@@ -21,6 +21,7 @@ from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from tzlocal import get_localzone
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def create_scheduler() -> BackgroundScheduler:
     global _scheduler
 
     _scheduler = BackgroundScheduler(
-        timezone="local",
+        timezone=get_localzone(),
         job_defaults={
             "coalesce": True,         # If multiple misfires queued, run once
             "misfire_grace_time": 3600,  # Allow up to 1 h late before skipping
