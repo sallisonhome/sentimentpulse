@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import Game, Publisher
 from schemas import PublisherCreate, PublisherResponse
+from config import settings
 from services.reddit_service import discover_subreddits
-from services.steam_service import get_games_by_publisher
+from services.steam_service import get_games_by_developer, get_games_by_publisher
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,17 @@ def _discover_games_bg(publisher_id: int, publisher_name: str) -> None:
 
     db = SessionLocal()
     try:
-        steam_games = get_games_by_publisher(publisher_name)
+        # Search by publisher
+        steam_games_pub = get_games_by_publisher(publisher_name)
+        # Also search by developer if configured
+        steam_games_dev: list[dict] = []
+        if settings.developer_name:
+            steam_games_dev = get_games_by_developer(settings.developer_name)
+        # Merge, deduplicating by steam_app_id
+        seen: dict[int, dict] = {g["steam_app_id"]: g for g in steam_games_pub}
+        for g in steam_games_dev:
+            seen.setdefault(g["steam_app_id"], g)
+        steam_games = list(seen.values())
         new_count = 0
         for gd in steam_games:
             if db.query(Game).filter_by(steam_app_id=gd["steam_app_id"]).first():

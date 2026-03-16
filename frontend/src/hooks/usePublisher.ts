@@ -5,6 +5,6 @@ import type { Publisher } from '../types'
 export function usePublisher() {
   return useQuery<Publisher>({
     queryKey: ['publisher'],
-    queryFn: () => api.get<Publisher>('/publishers/me').then(r => r.data),
+    queryFn: () => api.get<Publisher>('/publisher').then(r => r.data),
   })
 }

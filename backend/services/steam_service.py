@@ -119,6 +119,67 @@ def get_games_by_publisher(publisher_name: str) -> list[dict]:
     return list(games.values())
 
 
+def get_games_by_developer(developer_name: str) -> list[dict]:
+    """
+    Return all Steam games by a given developer.
+
+    Identical pagination logic to get_games_by_publisher but uses the
+    ``developer`` filter parameter instead of ``publisher``.
+
+    Each returned dict has:
+        steam_app_id (int), name (str), release_date (str | None)
+    """
+    games: dict[int, dict] = {}
+    start = 0
+    page_size = 100
+
+    while True:
+        resp = _get(
+            STEAM_SEARCH_URL,
+            params={
+                "developer": developer_name,
+                "json": "1",
+                "count": page_size,
+                "start": start,
+                "sort_by": "_ASC",
+            },
+        )
+        if resp is None:
+            break
+
+        try:
+            data = resp.json()
+        except Exception as exc:
+            logger.error(
+                "Non-JSON response from Steam search for developer '%s': %s",
+                developer_name, exc,
+            )
+            break
+
+        items = data.get("items", [])
+        if not items:
+            break
+
+        for item in items:
+            app_id = _extract_appid_from_item(item)
+            if app_id and app_id not in games:
+                games[app_id] = {
+                    "steam_app_id": app_id,
+                    "name": item.get("name", "Unknown"),
+                    "release_date": None,
+                }
+
+        total = data.get("total_count", 0)
+        start += page_size
+        if start >= total:
+            break
+
+    logger.info(
+        "Discovered %d game(s) for developer '%s'", len(games), developer_name
+    )
+    return list(games.values())
+
+
 def get_app_details(steam_app_id: int) -> Optional[dict]:
     """
     Fetch detailed metadata for a single Steam app (publisher, release date, etc.)

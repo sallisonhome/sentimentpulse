@@ -21,11 +21,11 @@ Design principles
 - The module-level `_status` dict is read by GET /api/ingest/status.
 """
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import cast, Date, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -48,6 +48,7 @@ from services.reddit_service import (
 )
 from services.steam_service import (
     fetch_reviews,
+    get_games_by_developer,
     get_games_by_publisher,
     scrape_forum_threads,
 )
@@ -186,14 +187,31 @@ def _step1_discover_games(
         log_lines.append("[Step 1] No publisher configured — nothing to ingest.")
         return []
 
-    # Attempt Steam discovery; fall back to existing DB records on failure
+    # Attempt Steam discovery by publisher; fall back to existing DB on failure
     try:
-        steam_games = get_games_by_publisher(publisher.name)
+        steam_games_pub = get_games_by_publisher(publisher.name)
     except Exception as exc:
-        msg = f"[Step 1] Steam discovery failed: {exc}"
+        msg = f"[Step 1] Steam publisher discovery failed: {exc}"
         errors.append(msg)
         logger.error(msg)
-        steam_games = []
+        steam_games_pub = []
+
+    # Also search by developer name if configured (catches games published by
+    # third parties such as Focus Home Interactive)
+    steam_games_dev: list[dict] = []
+    if settings.developer_name:
+        try:
+            steam_games_dev = get_games_by_developer(settings.developer_name)
+        except Exception as exc:
+            msg = f"[Step 1] Steam developer discovery failed: {exc}"
+            errors.append(msg)
+            logger.error(msg)
+
+    # Merge, deduplicating by steam_app_id
+    seen: dict[int, dict] = {g["steam_app_id"]: g for g in steam_games_pub}
+    for g in steam_games_dev:
+        seen.setdefault(g["steam_app_id"], g)
+    steam_games = list(seen.values())
 
     new_count = 0
     for gd in steam_games:
@@ -381,19 +399,22 @@ def _step6_extract_topics(
     Upserts results into topic_trends and back-fills SentimentRecord.topics.
     """
     today = date.today()
+    day_start = datetime.combine(today, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
 
     rows: list[tuple[RawPost, SentimentRecord]] = (
         db.query(RawPost, SentimentRecord)
         .join(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
         .filter(
             RawPost.game_id == game.id,
-            cast(RawPost.collected_at, Date) == today,
+            RawPost.collected_at >= day_start,
+            RawPost.collected_at < day_end,
         )
         .all()
     )
 
     if not rows:
-        log_lines.append(f"[Step 6] '{game.name}': no posts today.")
+        log_lines.append(f"[Step 6] '{game.name}': no posts today (range {day_start} - {day_end}).")
         return
 
     # Group text by sentiment
@@ -455,6 +476,8 @@ def _step7_daily_summary(
     AI executive summary + recommended actions.  Upserts one DailySummary row.
     """
     today = date.today()
+    day_start = datetime.combine(today, datetime.min.time())
+    day_end = day_start + timedelta(days=1)
 
     # Aggregate counts for today
     count_rows = (
@@ -462,7 +485,8 @@ def _step7_daily_summary(
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
         .filter(
             RawPost.game_id == game.id,
-            cast(RawPost.collected_at, Date) == today,
+            RawPost.collected_at >= day_start,
+            RawPost.collected_at < day_end,
         )
         .group_by(SentimentRecord.sentiment)
         .all()

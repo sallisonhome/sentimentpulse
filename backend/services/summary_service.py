@@ -228,7 +228,13 @@ def _get_client():
     """Return an Anthropic client, or None if the package is unavailable."""
     try:
         import anthropic  # noqa: PLC0415
-        return anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        # Pin base_url to the real Anthropic API endpoint so the client is
+        # never affected by proxy env-vars (e.g. ANTHROPIC_BASE_URL) set by
+        # other tools in the shell environment.
+        return anthropic.Anthropic(
+            api_key=settings.anthropic_api_key,
+            base_url="https://api.anthropic.com",
+        )
     except ImportError:
         logger.error(
             "The 'anthropic' package is not installed. "
