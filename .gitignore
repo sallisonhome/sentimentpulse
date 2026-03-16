@@ -1,0 +1,79 @@
+# Environment
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+# Python venv lib dirs (scoped to avoid matching frontend/src/lib)
+backend/lib/
+backend/lib64/
+.venv/lib/
+.venv/lib64/
+parts/
+sdist/
+var/
+wheels/
+*.so
+.installed.cfg
+MANIFEST
+.venv/
+venv/
+env/
+ENV/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Alembic
+# (keep migrations directory, but not the compiled cache)
+
+# SQLite database
+*.db
+*.db-shm
+*.db-wal
+
+# NLP model cache (large, download at runtime)
+backend/.cache/
+backend/models/
+~/.cache/huggingface/
+
+# Logs
+backend/logs/*.log
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker
+*.override.yml

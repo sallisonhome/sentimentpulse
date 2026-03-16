@@ -1,0 +1,703 @@
+"""
+Daily ingestion pipeline — orchestrates all 8 steps for every active game.
+
+Steps
+-----
+1. Game Discovery    — Steam API publisher search + Reddit subreddit auto-detection
+2. Steam Reviews     — fetch 100 most-recent reviews per game
+3. Steam Forums      — scrape 3 most-active discussion threads per game
+4. Reddit            — fetch new/hot posts + top-50 comments per subreddit
+5. NLP Sentiment     — batch-classify all unprocessed raw_posts
+6. Topic Extraction  — BERTopic / LDA per sentiment group → topic_trends upsert
+7. Daily Summary     — aggregate counts + AI summary via Claude API
+8. Log Results       — write logs/ingest_YYYY-MM-DD.log
+
+Design principles
+-----------------
+- Every step is wrapped in try/except so a failure in one game never stops
+  the others.
+- Deduplication is enforced at the DB level (unique constraint on
+  external_id + source) AND via a pre-flight set-check in _bulk_save_posts.
+- The module-level `_status` dict is read by GET /api/ingest/status.
+"""
+import logging
+from datetime import date, datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from sqlalchemy import cast, Date, func
+from sqlalchemy.orm import Session
+
+from config import settings
+from database import SessionLocal
+from models import (
+    DailySummary,
+    Game,
+    Publisher,
+    RawPost,
+    SentimentEnum,
+    SentimentRecord,
+    SourceEnum,
+    TopicTrend,
+)
+from services.nlp_service import classify_batch, load_model
+from services.reddit_service import (
+    discover_subreddits,
+    fetch_post_comments,
+    fetch_subreddit_posts,
+)
+from services.steam_service import (
+    fetch_reviews,
+    get_games_by_publisher,
+    scrape_forum_threads,
+)
+from services.summary_service import generate_summaries
+from services.topic_service import extract_topics, upsert_topic_trends
+
+logger = logging.getLogger(__name__)
+
+_LOG_DIR = Path(__file__).parent.parent / "logs"
+
+# ── Module-level status — read by GET /api/ingest/status ─────────────────────
+_status: dict = {
+    "is_running": False,
+    "last_run_at": None,          # ISO-8601 string
+    "last_run_status": "never",   # "never" | "success" | "partial" | "error"
+    "last_run_errors": [],
+    "games_processed": 0,
+    "posts_collected": 0,
+    "next_run_at": None,          # ISO-8601 string — set by scheduler
+}
+
+
+def get_status() -> dict:
+    """Return a snapshot of the current ingestion status."""
+    return dict(_status)
+
+
+def set_next_run(dt: Optional[datetime]) -> None:
+    """Called by the scheduler after each run to record the next scheduled time."""
+    _status["next_run_at"] = dt.isoformat() if dt else None
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def run_ingestion() -> dict:
+    """
+    Execute the full ingestion pipeline for all active games.
+
+    Thread-safe: returns immediately if a run is already in progress.
+    Returns a summary dict suitable for serialising as a JSON response.
+    """
+    if _status["is_running"]:
+        logger.warning("Ingestion already running — ignoring duplicate trigger.")
+        return {"status": "skipped", "reason": "already_running"}
+
+    _status["is_running"] = True
+    _status["last_run_at"] = datetime.now(timezone.utc).isoformat()
+
+    log_lines: list[str] = []
+    errors: list[str] = []
+    games_processed = 0
+    posts_collected = 0
+
+    # Ensure the NLP model is loaded before processing any posts
+    load_model()
+
+    db = SessionLocal()
+    try:
+        # ── Step 1: game discovery ────────────────────────────────────────────
+        active_games = _step1_discover_games(db, log_lines, errors)
+        log_lines.append(
+            f"[Step 1] {len(active_games)} active game(s) queued."
+        )
+
+        for game in active_games:
+            game_posts = 0
+            try:
+                # ── Step 2 ────────────────────────────────────────────────────
+                game_posts += _step2_steam_reviews(db, game, log_lines, errors)
+
+                # ── Step 3 ────────────────────────────────────────────────────
+                game_posts += _step3_steam_forums(db, game, log_lines, errors)
+
+                # ── Step 4 ────────────────────────────────────────────────────
+                game_posts += _step4_reddit(db, game, log_lines, errors)
+
+                # ── Step 5 ────────────────────────────────────────────────────
+                _step5_classify_sentiment(db, game, log_lines, errors)
+
+                # ── Step 6 ────────────────────────────────────────────────────
+                _step6_extract_topics(db, game, log_lines, errors)
+
+                # ── Step 7 ────────────────────────────────────────────────────
+                _step7_daily_summary(db, game, log_lines, errors)
+
+                games_processed += 1
+                posts_collected += game_posts
+
+            except Exception as exc:
+                msg = f"Unhandled error processing game '{game.name}': {exc}"
+                errors.append(msg)
+                logger.exception(msg)
+                # Continue with next game — never abort the whole pipeline
+
+        final_status = "success" if not errors else "partial"
+
+    except Exception as exc:
+        msg = f"Fatal ingestion error: {exc}"
+        errors.append(msg)
+        logger.exception(msg)
+        final_status = "error"
+
+    finally:
+        # ── Step 8: write log ─────────────────────────────────────────────────
+        _step8_write_log(log_lines, errors)
+
+        db.close()
+        _status["is_running"] = False
+        _status["last_run_status"] = final_status
+        _status["last_run_errors"] = errors
+        _status["games_processed"] = games_processed
+        _status["posts_collected"] = posts_collected
+
+    return {
+        "status": final_status,
+        "games_processed": games_processed,
+        "posts_collected": posts_collected,
+        "errors": errors,
+    }
+
+
+# ── Step 1: Game Discovery ────────────────────────────────────────────────────
+
+def _step1_discover_games(
+    db: Session,
+    log_lines: list,
+    errors: list,
+) -> list[Game]:
+    """
+    Fetch all Steam games for the configured publisher.
+    Upserts new games and auto-discovers their subreddits.
+    Returns the full list of active games for this publisher.
+    """
+    publisher: Optional[Publisher] = db.query(Publisher).first()
+    if not publisher:
+        log_lines.append("[Step 1] No publisher configured — nothing to ingest.")
+        return []
+
+    # Attempt Steam discovery; fall back to existing DB records on failure
+    try:
+        steam_games = get_games_by_publisher(publisher.name)
+    except Exception as exc:
+        msg = f"[Step 1] Steam discovery failed: {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        steam_games = []
+
+    new_count = 0
+    for gd in steam_games:
+        if db.query(Game).filter_by(steam_app_id=gd["steam_app_id"]).first():
+            continue  # Already known
+        subreddits = discover_subreddits(gd["name"])
+        db.add(Game(
+            publisher_id=publisher.id,
+            steam_app_id=gd["steam_app_id"],
+            name=gd["name"],
+            release_date=gd.get("release_date"),
+            is_active=True,
+            subreddits=subreddits,
+        ))
+        new_count += 1
+
+    if new_count:
+        try:
+            db.commit()
+            log_lines.append(f"[Step 1] {new_count} new game(s) added.")
+        except Exception as exc:
+            db.rollback()
+            errors.append(f"[Step 1] Error saving new games: {exc}")
+
+    return (
+        db.query(Game)
+        .filter_by(publisher_id=publisher.id, is_active=True)
+        .all()
+    )
+
+
+# ── Step 2: Steam Reviews ─────────────────────────────────────────────────────
+
+def _step2_steam_reviews(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> int:
+    """Fetch Steam reviews; return count of newly saved posts."""
+    try:
+        reviews = fetch_reviews(game.steam_app_id, count=100)
+    except Exception as exc:
+        msg = f"[Step 2] Steam reviews failed for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        return 0
+
+    saved = _bulk_save_posts(db, game.id, SourceEnum.steam_review, reviews, errors)
+    log_lines.append(
+        f"[Step 2] '{game.name}': {saved} new review(s) (fetched {len(reviews)})."
+    )
+    return saved
+
+
+# ── Step 3: Steam Forums ──────────────────────────────────────────────────────
+
+def _step3_steam_forums(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> int:
+    """Scrape Steam forum threads; return count of newly saved posts."""
+    try:
+        posts = scrape_forum_threads(game.steam_app_id, max_threads=3)
+    except Exception as exc:
+        msg = f"[Step 3] Steam forums failed for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        return 0
+
+    saved = _bulk_save_posts(db, game.id, SourceEnum.steam_forum, posts, errors)
+    log_lines.append(
+        f"[Step 3] '{game.name}': {saved} new forum post(s) (fetched {len(posts)})."
+    )
+    return saved
+
+
+# ── Step 4: Reddit ────────────────────────────────────────────────────────────
+
+def _step4_reddit(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> int:
+    """Fetch Reddit posts + comments from configured subreddits."""
+    subreddits: list[str] = game.subreddits or []
+    if not subreddits:
+        log_lines.append(
+            f"[Step 4] '{game.name}': no subreddits configured — skipping Reddit."
+        )
+        return 0
+
+    total_saved = 0
+    for sub_name in subreddits:
+        try:
+            submissions = fetch_subreddit_posts(sub_name, limit=25)
+            total_saved += _bulk_save_posts(
+                db, game.id, SourceEnum.reddit, submissions, errors
+            )
+            # Fetch top-50 comments per submission
+            for sub in submissions:
+                comments = fetch_post_comments(sub["external_id"], limit=50)
+                total_saved += _bulk_save_posts(
+                    db, game.id, SourceEnum.reddit, comments, errors
+                )
+        except Exception as exc:
+            msg = f"[Step 4] Reddit error for r/{sub_name}: {exc}"
+            errors.append(msg)
+            logger.error(msg)
+
+    log_lines.append(
+        f"[Step 4] '{game.name}': {total_saved} new Reddit post(s)/comment(s)."
+    )
+    return total_saved
+
+
+# ── Step 5: Sentiment Classification ─────────────────────────────────────────
+
+def _step5_classify_sentiment(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> None:
+    """
+    Batch-classify ALL unprocessed posts for this game.
+    Processes any backlog from previous failed runs, not just today's posts.
+    """
+    unprocessed: list[RawPost] = (
+        db.query(RawPost)
+        .outerjoin(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
+        .filter(
+            RawPost.game_id == game.id,
+            SentimentRecord.id.is_(None),
+        )
+        .all()
+    )
+
+    if not unprocessed:
+        log_lines.append(f"[Step 5] '{game.name}': no unclassified posts.")
+        return
+
+    texts = [_post_text(p) for p in unprocessed]
+    try:
+        results = classify_batch(texts)
+    except Exception as exc:
+        msg = f"[Step 5] Batch classification failed for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        return
+
+    for post, (label, score) in zip(unprocessed, results):
+        db.add(SentimentRecord(
+            raw_post_id=post.id,
+            sentiment=SentimentEnum(label),
+            sentiment_score=score,
+            topics=[],
+        ))
+
+    try:
+        db.commit()
+        log_lines.append(
+            f"[Step 5] '{game.name}': classified {len(unprocessed)} post(s)."
+        )
+    except Exception as exc:
+        db.rollback()
+        msg = f"[Step 5] Error saving sentiment records for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+
+
+# ── Step 6: Topic Extraction ──────────────────────────────────────────────────
+
+def _step6_extract_topics(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> None:
+    """
+    Cluster today's posts per sentiment group.
+    Upserts results into topic_trends and back-fills SentimentRecord.topics.
+    """
+    today = date.today()
+
+    rows: list[tuple[RawPost, SentimentRecord]] = (
+        db.query(RawPost, SentimentRecord)
+        .join(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
+        .filter(
+            RawPost.game_id == game.id,
+            cast(RawPost.collected_at, Date) == today,
+        )
+        .all()
+    )
+
+    if not rows:
+        log_lines.append(f"[Step 6] '{game.name}': no posts today.")
+        return
+
+    # Group text by sentiment
+    grouped: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
+    for post, sr in rows:
+        text = _post_text(post)
+        if text:
+            grouped[sr.sentiment.value].append(text)
+
+    # Extract topics per sentiment group
+    topics_by_sentiment: dict[str, list[str]] = {}
+    for sentiment_label, texts in grouped.items():
+        if not texts:
+            continue
+        try:
+            topics = extract_topics(texts)
+            topics_by_sentiment[sentiment_label] = topics
+        except Exception as exc:
+            msg = (
+                f"[Step 6] Topic extraction error ({sentiment_label}) "
+                f"for '{game.name}': {exc}"
+            )
+            errors.append(msg)
+            logger.error(msg)
+
+    if not topics_by_sentiment:
+        return
+
+    # Back-fill top topics onto each SentimentRecord for this game/day
+    top_map = {k: v[:5] for k, v in topics_by_sentiment.items()}
+    for _, sr in rows:
+        sr.topics = top_map.get(sr.sentiment.value, [])
+
+    # Upsert into topic_trends (includes its own commit)
+    try:
+        upsert_topic_trends(db, game.id, today, topics_by_sentiment)
+    except Exception as exc:
+        msg = f"[Step 6] Topic trend upsert failed for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        return
+
+    total = sum(len(v) for v in topics_by_sentiment.values())
+    log_lines.append(
+        f"[Step 6] '{game.name}': {total} topic(s) extracted/updated."
+    )
+
+
+# ── Step 7: Daily Summary ─────────────────────────────────────────────────────
+
+def _step7_daily_summary(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> None:
+    """
+    Aggregate today's sentiment counts, compute trend delta, and generate the
+    AI executive summary + recommended actions.  Upserts one DailySummary row.
+    """
+    today = date.today()
+
+    # Aggregate counts for today
+    count_rows = (
+        db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
+        .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+        .filter(
+            RawPost.game_id == game.id,
+            cast(RawPost.collected_at, Date) == today,
+        )
+        .group_by(SentimentRecord.sentiment)
+        .all()
+    )
+
+    count_map: dict[str, int] = {s.value: c for s, c in count_rows}
+    pos = count_map.get("positive", 0)
+    neg = count_map.get("negative", 0)
+    neu = count_map.get("neutral", 0)
+    total = pos + neg + neu
+
+    if total == 0:
+        log_lines.append(
+            f"[Step 7] '{game.name}': no posts classified today — skipping summary."
+        )
+        return
+
+    # Top-5 topics per sentiment — returns (label, trend_direction) tuples so
+    # the Claude actions prompt can reference trend context per topic.
+    def _top_topics_with_trend(
+        sentiment: SentimentEnum, limit: int = 5
+    ) -> list[tuple[str, str]]:
+        return [
+            (t.topic_label, t.trend_direction.value)
+            for t in (
+                db.query(TopicTrend)
+                .filter_by(game_id=game.id, sentiment=sentiment)
+                .order_by(TopicTrend.mention_count.desc())
+                .limit(limit)
+                .all()
+            )
+        ]
+
+    pos_with_trend = _top_topics_with_trend(SentimentEnum.positive)
+    neg_with_trend = _top_topics_with_trend(SentimentEnum.negative)
+    neu_with_trend = _top_topics_with_trend(SentimentEnum.neutral)
+
+    # Plain label lists for the executive summary prompt and DB storage
+    top_pos = [label for label, _ in pos_with_trend]
+    top_neg = [label for label, _ in neg_with_trend]
+    top_neu = [label for label, _ in neu_with_trend]
+
+    trend_delta = _compute_trend_delta(db, game.id, today, pos, neg, total)
+
+    # Generate AI text via Claude API (summary_service.py)
+    try:
+        exec_summary, rec_actions = generate_summaries(
+            game_name=game.name,
+            top_positive_topics=top_pos,
+            top_negative_topics=top_neg,
+            top_neutral_topics=top_neu,
+            trend_delta=trend_delta,
+            total_posts=total,
+            positive_with_trend=pos_with_trend,
+            negative_with_trend=neg_with_trend,
+            neutral_with_trend=neu_with_trend,
+        )
+    except Exception as exc:
+        errors.append(
+            f"[Step 7] Summary generation failed for '{game.name}': {exc}"
+        )
+        exec_summary = ""
+        rec_actions = ""
+
+    # Upsert — one row per game per date
+    existing: Optional[DailySummary] = (
+        db.query(DailySummary)
+        .filter_by(game_id=game.id, summary_date=today)
+        .first()
+    )
+    if existing:
+        existing.positive_count = pos
+        existing.negative_count = neg
+        existing.neutral_count = neu
+        existing.top_positive_topics = top_pos
+        existing.top_negative_topics = top_neg
+        existing.top_neutral_topics = top_neu
+        existing.sentiment_trend_delta = trend_delta
+        existing.executive_summary = exec_summary
+        existing.recommended_actions = rec_actions
+    else:
+        db.add(DailySummary(
+            game_id=game.id,
+            summary_date=today,
+            positive_count=pos,
+            negative_count=neg,
+            neutral_count=neu,
+            top_positive_topics=top_pos,
+            top_negative_topics=top_neg,
+            top_neutral_topics=top_neu,
+            sentiment_trend_delta=trend_delta,
+            executive_summary=exec_summary,
+            recommended_actions=rec_actions,
+        ))
+
+    try:
+        db.commit()
+        log_lines.append(
+            f"[Step 7] '{game.name}': summary saved "
+            f"(pos={pos}, neg={neg}, neu={neu}, total={total}, "
+            f"delta={f'{trend_delta:+.1%}' if trend_delta is not None else 'N/A'})."
+        )
+    except Exception as exc:
+        db.rollback()
+        msg = f"[Step 7] Error saving daily summary for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+
+
+# ── Step 8: Write Log ─────────────────────────────────────────────────────────
+
+def _step8_write_log(log_lines: list, errors: list) -> None:
+    """Append a structured run record to logs/ingest_YYYY-MM-DD.log."""
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = _LOG_DIR / f"ingest_{date.today()}.log"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    sep = "-" * 60
+
+    with log_file.open("a", encoding="utf-8") as fh:
+        fh.write(f"\n{sep}\n")
+        fh.write(f"Ingestion run completed: {timestamp}\n")
+        fh.write(f"{sep}\n")
+        for line in log_lines:
+            fh.write(f"  {line}\n")
+        if errors:
+            fh.write(f"\nERRORS ({len(errors)}):\n")
+            for err in errors:
+                fh.write(f"  [ERROR] {err}\n")
+        fh.write(f"{sep}\n")
+
+    logger.info("Ingestion log written → %s", log_file)
+
+
+# ── Private helpers ───────────────────────────────────────────────────────────
+
+def _bulk_save_posts(
+    db: Session,
+    game_id: int,
+    source: SourceEnum,
+    post_data_list: list[dict],
+    errors: list,
+) -> int:
+    """
+    Persist a list of raw-post dicts, skipping any that are already stored.
+
+    Deduplication uses a single pre-flight query to fetch all known
+    external_ids for this source, avoiding N per-row existence checks.
+
+    Returns the count of newly inserted rows.
+    """
+    if not post_data_list:
+        return 0
+
+    external_ids = [p["external_id"] for p in post_data_list]
+    known: set[str] = {
+        row[0]
+        for row in db.query(RawPost.external_id).filter(
+            RawPost.external_id.in_(external_ids),
+            RawPost.source == source,
+        )
+    }
+
+    new_rows = [
+        RawPost(
+            game_id=game_id,
+            source=source,
+            external_id=pd["external_id"],
+            author=pd.get("author"),
+            title=pd.get("title"),
+            body=pd.get("body"),
+            url=pd.get("url"),
+            upvotes=pd.get("upvotes", 0),
+            post_date=pd.get("post_date"),
+        )
+        for pd in post_data_list
+        if pd["external_id"] not in known
+    ]
+
+    if not new_rows:
+        return 0
+
+    db.add_all(new_rows)
+    try:
+        db.commit()
+        return len(new_rows)
+    except Exception as exc:
+        db.rollback()
+        msg = f"DB error saving {source.value} posts: {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        return 0
+
+
+def _post_text(post: RawPost) -> str:
+    """Concatenate title and body into a single NLP input string."""
+    return " ".join(
+        part for part in (post.title or "", post.body or "") if part
+    ).strip()
+
+
+def _compute_trend_delta(
+    db: Session,
+    game_id: int,
+    today: date,
+    pos: int,
+    neg: int,
+    total: int,
+) -> Optional[float]:
+    """
+    Compute the change in net sentiment score vs the most recent prior summary.
+
+    Net sentiment = (positive_count - negative_count) / total_count.
+    Returns None if no prior summary exists or prior total is zero.
+    """
+    if total == 0:
+        return None
+
+    today_net = (pos - neg) / total
+
+    prior: Optional[DailySummary] = (
+        db.query(DailySummary)
+        .filter(
+            DailySummary.game_id == game_id,
+            DailySummary.summary_date < today,
+        )
+        .order_by(DailySummary.summary_date.desc())
+        .first()
+    )
+
+    if prior is None:
+        return None
+
+    prior_total = prior.positive_count + prior.negative_count + prior.neutral_count
+    if prior_total == 0:
+        return None
+
+    prior_net = (prior.positive_count - prior.negative_count) / prior_total
+    return round(today_net - prior_net, 4)

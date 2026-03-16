@@ -1,0 +1,229 @@
+"""
+Dashboard router — GET /api/games/{game_id}/dashboard
+
+Returns all KPI data for a single game over the requested time period:
+  - Today's sentiment counts (donut chart)
+  - Net sentiment trend (line chart)
+  - Top 3 topics per sentiment (cards)
+  - Post volume by source per day (stacked bar)
+  - Sentiment velocity (momentum gauge)
+"""
+import logging
+from datetime import date, timedelta
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import cast, Date, func
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import (
+    DailySummary,
+    Game,
+    RawPost,
+    SentimentEnum,
+    SentimentRecord,
+    TopicTrend,
+)
+from schemas import (
+    DashboardResponse,
+    NetSentimentPoint,
+    PeriodEnum,
+    SentimentCounts,
+    SentimentVelocity,
+    TopicItem,
+    VolumePoint,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/games", tags=["dashboard"])
+
+
+# ── Helper ────────────────────────────────────────────────────────────────────
+
+def _period_start(period: PeriodEnum) -> Optional[date]:
+    today = date.today()
+    return {
+        PeriodEnum.weekly:    today - timedelta(days=7),
+        PeriodEnum.monthly:   today - timedelta(days=30),
+        PeriodEnum.quarterly: today - timedelta(days=90),
+        PeriodEnum.lifetime:  None,
+    }[period]
+
+
+def _to_date(val) -> date:
+    """Normalise SQLite date strings or Python date objects to date."""
+    if isinstance(val, date):
+        return val
+    return date.fromisoformat(str(val)[:10])
+
+
+# ── Endpoint ──────────────────────────────────────────────────────────────────
+
+@router.get("/{game_id}/dashboard", response_model=DashboardResponse)
+def get_dashboard(
+    game_id: int,
+    period: PeriodEnum = Query(PeriodEnum.weekly),
+    db: Session = Depends(get_db),
+):
+    game = db.query(Game).filter_by(id=game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+
+    p_start = _period_start(period)
+    today = date.today()
+
+    # ── 1. Today's sentiment counts ───────────────────────────────────────────
+    today_row: Optional[DailySummary] = (
+        db.query(DailySummary)
+        .filter_by(game_id=game_id, summary_date=today)
+        .first()
+    )
+
+    if today_row:
+        pos, neg, neu = (
+            today_row.positive_count,
+            today_row.negative_count,
+            today_row.neutral_count,
+        )
+    else:
+        # Ingest may not have run yet today — count directly from records
+        rows = (
+            db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(
+                RawPost.game_id == game_id,
+                cast(RawPost.collected_at, Date) == today,
+            )
+            .group_by(SentimentRecord.sentiment)
+            .all()
+        )
+        cm = {s.value: c for s, c in rows}
+        pos, neg, neu = cm.get("positive", 0), cm.get("negative", 0), cm.get("neutral", 0)
+
+    total_today = pos + neg + neu
+    sentiment_today = SentimentCounts(
+        positive=pos,
+        negative=neg,
+        neutral=neu,
+        total=total_today,
+        positive_pct=round(pos / total_today * 100, 1) if total_today else 0.0,
+        negative_pct=round(neg / total_today * 100, 1) if total_today else 0.0,
+        neutral_pct=round(neu / total_today * 100, 1) if total_today else 0.0,
+    )
+
+    # ── 2. Net sentiment trend (from daily_summaries) ─────────────────────────
+    sum_q = db.query(DailySummary).filter(DailySummary.game_id == game_id)
+    if p_start:
+        sum_q = sum_q.filter(DailySummary.summary_date >= p_start)
+    summaries = sum_q.order_by(DailySummary.summary_date.asc()).all()
+
+    trend = []
+    for s in summaries:
+        s_total = s.positive_count + s.negative_count + s.neutral_count
+        net = (s.positive_count - s.negative_count) / s_total if s_total else 0.0
+        trend.append(NetSentimentPoint(
+            summary_date=s.summary_date,
+            net_sentiment=round(net, 4),
+            positive_count=s.positive_count,
+            negative_count=s.negative_count,
+            neutral_count=s.neutral_count,
+            total=s_total,
+        ))
+
+    # ── 3. Top 3 topics per sentiment ─────────────────────────────────────────
+    def _top_topics(sentiment: SentimentEnum, limit: int = 3) -> list[TopicItem]:
+        rows = (
+            db.query(TopicTrend)
+            .filter_by(game_id=game_id, sentiment=sentiment)
+            .order_by(TopicTrend.mention_count.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            TopicItem(
+                topic_label=t.topic_label,
+                mention_count=t.mention_count,
+                trend_direction=t.trend_direction.value,
+                velocity=round(t.velocity, 4),
+            )
+            for t in rows
+        ]
+
+    # ── 4. Volume by source per day ───────────────────────────────────────────
+    vol_q = (
+        db.query(
+            cast(RawPost.collected_at, Date).label("day"),
+            RawPost.source,
+            func.count(RawPost.id).label("cnt"),
+        )
+        .filter(RawPost.game_id == game_id)
+    )
+    if p_start:
+        vol_q = vol_q.filter(cast(RawPost.collected_at, Date) >= p_start)
+
+    vol_rows = (
+        vol_q
+        .group_by(cast(RawPost.collected_at, Date), RawPost.source)
+        .order_by(cast(RawPost.collected_at, Date))
+        .all()
+    )
+
+    vol_map: dict[date, dict[str, int]] = {}
+    for row in vol_rows:
+        d = _to_date(row.day)
+        vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0})
+        vol_map[d][row.source.value] = row.cnt
+
+    volume_points = [
+        VolumePoint(
+            day=d,
+            steam_review=counts.get("steam_review", 0),
+            steam_forum=counts.get("steam_forum", 0),
+            reddit=counts.get("reddit", 0),
+            total=sum(counts.values()),
+        )
+        for d, counts in sorted(vol_map.items())
+    ]
+
+    # ── 5. Sentiment velocity ─────────────────────────────────────────────────
+    delta_rows = (
+        db.query(DailySummary.sentiment_trend_delta)
+        .filter(
+            DailySummary.game_id == game_id,
+            DailySummary.sentiment_trend_delta.isnot(None),
+        )
+        .order_by(DailySummary.summary_date.desc())
+        .limit(7)
+        .all()
+    )
+    deltas = [r[0] for r in delta_rows if r[0] is not None]
+
+    if deltas:
+        avg_delta = sum(deltas) / len(deltas)
+        direction = (
+            "improving" if avg_delta > 0.02
+            else "declining" if avg_delta < -0.02
+            else "stable"
+        )
+    else:
+        avg_delta = None
+        direction = "stable"
+
+    velocity = SentimentVelocity(
+        direction=direction,
+        delta_avg=round(avg_delta, 4) if avg_delta is not None else None,
+    )
+
+    return DashboardResponse(
+        game_id=game_id,
+        period=period.value,
+        sentiment_today=sentiment_today,
+        net_sentiment_trend=trend,
+        top_positive_topics=_top_topics(SentimentEnum.positive),
+        top_negative_topics=_top_topics(SentimentEnum.negative),
+        top_neutral_topics=_top_topics(SentimentEnum.neutral),
+        volume_by_source=volume_points,
+        sentiment_velocity=velocity,
+    )

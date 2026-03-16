@@ -1,0 +1,87 @@
+import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
+import { cn } from '../../lib/utils'
+import type { SentimentCounts, SentimentVelocity } from '../../types'
+
+const VELOCITY_CONFIG = {
+  improving: { icon: TrendingUp,   color: 'text-green-600', label: 'Improving' },
+  stable:    { icon: Minus,        color: 'text-slate-500',  label: 'Stable'    },
+  declining: { icon: TrendingDown, color: 'text-red-600',   label: 'Declining' },
+}
+
+interface KpiCardsProps {
+  sentiment: SentimentCounts
+  velocity: SentimentVelocity
+}
+
+export default function KpiCards({ sentiment, velocity }: KpiCardsProps) {
+  const vel = VELOCITY_CONFIG[velocity.direction]
+  const VelIcon = vel.icon
+
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <StatCard
+        title="Total Posts"
+        value={sentiment.total.toLocaleString()}
+        sub="collected today"
+      />
+      <StatCard
+        title="Positive"
+        value={`${sentiment.positive_pct.toFixed(1)}%`}
+        sub={`${sentiment.positive.toLocaleString()} posts`}
+        valueClass="text-green-600"
+      />
+      <StatCard
+        title="Negative"
+        value={`${sentiment.negative_pct.toFixed(1)}%`}
+        sub={`${sentiment.negative.toLocaleString()} posts`}
+        valueClass="text-red-600"
+      />
+      <StatCard
+        title="Neutral"
+        value={`${sentiment.neutral_pct.toFixed(1)}%`}
+        sub={`${sentiment.neutral.toLocaleString()} posts`}
+        valueClass="text-slate-500"
+      />
+
+      {/* Velocity card */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">Sentiment Velocity</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className={cn('flex items-center gap-2 text-2xl font-bold', vel.color)}>
+            <VelIcon className="h-5 w-5" />
+            {vel.label}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {velocity.delta_avg != null
+              ? `Avg Δ ${velocity.delta_avg >= 0 ? '+' : ''}${(velocity.delta_avg * 100).toFixed(1)}% / day`
+              : 'Insufficient data'}
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+interface StatCardProps {
+  title: string
+  value: string
+  sub: string
+  valueClass?: string
+}
+
+function StatCard({ title, value, sub, valueClass }: StatCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className={cn('text-2xl font-bold', valueClass)}>{value}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{sub}</p>
+      </CardContent>
+    </Card>
+  )
+}
