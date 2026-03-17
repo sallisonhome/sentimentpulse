@@ -53,7 +53,7 @@ from services.steam_service import (
     scrape_forum_threads,
 )
 from services.summary_service import generate_summaries
-from services.topic_service import extract_topics, upsert_topic_trends
+from services.topic_service import extract_topics, humanize_topic_labels, upsert_topic_trends
 
 logger = logging.getLogger(__name__)
 
@@ -308,9 +308,18 @@ def _step4_reddit(
         return 0
 
     total_saved = 0
-    for sub_name in subreddits:
+    for raw_sub in subreddits:
+        # Normalise: accept full URLs like https://www.reddit.com/r/gaming/,
+        # "r/gaming", or plain names like "gaming"
+        sub_name = raw_sub.strip().rstrip("/")
+        if "/r/" in sub_name:
+            sub_name = sub_name.split("/r/")[-1].split("/")[0]
+        elif sub_name.startswith("r/"):
+            sub_name = sub_name[2:]
+        if not sub_name:
+            continue
         try:
-            submissions = fetch_subreddit_posts(sub_name, limit=25)
+            submissions = fetch_subreddit_posts(sub_name, limit=25, game_name=game.name)
             total_saved += _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
             )
@@ -442,6 +451,12 @@ def _step6_extract_topics(
 
     if not topics_by_sentiment:
         return
+
+    # Convert raw keyword clusters to plain-English labels via Claude
+    try:
+        topics_by_sentiment = humanize_topic_labels(game.name, topics_by_sentiment)
+    except Exception as exc:
+        logger.warning("[Step 6] Topic humanization failed for '%s': %s", game.name, exc)
 
     # Back-fill top topics onto each SentimentRecord for this game/day
     top_map = {k: v[:5] for k, v in topics_by_sentiment.items()}

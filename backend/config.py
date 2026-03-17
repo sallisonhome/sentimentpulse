@@ -4,10 +4,18 @@ from typing import Optional
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Load .env files with override=True so non-empty .env values always win over
-# blank system environment variables (e.g. ANTHROPIC_API_KEY='' set by the
-# Claude Code CLI shell).
-for _env_path in ("../.env", ".env"):
+# Resolve .env paths relative to this file's location so the correct file is
+# found regardless of the process working directory (e.g. uvicorn --reload
+# may run from a different cwd than the project root).
+_this_dir = os.path.dirname(os.path.abspath(__file__))       # backend/
+_project_root = os.path.dirname(_this_dir)                    # project root
+
+# Load .env with override=True so non-empty .env values always win over blank
+# system environment variables (e.g. ANTHROPIC_API_KEY='' set by Claude Code).
+for _env_path in (
+    os.path.join(_project_root, ".env"),   # <project>/.env  (primary)
+    os.path.join(_this_dir, ".env"),       # <project>/backend/.env (fallback)
+):
     if os.path.exists(_env_path):
         load_dotenv(_env_path, override=True)
         break
@@ -15,7 +23,10 @@ for _env_path in ("../.env", ".env"):
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=("../.env", ".env"),   # root-level .env, fallback to local
+        env_file=(
+            os.path.join(_project_root, ".env"),
+            os.path.join(_this_dir, ".env"),
+        ),
         env_file_encoding="utf-8",
         extra="ignore",
         # Treat empty system env vars as unset so .env file values win.

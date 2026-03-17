@@ -21,7 +21,7 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-3-5-haiku-latest"
+_MODEL = "claude-haiku-4-5-20251001"
 _MAX_TOKENS_SUMMARY = 400
 _MAX_TOKENS_ACTIONS = 600
 
@@ -49,7 +49,7 @@ def generate_summaries(
     Returns:
         (executive_summary: str, recommended_actions: str)
     """
-    if not settings.anthropic_api_key:
+    if not _resolve_api_key():
         logger.warning(
             "ANTHROPIC_API_KEY not configured — returning placeholder summaries. "
             "Add the key to .env to enable AI-generated content."
@@ -224,6 +224,46 @@ def _call_recommended_actions(
 
 # ── Client factory ────────────────────────────────────────────────────────────
 
+def _resolve_api_key() -> str:
+    """
+    Return the Anthropic API key, reading the .env file directly when the
+    value from settings is empty.
+
+    This is necessary because the Claude Code CLI shell sets
+    ANTHROPIC_API_KEY='' in the process environment, which pydantic-settings
+    reads with higher priority than the .env file, leaving settings.anthropic_api_key
+    as an empty string even when the key is present in .env.
+
+    dotenv_values() reads the file without touching os.environ, so it always
+    returns the raw file value regardless of what the shell has set.
+
+    Paths are resolved relative to this file's location (not the process cwd)
+    so the lookup works regardless of where uvicorn was launched from.
+    """
+    if settings.anthropic_api_key:
+        return settings.anthropic_api_key
+    try:
+        import os  # noqa: PLC0415
+        from dotenv import dotenv_values  # noqa: PLC0415
+
+        # services/summary_service.py → services/ → backend/ → project root
+        services_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir  = os.path.dirname(services_dir)
+        project_root = os.path.dirname(backend_dir)
+
+        for env_path in (
+            os.path.join(project_root, ".env"),   # <project>/.env  (primary)
+            os.path.join(backend_dir,  ".env"),   # <project>/backend/.env (fallback)
+        ):
+            if os.path.exists(env_path):
+                key = dotenv_values(env_path).get("ANTHROPIC_API_KEY", "")
+                if key:
+                    return key
+    except Exception:
+        pass
+    return ""
+
+
 def _get_client():
     """Return an Anthropic client, or None if the package is unavailable."""
     try:
@@ -232,7 +272,7 @@ def _get_client():
         # never affected by proxy env-vars (e.g. ANTHROPIC_BASE_URL) set by
         # other tools in the shell environment.
         return anthropic.Anthropic(
-            api_key=settings.anthropic_api_key,
+            api_key=_resolve_api_key(),
             base_url="https://api.anthropic.com",
         )
     except ImportError:

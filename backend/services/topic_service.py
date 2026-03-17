@@ -6,7 +6,12 @@ Fallback: Latent Dirichlet Allocation via scikit-learn
 
 Extracted topic labels are upserted into the topic_trends table, updating
 mention counts, last_seen date, trend direction, and velocity on each run.
+
+After raw extraction, a Claude API call converts machine-readable keyword
+clusters (e.g. "crash + fps + performance") into plain-English topic labels
+(e.g. "Performance & FPS Problems") using the game name for context.
 """
+import json
 import logging
 from datetime import date
 
@@ -22,6 +27,41 @@ _TOP_WORDS = 3      # Keywords to join for each topic label
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def humanize_topic_labels(
+    game_name: str,
+    topics_by_sentiment: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """
+    Convert raw keyword-cluster labels (e.g. "crash + fps + performance") into
+    plain-English topic labels (e.g. "Performance & FPS Problems") using the
+    Claude API for context-aware renaming.
+
+    Accepts and returns the same topics_by_sentiment dict structure.
+    Falls back to the original labels on any error so ingestion never breaks.
+    """
+    # Collect all unique raw labels across sentiments
+    all_raw: list[str] = []
+    for labels in topics_by_sentiment.values():
+        for label in labels:
+            if label not in all_raw:
+                all_raw.append(label)
+
+    if not all_raw:
+        return topics_by_sentiment
+
+    try:
+        humanized_map = _call_claude_humanize(game_name, all_raw)
+    except Exception as exc:
+        logger.warning("Topic humanization failed for '%s': %s — using raw labels.", game_name, exc)
+        return topics_by_sentiment
+
+    # Apply the mapping, falling back to original label if Claude missed one
+    result: dict[str, list[str]] = {}
+    for sentiment, labels in topics_by_sentiment.items():
+        result[sentiment] = [humanized_map.get(label, label) for label in labels]
+    return result
+
 
 def extract_topics(texts: list[str], n_topics: int = _N_TOPICS) -> list[str]:
     """
@@ -89,12 +129,18 @@ def upsert_topic_trends(
 
 def _bertopic(texts: list[str], n_topics: int) -> list[str]:
     from bertopic import BERTopic  # noqa: PLC0415
+    from sklearn.feature_extraction.text import CountVectorizer  # noqa: PLC0415
+
+    # Use a stopword-aware vectorizer so common words like "the", "and", "of"
+    # don't surface as topic keywords.
+    vectorizer_model = CountVectorizer(stop_words="english", min_df=1)
 
     model = BERTopic(
         nr_topics=n_topics,
         min_topic_size=_MIN_DOCS,
         verbose=False,
         calculate_probabilities=False,
+        vectorizer_model=vectorizer_model,
     )
     model.fit_transform(texts)
 
@@ -145,6 +191,61 @@ def _lda(texts: list[str], n_topics: int) -> list[str]:
         labels.append(label)
 
     return labels
+
+
+# ── Private: Claude label humanization ───────────────────────────────────────
+
+def _call_claude_humanize(game_name: str, raw_labels: list[str]) -> dict[str, str]:
+    """
+    Send raw topic keyword clusters to Claude and get back plain-English labels.
+
+    Returns a dict mapping raw_label → human_label.
+    Raises on any API or parse error so the caller can fall back gracefully.
+    """
+    from services.summary_service import _resolve_api_key  # noqa: PLC0415  # noqa: PLC0415
+
+    api_key = _resolve_api_key()
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not configured")
+
+    import anthropic  # noqa: PLC0415
+
+    client = anthropic.Anthropic(api_key=api_key, base_url="https://api.anthropic.com")
+
+    clusters_text = "\n".join(f"- {label}" for label in raw_labels)
+    prompt = (
+        f'You are labelling discussion topics for a game community sentiment dashboard.\n'
+        f'Game: "{game_name}"\n\n'
+        f'Below are raw keyword clusters extracted automatically from player reviews '
+        f'and forum posts. For each cluster, write a 2-5 word plain-English topic label '
+        f'that a non-technical person would immediately understand. '
+        f'Labels should be specific to gaming context and reflect what players are actually discussing.\n\n'
+        f'Good examples:\n'
+        f'- "crash + fps + performance" → "Performance & FPS Issues"\n'
+        f'- "love + game + play" → "Enjoyable Gameplay"\n'
+        f'- "multiplayer + online + bug" → "Multiplayer Connectivity Bugs"\n'
+        f'- "story + narrative + ending" → "Story & Narrative"\n'
+        f'- "price + worth + value" → "Price vs Value"\n\n'
+        f'Raw clusters to label:\n{clusters_text}\n\n'
+        f'Respond with ONLY a valid JSON object mapping each raw label to its human-readable label. '
+        f'Include every label from the list above. No extra text, no markdown fences.\n'
+        f'Example format: {{"crash + fps + performance": "Performance & FPS Issues"}}'
+    )
+
+    message = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=800,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    response_text = message.content[0].text.strip()
+
+    # Strip markdown code fences if present
+    if response_text.startswith("```"):
+        lines = response_text.split("\n")
+        response_text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+    mapping: dict[str, str] = json.loads(response_text)
+    return mapping
 
 
 # ── Private: DB upsert ────────────────────────────────────────────────────────
