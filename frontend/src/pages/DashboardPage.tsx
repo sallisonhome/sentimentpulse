@@ -39,7 +39,10 @@ export default function DashboardPage() {
     return <EmptyState title="Failed to load dashboard" description={error.message} />
   }
 
-  if (!data || data.sentiment_today.total === 0) {
+  // Only show empty state when there is truly no data at all — no trend history
+  // and no posts collected today. A game with yesterday's data but no today's
+  // data should still show the dashboard, not a blank page.
+  if (!data || (data.sentiment_today.total === 0 && data.net_sentiment_trend.length === 0)) {
     return (
       <EmptyState
         title="No data for this period"
@@ -48,9 +51,20 @@ export default function DashboardPage() {
     )
   }
 
+  const todayMissing = data.sentiment_today.total === 0 && data.net_sentiment_trend.length > 0
+  const lastDate = todayMissing
+    ? data.net_sentiment_trend[data.net_sentiment_trend.length - 1]?.summary_date
+    : null
+
   return (
     <ErrorBoundary>
       <div className="space-y-4">
+        {todayMissing && (
+          <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+            Today's data has not been collected yet.
+            {lastDate && <> Showing most recent data from <strong>{lastDate}</strong>.</>}
+          </div>
+        )}
         {/* Row 1 — KPI stat cards */}
         <KpiCards sentiment={data.sentiment_today} velocity={data.sentiment_velocity} />
 

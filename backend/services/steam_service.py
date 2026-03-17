@@ -4,6 +4,7 @@ Steam service — publisher game discovery, review fetching, forum scraping.
 All external HTTP calls include a 1-second rate-limit delay and are wrapped
 in try/except so a single failure never halts the ingestion pipeline.
 """
+import html
 import logging
 import time
 from datetime import datetime, timezone
@@ -104,7 +105,7 @@ def get_games_by_publisher(publisher_name: str) -> list[dict]:
             if app_id and app_id not in games:
                 games[app_id] = {
                     "steam_app_id": app_id,
-                    "name": item.get("name", "Unknown"),
+                    "name": html.unescape(item.get("name", "Unknown")),
                     "release_date": None,
                 }
 
@@ -165,7 +166,7 @@ def get_games_by_developer(developer_name: str) -> list[dict]:
             if app_id and app_id not in games:
                 games[app_id] = {
                     "steam_app_id": app_id,
-                    "name": item.get("name", "Unknown"),
+                    "name": html.unescape(item.get("name", "Unknown")),
                     "release_date": None,
                 }
 
