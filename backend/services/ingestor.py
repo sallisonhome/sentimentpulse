@@ -45,6 +45,8 @@ from services.reddit_service import (
     discover_subreddits,
     fetch_post_comments,
     fetch_subreddit_posts,
+    _game_search_query,
+    _post_mentions_game,
 )
 from services.steam_service import (
     fetch_reviews,
@@ -323,9 +325,12 @@ def _step4_reddit(
             total_saved += _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
             )
-            # Fetch top-50 comments per submission
+            # Fetch top-50 comments per submission, keeping only those that
+            # mention the game so off-topic replies don't pollute the data.
             for sub in submissions:
                 comments = fetch_post_comments(sub["external_id"], limit=50)
+                query = _game_search_query(game.name)
+                comments = [c for c in comments if _post_mentions_game(c, query)]
                 total_saved += _bulk_save_posts(
                     db, game.id, SourceEnum.reddit, comments, errors
                 )

@@ -73,7 +73,9 @@ def extract_topics(texts: list[str], n_topics: int = _N_TOPICS) -> list[str]:
     Returns an empty list when fewer than _MIN_DOCS texts are provided or
     when both BERTopic and LDA fail.
     """
-    clean = [t for t in texts if t and t.strip()]
+    # Filter out blank texts and very short ones (< 30 chars) — short Reddit
+    # comments like "lmao sounds fun" produce meaningless topic clusters.
+    clean = [t for t in texts if t and len(t.strip()) >= 30]
     if len(clean) < _MIN_DOCS:
         return []
 
@@ -195,14 +197,20 @@ def _lda(texts: list[str], n_topics: int) -> list[str]:
 
 # ── Private: Claude label humanization ───────────────────────────────────────
 
+_HUMANIZE_BATCH_SIZE = 15   # Max labels per Claude call to avoid truncated JSON
+
+
 def _call_claude_humanize(game_name: str, raw_labels: list[str]) -> dict[str, str]:
     """
     Send raw topic keyword clusters to Claude and get back plain-English labels.
 
+    Processes labels in batches of _HUMANIZE_BATCH_SIZE to prevent Claude from
+    returning truncated or malformed JSON on large label sets.
+
     Returns a dict mapping raw_label → human_label.
     Raises on any API or parse error so the caller can fall back gracefully.
     """
-    from services.summary_service import _resolve_api_key  # noqa: PLC0415  # noqa: PLC0415
+    from services.summary_service import _resolve_api_key  # noqa: PLC0415
 
     api_key = _resolve_api_key()
     if not api_key:
@@ -212,6 +220,17 @@ def _call_claude_humanize(game_name: str, raw_labels: list[str]) -> dict[str, st
 
     client = anthropic.Anthropic(api_key=api_key, base_url="https://api.anthropic.com")
 
+    merged: dict[str, str] = {}
+    for i in range(0, len(raw_labels), _HUMANIZE_BATCH_SIZE):
+        batch = raw_labels[i : i + _HUMANIZE_BATCH_SIZE]
+        batch_map = _call_claude_humanize_batch(client, game_name, batch)
+        merged.update(batch_map)
+
+    return merged
+
+
+def _call_claude_humanize_batch(client, game_name: str, raw_labels: list[str]) -> dict[str, str]:
+    """Send a single batch of labels to Claude and parse the JSON response."""
     clusters_text = "\n".join(f"- {label}" for label in raw_labels)
     prompt = (
         f'You are labelling discussion topics for a game community sentiment dashboard.\n'
@@ -234,7 +253,7 @@ def _call_claude_humanize(game_name: str, raw_labels: list[str]) -> dict[str, st
 
     message = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=800,
+        max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
     response_text = message.content[0].text.strip()
