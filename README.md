@@ -27,58 +27,79 @@ A full-stack game publisher sentiment tracker. SentimentPulse scrapes Steam Revi
 
 ---
 
-## Quick Start (without Docker)
+## Quick Start
 
-### 1. Clone and configure
+### Prerequisites
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (recommended — handles everything automatically)
+- Or: Python 3.11+ and Node.js 18+ for manual setup
 
+---
+
+### Option A — Docker (recommended for team installs)
+
+**1. Clone and configure**
 ```bash
-git clone <repo-url>
+git clone https://github.com/sallisonhome/sentimentpulse.git
+cd sentimentpulse
+cp .env.example .env
+```
+
+Edit `.env` and set at minimum:
+```
+ANTHROPIC_API_KEY=sk-ant-...       # from console.anthropic.com
+PUBLISHER_NAME=Your Studio Name
+```
+
+**2. Start the app**
+```bash
+docker-compose up --build
+```
+
+That's it. Docker will:
+- Install all Python and Node dependencies
+- Run database migrations automatically
+- Download NLP models on first run (~500 MB, cached for future starts)
+- Start both backend and frontend
+
+Open [http://localhost:5173](http://localhost:5173).
+
+> **First run:** Go to **Settings** to verify your publisher and games, then trigger an ingestion manually. After that, ingestion runs automatically at 02:00 daily.
+
+**PostgreSQL (optional):**
+```bash
+docker-compose --profile postgres up --build
+```
+
+---
+
+### Option B — Manual setup (without Docker)
+
+**1. Clone and configure**
+```bash
+git clone https://github.com/sallisonhome/sentimentpulse.git
 cd sentimentpulse
 cp .env.example .env
 # Edit .env — see Environment Variables section below
 ```
 
-### 2. Backend
-
+**2. Backend**
 ```bash
 cd backend
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# Run database migrations
 alembic upgrade head
-
-# Start the API server (port 8000)
 uvicorn main:app --reload
 ```
 
-### 3. Frontend
-
+**3. Frontend** (separate terminal)
 ```bash
 cd frontend
 npm install
-npm run dev   # Vite dev server on port 5173
+npm run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173). The Vite proxy forwards `/api` requests to the backend automatically.
-
----
-
-## Docker Compose
-
-```bash
-# SQLite (default)
-docker-compose up --build
-
-# PostgreSQL
-docker-compose --profile postgres up --build
-```
-
-Services:
-- `frontend` → http://localhost:5173
-- `backend` → http://localhost:8000
-- `postgres` (with `--profile postgres`) → port 5432
 
 ---
 

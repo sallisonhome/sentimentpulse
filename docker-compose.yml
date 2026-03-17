@@ -1,7 +1,7 @@
 version: '3.9'
 
 services:
-  # ── Backend ─────────────────────────────────────────────────────────────────
+  # ── Backend (SQLite — default) ───────────────────────────────────────────────
   backend:
     build:
       context: ./backend
@@ -12,25 +12,8 @@ services:
       - .env
     volumes:
       - ./backend:/app
-      - sqlite_data:/app/data
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-    depends_on:
-      postgres:
-        condition: service_healthy
-    profiles:
-      - postgres
-
-  # Same backend, but using SQLite (default — no postgres dependency)
-  backend-sqlite:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
-    volumes:
-      - ./backend:/app
+      # Persist HuggingFace model cache so models aren't re-downloaded on restart
+      - hf_cache:/root/.cache/huggingface
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
@@ -44,8 +27,27 @@ services:
       - ./frontend/index.html:/app/index.html
     environment:
       - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - backend
 
-  # ── PostgreSQL (optional — activate with --profile postgres) ─────────────────
+  # ── PostgreSQL (optional — activate with: docker-compose --profile postgres up)
+  backend-postgres:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app
+      - hf_cache:/root/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - postgres
+
   postgres:
     image: postgres:16-alpine
     environment:
@@ -65,5 +67,5 @@ services:
       - postgres
 
 volumes:
-  sqlite_data:
+  hf_cache:
   postgres_data:
