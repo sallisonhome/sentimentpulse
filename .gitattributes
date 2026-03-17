@@ -1,0 +1,5 @@
+# Force shell scripts to LF line endings so they work inside Linux Docker containers
+*.sh text eol=lf
+
+# Default — let Git handle everything else with autocrlf
+* text=auto
