@@ -303,14 +303,19 @@ def _parse_thread_links(soup: BeautifulSoup) -> list[tuple[str, str, str]]:
     """
     Extract (url, thread_id, title) tuples from a forum listing page.
     Thread URL pattern: .../discussions/0/{thread_id}/
+
+    Steam uses a.forum_topic_overlay for the link and div.forum_topic_name
+    for the visible title text.
     """
     results = []
     for row in soup.select("div.forum_topic"):
-        link_tag = row.select_one("a.forum_topic_name")
+        link_tag = row.select_one("a.forum_topic_overlay")
         if not link_tag:
             continue
         href = link_tag.get("href", "")
-        title = link_tag.get_text(strip=True)
+        # Title lives in a sibling div, not on the link itself
+        title_el = row.select_one("div.forum_topic_name")
+        title = title_el.get_text(strip=True) if title_el else ""
         # Last path segment (before trailing slash) is the thread ID
         parts = href.rstrip("/").split("/")
         thread_id = parts[-1] if parts else ""
