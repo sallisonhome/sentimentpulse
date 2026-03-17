@@ -518,11 +518,76 @@ def _step7_daily_summary(
     neu = count_map.get("neutral", 0)
     total = pos + neg + neu
 
+    # ── Zero-new-records path ─────────────────────────────────────────────────
+    # Even when no new posts were collected today, write a DailySummary row so
+    # the dashboard and summary pages remain visible and don't lose persistence.
+    # Carry forward topics from the most recent prior summary so the topic
+    # panels are not blank.
     if total == 0:
-        log_lines.append(
-            f"[Step 7] '{game.name}': no posts classified today — skipping summary."
+        prior: Optional[DailySummary] = (
+            db.query(DailySummary)
+            .filter(
+                DailySummary.game_id == game.id,
+                DailySummary.summary_date < today,
+            )
+            .order_by(DailySummary.summary_date.desc())
+            .first()
         )
+        top_pos_zero = prior.top_positive_topics if prior else []
+        top_neg_zero = prior.top_negative_topics if prior else []
+        top_neu_zero = prior.top_neutral_topics if prior else []
+        prior_date_str = str(prior.summary_date) if prior else "unknown"
+
+        no_data_summary = (
+            f"[No new posts collected] No new community posts were ingested for "
+            f"{game.name} during today's run. All sentiment metrics and topics "
+            f"reflect historical data. Most recent active collection: {prior_date_str}."
+        )
+        no_data_actions = (
+            "[No new posts collected] No new data was available today. "
+            "Previous recommended actions remain applicable until new posts are ingested."
+        )
+
+        existing_zero: Optional[DailySummary] = (
+            db.query(DailySummary)
+            .filter_by(game_id=game.id, summary_date=today)
+            .first()
+        )
+        if existing_zero:
+            existing_zero.executive_summary = no_data_summary
+            existing_zero.recommended_actions = no_data_actions
+            existing_zero.top_positive_topics = top_pos_zero
+            existing_zero.top_negative_topics = top_neg_zero
+            existing_zero.top_neutral_topics = top_neu_zero
+        else:
+            db.add(DailySummary(
+                game_id=game.id,
+                summary_date=today,
+                positive_count=0,
+                negative_count=0,
+                neutral_count=0,
+                top_positive_topics=top_pos_zero,
+                top_negative_topics=top_neg_zero,
+                top_neutral_topics=top_neu_zero,
+                sentiment_trend_delta=None,
+                executive_summary=no_data_summary,
+                recommended_actions=no_data_actions,
+            ))
+
+        try:
+            db.commit()
+            log_lines.append(
+                f"[Step 7] '{game.name}': no new posts today — "
+                f"zero-count summary written (topics carried from {prior_date_str})."
+            )
+        except Exception as exc:
+            db.rollback()
+            msg = f"[Step 7] Error saving zero-count summary for '{game.name}': {exc}"
+            errors.append(msg)
+            logger.error(msg)
         return
+
+    # ── Normal path: new posts were collected today ───────────────────────────
 
     # Top-5 topics per sentiment — returns (label, trend_direction) tuples so
     # the Claude actions prompt can reference trend context per topic.

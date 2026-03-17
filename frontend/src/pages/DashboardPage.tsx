@@ -51,18 +51,30 @@ export default function DashboardPage() {
     )
   }
 
-  const todayMissing = data.sentiment_today.total === 0 && data.net_sentiment_trend.length > 0
-  const lastDate = todayMissing
-    ? data.net_sentiment_trend[data.net_sentiment_trend.length - 1]?.summary_date
+  // Determine what state today's data is in:
+  // - noNewRecords: ingestion ran today but found no new posts (zero-count summary exists)
+  // - notCollectedYet: ingestion hasn't run today yet (no summary for today at all)
+  const todayStr = new Date().toISOString().split('T')[0]
+  const todayTrendEntry = data.net_sentiment_trend.find(p => p.summary_date === todayStr)
+  const noNewRecords = data.sentiment_today.total === 0 && todayTrendEntry !== undefined
+  const notCollectedYet = data.sentiment_today.total === 0 && todayTrendEntry === undefined && data.net_sentiment_trend.length > 0
+  const lastDate = (noNewRecords || notCollectedYet)
+    ? data.net_sentiment_trend.filter(p => p.total > 0).slice(-1)[0]?.summary_date
     : null
 
   return (
     <ErrorBoundary>
       <div className="space-y-4">
-        {todayMissing && (
+        {noNewRecords && (
           <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-            Today's data has not been collected yet.
-            {lastDate && <> Showing most recent data from <strong>{lastDate}</strong>.</>}
+            <strong>No new posts collected on last ingestion.</strong> Sentiment counts show zero for today. Topics and trend charts reflect historical data.
+            {lastDate && <> Last active collection: <strong>{lastDate}</strong>.</>}
+          </div>
+        )}
+        {notCollectedYet && (
+          <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+            Today's ingestion has not run yet. Showing most recent available data.
+            {lastDate && <> Last active collection: <strong>{lastDate}</strong>.</>}
           </div>
         )}
         {/* Row 1 — KPI stat cards */}

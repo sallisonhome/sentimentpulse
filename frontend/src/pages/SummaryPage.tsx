@@ -57,15 +57,24 @@ export default function SummaryPage() {
 
   const summary = history.find(s => s.id === selectedId) ?? history[0]
   const dateLabel = format(parseISO(summary.summary_date), 'EEEE, MMMM d yyyy')
+  const noNewRecords = summary.executive_summary?.startsWith('[No new posts collected]')
+  const total = summary.positive_count + summary.negative_count + summary.neutral_count
 
   return (
     <ErrorBoundary>
       <div className="space-y-5">
+        {/* No-new-records callout */}
+        {noNewRecords && (
+          <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+            <strong>No new posts collected on this date.</strong> No community posts were ingested during the {dateLabel} run.
+            Topics and recommended actions are carried forward from the previous active collection.
+          </div>
+        )}
         {/* Page header */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-2xl font-bold">Executive Summary</h2>
-            <p className="text-sm text-muted-foreground">{dateLabel}</p>
+            <p className="text-sm text-muted-foreground">{dateLabel}{total === 0 && !noNewRecords ? ' — no posts collected' : ''}</p>
           </div>
           {history.length > 1 && (
             <SummaryDateSelector
