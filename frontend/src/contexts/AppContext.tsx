@@ -12,12 +12,13 @@ const AppContext = createContext<AppContextValue | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedGameId, setSelectedGameId] = useState<number | null>(null)
-  const [period, setPeriod] = useState<Period>('weekly')
+  const [period, setPeriod] = useState<Period>('today')
 
   // Persist period selection across page reloads
   useEffect(() => {
+    const valid: Period[] = ['today', 'weekly', 'monthly', 'quarterly', 'lifetime']
     const stored = localStorage.getItem('sp_period') as Period | null
-    if (stored) setPeriod(stored)
+    if (stored && valid.includes(stored)) setPeriod(stored)
   }, [])
 
   const handleSetPeriod = (p: Period) => {

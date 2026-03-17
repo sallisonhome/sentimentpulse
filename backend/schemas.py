@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # ── Shared enums ──────────────────────────────────────────────────────────────
 
 class PeriodEnum(str, Enum):
+    today = "today"
     weekly = "weekly"
     monthly = "monthly"
     quarterly = "quarterly"

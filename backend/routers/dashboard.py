@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import cast, Date, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -45,6 +45,7 @@ router = APIRouter(prefix="/games", tags=["dashboard"])
 def _period_start(period: PeriodEnum) -> Optional[date]:
     today = date.today()
     return {
+        PeriodEnum.today:     today,
         PeriodEnum.weekly:    today - timedelta(days=7),
         PeriodEnum.monthly:   today - timedelta(days=30),
         PeriodEnum.quarterly: today - timedelta(days=90),
@@ -74,34 +75,22 @@ def get_dashboard(
     p_start = _period_start(period)
     today = date.today()
 
-    # ── 1. Today's sentiment counts ───────────────────────────────────────────
-    today_row: Optional[DailySummary] = (
-        db.query(DailySummary)
-        .filter_by(game_id=game_id, summary_date=today)
-        .first()
-    )
+    # ── 1. Period-aggregated sentiment counts ─────────────────────────────────
+    # Sum daily summary counts across all days in the selected period so that
+    # KPI cards reflect the correct totals for the chosen time range.
+    agg_q = db.query(
+        func.sum(DailySummary.positive_count),
+        func.sum(DailySummary.negative_count),
+        func.sum(DailySummary.neutral_count),
+    ).filter(DailySummary.game_id == game_id)
 
-    if today_row:
-        pos, neg, neu = (
-            today_row.positive_count,
-            today_row.negative_count,
-            today_row.neutral_count,
-        )
-    else:
-        # Ingest may not have run yet today — count directly from records
-        rows = (
-            db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
-            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
-            .filter(
-                RawPost.game_id == game_id,
-                cast(RawPost.collected_at, Date) == today,
-            )
-            .group_by(SentimentRecord.sentiment)
-            .all()
-        )
-        cm = {s.value: c for s, c in rows}
-        pos, neg, neu = cm.get("positive", 0), cm.get("negative", 0), cm.get("neutral", 0)
+    if p_start is not None:
+        agg_q = agg_q.filter(DailySummary.summary_date >= p_start)
 
+    agg_row = agg_q.first()
+    pos = int(agg_row[0] or 0)
+    neg = int(agg_row[1] or 0)
+    neu = int(agg_row[2] or 0)
     total_today = pos + neg + neu
     sentiment_today = SentimentCounts(
         positive=pos,
@@ -152,21 +141,25 @@ def get_dashboard(
         ]
 
     # ── 4. Volume by source per day ───────────────────────────────────────────
+    # Use func.date() instead of cast(..., Date) — SQLite's CAST doesn't truncate
+    # datetime strings to dates and confuses SQLAlchemy's type processors.
+    day_expr = func.date(RawPost.collected_at).label("day")
     vol_q = (
         db.query(
-            cast(RawPost.collected_at, Date).label("day"),
+            day_expr,
             RawPost.source,
             func.count(RawPost.id).label("cnt"),
         )
         .filter(RawPost.game_id == game_id)
+        .filter(RawPost.collected_at.isnot(None))
     )
     if p_start:
-        vol_q = vol_q.filter(cast(RawPost.collected_at, Date) >= p_start)
+        vol_q = vol_q.filter(func.date(RawPost.collected_at) >= str(p_start))
 
     vol_rows = (
         vol_q
-        .group_by(cast(RawPost.collected_at, Date), RawPost.source)
-        .order_by(cast(RawPost.collected_at, Date))
+        .group_by(func.date(RawPost.collected_at), RawPost.source)
+        .order_by(func.date(RawPost.collected_at))
         .all()
     )
 

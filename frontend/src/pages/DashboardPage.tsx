@@ -39,26 +39,20 @@ export default function DashboardPage() {
     return <EmptyState title="Failed to load dashboard" description={error.message} />
   }
 
-  // Only show empty state when there is truly no data at all — no trend history
-  // and no posts collected today. A game with yesterday's data but no today's
-  // data should still show the dashboard, not a blank page.
+  // Empty state: no data at all for this period
   if (!data || (data.sentiment_today.total === 0 && data.net_sentiment_trend.length === 0)) {
-    return (
-      <EmptyState
-        title="No data for this period"
-        description="Run an ingestion or select a different time period."
-      />
-    )
+    const desc = period === 'today'
+      ? "Today's ingestion has not run yet. Data updates automatically at 02:00."
+      : "No data for this period. Try a wider time range or run an ingestion."
+    return <EmptyState title="No data available" description={desc} />
   }
 
-  // Determine what state today's data is in:
-  // - noNewRecords: ingestion ran today but found no new posts (zero-count summary exists)
-  // - notCollectedYet: ingestion hasn't run today yet (no summary for today at all)
+  // Banners — only relevant on the Today view where zero counts are meaningful
   const todayStr = new Date().toISOString().split('T')[0]
   const todayTrendEntry = data.net_sentiment_trend.find(p => p.summary_date === todayStr)
-  const noNewRecords = data.sentiment_today.total === 0 && todayTrendEntry !== undefined
-  const notCollectedYet = data.sentiment_today.total === 0 && todayTrendEntry === undefined && data.net_sentiment_trend.length > 0
-  const lastDate = (noNewRecords || notCollectedYet)
+  const noNewRecords = period === 'today' && data.sentiment_today.total === 0 && todayTrendEntry !== undefined
+  const notCollectedYet = period === 'today' && data.sentiment_today.total === 0 && todayTrendEntry === undefined && data.net_sentiment_trend.length > 0
+  const lastActiveDate = (noNewRecords || notCollectedYet)
     ? data.net_sentiment_trend.filter(p => p.total > 0).slice(-1)[0]?.summary_date
     : null
 
@@ -68,17 +62,17 @@ export default function DashboardPage() {
         {noNewRecords && (
           <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
             <strong>No new posts collected on last ingestion.</strong> Sentiment counts show zero for today. Topics and trend charts reflect historical data.
-            {lastDate && <> Last active collection: <strong>{lastDate}</strong>.</>}
+            {lastActiveDate && <> Last active collection: <strong>{lastActiveDate}</strong>.</>}
           </div>
         )}
         {notCollectedYet && (
           <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
             Today's ingestion has not run yet. Showing most recent available data.
-            {lastDate && <> Last active collection: <strong>{lastDate}</strong>.</>}
+            {lastActiveDate && <> Last active collection: <strong>{lastActiveDate}</strong>.</>}
           </div>
         )}
         {/* Row 1 — KPI stat cards */}
-        <KpiCards sentiment={data.sentiment_today} velocity={data.sentiment_velocity} />
+        <KpiCards sentiment={data.sentiment_today} velocity={data.sentiment_velocity} period={period} />
 
         {/* Row 2 — Net sentiment trend (wide) + donut (narrow) */}
         <div className="grid gap-4 lg:grid-cols-3">

@@ -2,10 +2,11 @@ import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import type { Period } from '../../types'
 
 const PERIODS: { value: Period; label: string }[] = [
-  { value: 'weekly',    label: '7d'  },
-  { value: 'monthly',   label: '30d' },
-  { value: 'quarterly', label: '90d' },
-  { value: 'lifetime',  label: 'All' },
+  { value: 'today',     label: 'Today' },
+  { value: 'weekly',    label: '7d'    },
+  { value: 'monthly',   label: '30d'   },
+  { value: 'quarterly', label: '90d'   },
+  { value: 'lifetime',  label: 'All'   },
 ]
 
 interface PeriodFilterProps {

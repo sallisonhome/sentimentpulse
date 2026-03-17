@@ -1,6 +1,6 @@
 // ── Shared ────────────────────────────────────────────────────────────────────
 
-export type Period = 'weekly' | 'monthly' | 'quarterly' | 'lifetime'
+export type Period = 'today' | 'weekly' | 'monthly' | 'quarterly' | 'lifetime'
 export type Sentiment = 'positive' | 'negative' | 'neutral'
 export type Source = 'steam_review' | 'steam_forum' | 'reddit'
 export type TrendDirection = 'rising' | 'falling' | 'stable'

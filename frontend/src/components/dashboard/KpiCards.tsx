@@ -1,7 +1,7 @@
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { cn } from '../../lib/utils'
-import type { SentimentCounts, SentimentVelocity } from '../../types'
+import type { Period, SentimentCounts, SentimentVelocity } from '../../types'
 
 const VELOCITY_CONFIG = {
   improving: { icon: TrendingUp,   color: 'text-green-600', label: 'Improving' },
@@ -9,12 +9,21 @@ const VELOCITY_CONFIG = {
   declining: { icon: TrendingDown, color: 'text-red-600',   label: 'Declining' },
 }
 
+const PERIOD_LABELS: Record<Period, string> = {
+  today:     'collected today',
+  weekly:    'over 7 days',
+  monthly:   'over 30 days',
+  quarterly: 'over 90 days',
+  lifetime:  'all time',
+}
+
 interface KpiCardsProps {
   sentiment: SentimentCounts
   velocity: SentimentVelocity
+  period: Period
 }
 
-export default function KpiCards({ sentiment, velocity }: KpiCardsProps) {
+export default function KpiCards({ sentiment, velocity, period }: KpiCardsProps) {
   const vel = VELOCITY_CONFIG[velocity.direction]
   const VelIcon = vel.icon
 
@@ -23,7 +32,7 @@ export default function KpiCards({ sentiment, velocity }: KpiCardsProps) {
       <StatCard
         title="Total Posts"
         value={sentiment.total.toLocaleString()}
-        sub="collected today"
+        sub={PERIOD_LABELS[period]}
       />
       <StatCard
         title="Positive"
