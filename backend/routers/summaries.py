@@ -20,6 +20,7 @@ router = APIRouter(prefix="/games", tags=["summaries"])
 def _period_start(period: PeriodEnum) -> Optional[date]:
     today = date.today()
     return {
+        PeriodEnum.today:     today,
         PeriodEnum.weekly:    today - timedelta(days=7),
         PeriodEnum.monthly:   today - timedelta(days=30),
         PeriodEnum.quarterly: today - timedelta(days=90),

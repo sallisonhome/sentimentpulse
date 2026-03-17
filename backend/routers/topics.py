@@ -50,6 +50,7 @@ def get_topics(
     # Period filter — restrict to topics seen within the window
     today = date.today()
     period_starts = {
+        PeriodEnum.today:     today,
         PeriodEnum.weekly:    today - timedelta(days=7),
         PeriodEnum.monthly:   today - timedelta(days=30),
         PeriodEnum.quarterly: today - timedelta(days=90),
