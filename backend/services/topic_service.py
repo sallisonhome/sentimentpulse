@@ -115,7 +115,9 @@ def upsert_topic_trends(
             )
             continue
 
-        for label in topic_labels:
+        # Deduplicate: humanization can map multiple raw labels to the same
+        # human label; only upsert each unique label once per sentiment.
+        for label in dict.fromkeys(topic_labels):
             _upsert_one(db, game_id, label, sentiment, today)
 
     try:
