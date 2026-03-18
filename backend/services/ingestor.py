@@ -5,7 +5,7 @@ Steps
 -----
 1. Game Discovery    — Steam API publisher search + Reddit subreddit auto-detection
 2. Steam Reviews     — fetch 100 most-recent reviews per game
-3. Steam Forums      — scrape 3 most-active discussion threads per game
+3. Steam Forums      — scrape 10 most-active discussion threads per game
 4. Reddit            — fetch new/hot posts + top-50 comments per subreddit
 5. NLP Sentiment     — batch-classify all unprocessed raw_posts
 6. Topic Extraction  — BERTopic / LDA per sentiment group → topic_trends upsert
@@ -255,7 +255,14 @@ def _step2_steam_reviews(
 ) -> int:
     """Fetch Steam reviews; return count of newly saved posts."""
     try:
-        reviews = fetch_reviews(game.steam_app_id, count=100)
+        known_ids: set[str] = {
+            row[0]
+            for row in db.query(RawPost.external_id).filter(
+                RawPost.game_id == game.id,
+                RawPost.source == SourceEnum.steam_review,
+            )
+        }
+        reviews = fetch_reviews(game.steam_app_id, known_ids=known_ids)
     except Exception as exc:
         msg = f"[Step 2] Steam reviews failed for '{game.name}': {exc}"
         errors.append(msg)
@@ -279,7 +286,7 @@ def _step3_steam_forums(
 ) -> int:
     """Scrape Steam forum threads; return count of newly saved posts."""
     try:
-        posts = scrape_forum_threads(game.steam_app_id, max_threads=3)
+        posts = scrape_forum_threads(game.steam_app_id, max_threads=10)
     except Exception as exc:
         msg = f"[Step 3] Steam forums failed for '{game.name}': {exc}"
         errors.append(msg)

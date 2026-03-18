@@ -206,56 +206,85 @@ def get_app_details(steam_app_id: int) -> Optional[dict]:
 
 # ── Reviews ───────────────────────────────────────────────────────────────────
 
-def fetch_reviews(steam_app_id: int, count: int = 100) -> list[dict]:
+def fetch_reviews(
+    steam_app_id: int,
+    known_ids: Optional[set] = None,
+    max_pages: int = 5,
+) -> list[dict]:
     """
-    Fetch up to `count` recent English reviews for a Steam app.
+    Fetch recent English reviews using cursor-based pagination.
+
+    Fetches up to max_pages * 100 reviews per run, stopping early when a
+    page has >50% overlap with known_ids (already collected reviews).
 
     Each returned dict has:
         external_id, author, title (None), body, url, upvotes, post_date
     """
-    resp = _get(
-        STEAM_REVIEWS_URL.format(appid=steam_app_id),
-        params={
-            "json": "1",
-            "filter": "recent",
-            "language": "english",
-            "review_type": "all",
-            "purchase_type": "all",
-            "num_per_page": min(count, 100),
-        },
-    )
-    if resp is None:
-        return []
+    known_ids = known_ids or set()
+    all_reviews: list[dict] = []
+    cursor = "*"
 
-    try:
-        data = resp.json()
-    except Exception as exc:
-        logger.error("Error parsing reviews for app %d: %s", steam_app_id, exc)
-        return []
+    for page_num in range(max_pages):
+        resp = _get(
+            STEAM_REVIEWS_URL.format(appid=steam_app_id),
+            params={
+                "json": "1",
+                "filter": "recent",
+                "language": "english",
+                "review_type": "all",
+                "purchase_type": "all",
+                "num_per_page": 100,
+                "cursor": cursor,
+            },
+        )
+        if resp is None:
+            break
 
-    reviews = []
-    for review in data.get("reviews", []):
         try:
-            post_date = datetime.fromtimestamp(
-                review["timestamp_created"], tz=timezone.utc
-            )
-            reviews.append({
-                "external_id": str(review["recommendationid"]),
-                "author": review.get("author", {}).get("steamid", "unknown"),
-                "title": None,
-                "body": review.get("review", ""),
-                "url": (
-                    f"https://store.steampowered.com/app/{steam_app_id}"
-                    f"#app_reviews_hash"
-                ),
-                "upvotes": int(review.get("votes_up", 0)),
-                "post_date": post_date,
-            })
-        except (KeyError, ValueError, OSError) as exc:
-            logger.warning("Skipping malformed review entry: %s", exc)
+            data = resp.json()
+        except Exception as exc:
+            logger.error("Error parsing reviews for app %d (page %d): %s",
+                         steam_app_id, page_num + 1, exc)
+            break
 
-    logger.info("Fetched %d review(s) for Steam app %d", len(reviews), steam_app_id)
-    return reviews
+        batch = data.get("reviews", [])
+        if not batch:
+            break
+
+        for review in batch:
+            try:
+                post_date = datetime.fromtimestamp(
+                    review["timestamp_created"], tz=timezone.utc
+                )
+                all_reviews.append({
+                    "external_id": str(review["recommendationid"]),
+                    "author": review.get("author", {}).get("steamid", "unknown"),
+                    "title": None,
+                    "body": review.get("review", ""),
+                    "url": (
+                        f"https://store.steampowered.com/app/{steam_app_id}"
+                        f"#app_reviews_hash"
+                    ),
+                    "upvotes": int(review.get("votes_up", 0)),
+                    "post_date": post_date,
+                })
+            except (KeyError, ValueError, OSError) as exc:
+                logger.warning("Skipping malformed review entry: %s", exc)
+
+        # Stop early if most of this page is already known — we've caught up
+        if known_ids:
+            batch_ids = {str(r["recommendationid"]) for r in batch}
+            if len(batch_ids & known_ids) >= len(batch_ids) * 0.5:
+                break
+
+        next_cursor = data.get("cursor", "")
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+
+    logger.info("Fetched %d review(s) (%d page(s)) for Steam app %d",
+                len(all_reviews), page_num + 1, steam_app_id)
+    return all_reviews
 
 
 # ── Forum scraping ────────────────────────────────────────────────────────────
