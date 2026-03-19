@@ -55,6 +55,8 @@ backend/models/
 
 # Logs
 backend/logs/*.log
+backend/*.log
+frontend/*.log
 
 # Node / frontend
 node_modules/
