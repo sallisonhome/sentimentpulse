@@ -14,6 +14,7 @@ services:
       - ./backend:/app
       # Persist HuggingFace model cache so models aren't re-downloaded on restart
       - hf_cache:/root/.cache/huggingface
+    restart: unless-stopped
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
@@ -29,6 +30,7 @@ services:
       - VITE_API_URL=http://localhost:8000
     depends_on:
       - backend
+    restart: unless-stopped
 
   # ── PostgreSQL (optional — activate with: docker-compose --profile postgres up)
   backend-postgres:
