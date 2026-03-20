@@ -48,6 +48,14 @@ def load_model() -> None:
     if _pipeline is not None or _use_vader:
         return  # already initialised
 
+    # Lightweight mode: skip the heavy transformer model entirely
+    from config import settings  # noqa: PLC0415
+    if settings.lightweight_nlp:
+        logger.info("Lightweight NLP mode — skipping transformer, using VADER only.")
+        _use_vader = True
+        _load_vader()
+        return
+
     try:
         from transformers import pipeline as hf_pipeline  # noqa: PLC0415
 

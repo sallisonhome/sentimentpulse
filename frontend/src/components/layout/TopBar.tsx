@@ -7,6 +7,7 @@ import { Button } from '../ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select'
 import { RefreshCw } from 'lucide-react'
 import { relativeTime } from '../../lib/utils'
+import ThemeToggle from '../shared/ThemeToggle'
 
 export default function TopBar() {
   const { selectedGameId, setSelectedGameId, period, setPeriod } = useAppContext()
@@ -60,6 +61,7 @@ export default function TopBar() {
           <RefreshCw className={`mr-2 h-3.5 w-3.5 ${ingestStatus?.is_running ? 'animate-spin' : ''}`} />
           {ingestStatus?.is_running ? 'Running…' : 'Run Ingest'}
         </Button>
+        <ThemeToggle />
       </div>
     </header>
   )

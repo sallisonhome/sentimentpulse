@@ -79,10 +79,15 @@ def extract_topics(texts: list[str], n_topics: int = _N_TOPICS) -> list[str]:
     if len(clean) < _MIN_DOCS:
         return []
 
-    try:
-        return _bertopic(clean, n_topics)
-    except Exception as exc:
-        logger.warning("BERTopic failed (%s) — falling back to LDA.", exc)
+    # Lightweight mode: skip BERTopic entirely, go straight to LDA
+    from config import settings  # noqa: PLC0415
+    if not settings.lightweight_nlp:
+        try:
+            return _bertopic(clean, n_topics)
+        except Exception as exc:
+            logger.warning("BERTopic failed (%s) — falling back to LDA.", exc)
+    else:
+        logger.info("Lightweight NLP mode — skipping BERTopic, using LDA only.")
 
     try:
         return _lda(clean, n_topics)

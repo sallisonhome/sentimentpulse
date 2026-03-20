@@ -53,5 +53,9 @@ class Settings(BaseSettings):
     # is the developer but a third-party publisher like Focus Home is listed)
     developer_name: Optional[str] = None
 
+    # Lightweight mode: skip heavy transformer/BERTopic models, use VADER + LDA only.
+    # Recommended for servers with < 4 GB RAM.
+    lightweight_nlp: bool = False
+
 
 settings = Settings()
