@@ -1,8 +1,12 @@
 import { Outlet } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import TopBar from './TopBar'
+import { useIngestAutoRefresh } from '../../hooks/useIngest'
 
 export default function AppShell() {
+  // Auto-refresh all data when an ingestion run finishes
+  useIngestAutoRefresh()
+
   return (
     <div className="flex h-screen overflow-hidden bg-background">
       <Sidebar />
