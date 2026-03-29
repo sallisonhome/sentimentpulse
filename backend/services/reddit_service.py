@@ -183,6 +183,88 @@ def _fetch_rss(subreddit_name: str, game_name: str = "", force_filter: bool = Fa
     return posts
 
 
+# ── PullPush API fallback ─────────────────────────────────────────────────────
+
+_PULLPUSH_BASE = "https://api.pullpush.io"
+
+
+def _fetch_pullpush(
+    subreddit_name: str,
+    game_name: str = "",
+    limit: int = 25,
+) -> list[dict]:
+    """
+    Fetch recent posts from a subreddit via the PullPush API (free Reddit
+    archive). Works from any IP — no authentication required.
+
+    For dedicated game subs, fetches all recent posts.
+    For general subs, searches by game name.
+    """
+    is_general = subreddit_name.lower() in {s.lower() for s in _GENERAL_SUBREDDITS}
+
+    params: dict = {
+        "subreddit": subreddit_name,
+        "size": limit,
+        "sort": "desc",
+        "sort_type": "created_utc",
+    }
+
+    # Only add search query for general subs
+    if game_name and is_general:
+        params["q"] = _game_search_query(game_name)
+
+    try:
+        resp = httpx.get(
+            f"{_PULLPUSH_BASE}/reddit/search/submission/",
+            params=params,
+            headers={"User-Agent": "SentimentPulse/1.0"},
+            timeout=_TIMEOUT,
+        )
+        time.sleep(_REQUEST_DELAY)
+        if resp.status_code != 200:
+            logger.warning("PullPush API returned HTTP %d for r/%s", resp.status_code, subreddit_name)
+            return []
+        data = resp.json()
+    except Exception as exc:
+        logger.error("PullPush API request failed for r/%s: %s", subreddit_name, exc)
+        return []
+
+    posts = []
+    for item in data.get("data", []):
+        external_id = item.get("id", "")
+        if not external_id:
+            continue
+
+        post_date = None
+        created = item.get("created_utc")
+        if created:
+            try:
+                post_date = datetime.fromtimestamp(float(created), tz=timezone.utc)
+            except Exception:
+                pass
+
+        permalink = item.get("permalink", "")
+        url = f"https://www.reddit.com{permalink}" if permalink else ""
+
+        post_dict = {
+            "external_id": external_id,
+            "author": item.get("author", "[deleted]"),
+            "title": item.get("title", ""),
+            "body": (item.get("selftext", "") or "")[:2000],
+            "url": url,
+            "upvotes": max(0, int(item.get("score", 0))),
+            "post_date": post_date,
+        }
+        posts.append(post_dict)
+
+    logger.info(
+        "Fetched %d post(s) from r/%s via PullPush%s",
+        len(posts), subreddit_name,
+        f" (search: '{game_name}')" if (game_name and is_general) else " (dedicated sub, all posts)",
+    )
+    return posts
+
+
 # ── Subreddit discovery ───────────────────────────────────────────────────────
 
 def discover_subreddits(game_name: str, max_results: int = 3) -> list[str]:
@@ -271,10 +353,10 @@ def fetch_subreddit_posts(
 
     posts = list(seen.values())
 
-    # If JSON endpoints returned nothing (likely 403 blocked), try RSS fallback
+    # If JSON endpoints returned nothing (likely 403 blocked), try PullPush
     if not posts:
-        logger.info("No posts via JSON for r/%s — trying RSS fallback", subreddit_name)
-        posts = _fetch_rss(subreddit_name, game_name=game_name)
+        logger.info("No posts via JSON for r/%s — trying PullPush API", subreddit_name)
+        posts = _fetch_pullpush(subreddit_name, game_name=game_name, limit=limit)
     else:
         logger.info(
             "Fetched %d post(s) from r/%s%s",
