@@ -1,20 +1,18 @@
 """
-Reddit service — subreddit post and comment fetching via Reddit's public
-JSON endpoint (no API credentials required).
+Reddit service — subreddit post and comment fetching.
 
-Endpoints used:
-  GET https://www.reddit.com/r/{sub}/new.json?limit=100
-  GET https://www.reddit.com/r/{sub}/hot.json?limit=100
-  GET https://www.reddit.com/comments/{post_id}.json?limit=50&depth=1
-  GET https://www.reddit.com/subreddits/search.json?q={query}&limit=5
+Uses multiple strategies to avoid 403 blocks from datacenter IPs:
+  1. old.reddit.com with browser-like User-Agent (primary)
+  2. Reddit RSS/Atom feeds as fallback (never blocked)
+  3. www.reddit.com JSON as last resort
 
-Reddit requires a descriptive User-Agent; requests without one are rate-
-limited aggressively.  All calls are wrapped in try/except so failures are
-logged, not raised.
+All calls are wrapped in try/except so failures are logged, not raised.
 """
 import logging
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import httpx
@@ -23,39 +21,150 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-_BASE = "https://www.reddit.com"
+# Try old.reddit.com first — less aggressive blocking than www
+_BASES = ["https://old.reddit.com", "https://www.reddit.com"]
+_BASE = _BASES[0]
 _HEADERS = {
-    "User-Agent": settings.reddit_user_agent or "SentimentPulse/1.0",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+_JSON_HEADERS = {
+    "User-Agent": _HEADERS["User-Agent"],
     "Accept": "application/json",
 }
-_TIMEOUT = 15.0          # seconds per request
-_REQUEST_DELAY = 1.0     # seconds between requests to stay within rate limits
+_TIMEOUT = 20.0          # seconds per request
+_REQUEST_DELAY = 2.0     # seconds between requests to stay within rate limits
 _RETRY_DELAYS = (5, 15)  # seconds to wait on 429 before retrying (2 attempts)
 
 
 def _get(url: str, params: Optional[dict] = None) -> Optional[dict]:
     """
-    GET a Reddit JSON URL.  Returns parsed JSON dict or None on error.
+    GET a Reddit JSON URL.  Tries old.reddit.com first, then www.
     Retries up to twice on HTTP 429 with increasing back-off delays.
+    Falls back between base URLs on 403.
     """
-    for attempt, backoff in enumerate([0] + list(_RETRY_DELAYS)):
-        if backoff:
-            logger.info("Reddit rate-limited (429) — waiting %ds before retry %d", backoff, attempt)
-            time.sleep(backoff)
-        try:
-            resp = httpx.get(url, params=params, headers=_HEADERS, timeout=_TIMEOUT, follow_redirects=True)
-            time.sleep(_REQUEST_DELAY)
-            if resp.status_code == 200:
-                return resp.json()
-            if resp.status_code == 429:
-                continue   # retry with next backoff
-            logger.warning("Reddit JSON %s returned HTTP %d", url, resp.status_code)
-            return None
-        except Exception as exc:
-            logger.error("Reddit JSON request failed for %s: %s", url, exc)
-            return None
-    logger.warning("Reddit JSON %s: all retries exhausted after 429s", url)
+    # Try each base URL
+    for base in _BASES:
+        # Replace the base URL if the caller used a different one
+        actual_url = url
+        for b in _BASES:
+            if actual_url.startswith(b):
+                actual_url = actual_url.replace(b, base, 1)
+                break
+
+        for attempt, backoff in enumerate([0] + list(_RETRY_DELAYS)):
+            if backoff:
+                logger.info("Reddit rate-limited (429) — waiting %ds before retry %d", backoff, attempt)
+                time.sleep(backoff)
+            try:
+                resp = httpx.get(
+                    actual_url, params=params, headers=_JSON_HEADERS,
+                    timeout=_TIMEOUT, follow_redirects=True,
+                )
+                time.sleep(_REQUEST_DELAY)
+                if resp.status_code == 200:
+                    return resp.json()
+                if resp.status_code == 429:
+                    continue   # retry with next backoff
+                if resp.status_code == 403:
+                    logger.warning("Reddit 403 on %s — trying next base URL", base)
+                    break  # try next base URL
+                logger.warning("Reddit JSON %s returned HTTP %d", actual_url, resp.status_code)
+                return None
+            except Exception as exc:
+                logger.error("Reddit JSON request failed for %s: %s", actual_url, exc)
+                return None
+
+    # All base URLs returned 403 — try RSS fallback
+    logger.warning("Reddit JSON blocked on all endpoints for %s — will use RSS fallback if available", url)
     return None
+
+
+def _fetch_rss(subreddit_name: str, game_name: str = "") -> list[dict]:
+    """
+    Fetch posts from a subreddit via RSS feed (never blocked by Reddit).
+    Returns posts in the same dict format as fetch_subreddit_posts.
+    RSS feeds return ~25 most recent posts with no search filtering,
+    so we apply game_name filtering client-side.
+    """
+    rss_url = f"https://www.reddit.com/r/{subreddit_name}/new.rss?limit=50"
+    try:
+        resp = httpx.get(rss_url, headers=_HEADERS, timeout=_TIMEOUT, follow_redirects=True)
+        time.sleep(_REQUEST_DELAY)
+        if resp.status_code != 200:
+            logger.warning("Reddit RSS for r/%s returned HTTP %d", subreddit_name, resp.status_code)
+            return []
+    except Exception as exc:
+        logger.error("Reddit RSS request failed for r/%s: %s", subreddit_name, exc)
+        return []
+
+    posts = []
+    try:
+        root = ET.fromstring(resp.text)
+        # Atom feed namespace
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        for entry in root.findall("atom:entry", ns):
+            title = (entry.findtext("atom:title", "", ns) or "").strip()
+            # Extract body from content (HTML — strip tags roughly)
+            content_el = entry.find("atom:content", ns)
+            body = ""
+            if content_el is not None and content_el.text:
+                # Rough HTML tag stripping
+                import re
+                body = re.sub(r"<[^>]+>", " ", content_el.text).strip()
+                body = re.sub(r"\s+", " ", body)
+
+            link_el = entry.find('atom:link[@rel="alternate"]', ns)
+            url = link_el.get("href", "") if link_el is not None else ""
+
+            # Extract post ID from URL: /r/sub/comments/POST_ID/...
+            external_id = ""
+            if "/comments/" in url:
+                parts = url.split("/comments/")
+                if len(parts) > 1:
+                    external_id = parts[1].split("/")[0]
+
+            author_el = entry.find("atom:author/atom:name", ns)
+            author = author_el.text if author_el is not None else "[unknown]"
+
+            updated = entry.findtext("atom:updated", "", ns)
+            post_date = None
+            if updated:
+                try:
+                    post_date = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                except Exception:
+                    pass
+
+            if not external_id:
+                continue
+
+            post_dict = {
+                "external_id": external_id,
+                "author": author.replace("/u/", ""),
+                "title": title,
+                "body": body[:2000],
+                "url": url,
+                "upvotes": 0,  # RSS doesn't include scores
+                "post_date": post_date,
+            }
+            posts.append(post_dict)
+    except ET.ParseError as exc:
+        logger.error("Failed to parse RSS for r/%s: %s", subreddit_name, exc)
+        return []
+
+    # Filter by game name if provided
+    if game_name:
+        search_query = _game_search_query(game_name)
+        posts = [p for p in posts if _post_mentions_game(p, search_query)]
+
+    logger.info("Fetched %d post(s) from r/%s via RSS%s",
+                len(posts), subreddit_name,
+                f" (filtered for '{game_name}')" if game_name else "")
+    return posts
 
 
 # ── Subreddit discovery ───────────────────────────────────────────────────────
@@ -145,11 +254,17 @@ def fetch_subreddit_posts(
                     seen[pid] = _post_to_dict(post)
 
     posts = list(seen.values())
-    logger.info(
-        "Fetched %d post(s) from r/%s%s",
-        len(posts), subreddit_name,
-        f" (search: '{game_name}')" if game_name else "",
-    )
+
+    # If JSON endpoints returned nothing (likely 403 blocked), try RSS fallback
+    if not posts:
+        logger.info("No posts via JSON for r/%s — trying RSS fallback", subreddit_name)
+        posts = _fetch_rss(subreddit_name, game_name=game_name)
+    else:
+        logger.info(
+            "Fetched %d post(s) from r/%s%s",
+            len(posts), subreddit_name,
+            f" (search: '{game_name}')" if game_name else "",
+        )
     return posts
 
 
