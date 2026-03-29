@@ -356,7 +356,7 @@ def fetch_subreddit_posts(
     # If JSON endpoints returned nothing (likely 403 blocked), try PullPush
     if not posts:
         logger.info("No posts via JSON for r/%s — trying PullPush API", subreddit_name)
-        posts = _fetch_pullpush(subreddit_name, game_name=game_name, limit=limit)
+        posts = _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
     else:
         logger.info(
             "Fetched %d post(s) from r/%s%s",
