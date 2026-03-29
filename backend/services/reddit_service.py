@@ -84,12 +84,23 @@ def _get(url: str, params: Optional[dict] = None) -> Optional[dict]:
     return None
 
 
-def _fetch_rss(subreddit_name: str, game_name: str = "") -> list[dict]:
+# Large general subreddits where posts must be filtered by game name.
+# Dedicated game subs (e.g. r/snowrunner) don't need filtering since
+# every post is already about the game.
+_GENERAL_SUBREDDITS = {
+    "gaming", "games", "pcgaming", "ps5", "xbox", "steam",
+    "halo", "ghostbusters", "JurassicPark", "hellraiser", "JohnWick",
+    "patientgamers", "ShouldIbuythisgame",
+}
+
+
+def _fetch_rss(subreddit_name: str, game_name: str = "", force_filter: bool = False) -> list[dict]:
     """
     Fetch posts from a subreddit via RSS feed (never blocked by Reddit).
     Returns posts in the same dict format as fetch_subreddit_posts.
-    RSS feeds return ~25 most recent posts with no search filtering,
-    so we apply game_name filtering client-side.
+    RSS feeds return ~25 most recent posts with no search filtering.
+    Game name filtering is only applied for general subreddits, not
+    dedicated game subs where every post is relevant.
     """
     rss_url = f"https://www.reddit.com/r/{subreddit_name}/new.rss?limit=50"
     try:
@@ -156,14 +167,19 @@ def _fetch_rss(subreddit_name: str, game_name: str = "") -> list[dict]:
         logger.error("Failed to parse RSS for r/%s: %s", subreddit_name, exc)
         return []
 
-    # Filter by game name if provided
-    if game_name:
+    # Only filter by game name for general subreddits.
+    # Dedicated game subs (r/snowrunner, r/Spacemarine, etc.) don't need
+    # filtering — every post is already about the game.
+    is_general = subreddit_name.lower() in {s.lower() for s in _GENERAL_SUBREDDITS}
+    if game_name and (is_general or force_filter):
         search_query = _game_search_query(game_name)
-        posts = [p for p in posts if _post_mentions_game(p, search_query)]
+        filtered = [p for p in posts if _post_mentions_game(p, search_query)]
+        logger.info("Fetched %d post(s) from r/%s via RSS (filtered %d→%d for '%s')",
+                    len(posts), subreddit_name, len(posts), len(filtered), game_name)
+        return filtered
 
-    logger.info("Fetched %d post(s) from r/%s via RSS%s",
-                len(posts), subreddit_name,
-                f" (filtered for '{game_name}')" if game_name else "")
+    logger.info("Fetched %d post(s) from r/%s via RSS (dedicated sub, no filter)",
+                len(posts), subreddit_name)
     return posts
 
 
