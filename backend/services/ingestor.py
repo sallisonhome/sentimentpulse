@@ -724,8 +724,9 @@ def _bulk_save_posts(
     """
     Persist a list of raw-post dicts, skipping any that are already stored.
 
-    Deduplication uses a single pre-flight query to fetch all known
-    external_ids for this source, avoiding N per-row existence checks.
+    Deduplication checks (external_id, source) globally AND per game_id to
+    handle Reddit posts shared across multiple games' subreddits.
+    Inserts one-by-one to avoid a single duplicate killing the whole batch.
 
     Returns the count of newly inserted rows.
     """
@@ -733,6 +734,7 @@ def _bulk_save_posts(
         return 0
 
     external_ids = [p["external_id"] for p in post_data_list]
+    # Check for posts already stored globally (any game) with same external_id+source
     known: set[str] = {
         row[0]
         for row in db.query(RawPost.external_id).filter(
@@ -741,8 +743,11 @@ def _bulk_save_posts(
         )
     }
 
-    new_rows = [
-        RawPost(
+    saved = 0
+    for pd in post_data_list:
+        if pd["external_id"] in known:
+            continue
+        row = RawPost(
             game_id=game_id,
             source=source,
             external_id=pd["external_id"],
@@ -753,23 +758,16 @@ def _bulk_save_posts(
             upvotes=pd.get("upvotes", 0),
             post_date=pd.get("post_date"),
         )
-        for pd in post_data_list
-        if pd["external_id"] not in known
-    ]
+        db.add(row)
+        try:
+            db.commit()
+            known.add(pd["external_id"])  # Track so next game skips it
+            saved += 1
+        except Exception:
+            db.rollback()
+            known.add(pd["external_id"])  # Already exists, skip silently
 
-    if not new_rows:
-        return 0
-
-    db.add_all(new_rows)
-    try:
-        db.commit()
-        return len(new_rows)
-    except Exception as exc:
-        db.rollback()
-        msg = f"DB error saving {source.value} posts: {exc}"
-        errors.append(msg)
-        logger.error(msg)
-        return 0
+    return saved
 
 
 def _post_text(post: RawPost) -> str:
