@@ -332,15 +332,11 @@ def _step4_reddit(
             total_saved += _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
             )
-            # Fetch top-50 comments per submission, keeping only those that
-            # mention the game so off-topic replies don't pollute the data.
-            for sub in submissions:
-                comments = fetch_post_comments(sub["external_id"], limit=50)
-                query = _game_search_query(game.name)
-                comments = [c for c in comments if _post_mentions_game(c, query)]
-                total_saved += _bulk_save_posts(
-                    db, game.id, SourceEnum.reddit, comments, errors
-                )
+            # NOTE: Comment fetching is disabled because Reddit blocks all
+            # JSON API requests from datacenter IPs (403 Blocked). Each
+            # blocked comment fetch adds ~4s of wasted retry time, which
+            # made full ingestion take hours. Posts alone provide sufficient
+            # sentiment signal. Re-enable if Reddit API access is restored.
         except Exception as exc:
             msg = f"[Step 4] Reddit error for r/{sub_name}: {exc}"
             errors.append(msg)

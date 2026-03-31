@@ -300,70 +300,15 @@ def fetch_subreddit_posts(
     """
     Fetch posts from a subreddit that mention `game_name`.
 
-    When game_name is provided (always recommended) Reddit's own search is used
-    with restrict_sr=1 so only posts within that subreddit are returned and they
-    must mention the game name.  This prevents pulling in unrelated posts from
-    large general subreddits like r/gaming.
-
-    Falls back to new+hot feeds only when game_name is empty.
+    Uses PullPush API directly since Reddit blocks all JSON/RSS requests
+    from datacenter IPs.  PullPush is a free Reddit archive that works
+    from any IP without authentication.
 
     Each returned dict has:
         external_id, author, title, body, url, upvotes, post_date
     """
-    seen: dict[str, dict] = {}
-
-    if game_name:
-        search_query = _game_search_query(game_name)
-        # Use subreddit search so only game-relevant posts are returned
-        for sort in ("new", "relevance"):
-            data = _get(
-                f"{_BASE}/r/{subreddit_name}/search.json",
-                params={
-                    "q": search_query,
-                    "sort": sort,
-                    "limit": limit,
-                    "restrict_sr": 1,
-                    "raw_json": 1,
-                },
-            )
-            if not data:
-                continue
-            for child in data.get("data", {}).get("children", []):
-                post = child.get("data", {})
-                pid = post.get("id")
-                if pid and pid not in seen:
-                    post_dict = _post_to_dict(post)
-                    # Secondary filter: post must actually mention the game
-                    if _post_mentions_game(post_dict, search_query):
-                        seen[pid] = post_dict
-    else:
-        # Fallback: no game filter — fetch new and hot feeds unfiltered
-        for feed in ("new", "hot"):
-            data = _get(
-                f"{_BASE}/r/{subreddit_name}/{feed}.json",
-                params={"limit": limit, "raw_json": 1},
-            )
-            if not data:
-                continue
-            for child in data.get("data", {}).get("children", []):
-                post = child.get("data", {})
-                pid = post.get("id")
-                if pid and pid not in seen:
-                    seen[pid] = _post_to_dict(post)
-
-    posts = list(seen.values())
-
-    # If JSON endpoints returned nothing (likely 403 blocked), try PullPush
-    if not posts:
-        logger.info("No posts via JSON for r/%s — trying PullPush API", subreddit_name)
-        posts = _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
-    else:
-        logger.info(
-            "Fetched %d post(s) from r/%s%s",
-            len(posts), subreddit_name,
-            f" (search: '{game_name}')" if game_name else "",
-        )
-    return posts
+    # Go straight to PullPush — Reddit JSON is 403-blocked on this server
+    return _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
 
 
 # ── Comment fetching ──────────────────────────────────────────────────────────
