@@ -107,6 +107,10 @@ def run_ingestion() -> dict:
     # Ensure the NLP model is loaded before processing any posts
     load_model()
 
+    # Reset Reddit Gist cache so fresh data is fetched each run
+    from services.reddit_service import _reset_gist_cache  # noqa
+    _reset_gist_cache()
+
     db = SessionLocal()
     try:
         # ── Step 1: game discovery ────────────────────────────────────────────

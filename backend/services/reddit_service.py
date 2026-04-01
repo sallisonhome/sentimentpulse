@@ -292,22 +292,89 @@ def discover_subreddits(game_name: str, max_results: int = 3) -> list[str]:
 
 # ── Post fetching ─────────────────────────────────────────────────────────────
 
+# ── GitHub Gist data source ──────────────────────────────────────────────────
+# A GitHub Action fetches Reddit data daily from GitHub's servers (not blocked)
+# and uploads it to a Gist. The droplet reads from the Gist.
+
+_GIST_CACHE: dict = {}  # Populated once per ingestion run
+_GIST_LOADED: bool = False
+
+
+def _reset_gist_cache() -> None:
+    """Reset the Gist cache so the next call to _load_gist_data() fetches fresh data."""
+    global _GIST_CACHE, _GIST_LOADED
+    _GIST_CACHE = {}
+    _GIST_LOADED = False
+
+
+def _load_gist_data() -> dict:
+    """Load Reddit data from the GitHub Gist (cached per process lifetime)."""
+    global _GIST_CACHE, _GIST_LOADED
+    if _GIST_LOADED:
+        return _GIST_CACHE
+
+    from config import settings as _s  # noqa
+    gist_url = getattr(_s, 'reddit_gist_url', '') or ''
+    if not gist_url:
+        logger.warning("REDDIT_GIST_URL not configured — no Reddit data available")
+        _GIST_LOADED = True
+        return _GIST_CACHE
+
+    try:
+        resp = httpx.get(gist_url, timeout=30, follow_redirects=True)
+        if resp.status_code == 200:
+            _GIST_CACHE = resp.json()
+            total = sum(len(v.get("posts", [])) for v in _GIST_CACHE.values())
+            logger.info("Loaded Reddit Gist data: %d games, %d total posts", len(_GIST_CACHE), total)
+        else:
+            logger.warning("Reddit Gist returned HTTP %d", resp.status_code)
+    except Exception as exc:
+        logger.error("Failed to load Reddit Gist: %s", exc)
+
+    _GIST_LOADED = True
+    return _GIST_CACHE
+
+
 def fetch_subreddit_posts(
     subreddit_name: str,
     limit: int = 25,
     game_name: str = "",
 ) -> list[dict]:
     """
-    Fetch posts from a subreddit that mention `game_name`.
+    Fetch posts for a game from the pre-fetched GitHub Gist data.
 
-    Uses PullPush API directly since Reddit blocks all JSON/RSS requests
-    from datacenter IPs.  PullPush is a free Reddit archive that works
-    from any IP without authentication.
+    A GitHub Action runs daily on GitHub's servers (not blocked by Reddit),
+    fetches posts from all configured subreddits, and uploads the data to
+    a Gist. This function reads from that Gist.
 
-    Each returned dict has:
-        external_id, author, title, body, url, upvotes, post_date
+    Falls back to PullPush if the Gist has no data for this game.
     """
-    # Go straight to PullPush — Reddit JSON is 403-blocked on this server
+    # This function is called per-subreddit, but the Gist data is per-game.
+    # We return the full game's posts on the first subreddit call, and
+    # empty for subsequent subs to avoid duplicates.
+    gist = _load_gist_data()
+
+    # Find the game_id that uses this subreddit
+    for game_id_str, game_data in gist.items():
+        posts = game_data.get("posts", [])
+        if not posts:
+            continue
+        # Check if any post URL contains this subreddit name
+        # Or match by game_name
+        if game_name and game_data.get("game_name", "").lower() == game_name.lower():
+            # Convert ISO date strings back to datetime objects
+            for p in posts:
+                if p.get("post_date") and isinstance(p["post_date"], str):
+                    try:
+                        from datetime import datetime as _dt
+                        p["post_date"] = _dt.fromisoformat(p["post_date"])
+                    except Exception:
+                        p["post_date"] = None
+            logger.info("Loaded %d post(s) for '%s' from Reddit Gist", len(posts), game_name)
+            return posts
+
+    # Fallback to PullPush if no Gist data
+    logger.info("No Gist data for '%s' / r/%s — trying PullPush", game_name, subreddit_name)
     return _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
 
 

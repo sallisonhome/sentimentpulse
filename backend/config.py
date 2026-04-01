@@ -57,5 +57,9 @@ class Settings(BaseSettings):
     # Recommended for servers with < 4 GB RAM.
     lightweight_nlp: bool = False
 
+    # URL to the raw GitHub Gist containing Reddit data (fetched by GitHub Action).
+    # Format: https://gist.githubusercontent.com/<user>/<gist_id>/raw/reddit_data.json
+    reddit_gist_url: str = ""
+
 
 settings = Settings()
