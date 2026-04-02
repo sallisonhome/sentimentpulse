@@ -89,8 +89,8 @@ function Fetch-Subreddit($subName, $gameName, $limit) {
             if (-not $data) { continue }
             foreach ($child in $data.data.children) {
                 $post = $child.data
-                $pid = $post.id
-                if ($pid -and -not $seen.ContainsKey($pid)) {
+                $postId = $post.id
+                if ($postId -and -not $seen.ContainsKey($postId)) {
                     $pd = @{
                         external_id = $post.id
                         author = if ($post.author) { $post.author } else { "[deleted]" }
@@ -101,7 +101,7 @@ function Fetch-Subreddit($subName, $gameName, $limit) {
                         post_date = if ($post.created_utc) { [DateTimeOffset]::FromUnixTimeSeconds([long]$post.created_utc).ToString("o") } else { $null }
                     }
                     if (Test-PostMentionsGame $pd $query) {
-                        $seen[$pid] = $pd
+                        $seen[$postId] = $pd
                     }
                 }
             }
@@ -113,9 +113,9 @@ function Fetch-Subreddit($subName, $gameName, $limit) {
             if (-not $data) { continue }
             foreach ($child in $data.data.children) {
                 $post = $child.data
-                $pid = $post.id
-                if ($pid -and -not $seen.ContainsKey($pid)) {
-                    $seen[$pid] = @{
+                $postId = $post.id
+                if ($postId -and -not $seen.ContainsKey($postId)) {
+                    $seen[$postId] = @{
                         external_id = $post.id
                         author = if ($post.author) { $post.author } else { "[deleted]" }
                         title = if ($post.title) { $post.title } else { "" }
