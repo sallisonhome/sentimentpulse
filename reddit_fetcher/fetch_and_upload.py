@@ -19,9 +19,9 @@ import sys
 from datetime import datetime, timezone
 
 try:
-    import requests
+    import cloudscraper
 except ImportError:
-    print("Install requests: pip install requests")
+    print("Install cloudscraper: pip install cloudscraper")
     sys.exit(1)
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
@@ -68,22 +68,12 @@ GENERAL_SUBS = {
     "patientgamers", "shouldibuythisgame",
 }
 
-# Use a full requests Session with browser-like headers to avoid 403 blocks
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-})
+# Use cloudscraper to mimic a real browser's TLS fingerprint — avoids 403 blocks
+SESSION = cloudscraper.create_scraper(
+    browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
+)
 
-BASE = "https://www.reddit.com"
+BASE = "https://old.reddit.com"
 
 
 def game_search_query(game_name: str) -> str:
@@ -177,8 +167,9 @@ def upload_to_gist(data: dict) -> bool:
         print("  Generate a classic token with 'gist' scope")
         return False
 
+    import requests as _req
     content = json.dumps(data)
-    resp = requests.patch(
+    resp = _req.patch(
         f"https://api.github.com/gists/{GIST_ID}",
         headers={
             "Authorization": f"token {GIST_TOKEN}",
