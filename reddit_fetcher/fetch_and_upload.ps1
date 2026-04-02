@@ -177,22 +177,26 @@ if ($totalPosts -gt 0) {
     if ($GIST_TOKEN -eq "PASTE_YOUR_GITHUB_TOKEN_HERE") {
         Write-Host "`n  ERROR: Set GIST_TOKEN in the script first!" -ForegroundColor Red
     } else {
-        $jsonContent = $allData | ConvertTo-Json -Depth 10 -Compress
-        $body = @{
-            files = @{
-                "reddit_data.json" = @{ content = $jsonContent }
-            }
-        } | ConvertTo-Json -Depth 5
+        # Save data as JSON to temp file, then upload
+        $tempFile = Join-Path $PSScriptRoot "reddit_data.json"
+        $allData | ConvertTo-Json -Depth 10 -Compress | Set-Content -Path $tempFile -Encoding UTF8
+        $jsonContent = [System.IO.File]::ReadAllText($tempFile, [System.Text.Encoding]::UTF8)
+
+        # Build the API body manually to avoid nested JSON escaping issues
+        Add-Type -AssemblyName System.Web
+        $escapedContent = $jsonContent.Replace('\', '\\').Replace('"', '\"').Replace([char]10, '\n').Replace([char]13, '').Replace([char]9, '\t')
+        $apiBody = [System.Text.Encoding]::UTF8.GetBytes('{"files":{"reddit_data.json":{"content":"' + $escapedContent + '"}}}')
 
         try {
             $headers = @{
                 "Authorization" = "token $GIST_TOKEN"
                 "Accept" = "application/vnd.github.v3+json"
             }
-            Invoke-RestMethod -Uri "https://api.github.com/gists/$GIST_ID" -Method Patch -Headers $headers -Body $body -ContentType "application/json"
+            Invoke-WebRequest -Uri "https://api.github.com/gists/$GIST_ID" -Method Patch -Headers $headers -Body $apiBody -ContentType "application/json; charset=utf-8" -UseBasicParsing | Out-Null
             Write-Host "`n  Gist updated: https://gist.github.com/$GIST_ID" -ForegroundColor Green
         } catch {
-            Write-Host "`n  Failed to update Gist: $_" -ForegroundColor Red
+            Write-Host "`n  Failed to update Gist: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "  Data saved locally: $tempFile" -ForegroundColor Yellow
         }
     }
 } else {
