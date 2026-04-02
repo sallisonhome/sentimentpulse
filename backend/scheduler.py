@@ -47,16 +47,20 @@ def create_scheduler() -> BackgroundScheduler:
         },
     )
 
+    from config import settings  # noqa: PLC0415
+    ingest_hour = int(getattr(settings, 'ingest_hour', 2))
+    ingest_minute = int(getattr(settings, 'ingest_minute', 0))
+
     _scheduler.add_job(
         _ingest_job,
-        trigger=CronTrigger(hour=2, minute=0),
+        trigger=CronTrigger(hour=ingest_hour, minute=ingest_minute),
         id=_JOB_ID,
         name="Daily sentiment ingestion",
         replace_existing=True,
     )
 
     logger.info(
-        "Scheduler created — daily ingestion job registered at 02:00 local time."
+        f"Scheduler created — daily ingestion job registered at {ingest_hour:02d}:{ingest_minute:02d} local time."
     )
     return _scheduler
 

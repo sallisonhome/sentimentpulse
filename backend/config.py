@@ -61,5 +61,9 @@ class Settings(BaseSettings):
     # Format: https://gist.githubusercontent.com/<user>/<gist_id>/raw/reddit_data.json
     reddit_gist_url: str = ""
 
+    # Daily ingestion schedule (local server time). Default: 02:00.
+    ingest_hour: int = 2
+    ingest_minute: int = 0
+
 
 settings = Settings()
