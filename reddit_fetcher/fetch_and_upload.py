@@ -15,9 +15,14 @@ The droplet's 2:00 AM ingestion will pick up the fresh data automatically.
 """
 import json
 import time
-import httpx
 import sys
 from datetime import datetime, timezone
+
+try:
+    import requests
+except ImportError:
+    print("Install requests: pip install requests")
+    sys.exit(1)
 
 # ── CONFIGURATION ─────────────────────────────────────────────────────────────
 # GitHub Personal Access Token with "gist" scope.
@@ -63,10 +68,20 @@ GENERAL_SUBS = {
     "patientgamers", "shouldibuythisgame",
 }
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0",
-    "Accept": "application/json",
-}
+# Use a full requests Session with browser-like headers to avoid 403 blocks
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Upgrade-Insecure-Requests": "1",
+})
 
 BASE = "https://www.reddit.com"
 
@@ -96,11 +111,11 @@ def fetch_subreddit(sub_name: str, game_name: str, limit: int = 100) -> list[dic
         query = game_search_query(game_name)
         for sort in ("new", "relevance"):
             try:
-                resp = httpx.get(
+                resp = SESSION.get(
                     f"{BASE}/r/{sub_name}/search.json",
                     params={"q": query, "sort": sort, "limit": limit,
                             "restrict_sr": 1, "raw_json": 1},
-                    headers=HEADERS, timeout=15, follow_redirects=True,
+                    timeout=15,
                 )
                 time.sleep(2)
                 if resp.status_code != 200:
@@ -119,10 +134,10 @@ def fetch_subreddit(sub_name: str, game_name: str, limit: int = 100) -> list[dic
     else:
         for feed in ("new", "hot"):
             try:
-                resp = httpx.get(
+                resp = SESSION.get(
                     f"{BASE}/r/{sub_name}/{feed}.json",
                     params={"limit": limit, "raw_json": 1},
-                    headers=HEADERS, timeout=15, follow_redirects=True,
+                    timeout=15,
                 )
                 time.sleep(2)
                 if resp.status_code != 200:
@@ -163,7 +178,7 @@ def upload_to_gist(data: dict) -> bool:
         return False
 
     content = json.dumps(data)
-    resp = httpx.patch(
+    resp = requests.patch(
         f"https://api.github.com/gists/{GIST_ID}",
         headers={
             "Authorization": f"token {GIST_TOKEN}",
