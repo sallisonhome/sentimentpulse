@@ -323,7 +323,10 @@ def _load_gist_data() -> dict:
     try:
         resp = httpx.get(gist_url, timeout=30, follow_redirects=True)
         if resp.status_code == 200:
-            _GIST_CACHE = resp.json()
+            # Handle UTF-8 BOM from PowerShell-generated JSON
+            text = resp.text.lstrip('\ufeff')
+            import json as _json
+            _GIST_CACHE = _json.loads(text)
             total = sum(len(v.get("posts", [])) for v in _GIST_CACHE.values())
             logger.info("Loaded Reddit Gist data: %d games, %d total posts", len(_GIST_CACHE), total)
         else:

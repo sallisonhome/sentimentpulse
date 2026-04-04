@@ -12,35 +12,35 @@ $GIST_ID = "18675b3d910f4555251b666a65a6874a"
 
 $BASE = "https://www.reddit.com"
 
-# Game ID -> (Name, Subreddits, IsGeneral)
+# Game ID -> (Name, Subreddits)
 $GAMES = @{
-    "1"   = @{ Name="Docked"; Subs=@("gaming","pcgaming"); General=$true }
-    "2"   = @{ Name="Tempest Rising"; Subs=@("TempestRising"); General=$false }
-    "3"   = @{ Name="A Quiet Place: The Road Ahead"; Subs=@("AQuietPlace","gaming"); General=$true }
-    "4"   = @{ Name="The Knightling"; Subs=@("gaming","pcgaming"); General=$true }
-    "5"   = @{ Name="Dakar Desert Rally"; Subs=@("dakardesertrally","DakartheGame"); General=$false }
-    "20"  = @{ Name="Untitled John Wick Game"; Subs=@("JohnWick","gaming"); General=$true }
-    "21"  = @{ Name="Clive Barker's Hellraiser: Revival"; Subs=@("hellraiser","gaming"); General=$true }
-    "22"  = @{ Name="Jurassic Park: Survival"; Subs=@("JurassicPark","gaming"); General=$true }
-    "23"  = @{ Name="Turok: Origins"; Subs=@("Turok","gaming"); General=$true }
-    "24"  = @{ Name="Warhammer 40,000: Space Marine 2"; Subs=@("Spacemarine","SpaceMarine_2"); General=$false }
-    "25"  = @{ Name="John Carpenter's Toxic Commando"; Subs=@("gaming","pcgaming"); General=$true }
-    "26"  = @{ Name="Halo: The Master Chief Collection"; Subs=@("halo","HaloMCC"); General=$true }
-    "27"  = @{ Name="SnowRunner"; Subs=@("snowrunner"); General=$false }
-    "28"  = @{ Name="RoadCraft"; Subs=@("gaming","pcgaming"); General=$true }
-    "29"  = @{ Name="Gloomhaven"; Subs=@("Gloomhaven"); General=$false }
-    "33"  = @{ Name="Expeditions: A MudRunner Game"; Subs=@("Mudrunner","snowrunner"); General=$false }
-    "36"  = @{ Name="MudRunner"; Subs=@("Mudrunner"); General=$false }
-    "37"  = @{ Name="Crysis 3 Remastered"; Subs=@("Crysis"); General=$false }
-    "39"  = @{ Name="Crysis 2 Remastered"; Subs=@("Crysis"); General=$false }
-    "43"  = @{ Name="Ghostbusters: The Video Game Remastered"; Subs=@("GhostbustersGame","ghostbusters"); General=$true }
-    "60"  = @{ Name="TimeShift"; Subs=@("gaming"); General=$true }
-    "87"  = @{ Name="MX Nitro: Unleashed"; Subs=@("gaming"); General=$true }
-    "98"  = @{ Name="Inversion"; Subs=@("gaming"); General=$true }
-    "104" = @{ Name="Halo 2: Anniversary"; Subs=@("halo","HaloMCC"); General=$true }
-    "105" = @{ Name="Halo 3"; Subs=@("halo","HaloMCC"); General=$true }
-    "123" = @{ Name="MudRunner - Old-timers DLC"; Subs=@("Mudrunner","snowrunner"); General=$false }
-    "124" = @{ Name="RoadCraft - Reclaim Expansion"; Subs=@("gaming"); General=$true }
+    "1"   = @{ Name="Docked"; Subs=@("gaming","pcgaming") }
+    "2"   = @{ Name="Tempest Rising"; Subs=@("TempestRising") }
+    "3"   = @{ Name="A Quiet Place: The Road Ahead"; Subs=@("AQuietPlace","gaming") }
+    "4"   = @{ Name="The Knightling"; Subs=@("gaming","pcgaming") }
+    "5"   = @{ Name="Dakar Desert Rally"; Subs=@("dakardesertrally","DakartheGame") }
+    "20"  = @{ Name="Untitled John Wick Game"; Subs=@("JohnWick","gaming") }
+    "21"  = @{ Name="Clive Barker's Hellraiser: Revival"; Subs=@("hellraiser","gaming") }
+    "22"  = @{ Name="Jurassic Park: Survival"; Subs=@("JurassicPark","gaming") }
+    "23"  = @{ Name="Turok: Origins"; Subs=@("Turok","gaming") }
+    "24"  = @{ Name="Warhammer 40,000: Space Marine 2"; Subs=@("Spacemarine","SpaceMarine_2") }
+    "25"  = @{ Name="John Carpenter's Toxic Commando"; Subs=@("gaming","pcgaming") }
+    "26"  = @{ Name="Halo: The Master Chief Collection"; Subs=@("halo","HaloMCC") }
+    "27"  = @{ Name="SnowRunner"; Subs=@("snowrunner") }
+    "28"  = @{ Name="RoadCraft"; Subs=@("gaming","pcgaming") }
+    "29"  = @{ Name="Gloomhaven"; Subs=@("Gloomhaven") }
+    "33"  = @{ Name="Expeditions: A MudRunner Game"; Subs=@("Mudrunner","snowrunner") }
+    "36"  = @{ Name="MudRunner"; Subs=@("Mudrunner") }
+    "37"  = @{ Name="Crysis 3 Remastered"; Subs=@("Crysis") }
+    "39"  = @{ Name="Crysis 2 Remastered"; Subs=@("Crysis") }
+    "43"  = @{ Name="Ghostbusters: The Video Game Remastered"; Subs=@("GhostbustersGame","ghostbusters") }
+    "60"  = @{ Name="TimeShift"; Subs=@("gaming") }
+    "87"  = @{ Name="MX Nitro: Unleashed"; Subs=@("gaming") }
+    "98"  = @{ Name="Inversion"; Subs=@("gaming") }
+    "104" = @{ Name="Halo 2: Anniversary"; Subs=@("halo","HaloMCC") }
+    "105" = @{ Name="Halo 3"; Subs=@("halo","HaloMCC") }
+    "123" = @{ Name="MudRunner - Old-timers DLC"; Subs=@("Mudrunner","snowrunner") }
+    "124" = @{ Name="RoadCraft - Reclaim Expansion"; Subs=@("gaming") }
 }
 
 $GENERAL_SUBS = @("gaming","games","pcgaming","ps5","xbox","steam","halo",
@@ -177,26 +177,51 @@ if ($totalPosts -gt 0) {
     if ($GIST_TOKEN -eq "PASTE_YOUR_GITHUB_TOKEN_HERE") {
         Write-Host "`n  ERROR: Set GIST_TOKEN in the script first!" -ForegroundColor Red
     } else {
-        # Save data as JSON to temp file, then upload
+        # Save JSON without BOM (critical — BOM breaks the droplet's JSON parser)
         $tempFile = Join-Path $PSScriptRoot "reddit_data.json"
-        $allData | ConvertTo-Json -Depth 10 -Compress | Set-Content -Path $tempFile -Encoding UTF8
-        $jsonContent = [System.IO.File]::ReadAllText($tempFile, [System.Text.Encoding]::UTF8)
+        $json = $allData | ConvertTo-Json -Depth 10 -Compress
+        [System.IO.File]::WriteAllText($tempFile, $json, (New-Object System.Text.UTF8Encoding $false))
 
-        # Build the API body manually to avoid nested JSON escaping issues
-        Add-Type -AssemblyName System.Web
-        $escapedContent = $jsonContent.Replace('\', '\\').Replace('"', '\"').Replace([char]10, '\n').Replace([char]13, '').Replace([char]9, '\t')
-        $apiBody = [System.Text.Encoding]::UTF8.GetBytes('{"files":{"reddit_data.json":{"content":"' + $escapedContent + '"}}}')
-
+        # Upload via GitHub API (avoids gh gist edit interactive prompts)
         try {
+            # Read file and escape for JSON embedding
+            $content = [System.IO.File]::ReadAllText($tempFile)
+            
+            # Use multipart approach: update gist via API with proper escaping
             $headers = @{
                 "Authorization" = "token $GIST_TOKEN"
                 "Accept" = "application/vnd.github.v3+json"
             }
-            Invoke-WebRequest -Uri "https://api.github.com/gists/$GIST_ID" -Method Patch -Headers $headers -Body $apiBody -ContentType "application/json; charset=utf-8" -UseBasicParsing | Out-Null
-            Write-Host "`n  Gist updated: https://gist.github.com/$GIST_ID" -ForegroundColor Green
+            
+            # Build body using .NET to handle escaping properly
+            $bodyObj = @{
+                files = @{
+                    "reddit_data.json" = @{
+                        content = $content
+                    }
+                }
+            }
+            $bodyJson = $bodyObj | ConvertTo-Json -Depth 5 -Compress
+            $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($bodyJson)
+            
+            Invoke-WebRequest -Uri "https://api.github.com/gists/$GIST_ID" `
+                -Method Patch -Headers $headers `
+                -Body $bodyBytes `
+                -ContentType "application/json; charset=utf-8" `
+                -UseBasicParsing | Out-Null
+            
+            Write-Host "`n  Gist updated successfully" -ForegroundColor Green
         } catch {
-            Write-Host "`n  Failed to update Gist: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "  Data saved locally: $tempFile" -ForegroundColor Yellow
+            Write-Host "`n  API upload failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "  Trying gh CLI fallback..." -ForegroundColor Yellow
+            try {
+                # Fallback to gh CLI
+                gh gist edit $GIST_ID -f reddit_data.json $tempFile 2>&1 | Out-Null
+                Write-Host "  Gist updated via gh CLI" -ForegroundColor Green
+            } catch {
+                Write-Host "  Both upload methods failed: $($_.Exception.Message)" -ForegroundColor Red
+                Write-Host "  Data saved locally: $tempFile" -ForegroundColor Yellow
+            }
         }
     }
 } else {
