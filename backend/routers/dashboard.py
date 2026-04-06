@@ -185,34 +185,35 @@ def get_dashboard(
     ]
 
     # ── 5. Sentiment velocity (based on Positive/Negative Ratio trend) ────────
-    # Calculate daily pos/neg ratios for the last 7 summary days, then measure
-    # whether the ratio is improving, declining, or stable.
-    recent_summaries = (
-        db.query(
-            DailySummary.positive_count,
-            DailySummary.negative_count,
-        )
-        .filter(
-            DailySummary.game_id == game_id,
-        )
-        .order_by(DailySummary.summary_date.desc())
-        .limit(7)
-        .all()
-    )
+    # Uses daily pos/(pos+neg) percentages within the selected period.
+    # Compares the first half of the period to the second half to determine
+    # whether sentiment is improving, declining, or stable.
+    vel_q = db.query(
+        DailySummary.summary_date,
+        DailySummary.positive_count,
+        DailySummary.negative_count,
+    ).filter(DailySummary.game_id == game_id)
 
-    daily_pcts = []  # pos/(pos+neg) as a 0-1 fraction per day
-    for row in recent_summaries:
-        p, n = int(row[0] or 0), int(row[1] or 0)
+    if p_start is not None:
+        vel_q = vel_q.filter(DailySummary.summary_date >= p_start)
+
+    vel_rows = vel_q.order_by(DailySummary.summary_date.asc()).all()
+
+    # Build daily pos/neg percentage for each day (only days with pos+neg > 0)
+    daily_pcts = []  # list of (date, pos/(pos+neg)) tuples
+    for row in vel_rows:
+        p, n = int(row[1] or 0), int(row[2] or 0)
         pn_total = p + n
         if pn_total > 0:
             daily_pcts.append(p / pn_total)
 
     if len(daily_pcts) >= 2:
-        # Compute average day-over-day change in pos/neg percentage
-        # Ratios are in desc order (newest first), so reverse for chronological
-        daily_pcts.reverse()
-        changes = [daily_pcts[i+1] - daily_pcts[i] for i in range(len(daily_pcts)-1)]
-        avg_delta = sum(changes) / len(changes)
+        # Split into first half and second half, compare averages
+        mid = len(daily_pcts) // 2
+        first_half_avg = sum(daily_pcts[:mid]) / mid if mid > 0 else 0
+        second_half_avg = sum(daily_pcts[mid:]) / len(daily_pcts[mid:]) if len(daily_pcts[mid:]) > 0 else 0
+        # Delta is the shift in pos/neg percentage between halves
+        avg_delta = second_half_avg - first_half_avg
         direction = (
             "improving" if avg_delta > 0.01
             else "declining" if avg_delta < -0.01
