@@ -12,12 +12,13 @@ export default function SummaryStatsRow({ summary }: SummaryStatsRowProps) {
   const pos = summary.positive_count
   const neg = summary.negative_count
 
-  // Positive/Negative Ratio
-  const ratio = neg > 0 ? pos / neg : (pos > 0 ? pos : null)
-  const ratioDisplay = ratio != null ? `${ratio.toFixed(2)}:1` : 'N/A'
-  const ratioColor = ratio != null
-    ? ratio >= 2 ? 'text-green-600'
-      : ratio >= 1 ? 'text-amber-500'
+  // Positive/Negative Ratio as percentage: positive / (positive + negative) * 100
+  const posNegTotal = pos + neg
+  const ratioPct = posNegTotal > 0 ? (pos / posNegTotal) * 100 : null
+  const ratioDisplay = ratioPct != null ? `${ratioPct.toFixed(1)}%` : 'N/A'
+  const ratioColor = ratioPct != null
+    ? ratioPct >= 66 ? 'text-green-600'
+      : ratioPct >= 50 ? 'text-amber-500'
       : 'text-red-600'
     : 'text-muted-foreground'
 

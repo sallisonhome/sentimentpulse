@@ -27,13 +27,13 @@ export default function KpiCards({ sentiment, velocity, period }: KpiCardsProps)
   const vel = VELOCITY_CONFIG[velocity.direction]
   const VelIcon = vel.icon
 
-  // Format the pos/neg ratio for display
-  const ratioValue = sentiment.pos_neg_ratio != null
-    ? `${sentiment.pos_neg_ratio.toFixed(2)}:1`
-    : 'N/A'
-  const ratioColor = sentiment.pos_neg_ratio != null
-    ? sentiment.pos_neg_ratio >= 2 ? 'text-green-600'
-      : sentiment.pos_neg_ratio >= 1 ? 'text-amber-500'
+  // Format the pos/neg ratio as a percentage: positive / (positive + negative) * 100
+  const posNegTotal = sentiment.positive + sentiment.negative
+  const ratioPct = posNegTotal > 0 ? (sentiment.positive / posNegTotal) * 100 : null
+  const ratioValue = ratioPct != null ? `${ratioPct.toFixed(1)}%` : 'N/A'
+  const ratioColor = ratioPct != null
+    ? ratioPct >= 66 ? 'text-green-600'
+      : ratioPct >= 50 ? 'text-amber-500'
       : 'text-red-600'
     : 'text-slate-500'
 
