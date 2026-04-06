@@ -51,7 +51,7 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
         <CardTitle className="flex items-center justify-between text-base">
           <span>{game.name}</span>
           <div className="flex items-center gap-2 text-sm font-normal text-muted-foreground">
-            <span>{isActive ? 'Tracking active' : 'Tracking paused'}</span>
+            <span>{isActive ? 'Visible' : 'Hidden'}</span>
             <Switch
               checked={isActive}
               onCheckedChange={handleActiveToggle}

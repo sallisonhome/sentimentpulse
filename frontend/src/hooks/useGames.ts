@@ -3,9 +3,18 @@ import { api } from '../lib/api'
 import { queryClient } from '../lib/queryClient'
 import type { Game, GameDetail } from '../types'
 
+/** Fetch only active games (used by the main app dropdown). */
 export function useGames() {
   return useQuery<Game[]>({
     queryKey: ['games'],
+    queryFn: () => api.get<Game[]>('/games?is_active=true').then(r => r.data),
+  })
+}
+
+/** Fetch ALL games regardless of active status (used by Settings page). */
+export function useAllGames() {
+  return useQuery<Game[]>({
+    queryKey: ['games', 'all'],
     queryFn: () => api.get<Game[]>('/games').then(r => r.data),
   })
 }

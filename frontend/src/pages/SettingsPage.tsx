@@ -1,4 +1,4 @@
-import { useGames } from '../hooks/useGames'
+import { useAllGames } from '../hooks/useGames'
 import { usePublisher } from '../hooks/usePublisher'
 import { useIngestStatus, useTriggerIngest } from '../hooks/useIngest'
 import GameSettingsCard from '../components/settings/GameSettingsCard'
@@ -11,7 +11,7 @@ import { RefreshCw, CheckCircle, XCircle } from 'lucide-react'
 
 export default function SettingsPage() {
   const { data: publisher, isLoading: pubLoading }   = usePublisher()
-  const { data: games,     isLoading: gamesLoading } = useGames()
+  const { data: games,     isLoading: gamesLoading } = useAllGames()
   const { data: ingestStatus }                       = useIngestStatus()
   const triggerIngest = useTriggerIngest()
 
@@ -102,7 +102,8 @@ export default function SettingsPage() {
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Games</h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Games are auto-discovered during ingestion. Configure subreddits and tracking status below.
+            Toggle games on/off to control which titles appear in the main dashboard dropdown.
+            Data is preserved for hidden games.
           </p>
         </div>
 
