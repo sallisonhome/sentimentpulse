@@ -200,23 +200,22 @@ def get_dashboard(
         .all()
     )
 
-    daily_ratios = []
+    daily_pcts = []  # pos/(pos+neg) as a 0-1 fraction per day
     for row in recent_summaries:
         p, n = int(row[0] or 0), int(row[1] or 0)
-        if n > 0:
-            daily_ratios.append(p / n)
-        elif p > 0:
-            daily_ratios.append(float(p))  # all positive, no negative
+        pn_total = p + n
+        if pn_total > 0:
+            daily_pcts.append(p / pn_total)
 
-    if len(daily_ratios) >= 2:
-        # Compute average day-over-day change in ratio
+    if len(daily_pcts) >= 2:
+        # Compute average day-over-day change in pos/neg percentage
         # Ratios are in desc order (newest first), so reverse for chronological
-        daily_ratios.reverse()
-        changes = [daily_ratios[i+1] - daily_ratios[i] for i in range(len(daily_ratios)-1)]
+        daily_pcts.reverse()
+        changes = [daily_pcts[i+1] - daily_pcts[i] for i in range(len(daily_pcts)-1)]
         avg_delta = sum(changes) / len(changes)
         direction = (
-            "improving" if avg_delta > 0.05
-            else "declining" if avg_delta < -0.05
+            "improving" if avg_delta > 0.01
+            else "declining" if avg_delta < -0.01
             else "stable"
         )
     else:

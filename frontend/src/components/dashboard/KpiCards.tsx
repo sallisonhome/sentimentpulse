@@ -65,7 +65,7 @@ export default function KpiCards({ sentiment, velocity, period }: KpiCardsProps)
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             {velocity.delta_avg != null
-              ? `Ratio Δ ${velocity.delta_avg >= 0 ? '+' : ''}${velocity.delta_avg.toFixed(2)} / day`
+              ? `${velocity.delta_avg >= 0 ? '+' : ''}${(velocity.delta_avg * 100).toFixed(1)}% / day`
               : 'Insufficient data'}
           </p>
         </CardContent>
