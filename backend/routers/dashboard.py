@@ -185,22 +185,25 @@ def get_dashboard(
     ]
 
     # ── 5. Sentiment velocity (based on Positive/Negative Ratio trend) ────────
-    # Uses daily pos/(pos+neg) percentages within the selected period.
-    # Compares the first half of the period to the second half to determine
-    # whether sentiment is improving, declining, or stable.
+    # For "Today": compare today's ratio vs yesterday's.
+    # For longer periods: compare first half vs second half of the period.
     vel_q = db.query(
         DailySummary.summary_date,
         DailySummary.positive_count,
         DailySummary.negative_count,
     ).filter(DailySummary.game_id == game_id)
 
-    if p_start is not None:
+    if period == PeriodEnum.today:
+        # Fetch today + yesterday for comparison
+        yesterday = today - timedelta(days=1)
+        vel_q = vel_q.filter(DailySummary.summary_date >= yesterday)
+    elif p_start is not None:
         vel_q = vel_q.filter(DailySummary.summary_date >= p_start)
 
     vel_rows = vel_q.order_by(DailySummary.summary_date.asc()).all()
 
     # Build daily pos/neg percentage for each day (only days with pos+neg > 0)
-    daily_pcts = []  # list of (date, pos/(pos+neg)) tuples
+    daily_pcts = []
     for row in vel_rows:
         p, n = int(row[1] or 0), int(row[2] or 0)
         pn_total = p + n
@@ -212,7 +215,6 @@ def get_dashboard(
         mid = len(daily_pcts) // 2
         first_half_avg = sum(daily_pcts[:mid]) / mid if mid > 0 else 0
         second_half_avg = sum(daily_pcts[mid:]) / len(daily_pcts[mid:]) if len(daily_pcts[mid:]) > 0 else 0
-        # Delta is the shift in pos/neg percentage between halves
         avg_delta = second_half_avg - first_half_avg
         direction = (
             "improving" if avg_delta > 0.01
