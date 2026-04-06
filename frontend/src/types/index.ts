@@ -59,6 +59,7 @@ export interface SentimentCounts {
   positive_pct: number
   negative_pct: number
   neutral_pct: number
+  pos_neg_ratio: number | null
 }
 
 export interface NetSentimentPoint {

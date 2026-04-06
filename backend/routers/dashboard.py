@@ -92,6 +92,9 @@ def get_dashboard(
     neg = int(agg_row[1] or 0)
     neu = int(agg_row[2] or 0)
     total_today = pos + neg + neu
+    # Positive/Negative Ratio (excludes neutral posts)
+    pos_neg_ratio = round(pos / neg, 2) if neg > 0 else (float(pos) if pos > 0 else None)
+
     sentiment_today = SentimentCounts(
         positive=pos,
         negative=neg,
@@ -100,6 +103,7 @@ def get_dashboard(
         positive_pct=round(pos / total_today * 100, 1) if total_today else 0.0,
         negative_pct=round(neg / total_today * 100, 1) if total_today else 0.0,
         neutral_pct=round(neu / total_today * 100, 1) if total_today else 0.0,
+        pos_neg_ratio=pos_neg_ratio,
     )
 
     # ── 2. Net sentiment trend (from daily_summaries) ─────────────────────────
@@ -180,24 +184,39 @@ def get_dashboard(
         for d, counts in sorted(vol_map.items())
     ]
 
-    # ── 5. Sentiment velocity ─────────────────────────────────────────────────
-    delta_rows = (
-        db.query(DailySummary.sentiment_trend_delta)
+    # ── 5. Sentiment velocity (based on Positive/Negative Ratio trend) ────────
+    # Calculate daily pos/neg ratios for the last 7 summary days, then measure
+    # whether the ratio is improving, declining, or stable.
+    recent_summaries = (
+        db.query(
+            DailySummary.positive_count,
+            DailySummary.negative_count,
+        )
         .filter(
             DailySummary.game_id == game_id,
-            DailySummary.sentiment_trend_delta.isnot(None),
         )
         .order_by(DailySummary.summary_date.desc())
         .limit(7)
         .all()
     )
-    deltas = [r[0] for r in delta_rows if r[0] is not None]
 
-    if deltas:
-        avg_delta = sum(deltas) / len(deltas)
+    daily_ratios = []
+    for row in recent_summaries:
+        p, n = int(row[0] or 0), int(row[1] or 0)
+        if n > 0:
+            daily_ratios.append(p / n)
+        elif p > 0:
+            daily_ratios.append(float(p))  # all positive, no negative
+
+    if len(daily_ratios) >= 2:
+        # Compute average day-over-day change in ratio
+        # Ratios are in desc order (newest first), so reverse for chronological
+        daily_ratios.reverse()
+        changes = [daily_ratios[i+1] - daily_ratios[i] for i in range(len(daily_ratios)-1)]
+        avg_delta = sum(changes) / len(changes)
         direction = (
-            "improving" if avg_delta > 0.02
-            else "declining" if avg_delta < -0.02
+            "improving" if avg_delta > 0.05
+            else "declining" if avg_delta < -0.05
             else "stable"
         )
     else:

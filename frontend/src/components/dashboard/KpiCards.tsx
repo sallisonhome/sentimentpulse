@@ -27,13 +27,50 @@ export default function KpiCards({ sentiment, velocity, period }: KpiCardsProps)
   const vel = VELOCITY_CONFIG[velocity.direction]
   const VelIcon = vel.icon
 
+  // Format the pos/neg ratio for display
+  const ratioValue = sentiment.pos_neg_ratio != null
+    ? `${sentiment.pos_neg_ratio.toFixed(2)}:1`
+    : 'N/A'
+  const ratioColor = sentiment.pos_neg_ratio != null
+    ? sentiment.pos_neg_ratio >= 2 ? 'text-green-600'
+      : sentiment.pos_neg_ratio >= 1 ? 'text-amber-500'
+      : 'text-red-600'
+    : 'text-slate-500'
+
   return (
-    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+    <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
       <StatCard
         title="Total Posts"
         value={sentiment.total.toLocaleString()}
         sub={PERIOD_LABELS[period]}
       />
+
+      {/* Positive/Negative Ratio — right of Total Posts */}
+      <StatCard
+        title="Pos/Neg Ratio"
+        value={ratioValue}
+        sub={`${sentiment.positive.toLocaleString()} pos / ${sentiment.negative.toLocaleString()} neg`}
+        valueClass={ratioColor}
+      />
+
+      {/* Velocity card — right of Ratio */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium text-muted-foreground">Sentiment Velocity</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className={cn('flex items-center gap-2 text-2xl font-bold', vel.color)}>
+            <VelIcon className="h-5 w-5" />
+            {vel.label}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {velocity.delta_avg != null
+              ? `Ratio Δ ${velocity.delta_avg >= 0 ? '+' : ''}${velocity.delta_avg.toFixed(2)} / day`
+              : 'Insufficient data'}
+          </p>
+        </CardContent>
+      </Card>
+
       <StatCard
         title="Positive"
         value={`${sentiment.positive_pct.toFixed(1)}%`}
@@ -52,24 +89,6 @@ export default function KpiCards({ sentiment, velocity, period }: KpiCardsProps)
         sub={`${sentiment.neutral.toLocaleString()} posts`}
         valueClass="text-slate-500"
       />
-
-      {/* Velocity card */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Sentiment Velocity</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className={cn('flex items-center gap-2 text-2xl font-bold', vel.color)}>
-            <VelIcon className="h-5 w-5" />
-            {vel.label}
-          </div>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {velocity.delta_avg != null
-              ? `Avg Δ ${velocity.delta_avg >= 0 ? '+' : ''}${(velocity.delta_avg * 100).toFixed(1)}% / day`
-              : 'Insufficient data'}
-          </p>
-        </CardContent>
-      </Card>
     </div>
   )
 }

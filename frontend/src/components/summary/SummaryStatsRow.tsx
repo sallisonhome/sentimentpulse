@@ -9,32 +9,54 @@ interface SummaryStatsRowProps {
 
 export default function SummaryStatsRow({ summary }: SummaryStatsRowProps) {
   const total = summary.positive_count + summary.negative_count + summary.neutral_count
-  const delta = summary.sentiment_trend_delta
+  const pos = summary.positive_count
+  const neg = summary.negative_count
 
-  const DeltaIcon = delta == null ? Minus : delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus
-  const deltaColor =
+  // Positive/Negative Ratio
+  const ratio = neg > 0 ? pos / neg : (pos > 0 ? pos : null)
+  const ratioDisplay = ratio != null ? `${ratio.toFixed(2)}:1` : 'N/A'
+  const ratioColor = ratio != null
+    ? ratio >= 2 ? 'text-green-600'
+      : ratio >= 1 ? 'text-amber-500'
+      : 'text-red-600'
+    : 'text-muted-foreground'
+
+  // Sentiment Velocity (based on trend delta as proxy for ratio change)
+  const delta = summary.sentiment_trend_delta
+  const VelIcon = delta == null ? Minus : delta > 0 ? TrendingUp : delta < 0 ? TrendingDown : Minus
+  const velLabel = delta == null ? 'Stable' : delta > 0.02 ? 'Improving' : delta < -0.02 ? 'Declining' : 'Stable'
+  const velColor =
     delta == null ? 'text-muted-foreground'
-    : delta > 0   ? 'text-green-600'
-    : delta < 0   ? 'text-red-600'
+    : delta > 0.02 ? 'text-green-600'
+    : delta < -0.02 ? 'text-red-600'
     : 'text-slate-500'
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      <StatChip label="Positive" value={summary.positive_count} pct={total > 0 ? summary.positive_count / total : 0} color="text-green-600" />
-      <StatChip label="Negative" value={summary.negative_count} pct={total > 0 ? summary.negative_count / total : 0} color="text-red-600" />
-      <StatChip label="Neutral"  value={summary.neutral_count}  pct={total > 0 ? summary.neutral_count / total  : 0} color="text-slate-500" />
-
-      {/* Delta chip */}
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      {/* Pos/Neg Ratio — far left */}
       <Card>
         <CardContent className="flex flex-col justify-center p-4">
-          <p className="text-xs text-muted-foreground">Trend Δ</p>
-          <div className={cn('mt-1 flex items-center gap-1 text-xl font-bold', deltaColor)}>
-            <DeltaIcon className="h-4 w-4" />
-            {delta == null ? 'N/A' : `${delta >= 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`}
-          </div>
-          <p className="text-xs text-muted-foreground">vs prior period</p>
+          <p className="text-xs text-muted-foreground">Pos/Neg Ratio</p>
+          <p className={cn('mt-1 text-xl font-bold', ratioColor)}>{ratioDisplay}</p>
+          <p className="text-xs text-muted-foreground">{pos.toLocaleString()} pos / {neg.toLocaleString()} neg</p>
         </CardContent>
       </Card>
+
+      {/* Sentiment Velocity — right of Ratio */}
+      <Card>
+        <CardContent className="flex flex-col justify-center p-4">
+          <p className="text-xs text-muted-foreground">Sentiment Velocity</p>
+          <div className={cn('mt-1 flex items-center gap-1 text-xl font-bold', velColor)}>
+            <VelIcon className="h-4 w-4" />
+            {velLabel}
+          </div>
+          <p className="text-xs text-muted-foreground">based on ratio trend</p>
+        </CardContent>
+      </Card>
+
+      <StatChip label="Positive" value={pos} pct={total > 0 ? pos / total : 0} color="text-green-600" />
+      <StatChip label="Negative" value={neg} pct={total > 0 ? neg / total : 0} color="text-red-600" />
+      <StatChip label="Neutral"  value={summary.neutral_count}  pct={total > 0 ? summary.neutral_count / total  : 0} color="text-slate-500" />
     </div>
   )
 }

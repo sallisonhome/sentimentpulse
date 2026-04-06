@@ -93,6 +93,7 @@ class SentimentCounts(BaseModel):
     positive_pct: float
     negative_pct: float
     neutral_pct: float
+    pos_neg_ratio: Optional[float] = None  # positive / negative (excludes neutral)
 
 
 class NetSentimentPoint(BaseModel):
@@ -121,7 +122,7 @@ class VolumePoint(BaseModel):
 
 class SentimentVelocity(BaseModel):
     direction: str              # "improving" | "stable" | "declining"
-    delta_avg: Optional[float] = None   # average daily net-sentiment change
+    delta_avg: Optional[float] = None   # average daily pos/neg ratio change
 
 
 class DashboardResponse(BaseModel):
