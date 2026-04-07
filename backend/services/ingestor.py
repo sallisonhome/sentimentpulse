@@ -423,14 +423,13 @@ def _step6_extract_topics(
     day_start = datetime.combine(today, datetime.min.time())
     day_end = day_start + timedelta(days=1)
 
-    # Use post_date (when user posted) if available, else collected_at
     rows: list[tuple[RawPost, SentimentRecord]] = (
         db.query(RawPost, SentimentRecord)
         .join(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
         .filter(
             RawPost.game_id == game.id,
-            func.coalesce(RawPost.post_date, RawPost.collected_at) >= day_start,
-            func.coalesce(RawPost.post_date, RawPost.collected_at) < day_end,
+            RawPost.collected_at >= day_start,
+            RawPost.collected_at < day_end,
         )
         .all()
     )
@@ -507,17 +506,15 @@ def _step7_daily_summary(
     day_start = datetime.combine(today, datetime.min.time())
     day_end = day_start + timedelta(days=1)
 
-    # Aggregate counts for today.
-    # For posts WITH a post_date (Reddit), use post_date so that a Reddit post
-    # dated today counts toward today's summary regardless of when it was first
-    # fetched. For posts WITHOUT post_date (Steam), fall back to collected_at.
+    # Aggregate counts for today using collected_at (when the post was ingested).
+    # This is consistent with the volume chart and posts page filtering.
     count_rows = (
         db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
         .filter(
             RawPost.game_id == game.id,
-            func.coalesce(RawPost.post_date, RawPost.collected_at) >= day_start,
-            func.coalesce(RawPost.post_date, RawPost.collected_at) < day_end,
+            RawPost.collected_at >= day_start,
+            RawPost.collected_at < day_end,
         )
         .group_by(SentimentRecord.sentiment)
         .all()

@@ -87,7 +87,7 @@ def get_posts(
 
     if date_from:
         try:
-            q = q.filter(RawPost.post_date >= datetime.fromisoformat(date_from))
+            q = q.filter(RawPost.collected_at >= datetime.fromisoformat(date_from))
         except ValueError:
             raise HTTPException(
                 status_code=400,
@@ -96,7 +96,7 @@ def get_posts(
 
     if date_to:
         try:
-            q = q.filter(RawPost.post_date <= datetime.fromisoformat(date_to))
+            q = q.filter(RawPost.collected_at <= datetime.fromisoformat(date_to))
         except ValueError:
             raise HTTPException(
                 status_code=400,
