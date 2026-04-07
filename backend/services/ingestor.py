@@ -423,13 +423,15 @@ def _step6_extract_topics(
     day_start = datetime.combine(today, datetime.min.time())
     day_end = day_start + timedelta(days=1)
 
+    # Use post_date where available so posts count toward the day they were posted
+    effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
     rows: list[tuple[RawPost, SentimentRecord]] = (
         db.query(RawPost, SentimentRecord)
         .join(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
         .filter(
             RawPost.game_id == game.id,
-            RawPost.collected_at >= day_start,
-            RawPost.collected_at < day_end,
+            effective_date >= day_start,
+            effective_date < day_end,
         )
         .all()
     )
@@ -506,15 +508,17 @@ def _step7_daily_summary(
     day_start = datetime.combine(today, datetime.min.time())
     day_end = day_start + timedelta(days=1)
 
-    # Aggregate counts for today using collected_at (when the post was ingested).
-    # This is consistent with the volume chart and posts page filtering.
+    # Aggregate counts for today using the post's actual date (post_date for
+    # Reddit/forums, collected_at for Steam which has no post_date).
+    # Posts always count toward the day they were originally posted.
+    effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
     count_rows = (
         db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
         .filter(
             RawPost.game_id == game.id,
-            RawPost.collected_at >= day_start,
-            RawPost.collected_at < day_end,
+            effective_date >= day_start,
+            effective_date < day_end,
         )
         .group_by(SentimentRecord.sentiment)
         .all()

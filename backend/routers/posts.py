@@ -87,7 +87,10 @@ def get_posts(
 
     if date_from:
         try:
-            q = q.filter(RawPost.collected_at >= datetime.fromisoformat(date_from))
+            from sqlalchemy import func as _func
+            q = q.filter(
+                _func.coalesce(RawPost.post_date, RawPost.collected_at) >= datetime.fromisoformat(date_from)
+            )
         except ValueError:
             raise HTTPException(
                 status_code=400,
@@ -96,7 +99,10 @@ def get_posts(
 
     if date_to:
         try:
-            q = q.filter(RawPost.collected_at <= datetime.fromisoformat(date_to))
+            from sqlalchemy import func as _func
+            q = q.filter(
+                _func.coalesce(RawPost.post_date, RawPost.collected_at) <= datetime.fromisoformat(date_to)
+            )
         except ValueError:
             raise HTTPException(
                 status_code=400,

@@ -145,9 +145,11 @@ def get_dashboard(
         ]
 
     # ── 4. Volume by source per day ───────────────────────────────────────────
-    # Use func.date() instead of cast(..., Date) — SQLite's CAST doesn't truncate
-    # datetime strings to dates and confuses SQLAlchemy's type processors.
-    day_expr = func.date(RawPost.collected_at).label("day")
+    # Use post_date (when the post was actually made) where available,
+    # falling back to collected_at for sources without post_date.
+    # Posts always appear on the day they were originally posted.
+    effective_date_expr = func.coalesce(RawPost.post_date, RawPost.collected_at)
+    day_expr = func.date(effective_date_expr).label("day")
     vol_q = (
         db.query(
             day_expr,
@@ -155,15 +157,14 @@ def get_dashboard(
             func.count(RawPost.id).label("cnt"),
         )
         .filter(RawPost.game_id == game_id)
-        .filter(RawPost.collected_at.isnot(None))
     )
     if p_start:
-        vol_q = vol_q.filter(func.date(RawPost.collected_at) >= str(p_start))
+        vol_q = vol_q.filter(func.date(effective_date_expr) >= str(p_start))
 
     vol_rows = (
         vol_q
-        .group_by(func.date(RawPost.collected_at), RawPost.source)
-        .order_by(func.date(RawPost.collected_at))
+        .group_by(day_expr, RawPost.source)
+        .order_by(day_expr)
         .all()
     )
 
