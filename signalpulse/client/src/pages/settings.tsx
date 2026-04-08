@@ -1,0 +1,387 @@
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { useToast } from "@/hooks/use-toast";
+import { apiRequest } from "@/lib/queryClient";
+import {
+  Eye, EyeOff, Save, Check, KeyRound, Server, Shield, Youtube, Trash2, Gamepad2, AlertTriangle,
+} from "lucide-react";
+
+interface SettingRow {
+  id: number;
+  key: string;
+  value: string;
+  label: string;
+  category: string;
+  isSecret: boolean;
+  isSet: boolean;
+}
+
+// Group settings into logical sections
+const SECTIONS: { key: string; label: string; description: string; icon: React.ReactNode; settingKeys: string[] }[] = [
+  {
+    key: "steam",
+    label: "Steam / Steamworks",
+    description: "API credentials for pulling wishlist and pre-purchase data from the Steamworks Partner API.",
+    icon: <Server className="h-5 w-5" />,
+    settingKeys: ["steam_api_key", "steam_partner_id"],
+  },
+  {
+    key: "sony",
+    label: "Sony / PlayStation",
+    description: "API credentials for pulling PS5 wishlist and pre-purchase data from the Sony Partner Portal.",
+    icon: <KeyRound className="h-5 w-5" />,
+    settingKeys: ["sony_api_key", "sony_partner_id"],
+  },
+  {
+    key: "youtube",
+    label: "YouTube Data API",
+    description: "Google API key for tracking YouTube video view counts via the YouTube Data API v3.",
+    icon: <Youtube className="h-5 w-5" />,
+    settingKeys: ["youtube_api_key"],
+  },
+  {
+    key: "security",
+    label: "App Security",
+    description: "Password required to access the application.",
+    icon: <Shield className="h-5 w-5" />,
+    settingKeys: ["app_password"],
+  },
+];
+
+function SettingField({ setting, onSaved }: { setting: SettingRow; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  const [showValue, setShowValue] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async (newValue: string) => {
+      const res = await fetch(`/api/settings/${setting.key}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: newValue }),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Saved", description: `${setting.label} updated successfully.` });
+      setEditing(false);
+      setValue("");
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+      onSaved();
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to save setting.", variant: "destructive" });
+    },
+  });
+
+  const handleSave = () => {
+    if (!value.trim()) return;
+    mutation.mutate(value.trim());
+  };
+
+  const handleCancel = () => {
+    setEditing(false);
+    setValue("");
+  };
+
+  return (
+    <div className="flex items-start gap-4 py-3">
+      <div className="flex-1 min-w-0">
+        <Label className="text-sm font-medium">{setting.label}</Label>
+        <div className="text-xs text-muted-foreground mt-0.5 font-mono">{setting.key}</div>
+      </div>
+
+      <div className="flex items-center gap-2 shrink-0">
+        {!editing ? (
+          <>
+            <div className="flex items-center gap-2">
+              {setting.isSet ? (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-1 rounded-md">
+                  <Check className="h-3 w-3" />
+                  Configured
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded-md">Not set</span>
+              )}
+              <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                {setting.isSet ? "Change" : "Set"}
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Input
+                type={showValue ? "text" : "password"}
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                placeholder={`Enter ${setting.label.toLowerCase()}`}
+                className="w-64 pr-9 h-9 text-sm"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSave();
+                  if (e.key === "Escape") handleCancel();
+                }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowValue(!showValue)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showValue ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={!value.trim() || mutation.isPending}
+              className="gap-1"
+            >
+              <Save className="h-3.5 w-3.5" />
+              Save
+            </Button>
+            <Button size="sm" variant="ghost" onClick={handleCancel}>
+              Cancel
+            </Button>
+          </div>
+        )}
+
+        {saved && !editing && (
+          <span className="text-xs text-emerald-600 dark:text-emerald-400 animate-in fade-in">Saved</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default function Settings() {
+  const queryClient = useQueryClient();
+
+  const { data: settings, isLoading } = useQuery<SettingRow[]>({
+    queryKey: ["/api/settings"],
+  });
+
+  const handleSaved = () => {
+    queryClient.invalidateQueries({ queryKey: ["/api/settings"] });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="p-6 max-w-3xl mx-auto">
+        <div className="animate-pulse space-y-4">
+          <div className="h-8 bg-muted rounded w-48" />
+          <div className="h-4 bg-muted rounded w-96" />
+          <div className="h-40 bg-muted rounded" />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 max-w-3xl mx-auto space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Manage API keys and application configuration. Secret values are encrypted and never displayed after being saved.
+        </p>
+      </div>
+
+      {SECTIONS.map((section) => {
+        const sectionSettings = settings?.filter(s => section.settingKeys.includes(s.key)) || [];
+        if (sectionSettings.length === 0) return null;
+
+        return (
+          <Card key={section.key}>
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-primary/10 text-primary">
+                  {section.icon}
+                </div>
+                <div>
+                  <CardTitle className="text-base">{section.label}</CardTitle>
+                  <CardDescription className="text-xs mt-0.5">{section.description}</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="divide-y">
+                {sectionSettings.map(setting => (
+                  <SettingField key={setting.key} setting={setting} onSaved={handleSaved} />
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
+
+      <ManageProducts />
+    </div>
+  );
+}
+
+// ─── Manage Products (Delete) ───────────────────────────────────────────────
+
+function ManageProducts() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; title: string } | null>(null);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+
+  const { data: products } = useQuery<any[]>({
+    queryKey: ["/api/products"],
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async ({ productId, password }: { productId: number; password: string }) => {
+      // Verify password first
+      const authRes = await fetch("/api/auth/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      if (!authRes.ok) {
+        throw new Error("INVALID_PASSWORD");
+      }
+      // Delete the product
+      await apiRequest("DELETE", `/api/products/${productId}`, undefined);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
+      toast({ title: "Product deleted", description: `"${deleteTarget?.title}" has been permanently removed.` });
+      setDeleteTarget(null);
+      setConfirmPassword("");
+      setPasswordError("");
+    },
+    onError: (err: any) => {
+      if (err.message === "INVALID_PASSWORD") {
+        setPasswordError("Incorrect password. Deletion cancelled.");
+        setConfirmPassword("");
+      } else {
+        toast({ title: "Error", description: "Failed to delete product.", variant: "destructive" });
+      }
+    },
+  });
+
+  const handleDelete = () => {
+    if (!deleteTarget || !confirmPassword) return;
+    setPasswordError("");
+    deleteMutation.mutate({ productId: deleteTarget.id, password: confirmPassword });
+  };
+
+  const handleClose = () => {
+    setDeleteTarget(null);
+    setConfirmPassword("");
+    setPasswordError("");
+  };
+
+  return (
+    <>
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-destructive/10 text-destructive">
+              <Trash2 className="h-5 w-5" />
+            </div>
+            <div>
+              <CardTitle className="text-base">Manage Products</CardTitle>
+              <CardDescription className="text-xs mt-0.5">Delete products from the application. This action is permanent and requires password confirmation.</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {!products || products.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-2">No products to manage.</p>
+          ) : (
+            <div className="divide-y">
+              {products.map((product: any) => (
+                <div key={product.id} className="flex items-center justify-between py-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Gamepad2 className="h-4 w-4 text-muted-foreground shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{product.title}</div>
+                      <div className="text-xs text-muted-foreground">{product.publisher} &middot; {product.genre}</div>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDeleteTarget({ id: product.id, title: product.title })}
+                    className="h-7 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30 shrink-0"
+                  >
+                    <Trash2 className="h-3 w-3 mr-1" />
+                    Delete
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open) handleClose(); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-base flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-destructive" />
+              Delete Product
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-1">
+            <p className="text-sm text-muted-foreground">
+              You are about to permanently delete <strong className="text-foreground">"{deleteTarget?.title}"</strong> and all its associated data (wishlists, forecasts, milestones, YouTube tracking).
+            </p>
+            <p className="text-sm text-muted-foreground">
+              This cannot be undone. Enter the app password to confirm.
+            </p>
+            <div className="space-y-1.5">
+              <Label className="text-xs">Password</Label>
+              <Input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => { setConfirmPassword(e.target.value); setPasswordError(""); }}
+                placeholder="Enter app password"
+                className="h-9 text-sm"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleDelete();
+                  if (e.key === "Escape") handleClose();
+                }}
+              />
+              {passwordError && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <AlertTriangle className="h-3 w-3" />
+                  {passwordError}
+                </p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={handleClose} className="h-8 text-xs">
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleDelete}
+                disabled={!confirmPassword || deleteMutation.isPending}
+                className="h-8 text-xs"
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Delete Permanently"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
