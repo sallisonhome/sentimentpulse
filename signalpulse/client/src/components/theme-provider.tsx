@@ -14,6 +14,11 @@ const ThemeContext = createContext<ThemeContextType>({
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
+    // Check localStorage first (shared across both apps on this domain)
+    try {
+      const saved = localStorage.getItem("suite_theme");
+      if (saved === "dark" || saved === "light") return saved;
+    } catch {}
     if (typeof window !== "undefined") {
       return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     }
@@ -27,7 +32,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [theme]);
 
   const toggleTheme = () => {
-    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+    setTheme((prev) => {
+      const next = prev === "dark" ? "light" : "dark";
+      try { localStorage.setItem("suite_theme", next); } catch {}
+      return next;
+    });
   };
 
   return (

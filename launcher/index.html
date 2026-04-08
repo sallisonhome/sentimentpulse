@@ -184,6 +184,19 @@
   </div>
 
   <script>
+    // Apply saved theme
+    try {
+      const savedTheme = localStorage.getItem('suite_theme');
+      if (savedTheme === 'light') {
+        document.documentElement.style.setProperty('--bg', '#f8f9fa');
+        document.documentElement.style.setProperty('--surface', '#ffffff');
+        document.documentElement.style.setProperty('--surface-hover', '#f0f1f3');
+        document.documentElement.style.setProperty('--border', '#e2e4e9');
+        document.documentElement.style.setProperty('--text', '#1a1d27');
+        document.documentElement.style.setProperty('--text-muted', '#6b7085');
+      }
+    } catch {}
+
     const PASSWORD = 'SABER';
     const SESSION_KEY = 'suite_authenticated';
 
