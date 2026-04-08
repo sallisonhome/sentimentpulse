@@ -103,6 +103,7 @@ export async function registerRoutes(
           latestRevisionDate: latestRevision?.date ?? null,
           dynamicFirstMonthTotal,
           dynamicFirstYearTotal: dynamicFirstMonthTotal * 2,
+          dynamicLtTotal: dynamicFirstMonthTotal * 4,  // LT = 1st month × 2 (1yr) × 2 (lifetime)
         };
       });
       res.json(enriched);
