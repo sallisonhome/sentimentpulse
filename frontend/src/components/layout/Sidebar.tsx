@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, FileText, TrendingUp, MessageSquare, Settings } from 'lucide-react'
+import { LayoutDashboard, FileText, TrendingUp, MessageSquare, Settings, ArrowRightLeft, Home } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 const NAV_ITEMS = [
@@ -38,6 +38,23 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+
+      <div className="border-t pt-3 space-y-1">
+        <a
+          href="/signal/"
+          className="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <ArrowRightLeft className="h-4 w-4" />
+          SignalPulse
+        </a>
+        <a
+          href="/"
+          className="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <Home className="h-4 w-4" />
+          Suite Home
+        </a>
+      </div>
     </aside>
   )
 }
