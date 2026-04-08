@@ -316,7 +316,7 @@ export default function ProductDetail() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-xs text-muted-foreground">PS5 First Month Forecast (Pre-Purchase × 8) · Pre-purchase started {formatDate(prepurchaseStartDate)}</div>
+                    <div className="text-xs text-muted-foreground">PS5 Dynamic LT Forecast (Pre-Purchase × 8) · 1 Year = LT ÷ 2 · 1st Month = 1 Year ÷ 2 · Pre-purchase started {formatDate(prepurchaseStartDate)}</div>
                     <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-ps5-first-month">
                       {formatNumber(product.ps5FirstMonthForecast)} <span className="text-xs font-normal text-muted-foreground">units</span>
                     </div>
@@ -343,7 +343,7 @@ export default function ProductDetail() {
                 {/* Sparkline */}
                 <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/ps5/prepurchases`} color="#6366F1" />
                 <InfoMessage>
-                  PS5 Pre-Purchase counts updated daily, first month forecast = 8× PS5 Prepurchase Count. This number is not relevant for forecasting until 8 weeks prior to launch. Prior to 8 weeks this information is for reference only.
+                  PS5 Pre-Purchase counts updated daily. Dynamic LT Forecast = 8× PS5 Prepurchase Count. Dynamic 1 Year = LT ÷ 2. Dynamic 1st Month = 1 Year ÷ 2. Other console platforms (Xbox, Switch) are proportioned from PS5 based on platform mix. This number is not relevant for forecasting until 8 weeks prior to launch. Prior to 8 weeks this information is for reference only.
                 </InfoMessage>
               </div>
             )}
