@@ -81,7 +81,7 @@ export default function Dashboard() {
 
             const bizLabel = product.latestRevisionTotal != null
               ? `Biz Forecast - Amended (${format(new Date(product.latestRevisionDate + "T00:00:00"), "MMM d, yyyy")})`
-              : "Original LT Biz Forecast";
+              : "Current LT Biz Forecast";
 
             // Flag seeded dummy products by their known titles
             const DUMMY_TITLES = ['Warhammer 40,000: Space Marine 2', 'Expeditions: A New Earth'];
