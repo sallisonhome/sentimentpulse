@@ -40,11 +40,9 @@ export function seedDatabase(): void {
   const trailer1 = milestones1.find(m => m.name === "Official Trailer 1");
   if (trailer1) storage.updatePlsMilestone(trailer1.id, { actualDate: "2026-03-09" });
 
-  // Prepurchase Start: only a target date, no actual date yet (prepurchase hasn't happened as of Mar 30, 2026)
-  // This means prepurchaseActive = false, and pre-purchase sections show "not started" state
-  // const prepurchaseStart = milestones1.find(m => m.name === "Prepurchase Start");
-  // When prepurchase actually starts, set the actual date to activate tracking:  
-  // if (prepurchaseStart) storage.updatePlsMilestone(prepurchaseStart.id, { actualDate: "2026-06-09" });
+  // Prepurchase Start: set to a past date so dummy data shows active prepurchase tracking
+  const prepurchaseStart = milestones1.find(m => m.name === "Prepurchase Start");
+  if (prepurchaseStart) storage.updatePlsMilestone(prepurchaseStart.id, { actualDate: "2026-01-15" });
 
   // Add press beats with actual dates
   storage.createPlsMilestone({
@@ -111,10 +109,33 @@ export function seedDatabase(): void {
     });
   }
 
-  // ─── Steam Pre-Purchase Data: ONLY from prepurchase start date ──────────────
-  // Prepurchase starts Jun 9, 2026 — NO data before this date
-  // Since our "today" is Mar 30, 2026, there should be NO steam prepurchase data yet
-  // (prepurchase hasn't started)
+  // ─── Steam Pre-Purchase Data: from prepurchase start date ───────────────────
+  const steamPreStart = new Date("2026-01-15");
+  let steamPreCum = 0;
+
+  const steamPreSpikeDates: Record<string, number> = {
+    "2026-01-15": 3000,   // Prepurchase launch day
+    "2026-01-16": 2200,   // Day 2
+    "2026-03-09": 4500,   // Official Trailer 1 spike
+    "2026-03-10": 3000,   // Trailing
+    "2026-03-18": 2500,   // IGN preview spike
+  };
+
+  for (let d = new Date(steamPreStart); d <= today; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const spikeBonus = steamPreSpikeDates[dateStr] || 0;
+    const daysSinceStart = Math.floor((d.getTime() - steamPreStart.getTime()) / 86400000);
+    const baseDelta = Math.round(200 + Math.random() * 400 + (daysSinceStart * 1.5));
+    const delta = baseDelta + spikeBonus;
+    steamPreCum += delta;
+    storage.addSteamPrepurchase({
+      productId: product1.id,
+      date: dateStr,
+      cumulativeCount: steamPreCum,
+      dailyDelta: delta,
+      source: "api",
+    });
+  }
 
   // ─── PS5 Wishlist Data: 7 months, with spikes at events ────────────────────
   const ps5WlStartDate = new Date("2025-09-15");
@@ -146,8 +167,36 @@ export function seedDatabase(): void {
     });
   }
 
-  // ─── PS5 Pre-Purchase Data: NONE yet (prepurchase starts Jun 9, 2026) ──────
-  // No PS5 prepurchase data because the prepurchase period hasn't started
+  // ─── PS5 Pre-Purchase Data: from prepurchase start date ─────────────────────
+  const ps5PreStart = new Date("2026-01-15");
+  let ps5PreCum = 0;
+
+  const ps5PreSpikeDates: Record<string, number> = {
+    "2026-01-15": 5000,   // Prepurchase launch day — PS5 sees bigger pre-order spike
+    "2026-01-16": 3800,   // Day 2
+    "2026-01-17": 2500,   // Trailing
+    "2026-03-09": 6000,   // Official Trailer 1 spike
+    "2026-03-10": 4000,   // Trailing
+    "2026-03-18": 3500,   // IGN preview spike
+    "2026-03-19": 2000,   // Trailing
+  };
+
+  for (let d = new Date(ps5PreStart); d <= today; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const spikeBonus = ps5PreSpikeDates[dateStr] || 0;
+    const daysSinceStart = Math.floor((d.getTime() - ps5PreStart.getTime()) / 86400000);
+    // PS5 prepurchase runs higher than Steam — console players pre-order more aggressively
+    const baseDelta = Math.round(350 + Math.random() * 500 + (daysSinceStart * 2));
+    const delta = baseDelta + spikeBonus;
+    ps5PreCum += delta;
+    storage.addPs5Prepurchase({
+      productId: product1.id,
+      date: dateStr,
+      cumulativeCount: ps5PreCum,
+      dailyDelta: delta,
+      source: "api",
+    });
+  }
 
   // ─── YouTube Tracking Data ─────────────────────────────────────────────────
   if (teaser) {
@@ -264,7 +313,47 @@ export function seedDatabase(): void {
     });
   }
 
-  // No prepurchase data for Product 2 either (prepurchase hasn't started)
+  // ─── Product 2: Prepurchase Data ──────────────────────────────────────────
+  // Prepurchase starts later for product 2 — Feb 15, 2026
+  const m2Pre = storage.getPlsMilestones(product2.id);
+  const preStart2 = m2Pre.find(m => m.name === "Prepurchase Start");
+  if (preStart2) storage.updatePlsMilestone(preStart2.id, { actualDate: "2026-02-15" });
 
-  console.log("Database seeded with 2 sample products (realistic data with event spikes).");
+  // Steam prepurchase for product 2
+  const steamPre2Start = new Date("2026-02-15");
+  let steamPre2Cum = 0;
+  for (let d = new Date(steamPre2Start); d <= today; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const daysSinceStart = Math.floor((d.getTime() - steamPre2Start.getTime()) / 86400000);
+    const spikeBonus = daysSinceStart === 0 ? 1500 : daysSinceStart === 1 ? 800 : 0;
+    const baseDelta = Math.round(100 + Math.random() * 200 + (daysSinceStart * 0.8));
+    steamPre2Cum += baseDelta + spikeBonus;
+    storage.addSteamPrepurchase({
+      productId: product2.id,
+      date: dateStr,
+      cumulativeCount: steamPre2Cum,
+      dailyDelta: baseDelta + spikeBonus,
+      source: "api",
+    });
+  }
+
+  // PS5 prepurchase for product 2
+  const ps5Pre2Start = new Date("2026-02-15");
+  let ps5Pre2Cum = 0;
+  for (let d = new Date(ps5Pre2Start); d <= today; d.setDate(d.getDate() + 1)) {
+    const dateStr = d.toISOString().split("T")[0];
+    const daysSinceStart = Math.floor((d.getTime() - ps5Pre2Start.getTime()) / 86400000);
+    const spikeBonus = daysSinceStart === 0 ? 2500 : daysSinceStart === 1 ? 1500 : 0;
+    const baseDelta = Math.round(200 + Math.random() * 300 + (daysSinceStart * 1.2));
+    ps5Pre2Cum += baseDelta + spikeBonus;
+    storage.addPs5Prepurchase({
+      productId: product2.id,
+      date: dateStr,
+      cumulativeCount: ps5Pre2Cum,
+      dailyDelta: baseDelta + spikeBonus,
+      source: "api",
+    });
+  }
+
+  console.log("Database seeded with 2 sample products (realistic data with event spikes, prepurchase active).");
 }
