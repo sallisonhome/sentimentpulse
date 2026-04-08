@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { autoGenerateForecasts, calculateDynamicForecasts, getAdjustedPlatformMix } from "./forecast";
+import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForecastsFull, getAdjustedPlatformMix } from "./forecast";
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
@@ -80,14 +80,16 @@ export async function registerRoutes(
         const comps = storage.getCompForecasts(p.id);
         const compTotal = comps.reduce((sum, c) => sum + c.forecastUnits, 0);
 
-        // Calculate dynamic first month forecast for dashboard
+        // Calculate dynamic forecasts at all timeframes
         const platforms = JSON.parse(p.platforms);
-        const dynamicForecasts = calculateDynamicForecasts(
+        const dynamicFull = calculateDynamicForecastsFull(
           platforms,
           latestSteamWl?.cumulativeCount ?? null,
           latestPs5Pre?.cumulativeCount ?? null,
         );
-        const dynamicFirstMonthTotal = dynamicForecasts.reduce((sum, d) => sum + d.forecastUnits, 0);
+        const dynamicFirstMonthTotal = dynamicFull.reduce((sum, d) => sum + d.firstMonth, 0);
+        const dynamicFirstYearTotal = dynamicFull.reduce((sum, d) => sum + d.firstYear, 0);
+        const dynamicLtTotal = dynamicFull.reduce((sum, d) => sum + d.lifetime, 0);
 
         // Get latest revision total if any
         const latestRevision = storage.getLatestRevisionTotal(p.id);
@@ -98,12 +100,13 @@ export async function registerRoutes(
           perPlatformPricing: p.perPlatformPricing ? JSON.parse(p.perPlatformPricing) : null,
           latestSteamWishlistCount: latestSteamWl?.cumulativeCount ?? null,
           latestPs5WishlistCount: latestPs5Wl?.cumulativeCount ?? null,
+          latestPs5PrepurchaseCount: latestPs5Pre?.cumulativeCount ?? null,
           compsForecastTotal: compTotal,
           latestRevisionTotal: latestRevision?.total ?? null,
           latestRevisionDate: latestRevision?.date ?? null,
           dynamicFirstMonthTotal,
-          dynamicFirstYearTotal: dynamicFirstMonthTotal * 2,
-          dynamicLtTotal: dynamicFirstMonthTotal * 4,  // LT = 1st month × 2 (1yr) × 2 (lifetime)
+          dynamicFirstYearTotal,
+          dynamicLtTotal,
         };
       });
       res.json(enriched);
@@ -207,6 +210,13 @@ export async function registerRoutes(
       }
       const forecastRevisions = Object.values(revisionGrouped).sort((a, b) => a.date.localeCompare(b.date));
 
+      // Calculate full per-platform forecasts (first month, 1yr, LT)
+      const dynamicFullForecasts = calculateDynamicForecastsFull(
+        platforms,
+        latestSteamWl?.cumulativeCount ?? null,
+        latestPs5Pre?.cumulativeCount ?? null,
+      );
+
       res.json({
         ...product,
         platforms,
@@ -217,6 +227,7 @@ export async function registerRoutes(
         latestPs5PrepurchaseCount: latestPs5Pre?.cumulativeCount ?? null,
         compsForecasts: comps,
         dynamicForecasts: dynamicData,
+        dynamicFullForecasts,  // per-platform {firstMonth, firstYear, lifetime}
         forecastRevisions,
         steamFirstMonthForecast: latestSteamWl ? Math.round(latestSteamWl.cumulativeCount * 0.20) : null,
         ps5FirstMonthForecast: latestPs5Pre ? Math.round(latestPs5Pre.cumulativeCount * 8) : null,

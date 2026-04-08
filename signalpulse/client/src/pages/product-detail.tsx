@@ -360,6 +360,7 @@ export default function ProductDetail() {
           <ForecastTable
             compsForecasts={product.compsForecasts}
             dynamicForecasts={product.dynamicForecasts}
+            dynamicFullForecasts={product.dynamicFullForecasts}
             platforms={platforms}
             forecastRevisions={product.forecastRevisions || []}
             productId={productId}
@@ -531,6 +532,7 @@ type RevisionGroup = {
 function ForecastTable({
   compsForecasts,
   dynamicForecasts,
+  dynamicFullForecasts,
   platforms,
   forecastRevisions,
   productId,
@@ -539,6 +541,7 @@ function ForecastTable({
 }: {
   compsForecasts: any[];
   dynamicForecasts: any[];
+  dynamicFullForecasts?: any[];
   platforms: string[];
   forecastRevisions: RevisionGroup[];
   productId: number;
@@ -550,24 +553,28 @@ function ForecastTable({
   const compsMap: Record<string, number> = {};
   compsForecasts?.forEach((c: any) => { compsMap[c.platform] = c.forecastUnits; });
 
+  // Use server-calculated full forecasts (handles PS5 prepurchase LT-first logic)
   const dynamicMap: Record<string, number> = {};
-  dynamicForecasts?.forEach((d: any) => { dynamicMap[d.platform] = d.forecastUnits; });
+  const dynamic1YearMap: Record<string, number> = {};
+  const dynamicLtMap: Record<string, number> = {};
+  if (dynamicFullForecasts && dynamicFullForecasts.length > 0) {
+    for (const f of dynamicFullForecasts) {
+      dynamicMap[f.platform] = f.firstMonth;
+      dynamic1YearMap[f.platform] = f.firstYear;
+      dynamicLtMap[f.platform] = f.lifetime;
+    }
+  } else {
+    // Fallback to old dynamicForecasts
+    dynamicForecasts?.forEach((d: any) => {
+      dynamicMap[d.platform] = d.forecastUnits;
+      dynamic1YearMap[d.platform] = d.forecastUnits * 2;
+      dynamicLtMap[d.platform] = d.forecastUnits * 4;
+    });
+  }
 
   const compsTotal = Object.values(compsMap).reduce((a, b) => a + b, 0);
   const dynamicTotal = Object.values(dynamicMap).reduce((a, b) => a + b, 0);
-
-  // Dynamic 1 Year Forecast = Dynamic First Month x 2
-  const dynamic1YearMap: Record<string, number> = {};
-  for (const p of platforms) {
-    dynamic1YearMap[p] = (dynamicMap[p] ?? 0) * 2;
-  }
   const dynamic1YearTotal = Object.values(dynamic1YearMap).reduce((a, b) => a + b, 0);
-
-  // Dynamic LT Biz Forecast = Dynamic 1 Year x 2 (premium game LT = 2x first year)
-  const dynamicLtMap: Record<string, number> = {};
-  for (const p of platforms) {
-    dynamicLtMap[p] = (dynamic1YearMap[p] ?? 0) * 2;
-  }
   const dynamicLtTotal = Object.values(dynamicLtMap).reduce((a, b) => a + b, 0);
 
   const revisions = forecastRevisions || [];
