@@ -316,9 +316,12 @@ export default function ProductDetail() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <div>
-                    <div className="text-xs text-muted-foreground">PS5 Dynamic LT Forecast (Pre-Purchase × 8) · 1 Year = LT ÷ 2 · 1st Month = 1 Year ÷ 2 · Pre-purchase started {formatDate(prepurchaseStartDate)}</div>
+                    <div className="text-xs text-muted-foreground">PS5 Dynamic LT Forecast (Pre-Purchase × 8) · Pre-purchase started {formatDate(prepurchaseStartDate)}</div>
                     <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-ps5-first-month">
-                      {formatNumber(product.ps5FirstMonthForecast)} <span className="text-xs font-normal text-muted-foreground">units</span>
+                      {formatNumber(product.ps5FirstMonthForecast)} <span className="text-xs font-normal text-muted-foreground">LT units</span>
+                    </div>
+                    <div className="text-xs tabular-nums text-muted-foreground mt-0.5">
+                      1 Year: {formatNumber(Math.round(product.ps5FirstMonthForecast / 2))} · 1st Month: {formatNumber(Math.round(product.ps5FirstMonthForecast / 4))}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
