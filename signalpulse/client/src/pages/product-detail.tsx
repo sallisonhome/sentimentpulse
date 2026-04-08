@@ -645,7 +645,7 @@ function ForecastTable({
               <th className={`text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px] ${hasRevisions ? stickyDyn1YearCol : ""}`}>Dynamic 1 Year</th>
               <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[150px]">Dynamic LT Biz Forecast</th>
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[150px]">Original LT Biz Forecast</th>
-              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[80px]">% +/−</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[80px]">Trend +/- %</th>
               {revisions.map((rev, idx) => (
                 <th
                   key={rev.date}
