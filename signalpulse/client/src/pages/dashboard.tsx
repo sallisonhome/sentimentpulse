@@ -83,12 +83,22 @@ export default function Dashboard() {
               ? `Biz Forecast - Amended (${format(new Date(product.latestRevisionDate + "T00:00:00"), "MMM d, yyyy")})`
               : "Original LT Biz Forecast";
 
+            // Flag seeded dummy products by their known titles
+            const DUMMY_TITLES = ['Warhammer 40,000: Space Marine 2', 'Expeditions: A New Earth'];
+            const isDummy = DUMMY_TITLES.includes(product.title);
+
             return (
               <Link key={product.id} href={`/products/${product.id}`}>
                 <Card
                   className="p-4 cursor-pointer transition-all duration-150 hover:shadow-lg dark:hover:border-primary/30 group border"
                   data-testid={`card-product-${product.id}`}
                 >
+                  {/* Dummy data disclaimer */}
+                  {isDummy && (
+                    <div className="text-[10px] font-semibold text-red-500 uppercase tracking-wide mb-2">
+                      NOT ACTUAL DATA — USING DUMMY DATA FOR EXAMPLE
+                    </div>
+                  )}
                   {/* Header: Title + Meta */}
                   <div className="flex items-start justify-between mb-3">
                     <div className="min-w-0 flex-1">
