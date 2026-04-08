@@ -28,7 +28,7 @@ fi
 # ── 1. System packages ──────────────────────────────────────────────────────
 echo "[1/9] Installing system packages..."
 apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv nodejs npm nginx git ufw curl > /dev/null
+apt-get install -y -qq python3 python3-pip python3-venv nodejs nginx git ufw curl > /dev/null
 
 # ── 2. Firewall ─────────────────────────────────────────────────────────────
 echo "[2/9] Configuring firewall..."
