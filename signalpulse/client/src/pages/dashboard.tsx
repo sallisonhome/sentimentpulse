@@ -235,7 +235,7 @@ export default function Dashboard() {
                     </div>
                     {/* +/-% Delta */}
                     <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">+/- %</div>
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Trend +/- %</div>
                       <div className={`text-sm font-bold tabular-nums mt-0.5 ${deltaColor}`}>
                         {deltaStr}
                       </div>
