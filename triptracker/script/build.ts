@@ -24,7 +24,8 @@ const allowlist = [
   "openai",
   "passport",
   "passport-local",
-  "pdf-parse",
+  // pdf-parse v1 uses `!module.parent` self-test — keep external so it loads from node_modules
+  // "pdf-parse",
   "pg",
   "stripe",
   "uuid",

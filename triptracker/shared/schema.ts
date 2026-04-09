@@ -119,6 +119,7 @@ export const events = pgTable("events", {
   primaryOwnerUserId: integer("primary_owner_user_id").references(
     () => users.id
   ),
+  isDummy: boolean("is_dummy").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });

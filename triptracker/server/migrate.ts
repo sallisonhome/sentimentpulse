@@ -89,6 +89,7 @@ async function createTablesIfNotExist() {
       city TEXT,
       country TEXT,
       primary_owner_user_id INTEGER REFERENCES users(id),
+      is_dummy BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMP DEFAULT NOW() NOT NULL,
       updated_at TIMESTAMP DEFAULT NOW() NOT NULL
     );
@@ -243,6 +244,119 @@ async function createTablesIfNotExist() {
   `);
 }
 
+async function seedDummyEvents() {
+  log("Seeding dummy example events...");
+
+  // Get user ID for attribution
+  const userRows = await db.select().from(users);
+  const userId = userRows[0]?.id ?? 1;
+
+  // Dummy companies
+  const [dc1] = await db.insert(companies).values([
+    { name: "Acme Interactive", companyType: "developer", region: "NA", notes: "Example company \u2014 fictional" },
+  ]).returning();
+  const [dc2] = await db.insert(companies).values([
+    { name: "Fjord Studios", companyType: "publisher", region: "EMEA", notes: "Example company \u2014 fictional" },
+  ]).returning();
+
+  // Dummy contacts
+  const [dct1] = await db.insert(contacts).values([
+    { companyId: dc1.id, name: "Jane Doe", title: "VP Publishing", notes: "Fictional contact" },
+  ]).returning();
+  const [dct2] = await db.insert(contacts).values([
+    { companyId: dc2.id, name: "Erik Lindgren", title: "Head of BD", notes: "Fictional contact" },
+  ]).returning();
+
+  // Dummy games
+  const [dg1] = await db.insert(games).values([
+    { title: "Starfall Chronicles", developerCompanyId: dc1.id, publisherCompanyId: dc1.id, currentEgsStatus: "under_discussion", notes: "Example game \u2014 fictional" },
+  ]).returning();
+  const [dg2] = await db.insert(games).values([
+    { title: "Frozen Tides", developerCompanyId: dc2.id, publisherCompanyId: dc2.id, currentEgsStatus: "announced", notes: "Example game \u2014 fictional" },
+  ]).returning();
+
+  // Dummy Event 1: E3 2025
+  const [dummyE1] = await db.insert(events).values([
+    { name: "[EXAMPLE] E3 2025 Partner Meetings", description: "Example event \u2014 E3 partner meetings at the LA Convention Center", eventType: "conference", startDate: "2025-06-10", endDate: "2025-06-13", city: "Los Angeles", country: "USA", primaryOwnerUserId: userId, isDummy: true },
+  ]).returning();
+
+  // Dummy Event 2: Nordic Game 2025
+  const [dummyE2] = await db.insert(events).values([
+    { name: "[EXAMPLE] Nordic Game 2025 Trip", description: "Example event \u2014 Nordic Game conference trip report", eventType: "conference", startDate: "2025-05-20", endDate: "2025-05-22", city: "Malm\u00f6", country: "Sweden", primaryOwnerUserId: userId, isDummy: true },
+  ]).returning();
+
+  // Attendees
+  await db.insert(eventAttendees).values([
+    { eventId: dummyE1.id, userId, roleAtEvent: "Lead BD" },
+    { eventId: dummyE2.id, userId, roleAtEvent: "Lead AM" },
+  ]);
+
+  // Meetings
+  const [dm1] = await db.insert(meetings).values([
+    { eventId: dummyE1.id, companyId: dc1.id, meetingDate: "2025-06-11", startTime: "10:00", endTime: "10:45", location: "Meeting Room 4A, West Hall", format: "in_person", overallSentiment: "positive", summary: "Acme Interactive excited about bringing Starfall Chronicles to EGS. Revenue share terms praised. Requesting marketing co-promotion support for launch.", detailedNotes: "Jane Doe led the discussion. Acme has been evaluating EGS for 6 months. Very impressed with the 88/12 revenue split.", followUpActions: "Send marketing co-op proposal. Schedule follow-up call for July.", followUpOwnerUserId: userId, followUpDueDate: "2025-07-01" },
+  ]).returning();
+  const [dm2] = await db.insert(meetings).values([
+    { eventId: dummyE1.id, companyId: dc2.id, meetingDate: "2025-06-12", startTime: "14:00", endTime: "14:30", location: "Lobby Lounge, JW Marriott", format: "in_person", overallSentiment: "neutral", summary: "Fjord Studios evaluating EGS for Frozen Tides but concerned about discoverability compared to Steam.", detailedNotes: "Erik was direct about their hesitation. They want hard numbers on conversion rates before committing.", followUpActions: "Prepare EGS conversion rate deck.", followUpOwnerUserId: userId, followUpDueDate: "2025-07-15" },
+  ]).returning();
+  const [dm3] = await db.insert(meetings).values([
+    { eventId: dummyE2.id, companyId: dc2.id, meetingDate: "2025-05-21", startTime: "11:00", endTime: "11:45", location: "Scandic Hotel Conference Center", format: "in_person", overallSentiment: "positive", summary: "Fjord Studios now leaning positive on Frozen Tides for EGS if exclusivity terms are favorable.", detailedNotes: "Erik brought his CEO. They discussed a compromise at 60 days exclusivity with enhanced featuring.", followUpActions: "Draft 60-day exclusivity proposal.", followUpOwnerUserId: userId, followUpDueDate: "2025-06-05" },
+  ]).returning();
+
+  // Meeting contacts
+  await db.insert(meetingContacts).values([
+    { meetingId: dm1.id, contactId: dct1.id, roleInMeeting: "Lead" },
+    { meetingId: dm2.id, contactId: dct2.id, roleInMeeting: "Lead" },
+    { meetingId: dm3.id, contactId: dct2.id, roleInMeeting: "Lead" },
+  ]);
+
+  // Meeting games
+  await db.insert(meetingGames).values([
+    { meetingId: dm1.id, gameId: dg1.id, gameSpecificSentiment: "positive", discussionSummary: "Starfall Chronicles confirmed interested in EGS launch.", dealStatus: "in_negotiation", projectedLaunchTiming: "Q1 2026" },
+    { meetingId: dm2.id, gameId: dg2.id, gameSpecificSentiment: "neutral", discussionSummary: "Frozen Tides still evaluating. Data request pending.", dealStatus: "initial_outreach" },
+    { meetingId: dm3.id, gameId: dg2.id, gameSpecificSentiment: "positive", discussionSummary: "Frozen Tides moving toward EGS. 60-day exclusivity discussed.", dealStatus: "in_negotiation", projectedLaunchTiming: "Q3 2025" },
+  ]);
+
+  // Get topic IDs
+  const allTopics = await db.select().from(platformTopics);
+  const revShareTopic = allTopics.find(t => t.name.includes("Revenue Share"));
+  const discoveryTopic = allTopics.find(t => t.name.includes("Discovery"));
+  const marketingTopic = allTopics.find(t => t.name.includes("User Acquisition"));
+
+  if (revShareTopic && discoveryTopic && marketingTopic) {
+    await db.insert(meetingTopics).values([
+      { meetingId: dm1.id, topicId: revShareTopic.id, sentiment: "positive", feedbackSummary: "88/12 split praised. Launch bonus discussed.", priority: "high" },
+      { meetingId: dm1.id, topicId: marketingTopic.id, sentiment: "positive", feedbackSummary: "Marketing co-op requested and viewed as a strong differentiator.", requestOrBlocker: "Needs co-marketing proposal", priority: "high" },
+      { meetingId: dm2.id, topicId: discoveryTopic.id, sentiment: "negative", feedbackSummary: "Discoverability concerns \u2014 previous titles underperformed on EGS.", requestOrBlocker: "Need conversion rate data", priority: "high" },
+      { meetingId: dm3.id, topicId: revShareTopic.id, sentiment: "positive", feedbackSummary: "Exclusivity window compromise at 60 days with enhanced featuring.", priority: "high" },
+    ]);
+  }
+
+  // Source documents
+  await db.insert(sourceDocuments).values([
+    { eventId: dummyE1.id, sourceType: "pasted_text", uploadedByUserId: userId, parsingStatus: "success", parsingLog: "AI extraction complete. Meetings: 2 \u00b7 Companies: 2 \u00b7 Contacts: 2 \u00b7 Games: 2 \u00b7 Topics: 3", rawTextExcerpt: "E3 2025 Trip Report\n\n### Meeting: Acme Interactive (Jane Doe)\nSentiment: Positive..." },
+    { eventId: dummyE2.id, sourceType: "pasted_text", uploadedByUserId: userId, parsingStatus: "success", parsingLog: "AI extraction complete. Meetings: 1 \u00b7 Companies: 1 \u00b7 Contacts: 1 \u00b7 Games: 1 \u00b7 Topics: 1", rawTextExcerpt: "Nordic Game 2025 Trip Report\n\n### Meeting: Fjord Studios (Erik Lindgren)\nSentiment: Positive..." },
+  ]);
+
+  // Executive summary for dummy E1
+  await db.insert(eventExecutiveSummaries).values([
+    {
+      eventId: dummyE1.id,
+      macroThemes: "Mixed signals at E3: indie developers receptive to EGS revenue share, but mid-tier publishers still cautious about discoverability.",
+      highlights: "Acme Interactive strongly interested in launching Starfall Chronicles on EGS. 88/12 revenue share praised.",
+      negatives: "Fjord Studios skeptical about EGS conversion rates vs Steam.",
+      recommendations: "1. Prepare EGS conversion/wishlist data deck. 2. Develop co-marketing proposal template. 3. Schedule data-sharing session with Fjord.",
+      topOpportunities: ["Starfall Chronicles (Acme) \u2014 Q1 2026", "Frozen Tides (Fjord) \u2014 needs data"],
+      topRisks: ["Fjord may stay Steam-only", "Co-marketing budget needs approval"],
+      topActions: [
+        { action: "Send co-marketing proposal to Acme", owner: "EGS Team", dueDate: "2025-07-01" },
+        { action: "Prepare conversion rate deck for Fjord", owner: "EGS Team", dueDate: "2025-07-15" },
+      ],
+    },
+  ]);
+
+  log("Dummy example events seeded");
+}
+
 async function seedIfEmpty() {
   // Only seed platform topics — these are required app lookup data.
   // We check topics not users, so a truncate + restart won't re-create fake demo data.
@@ -271,12 +385,25 @@ async function seedIfEmpty() {
     { name: "User Acquisition & Marketing", category: "marketing", description: "Free games program, launch marketing support, UA budget" },
   ]);
 
+  // Seed 2 dummy example events with full data
+  await seedDummyEvents();
+
   log("Seed complete");
+}
+
+async function addMissingColumns() {
+  // Add is_dummy column to events if it doesn't exist (upgrade path)
+  await db.execute(sql`
+    DO $$ BEGIN
+      ALTER TABLE events ADD COLUMN IF NOT EXISTS is_dummy BOOLEAN NOT NULL DEFAULT FALSE;
+    EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+  `);
 }
 
 export async function runMigrations() {
   log("Running migrations...");
   await createTablesIfNotExist();
+  await addMissingColumns();
   log("Tables ready");
   await seedIfEmpty();
 }

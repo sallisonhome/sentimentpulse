@@ -15,7 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { IngestModal } from "@/components/ingest-modal";
 import {
   Plus, Search, MapPin, Calendar, Users, FileText,
-  ChevronRight, Building2, Globe, UploadCloud, Trash2,
+  ChevronRight, Building2, Globe, UploadCloud, Trash2, AlertTriangle,
 } from "lucide-react";
 import { format } from "date-fns";
 
@@ -162,8 +162,16 @@ export default function EventListPage() {
         {filtered.map(event => (
           <div key={event.id} className="relative group">
             <a href={`#/events/${event.id}`}>
-              <Card className="hover-elevate cursor-pointer transition-all" data-testid={`event-card-${event.id}`}>
+              <Card className={`hover-elevate cursor-pointer transition-all ${event.isDummy ? "border-red-300 dark:border-red-800" : ""}`} data-testid={`event-card-${event.id}`}>
                 <CardContent className="p-4">
+                  {event.isDummy && (
+                    <div className="flex items-center gap-1.5 mb-2 px-2 py-1 rounded bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800">
+                      <AlertTriangle className="w-3.5 h-3.5 text-red-600 dark:text-red-400 shrink-0" />
+                      <span className="text-xs font-bold text-red-600 dark:text-red-400 uppercase tracking-wide">
+                        Not a real trip report — Example only
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">

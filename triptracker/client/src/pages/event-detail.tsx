@@ -197,6 +197,15 @@ export default function EventDetailPage() {
         </a>
       </div>
 
+      {event.isDummy && (
+        <div className="flex items-center gap-2 mb-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800">
+          <AlertTriangle className="w-4 h-4 text-red-600 dark:text-red-400 shrink-0" />
+          <span className="text-sm font-bold text-red-600 dark:text-red-400 uppercase tracking-wide">
+            Not a real trip report — Example only
+          </span>
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
           <div className="flex items-center gap-2 flex-wrap">

@@ -197,10 +197,15 @@ export class MemStorage implements IStorage {
     [g1, g2, g3, g4, g5].forEach(g => this.games.set(g.id, g));
 
     // Seed events
-    const e1: Event = { id: this.getId(), name: "GDC 2026", description: "Game Developers Conference, Moscone Center", eventType: "conference", startDate: "2026-03-17", endDate: "2026-03-21", city: "San Francisco", country: "USA", primaryOwnerUserId: u1.id, createdAt: new Date(), updatedAt: new Date() };
-    const e2: Event = { id: this.getId(), name: "Gamescom 2025", description: "World's largest gaming expo", eventType: "conference", startDate: "2025-08-20", endDate: "2025-08-24", city: "Cologne", country: "Germany", primaryOwnerUserId: u2.id, createdAt: new Date(), updatedAt: new Date() };
-    const e3: Event = { id: this.getId(), name: "Tokyo Publisher Roadshow Q1 2026", description: "BD roadshow targeting APAC publishers", eventType: "roadshow", startDate: "2026-01-15", endDate: "2026-01-18", city: "Tokyo", country: "Japan", primaryOwnerUserId: u1.id, createdAt: new Date(), updatedAt: new Date() };
-    [e1, e2, e3].forEach(e => this.events.set(e.id, e));
+    const e1: Event = { id: this.getId(), name: "GDC 2026", description: "Game Developers Conference, Moscone Center", eventType: "conference", startDate: "2026-03-17", endDate: "2026-03-21", city: "San Francisco", country: "USA", primaryOwnerUserId: u1.id, isDummy: false, createdAt: new Date(), updatedAt: new Date() };
+    const e2: Event = { id: this.getId(), name: "Gamescom 2025", description: "World's largest gaming expo", eventType: "conference", startDate: "2025-08-20", endDate: "2025-08-24", city: "Cologne", country: "Germany", primaryOwnerUserId: u2.id, isDummy: false, createdAt: new Date(), updatedAt: new Date() };
+    const e3: Event = { id: this.getId(), name: "Tokyo Publisher Roadshow Q1 2026", description: "BD roadshow targeting APAC publishers", eventType: "roadshow", startDate: "2026-01-15", endDate: "2026-01-18", city: "Tokyo", country: "Japan", primaryOwnerUserId: u1.id, isDummy: false, createdAt: new Date(), updatedAt: new Date() };
+
+    // ── Dummy example events ──────────────────────────────────────────────────
+    const dummyE1: Event = { id: this.getId(), name: "[EXAMPLE] E3 2025 Partner Meetings", description: "Example event — E3 partner meetings at the LA Convention Center", eventType: "conference", startDate: "2025-06-10", endDate: "2025-06-13", city: "Los Angeles", country: "USA", primaryOwnerUserId: u3.id, isDummy: true, createdAt: new Date(), updatedAt: new Date() };
+    const dummyE2: Event = { id: this.getId(), name: "[EXAMPLE] Nordic Game 2025 Trip", description: "Example event — Nordic Game conference trip report", eventType: "conference", startDate: "2025-05-20", endDate: "2025-05-22", city: "Malmö", country: "Sweden", primaryOwnerUserId: u2.id, isDummy: true, createdAt: new Date(), updatedAt: new Date() };
+
+    [e1, e2, e3, dummyE1, dummyE2].forEach(e => this.events.set(e.id, e));
 
     // Seed event attendees
     this.eventAttendees.set(this.getId(), { id: this.nextId - 1, eventId: e1.id, userId: u1.id, roleAtEvent: "Lead BD" });
@@ -298,6 +303,85 @@ export class MemStorage implements IStorage {
     const sd1: SourceDocument = { id: this.getId(), eventId: e1.id, sourceType: "pasted_text", originalFileName: null, externalUrl: null, storagePathOrId: "blob://gdc-2026-raw", uploadedByUserId: u1.id, uploadedAt: new Date(), parsingStatus: "success", parsingLog: "Extracted 3 meeting blocks, 2 game mentions, 4 platform topic references.", rawTextExcerpt: "GDC 2026 Trip Report — Alex Chen...\n\n### Meeting: Nexon Games (Yuki Tanaka)\nDate: March 18, 10:00 AM\nSentiment: Very positive...", rawText: null };
     const sd2: SourceDocument = { id: this.getId(), eventId: e2.id, sourceType: "google_doc", originalFileName: null, externalUrl: "https://docs.google.com/document/d/example-gamescom-2025", storagePathOrId: null, uploadedByUserId: u2.id, uploadedAt: new Date(), parsingStatus: "success", parsingLog: "Extracted 1 meeting block, 2 game mentions.", rawTextExcerpt: "Gamescom 2025 Notes — Jordan Rivera...", rawText: null };
     [sd1, sd2].forEach(sd => this.sourceDocuments.set(sd.id, sd));
+
+    // ── Dummy example event data ─────────────────────────────────────────────
+    // Dummy event 1 attendees
+    this.eventAttendees.set(this.getId(), { id: this.nextId - 1, eventId: dummyE1.id, userId: u3.id, roleAtEvent: "Lead BD" });
+    this.eventAttendees.set(this.getId(), { id: this.nextId - 1, eventId: dummyE2.id, userId: u2.id, roleAtEvent: "Lead AM" });
+
+    // Dummy companies for examples
+    const dc1: Company = { id: this.getId(), name: "Acme Interactive", companyType: "developer", region: "NA", notes: "Example company — fictional", createdAt: new Date(), updatedAt: new Date() };
+    const dc2: Company = { id: this.getId(), name: "Fjord Studios", companyType: "publisher", region: "EMEA", notes: "Example company — fictional", createdAt: new Date(), updatedAt: new Date() };
+    [dc1, dc2].forEach(c => this.companies.set(c.id, c));
+
+    // Dummy contacts
+    const dct1: Contact = { id: this.getId(), companyId: dc1.id, name: "Jane Doe", title: "VP Publishing", email: null, phone: null, notes: "Fictional contact", createdAt: new Date() };
+    const dct2: Contact = { id: this.getId(), companyId: dc2.id, name: "Erik Lindgren", title: "Head of BD", email: null, phone: null, notes: "Fictional contact", createdAt: new Date() };
+    [dct1, dct2].forEach(ct => this.contacts.set(ct.id, ct));
+
+    // Dummy games
+    const dg1: Game = { id: this.getId(), title: "Starfall Chronicles", developerCompanyId: dc1.id, publisherCompanyId: dc1.id, currentEgsStatus: "under_discussion", notes: "Example game — fictional", createdAt: new Date(), updatedAt: new Date() };
+    const dg2: Game = { id: this.getId(), title: "Frozen Tides", developerCompanyId: dc2.id, publisherCompanyId: dc2.id, currentEgsStatus: "announced", notes: "Example game — fictional", createdAt: new Date(), updatedAt: new Date() };
+    [dg1, dg2].forEach(g => this.games.set(g.id, g));
+
+    // Dummy meetings — E3
+    const dm1: Meeting = { id: this.getId(), eventId: dummyE1.id, companyId: dc1.id, meetingDate: "2025-06-11", startTime: "10:00", endTime: "10:45", location: "Meeting Room 4A, West Hall", format: "in_person", overallSentiment: "positive", summary: "Acme Interactive excited about bringing Starfall Chronicles to EGS. Revenue share terms praised. Requesting marketing co-promotion support for launch.", detailedNotes: "Jane Doe led the discussion. Acme has been evaluating EGS for 6 months. Very impressed with the 88/12 revenue split. They want to launch Starfall Chronicles on EGS simultaneously with Steam. Main ask: co-marketing support and featuring placement. Timeline: Q1 2026.", followUpActions: "Send marketing co-op proposal. Schedule follow-up call for July.", followUpOwnerUserId: u3.id, followUpDueDate: "2025-07-01", createdAt: new Date(), updatedAt: new Date() };
+    const dm2: Meeting = { id: this.getId(), eventId: dummyE1.id, companyId: dc2.id, meetingDate: "2025-06-12", startTime: "14:00", endTime: "14:30", location: "Lobby Lounge, JW Marriott", format: "in_person", overallSentiment: "neutral", summary: "Fjord Studios evaluating EGS for Frozen Tides but concerned about discoverability compared to Steam. Want to see more data on conversion rates.", detailedNotes: "Erik was direct about their hesitation — Fjord's previous titles underperformed on EGS relative to Steam. They want hard numbers on conversion rates and wishlists before committing Frozen Tides. Open to a data-sharing session. Not hostile, just cautious.", followUpActions: "Prepare EGS conversion rate deck. Share wishlist performance data.", followUpOwnerUserId: u3.id, followUpDueDate: "2025-07-15", createdAt: new Date(), updatedAt: new Date() };
+
+    // Dummy meetings — Nordic Game
+    const dm3: Meeting = { id: this.getId(), eventId: dummyE2.id, companyId: dc2.id, meetingDate: "2025-05-21", startTime: "11:00", endTime: "11:45", location: "Scandic Hotel Conference Center", format: "in_person", overallSentiment: "positive", summary: "Follow-up with Fjord Studios from earlier conversations. They are now leaning positive on bringing Frozen Tides to EGS if launch window exclusivity terms are favorable.", detailedNotes: "Erik brought his CEO this time, signaling higher-level interest. They are now more open to EGS after seeing Q1 2025 growth data we shared. Main discussion around launch window exclusivity — they want a 30-day window max, not 90. We discussed a compromise at 60 days with enhanced featuring. CEO seemed receptive.", followUpActions: "Draft 60-day exclusivity proposal. Share with Fjord legal team.", followUpOwnerUserId: u2.id, followUpDueDate: "2025-06-05", createdAt: new Date(), updatedAt: new Date() };
+
+    [dm1, dm2, dm3].forEach(m => this.meetings.set(m.id, m));
+
+    // Dummy meeting contacts
+    [{ meetingId: dm1.id, contactId: dct1.id, roleInMeeting: "Lead" },
+     { meetingId: dm2.id, contactId: dct2.id, roleInMeeting: "Lead" },
+     { meetingId: dm3.id, contactId: dct2.id, roleInMeeting: "Lead" },
+    ].forEach(mc => {
+      const id = this.getId();
+      this.meetingContacts.set(id, { id, ...mc });
+    });
+
+    // Dummy meeting games
+    [{ meetingId: dm1.id, gameId: dg1.id, gameSpecificSentiment: "positive" as const, discussionSummary: "Starfall Chronicles confirmed interested in EGS launch.", dealStatus: "in_negotiation" as const, projectedLaunchTiming: "Q1 2026", keyQuotes: "\"The 88/12 split is exactly what indie devs need\" — Jane Doe" },
+     { meetingId: dm2.id, gameId: dg2.id, gameSpecificSentiment: "neutral" as const, discussionSummary: "Frozen Tides still evaluating. Data request pending.", dealStatus: "initial_outreach" as const, projectedLaunchTiming: null, keyQuotes: null },
+     { meetingId: dm3.id, gameId: dg2.id, gameSpecificSentiment: "positive" as const, discussionSummary: "Frozen Tides moving toward EGS. 60-day exclusivity discussed.", dealStatus: "in_negotiation" as const, projectedLaunchTiming: "Q3 2025", keyQuotes: "\"We're much more optimistic after seeing the Q1 numbers\" — Erik Lindgren" },
+    ].forEach(mg => {
+      const id = this.getId();
+      this.meetingGames.set(id, { id, createdAt: new Date(), updatedAt: new Date(), ...mg });
+    });
+
+    // Dummy meeting topics
+    [{ meetingId: dm1.id, topicId: pt1.id, sentiment: "positive" as const, feedbackSummary: "88/12 split praised. Launch bonus discussed.", requestOrBlocker: null, priority: "high" as const },
+     { meetingId: dm1.id, topicId: pt5.id, sentiment: "positive" as const, feedbackSummary: "Marketing co-op requested and viewed as a strong differentiator.", requestOrBlocker: "Needs co-marketing proposal", priority: "high" as const },
+     { meetingId: dm2.id, topicId: pt2.id, sentiment: "negative" as const, feedbackSummary: "Discoverability concerns — previous titles underperformed on EGS.", requestOrBlocker: "Need conversion rate data", priority: "high" as const },
+     { meetingId: dm3.id, topicId: pt1.id, sentiment: "positive" as const, feedbackSummary: "Exclusivity window compromise at 60 days with enhanced featuring.", requestOrBlocker: null, priority: "high" as const },
+    ].forEach(mt => {
+      const id = this.getId();
+      this.meetingTopics.set(id, { id, createdAt: new Date(), updatedAt: new Date(), ...mt });
+    });
+
+    // Dummy source documents
+    const dsd1: SourceDocument = { id: this.getId(), eventId: dummyE1.id, sourceType: "pasted_text", originalFileName: null, externalUrl: null, storagePathOrId: null, uploadedByUserId: u3.id, uploadedAt: new Date(), parsingStatus: "success", parsingLog: "AI extraction complete. Meetings: 2 · Companies: 2 · Contacts: 2 · Games: 2 · Topics: 3", rawTextExcerpt: "E3 2025 Trip Report — Sam Park\n\n### Meeting: Acme Interactive (Jane Doe)\nDate: June 11, 10:00 AM\nSentiment: Positive...", rawText: null };
+    const dsd2: SourceDocument = { id: this.getId(), eventId: dummyE2.id, sourceType: "pasted_text", originalFileName: null, externalUrl: null, storagePathOrId: null, uploadedByUserId: u2.id, uploadedAt: new Date(), parsingStatus: "success", parsingLog: "AI extraction complete. Meetings: 1 · Companies: 1 · Contacts: 1 · Games: 1 · Topics: 1", rawTextExcerpt: "Nordic Game 2025 Trip Report — Jordan Rivera\n\n### Meeting: Fjord Studios (Erik Lindgren)\nDate: May 21, 11:00 AM\nSentiment: Positive...", rawText: null };
+    [dsd1, dsd2].forEach(sd => this.sourceDocuments.set(sd.id, sd));
+
+    // Dummy executive summaries
+    const des1: EventExecutiveSummary = {
+      id: this.getId(), eventId: dummyE1.id,
+      macroThemes: "Mixed signals at E3: indie developers receptive to EGS revenue share, but mid-tier publishers still cautious about discoverability. Marketing co-promotion emerging as a key differentiator.",
+      highlights: "Acme Interactive strongly interested in launching Starfall Chronicles on EGS. 88/12 revenue share praised. Timeline aligned for Q1 2026.",
+      negatives: "Fjord Studios skeptical about EGS conversion rates vs Steam. Previous title performance on EGS was below expectations.",
+      recommendations: "1. Prepare a comprehensive EGS conversion/wishlist data deck for hesitant publishers. 2. Develop a co-marketing proposal template for indie partners. 3. Schedule data-sharing session with Fjord Studios.",
+      topOpportunities: ["Starfall Chronicles (Acme) — Q1 2026 launch, in negotiation", "Frozen Tides (Fjord) — cautiously optimistic, needs data"],
+      topRisks: ["Fjord Studios may stay Steam-only if data doesn't convince them", "Co-marketing budget needs internal approval"],
+      topActions: [
+        { action: "Send marketing co-op proposal to Acme", owner: "Sam Park", dueDate: "2025-07-01" },
+        { action: "Prepare conversion rate deck for Fjord", owner: "Sam Park", dueDate: "2025-07-15" },
+      ],
+      generatedAt: new Date(), lastRefreshedAt: new Date(),
+    };
+    this.execSummaries.set(dummyE1.id, des1);
   }
 
   // ── Users ──
@@ -339,7 +423,7 @@ export class MemStorage implements IStorage {
   }
 
   async createEvent(data: InsertEvent): Promise<Event> {
-    const event: Event = { id: this.getId(), createdAt: new Date(), updatedAt: new Date(), description: null, startDate: null, endDate: null, city: null, country: null, primaryOwnerUserId: null, ...data };
+    const event: Event = { id: this.getId(), createdAt: new Date(), updatedAt: new Date(), description: null, startDate: null, endDate: null, city: null, country: null, primaryOwnerUserId: null, isDummy: false, ...data };
     this.events.set(event.id, event);
     return event;
   }
