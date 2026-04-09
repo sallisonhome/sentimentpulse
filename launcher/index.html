@@ -88,7 +88,8 @@
     .btn-primary:disabled { opacity: 0.5; cursor: default; }
 
     /* App Selector Cards */
-    .app-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    .app-cards { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-top: 1.5rem; }
+    @media (max-width: 600px) { .app-cards { grid-template-columns: 1fr; } }
     .app-card {
       display: flex; flex-direction: column; align-items: center;
       padding: 2rem 1.5rem; background: var(--surface);
@@ -178,6 +179,17 @@
           </div>
           <div class="app-card-title">SignalPulse</div>
           <div class="app-card-desc">Sales forecasting &amp; market signals</div>
+        </a>
+
+        <a class="app-card" href="/trips/">
+          <div class="app-card-icon" style="background: rgba(139, 92, 246, 0.12); color: #8b5cf6;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/>
+              <circle cx="12" cy="10" r="3"/>
+            </svg>
+          </div>
+          <div class="app-card-title">Trip Tracker</div>
+          <div class="app-card-desc">Show &amp; partner meeting reports</div>
         </a>
       </div>
     </div>

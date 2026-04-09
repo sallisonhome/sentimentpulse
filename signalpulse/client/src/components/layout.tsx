@@ -165,6 +165,13 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
             {!sidebarCollapsed && <span>SentimentPulse</span>}
           </a>
           <a
+            href="/trips/"
+            className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+          >
+            <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />
+            {!sidebarCollapsed && <span>Trip Tracker</span>}
+          </a>
+          <a
             href="/"
             className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
           >
