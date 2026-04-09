@@ -92,7 +92,7 @@ export default function EventListPage() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-xl font-bold tracking-tight">Events & Trips</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">All BD/AM field reports and event coverage</p>
+          <p className="text-sm text-muted-foreground mt-0.5">All trip/show and partner meeting reports</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={() => setIngestOpen(true)} data-testid="button-upload-report">

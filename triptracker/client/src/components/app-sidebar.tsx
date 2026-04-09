@@ -28,8 +28,8 @@ export function AppSidebar() {
             <Map className="w-3.5 h-3.5 text-primary-foreground" />
           </div>
           <div>
-            <p className="text-xs font-semibold leading-tight">EGS BD/AM</p>
-            <p className="text-xs text-muted-foreground leading-tight">Trip Tracker</p>
+            <p className="text-xs font-semibold leading-tight">Saber Interactive</p>
+            <p className="text-xs text-muted-foreground leading-tight">Trip/Show & Partner Meetings</p>
           </div>
         </div>
       </SidebarHeader>

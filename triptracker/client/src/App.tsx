@@ -49,7 +49,7 @@ export default function App() {
                     <SidebarTrigger data-testid="button-sidebar-toggle" className="text-muted-foreground" />
                     <div className="flex items-center gap-2 ml-1">
                       <EgsLogo />
-                      <span className="font-semibold text-sm tracking-tight">Trip/Show & Partner Meeting Report Tracker</span>
+                      <span className="font-semibold text-sm tracking-tight">Saber Trip/Show & Partner Meeting Report Tracker</span>
                     </div>
                   </div>
                   <ThemeToggle />
@@ -70,7 +70,7 @@ export default function App() {
 
 function EgsLogo() {
   return (
-    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-label="EGS Trip Tracker" xmlns="http://www.w3.org/2000/svg">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-label="Saber Trip Tracker" xmlns="http://www.w3.org/2000/svg">
       <rect width="22" height="22" rx="5" fill="hsl(var(--primary))" />
       <path d="M4 7h9M4 11h6M4 15h9" stroke="white" strokeWidth="1.8" strokeLinecap="round"/>
       <circle cx="17" cy="11" r="3" stroke="white" strokeWidth="1.5"/>
