@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { SourceDocument } from "@shared/schema";
+import { API_BASE } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,7 +41,7 @@ export function SourceDocumentsPanel({ eventId, onIngestClick }: SourceDocuments
   const { data: docs, isLoading } = useQuery<SourceDocument[]>({
     queryKey: ["/api/events", eventId, "source-documents"],
     queryFn: async () => {
-      const r = await fetch(`/api/events/${eventId}/source-documents`);
+      const r = await fetch(`${API_BASE}/api/events/${eventId}/source-documents`);
       return r.json();
     },
     // Poll every 4s while any doc is in "pending" state so UI auto-updates after extraction
@@ -60,7 +61,7 @@ export function SourceDocumentsPanel({ eventId, onIngestClick }: SourceDocuments
 
   const deleteMutation = useMutation({
     mutationFn: async (docId: number) => {
-      const res = await fetch(`/api/source-documents/${docId}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/source-documents/${docId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
     },
     onMutate: (docId) => {
@@ -86,7 +87,7 @@ export function SourceDocumentsPanel({ eventId, onIngestClick }: SourceDocuments
 
   const parseMutation = useMutation({
     mutationFn: async (docId: number) => {
-      const res = await fetch(`/api/source-documents/${docId}/parse`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/source-documents/${docId}/parse`, { method: "POST" });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json();
     },
@@ -215,7 +216,7 @@ export function SourceDocumentsPanel({ eventId, onIngestClick }: SourceDocuments
                         setRemovedIds(prev => [...prev, id]);
                         setDeletingId(null);
                         // Fire DELETE in background
-                        fetch(`/api/source-documents/${id}`, { method: "DELETE" })
+                        fetch(`${API_BASE}/api/source-documents/${id}`, { method: "DELETE" })
                           .then(r => {
                             if (!r.ok) throw new Error(`${r.status}`);
                             qc.invalidateQueries({ queryKey: ["/api/events", eventId, "source-documents"] });

@@ -1,6 +1,7 @@
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import type { MeetingWithDetails } from "@shared/schema";
+import { API_BASE } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -46,7 +47,7 @@ export default function MeetingDetailPage() {
   const { data: meeting, isLoading } = useQuery<MeetingWithDetails>({
     queryKey: ["/api/meetings", meetingId],
     queryFn: async () => {
-      const r = await fetch(`/api/meetings/${meetingId}`);
+      const r = await fetch(`${API_BASE}/api/meetings/${meetingId}`);
       return r.json();
     },
   });

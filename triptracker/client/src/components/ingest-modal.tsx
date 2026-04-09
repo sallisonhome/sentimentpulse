@@ -13,7 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { FileText, Link2, Upload, AlignLeft, CheckCircle2, Loader2 } from "lucide-react";
 import type { EventWithStats } from "@shared/schema";
 
-const API_BASE = (import.meta.env.VITE_API_BASE as string) ?? "";
+import { API_BASE } from "@/lib/constants";
 
 interface IngestModalProps {
   open: boolean;

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Game, PlatformTopic } from "@shared/schema";
+import { API_BASE } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -60,7 +61,7 @@ function TopicDetailSheet({ topic, open, onClose }: { topic: TopicWithStats | nu
   const { data: entries, isLoading } = useQuery<TopicEntry[]>({
     queryKey: ["/api/platform-topics", topic?.id, "entries"],
     queryFn: async () => {
-      const r = await fetch(`/api/platform-topics/${topic!.id}/entries`);
+      const r = await fetch(`${API_BASE}/api/platform-topics/${topic!.id}/entries`);
       return r.json();
     },
     enabled: !!topic && open,
@@ -143,7 +144,7 @@ function GameDetailSheet({ game, open, onClose }: { game: GameWithTP | null; ope
   const { data: entries, isLoading } = useQuery<GameEntry[]>({
     queryKey: ["/api/games", gameId, "entries"],
     queryFn: async () => {
-      const r = await fetch(`/api/games/${gameId}/entries`);
+      const r = await fetch(`${API_BASE}/api/games/${gameId}/entries`);
       return r.json();
     },
     enabled: !!gameId && open,
@@ -262,7 +263,7 @@ export default function DashboardPage() {
   const { data, isLoading } = useQuery<DashboardData>({
     queryKey: ["/api/dashboard"],
     queryFn: async () => {
-      const r = await fetch("/api/dashboard");
+      const r = await fetch(`${API_BASE}/api/dashboard`);
       return r.json();
     },
     // Refresh every 8s so the dashboard updates after a parse completes

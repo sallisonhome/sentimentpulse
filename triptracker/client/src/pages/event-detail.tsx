@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import type { EventWithStats, MeetingWithDetails, EventExecutiveSummary } from "@shared/schema";
+import { API_BASE } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,7 +31,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
   const { data: summary } = useQuery<EventExecutiveSummary>({
     queryKey: ["/api/events", eventId, "executive-summary"],
     queryFn: async () => {
-      const r = await fetch(`/api/events/${eventId}/executive-summary`);
+      const r = await fetch(`${API_BASE}/api/events/${eventId}/executive-summary`);
       if (!r.ok) return null;
       return r.json();
     },
@@ -155,7 +156,7 @@ export default function EventDetailPage() {
   const { data: event, isLoading: eventLoading } = useQuery<EventWithStats>({
     queryKey: ["/api/events", eventId],
     queryFn: async () => {
-      const r = await fetch(`/api/events/${eventId}`);
+      const r = await fetch(`${API_BASE}/api/events/${eventId}`);
       return r.json();
     },
     // Refetch stats and exec summary availability while parsing is in progress
@@ -166,7 +167,7 @@ export default function EventDetailPage() {
   const { data: meetings, isLoading: meetingsLoading } = useQuery<MeetingWithDetails[]>({
     queryKey: ["/api/events", eventId, "meetings"],
     queryFn: async () => {
-      const r = await fetch(`/api/events/${eventId}/meetings`);
+      const r = await fetch(`${API_BASE}/api/events/${eventId}/meetings`);
       return r.json();
     },
     // Refetch meetings periodically while source docs are being parsed
