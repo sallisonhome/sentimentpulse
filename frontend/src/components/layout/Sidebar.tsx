@@ -55,6 +55,13 @@ export default function Sidebar() {
           Trip Tracker
         </a>
         <a
+          href="/genrepulse/"
+          className="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <ArrowRightLeft className="h-4 w-4" />
+          Genre Pulse
+        </a>
+        <a
           href="/"
           className="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
         >

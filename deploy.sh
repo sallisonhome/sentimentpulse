@@ -255,6 +255,31 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_read_timeout 120s;
     }
+
+    # Genre Pulse — static frontend (mirrors howmanyareplaying.com)
+    location /genrepulse/ {
+        alias /opt/sentimentpulse/genrepulse/;
+        index index.html;
+        try_files \$uri \$uri/ /genrepulse/index.html;
+    }
+
+    # Genre Pulse — reverse proxy to howmanyareplaying.com to bypass CORS
+    location /genrepulse/api/ {
+        proxy_pass https://www.howmanyareplaying.com/api/;
+        proxy_ssl_server_name on;
+        proxy_set_header Host www.howmanyareplaying.com;
+        proxy_set_header Origin https://howmanyareplaying.com;
+        proxy_set_header User-Agent "GenrePulse/1.0 (Saber Intelligence Suite)";
+        proxy_set_header Accept "application/json";
+        proxy_read_timeout 30s;
+        proxy_connect_timeout 10s;
+        # Cache upstream responses for 5 minutes (data is bi-weekly)
+        proxy_cache_valid 200 5m;
+        proxy_hide_header Access-Control-Allow-Origin;
+        proxy_hide_header Access-Control-Allow-Credentials;
+        add_header Access-Control-Allow-Origin "\$http_origin" always;
+        add_header Access-Control-Allow-Credentials "true" always;
+    }
 }
 EOF
 
@@ -274,6 +299,7 @@ echo "  Password:         SABER"
 echo "  SentimentPulse:   http://${SERVER_IP}/sentiment/"
 echo "  SignalPulse:      http://${SERVER_IP}/signal/"
 echo "  Trip Tracker:     http://${SERVER_IP}/trips/"
+echo "  Genre Pulse:      http://${SERVER_IP}/genrepulse/"
 echo ""
 echo "  Services:"
 echo "    systemctl status sentimentpulse"

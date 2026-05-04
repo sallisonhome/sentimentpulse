@@ -79,3 +79,6 @@ desktop.ini
 
 # Docker
 *.override.yml
+
+# Genre Pulse local dev only
+genrepulse/test_server.py

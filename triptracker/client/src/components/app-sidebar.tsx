@@ -74,6 +74,9 @@ export function AppSidebar() {
           <a href="/signal/" className="flex items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded">
             <ArrowRightLeft className="w-3.5 h-3.5" />SignalPulse
           </a>
+          <a href="/genrepulse/" className="flex items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded">
+            <ArrowRightLeft className="w-3.5 h-3.5" />Genre Pulse
+          </a>
           <a href="/" className="flex items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded">
             <Home className="w-3.5 h-3.5" />Suite Home
           </a>
