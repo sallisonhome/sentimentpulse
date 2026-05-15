@@ -36,6 +36,16 @@ echo "[4/7] Storage dirs..."
 mkdir -p "${STORAGE}/library" "${STORAGE}/trash" "${STORAGE}/preview"
 chown -R www-data:www-data "${STORAGE}"
 
+echo "[5a/7] Building frontend..."
+if command -v npm >/dev/null 2>&1; then
+  cd "${GTM_ROOT}/frontend"
+  npm install --silent --no-audit --no-fund
+  npm run build --silent
+  cd "${REPO_ROOT}"
+else
+  echo "  WARNING: npm not available, skipping frontend build"
+fi
+
 echo "[5/7] Systemd service..."
 cp "${GTM_ROOT}/systemd/gtmstudio.service" /etc/systemd/system/gtmstudio.service
 systemctl daemon-reload
