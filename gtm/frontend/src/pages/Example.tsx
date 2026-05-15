@@ -47,7 +47,10 @@ const CAPTIONS = [
 
 export function Example() {
   const { deckTheme } = useDeckTheme();
-  const [pngs, setPngs] = useState<string[]>([]);
+  const [themes, setThemes] = useState<{ dark: string[]; light: string[] }>({
+    dark: [],
+    light: [],
+  });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [idx, setIdx] = useState(0);
@@ -57,15 +60,21 @@ export function Example() {
     setErr(null);
     api
       .example()
-      .then((d) => {
-        setPngs(d.pngs || []);
+      .then((d: any) => {
+        // Backend returns { themes: { dark: [...], light: [...] } }
+        setThemes({
+          dark: d.themes?.dark || [],
+          light: d.themes?.light || [],
+        });
         setLoading(false);
       })
       .catch((e) => {
         setErr(String(e.message || e));
         setLoading(false);
       });
-  }, [deckTheme]); // theme can re-fetch if backend supports it
+  }, []);
+
+  const pngs = themes[deckTheme] || [];
 
   function next() {
     setIdx((i) => Math.min(i + 1, Math.max(pngs.length, CAPTIONS.length) - 1));

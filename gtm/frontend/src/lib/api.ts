@@ -80,7 +80,7 @@ export const api = {
       body: JSON.stringify({ is_private: isPrivate }),
     }),
   example: () =>
-    request<{ pngs: string[]; captions?: string[] }>(`/example`),
+    request<{ themes: { dark: string[]; light: string[] } }>(`/example`),
   // The preview PNG paths come back as absolute URLs (likely /gtm/api/preview/.../png/...).
   // If they are relative, prefix with API_BASE.
   resolvePng: (url: string) =>

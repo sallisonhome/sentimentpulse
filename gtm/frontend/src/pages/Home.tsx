@@ -53,7 +53,7 @@ export function Home() {
       <PageHeader
         eyebrow="GTM Studio"
         title="Build go-to-market slide packs in minutes"
-        subtitle="Generate audience-tier maps, USP manifestos, channel matrices, and 12-month roadmaps that match the Saber brand — straight to PPTX and PDF."
+        subtitle="Answer a four-step questionnaire about your game and release date. GTM Studio renders a 9-slide pack — audience tiers, USP manifesto, reach plan, and a 12-month work-back roadmap — ready to download as PPTX or PDF."
       />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -98,23 +98,75 @@ export function Home() {
         />
       </div>
 
-      <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-5">
-        <div className="card p-5">
-          <div className="eyebrow mb-2">01</div>
-          <div className="text-sm font-semibold text-ink mb-1">Audience tiers</div>
-          <div className="text-xs text-muted">Nested-ring map of cohorts from highest-intent inward.</div>
+      {/* ── How it works ───────────────────────────────────────────────────────────*/}
+      <section className="mt-14">
+        <div className="eyebrow mb-3">How it works</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* You provide */}
+          <div className="card p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-7 h-7 rounded-md bg-surface-elev border border-border flex items-center justify-center text-xs font-semibold text-muted">1</div>
+              <h3 className="text-sm font-semibold text-ink uppercase tracking-wide">You provide</h3>
+            </div>
+            <ul className="space-y-3 text-sm text-muted">
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">•</span>
+                <span><span className="text-ink font-medium">Game basics</span> — title, genre, and whether it's a sequel, IP-based, or new.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">•</span>
+                <span><span className="text-ink font-medium">Audience tiers</span> — four cohorts (innermost → broadest) with names and sizes.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">•</span>
+                <span><span className="text-ink font-medium">3–5 USPs</span> — short title, supporting sentence, and proof point each.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">•</span>
+                <span><span className="text-ink font-medium">Reach plan</span> — channel, message, and KPI for each of the four cohorts.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">•</span>
+                <span><span className="text-ink font-medium">Release date</span> — anchors the 12-month work-back schedule.</span>
+              </li>
+            </ul>
+          </div>
+
+          {/* You get back */}
+          <div className="card p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-7 h-7 rounded-md bg-accent/15 border border-accent/30 flex items-center justify-center text-xs font-semibold text-accent">2</div>
+              <h3 className="text-sm font-semibold text-ink uppercase tracking-wide">You get back</h3>
+            </div>
+            <ul className="space-y-3 text-sm text-muted">
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">·</span>
+                <span><span className="text-ink font-medium">Slide 1 — Audience tiers.</span> Nested-circle chart sized to your cohorts.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">·</span>
+                <span><span className="text-ink font-medium">Slide 2 — USP manifesto.</span> Vertical stack of your selling points with proofs.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">·</span>
+                <span><span className="text-ink font-medium">Slide 3 — How we reach.</span> Per-cohort channel matrix with mini audience map.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">·</span>
+                <span><span className="text-ink font-medium">Slides 4.1–4.5 — GTM roadmap.</span> Phased work-back from T-12 months through T+365 days, with calendar dates computed from your release date.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">·</span>
+                <span><span className="text-ink font-medium">Slide 4.6 — Key dates.</span> At-a-glance summary of every calendar-anchored milestone.</span>
+              </li>
+              <li className="flex gap-2.5 pt-1 mt-2 border-t border-border">
+                <span className="text-accent mt-[2px]">→</span>
+                <span className="text-ink font-medium">Download as PPTX or PDF. Editable, ready to share.</span>
+              </li>
+            </ul>
+          </div>
         </div>
-        <div className="card p-5">
-          <div className="eyebrow mb-2">02</div>
-          <div className="text-sm font-semibold text-ink mb-1">USP manifesto</div>
-          <div className="text-xs text-muted">3–5 unique selling points stacked as a vertical manifesto.</div>
-        </div>
-        <div className="card p-5">
-          <div className="eyebrow mb-2">03</div>
-          <div className="text-sm font-semibold text-ink mb-1">Reach matrix + roadmap</div>
-          <div className="text-xs text-muted">Per-cohort channel plan plus a six-stage release roadmap.</div>
-        </div>
-      </div>
+      </section>
 
       <footer className="mt-16 pt-6 border-t border-border flex items-center justify-between text-xs text-dim">
         <div>GTM Slide Pack Studio · Saber Intelligence Suite</div>
