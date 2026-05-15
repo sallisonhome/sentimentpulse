@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -456,7 +456,7 @@ class PasswordChangeRequest(BaseModel):
 
 @app.post("/admin/login")
 @limiter.limit("5/15minutes")
-def admin_login(request: Request, body: LoginRequest, response: Response):
+def admin_login(request: Request, response: Response, body: LoginRequest = Body(...)):
     ip = get_remote_address(request)
     if not verify_password(body.password):
         _log_admin_action("login_failed", None, ip)
@@ -599,7 +599,8 @@ def admin_audit(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=
 
 
 @app.post("/admin/password")
-def admin_change_password(body: PasswordChangeRequest, request: Request,
+def admin_change_password(request: Request,
+                          body: PasswordChangeRequest = Body(...),
                           _=Depends(require_admin)):
     """Re-hash and update the password."""
     ip = get_remote_address(request)
