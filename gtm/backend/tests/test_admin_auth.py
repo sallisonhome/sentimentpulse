@@ -38,8 +38,8 @@ init_db()  # re-init at the new path
 @pytest.fixture
 def client():
     # Reset rate limiter state between tests
-    if hasattr(app.state, "limiter"):
-        app.state.limiter.reset()
+    import main as main_mod
+    main_mod._LOGIN_ATTEMPTS.clear()
     return TestClient(app)
 
 

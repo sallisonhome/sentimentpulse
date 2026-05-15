@@ -454,10 +454,29 @@ class PasswordChangeRequest(BaseModel):
         return v
 
 
+# Manual in-memory rate limit for login (slowapi decorator conflicts with
+# FastAPI's body parsing of Pydantic models). Same semantics: 5 per 15 min per IP.
+_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
+_LOGIN_RATE_LIMIT = 5
+_LOGIN_WINDOW_SECONDS = 15 * 60
+
+
+def _check_login_rate(ip: str):
+    import time
+    now = time.time()
+    attempts = _LOGIN_ATTEMPTS.get(ip, [])
+    # Drop expired
+    attempts = [t for t in attempts if now - t < _LOGIN_WINDOW_SECONDS]
+    if len(attempts) >= _LOGIN_RATE_LIMIT:
+        raise HTTPException(429, "Too many login attempts. Try again in 15 minutes.")
+    attempts.append(now)
+    _LOGIN_ATTEMPTS[ip] = attempts
+
+
 @app.post("/admin/login")
-@limiter.limit("5/15minutes")
-def admin_login(request: Request, response: Response, body: LoginRequest = Body(...)):
+def admin_login(request: Request, response: Response, body: LoginRequest):
     ip = get_remote_address(request)
+    _check_login_rate(ip)
     if not verify_password(body.password):
         _log_admin_action("login_failed", None, ip)
         raise HTTPException(401, "Invalid password")
@@ -600,7 +619,7 @@ def admin_audit(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=
 
 @app.post("/admin/password")
 def admin_change_password(request: Request,
-                          body: PasswordChangeRequest = Body(...),
+                          body: PasswordChangeRequest,
                           _=Depends(require_admin)):
     """Re-hash and update the password."""
     ip = get_remote_address(request)
