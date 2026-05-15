@@ -280,6 +280,24 @@ server {
         add_header Access-Control-Allow-Origin "\$http_origin" always;
         add_header Access-Control-Allow-Credentials "true" always;
     }
+
+    # GTM Studio frontend (static Vite build)
+    location /gtm/ {
+        alias /opt/sentimentpulse/gtm/frontend/dist/;
+        index index.html;
+        try_files \$uri \$uri/ /gtm/index.html;
+    }
+
+    # GTM Studio API (FastAPI on port 8001)
+    location /gtm/api/ {
+        proxy_pass http://127.0.0.1:8001/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 120s;
+        client_max_body_size 25M;
+    }
 }
 EOF
 
