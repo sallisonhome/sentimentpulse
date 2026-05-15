@@ -52,7 +52,7 @@ export function Home() {
     <div>
       <PageHeader
         eyebrow="GTM Studio"
-        title="Build go-to-market slide packs in minutes"
+        title="Generate Go-to-Market slide pack foundations in less than 5 minutes that you can edit to final quickly"
         subtitle="Answer a four-step questionnaire about your game and release date. GTM Studio renders a 9-slide pack — audience tiers, USP manifesto, reach plan, and a 12-month work-back roadmap — ready to download as PPTX or PDF."
       />
 
