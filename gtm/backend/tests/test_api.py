@@ -63,13 +63,8 @@ def test_preview_creates_session(session_id):
     assert session_id
 
 
-def test_preview_png_served(session_id):
-    # Pull one of the previews
-    r = client.get("/preview/" + session_id + "/png/" +
-                   Path(client.get("/library").json()["decks"][0]["id"]
-                        if client.get("/library").json()["total"] else "x").name
-                   if False else f"/preview/{session_id}/png/nonexistent.png")
-    # We can't easily get the filename, so just confirm 404 on bogus is correct
+def test_preview_png_404_on_bogus(session_id):
+    r = client.get(f"/preview/{session_id}/png/nonexistent.png")
     assert r.status_code == 404
 
 
@@ -123,7 +118,6 @@ def test_private_deck_hidden_from_library():
     r = client.get(f"/library/{private_id}")
     assert r.status_code == 404
 
-    # Admin endpoint sees it (auth gated in Phase 6)
+    # Admin endpoint now requires auth (added in Phase 6)
     r = client.get("/admin/library")
-    ids = [d["id"] for d in r.json()["decks"]]
-    assert private_id in ids
+    assert r.status_code == 401  # unauthenticated

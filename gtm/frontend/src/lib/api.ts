@@ -6,6 +6,7 @@ export const API_BASE = "/gtm/api";
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
+    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers || {}),
@@ -84,4 +85,32 @@ export const api = {
   // If they are relative, prefix with API_BASE.
   resolvePng: (url: string) =>
     url.startsWith("http") || url.startsWith("/") ? url : `${API_BASE}/${url}`,
+
+  // ── Admin ──
+  adminLogin: (password: string) =>
+    request<{ ok: boolean }>(`/admin/login`, {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+  adminLogout: () =>
+    request<{ ok: boolean }>(`/admin/logout`, { method: "POST" }),
+  adminSession: () =>
+    request<{ authenticated: boolean }>(`/admin/session`),
+  adminLibrary: () =>
+    request<{ decks: any[] }>(`/admin/library`),
+  adminDelete: (deckId: string) =>
+    request<{ ok: boolean }>(`/admin/library/${deckId}`, { method: "DELETE" }),
+  adminRestore: (deckId: string) =>
+    request<{ ok: boolean }>(`/admin/library/${deckId}/restore`, { method: "POST" }),
+  adminPurge: (deckId: string) =>
+    request<{ ok: boolean }>(`/admin/library/${deckId}/purge`, { method: "DELETE" }),
+  adminAudit: (page = 1) =>
+    request<{ total: number; page: number; page_size: number; actions: any[] }>(
+      `/admin/audit?page=${page}`
+    ),
+  adminChangePassword: (newPassword: string) =>
+    request<{ ok: boolean }>(`/admin/password`, {
+      method: "POST",
+      body: JSON.stringify({ new_password: newPassword }),
+    }),
 };
