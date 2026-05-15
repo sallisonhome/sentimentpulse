@@ -207,8 +207,8 @@ function renderAverages(avg) {
   if (!avg) { grid.innerHTML = ''; return; }
   const cards = [
     { label: 'Avg Price (MSRP×.66)', value: fmt.price(avg.avg_msrp_usd_cents ? Math.round(avg.avg_msrp_usd_cents * 0.66) : null) },
-    { label: 'Avg Units Sold', value: fmt.num(avg.avg_estimated_owners) },
-    { label: 'Avg Est. Gross Sales', value: fmt.money(avg.avg_estimated_gross_sales_usd_cents) },
+    { label: 'Median Units Sold', value: fmt.num(avg.median_estimated_owners ?? avg.avg_estimated_owners) },
+    { label: 'Median Est. Gross Sales', value: fmt.money(avg.median_estimated_gross_sales_usd_cents ?? avg.avg_estimated_gross_sales_usd_cents) },
     { label: 'Median Hrs/Player', value: fmt.hours(avg.avg_hours_median) },
     { label: 'Avg Daily Peak CCU', value: fmt.numFull(avg.avg_daily_peak_ccu) },
     { label: 'Avg Reviews', value: fmt.numFull(avg.avg_reviews) },
