@@ -1,0 +1,222 @@
+{
+  "_source_note": "PDF content reframed for generic PC GTM (no Steam/Valve/Mad Octopus refs). 9 phases grouped into 5 slides for clarity. T-offsets are in months unless noted as 'd' (days). Used by render_roadmap.py with --release-date to compute calendar dates.",
+  "_reframing_glossary": {
+    "Steam": "PC storefront",
+    "Steamworks / Steam partner backend": "platform backend",
+    "Steam Direct fee": "platform listing fee",
+    "Steam Next Fest": "demo showcase fest",
+    "Steam Deck Verified": "handheld certification",
+    "Steam Bundles": "platform bundles",
+    "Steam Deals / Featured Deals": "platform featured deals",
+    "Steam Community Hub": "platform community hub",
+    "Curator Connect": "curator outreach program",
+    "Valve": "the platform"
+  },
+  "slides": [
+    {
+      "slide_id": "S4-1",
+      "title": "Foundations & Identity",
+      "subtitle": "Lay the legal, creative, and audience groundwork.",
+      "phase_span": "T-12+ mo  \u2192  T-9 mo",
+      "tx_start_months": 12,
+      "tx_end_months": 9,
+      "sections": [
+        {
+          "heading": "Phase 0 \u2014 Business & Game Readiness",
+          "tx_label": "T-12 mo and earlier",
+          "items": [
+            "Legal entity formed; business bank account opened; tax forms ready.",
+            "Platform listing fee budgeted ($100 per title on most PC storefronts).",
+            "Trademark search on working title; primary domain secured.",
+            "IP rights audit \u2014 every asset has a paper trail or clean license.",
+            "Vertical slice playable: core loop demonstrable in under 5 minutes.",
+            "Working title, genre, and 5 store-page tags locked.",
+            "Target audience defined in one sentence \u2014 actionable, not aspirational."
+          ]
+        },
+        {
+          "heading": "Phase 1 \u2014 Audience & Identity",
+          "tx_label": "T-12 \u2192 T-9 mo",
+          "items": [
+            "20 comparable titles analyzed: tags, price, review count, themes.",
+            "50+ reviews of nearest 3 comps mined for love-it / hate-it patterns.",
+            "Communities mapped: 10 subreddits, 5 Discords, 3 forums where target audience lives.",
+            "3 wishful comps named (\u201cFor fans of X meets Y\u201d) \u2014 your positioning compass.",
+            "One-sentence hook drafted and pressure-tested with 10 strangers.",
+            "Visual identity: logo, key art direction, palette, and font choices locked."
+          ]
+        }
+      ]
+    },
+    {
+      "slide_id": "S4-2",
+      "title": "Store Page & Audience Building",
+      "subtitle": "Ship the page that converts and start filling the funnel.",
+      "phase_span": "T-9 mo  \u2192  T-3 mo",
+      "tx_start_months": 9,
+      "tx_end_months": 3,
+      "sections": [
+        {
+          "heading": "Phase 2 \u2014 Store Page Foundations",
+          "tx_label": "T-9 \u2192 T-6 mo",
+          "items": [
+            "Platform backend configured: partner account, payee, tax, banking, age gate.",
+            "Required visuals: capsules (small/main/vertical), 5\u201310 screenshots, 2\u20133 GIFs, 60\u201390s trailer.",
+            "Page copy: short description (300 chars), long description with structured sections.",
+            "Pre-launch features enabled: announce date, demo plan, community hub.",
+            "First-wave press kit: 1-page fact sheet, hi-res key art, gameplay clips, contact."
+          ]
+        },
+        {
+          "heading": "Phase 3 \u2014 Audience Building",
+          "tx_label": "T-6 \u2192 T-3 mo",
+          "items": [
+            "Community channels live: Discord, X/social, dev blog, mailing list.",
+            "Content cadence: 12 weeks of weekly devlog / GIF / screenshot posts pre-built.",
+            "Outreach: 50 curators, 30 press contacts, 30 streamers researched and tiered.",
+            "Wishlist milestones tracked: 1K (validation), 7K (signal), 25K (healthy launch).",
+            "Target 15K\u201330K wishlists by launch \u2014 the band most genre titles need."
+          ]
+        }
+      ]
+    },
+    {
+      "slide_id": "S4-3",
+      "title": "Demo Fest & Pre-Launch Push",
+      "subtitle": "Convert attention into wishlists, then convert wishlists into buyers.",
+      "phase_span": "T-3 mo  \u2192  T-1 mo",
+      "tx_start_months": 3,
+      "tx_end_months": 1,
+      "sections": [
+        {
+          "heading": "Phase 4 \u2014 Demo Showcase Fest",
+          "tx_label": "T-3 mo",
+          "items": [
+            "Demo build polished to 30\u201390 min of best-foot-forward gameplay; first 5 min hook tested.",
+            "Festival registration completed early; capsule and demo trailer submitted on spec.",
+            "Pre-fest push: socials, newsletter, Discord countdown; 3 streamers lined up.",
+            "During fest: daily metrics review (CTR, demo D/L, wishlist uplift), reply to every review.",
+            "Post-fest: thank-you devlog, list of fixes, demo stays up if rules allow."
+          ]
+        },
+        {
+          "heading": "Phase 5 \u2014 Pre-Launch Push",
+          "tx_label": "T-3 \u2192 T-1 mo",
+          "items": [
+            "Launch trailer (60\u201390s) cut; first 5s hook validated; release date + CTA in end card.",
+            "Trailer mirrored in native ratios: 16:9 (YouTube), 1:1 (X), 9:16 (TikTok/Reels).",
+            "Embargoed review keys to top 20 press, 4 weeks out; 30 personalized streamer emails.",
+            "Final build to default branch 2 weeks before launch; day-1 patch staged separately.",
+            "Achievements, save-cloud, controller, localization, handheld cert all tested.",
+            "Paid test (optional): $500\u2013$2K across Meta/TikTok/YouTube/Reddit, 3 creative angles."
+          ]
+        }
+      ]
+    },
+    {
+      "slide_id": "S4-4",
+      "title": "Launch Week & Launch Day",
+      "subtitle": "Be present. Respond fast. Don\u2019t break anything.",
+      "phase_span": "T-7 days  \u2192  T+0",
+      "tx_start_months": 0.25,
+      "tx_end_months": 0,
+      "sections": [
+        {
+          "heading": "Phase 6 \u2014 Launch Week",
+          "tx_label": "T-7 \u2192 T-1 days",
+          "items": [
+            "T-7: Final QA pass by fresh eyes; pricing locked; 10% launch discount decided.",
+            "T-7: Press release (short, scannable, assets attached) sent 48h pre-launch under embargo.",
+            "T-3: Server capacity checked across Discord, site, support email; on-call rota covers 16+ hrs.",
+            "T-3: Pre-written launch posts and common-bug response templates approved.",
+            "T-1: Sleep schedule planned; final wishlist count screenshotted; tools and devices tested."
+          ]
+        },
+        {
+          "heading": "Phase 7 \u2014 Launch Day",
+          "tx_label": "T+0 (Launch Day)",
+          "items": [
+            "Hr 0\u20132: Confirm release went live (refresh, check backend); launch posts on all channels within 30 min.",
+            "Hr 2\u20138: Reply to every review and Discord ping; pin known issues; hotfix only critical bugs.",
+            "Hr 8\u201324: Compile day-1 metrics (wishlist conversion, refund rate, review score, peak CCU).",
+            "Day 1 close: Public end-of-day post \u2014 thank players, acknowledge issues, set day-2 expectations.",
+            "First 7 days: Daily patch notes; re-pitch the 50 streamers who passed pre-launch."
+          ]
+        }
+      ]
+    },
+    {
+      "slide_id": "S4-5",
+      "title": "Post-Launch Growth",
+      "subtitle": "Launch is the start, not the finish. Months 2\u201312 often beat month 1.",
+      "phase_span": "T+30 days  \u2192  T+365 days",
+      "tx_start_months": -1,
+      "tx_end_months": -12,
+      "sections": [
+        {
+          "heading": "Phase 8a \u2014 First 30 Days",
+          "tx_label": "T+30 days",
+          "items": [
+            "Major patch addressing top community concerns shipped.",
+            "First platform featured-deal slot applied for; aim for \u226525% discount.",
+            "Festival applications: indie showcases, genre fests, summer/winter events.",
+            "Console-port decision gated at ~5K PC units sold; porting partners scoped (6\u201312 mo lead)."
+          ]
+        },
+        {
+          "heading": "Phase 8b \u2014 Months 2\u201312",
+          "tx_label": "T+60 \u2192 T+365 days",
+          "items": [
+            "Monthly free content updates \u2014 each one a visibility refresh on the platform.",
+            "Discount cadence: 3 major sales + 1\u20132 mid-cycle drops planned.",
+            "Localization expansion based on regional sales (Brazilian PT, Simplified Chinese typically highest ROI).",
+            "Cross-promo bundles with adjacent-genre devs; re-engagement campaign for lapsed wishlists.",
+            "Months 6\u201312: Major DLC / 1.0 if Early Access; awards push; public post-mortem; planning game #2 begins."
+          ]
+        }
+      ]
+    }
+  ],
+  "summary_events": {
+    "_note": "Filtered subset of phase items \u2014 only date-anchored milestones, events, and deadlines. Used by the Step 4.6 'Key Dates & Events' summary slide. No descriptors. Each entry is (date_anchor, event_label).",
+    "events": [
+      {"date_anchor": "T-12mo", "event": "Vertical slice playable"},
+      {"date_anchor": "T-12mo", "event": "Title, genre & 5 store tags locked"},
+      {"date_anchor": "T-9mo",  "event": "Platform backend configured"},
+      {"date_anchor": "T-9mo",  "event": "Store page live: capsules, screenshots, trailer"},
+      {"date_anchor": "T-6mo",  "event": "Community channels live (Discord, social, mailing list)"},
+      {"date_anchor": "T-6mo",  "event": "First-wave press kit shipped"},
+      {"date_anchor": "T-3mo",  "event": "Demo showcase fest goes live"},
+      {"date_anchor": "T-1mo",  "event": "Launch trailer published as primary asset"},
+      {"date_anchor": "T-1mo",  "event": "Embargoed review keys to top 20 press"},
+      {"date_anchor": "T-1mo",  "event": "Streamer key wave (30 personalized)"},
+      {"date_anchor": "T-2wk",  "event": "Final build to default branch"},
+      {"date_anchor": "T-7d",   "event": "Pricing & launch discount locked"},
+      {"date_anchor": "T-7d",   "event": "Press release sent under 48h embargo"},
+      {"date_anchor": "T-1d",   "event": "Final wishlist count screenshot"},
+      {"date_anchor": "T+0",    "event": "Launch Day"},
+      {"date_anchor": "T+0",    "event": "Launch posts across all channels (within 30 min)"},
+      {"date_anchor": "T+0",    "event": "End-of-day-1 public recap post"},
+      {"date_anchor": "T+7d",   "event": "First post-launch roadmap post"},
+      {"date_anchor": "T+30d",  "event": "Major patch shipped"},
+      {"date_anchor": "T+30d",  "event": "First featured-deal slot applied"},
+      {"date_anchor": "T+30d",  "event": "Festival applications submitted"},
+      {"date_anchor": "T+60d",  "event": "Console-port decision gate (~5K units)"},
+      {"date_anchor": "T+90d",  "event": "First major sale event participation"},
+      {"date_anchor": "T+180d", "event": "Quarterly content drop"},
+      {"date_anchor": "T+365d", "event": "Major DLC / 1.0 / awards push"}
+    ]
+  },
+  "benchmark_appendix": {
+    "title": "Benchmarks at Launch",
+    "rows": [
+      {"metric": "Wishlist \u2192 sale (first week)", "weak": "5\u20138%", "avg": "10\u201315%", "strong": "20%+"},
+      {"metric": "Wishlist \u2192 sale (year 1)",   "weak": "15\u201320%", "avg": "25\u201335%", "strong": "40%+"},
+      {"metric": "Capsule CTR (discovery)",         "weak": "<3%",   "avg": "5\u20138%",   "strong": "10%+"},
+      {"metric": "Trailer watch-through",           "weak": "<20%",  "avg": "25\u201340%", "strong": "50%+"},
+      {"metric": "Refund rate",                     "weak": "8\u201312%", "avg": "5\u20138%",   "strong": "<5%"},
+      {"metric": "Review score (% positive)",       "weak": "<70%",  "avg": "80%",        "strong": "90%+"},
+      {"metric": "Demo \u2192 wishlist (fest)",     "weak": "<10%",  "avg": "15\u201325%", "strong": "30%+"}
+    ]
+  }
+}
