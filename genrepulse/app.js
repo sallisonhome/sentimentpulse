@@ -6,6 +6,419 @@ const main = document.getElementById('main');
 const genreSidebarSection = document.getElementById('genre-list-section');
 const genreSidebarList = document.getElementById('genre-sidebar-list');
 
+// ── Platform Mix module ────────────────────────────────────────────────────
+// Mirrors howmanyareplaying.com's PlatformMixPopover (Layout 3, Variant C badge).
+// All Saber-specific code is namespaced under PM_*; markup uses .pm-* classes.
+// ISOLATION: this widget is read-only against row data. It NEVER writes back
+// into game cells, sort keys, averages, or any export. The +/+ Platforms
+// column simply hosts a personal overlay that lives in a per-session row
+// (user_platform_mix table on the upstream backend, identified by connect.sid).
+const PM_PLATFORM_KEYS = ['steam', 'pc_other', 'xbox', 'playstation', 'switch'];
+const PM_PLATFORM_META = {
+  steam:       { label: 'Steam',         color: '#66c0f4' },
+  pc_other:    { label: 'PC Other',      color: '#d0d0e0' },
+  xbox:        { label: 'Xbox',          color: '#5cd45c' },
+  playstation: { label: 'PlayStation',   color: '#6aa9e9' },
+  switch:      { label: 'Switch / 2',    color: '#ff7a85' },
+};
+const PM_DEFAULT_MIX = {
+  steam_pct: 100, pc_other_pct: 0, xbox_pct: 0, playstation_pct: 0, switch_pct: 0,
+};
+
+function pmIsDefaultMix(mix) {
+  return PM_PLATFORM_KEYS.every(k => mix[`${k}_pct`] === PM_DEFAULT_MIX[`${k}_pct`]);
+}
+
+function pmActiveCount(mix) {
+  return PM_PLATFORM_KEYS.reduce((n, k) => n + (mix[`${k}_pct`] > 0 ? 1 : 0), 0);
+}
+
+// Pure rebalance — ported verbatim from frontend/src/platform-mix/rebalance.js.
+// Any pct change re-distributes proportionally across the other four so the
+// total is always exactly 100 (backend CHECK constraint).
+function pmRebalance(mix, changedKey, rawValue) {
+  if (!PM_PLATFORM_KEYS.includes(changedKey)) {
+    throw new Error(`pmRebalance: unknown key ${changedKey}`);
+  }
+  let newVal = Number(rawValue);
+  if (!Number.isFinite(newVal)) newVal = 0;
+  newVal = Math.max(0, Math.min(100, Math.round(newVal)));
+  const next = { ...mix };
+  const others = PM_PLATFORM_KEYS.filter(k => k !== changedKey);
+  const newOthersSum = 100 - newVal;
+  const oldOthersSum = others.reduce((s, k) => s + (next[`${k}_pct`] || 0), 0);
+  next[`${changedKey}_pct`] = newVal;
+  if (oldOthersSum === 0) {
+    const each = Math.floor(newOthersSum / others.length);
+    others.forEach(k => { next[`${k}_pct`] = each; });
+    const remainder = newOthersSum - each * others.length;
+    if (remainder !== 0) next[`${others[0]}_pct`] += remainder;
+  } else {
+    let running = 0;
+    others.forEach((k, i) => {
+      if (i === others.length - 1) {
+        next[`${k}_pct`] = newOthersSum - running;
+      } else {
+        const v = Math.round(next[`${k}_pct`] * (newOthersSum / oldOthersSum));
+        next[`${k}_pct`] = v;
+        running += v;
+      }
+    });
+  }
+  others.forEach(k => {
+    if (next[`${k}_pct`] < 0) next[`${k}_pct`] = 0;
+    if (next[`${k}_pct`] > 100) next[`${k}_pct`] = 100;
+  });
+  let total = PM_PLATFORM_KEYS.reduce((s, k) => s + next[`${k}_pct`], 0);
+  let safety = 200;
+  while (total !== 100 && safety-- > 0) {
+    const target = others.find(k => total < 100 ? next[`${k}_pct`] < 100 : next[`${k}_pct`] > 0);
+    if (!target) break;
+    next[`${target}_pct`] += total < 100 ? 1 : -1;
+    total = PM_PLATFORM_KEYS.reduce((s, k) => s + next[`${k}_pct`], 0);
+  }
+  return next;
+}
+
+// API — hits /genrepulse/api/platform-mix/:appid through the Saber nginx proxy.
+// `credentials: 'include'` makes the browser send/store the connect.sid cookie
+// that express-session uses to identify the user.
+async function pmFetchMix(appid) {
+  const res = await fetch(`${API_BASE}/platform-mix/${appid}`, {
+    credentials: 'include',
+    headers: { 'Accept': 'application/json' },
+  });
+  if (!res.ok) throw new Error(`Mix GET ${appid} returned ${res.status}`);
+  return res.json();
+}
+
+async function pmSaveMix(appid, mix) {
+  const res = await fetch(`${API_BASE}/platform-mix/${appid}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify({
+      steam_pct: mix.steam_pct,
+      pc_other_pct: mix.pc_other_pct,
+      xbox_pct: mix.xbox_pct,
+      playstation_pct: mix.playstation_pct,
+      switch_pct: mix.switch_pct,
+    }),
+  });
+  if (!res.ok) {
+    let err = `Mix PUT ${appid} returned ${res.status}`;
+    try { const body = await res.json(); if (body.error) err = body.error; } catch {}
+    throw new Error(err);
+  }
+  return res.json();
+}
+
+// Formatters local to the popover (matches the React version's output)
+function pmFmtUsd(cents) {
+  if (!Number.isFinite(cents)) return '—';
+  const dollars = cents / 100;
+  if (dollars >= 1_000_000) return `$${(dollars / 1_000_000).toFixed(2)}M`;
+  if (dollars >= 1_000)     return `$${(dollars / 1_000).toFixed(1)}K`;
+  return `$${dollars.toFixed(0)}`;
+}
+function pmFmtUnits(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
+  return Math.round(n).toLocaleString('en-US');
+}
+
+// Per-row state. Keyed by appid; created lazily when a badge is first clicked.
+// Holds: { mix, isCustom, activeCount } so the badge can re-render its style
+// after a save without re-fetching.
+const pmRowState = new Map();
+
+// Popover singleton — only one open at a time.
+let pmActivePopover = null;
+let pmActiveAppid = null;
+let pmActiveAnchorEl = null;
+let pmSaveTimer = null;
+let pmReposListenersAttached = false;
+let pmScrollHandler = null;
+let pmResizeHandler = null;
+
+function pmClosePopover() {
+  if (!pmActivePopover) return;
+  pmActivePopover.remove();
+  pmActivePopover = null;
+  pmActiveAppid = null;
+  pmActiveAnchorEl = null;
+  if (pmSaveTimer) { clearTimeout(pmSaveTimer); pmSaveTimer = null; }
+  if (pmReposListenersAttached) {
+    window.removeEventListener('scroll', pmScrollHandler, true);
+    window.removeEventListener('resize', pmResizeHandler);
+    document.removeEventListener('mousedown', pmOutsideHandler, true);
+    document.removeEventListener('keydown', pmKeyHandler, true);
+    pmReposListenersAttached = false;
+  }
+}
+
+function pmRepositionPopover() {
+  if (!pmActivePopover || !pmActiveAnchorEl) return;
+  const rect = pmActiveAnchorEl.getBoundingClientRect();
+  const POPOVER_W = 340;
+  let left = rect.right - POPOVER_W;
+  if (left < 8) left = 8;
+  const maxLeft = window.innerWidth - POPOVER_W - 8;
+  if (left > maxLeft) left = maxLeft;
+  pmActivePopover.style.left = `${left}px`;
+  pmActivePopover.style.top = `${rect.bottom + 6}px`;
+}
+
+function pmOutsideHandler(e) {
+  if (!pmActivePopover) return;
+  if (pmActivePopover.contains(e.target)) return;
+  // Don't close on badge click — the badge has its own toggle handler
+  if (pmActiveAnchorEl && pmActiveAnchorEl.contains(e.target)) return;
+  pmClosePopover();
+}
+
+function pmKeyHandler(e) {
+  if (e.key === 'Escape') pmClosePopover();
+}
+
+function pmRenderBadge(g) {
+  if (g.is_prerelease) return '<span class="muted-dash">—</span>';
+  if (!Number.isFinite(g.estimated_owners) || g.estimated_owners <= 0) {
+    // No anchor units — the totals math won't work. Hide the badge entirely.
+    return '<span class="muted-dash">—</span>';
+  }
+  const state = pmRowState.get(g.appid);
+  const isCustom = !!(state && state.isCustom);
+  const activeCount = state ? state.activeCount : 1;
+  const cls = `pm-badge${isCustom ? ' pm-badge--custom' : ''}`;
+  const label = isCustom ? `Mix · ${activeCount}` : '+ Platforms';
+  // data-appid is the only thing the click handler needs; the game's anchor
+  // values (units_steam, asp_cents) are looked up from currentGenreData by appid.
+  return `<button type="button" class="${cls}" data-pm-appid="${g.appid}" aria-label="Open platform mix">${label}</button>`;
+}
+
+function pmRenderPopover(appid) {
+  // anchor row data (units_steam, asp_cents) comes from currentGenreData
+  // Port of howmanyareplaying.com's o1() ASP formula — verbatim:
+  //   is_free ? null
+  //   : lifetime_avg_price_cents ?? Math.round(msrp_usd_cents * 0.66)
+  const game = currentGenreData?.games?.find(g => g.appid === appid);
+  if (!game) return;
+  const unitsSteam = game.estimated_owners;
+  const aspCents = game.is_free
+    ? null
+    : (game.lifetime_avg_price_cents != null
+        ? game.lifetime_avg_price_cents
+        : (game.msrp_usd_cents
+            ? Math.round(game.msrp_usd_cents * 0.66)
+            : null));
+
+  const existing = pmRowState.get(appid);
+  const initialMix = existing ? existing.mix : PM_DEFAULT_MIX;
+  let mix = { ...initialMix };
+  let loaded = !!existing;  // skip the loading state if we already have data cached
+  let saveState = 'idle';
+  let saveError = '';
+
+  // Build DOM
+  const pop = document.createElement('div');
+  pop.className = 'pm-popover';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Platform mix overlay');
+  pop.style.position = 'fixed';
+  pop.style.width = '340px';
+  document.body.appendChild(pop);
+  pmActivePopover = pop;
+  pmActiveAppid = appid;
+
+  function paint() {
+    const totals = (function() {
+      const sp = mix.steam_pct;
+      if (!Number.isFinite(unitsSteam) || unitsSteam <= 0 || sp <= 0) return null;
+      const totalUnits = (unitsSteam / sp) * 100;
+      const perPlatform = PM_PLATFORM_KEYS.map(k => {
+        const pct = mix[`${k}_pct`];
+        const u = totalUnits * pct / 100;
+        const gross = Number.isFinite(aspCents) ? u * aspCents : null;
+        return { key: k, pct, units: u, grossCents: gross };
+      });
+      const totalGrossCents = Number.isFinite(aspCents) ? totalUnits * aspCents : null;
+      return { perPlatform, totalUnits, totalGrossCents };
+    })();
+
+    pop.innerHTML = `
+      <div class="pm-popover__header">
+        <span class="pm-popover__title">Cross-platform mix</span>
+        <button type="button" class="pm-popover__close" aria-label="Close">✕</button>
+      </div>
+
+      <div class="pm-bar" aria-hidden="true">
+        ${PM_PLATFORM_KEYS.map(k => {
+          const pct = mix[`${k}_pct`];
+          if (pct <= 0) return '';
+          return `<div class="pm-bar__seg" style="flex:${pct};background:${PM_PLATFORM_META[k].color}" title="${PM_PLATFORM_META[k].label}: ${pct}%">${pct >= 10 ? `<span class="pm-bar__lbl">${pct}%</span>` : ''}</div>`;
+        }).join('')}
+      </div>
+
+      <div class="pm-grid">
+        ${PM_PLATFORM_KEYS.map(k => `
+          <label class="pm-cell${k === 'steam' ? ' pm-cell--anchor' : ''}">
+            <span class="pm-cell__lbl">
+              <span class="pm-swatch" style="background:${PM_PLATFORM_META[k].color}" aria-hidden="true"></span>
+              ${PM_PLATFORM_META[k].label}
+              ${k === 'steam' ? '<span class="pm-cell__anchor-tag">anchor</span>' : ''}
+            </span>
+            <span class="pm-cell__input-wrap">
+              <input type="number" min="0" max="100" step="1" inputmode="numeric"
+                     class="pm-cell__input" data-pm-key="${k}"
+                     value="${mix[`${k}_pct`]}" aria-label="${PM_PLATFORM_META[k].label} percent">
+              <span class="pm-cell__suffix">%</span>
+            </span>
+          </label>
+        `).join('')}
+      </div>
+
+      <div class="pm-totals">
+        ${totals ? (totals.perPlatform.filter(r => r.pct > 0).map(row => `
+          <div class="pm-totals__row">
+            <span class="pm-totals__name">
+              <span class="pm-swatch" style="background:${PM_PLATFORM_META[row.key].color}" aria-hidden="true"></span>
+              ${PM_PLATFORM_META[row.key].label}
+            </span>
+            <span class="pm-totals__num">${pmFmtUnits(row.units)} units · ${pmFmtUsd(row.grossCents)}</span>
+          </div>
+        `).join('') + `
+          <div class="pm-totals__row pm-totals__row--grand">
+            <span class="pm-totals__name">All platforms</span>
+            <span class="pm-totals__num">${pmFmtUnits(totals.totalUnits)} units · ${pmFmtUsd(totals.totalGrossCents)}</span>
+          </div>
+        `) : '<div class="pm-totals__hint">Set Steam &gt; 0 to anchor totals.</div>'}
+      </div>
+
+      <div class="pm-footer">
+        <button type="button" class="pm-footer__reset" ${pmIsDefaultMix(mix) ? 'disabled' : ''}>Reset to Steam only</button>
+        <span class="pm-footer__save pm-footer__save--${saveState}">${
+          saveState === 'saving' ? 'Saving…' :
+          saveState === 'saved'  ? 'Saved'    :
+          saveState === 'error'  ? `Error: ${escapeHtml(saveError)}` : ''
+        }</span>
+      </div>
+
+      <div class="pm-note">Personal view. Doesn't affect Compare, genre rankings, or exports.</div>
+    `;
+
+    // Wire input handlers
+    pop.querySelectorAll('input.pm-cell__input').forEach(input => {
+      input.addEventListener('input', e => {
+        const key = e.target.dataset.pmKey;
+        mix = pmRebalance(mix, key, e.target.value);
+        // Cache state so the badge re-renders correctly even before save lands
+        pmRowState.set(appid, {
+          mix,
+          isCustom: !pmIsDefaultMix(mix),
+          activeCount: pmActiveCount(mix),
+        });
+        scheduleSave();
+        paint();
+      });
+    });
+    pop.querySelector('.pm-popover__close')?.addEventListener('click', pmClosePopover);
+    pop.querySelector('.pm-footer__reset')?.addEventListener('click', () => {
+      mix = { ...PM_DEFAULT_MIX };
+      pmRowState.set(appid, { mix, isCustom: false, activeCount: 1 });
+      scheduleSave();
+      paint();
+    });
+
+    pmRepositionPopover();
+    // Re-render the row badge so its label/style updates immediately
+    pmRefreshBadge(appid);
+  }
+
+  function scheduleSave() {
+    if (!loaded) return; // don't save before we've fetched what the user had
+    if (pmSaveTimer) clearTimeout(pmSaveTimer);
+    saveState = 'saving';
+    paint();
+    pmSaveTimer = setTimeout(async () => {
+      try {
+        await pmSaveMix(appid, mix);
+        saveState = 'saved';
+        paint();
+        setTimeout(() => {
+          if (saveState === 'saved') { saveState = 'idle'; paint(); }
+        }, 1200);
+      } catch (err) {
+        saveState = 'error';
+        saveError = err.message || 'Save failed';
+        paint();
+      }
+    }, 500);
+  }
+
+  // Initial paint (default mix or cached) so the popover appears instantly
+  paint();
+
+  // Attach reposition + dismiss listeners
+  pmScrollHandler = () => pmRepositionPopover();
+  pmResizeHandler = () => pmRepositionPopover();
+  window.addEventListener('scroll', pmScrollHandler, true);
+  window.addEventListener('resize', pmResizeHandler);
+  document.addEventListener('mousedown', pmOutsideHandler, true);
+  document.addEventListener('keydown', pmKeyHandler, true);
+  pmReposListenersAttached = true;
+
+  // Fetch saved mix (replaces the default if the user had something stored)
+  if (!existing) {
+    pmFetchMix(appid).then(res => {
+      if (pmActiveAppid !== appid) return; // popover closed before fetch landed
+      mix = res.mix;
+      loaded = true;
+      pmRowState.set(appid, {
+        mix,
+        isCustom: !res.isDefault,
+        activeCount: pmActiveCount(mix),
+      });
+      paint();
+    }).catch(() => {
+      loaded = true; // allow saves anyway; subsequent PUT will create the row
+    });
+  } else {
+    loaded = true;
+  }
+}
+
+function pmRefreshBadge(appid) {
+  const tdList = document.querySelectorAll(`td button.pm-badge[data-pm-appid="${appid}"]`);
+  if (!tdList.length) return;
+  const state = pmRowState.get(appid);
+  const isCustom = !!(state && state.isCustom);
+  const activeCount = state ? state.activeCount : 1;
+  tdList.forEach(btn => {
+    btn.className = `pm-badge${isCustom ? ' pm-badge--custom' : ''}`;
+    btn.textContent = isCustom ? `Mix · ${activeCount}` : '+ Platforms';
+  });
+}
+
+function pmHandleBadgeClick(e) {
+  const btn = e.target.closest('button.pm-badge[data-pm-appid]');
+  if (!btn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const appid = Number(btn.dataset.pmAppid);
+  if (pmActiveAppid === appid) {
+    // Same badge clicked — toggle closed
+    pmClosePopover();
+    return;
+  }
+  // Different badge (or none open) — close existing, open new
+  pmClosePopover();
+  pmActiveAnchorEl = btn;
+  pmRenderPopover(appid);
+}
+
+
 // ── Cache ──────────────────────────────────────────────────────────────────
 let genreListCache = null;
 const genreDetailCache = new Map();
@@ -240,6 +653,10 @@ function renderTable(games) {
     { key: 'current_ccu',                   label: 'Current',        sortable: true,  align: 'right', render: g => g.is_prerelease ? '<span class="muted-dash">—</span>' : fmt.numFull(g.current_ccu) },
     { key: 'total_reviews',                 label: 'Reviews',        sortable: true,  align: 'right', render: g => g.is_prerelease ? '<span class="muted-dash">—</span>' : fmt.numFull(g.total_reviews) },
     { key: 'positive_percent',              label: 'Pos %',          sortable: true,  align: 'right', render: g => g.is_prerelease ? '<span class="muted-dash">—</span>' : `<span class="pos-pct ${posPctClass(g.positive_percent)}">${fmt.pct(g.positive_percent)}</span>` },
+    // Platform Mix overlay — personal view, non-sortable. See PM_* block at top of file.
+    // The column header has no sort affordance because the badge is per-user state,
+    // not a property of the game row. Matches howmanyareplaying's GenrePage column.
+    { key: '_platform_mix',                 label: '+ Platforms',    sortable: false, align: 'center', render: g => pmRenderBadge(g) },
   ];
 
   const sorted = sortGames(games, currentSort.key, currentSort.dir);
@@ -250,8 +667,9 @@ function renderTable(games) {
         <tr>
           ${cols.map(c => {
             const isSorted = c.key === currentSort.key;
-            const arrow = isSorted ? (currentSort.dir === 'asc' ? '▲' : '▼') : '';
-            return `<th class="${isSorted ? 'sorted' : ''}" data-key="${c.key}" style="text-align:${c.align}">
+            const arrow = isSorted && c.sortable !== false ? (currentSort.dir === 'asc' ? '▲' : '▼') : '';
+            const sortableAttr = c.sortable === false ? 'data-sortable="false" style="cursor:default"' : '';
+            return `<th class="${isSorted ? 'sorted' : ''} ${c.sortable === false ? 'no-sort' : ''}" data-key="${c.key}" ${sortableAttr} style="text-align:${c.align}">
               ${escapeHtml(c.label)}<span class="sort-arrow">${arrow}</span>
             </th>`;
           }).join('')}
@@ -271,8 +689,9 @@ function renderTable(games) {
     </table>
   `;
 
-  // Wire sort handlers
+  // Wire sort handlers — skip the non-sortable Platform Mix column
   wrap.querySelectorAll('th[data-key]').forEach(th => {
+    if (th.dataset.sortable === 'false') return;
     th.addEventListener('click', () => {
       const key = th.dataset.key;
       if (currentSort.key === key) {
@@ -284,6 +703,9 @@ function renderTable(games) {
       renderTable(currentGenreData.games);
     });
   });
+
+  // Wire badge clicks (delegated, so re-renders don't lose handlers)
+  wrap.addEventListener('click', pmHandleBadgeClick);
 }
 
 function renderGameCell(g) {
