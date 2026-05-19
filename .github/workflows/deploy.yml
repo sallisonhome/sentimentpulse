@@ -61,8 +61,10 @@ jobs:
             which npm || echo "npm not in PATH"
             if [ -d frontend ] && [ -f frontend/package.json ]; then
               cd frontend
-              npm ci 2>&1 | tail -5
-              npm run build 2>&1 | tail -10
+              # Use npm install (not ci) so out-of-sync lockfiles don't block deploy.
+              # Capture full output so any failure is visible in the workflow log.
+              npm install --no-audit --no-fund
+              npm run build
               cd ..
             else
               echo "frontend/ or package.json missing, skipping build"
