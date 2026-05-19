@@ -206,6 +206,46 @@ def _lda(texts: list[str], n_topics: int) -> list[str]:
 
 _HUMANIZE_BATCH_SIZE = 15   # Max labels per Claude call to avoid truncated JSON
 
+# Concepts Claude is forbidden from inventing (CLAUDE.md §13). If the humanized
+# label contains any of these tokens but the raw cluster does NOT, the label is
+# rejected and we fall back to the raw cluster. Tokens are checked as substrings
+# against a lowercased, punctuation-normalized form of both strings.
+_FORBIDDEN_CONCEPT_TOKENS = (
+    "free to play", "free-to-play", "f2p",
+    "battle pass", "battlepass",
+    "monetization", "monetisation",
+    "microtransaction", "micro-transaction",
+    "gacha",
+    "live service",
+    "season pass", "seasonpass",
+    "pay to win", "pay-to-win", "p2w",
+    "loot box", "lootbox",
+    "subscription",
+    "dlc",
+)
+
+
+def _normalize_for_check(s: str) -> str:
+    """Lowercase + collapse non-alphanumerics to single spaces for substring match."""
+    import re  # noqa: PLC0415
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+
+
+def _label_violates_evidence_rule(humanized: str, raw_cluster: str) -> bool:
+    """Return True if the humanized label introduces a forbidden concept that
+    the raw cluster does NOT contain.
+
+    This is the belt to the prompt's suspenders. Even with explicit negative
+    examples in the prompt, the LLM occasionally introduces F2P / battle-pass /
+    monetization framing for clusters that have none of those words.
+    """
+    h = _normalize_for_check(humanized)
+    r = _normalize_for_check(raw_cluster)
+    for tok in _FORBIDDEN_CONCEPT_TOKENS:
+        if tok in h and tok not in r:
+            return True
+    return False
+
 
 def _call_claude_humanize(game_name: str, raw_labels: list[str]) -> dict[str, str]:
     """
@@ -231,27 +271,66 @@ def _call_claude_humanize(game_name: str, raw_labels: list[str]) -> dict[str, st
     for i in range(0, len(raw_labels), _HUMANIZE_BATCH_SIZE):
         batch = raw_labels[i : i + _HUMANIZE_BATCH_SIZE]
         batch_map = _call_claude_humanize_batch(client, game_name, batch)
-        merged.update(batch_map)
+        # Post-LLM filter: reject any humanized label that introduces a forbidden
+        # concept not present in the source cluster. Fall back to the raw label.
+        for raw_label, human_label in batch_map.items():
+            if not isinstance(human_label, str) or not human_label.strip():
+                merged[raw_label] = raw_label
+                continue
+            if _label_violates_evidence_rule(human_label, raw_label):
+                logger.warning(
+                    "Topic label rejected for hallucinated concept — raw=%r humanized=%r (using raw label)",
+                    raw_label, human_label,
+                )
+                merged[raw_label] = raw_label
+            else:
+                merged[raw_label] = human_label.strip()
 
     return merged
 
 
 def _call_claude_humanize_batch(client, game_name: str, raw_labels: list[str]) -> dict[str, str]:
-    """Send a single batch of labels to Claude and parse the JSON response."""
+    """Send a single batch of labels to Claude and parse the JSON response.
+
+    CRITICAL: the label MUST be derived only from the words present in the raw
+    cluster. Claude is explicitly forbidden from introducing gaming-industry
+    concepts (F2P, battle pass, monetization model, etc.) that don't appear in
+    the cluster. When a cluster is ambiguous or generic, the human label must
+    reflect that — do not invent specificity.
+
+    See CLAUDE.md §13 for the project-wide evidence-only rule this enforces.
+    """
     clusters_text = "\n".join(f"- {label}" for label in raw_labels)
     prompt = (
         f'You are labelling discussion topics for a game community sentiment dashboard.\n'
         f'Game: "{game_name}"\n\n'
-        f'Below are raw keyword clusters extracted automatically from player reviews '
-        f'and forum posts. For each cluster, write a 2-5 word plain-English topic label '
-        f'that a non-technical person would immediately understand. '
-        f'Labels should be specific to gaming context and reflect what players are actually discussing.\n\n'
-        f'Good examples:\n'
+        f'HARD RULES — NO INVENTING, NO SPECULATING:\n'
+        f'1. The label MUST be derived ONLY from the words in the raw cluster. Do not '
+        f'add concepts the cluster does not contain.\n'
+        f'2. NEVER introduce these gaming-industry concepts unless the EXACT word is in the cluster: '
+        f'"free-to-play", "f2p", "battle pass", "monetization", "microtransactions", "gacha", '
+        f'"live service", "season pass", "pay-to-win", "loot box", "DLC", "subscription". '
+        f'These are dashboard-poisoning false positives — a generic cluster like "free + play + game" '
+        f'does NOT imply free-to-play; it is players using common verbs.\n'
+        f'3. If the cluster is generic, vague, or made of common stopword-adjacent words, label it '
+        f'with a generic-but-honest label like "General Discussion", "General Gameplay Talk", '
+        f'or "Misc Game Trailers". Do NOT dress generic clusters up as specific insights.\n'
+        f'4. The label must read as a topic of discussion, not a marketing claim or feature ad.\n'
+        f'5. 2-5 words. Use "&" for compound topics. No emojis, no quotation marks in the label.\n\n'
+        f'GOOD examples (label is grounded in the cluster words):\n'
         f'- "crash + fps + performance" → "Performance & FPS Issues"\n'
-        f'- "love + game + play" → "Enjoyable Gameplay"\n'
+        f'- "love + game + play" → "General Positive Sentiment"   (NOT "Free to Play Model" — "free" is not in this cluster, and "play" is a verb here)\n'
         f'- "multiplayer + online + bug" → "Multiplayer Connectivity Bugs"\n'
         f'- "story + narrative + ending" → "Story & Narrative"\n'
-        f'- "price + worth + value" → "Price vs Value"\n\n'
+        f'- "price + worth + value" → "Price vs Value"\n'
+        f'- "trailer + announce + reveal" → "Trailers & Announcements"\n'
+        f'- "good + great + fun" → "General Positive Sentiment"\n'
+        f'- "think + want + would" → "General Discussion"\n\n'
+        f'BAD examples (these are the kinds of hallucinations to NEVER produce):\n'
+        f'- "free + play + game" → "Free to Play Model"        BAD: "free" is a verb modifier here, not a business model\n'
+        f'- "john + wick + game" → "Free-to-Play John Wick"   BAD: cluster contains nothing about pricing\n'
+        f'- "like + good + game" → "Battle Pass Success"      BAD: cluster has no battle-pass words\n'
+        f'- "competitor + alternative + similar" → "F2P Competitive Positioning"   BAD: F2P is not in the cluster\n\n'
         f'Raw clusters to label:\n{clusters_text}\n\n'
         f'Respond with ONLY a valid JSON object mapping each raw label to its human-readable label. '
         f'Include every label from the list above. No extra text, no markdown fences.\n'

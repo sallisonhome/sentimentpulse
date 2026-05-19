@@ -322,14 +322,36 @@ def _call_claude_for_period(
     return exec_summary, rec_actions, bold_ideas
 
 
+# ── Evidence-only guardrail (CLAUDE.md §13) ───────────────────────────────────
+# Shared preamble every LLM call uses. Forbids invention/speculation and pins
+# claims to the words actually present in the topic data.
+_EVIDENCE_GUARDRAIL = (
+    "HARD RULES — NO INVENTING, NO SPECULATING:\n"
+    "1. Every claim you make must be traceable to the exact topic labels provided below. "
+    "Do not invent topics, infer concepts, or extrapolate beyond what is literally in the data.\n"
+    "2. NEVER introduce gaming-industry concepts that are not in the topic labels. "
+    "Forbidden unless those exact words appear in a topic label: \"free-to-play\", \"F2P\", "
+    "\"battle pass\", \"monetization model\", \"microtransactions\", \"gacha\", "
+    "\"live service\", \"season pass\", \"pay-to-win\", \"loot box\". "
+    "Treat business model, pricing, platform mix, and release strategy as off-limits unless a topic label explicitly names them.\n"
+    "3. If a topic label is generic (e.g. \"General Discussion\", \"Game Trailers\"), say so plainly. "
+    "Do NOT dress it up as a specific insight.\n"
+    "4. If post volume is low (<20 posts) or topics are vague, lead with that fact and keep the analysis short. "
+    "It is better to say \"insufficient signal\" than to fabricate confidence.\n"
+    "5. NEVER guess what a player meant. The topics below already exclude ambiguous content. "
+    "Work only with what is provided.\n\n"
+)
+
+
 def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts) -> str:
     prompt = (
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
+        + _EVIDENCE_GUARDRAIL +
         f"Below is community sentiment data covering {window_label}. Write a 4-6 sentence executive summary that is:\n"
-        f"- SPECIFIC: cite topic names and rough magnitudes. Don't say \"users like the gameplay\" — say which topics rank where and how big the signal is relative to total posts.\n"
-        f"- ACTIONABLE: lean toward observations that imply a decision or response.\n"
+        f"- SPECIFIC: cite topic names exactly as provided and rough magnitudes. Don't say \"users like the gameplay\" — say which topics rank where and how big the signal is relative to total posts.\n"
+        f"- ACTIONABLE: lean toward observations that imply a decision or response, but only when the data supports one.\n"
         f"- HONEST about scale: if total post volume is low, say so plainly.\n\n"
-        f"Avoid generic platitudes, restating raw counts without insight, or hedging when the data is clear.\n\n"
+        f"Avoid generic platitudes, restating raw counts without insight, hedging when the data is clear, or making claims the topics don't support.\n\n"
         f"Data ({window_label}):\n"
         f"Top positive topics: {pos_str}\n"
         f"Top negative topics: {neg_str}\n"
@@ -352,13 +374,15 @@ def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total
 def _call_actions(client, game_name, window_label, pos_str, neg_str, neu_str) -> str:
     prompt = (
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
+        + _EVIDENCE_GUARDRAIL +
         f"Based on the sentiment data from {window_label} below, write 3-5 specific, actionable recommendations "
         f"the team should execute next. Requirements:\n"
-        f"- Each must reference a specific topic from the data\n"
+        f"- Each must reference a specific topic from the data — use the exact label\n"
         f"- Each must be concrete enough to put on a sprint board this week\n"
         f"- Where useful, note whether the issue looks worsening, stable, or an emerging positive to amplify\n"
-        f"- If a category has nothing actionable, write fewer items rather than padding\n\n"
-        f"Avoid generic advice.\n\n"
+        f"- If a category has nothing actionable, write fewer items rather than padding\n"
+        f"- If no topic supports a real recommendation, output the single line: NO ACTIONABLE RECOMMENDATIONS\n\n"
+        f"Avoid generic advice and any recommendation about business model, pricing, monetization, or platforms unless those exact concepts appear in a topic label.\n\n"
         f"Negative topics: {neg_str}\n"
         f"Neutral topics: {neu_str}\n"
         f"Positive topics: {pos_str}\n\n"
@@ -380,20 +404,23 @@ def _call_bold_ideas(client, game_name, window_label, pos_str, neg_str, neu_str,
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
         f"Looking at community signals from {window_label}, find opportunities that a typical analyst would MISS.\n\n"
+        + _EVIDENCE_GUARDRAIL +
+        f"Bold ideas may be creative, but the TRIGGER INSIGHT they respond to must be evidenced in the topic labels below. "
+        f"Do not invent a complaint cluster or a positive sentiment trend that isn't in the data.\n\n"
         f"ONLY if you spot something genuinely worth flagging as a bold move — beyond the obvious fixes — "
         f"propose 1 or 2 \"bold ideas to consider.\" They should be:\n"
-        f"- Surprising or non-obvious (a community event, an unexpected partnership angle, a creative response to a complaint cluster)\n"
-        f"- Tied to specific signals in the data\n"
+        f"- Surprising or non-obvious (a community event, an unexpected partnership angle, a creative response to a real complaint cluster)\n"
+        f"- Anchored in a SPECIFIC topic label from the data — name it explicitly in the idea\n"
         f"- Aimed at driving positive sentiment in a way standard recommendations wouldn't\n\n"
         f"If the data does NOT clearly support a bold idea, respond with the literal string \"NONE\" and nothing else. "
-        f"Most periods should return NONE. Only fire when there's a real signal.\n\n"
+        f"Most periods should return NONE. Only fire when there's a real, evidenced signal.\n\n"
         f"Data ({window_label}):\n"
         f"Positive topics: {pos_str}\n"
         f"Negative topics: {neg_str}\n"
         f"Neutral topics: {neu_str}\n"
         f"Total posts: {total_posts}\n\n"
         f"Format if ideas exist:\n"
-        f"1. <Bold idea, 1-2 sentences, specific, references data>\n"
+        f"1. <Bold idea, 1-2 sentences, specific, references a topic label by name>\n"
         f"2. <Optional second>\n\n"
         f"Otherwise respond with: NONE"
     )
