@@ -115,6 +115,13 @@ GAME_KEYWORD_FALLBACK: dict[str, list[str]] = {
         "WH40K Space Marine 2",
         "Space Marine II",
     ],
+    "Warhammer 40,000: Space Marine 2": [
+        "Space Marine 2",
+        "SM2",
+        "Warhammer Space Marine 2",
+        "WH40K Space Marine 2",
+        "Space Marine II",
+    ],
     "John Carpenter's Toxic Commando": [
         "Toxic Commando",
         "Carpenter Toxic Commando",
@@ -160,7 +167,17 @@ GAME_KEYWORD_FALLBACK: dict[str, list[str]] = {
         "Ghostbusters Video Game Remastered",
         "Ghostbusters 2009 remaster",
     ],
+    "Ghostbusters: The Video Game Remastered": [
+        "Ghostbusters Remastered",
+        "Ghostbusters Video Game Remastered",
+        "Ghostbusters 2009 remaster",
+    ],
     "TimeShift": [
+        "TimeShift game",
+        "TimeShift Saber",
+        "TimeShift FPS",
+    ],
+    "TimeShift™": [
         "TimeShift game",
         "TimeShift Saber",
         "TimeShift FPS",
@@ -170,6 +187,12 @@ GAME_KEYWORD_FALLBACK: dict[str, list[str]] = {
         "MX Nitro game",
     ],
     "Inversion": [
+        "Inversion game",
+        "Inversion shooter",
+        "Inversion gravity",
+        "Inversion Saber",
+    ],
+    "Inversion™": [
         "Inversion game",
         "Inversion shooter",
         "Inversion gravity",
@@ -194,6 +217,12 @@ GAME_KEYWORD_FALLBACK: dict[str, list[str]] = {
         "Reclaim Expansion",
         "RoadCraft Reclaim",
         "RoadCraft expansion",
+    ],
+    "Halo: Combat Evolved Anniversary": [
+        "Halo CE Anniversary",
+        "Halo CEA",
+        "Combat Evolved Anniversary",
+        "Halo: CE Anniversary",
     ],
 }
 
@@ -310,6 +339,7 @@ _FOCAL_GAME_GENRES: dict[str, set[str]] = {
     "Jurassic Park: Survival": {"action", "adventure"},
     "Turok: Origins": {"fps", "action"},
     "Warhammer 40K: Space Marine 2": {"action", "shooter"},
+    "Warhammer 40,000: Space Marine 2": {"action", "shooter"},
     "John Carpenter's Toxic Commando": {"fps", "horror"},
     "SnowRunner": {"simulation"},
     "RoadCraft": {"simulation"},
@@ -320,6 +350,10 @@ _FOCAL_GAME_GENRES: dict[str, set[str]] = {
     "Crysis 2 Remastered": {"fps"},
     "Ghostbusters Remastered": {"action", "adventure"},
     "TimeShift": {"fps"},
+    "TimeShift™": {"fps"},
+    "Inversion™": {"fps", "action"},
+    "Ghostbusters: The Video Game Remastered": {"action", "adventure"},
+    "Halo: Combat Evolved Anniversary": {"fps"},
     "MX Nitro": {"racing"},
     "MudRunner Old-timers DLC": {"simulation"},
     "RoadCraft Reclaim Expansion": {"simulation"},
