@@ -168,3 +168,10 @@ Matches the howmanyareplaying.com project's `.github/workflows/deploy.yml` patte
 - **Minimal Impact**: Changes should only touch what's necessary. Avoid introducing bugs.
 
 <!-- END PRINCIPLES PROMPT COPY -->
+---
+
+## Canonical Principles
+
+The canonical truth-and-accuracy, QA, and command-execution rules for this repo live in [`PRINCIPLES.md`](./PRINCIPLES.md). When in doubt, that file is the source of truth. Priority order on conflict: **Truth > QA > Style.**
+
+The sections above contain project-specific operational details that remain in effect alongside `PRINCIPLES.md`.
