@@ -55,6 +55,7 @@ from services.steam_service import (
     scrape_forum_threads,
 )
 from services.summary_service import generate_summaries
+from services import period_summary_service as _pss
 from services.topic_service import extract_topics, humanize_topic_labels, upsert_topic_trends
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,9 @@ def run_ingestion() -> dict:
                 errors.append(msg)
                 logger.exception(msg)
                 # Continue with next game — never abort the whole pipeline
+
+        # ── Step 9: Monthly summaries on 1st of month ───────────────────────────
+        _step9_monthly_summaries(db, active_games, log_lines, errors)
 
         final_status = "success" if not errors else "partial"
 
@@ -691,6 +695,47 @@ def _step7_daily_summary(
         msg = f"[Step 7] Error saving daily summary for '{game.name}': {exc}"
         errors.append(msg)
         logger.error(msg)
+
+
+# ── Step 9: Monthly Summaries ────────────────────────────────────────────────
+
+def _step9_monthly_summaries(
+    db,
+    active_games: list,
+    log_lines: list,
+    errors: list,
+) -> None:
+    """
+    If today is the 1st of the month, generate monthly summaries for the
+    preceding calendar month for all active games. Idempotent due to the
+    UNIQUE constraint on (game_id, period_year, period_month).
+    """
+    today = date.today()
+    if today.day != 1:
+        return
+
+    # The month that just ended
+    first_of_this_month = today
+    last_month_end = first_of_this_month - timedelta(days=1)
+    year  = last_month_end.year
+    month = last_month_end.month
+
+    log_lines.append(
+        f"[Step 9] 1st of month — generating monthly summaries for {year}-{month:02d} "        f"across {len(active_games)} game(s)."
+    )
+
+    for game in active_games:
+        try:
+            _pss.generate_monthly_summary(db, game.id, year, month)
+            log_lines.append(
+                f"[Step 9] Monthly summary generated for '{game.name}' {year}-{month:02d}."
+            )
+        except Exception as exc:
+            msg = (
+                f"[Step 9] Monthly summary failed for '{game.name}' "                f"{year}-{month:02d}: {exc}"
+            )
+            errors.append(msg)
+            logger.error(msg)
 
 
 # ── Step 8: Write Log ─────────────────────────────────────────────────────────

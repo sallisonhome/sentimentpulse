@@ -100,6 +100,43 @@ Frontend calls backend at http://localhost:8000/api in dev (Vite proxy configure
 - If a required value genuinely cannot be obtained, **stop and ask one targeted question for that specific value** — do not paper over it with a placeholder.
 - This rule applies on top of (not instead of) the §7 QA-Before-Commit/Deploy gate: commands must be both correct and QA'd before being handed to the user.
 
+### 9. QA Every PR Before Marking Done (REQUIRED)
+- **Every code change that touches behavior MUST be QAed end-to-end before the PR/task is marked complete.**
+- For backend changes: run the relevant tests AND hit the actual endpoint(s) with curl against the live droplet or local server. Don't trust that "it compiles" or "tests pass" means the user-facing flow works.
+- For frontend changes: build the frontend, screenshot the affected page(s) at desktop width, visually inspect the result.
+- For changes that touch both: do both.
+- If the QA reveals a problem, fix it BEFORE telling the user the work is done. Never report success on something that's broken.
+- After the user deploys, run a full live-site QA pass and paste back a results table (what was tested, pass/fail) before declaring the deploy successful.
+
+### 10. Confirm Steps Before Executing Anything Irreversible or Cross-Cutting
+- **Always confirm the plan before executing** when the change is:
+  - Irreversible (DB migrations, deletes, schema changes, file purges)
+  - Cross-cutting (touches multiple apps in the suite, or changes shared Nginx/systemd config)
+  - Above ~5 minutes of work (build a brief plan, get sign-off, then execute)
+- The confirmation should include: what files change, what services restart, what the user needs to run on the droplet, and what could break.
+- Skip confirmation only for: small visual tweaks, copy edits, single-line fixes, and other clearly trivial changes.
+- After confirmation, EXECUTE the plan as confirmed — don't add scope mid-execution without asking again.
+
+### 11. Squash Merge Workflow (REQUIRED for non-trivial changes)
+Matches the howmanyareplaying.com project process.
+
+- **Work happens on feature branches**, not directly on `main`. Branch naming: `feat/<short-description>`, `fix/<short-description>`, or `chore/<short-description>`.
+- **Open a PR** for any change that involves a meaningful behavior change, schema change, multiple files, or anything cross-cutting. Trivial copy edits or one-line bug fixes can go directly to main without a PR.
+- **QA the branch BEFORE opening the PR.** Tests pass, endpoints respond correctly, frontend builds cleanly, screenshots inspected. (See Principles 7 and 9.)
+- **Computer executes the squash-and-merge for the user**, but ALWAYS confirms first. The confirmation should include: branch name, PR title, summary of changes, and confirmation that QA passed.
+- **Squash merge format**: PR title becomes the squashed commit message. Title pattern: `<type>: <imperative summary>` (e.g., `feat: 30-day rolling summaries with bold ideas`, `fix: admin login body parsing under slowapi`).
+- After merge, delete the feature branch.
+- Auto-deploy on push to main is the goal (see Principle 12 below).
+
+### 12. Auto-Deploy via GitHub Actions (TARGET)
+Matches the howmanyareplaying.com project's `.github/workflows/deploy.yml` pattern.
+
+- Once configured, merging to `main` automatically triggers a deploy on the droplet: pull, install deps, build, restart services. No manual `ssh + git pull + systemctl restart` needed.
+- The workflow uses `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY` secrets on the GitHub repo.
+- For the Saber Suite droplet (104.236.239.46), the workflow should: SSH in, pull, run the apps' build commands, and restart only the affected services (sentimentpulse / signalpulse / triptracker / gtmstudio / nginx).
+- Avoid the howmanyareplaying "stale DNS IP 502 bug" pattern — force-reload nginx after each rebuild.
+- Until auto-deploy is wired up, the manual `bash deploy.sh` flow remains the deploy step.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation

@@ -70,6 +70,12 @@ class Game(Base):
     topic_trends: Mapped[List["TopicTrend"]] = relationship(
         "TopicTrend", back_populates="game"
     )
+    monthly_summaries: Mapped[List["MonthlySummary"]] = relationship(
+        "MonthlySummary", back_populates="game"
+    )
+    window_summaries: Mapped[List["WindowSummary"]] = relationship(
+        "WindowSummary", back_populates="game"
+    )
 
 
 class RawPost(Base):
@@ -187,3 +193,67 @@ class TopicTrend(Base):
     velocity: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
     game: Mapped["Game"] = relationship("Game", back_populates="topic_trends")
+
+
+class MonthlySummary(Base):
+    __tablename__ = "monthly_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "game_id", "period_year", "period_month",
+            name="uq_monthly_summaries_game_year_month",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    game_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("games.id"), nullable=False, index=True
+    )
+    period_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    period_month: Mapped[int] = mapped_column(Integer, nullable=False)
+    positive_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    negative_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    neutral_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_posts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    top_positive_topics: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    top_negative_topics: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    top_neutral_topics: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    executive_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recommended_actions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bold_ideas: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    game: Mapped["Game"] = relationship("Game", back_populates="monthly_summaries")
+
+
+class WindowSummary(Base):
+    __tablename__ = "window_summaries"
+    __table_args__ = (
+        UniqueConstraint(
+            "game_id", "window_days", "ingest_date",
+            name="uq_window_summaries_game_days_date",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    game_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("games.id"), nullable=False, index=True
+    )
+    window_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    ingest_date: Mapped[date] = mapped_column(Date, nullable=False)
+    positive_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    negative_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    neutral_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_posts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    top_positive_topics: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    top_negative_topics: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    top_neutral_topics: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    executive_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recommended_actions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    bold_ideas: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    game: Mapped["Game"] = relationship("Game", back_populates="window_summaries")

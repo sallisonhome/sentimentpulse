@@ -148,6 +148,47 @@ export interface PostsPage {
   total_pages: number
 }
 
+// ── Monthly Summaries ─────────────────────────────────────────────────────────
+
+export interface MonthlySummary {
+  id: number
+  game_id: number
+  period_year: number
+  period_month: number
+  positive_count: number
+  negative_count: number
+  neutral_count: number
+  total_posts: number
+  top_positive_topics: string[] | null
+  top_negative_topics: string[] | null
+  top_neutral_topics: string[] | null
+  executive_summary: string | null
+  recommended_actions: string | null
+  bold_ideas: string[] | null
+  generated_at: string
+  month_label: string
+}
+
+// ── Window Summaries ─────────────────────────────────────────────────────────
+
+export interface WindowSummary {
+  id: number
+  game_id: number
+  window_days: number
+  ingest_date: string
+  positive_count: number
+  negative_count: number
+  neutral_count: number
+  total_posts: number
+  top_positive_topics: string[] | null
+  top_negative_topics: string[] | null
+  top_neutral_topics: string[] | null
+  executive_summary: string | null
+  recommended_actions: string | null
+  bold_ideas: string[] | null
+  generated_at: string
+}
+
 // ── Ingestion ─────────────────────────────────────────────────────────────────
 
 export interface IngestStatus {

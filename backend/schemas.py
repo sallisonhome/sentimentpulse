@@ -203,6 +203,73 @@ class IngestRunResponse(BaseModel):
     errors: List[str] = Field(default_factory=list)
 
 
+# ── Monthly Summaries ─────────────────────────────────────────────────────────
+
+IMONTH_NAMES = [
+    "", "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+
+
+class MonthlySummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    game_id: int
+    period_year: int
+    period_month: int
+    positive_count: int
+    negative_count: int
+    neutral_count: int
+    total_posts: int
+    top_positive_topics: Optional[list] = None
+    top_negative_topics: Optional[list] = None
+    top_neutral_topics: Optional[list] = None
+    executive_summary: Optional[str] = None
+    recommended_actions: Optional[str] = None
+    bold_ideas: Optional[list] = None
+    generated_at: datetime
+    # Computed label, e.g. "April 2026" — populated in from_orm_with_label
+    month_label: str = ""
+
+
+class MonthlySummaryResponseWithLabel(MonthlySummaryResponse):
+    """Adds month_label as a proper serialisable field."""
+
+    @classmethod
+    def from_orm_with_label(cls, obj) -> "MonthlySummaryResponseWithLabel":
+        base = cls.model_validate(obj)
+        month_name = IMONTH_NAMES[base.period_month] if 1 <= base.period_month <= 12 else str(base.period_month)
+        base.month_label = f"{month_name} {base.period_year}"
+        return base
+
+
+# ── Window Summaries ──────────────────────────────────────────────────────────
+
+class WindowSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    game_id: int
+    window_days: int
+    ingest_date: date
+    positive_count: int
+    negative_count: int
+    neutral_count: int
+    total_posts: int
+    top_positive_topics: Optional[list] = None
+    top_negative_topics: Optional[list] = None
+    top_neutral_topics: Optional[list] = None
+    executive_summary: Optional[str] = None
+    recommended_actions: Optional[str] = None
+    bold_ideas: Optional[list] = None
+    generated_at: datetime
+
+
+class WindowSummaryRequest(BaseModel):
+    days: int = Field(default=7, ge=1, le=90)
+
+
 # ── Forward reference resolution ─────────────────────────────────────────────
 # GameDetailResponse references DailySummaryResponse which is defined below it;
 # model_rebuild() resolves the forward ref after both classes exist.
