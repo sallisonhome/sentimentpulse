@@ -605,3 +605,88 @@ a { color: inherit; text-decoration: none; }
     left: 8px !important;
   }
 }
+
+/* ── Platform Mix: commit-on-submit additions (2026-05-18) ───────────────────
+   Adds the visual elements introduced when the upstream React popover switched
+   from auto-rebalance + autosave to a "user edits the four non-Steam platforms,
+   then clicks Commit" model. Steam is now read-only and spans the first row. */
+
+/* Steam anchor row spans the full grid width so the read-only value reads as
+   distinct from the four editable rows below it. */
+.pm-cell--anchor.pm-cell--readonly {
+  grid-column: 1 / -1;
+}
+.pm-cell--readonly .pm-cell__readonly-value {
+  display: inline-block;
+  min-width: 38px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+  padding: 2px 4px;
+}
+
+/* Validation error banner shown when the four non-Steam inputs sum to > 100,
+   or to exactly 100 (which would force Steam — the anchor — to 0%). */
+.pm-error {
+  background: rgba(255, 107, 107, 0.12);
+  border: 1px solid rgba(255, 107, 107, 0.4);
+  color: #ff8b8b;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  margin-bottom: 10px;
+}
+.pm-error__sub {
+  display: inline-block;
+  font-size: 11px;
+  color: rgba(255, 139, 139, 0.85);
+  margin-left: 2px;
+}
+
+/* Small "Preview (uncommitted)" caption above the live totals so the user
+   knows the numbers below aren't saved yet. */
+.pm-totals__caption {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+/* Primary CTA — saves the four non-Steam values to the server. */
+.pm-footer__commit {
+  appearance: none;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  color: #042029;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 120ms ease, opacity 120ms ease, filter 120ms ease;
+}
+.pm-footer__commit:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.pm-footer__commit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Live status line under the footer — "Edits pending", "✓ Committed", etc.
+   Replaces the old inline pm-footer__save span. */
+.pm-status {
+  font-size: 11px;
+  min-height: 14px;
+  margin-bottom: 6px;
+  text-align: right;
+  color: var(--text-dim);
+}
+.pm-status--saving { color: var(--text-muted); }
+.pm-status--saved  { color: var(--success, #5cd45c); }
+.pm-status--error  { color: var(--danger,  #ff6b6b); }

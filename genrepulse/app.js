@@ -14,6 +14,9 @@ const genreSidebarList = document.getElementById('genre-sidebar-list');
 // column simply hosts a personal overlay that lives in a per-session row
 // (user_platform_mix table on the upstream backend, identified by connect.sid).
 const PM_PLATFORM_KEYS = ['steam', 'pc_other', 'xbox', 'playstation', 'switch'];
+// The four user-editable platforms. Steam is anchored: its % is always derived
+// as (100 - sum of these four) and is read-only in the UI.
+const PM_OTHER_KEYS = ['pc_other', 'xbox', 'playstation', 'switch'];
 const PM_PLATFORM_META = {
   steam:       { label: 'Steam',         color: '#66c0f4' },
   pc_other:    { label: 'PC Other',      color: '#d0d0e0' },
@@ -24,6 +27,55 @@ const PM_PLATFORM_META = {
 const PM_DEFAULT_MIX = {
   steam_pct: 100, pc_other_pct: 0, xbox_pct: 0, playstation_pct: 0, switch_pct: 0,
 };
+
+// ── Commit-on-submit helpers (mirrors frontend/src/platform-mix/rebalance.js)
+// Coerce a raw input value (string/number/NaN) to an integer in [0, 100].
+function pmCoercePct(raw) {
+  let n = Number(raw);
+  if (!Number.isFinite(n)) n = 0;
+  n = Math.round(n);
+  if (n < 0) n = 0;
+  if (n > 100) n = 100;
+  return n;
+}
+
+// Validate the four non-Steam inputs. Returns { ok, error, othersSum, steamPct }.
+function pmValidateOthers(others) {
+  const vals = PM_OTHER_KEYS.map((k) => pmCoercePct(others[`${k}_pct`]));
+  const othersSum = vals.reduce((s, v) => s + v, 0);
+  if (othersSum > 100) {
+    return { ok: false, error: "Totals can't exceed 100%.", othersSum, steamPct: null };
+  }
+  if (othersSum === 100) {
+    return { ok: false, error: "Steam can't be 0% — it's the anchor.", othersSum, steamPct: 0 };
+  }
+  return { ok: true, error: null, othersSum, steamPct: 100 - othersSum };
+}
+
+// Build the canonical mix object the backend expects from the user's edits.
+// Throws if validation fails. Always produces integers summing to exactly 100.
+function pmCommitFromOthers(others) {
+  const v = pmValidateOthers(others);
+  if (!v.ok) {
+    const err = new Error(v.error);
+    err.code = 'INVALID_MIX';
+    throw err;
+  }
+  const out = { steam_pct: v.steamPct };
+  for (const k of PM_OTHER_KEYS) {
+    out[`${k}_pct`] = pmCoercePct(others[`${k}_pct`]);
+  }
+  return out;
+}
+
+// Extract just the four editable fields from a full mix object.
+function pmOthersFromMix(mix) {
+  const out = {};
+  for (const k of PM_OTHER_KEYS) {
+    out[`${k}_pct`] = pmCoercePct(mix && mix[`${k}_pct`]);
+  }
+  return out;
+}
 
 function pmIsDefaultMix(mix) {
   return PM_PLATFORM_KEYS.every(k => mix[`${k}_pct`] === PM_DEFAULT_MIX[`${k}_pct`]);
@@ -198,8 +250,13 @@ function pmRenderBadge(g) {
   return `<button type="button" class="${cls}" data-pm-appid="${g.appid}" aria-label="Open platform mix">${label}</button>`;
 }
 
+// Commit-on-submit popover (mirrors React PlatformMixPopover.jsx 2026-05-18).
+// Steam is read-only — its % is derived as (100 - sum of other four). The user
+// edits the four non-Steam platforms freely; nothing saves until they click
+// "Commit values". Invalid sums (>100, or ==100 which would zero Steam) surface
+// an inline error and the Commit button is disabled.
 function pmRenderPopover(appid) {
-  // anchor row data (units_steam, asp_cents) comes from currentGenreData
+  // anchor row data (units_steam, asp_cents) comes from currentGenreData.
   // Port of howmanyareplaying.com's o1() ASP formula — verbatim:
   //   is_free ? null
   //   : lifetime_avg_price_cents ?? Math.round(msrp_usd_cents * 0.66)
@@ -215,10 +272,13 @@ function pmRenderPopover(appid) {
             : null));
 
   const existing = pmRowState.get(appid);
-  const initialMix = existing ? existing.mix : PM_DEFAULT_MIX;
-  let mix = { ...initialMix };
-  let loaded = !!existing;  // skip the loading state if we already have data cached
-  let saveState = 'idle';
+  // `committed` = last successfully-saved mix (drives badge, dirty check, bar
+  // fallback when invalid). `draftOthers` = the four editable fields the user
+  // is currently typing. Steam is NEVER in draftOthers — it's derived.
+  let committed = existing ? { ...existing.mix } : { ...PM_DEFAULT_MIX };
+  let draftOthers = pmOthersFromMix(committed);
+  let loaded = !!existing;
+  let saveState = 'idle'; // 'idle' | 'saving' | 'saved' | 'error'
   let saveError = '';
 
   // Build DOM
@@ -232,13 +292,55 @@ function pmRenderPopover(appid) {
   pmActivePopover = pop;
   pmActiveAppid = appid;
 
+  // Track which input was focused before a re-render so we can restore focus
+  // and caret position after innerHTML rewrite.
+  let lastFocusedKey = null;
+  let lastSelStart = null;
+  let lastSelEnd = null;
+
+  function captureFocus() {
+    const active = pop.contains(document.activeElement) ? document.activeElement : null;
+    if (active && active.matches?.('input.pm-cell__input')) {
+      lastFocusedKey = active.dataset.pmKey || null;
+      lastSelStart = active.selectionStart;
+      lastSelEnd = active.selectionEnd;
+    } else {
+      lastFocusedKey = null;
+    }
+  }
+
+  function restoreFocus() {
+    if (!lastFocusedKey) return;
+    const el = pop.querySelector(`input.pm-cell__input[data-pm-key="${lastFocusedKey}"]`);
+    if (!el) return;
+    el.focus();
+    try { el.setSelectionRange(lastSelStart, lastSelEnd); } catch (_) {}
+  }
+
   function paint() {
+    captureFocus();
+
+    const validation = pmValidateOthers(draftOthers);
+    // Preview mix used for totals + bar when valid. When invalid we fall back
+    // to the last committed mix for the bar so it doesn't go blank mid-edit.
+    const previewMix = validation.ok
+      ? {
+          steam_pct: validation.steamPct,
+          pc_other_pct:    pmCoercePct(draftOthers.pc_other_pct),
+          xbox_pct:        pmCoercePct(draftOthers.xbox_pct),
+          playstation_pct: pmCoercePct(draftOthers.playstation_pct),
+          switch_pct:      pmCoercePct(draftOthers.switch_pct),
+        }
+      : null;
+    const barMix = previewMix || committed;
+
     const totals = (function() {
-      const sp = mix.steam_pct;
+      if (!previewMix) return null;
+      const sp = previewMix.steam_pct;
       if (!Number.isFinite(unitsSteam) || unitsSteam <= 0 || sp <= 0) return null;
       const totalUnits = (unitsSteam / sp) * 100;
       const perPlatform = PM_PLATFORM_KEYS.map(k => {
-        const pct = mix[`${k}_pct`];
+        const pct = previewMix[`${k}_pct`];
         const u = totalUnits * pct / 100;
         const gross = Number.isFinite(aspCents) ? u * aspCents : null;
         return { key: k, pct, units: u, grossCents: gross };
@@ -246,6 +348,22 @@ function pmRenderPopover(appid) {
       const totalGrossCents = Number.isFinite(aspCents) ? totalUnits * aspCents : null;
       return { perPlatform, totalUnits, totalGrossCents };
     })();
+
+    // Has the user edited the draft since the last commit?
+    let dirty = false;
+    if (loaded) {
+      for (const k of PM_OTHER_KEYS) {
+        if (pmCoercePct(draftOthers[`${k}_pct`]) !== pmCoercePct(committed[`${k}_pct`])) {
+          dirty = true; break;
+        }
+      }
+    }
+    const draftIsDefault = PM_OTHER_KEYS.every(k => pmCoercePct(draftOthers[`${k}_pct`]) === 0);
+    const canCommit = loaded && dirty && validation.ok && saveState !== 'saving';
+
+    // Live Steam % — even when invalid we show 100 - othersSum so the user can
+    // see why we're blocking commit. May be negative when othersSum > 100.
+    const liveSteamPct = 100 - validation.othersSum;
 
     pop.innerHTML = `
       <div class="pm-popover__header">
@@ -255,109 +373,150 @@ function pmRenderPopover(appid) {
 
       <div class="pm-bar" aria-hidden="true">
         ${PM_PLATFORM_KEYS.map(k => {
-          const pct = mix[`${k}_pct`];
+          const pct = barMix[`${k}_pct`];
           if (pct <= 0) return '';
           return `<div class="pm-bar__seg" style="flex:${pct};background:${PM_PLATFORM_META[k].color}" title="${PM_PLATFORM_META[k].label}: ${pct}%">${pct >= 10 ? `<span class="pm-bar__lbl">${pct}%</span>` : ''}</div>`;
         }).join('')}
       </div>
 
       <div class="pm-grid">
-        ${PM_PLATFORM_KEYS.map(k => `
-          <label class="pm-cell${k === 'steam' ? ' pm-cell--anchor' : ''}">
+        <div class="pm-cell pm-cell--anchor pm-cell--readonly">
+          <span class="pm-cell__lbl">
+            <span class="pm-swatch" style="background:${PM_PLATFORM_META.steam.color}" aria-hidden="true"></span>
+            ${PM_PLATFORM_META.steam.label}
+            <span class="pm-cell__anchor-tag">anchor</span>
+          </span>
+          <span class="pm-cell__input-wrap">
+            <span class="pm-cell__readonly-value" aria-label="Steam percent (auto, ${liveSteamPct}%)">${liveSteamPct}</span>
+            <span class="pm-cell__suffix">%</span>
+          </span>
+        </div>
+        ${PM_OTHER_KEYS.map(k => `
+          <label class="pm-cell">
             <span class="pm-cell__lbl">
               <span class="pm-swatch" style="background:${PM_PLATFORM_META[k].color}" aria-hidden="true"></span>
               ${PM_PLATFORM_META[k].label}
-              ${k === 'steam' ? '<span class="pm-cell__anchor-tag">anchor</span>' : ''}
             </span>
             <span class="pm-cell__input-wrap">
               <input type="number" min="0" max="100" step="1" inputmode="numeric"
                      class="pm-cell__input" data-pm-key="${k}"
-                     value="${mix[`${k}_pct`]}" aria-label="${PM_PLATFORM_META[k].label} percent">
+                     value="${escapeAttr(String(draftOthers[`${k}_pct`] ?? 0))}" aria-label="${PM_PLATFORM_META[k].label} percent">
               <span class="pm-cell__suffix">%</span>
             </span>
           </label>
         `).join('')}
       </div>
 
+      ${!validation.ok ? `
+        <div class="pm-error" role="alert">
+          ${escapeHtml(validation.error)}
+          <span class="pm-error__sub">Other platforms total ${validation.othersSum}%.</span>
+        </div>
+      ` : ''}
+
       <div class="pm-totals">
-        ${totals ? (totals.perPlatform.filter(r => r.pct > 0).map(row => `
-          <div class="pm-totals__row">
-            <span class="pm-totals__name">
-              <span class="pm-swatch" style="background:${PM_PLATFORM_META[row.key].color}" aria-hidden="true"></span>
-              ${PM_PLATFORM_META[row.key].label}
-            </span>
-            <span class="pm-totals__num">${pmFmtUnits(row.units)} units · ${pmFmtUsd(row.grossCents)}</span>
-          </div>
-        `).join('') + `
+        ${totals ? (`
+          <div class="pm-totals__caption">Preview (uncommitted)</div>
+          ${totals.perPlatform.filter(r => r.pct > 0).map(row => `
+            <div class="pm-totals__row">
+              <span class="pm-totals__name">
+                <span class="pm-swatch" style="background:${PM_PLATFORM_META[row.key].color}" aria-hidden="true"></span>
+                ${PM_PLATFORM_META[row.key].label}
+              </span>
+              <span class="pm-totals__num">${pmFmtUnits(row.units)} units · ${pmFmtUsd(row.grossCents)}</span>
+            </div>
+          `).join('')}
           <div class="pm-totals__row pm-totals__row--grand">
             <span class="pm-totals__name">All platforms</span>
             <span class="pm-totals__num">${pmFmtUnits(totals.totalUnits)} units · ${pmFmtUsd(totals.totalGrossCents)}</span>
           </div>
-        `) : '<div class="pm-totals__hint">Set Steam &gt; 0 to anchor totals.</div>'}
+        `) : (validation.ok ? '<div class="pm-totals__hint">Set Steam &gt; 0 to anchor totals.</div>' : '')}
       </div>
 
       <div class="pm-footer">
-        <button type="button" class="pm-footer__reset" ${pmIsDefaultMix(mix) ? 'disabled' : ''}>Reset to Steam only</button>
-        <span class="pm-footer__save pm-footer__save--${saveState}">${
-          saveState === 'saving' ? 'Saving…' :
-          saveState === 'saved'  ? 'Saved'    :
-          saveState === 'error'  ? `Error: ${escapeHtml(saveError)}` : ''
-        }</span>
+        <button type="button" class="pm-footer__reset" ${draftIsDefault ? 'disabled' : ''}>Reset to Steam only</button>
+        <button type="button" class="pm-footer__commit" ${canCommit ? '' : 'disabled'}>${
+          saveState === 'saving' ? 'Committing…' : 'Commit values'
+        }</button>
       </div>
+
+      <div class="pm-status pm-status--${saveState}">${
+        saveState === 'saved'  ? '✓ Committed' :
+        saveState === 'error'  ? `Error: ${escapeHtml(saveError)}` :
+        !validation.ok         ? '' :
+        dirty                  ? 'Edits pending — click Commit values to save.' : ''
+      }</div>
 
       <div class="pm-note">Personal view. Doesn't affect Compare, genre rankings, or exports.</div>
     `;
 
-    // Wire input handlers
+    // Wire input handlers — local state only, NO autosave on keystroke.
     pop.querySelectorAll('input.pm-cell__input').forEach(input => {
       input.addEventListener('input', e => {
         const key = e.target.dataset.pmKey;
-        mix = pmRebalance(mix, key, e.target.value);
-        // Cache state so the badge re-renders correctly even before save lands
-        pmRowState.set(appid, {
-          mix,
-          isCustom: !pmIsDefaultMix(mix),
-          activeCount: pmActiveCount(mix),
-        });
-        scheduleSave();
+        if (!PM_OTHER_KEYS.includes(key)) return;
+        // Keep the raw string while typing so the field doesn't fight the user
+        // (e.g. clearing the box to retype). We coerce when validating/committing.
+        draftOthers = { ...draftOthers, [`${key}_pct`]: e.target.value };
+        // Clear any stale server-side save error the moment the user edits again.
+        if (saveState === 'error') {
+          saveState = 'idle';
+          saveError = '';
+        }
         paint();
       });
     });
     pop.querySelector('.pm-popover__close')?.addEventListener('click', pmClosePopover);
     pop.querySelector('.pm-footer__reset')?.addEventListener('click', () => {
-      mix = { ...PM_DEFAULT_MIX };
-      pmRowState.set(appid, { mix, isCustom: false, activeCount: 1 });
-      scheduleSave();
+      draftOthers = pmOthersFromMix(PM_DEFAULT_MIX);
+      saveState = 'idle';
+      saveError = '';
       paint();
     });
+    pop.querySelector('.pm-footer__commit')?.addEventListener('click', commit);
 
     pmRepositionPopover();
-    // Re-render the row badge so its label/style updates immediately
     pmRefreshBadge(appid);
+    restoreFocus();
   }
 
-  function scheduleSave() {
-    if (!loaded) return; // don't save before we've fetched what the user had
-    if (pmSaveTimer) clearTimeout(pmSaveTimer);
+  async function commit() {
+    const validation = pmValidateOthers(draftOthers);
+    if (!validation.ok) return;
+    let payload;
+    try {
+      payload = pmCommitFromOthers(draftOthers);
+    } catch (err) {
+      saveState = 'error';
+      saveError = err.message || 'Invalid mix';
+      paint();
+      return;
+    }
     saveState = 'saving';
+    saveError = '';
     paint();
-    pmSaveTimer = setTimeout(async () => {
-      try {
-        await pmSaveMix(appid, mix);
-        saveState = 'saved';
-        paint();
-        setTimeout(() => {
-          if (saveState === 'saved') { saveState = 'idle'; paint(); }
-        }, 1200);
-      } catch (err) {
-        saveState = 'error';
-        saveError = err.message || 'Save failed';
-        paint();
-      }
-    }, 500);
+    try {
+      await pmSaveMix(appid, payload);
+      committed = payload;
+      draftOthers = pmOthersFromMix(payload);
+      saveState = 'saved';
+      pmRowState.set(appid, {
+        mix: payload,
+        isCustom: !pmIsDefaultMix(payload),
+        activeCount: pmActiveCount(payload),
+      });
+      paint();
+      setTimeout(() => {
+        if (saveState === 'saved') { saveState = 'idle'; paint(); }
+      }, 1400);
+    } catch (err) {
+      saveState = 'error';
+      saveError = err.message || 'Save failed';
+      paint();
+    }
   }
 
-  // Initial paint (default mix or cached) so the popover appears instantly
+  // Initial paint (default mix or cached) so the popover appears instantly.
   paint();
 
   // Attach reposition + dismiss listeners
@@ -369,20 +528,31 @@ function pmRenderPopover(appid) {
   document.addEventListener('keydown', pmKeyHandler, true);
   pmReposListenersAttached = true;
 
-  // Fetch saved mix (replaces the default if the user had something stored)
+  // Fetch saved mix (replaces the default if the user had something stored).
+  // Only mutates draftOthers if the user hasn't started editing yet — we don't
+  // want a slow GET to clobber in-progress edits.
   if (!existing) {
     pmFetchMix(appid).then(res => {
       if (pmActiveAppid !== appid) return; // popover closed before fetch landed
-      mix = res.mix;
+      committed = { ...res.mix };
+      // Only overwrite the draft if it's still pristine (matches the previous
+      // committed state, which started as DEFAULT_MIX).
+      const stillPristine = PM_OTHER_KEYS.every(k =>
+        pmCoercePct(draftOthers[`${k}_pct`]) === PM_DEFAULT_MIX[`${k}_pct`]
+      );
+      if (stillPristine) {
+        draftOthers = pmOthersFromMix(committed);
+      }
       loaded = true;
       pmRowState.set(appid, {
-        mix,
+        mix: committed,
         isCustom: !res.isDefault,
-        activeCount: pmActiveCount(mix),
+        activeCount: pmActiveCount(committed),
       });
       paint();
     }).catch(() => {
-      loaded = true; // allow saves anyway; subsequent PUT will create the row
+      loaded = true; // allow commits anyway; subsequent PUT will create the row
+      paint();
     });
   } else {
     loaded = true;

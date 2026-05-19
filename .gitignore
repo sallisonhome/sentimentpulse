@@ -82,3 +82,9 @@ desktop.ini
 
 # Genre Pulse local dev only
 genrepulse/test_server.py
+
+# Editor/script backup files
+*.bak.*
+
+# GTM Studio runtime example output
+gtm/backend/static_example/
