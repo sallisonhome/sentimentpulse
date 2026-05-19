@@ -2,7 +2,7 @@
 
 Revision ID: 0003
 Revises: 0002
-Create Date: 2025-01-01 00:00:00.000000 UTC
+Create Date: 2026-05-19 20:00:00.000000 UTC
 
 Adds Game.distinctive_keywords — a JSON list of strings (keywords / keyphrases)
 that uniquely identify a specific game title vs the broader IP, movie, or brand
@@ -30,19 +30,20 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-# ── Seed: distinctive keywords per game name ──────────────────────────────────
-# Keys are exact game.name values as stored in the DB.
+# ── Seed: distinctive keywords per Saber Interactive game ─────────────────────
+# Keys are exact game.name values as stored in the production DB
+# (see backend/fix_subreddits.py for the canonical catalogue).
 # Values are JSON lists of strings — keywords or keyphrases, checked as
 # case-insensitive whole-word / whole-phrase matches in post_relevance.py.
 #
-# Design rules for single-word or IP-adjacent titles (per CLAUDE.md §14):
-#   • Require ≥1 multi-word phrase so the filter can't match on a common word.
-#   • Include the community shorthand (e.g. "MCC") only if it's genuinely
-#     unambiguous within gaming discussion.
-#   • Never use the raw IP name alone as a keyword — always qualify it with
-#     "game", a subtitle, or a community-specific term.
+# Design rules per CLAUDE.md §14:
+#   • Single-word or IP-adjacent titles require ≥1 multi-word phrase so the
+#     filter can't match on a common word (e.g. "Docked", "Inversion", "Fable").
+#   • Include the community shorthand (e.g. "MCC", "SM2") when unambiguous.
+#   • Never use the raw IP/movie name alone as a keyword — always qualify it
+#     with "game", a subtitle, a studio name, or a community-specific term.
 _SEED_KEYWORDS: dict[str, list[str]] = {
-    # ── Spec-provided examples (used verbatim) ─────────────────────────────
+    # ── Spec-provided examples ─────────────────────────────────────────────
     "Untitled John Wick Game": [
         "John Wick game",
         "Wick assassin game",
@@ -62,129 +63,131 @@ _SEED_KEYWORDS: dict[str, list[str]] = {
         "Docked steam game",
     ],
 
-    # ── Other common ambiguous-title games ─────────────────────────────────
+    # ── Other Saber-published / Saber-developed titles ─────────────────────
+    "Tempest Rising": [
+        "Tempest Rising",
+        "Tempest RTS",
+        "Slipgate Tempest",
+    ],
+    "A Quiet Place: The Road Ahead": [
+        "Quiet Place game",
+        "Road Ahead game",
+        "Quiet Place Road Ahead",
+        "Saber Quiet Place",
+    ],
+    "The Knightling": [
+        "Knightling",
+        "Knightling game",
+        "Twirlbound Knightling",
+    ],
+    "Dakar Desert Rally": [
+        "Dakar Desert Rally",
+        "Dakar rally game",
+        "Dakar DDR",
+    ],
+    "Clive Barker's Hellraiser: Revival": [
+        "Hellraiser Revival",
+        "Hellraiser game",
+        "Boss Team Hellraiser",
+        "Clive Barker Hellraiser game",
+    ],
+    "Jurassic Park: Survival": [
+        "Jurassic Park Survival",
+        "JP Survival",
+        "Jurassic Survival game",
+        "Saber Jurassic",
+    ],
+    "Turok: Origins": [
+        "Turok Origins",
+        "Turok game",
+        "Saber Turok",
+    ],
+    "Warhammer 40K: Space Marine 2": [
+        "Space Marine 2",
+        "SM2",
+        "Warhammer Space Marine 2",
+        "WH40K Space Marine 2",
+        "Space Marine II",
+    ],
+    "John Carpenter's Toxic Commando": [
+        "Toxic Commando",
+        "Carpenter Toxic Commando",
+        "Saber Toxic Commando",
+    ],
+    "SnowRunner": [
+        "SnowRunner",
+        "Snow Runner game",
+        "SnowRunner truck",
+    ],
+    "RoadCraft": [
+        "RoadCraft",
+        "Road Craft game",
+        "Saber RoadCraft",
+    ],
+    "Gloomhaven": [
+        "Gloomhaven",
+        "Gloomhaven digital",
+        "Gloomhaven video game",
+    ],
+    "Expeditions: A MudRunner Game": [
+        "Expeditions MudRunner",
+        "MudRunner Expeditions",
+        "Expeditions A MudRunner Game",
+    ],
+    "MudRunner": [
+        "MudRunner",
+        "Mud Runner game",
+        "MudRunner truck",
+    ],
+    "Crysis 3 Remastered": [
+        "Crysis 3 Remastered",
+        "Crysis 3 remaster",
+        "C3R",
+    ],
+    "Crysis 2 Remastered": [
+        "Crysis 2 Remastered",
+        "Crysis 2 remaster",
+        "C2R",
+    ],
+    "Ghostbusters Remastered": [
+        "Ghostbusters Remastered",
+        "Ghostbusters Video Game Remastered",
+        "Ghostbusters 2009 remaster",
+    ],
+    "TimeShift": [
+        "TimeShift game",
+        "TimeShift Saber",
+        "TimeShift FPS",
+    ],
+    "MX Nitro": [
+        "MX Nitro",
+        "MX Nitro game",
+    ],
     "Inversion": [
         "Inversion game",
         "Inversion shooter",
         "Inversion gravity",
-        "Inversion Sabre",
+        "Inversion Saber",
     ],
-
-    # ── Halo franchise titles (disambiguate from each other) ───────────────
-    "Halo Infinite": [
-        "Halo Infinite",
-        "Infinite campaign",
-        "Halo BR",
+    "Halo 2: Anniversary": [
+        "Halo 2 Anniversary",
+        "H2A",
+        "Halo 2A",
     ],
-    "Halo 5: Guardians": [
-        "Halo 5",
-        "Halo 5 Guardians",
-        "H5",
+    "Halo 3": [
+        "Halo 3 campaign",
+        "H3 MCC",
+        "Halo 3 multiplayer",
     ],
-    "Halo Wars 2": [
-        "Halo Wars 2",
-        "HW2",
-        "Halo Wars sequel",
+    "MudRunner Old-timers DLC": [
+        "Old-timers DLC",
+        "MudRunner Old-timers",
+        "Old timers DLC",
     ],
-    "Halo Wars: Definitive Edition": [
-        "Halo Wars Definitive",
-        "HW1",
-        "Halo Wars remaster",
-    ],
-
-    # ── Other potential titles (fill based on publisher's actual catalog) ───
-    "Gears 5": [
-        "Gears 5",
-        "Gears of War 5",
-        "G5",
-    ],
-    "Gears Tactics": [
-        "Gears Tactics",
-        "Gears strategy game",
-        "Gears turn-based",
-    ],
-    "Gears of War: Ultimate Edition": [
-        "Gears Ultimate",
-        "Gears of War Ultimate",
-        "GoW UE",
-    ],
-    "The Outer Worlds": [
-        "Outer Worlds game",
-        "TOW game",
-        "Halcyon colony",
-    ],
-    "The Outer Worlds 2": [
-        "Outer Worlds 2",
-        "TOW2",
-        "Obsidian sequel Outer",
-    ],
-    "Avowed": [
-        "Avowed game",
-        "Avowed Eora",
-        "Obsidian RPG Avowed",
-    ],
-    "Pentiment": [
-        "Pentiment game",
-        "Pentiment Obsidian",
-        "Bavarian narrative game",
-    ],
-    "Grounded": [
-        "Grounded game",
-        "Grounded survival shrunk",
-        "backyard survival game",
-    ],
-    "As Dusk Falls": [
-        "As Dusk Falls",
-        "Dusk Falls game",
-        "INTERIOR NIGHT game",
-    ],
-    "Contraband": [
-        "Contraband game",
-        "Avalanche Contraband",
-        "smuggler game Contraband",
-    ],
-    "Everwild": [
-        "Everwild game",
-        "Rare Everwild",
-        "nature spirits game",
-    ],
-    "Fable": [
-        "Fable game 2024",
-        "Fable reboot",
-        "Playground Fable",
-    ],
-    "Perfect Dark": [
-        "Perfect Dark game",
-        "Perfect Dark reboot",
-        "Joanna Dark game",
-        "Initiative Perfect Dark",
-    ],
-    "State of Decay 3": [
-        "State of Decay 3",
-        "SoD3",
-        "Undead Labs sequel",
-    ],
-    "Age of Empires IV": [
-        "Age of Empires IV",
-        "AoE4",
-        "AoE IV",
-    ],
-    "Age of Empires II: Definitive Edition": [
-        "AoE2 DE",
-        "Age of Empires 2 Definitive",
-        "AoE2DE",
-    ],
-    "Microsoft Flight Simulator": [
-        "MSFS",
-        "Flight Simulator 2020",
-        "FS2020",
-        "MSFS2024",
-        "Flight Sim Microsoft",
-    ],
-    "Minecraft Dungeons": [
-        "Minecraft Dungeons",
-        "MC Dungeons",
-        "Dungeons Mojang",
+    "RoadCraft Reclaim Expansion": [
+        "Reclaim Expansion",
+        "RoadCraft Reclaim",
+        "RoadCraft expansion",
     ],
 }
 

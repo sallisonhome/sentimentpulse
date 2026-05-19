@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 # Games not in this dict have no keywords → all posts pass (no filter applied).
 # ---------------------------------------------------------------------------
 GAME_KEYWORD_FALLBACK: dict[str, list[str]] = {
+    # ── Spec-provided examples ─────────────────────────────────────────────
     "Untitled John Wick Game": [
         "John Wick game",
         "Wick assassin game",
@@ -67,124 +68,132 @@ GAME_KEYWORD_FALLBACK: dict[str, list[str]] = {
         "TV gaming setup game",
         "Docked steam game",
     ],
+
+    # ── Other Saber Interactive titles (mirrors Alembic 0003 seed) ─────────
+    "Tempest Rising": [
+        "Tempest Rising",
+        "Tempest RTS",
+        "Slipgate Tempest",
+    ],
+    "A Quiet Place: The Road Ahead": [
+        "Quiet Place game",
+        "Road Ahead game",
+        "Quiet Place Road Ahead",
+        "Saber Quiet Place",
+    ],
+    "The Knightling": [
+        "Knightling",
+        "Knightling game",
+        "Twirlbound Knightling",
+    ],
+    "Dakar Desert Rally": [
+        "Dakar Desert Rally",
+        "Dakar rally game",
+        "Dakar DDR",
+    ],
+    "Clive Barker's Hellraiser: Revival": [
+        "Hellraiser Revival",
+        "Hellraiser game",
+        "Boss Team Hellraiser",
+        "Clive Barker Hellraiser game",
+    ],
+    "Jurassic Park: Survival": [
+        "Jurassic Park Survival",
+        "JP Survival",
+        "Jurassic Survival game",
+        "Saber Jurassic",
+    ],
+    "Turok: Origins": [
+        "Turok Origins",
+        "Turok game",
+        "Saber Turok",
+    ],
+    "Warhammer 40K: Space Marine 2": [
+        "Space Marine 2",
+        "SM2",
+        "Warhammer Space Marine 2",
+        "WH40K Space Marine 2",
+        "Space Marine II",
+    ],
+    "John Carpenter's Toxic Commando": [
+        "Toxic Commando",
+        "Carpenter Toxic Commando",
+        "Saber Toxic Commando",
+    ],
+    "SnowRunner": [
+        "SnowRunner",
+        "Snow Runner game",
+        "SnowRunner truck",
+    ],
+    "RoadCraft": [
+        "RoadCraft",
+        "Road Craft game",
+        "Saber RoadCraft",
+    ],
+    "Gloomhaven": [
+        "Gloomhaven",
+        "Gloomhaven digital",
+        "Gloomhaven video game",
+    ],
+    "Expeditions: A MudRunner Game": [
+        "Expeditions MudRunner",
+        "MudRunner Expeditions",
+        "Expeditions A MudRunner Game",
+    ],
+    "MudRunner": [
+        "MudRunner",
+        "Mud Runner game",
+        "MudRunner truck",
+    ],
+    "Crysis 3 Remastered": [
+        "Crysis 3 Remastered",
+        "Crysis 3 remaster",
+        "C3R",
+    ],
+    "Crysis 2 Remastered": [
+        "Crysis 2 Remastered",
+        "Crysis 2 remaster",
+        "C2R",
+    ],
+    "Ghostbusters Remastered": [
+        "Ghostbusters Remastered",
+        "Ghostbusters Video Game Remastered",
+        "Ghostbusters 2009 remaster",
+    ],
+    "TimeShift": [
+        "TimeShift game",
+        "TimeShift Saber",
+        "TimeShift FPS",
+    ],
+    "MX Nitro": [
+        "MX Nitro",
+        "MX Nitro game",
+    ],
     "Inversion": [
         "Inversion game",
         "Inversion shooter",
         "Inversion gravity",
-        "Inversion Sabre",
+        "Inversion Saber",
     ],
-    "Halo Infinite": [
-        "Halo Infinite",
-        "Infinite campaign",
-        "Halo BR",
+    "Halo 2: Anniversary": [
+        "Halo 2 Anniversary",
+        "H2A",
+        "Halo 2A",
     ],
-    "Halo 5: Guardians": [
-        "Halo 5",
-        "Halo 5 Guardians",
-        "H5",
+    "Halo 3": [
+        "Halo 3 campaign",
+        "H3 MCC",
+        "Halo 3 multiplayer",
     ],
-    "Halo Wars 2": [
-        "Halo Wars 2",
-        "HW2",
-        "Halo Wars sequel",
+    "MudRunner Old-timers DLC": [
+        "Old-timers DLC",
+        "MudRunner Old-timers",
+        "Old timers DLC",
     ],
-    "Halo Wars: Definitive Edition": [
-        "Halo Wars Definitive",
-        "HW1",
-        "Halo Wars remaster",
-    ],
-    "Gears 5": [
-        "Gears 5",
-        "Gears of War 5",
-        "G5",
-    ],
-    "Gears Tactics": [
-        "Gears Tactics",
-        "Gears strategy game",
-        "Gears turn-based",
-    ],
-    "Gears of War: Ultimate Edition": [
-        "Gears Ultimate",
-        "Gears of War Ultimate",
-        "GoW UE",
-    ],
-    "The Outer Worlds": [
-        "Outer Worlds game",
-        "TOW game",
-        "Halcyon colony",
-    ],
-    "The Outer Worlds 2": [
-        "Outer Worlds 2",
-        "TOW2",
-        "Obsidian sequel Outer",
-    ],
-    "Avowed": [
-        "Avowed game",
-        "Avowed Eora",
-        "Obsidian RPG Avowed",
-    ],
-    "Pentiment": [
-        "Pentiment game",
-        "Pentiment Obsidian",
-        "Bavarian narrative game",
-    ],
-    "Grounded": [
-        "Grounded game",
-        "Grounded survival shrunk",
-        "backyard survival game",
-    ],
-    "As Dusk Falls": [
-        "As Dusk Falls",
-        "Dusk Falls game",
-        "INTERIOR NIGHT game",
-    ],
-    "Contraband": [
-        "Contraband game",
-        "Avalanche Contraband",
-        "smuggler game Contraband",
-    ],
-    "Everwild": [
-        "Everwild game",
-        "Rare Everwild",
-        "nature spirits game",
-    ],
-    "Fable": [
-        "Fable game 2024",
-        "Fable reboot",
-        "Playground Fable",
-    ],
-    "Perfect Dark": [
-        "Perfect Dark game",
-        "Perfect Dark reboot",
-        "Joanna Dark game",
-        "Initiative Perfect Dark",
-    ],
-    "State of Decay 3": [
-        "State of Decay 3",
-        "SoD3",
-        "Undead Labs sequel",
-    ],
-    "Age of Empires IV": [
-        "Age of Empires IV",
-        "AoE4",
-        "AoE IV",
-    ],
-    "Age of Empires II: Definitive Edition": [
-        "AoE2 DE",
-        "Age of Empires 2 Definitive",
-        "AoE2DE",
-    ],
-    "Microsoft Flight Simulator": [
-        "MSFS",
-        "Flight Simulator 2020",
-        "FS2020",
-        "MSFS2024",
-        "Flight Sim Microsoft",
-    ],
-    "Minecraft Dungeons": [
-        "Minecraft Dungeons",
-        "MC Dungeons",
-        "Dungeons Mojang",
+    "RoadCraft Reclaim Expansion": [
+        "Reclaim Expansion",
+        "RoadCraft Reclaim",
+        "RoadCraft expansion",
     ],
 }
 
@@ -286,23 +295,34 @@ _GAME_GENRES: dict[str, set[str]] = {
 
 # Genre(s) of the focal game — used to determine if other-genre titles are present.
 _FOCAL_GAME_GENRES: dict[str, set[str]] = {
+    # Saber Interactive catalogue — genre tags for cross-genre contamination check.
     "Untitled John Wick Game": {"action", "stealth"},
     "Halo: The Master Chief Collection": {"fps"},
-    "Halo Infinite": {"fps"},
-    "Halo 5: Guardians": {"fps"},
-    "Halo Wars 2": {"strategy"},
-    "Halo Wars: Definitive Edition": {"strategy"},
-    "Gears 5": {"action", "fps"},
-    "Gears Tactics": {"strategy"},
-    "Gears of War: Ultimate Edition": {"action"},
-    "The Outer Worlds": {"rpg"},
-    "The Outer Worlds 2": {"rpg"},
-    "Avowed": {"rpg"},
-    "Pentiment": {"adventure"},
-    "Grounded": {"survival", "action"},
-    "As Dusk Falls": {"adventure"},
+    "Halo 2: Anniversary": {"fps"},
+    "Halo 3": {"fps"},
     "Docked": {"puzzle", "casual"},
     "Inversion": {"fps", "action"},
+    "Tempest Rising": {"strategy"},
+    "A Quiet Place: The Road Ahead": {"horror", "adventure"},
+    "The Knightling": {"action", "adventure"},
+    "Dakar Desert Rally": {"racing"},
+    "Clive Barker's Hellraiser: Revival": {"horror"},
+    "Jurassic Park: Survival": {"action", "adventure"},
+    "Turok: Origins": {"fps", "action"},
+    "Warhammer 40K: Space Marine 2": {"action", "shooter"},
+    "John Carpenter's Toxic Commando": {"fps", "horror"},
+    "SnowRunner": {"simulation"},
+    "RoadCraft": {"simulation"},
+    "Gloomhaven": {"strategy", "rpg"},
+    "Expeditions: A MudRunner Game": {"simulation"},
+    "MudRunner": {"simulation"},
+    "Crysis 3 Remastered": {"fps"},
+    "Crysis 2 Remastered": {"fps"},
+    "Ghostbusters Remastered": {"action", "adventure"},
+    "TimeShift": {"fps"},
+    "MX Nitro": {"racing"},
+    "MudRunner Old-timers DLC": {"simulation"},
+    "RoadCraft Reclaim Expansion": {"simulation"},
 }
 
 # Minimum number of other-genre titles that must appear to trigger the
