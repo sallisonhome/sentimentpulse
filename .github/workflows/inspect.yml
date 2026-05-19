@@ -1,0 +1,38 @@
+name: Inspect Droplet Layout
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Inspect
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            echo "── /opt/sentimentpulse/ ──"
+            ls -la /opt/sentimentpulse/
+            echo ""
+            echo "── /opt/sentimentpulse/frontend/ (if exists) ──"
+            ls -la /opt/sentimentpulse/frontend/ 2>&1 | head -20
+            echo ""
+            echo "── nginx site config ──"
+            ls /etc/nginx/sites-enabled/ 2>&1
+            grep -rE "sentiment|root\s+/" /etc/nginx/sites-enabled/ 2>&1 | head -20
+            echo ""
+            echo "── systemd service ──"
+            cat /etc/systemd/system/sentimentpulse.service 2>&1 || systemctl cat sentimentpulse 2>&1 | head -30
+            echo ""
+            echo "── git log on droplet ──"
+            cd /opt/sentimentpulse && git log -3 --oneline
+            echo ""
+            echo "── service status ──"
+            systemctl is-active sentimentpulse
+          EOF
