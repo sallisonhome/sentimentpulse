@@ -17,21 +17,23 @@ jobs:
       - name: Inspect
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
-            echo "── /opt/sentimentpulse/ ──"
-            ls -la /opt/sentimentpulse/
+            cd /opt/sentimentpulse/backend
+            echo "── alembic current ──"
+            source .venv/bin/activate
+            alembic current
+            deactivate
             echo ""
-            echo "── /opt/sentimentpulse/frontend/ (if exists) ──"
-            ls -la /opt/sentimentpulse/frontend/ 2>&1 | head -20
+            echo "── games with distinctive_keywords ──"
+            sqlite3 sentimentpulse.db "SELECT name, json_array_length(distinctive_keywords) AS kw_count FROM games WHERE distinctive_keywords IS NOT NULL AND distinctive_keywords != '[]' ORDER BY name;"
             echo ""
-            echo "── nginx site config ──"
-            ls /etc/nginx/sites-enabled/ 2>&1
-            grep -rE "sentiment|root\s+/" /etc/nginx/sites-enabled/ 2>&1 | head -20
+            echo "── games WITHOUT keywords (filter passes all posts) ──"
+            sqlite3 sentimentpulse.db "SELECT id, name FROM games WHERE distinctive_keywords IS NULL OR distinctive_keywords = '[]' ORDER BY id;"
             echo ""
-            echo "── systemd service ──"
-            cat /etc/systemd/system/sentimentpulse.service 2>&1 || systemctl cat sentimentpulse 2>&1 | head -30
+            echo "── John Wick game info ──"
+            sqlite3 sentimentpulse.db "SELECT id, name, distinctive_keywords FROM games WHERE name LIKE '%John Wick%';"
             echo ""
-            echo "── git log on droplet ──"
-            cd /opt/sentimentpulse && git log -3 --oneline
+            echo "── John Wick topic_trends (recent 30 days) ──"
+            sqlite3 sentimentpulse.db "SELECT label, sentiment, post_count FROM topic_trends WHERE game_id IN (SELECT id FROM games WHERE name LIKE '%John Wick%') AND created_at > datetime('now','-30 days') ORDER BY post_count DESC LIMIT 20;"
             echo ""
             echo "── service status ──"
             systemctl is-active sentimentpulse
