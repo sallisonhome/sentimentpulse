@@ -1,0 +1,76 @@
+name: Deploy to Droplet
+
+# CLAUDE.md §16 — Auto-Deploy via GitHub Actions
+#
+# Runs on every push to main (including PR merges) and via manual trigger.
+# Connects to the droplet via SSH, pulls main, runs Alembic migrations,
+# rebuilds the frontend, restarts the systemd service, and prints a
+# health-check summary.
+#
+# Required secrets:
+#   DROPLET_SSH_KEY   — ed25519 private key whose pubkey is in
+#                       /root/.ssh/authorized_keys on the droplet.
+#
+# Required repo variables (defaults shown below):
+#   DROPLET_HOST = 104.236.239.46
+#   DROPLET_USER = root
+#   DROPLET_PATH = /opt/sentimentpulse
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse
+
+            echo "── git pull ──────────────────────────────────"
+            git fetch origin main
+            git reset --hard origin/main
+            git log -1 --oneline
+
+            echo "── alembic upgrade ───────────────────────────"
+            cd backend
+            source .venv/bin/activate
+            alembic upgrade head
+            deactivate
+            cd ..
+
+            echo "── frontend build ────────────────────────────"
+            if [ -d frontend ] && [ -f frontend/package.json ]; then
+              cd frontend
+              npm ci --silent
+              npm run build
+              cd ..
+            fi
+
+            echo "── restart backend ───────────────────────────"
+            systemctl restart sentimentpulse
+            sleep 3
+            systemctl is-active sentimentpulse
+
+            echo "── deploy OK ─────────────────────────────────"
+          EOF
+
+      - name: Cleanup
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
