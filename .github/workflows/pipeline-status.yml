@@ -1,0 +1,81 @@
+name: Pipeline Status
+
+on:
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Status
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+            source .venv/bin/activate
+
+            echo "── 1. Live ingest status endpoint ──"
+            curl -sS http://127.0.0.1:8000/api/ingest/status | python -m json.tool
+            deactivate
+
+            echo ""
+            echo "── 2. Last ingestion run completion time (from log) ──"
+            LOG=$(ls -t /opt/sentimentpulse/backend/logs/ingest_*.log 2>/dev/null | head -1)
+            if [ -n "$LOG" ]; then
+              echo "Latest log: $LOG"
+              echo "Last 20 lines:"
+              tail -20 "$LOG"
+            fi
+
+            echo ""
+            echo "── 3. Daily summary freshness ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT date(generated_at) AS day, COUNT(*) AS rows_generated
+              FROM daily_summaries
+              GROUP BY date(generated_at)
+              ORDER BY day DESC
+              LIMIT 5;
+            "
+
+            echo ""
+            echo "── 4. Posts processed by sentiment in last 24h ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT
+                COUNT(DISTINCT rp.id) AS raw_posts_collected,
+                COUNT(DISTINCT sr.id) AS sentiment_records_created
+              FROM raw_posts rp
+              LEFT JOIN sentiment_records sr ON sr.raw_post_id = rp.id
+              WHERE rp.collected_at >= datetime('now', '-1 day');
+            "
+
+            echo ""
+            echo "── 5. May 2026 monthly summaries (current open month) ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT g.name, ms.generated_at, length(ms.executive_summary) AS exec_chars
+              FROM monthly_summaries ms
+              JOIN games g ON g.id = ms.game_id
+              WHERE ms.period_year=2026 AND ms.period_month=5
+              ORDER BY ms.generated_at DESC;
+            "
+
+            echo ""
+            echo "── 6. Topic trends populated for games (post-§14+§15 cleanup) ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT g.name, COUNT(tt.id) AS topic_count, MAX(tt.last_seen) AS latest_topic_day
+              FROM games g
+              LEFT JOIN topic_trends tt ON tt.game_id = g.id
+              WHERE EXISTS (SELECT 1 FROM raw_posts WHERE game_id=g.id)
+              GROUP BY g.id
+              HAVING COUNT(tt.id) > 0
+              ORDER BY topic_count DESC
+              LIMIT 15;
+            "
+          EOF
