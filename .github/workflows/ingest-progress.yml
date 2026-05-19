@@ -1,0 +1,65 @@
+name: Ingest Progress
+
+on:
+  workflow_dispatch:
+
+jobs:
+  progress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Progress
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+
+            echo "── 1. Live ingest status endpoint ──"
+            curl -sS http://127.0.0.1:8000/api/ingest/status
+
+            echo ""
+            echo ""
+            echo "── 2. Tail of today's ingest log ──"
+            LOG=/opt/sentimentpulse/backend/logs/ingest_2026-05-19.log
+            if [ -f "$LOG" ]; then
+              echo "Log size: $(wc -l < $LOG) lines"
+              echo ""
+              echo "Last 40 lines:"
+              tail -40 "$LOG"
+            else
+              echo "No log file at $LOG"
+              ls -lt /opt/sentimentpulse/backend/logs/ 2>&1 | head -10
+            fi
+
+            echo ""
+            echo "── 3. Posts collected in the last 30 minutes (live progress) ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT source, COUNT(*) AS n, MAX(collected_at) AS latest_utc
+              FROM raw_posts
+              WHERE collected_at >= datetime('now', '-30 minutes')
+              GROUP BY source
+              ORDER BY latest_utc DESC;
+            "
+
+            echo ""
+            echo "── 4. Per-game posts collected in the last 30 minutes ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT g.name, rp.source, COUNT(*) AS n
+              FROM raw_posts rp
+              JOIN games g ON g.id = rp.game_id
+              WHERE rp.collected_at >= datetime('now', '-30 minutes')
+              GROUP BY g.id, rp.source
+              ORDER BY n DESC;
+            "
+
+            echo ""
+            echo "── 5. Is the ingestion process still running? ──"
+            ps aux | grep -E "python.*ingest|uvicorn" | grep -v grep || echo "No ingest python process found (only uvicorn worker)"
+          EOF
