@@ -3,6 +3,9 @@ Shared pytest fixtures for SentimentPulse backend tests.
 
 Uses an in-memory SQLite database and patches out the expensive startup
 operations (NLP model loading, APScheduler) so tests run fast.
+
+Each test gets a fresh in-memory database (function-scoped engine + session)
+to avoid UNIQUE-constraint bleed-through between tests that call db.commit().
 """
 from datetime import date, datetime
 from unittest.mock import MagicMock, patch
@@ -11,32 +14,40 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-
-# ── Test database ──────────────────────────────────────────────────────────────
-
-TEST_DB_URL = "sqlite:///:memory:"
-test_engine = create_engine(TEST_DB_URL, connect_args={"check_same_thread": False})
-TestingSession = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+from sqlalchemy.pool import StaticPool
 
 
-# ── Table setup (session-scoped: create once, reuse across all tests) ──────────
+# ── Ensure models are registered once ─────────────────────────────────────────
 
 @pytest.fixture(scope="session", autouse=True)
-def create_tables():
-    from database import Base
-    Base.metadata.create_all(bind=test_engine)
-    yield
-    Base.metadata.drop_all(bind=test_engine)
+def _register_models():
+    """Import models once per session so Base.metadata knows about all tables."""
+    import models  # noqa: F401
 
 
-# ── Per-test DB session with automatic rollback ────────────────────────────────
+# ── Per-test engine factory ────────────────────────────────────────────────────
+
+def _make_test_engine():
+    return create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+
+# ── Per-test DB session ────────────────────────────────────────────────────────
 
 @pytest.fixture()
 def db():
-    session = TestingSession()
+    from database import Base
+    engine = _make_test_engine()
+    Base.metadata.create_all(bind=engine)
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    session = session_factory()
     yield session
-    session.rollback()
     session.close()
+    Base.metadata.drop_all(bind=engine)
+    engine.dispose()
 
 
 # ── FastAPI TestClient with patched lifespan ───────────────────────────────────
@@ -123,8 +134,7 @@ def raw_post(db, game):
 def sentiment_record(db, raw_post):
     from models import SentimentRecord, SentimentEnum
     sr = SentimentRecord(
-        post_id=raw_post.id,
-        game_id=raw_post.game_id,
+        raw_post_id=raw_post.id,
         sentiment=SentimentEnum.positive,
         sentiment_score=0.92,
         topics=["gameplay", "graphics"],
