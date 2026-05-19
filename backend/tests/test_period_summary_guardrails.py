@@ -164,7 +164,8 @@ class TestCallActionsPrompt:
         prompt = client.prompts[0]
         # The new NONE sentinel must be the documented escape valve
         assert "NONE" in prompt
-        assert "do not write a meta-message" in prompt.lower()
+        # NONE sentinel must be documented as the escape valve with NO meta-message
+        assert "nothing else, no explanation" in prompt.lower()
 
     def test_actions_returns_none_when_claude_says_none(self):
         client = _CapturingClient(response="NONE")
