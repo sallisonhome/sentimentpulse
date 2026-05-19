@@ -128,7 +128,7 @@ Matches the howmanyareplaying.com project process.
 - **Computer executes the squash-and-merge for the user**, but ALWAYS confirms first. The confirmation should include: branch name, PR title, summary of changes, and confirmation that QA passed.
 - **Squash merge format**: PR title becomes the squashed commit message. Title pattern: `<type>: <imperative summary>` (e.g., `feat: 30-day rolling summaries with bold ideas`, `fix: admin login body parsing under slowapi`).
 - After merge, delete the feature branch.
-- Auto-deploy on push to main is the goal (see Principle 15 below).
+- Auto-deploy on push to main is the goal (see Principle 16 below).
 
 ### 13. No Inventing, No Speculating — Evidence-Only Insights (always-on, all projects, all LLM calls)
 **Hard, firm requirement for every Claude/LLM call in any pipeline that produces summaries, topic labels, recommendations, or any user-facing insight.**
@@ -159,7 +159,24 @@ A post mentioning a topic, genre, mechanic, or property does NOT mean the entity
 
 This principle is the natural extension of §13 (No Inventing, No Speculating) into the data layer: §13 prevents the LLM from fabricating concepts; §14 prevents the upstream data from FEEDING the LLM contaminated material in the first place.
 
-### 15. Auto-Deploy via GitHub Actions (TARGET)
+### 15. Critical Mass Before Surfacing — No Topic Bubbles Up Without Plural Independent Signal (always-on, all projects, all aggregation pipelines)
+**Hard, firm requirement for every pipeline that surfaces topics, issues, opportunities, sentiments, or recommendations to a user.**
+
+1-2 posts do NOT mean "this is how players feel" or "this is what users care about." Real signal looks like the same theme repeating across MULTIPLE independent authors over time. Pipelines must enforce a critical-mass threshold before a topic qualifies for inclusion in any summary, recommendation, bold idea, or trend report.
+
+- **Minimum thresholds (all must be met) for a topic to surface in any user-facing output:**
+  - **≥3 distinct posts** referencing the topic (not 3 mentions in the same thread — 3 separate top-level posts or distinct comment threads)
+  - **≥3 distinct authors** — one user posting three times is one voice, not three
+  - **Sustained presence** — the topic appears in posts across multiple days within the reporting window (not a single-day spike that's likely a news/release artifact)
+- **Below threshold = excluded entirely.** A topic that almost qualifies is still noise. Do not surface it with a caveat ("this is emerging", "low-volume signal"). Do not surface it at all. Honesty about uncertainty means saying nothing about it, not saying it tentatively.
+- **This applies symmetrically to positive AND negative topics AND bold ideas.** A single ecstatic post does not justify amplifying that aspect of the product. A single complaint does not justify recommending an action. A bold idea triggered by one post is not a bold idea — it's a guess.
+- **Window-aware thresholds:** the absolute minimums above apply to the standard monthly summary. Shorter windows (7-day) may use proportionally lower thresholds but never below ≥2 distinct authors AND ≥2 distinct posts. Longer windows (90-day, all-time) should scale UP — a topic with only 3 posts over 90 days is not a trend.
+- **Total-volume gate:** if the entire reporting window has <20 posts of substantive content, the pipeline should surface a single "insufficient signal for confident reporting" state. Do NOT attempt to find topics in a desert and call them trends.
+- **Implementation expectation:** topic extraction at ingestion must record per-cluster post-count and author-count metadata. Summary prompts must receive ONLY clusters that pass the critical-mass gate. The gate enforcement lives in the data layer — not as a soft hint to the LLM — because the LLM will dutifully write confident prose about whatever clusters it's handed.
+
+Together with §13 and §14, this completes the trust chain: §13 forbids inventing concepts; §14 ensures the posts are actually ABOUT the entity; §15 ensures the topics derived from those posts have enough plural independent support to count as real signal.
+
+### 16. Auto-Deploy via GitHub Actions (TARGET)
 Matches the howmanyareplaying.com project's `.github/workflows/deploy.yml` pattern.
 
 - Once configured, merging to `main` automatically triggers a deploy on the droplet: pull, install deps, build, restart services. No manual `ssh + git pull + systemctl restart` needed.
