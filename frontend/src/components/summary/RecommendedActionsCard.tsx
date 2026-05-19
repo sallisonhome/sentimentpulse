@@ -18,7 +18,13 @@ function parseActions(raw: string): Array<{ type: 'bullet' | 'para'; text: strin
 }
 
 export default function RecommendedActionsCard({ text }: RecommendedActionsCardProps) {
-  const actions = text ? parseActions(text) : []
+  // Render nothing when the backend signals "nothing to recommend" — either by
+  // returning null, returning an empty/whitespace-only string, or returning
+  // content that parses to zero actions (e.g. just whitespace after sanitization).
+  // The parent grid auto-flows the Executive Summary card to full width.
+  if (!text || !text.trim()) return null
+  const actions = parseActions(text)
+  if (actions.length === 0) return null
 
   return (
     <Card>
@@ -29,24 +35,18 @@ export default function RecommendedActionsCard({ text }: RecommendedActionsCardP
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {actions.length === 0 ? (
-          <p className="text-sm text-muted-foreground italic">
-            No recommendations available yet.
-          </p>
-        ) : (
-          <div className="space-y-2 text-sm">
-            {actions.map((a, i) =>
-              a.type === 'bullet' ? (
-                <div key={i} className="flex items-start gap-2">
-                  <ChevronRight className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-primary" />
-                  <span className="leading-snug">{a.text}</span>
-                </div>
-              ) : (
-                <p key={i} className="leading-relaxed text-muted-foreground">{a.text}</p>
-              )
-            )}
-          </div>
-        )}
+        <div className="space-y-2 text-sm">
+          {actions.map((a, i) =>
+            a.type === 'bullet' ? (
+              <div key={i} className="flex items-start gap-2">
+                <ChevronRight className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-primary" />
+                <span className="leading-snug">{a.text}</span>
+              </div>
+            ) : (
+              <p key={i} className="leading-relaxed text-muted-foreground">{a.text}</p>
+            )
+          )}
+        </div>
       </CardContent>
     </Card>
   )

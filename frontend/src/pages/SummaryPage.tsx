@@ -76,7 +76,15 @@ function PeriodBody({ data, isWindow }: { data: PeriodData; isWindow?: boolean }
     <div className={cn('space-y-4', isWindow && 'rounded-xl border border-dashed border-primary/40 bg-primary/5 p-4')}>
       <PeriodStatsRow data={data} />
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div
+        className={cn(
+          'grid gap-4',
+          // Two-column grid only when both cards have content. If recommended
+          // actions are absent (backend returned null after stripping meta-leak),
+          // the executive summary expands to full width.
+          data.recommended_actions && data.recommended_actions.trim() ? 'lg:grid-cols-2' : '',
+        )}
+      >
         <ExecutiveSummaryCard text={data.executive_summary} />
         <RecommendedActionsCard text={data.recommended_actions} />
       </div>

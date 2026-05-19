@@ -169,21 +169,36 @@ class TestParseBoldIdeas:
         assert _parse_bold_ideas("  NONE  ") == []
 
     def test_numbered_list_parsed(self):
-        raw = "1. First bold idea here.\n2. Second bold idea here."
+        # Each idea must clear the 30-char substantive-prose floor introduced
+        # by the v2 strict parser. Real ideas are full sentences with a topic
+        # reference, not stubs.
+        raw = (
+            "1. Launch a community challenge tied to Combat Mechanics for weekly events.\n"
+            "2. Partner with content creators around Story Mode to amplify positive sentiment."
+        )
         result = _parse_bold_ideas(raw)
         assert len(result) == 2
-        assert "First bold idea" in result[0]
-        assert "Second bold idea" in result[1]
+        assert "Combat Mechanics" in result[0]
+        assert "Story Mode" in result[1]
 
     def test_single_idea(self):
-        raw = "1. Only one bold idea."
+        raw = "1. Capitalize on Hitman-Style Gameplay momentum with a free demo weekend campaign."
         result = _parse_bold_ideas(raw)
         assert len(result) == 1
 
     def test_multiline_idea(self):
-        raw = "1. A bold idea that spans\nmultiple lines.\n2. Another idea."
+        raw = (
+            "1. A substantive bold idea about Performance Issues that spans\n"
+            "multiple lines for emphasis and context.\n"
+            "2. Another fully-formed recommendation referencing Story Mode for clarity."
+        )
         result = _parse_bold_ideas(raw)
         assert len(result) >= 1
+
+    def test_short_stubs_rejected(self):
+        # v2 strict parser drops markdown headings and < 30-char stubs
+        raw = "1. Short.\n2. Also short.\n# Heading"
+        assert _parse_bold_ideas(raw) == []
 
 
 # ── API endpoint tests ────────────────────────────────────────────────────────
