@@ -56,11 +56,16 @@ jobs:
             cd ..
 
             echo "── frontend build ────────────────────────────"
+            export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+            which node || echo "node not in PATH"
+            which npm || echo "npm not in PATH"
             if [ -d frontend ] && [ -f frontend/package.json ]; then
               cd frontend
-              npm ci --silent
-              npm run build
+              npm ci 2>&1 | tail -5
+              npm run build 2>&1 | tail -10
               cd ..
+            else
+              echo "frontend/ or package.json missing, skipping build"
             fi
 
             echo "── restart backend ───────────────────────────"
