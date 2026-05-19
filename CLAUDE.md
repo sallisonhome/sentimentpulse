@@ -128,9 +128,24 @@ Matches the howmanyareplaying.com project process.
 - **Computer executes the squash-and-merge for the user**, but ALWAYS confirms first. The confirmation should include: branch name, PR title, summary of changes, and confirmation that QA passed.
 - **Squash merge format**: PR title becomes the squashed commit message. Title pattern: `<type>: <imperative summary>` (e.g., `feat: 30-day rolling summaries with bold ideas`, `fix: admin login body parsing under slowapi`).
 - After merge, delete the feature branch.
-- Auto-deploy on push to main is the goal (see Principle 12 below).
+- Auto-deploy on push to main is the goal (see Principle 14 below).
 
-### 12. Auto-Deploy via GitHub Actions (TARGET)
+### 13. No Inventing, No Speculating — Evidence-Only Insights (always-on, all projects, all LLM calls)
+**Hard, firm requirement for every Claude/LLM call in any pipeline that produces summaries, topic labels, recommendations, or any user-facing insight.**
+
+- **Only draw insights from firm, interpretable content.** Every claim in a summary, recommended action, topic label, or bold idea must trace back to specific words or unambiguous meaning in the source posts/comments. If you cannot point to the exact phrase that supports a claim, do not make the claim.
+- **Never guess what a person's comment means.** If a comment is ambiguous, sarcastic, off-topic, too short, or its sentiment is unclear, **tag it neutral and exclude it from the content fed into summary/recommendation generation**. Ambiguous data is worse than no data — it produces confident hallucinations.
+- **Never introduce concepts not present in the source.** Do not invent gaming-industry framing (e.g. "free-to-play model", "battle pass", "monetization model", "gacha", "live service", "season pass", "microtransactions") unless those exact terms appear in the underlying posts or topic clusters. The same rule applies to any domain: never add a concept the source didn't contain just because it sounds plausible for the category.
+- **Never extrapolate beyond evidence.** If topic labels show "Combat" and "Story", do not conclude anything about pricing, monetization, business model, platforms, marketing, or release timing. Insights must stay within the bounded scope of what was actually discussed.
+- **When in doubt, output less.** It is better to return "Insufficient signal to draw conclusions" or "General Discussion" than to fabricate a confident-sounding insight. Honesty about uncertainty is mandatory; confident hallucination is a P0 bug.
+- **This rule applies to every layer of every LLM pipeline:**
+  - Topic-label humanization: the human label must use only words/concepts present in the raw keyword cluster.
+  - Executive summaries: claims must be grounded in the topic labels and counts actually provided; no inferring business model, pricing, audience, or strategy from absence or from related-sounding labels.
+  - Recommended actions: every action must respond to an evidenced topic; no boilerplate for things the data didn't surface.
+  - Bold ideas: speculation about products/strategy is allowed, but the trigger insight must be evidence-backed.
+- **Implementation expectation:** prompts must explicitly forbid hallucination with negative examples, and pre-LLM filters must drop ambiguous/short/sarcastic content into a neutral bucket that is excluded from summary inputs.
+
+### 14. Auto-Deploy via GitHub Actions (TARGET)
 Matches the howmanyareplaying.com project's `.github/workflows/deploy.yml` pattern.
 
 - Once configured, merging to `main` automatically triggers a deploy on the droplet: pull, install deps, build, restart services. No manual `ssh + git pull + systemctl restart` needed.
