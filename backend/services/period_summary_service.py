@@ -292,6 +292,12 @@ def _aggregate_posts(
     return pos, neg, neu, top_pos, top_neg, top_neu
 
 
+# Minimum number of substantive posts required before attempting a confident
+# AI summary.  Below this threshold the pipeline returns the insufficient-signal
+# sentinel without calling Claude (§15).
+_MIN_SUBSTANTIVE_POSTS = 20
+
+
 def _call_claude_for_period(
     game_name: str,
     window_label: str,
@@ -308,7 +314,22 @@ def _call_claude_for_period(
       content was meta-leak (frontend hides the section).
     bold_ideas: list[str] — empty list when Claude returns "NONE" or all
       candidates were filtered out by quality checks.
+
+    §15 total-volume gate: if total_posts < _MIN_SUBSTANTIVE_POSTS, returns the
+    insufficient-signal sentinel immediately without calling Claude.
     """
+    # ── §15: Insufficient-signal sentinel ────────────────────────────────────
+    if total_posts < _MIN_SUBSTANTIVE_POSTS:
+        logger.info(
+            "Insufficient signal for '%s' %s: only %d posts (need %d) — skipping Claude.",
+            game_name, window_label, total_posts, _MIN_SUBSTANTIVE_POSTS,
+        )
+        exec_summary = (
+            f"Insufficient signal for confident reporting "
+            f"(only {total_posts} substantive posts in this window)."
+        )
+        return exec_summary, None, []
+
     client = _get_client()
     if client is None:
         return (

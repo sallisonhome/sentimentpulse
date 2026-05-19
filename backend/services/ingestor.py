@@ -56,7 +56,13 @@ from services.steam_service import (
 )
 from services.summary_service import generate_summaries
 from services import period_summary_service as _pss
-from services.topic_service import extract_topics, humanize_topic_labels, upsert_topic_trends
+from services.topic_service import (
+    extract_topics,
+    extract_topics_with_metadata,
+    humanize_topic_labels,
+    upsert_topic_trends,
+)
+from services.post_relevance import is_post_relevant_to_game
 
 logger = logging.getLogger(__name__)
 
@@ -413,6 +419,12 @@ def _step5_classify_sentiment(
 
 # ── Step 6: Topic Extraction ──────────────────────────────────────────────────
 
+# Critical-mass thresholds (§15)
+_CM_MIN_POSTS = 3
+_CM_MIN_AUTHORS = 3
+_CM_MIN_DAYS = 2
+
+
 def _step6_extract_topics(
     db: Session,
     game: Game,
@@ -421,6 +433,13 @@ def _step6_extract_topics(
 ) -> None:
     """
     Cluster today's posts per sentiment group.
+
+    Now implements:
+      §14 — Relevance filter: skip posts that are not substantively about the
+              focal game (off-topic, IP/movie references, cross-genre contamination).
+      §15 — Critical-mass gate: only surface clusters with ≥3 posts, ≥3 distinct
+              authors, and presence on ≥2 distinct days.
+
     Upserts results into topic_trends and back-fills SentimentRecord.topics.
     """
     today = date.today()
@@ -444,21 +463,55 @@ def _step6_extract_topics(
         log_lines.append(f"[Step 6] '{game.name}': no posts today (range {day_start} - {day_end}).")
         return
 
-    # Group text by sentiment
-    grouped: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
+    # ── §14: Relevance filter ────────────────────────────────────────────────
+    relevant_rows: list[tuple[RawPost, SentimentRecord]] = []
+    filtered_count = 0
     for post, sr in rows:
-        text = _post_text(post)
-        if text:
-            grouped[sr.sentiment.value].append(text)
+        if is_post_relevant_to_game(post.title or "", post.body or "", game):
+            relevant_rows.append((post, sr))
+        else:
+            filtered_count += 1
 
-    # Extract topics per sentiment group
+    if filtered_count:
+        log_lines.append(
+            f"[Step 6] '§14 filter' '{game.name}': "
+            f"{filtered_count}/{len(rows)} post(s) excluded as irrelevant today."
+        )
+
+    if not relevant_rows:
+        log_lines.append(f"[Step 6] '{game.name}': all posts filtered as irrelevant today.")
+        return
+
+    # ── Group text + metadata by sentiment ───────────────────────────────────
+    # For each sentiment group, collect parallel lists:
+    #   texts, author_ids, day_ids
+    # so that extract_topics_with_metadata can compute per-cluster metadata.
+    grouped_texts: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
+    grouped_authors: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
+    grouped_days: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
+
+    for post, sr in relevant_rows:
+        text = _post_text(post)
+        if not text:
+            continue
+        sentiment_key = sr.sentiment.value
+        grouped_texts[sentiment_key].append(text)
+        grouped_authors[sentiment_key].append(post.author or "anonymous")
+        # Use post_date if available, else collected_at
+        effective_dt = post.post_date or post.collected_at
+        day_str = effective_dt.date().isoformat() if effective_dt else today.isoformat()
+        grouped_days[sentiment_key].append(day_str)
+
+    # ── §15: Extract topics with metadata + critical-mass gate ───────────────
     topics_by_sentiment: dict[str, list[str]] = {}
-    for sentiment_label, texts in grouped.items():
+    for sentiment_label in ("positive", "negative", "neutral"):
+        texts = grouped_texts[sentiment_label]
+        authors = grouped_authors[sentiment_label]
+        days = grouped_days[sentiment_label]
         if not texts:
             continue
         try:
-            topics = extract_topics(texts)
-            topics_by_sentiment[sentiment_label] = topics
+            clusters = extract_topics_with_metadata(texts, authors, days)
         except Exception as exc:
             msg = (
                 f"[Step 6] Topic extraction error ({sentiment_label}) "
@@ -466,11 +519,38 @@ def _step6_extract_topics(
             )
             errors.append(msg)
             logger.error(msg)
+            continue
+
+        # Apply critical-mass gate: keep only clusters that pass ALL thresholds
+        passed: list[str] = []
+        for cluster in clusters:
+            pc = cluster["post_count"]
+            ac = len(cluster["author_ids"])
+            dc = len(cluster["day_set"])
+            if pc >= _CM_MIN_POSTS and ac >= _CM_MIN_AUTHORS and dc >= _CM_MIN_DAYS:
+                passed.append(cluster["label"])
+            else:
+                logger.debug(
+                    "[Step 6] §15 gate: cluster '%s' (%s) rejected: "
+                    "posts=%d authors=%d days=%d",
+                    cluster["label"], sentiment_label, pc, ac, dc,
+                )
+
+        if passed:
+            topics_by_sentiment[sentiment_label] = passed
+        else:
+            logger.info(
+                "[Step 6] §15 gate: no clusters passed for '%s' (%s) today.",
+                game.name, sentiment_label,
+            )
 
     if not topics_by_sentiment:
+        log_lines.append(
+            f"[Step 6] '{game.name}': no clusters passed §15 critical-mass gate today."
+        )
         return
 
-    # Convert raw keyword clusters to plain-English labels via Claude
+    # ── Humanise labels ──────────────────────────────────────────────────────
     try:
         topics_by_sentiment = humanize_topic_labels(game.name, topics_by_sentiment)
     except Exception as exc:
@@ -478,7 +558,7 @@ def _step6_extract_topics(
 
     # Back-fill top topics onto each SentimentRecord for this game/day
     top_map = {k: v[:5] for k, v in topics_by_sentiment.items()}
-    for _, sr in rows:
+    for _, sr in relevant_rows:
         sr.topics = top_map.get(sr.sentiment.value, [])
 
     # Upsert into topic_trends (includes its own commit)
@@ -492,9 +572,9 @@ def _step6_extract_topics(
 
     total = sum(len(v) for v in topics_by_sentiment.values())
     log_lines.append(
-        f"[Step 6] '{game.name}': {total} topic(s) extracted/updated."
+        f"[Step 6] '{game.name}': {total} topic(s) extracted/updated "
+        f"({len(relevant_rows)} relevant posts, {filtered_count} filtered)."
     )
-
 
 # ── Step 7: Daily Summary ─────────────────────────────────────────────────────
 

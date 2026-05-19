@@ -28,6 +28,178 @@ _TOP_WORDS = 3      # Keywords to join for each topic label
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+
+def extract_topics_with_metadata(
+    texts: list[str],
+    author_ids: list[str],
+    day_ids: list[str],
+    n_topics: int = _N_TOPICS,
+) -> list[dict]:
+    """
+    Extract topics from texts and return per-cluster metadata for the §15
+    critical-mass gate.
+
+    Parameters
+    ----------
+    texts      : list of post text strings (same order as author_ids / day_ids)
+    author_ids : list of author identifiers parallel to texts
+    day_ids    : list of date strings (e.g. "2024-04-15") parallel to texts
+    n_topics   : max topics to extract (forwarded to extract_topics)
+
+    Returns
+    -------
+    list of dicts, each with keys:
+        label      : str  — raw topic label (before humanization)
+        post_count : int  — number of texts assigned to this cluster
+        author_ids : set  — distinct author identifiers
+        day_set    : set  — distinct day strings
+
+    Returns an empty list when fewer than _MIN_DOCS texts are provided or
+    both BERTopic and LDA fail.
+    """
+    clean_indices, clean_texts = _filter_texts(texts)
+    if len(clean_texts) < _MIN_DOCS:
+        return []
+
+    # We attempt clustering — get per-document cluster assignments so we can
+    # compute author/day metadata per cluster.
+    try:
+        cluster_labels_raw = _cluster_with_assignments(clean_texts, n_topics)
+    except Exception as exc:
+        logger.error("extract_topics_with_metadata clustering failed: %s", exc)
+        return []
+
+    # Build metadata per cluster
+    cluster_meta: dict[str, dict] = {}
+    for local_idx, cluster_id in enumerate(cluster_labels_raw):
+        if cluster_id is None:
+            continue  # outlier from BERTopic
+        original_idx = clean_indices[local_idx]
+        author = author_ids[original_idx] if original_idx < len(author_ids) else "unknown"
+        day = day_ids[original_idx] if original_idx < len(day_ids) else "unknown"
+
+        if cluster_id not in cluster_meta:
+            cluster_meta[cluster_id] = {
+                "label": cluster_id,
+                "post_count": 0,
+                "author_ids": set(),
+                "day_set": set(),
+            }
+        cluster_meta[cluster_id]["post_count"] += 1
+        cluster_meta[cluster_id]["author_ids"].add(author)
+        cluster_meta[cluster_id]["day_set"].add(day)
+
+    return list(cluster_meta.values())
+
+
+def _filter_texts(texts: list[str]) -> tuple[list[int], list[str]]:
+    """Return (original_indices, clean_texts) filtered to len >= 30 chars."""
+    indices = []
+    clean = []
+    for i, t in enumerate(texts):
+        if t and len(t.strip()) >= 30:
+            indices.append(i)
+            clean.append(t)
+    return indices, clean
+
+
+def _cluster_with_assignments(texts: list[str], n_topics: int) -> list[object]:
+    """
+    Run topic clustering and return a list of cluster-id assignments,
+    one per input text.  Cluster IDs are strings (the raw label).
+    Outliers are represented as None.
+
+    Falls back: BERTopic → LDA.
+    """
+    from config import settings  # noqa: PLC0415
+    if not settings.lightweight_nlp:
+        try:
+            return _bertopic_assignments(texts, n_topics)
+        except Exception as exc:
+            logger.warning("BERTopic assignments failed (%s) — falling back to LDA.", exc)
+    else:
+        logger.info("Lightweight NLP mode — skipping BERTopic, using LDA only.")
+
+    try:
+        return _lda_assignments(texts, n_topics)
+    except Exception as exc:
+        logger.error("LDA assignments also failed: %s", exc)
+        return [None] * len(texts)
+
+
+def _bertopic_assignments(texts: list[str], n_topics: int) -> list[object]:
+    """Run BERTopic and return per-text cluster label strings (None for outliers)."""
+    from bertopic import BERTopic  # noqa: PLC0415
+    from sklearn.feature_extraction.text import CountVectorizer  # noqa: PLC0415
+
+    vectorizer_model = CountVectorizer(stop_words="english", min_df=1)
+    model = BERTopic(
+        nr_topics=n_topics,
+        min_topic_size=_MIN_DOCS,
+        verbose=False,
+        calculate_probabilities=False,
+        vectorizer_model=vectorizer_model,
+    )
+    topic_ids, _ = model.fit_transform(texts)
+
+    # Build label map: topic_id (int) → label string
+    label_map: dict[int, str] = {}
+    for _, row in model.get_topic_info().iterrows():
+        tid = row["Topic"]
+        if tid == -1:
+            continue
+        words = model.get_topic(tid)
+        if words:
+            label_map[tid] = " + ".join(w for w, _ in words[:_TOP_WORDS])
+
+    return [
+        label_map.get(tid, None)  # None for outlier (-1)
+        for tid in topic_ids
+    ]
+
+
+def _lda_assignments(texts: list[str], n_topics: int) -> list[object]:
+    """Run LDA and return per-text cluster label strings (never None — every
+    doc has a dominant topic)."""
+    from sklearn.feature_extraction.text import TfidfVectorizer  # noqa: PLC0415
+    from sklearn.decomposition import LatentDirichletAllocation   # noqa: PLC0415
+    import numpy as np  # noqa: PLC0415
+
+    vectorizer = TfidfVectorizer(
+        max_df=0.95,
+        min_df=2,
+        max_features=1000,
+        stop_words="english",
+    )
+    dtm = vectorizer.fit_transform(texts)
+
+    actual_n = min(n_topics, dtm.shape[0] - 1, dtm.shape[1] - 1)
+    if actual_n < 1:
+        return ["topic_0"] * len(texts)
+
+    lda = LatentDirichletAllocation(
+        n_components=actual_n,
+        random_state=42,
+        max_iter=10,
+    )
+    doc_topics = lda.fit_transform(dtm)
+
+    feature_names = vectorizer.get_feature_names_out()
+    # Build label for each LDA component
+    labels: list[str] = []
+    for topic_vec in lda.components_:
+        top_indices = topic_vec.argsort()[::-1][:_TOP_WORDS]
+        label = " + ".join(feature_names[i] for i in top_indices)
+        labels.append(label)
+
+    # Assign each document to its dominant topic
+    import numpy as np  # noqa: PLC0415,F811
+    return [
+        labels[int(np.argmax(doc_topic_vec))]
+        for doc_topic_vec in doc_topics
+    ]
+
+
 def humanize_topic_labels(
     game_name: str,
     topics_by_sentiment: dict[str, list[str]],

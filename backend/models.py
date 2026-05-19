@@ -58,6 +58,10 @@ class Game(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # JSON list of subreddit names, e.g. ["GameNameOfficial", "GameName"]
     subreddits: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
+    # JSON list of distinctive keywords/keyphrases that uniquely identify this
+    # game vs the broader IP, movie, or brand it shares a name with.
+    # Used by §14 post-relevance filter (post_relevance.py).
+    distinctive_keywords: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
