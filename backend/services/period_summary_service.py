@@ -33,7 +33,10 @@ logger = logging.getLogger(__name__)
 
 _MODEL = "claude-haiku-4-5-20251001"
 _MAX_TOKENS_SUMMARY = 500
-_MAX_TOKENS_ACTIONS = 700
+# Tightened from 700 → 350 to discourage verbose multi-clause recommendations.
+# With the 25-word-per-item budget, 5 items × ~40 tokens = 200 tokens; 350 leaves
+# comfortable headroom while still capping runaway prose.
+_MAX_TOKENS_ACTIONS = 350
 _MAX_TOKENS_BOLD = 400
 
 MONTH_NAMES = [
@@ -395,10 +398,13 @@ def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total
     prompt = (
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
         + _OUTPUT_STYLE +
-        f"Write a 4-6 sentence executive summary of community sentiment covering {window_label}. "
-        f"Cite topic names exactly as provided and give a sense of magnitude relative to total posts. "
-        f"Lean toward observations that imply a decision or response when the data supports one. "
-        f"If post volume is low, note it briefly and keep the analysis short.\n\n"
+        f"Write a TIGHT 3-5 sentence executive summary of community sentiment covering {window_label}.\n\n"
+        f"Concision rules:\n"
+        f"- 120 WORDS MAX. Aim for 80-100.\n"
+        f"- Lead with the dominant signal in 1 sentence, then 2-4 sentences of supporting detail.\n"
+        f"- Cite topic names exactly as provided.\n"
+        f"- NO parenthetical lists of examples. NO 'this suggests... which means... and therefore...' chains.\n"
+        f"- If post volume is low, say so plainly in 1 short sentence and keep the rest equally short.\n\n"
         f"Data ({window_label}):\n"
         f"Top positive topics: {pos_str}\n"
         f"Top negative topics: {neg_str}\n"
@@ -422,20 +428,26 @@ def _call_actions(client, game_name, window_label, pos_str, neg_str, neu_str) ->
     prompt = (
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
         + _OUTPUT_STYLE +
-        f"Write 3-5 specific, sprint-board-ready recommendations the team should execute next. "
-        f"Each recommendation must:\n"
-        f"- Reference a specific topic from the data using the exact label\n"
-        f"- Be concrete enough that an engineer or community manager could start tomorrow\n"
-        f"- Where useful, note whether the issue is worsening, stable, or an emerging positive to amplify\n\n"
+        f"Write 3-5 sprint-board-ready recommendations. Each one MUST follow this format strictly:\n\n"
+        f"  <Imperative verb> **<exact topic label>** — <what to do, in <=15 words>.\n\n"
+        f"Hard concision rules:\n"
+        f"- 25 WORDS MAX per recommendation. Aim for 15-20.\n"
+        f"- Start with an imperative verb (Ship, Patch, Audit, Launch, Amplify, Clarify, Document, Sunset, etc.).\n"
+        f"- Bold the topic label exactly as provided, using **double asterisks**.\n"
+        f"- NO parenthetical examples, NO 'this is your clearest signal' framing, NO 'should anchor messaging through next quarter' filler.\n"
+        f"- ONE sentence per recommendation. No semicolons. No 'and... and...' chains. If you need two ideas, write two recommendations.\n\n"
+        f"Good example:\n"
+        f"  1. Ship **John Wick vs Competition** head-to-head feature comparisons in community channels.\n"
+        f"  2. Patch **Horror & Suspense Elements** difficulty spikes flagged in negative cluster.\n\n"
+        f"Bad example (too verbose, has parenthetical and filler):\n"
+        f"  1. Lean into **John Wick vs Competition** momentum by shipping comparative feature breakdowns (kill-cam mechanics, precision controls, level design philosophy) that reinforce differentiation—this positive signal is your clearest community validation point and should anchor messaging through next quarter.\n\n"
         f"If you genuinely cannot produce 3+ actionable recommendations from the available topics, "
-        f"respond with the SINGLE LINE: NONE — nothing else, no explanation. Do NOT write a meta-message "
-        f"about why you can't recommend. Just NONE.\n\n"
+        f"respond with the SINGLE LINE: NONE — nothing else, no explanation.\n\n"
         f"Data ({window_label}):\n"
         f"Negative topics: {neg_str}\n"
         f"Neutral topics: {neu_str}\n"
         f"Positive topics: {pos_str}\n\n"
-        f"Format as a numbered list (1. ... 2. ... 3. ...). Each item one sentence, two max. "
-        f"Plain prose, no markdown headings."
+        f"Output: numbered list (1. ... 2. ... 3. ...). Plain prose, no markdown headings."
     )
     try:
         message = client.messages.create(
@@ -456,10 +468,13 @@ def _call_bold_ideas(client, game_name, window_label, pos_str, neg_str, neu_str,
         f"Looking at community signals from {window_label}, find opportunities a typical analyst would MISS.\n\n"
         + _OUTPUT_STYLE +
         f"If — and only if — the topic labels reveal something genuinely worth flagging as a bold move "
-        f"beyond the obvious fixes, propose 1 or 2 bold ideas. Each must:\n"
-        f"- Be surprising or non-obvious (a community event, an unexpected partnership angle, a creative response to a real signal)\n"
-        f"- Reference a specific topic label by name\n"
-        f"- Be 1-2 sentences of plain prose. Sprint-board ready in feel.\n\n"
+        f"beyond the obvious fixes, propose 1 or 2 bold ideas.\n\n"
+        f"Concision rules:\n"
+        f"- 40 WORDS MAX per idea. Aim for 25-30.\n"
+        f"- One sentence stating the bold move, optionally one second sentence on why.\n"
+        f"- Bold the referenced topic label exactly as provided, using **double asterisks**.\n"
+        f"- Be surprising or non-obvious (community event, partnership angle, unexpected creative response).\n"
+        f"- NO 'this is your X' framing. NO 'compounds loyalty' or 'lock in goodwill' filler.\n\n"
         f"If nothing in the data clearly supports a bold idea, respond with the SINGLE LINE: NONE — nothing else. "
         f"Most periods should return NONE. Only fire when there is a real signal.\n\n"
         f"Data ({window_label}):\n"
@@ -468,7 +483,7 @@ def _call_bold_ideas(client, game_name, window_label, pos_str, neg_str, neu_str,
         f"Neutral topics: {neu_str}\n"
         f"Total posts: {total_posts}\n\n"
         f"Format (when ideas exist):\n"
-        f"1. <Bold idea in plain prose, 1-2 sentences, names a topic label>\n"
+        f"1. <Tight bold idea naming a **topic label**, 25-40 words>\n"
         f"2. <Optional second>\n\n"
         f"No markdown headings. No \"# Analysis\" or \"## Key Observation\" sections. "
         f"No preamble. Either the numbered list, or NONE."
