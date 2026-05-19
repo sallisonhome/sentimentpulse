@@ -1,0 +1,63 @@
+name: Ingest Status
+
+on:
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Status
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+
+            echo "── 1. Backend service status ──"
+            systemctl is-active sentimentpulse
+            systemctl status sentimentpulse --no-pager -l | head -15
+
+            echo ""
+            echo "── 2. /api/ingest/status (live) ──"
+            curl -sS http://127.0.0.1:8000/api/ingest/status | python -m json.tool || true
+
+            echo ""
+            echo "── 3. Most recent posts collected today (UTC) ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT source, COUNT(*) AS n, MAX(collected_at) AS latest
+              FROM raw_posts
+              WHERE date(collected_at) = date('now')
+              GROUP BY source
+              ORDER BY n DESC;
+            "
+
+            echo ""
+            echo "── 4. Posts collected in the last 24 hours, by source + game ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT source, g.name AS game, COUNT(*) AS n
+              FROM raw_posts rp
+              JOIN games g ON g.id = rp.game_id
+              WHERE rp.collected_at >= datetime('now','-1 day')
+              GROUP BY rp.source, rp.game_id
+              ORDER BY n DESC
+              LIMIT 30;
+            "
+
+            echo ""
+            echo "── 5. Tail of latest ingest log ──"
+            LOG=$(ls -t /opt/sentimentpulse/backend/logs/ingest_*.log 2>/dev/null | head -1)
+            if [ -n "$LOG" ]; then
+              echo "Latest log: $LOG"
+              tail -40 "$LOG"
+            else
+              echo "No ingest logs found in backend/logs/"
+            fi
+          EOF
