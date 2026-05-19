@@ -128,7 +128,7 @@ Matches the howmanyareplaying.com project process.
 - **Computer executes the squash-and-merge for the user**, but ALWAYS confirms first. The confirmation should include: branch name, PR title, summary of changes, and confirmation that QA passed.
 - **Squash merge format**: PR title becomes the squashed commit message. Title pattern: `<type>: <imperative summary>` (e.g., `feat: 30-day rolling summaries with bold ideas`, `fix: admin login body parsing under slowapi`).
 - After merge, delete the feature branch.
-- Auto-deploy on push to main is the goal (see Principle 14 below).
+- Auto-deploy on push to main is the goal (see Principle 15 below).
 
 ### 13. No Inventing, No Speculating — Evidence-Only Insights (always-on, all projects, all LLM calls)
 **Hard, firm requirement for every Claude/LLM call in any pipeline that produces summaries, topic labels, recommendations, or any user-facing insight.**
@@ -145,7 +145,21 @@ Matches the howmanyareplaying.com project process.
   - Bold ideas: speculation about products/strategy is allowed, but the trigger insight must be evidence-backed.
 - **Implementation expectation:** prompts must explicitly forbid hallucination with negative examples, and pre-LLM filters must drop ambiguous/short/sarcastic content into a neutral bucket that is excluded from summary inputs.
 
-### 14. Auto-Deploy via GitHub Actions (TARGET)
+### 14. Context-Aware Attribution — Never Conflate Post Subject with Game Properties (always-on, all projects, all data pipelines)
+**Hard, firm requirement for every pipeline that classifies, clusters, summarizes, or attributes properties to an entity (game, product, person, company, etc.) based on user-generated content.**
+
+A post mentioning a topic, genre, mechanic, or property does NOT mean the entity the post is filed under shares that topic, genre, mechanic, or property. Posts arrive from general communities (r/gaming, r/pcgaming, etc.) and frequently reference OTHER entities for comparison, nostalgia, recommendation, or context. Treating any word in any post as a property of the focal entity is a hallucination, full stop.
+
+- **Genre, mechanics, business model, platform, art style, and tone are properties of the entity — not of the post.** If a user post about Game A mentions Game B's horror elements, that signal does NOT belong to Game A's summary. Period.
+- **Before attributing any topic to an entity, verify the post is ABOUT that entity, not merely MENTIONING it.** A relevance check at ingestion is mandatory: posts must either (a) come from an entity-specific source (a game's official subreddit, a product's vendor page, an artist's official feed), or (b) demonstrate substantive on-topic content (the entity name appears as a distinctive noun phrase, not as a passing reference; the post discusses the entity's actual content/features/issues, not just nostalgically name-drops it).
+- **When a general-source post mentions multiple entities, do NOT cross-pollinate properties.** Mention of "Survival Horror games" in a thread that happens to include the focal entity's name does not make the focal entity a survival horror game. Topic clusters built from such posts must be discarded or the post must be excluded from clustering.
+- **Use entity-genre awareness as a sanity gate.** Each entity has known properties (genre, business model, platform, target audience) recorded in the system. Any AI-generated topic label or summary claim that conflicts with the entity's known properties is a hallucination by definition and must be rejected.
+- **Never assume genre transfer from related entities.** If users discuss the focal entity alongside titles from a different genre, that comparison reveals interest in cross-genre play patterns — not that the focal entity shares the other genre's properties. Frame such signals carefully or exclude them entirely.
+- **Implementation expectation:** ingestion pipelines must include a per-post relevance filter that drops off-topic posts before they reach topic clustering. Summary prompts must include the entity's known properties as ground truth and forbid extrapolating beyond them.
+
+This principle is the natural extension of §13 (No Inventing, No Speculating) into the data layer: §13 prevents the LLM from fabricating concepts; §14 prevents the upstream data from FEEDING the LLM contaminated material in the first place.
+
+### 15. Auto-Deploy via GitHub Actions (TARGET)
 Matches the howmanyareplaying.com project's `.github/workflows/deploy.yml` pattern.
 
 - Once configured, merging to `main` automatically triggers a deploy on the droplet: pull, install deps, build, restart services. No manual `ssh + git pull + systemctl restart` needed.
