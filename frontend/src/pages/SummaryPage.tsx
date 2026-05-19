@@ -233,14 +233,14 @@ export default function SummaryPage() {
     <ErrorBoundary>
       <div className="space-y-5">
         {/* Page header */}
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-bold">Executive Summary</h2>
-            <p className="text-sm text-muted-foreground mt-0.5">{periodLabel}</p>
-          </div>
+        <div>
+          <h2 className="text-2xl font-bold">Executive Summary</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">{periodLabel}</p>
+        </div>
 
-          {/* Controls row: period tabs + 7-day button */}
-          <div className="flex flex-wrap items-center gap-3">
+        {/* Period controls: month/year selector + 7-day button */}
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
             {monthList.length > 0 && (
               <PeriodSelector
                 months={monthList}
@@ -248,19 +248,19 @@ export default function SummaryPage() {
                 onChange={key => setSelectedKey(key)}
               />
             )}
-            <Button
-              variant={is7Day ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setSelectedKey(is7Day ? defaultKey : '7day')}
-              className={cn(
-                'gap-1.5',
-                is7Day && 'ring-2 ring-primary ring-offset-2',
-              )}
-            >
-              <CalendarDays className="h-4 w-4" />
-              {is7Day ? 'Back to Monthly' : '+ Past 7 days'}
-            </Button>
           </div>
+          <Button
+            variant={is7Day ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setSelectedKey(is7Day ? defaultKey : '7day')}
+            className={cn(
+              'gap-1.5 shrink-0',
+              is7Day && 'ring-2 ring-primary ring-offset-2',
+            )}
+          >
+            <CalendarDays className="h-4 w-4" />
+            {is7Day ? 'Back to Monthly' : '+ Past 7 days'}
+          </Button>
         </div>
 
         {/* Main content */}
