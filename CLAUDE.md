@@ -99,6 +99,8 @@ Frontend calls backend at http://localhost:8000/api in dev (Vite proxy configure
 - Every command you give must be **paste-and-run executable verbatim** on the user's machine or server, with no fill-in-the-blanks step.
 - If a required value genuinely cannot be obtained, **stop and ask one targeted question for that specific value** — do not paper over it with a placeholder.
 - This rule applies on top of (not instead of) the §7 QA-Before-Commit/Deploy gate: commands must be both correct and QA'd before being handed to the user.
+- **No copy-paste-between-steps.** Never give the user a command whose output they must paste back into a follow-up command. If a value (key, token, SHA, URL) must flow between steps, capture it programmatically: assign it to a shell variable in the same command, write it to a file the next command reads, or call an API directly. The user should never be a manual data pipe.
+- Self-check before every command block: "Could this run unattended in a script?" If no, fix it before sending.
 
 ### 9. QA Every PR Before Marking Done (REQUIRED)
 - **Every code change that touches behavior MUST be QAed end-to-end before the PR/task is marked complete.**
