@@ -185,6 +185,22 @@ Matches the howmanyareplaying.com project's `.github/workflows/deploy.yml` patte
 - Avoid the howmanyareplaying "stale DNS IP 502 bug" pattern — force-reload nginx after each rebuild.
 - Until auto-deploy is wired up, the manual `bash deploy.sh` flow remains the deploy step.
 
+### 17. Reddit Fetch Command — Canonical (CRITICAL — NEVER GUESS, NEVER SUBSTITUTE)
+
+The ONE AND ONLY PowerShell command to fetch Reddit posts through the user's residential IP is:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "C:\sentimentpulse\reddit_fetcher\fetch_reddit.ps1"
+```
+
+**Rules — non-negotiable:**
+- Whenever the user (or any future user) asks for the PowerShell command to fetch Reddit posts, give THIS EXACT COMMAND verbatim — no alternatives, no "or you could also try", no `python fetch_and_upload.py` substitutes.
+- Reddit blocks datacenter IPs (the droplet and GitHub Actions runners). The user runs this command from their home PC because their residential IP is not blocked.
+- Do NOT invent variants. Do NOT propose alternative scripts. Do NOT suggest running it on the droplet. Do NOT suggest a Python-only invocation.
+- If the command returns 403s in execution (Reddit-side block), diagnose the 403 — do NOT substitute a different command.
+
+This rule exists because alternatives have been offered in error before. Any deviation is a regression.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation
