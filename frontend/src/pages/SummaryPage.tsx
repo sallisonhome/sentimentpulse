@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { CalendarDays } from 'lucide-react'
 import { useAppContext } from '../contexts/AppContext'
 import { useMonthlySummaries } from '../hooks/useMonthlySummaries'
-import { useWindow7DaySummary } from '../hooks/useWindow7DaySummary'
+import { useWindowSummary } from '../hooks/useWindowSummary'
 import PeriodSelector, { monthKey } from '../components/summary/PeriodSelector'
 import BoldIdeasCard from '../components/summary/BoldIdeasCard'
 import ExecutiveSummaryCard from '../components/summary/ExecutiveSummaryCard'
@@ -102,18 +102,29 @@ function PeriodBody({ data, isWindow }: { data: PeriodData; isWindow?: boolean }
   )
 }
 
-// ── 7-day panel ────────────────────────────────────────────────────────────────
+// ── Window panel (1-day / 7-day) ────────────────────────────────────────────────────────────────
 
-function Window7DayPanel({ gameId }: { gameId: number }) {
-  const { mutate, data, isPending, error } = useWindow7DaySummary(gameId)
+/**
+ * Renders an on-demand rolling-window summary for the given game and window
+ * size (in days). Used by both the "+ 1 Day / Previous" and "+ Past 7 days"
+ * buttons. Generalised from the original Window7DayPanel; `days` is passed in.
+ */
+function WindowSummaryPanel({ gameId, days }: { gameId: number; days: number }) {
+  const { mutate, data, isPending, error } = useWindowSummary(gameId)
+
+  // Human-readable window labels ("1 day" / "7 days")
+  const windowLabel = days === 1 ? '1 day' : `${days} days`
+  const titleLabel  = days === 1 ? 'Past 1 day' : `Past ${days} days`
 
   if (!data && !isPending && !error) {
     return (
       <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-primary/40 bg-primary/5 p-8 text-center">
         <CalendarDays className="h-8 w-8 text-primary/60" />
-        <p className="text-sm text-muted-foreground">Click to generate a real-time summary of the past 7 days.</p>
-        <Button onClick={() => mutate({ days: 7 })} variant="outline">
-          Generate Past 7 Days
+        <p className="text-sm text-muted-foreground">
+          Click to generate a real-time summary of the past {windowLabel}.
+        </p>
+        <Button onClick={() => mutate({ days })} variant="outline">
+          Generate {titleLabel}
         </Button>
       </div>
     )
@@ -122,7 +133,9 @@ function Window7DayPanel({ gameId }: { gameId: number }) {
   if (isPending) {
     return (
       <div className="space-y-4 rounded-xl border border-dashed border-primary/40 bg-primary/5 p-4">
-        <p className="text-sm text-muted-foreground animate-pulse">Analyzing the past 7 days…</p>
+        <p className="text-sm text-muted-foreground animate-pulse">
+          Analyzing the past {windowLabel}…
+        </p>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           {Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} lines={2} />)}
         </div>
@@ -135,8 +148,8 @@ function Window7DayPanel({ gameId }: { gameId: number }) {
   if (error) {
     return (
       <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">
-        Failed to generate 7-day summary: {error.message}
-        <Button size="sm" variant="outline" className="ml-3" onClick={() => mutate({ days: 7 })}>
+        Failed to generate {windowLabel} summary: {error.message}
+        <Button size="sm" variant="outline" className="ml-3" onClick={() => mutate({ days })}>
           Retry
         </Button>
       </div>
@@ -144,16 +157,23 @@ function Window7DayPanel({ gameId }: { gameId: number }) {
   }
 
   const ws = data as WindowSummary
-  const startDate = new Date(ws.ingest_date)
-  startDate.setDate(startDate.getDate() - ws.window_days + 1)
   const fmt = (d: Date) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   const endDate = new Date(ws.ingest_date)
-  const rangeLabel = `${fmt(startDate)} – ${fmt(endDate)}, ${endDate.getFullYear()}`
+
+  // For 1-day windows show a single date; for multi-day show a range.
+  let rangeLabel: string
+  if (ws.window_days === 1) {
+    rangeLabel = `${fmt(endDate)}, ${endDate.getFullYear()}`
+  } else {
+    const startDate = new Date(ws.ingest_date)
+    startDate.setDate(startDate.getDate() - ws.window_days + 1)
+    rangeLabel = `${fmt(startDate)} – ${fmt(endDate)}, ${endDate.getFullYear()}`
+  }
 
   return (
     <div>
       <p className="mb-3 text-sm text-muted-foreground">
-        Past 7 days · {rangeLabel}
+        {titleLabel} · {rangeLabel}
       </p>
       <PeriodBody data={ws} isWindow />
     </div>
@@ -162,8 +182,14 @@ function Window7DayPanel({ gameId }: { gameId: number }) {
 
 // ── Empty state for current open month ────────────────────────────────────────
 
-function CurrentMonthEmptyState({ gameId }: { gameId: number }) {
-  const { mutate, isPending } = useWindow7DaySummary(gameId)
+function CurrentMonthEmptyState({
+  gameId,
+  onPickWindow,
+}: {
+  gameId: number
+  onPickWindow: (days: number) => void
+}) {
+  const { isPending } = useWindowSummary(gameId)
   const now = new Date()
   const monthName = now.toLocaleDateString('en-US', { month: 'long' })
 
@@ -174,15 +200,24 @@ function CurrentMonthEmptyState({ gameId }: { gameId: number }) {
           The <strong>{monthName}</strong> summary will be released on the 1st of next month.
           Want a preview?
         </p>
-        <Button
-          className="mt-3"
-          variant="outline"
-          disabled={isPending}
-          onClick={() => mutate({ days: 7 })}
-        >
-          <CalendarDays className="mr-2 h-4 w-4" />
-          {isPending ? 'Generating…' : 'Generate Past 7 Days'}
-        </Button>
+        <div className="mt-3 flex flex-wrap justify-center gap-2">
+          <Button
+            variant="outline"
+            disabled={isPending}
+            onClick={() => onPickWindow(1)}
+          >
+            <CalendarDays className="mr-2 h-4 w-4" />
+            Generate Past 1 Day
+          </Button>
+          <Button
+            variant="outline"
+            disabled={isPending}
+            onClick={() => onPickWindow(7)}
+          >
+            <CalendarDays className="mr-2 h-4 w-4" />
+            Generate Past 7 Days
+          </Button>
+        </div>
       </div>
     </div>
   )
@@ -224,18 +259,27 @@ export default function SummaryPage() {
   const defaultKey = monthList.length > 0 ? monthKey(monthList[0].period_year, monthList[0].period_month) : null
   const activeKey = selectedKey ?? defaultKey
 
-  // Is the user in 7-day mode?
-  const is7Day = activeKey === '7day'
+  // Is the user in a window mode?
+  const is1Day  = activeKey === '1day'
+  const is7Day  = activeKey === '7day'
+  const isWindow = is1Day || is7Day
+  const windowDays: number | null = is1Day ? 1 : is7Day ? 7 : null
 
   // Find currently selected monthly summary
-  const activeSummary: MonthlySummary | undefined = is7Day
+  const activeSummary: MonthlySummary | undefined = isWindow
     ? undefined
     : monthList.find(m => monthKey(m.period_year, m.period_month) === activeKey)
 
   // Period label for the heading
-  const periodLabel = is7Day
+  const periodLabel = is1Day
+    ? 'Past 1 day'
+    : is7Day
     ? 'Past 7 days'
     : activeSummary?.month_label ?? 'No summaries yet'
+
+  // Toggle helper: clicking an active window button returns to monthly default
+  const toggleWindow = (key: '1day' | '7day') =>
+    setSelectedKey(activeKey === key ? defaultKey : key)
 
   return (
     <ErrorBoundary>
@@ -246,7 +290,7 @@ export default function SummaryPage() {
           <p className="text-sm text-muted-foreground mt-0.5">{periodLabel}</p>
         </div>
 
-        {/* Period controls: month/year selector + 7-day button */}
+        {/* Period controls: month/year selector + window buttons (1 day / 7 day) */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             {monthList.length > 0 && (
@@ -257,27 +301,44 @@ export default function SummaryPage() {
               />
             )}
           </div>
-          <Button
-            variant={is7Day ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => setSelectedKey(is7Day ? defaultKey : '7day')}
-            className={cn(
-              'gap-1.5 shrink-0',
-              is7Day && 'ring-2 ring-primary ring-offset-2',
-            )}
-          >
-            <CalendarDays className="h-4 w-4" />
-            {is7Day ? 'Back to Monthly' : '+ Past 7 days'}
-          </Button>
+          <div className="flex flex-wrap gap-2 shrink-0">
+            <Button
+              variant={is1Day ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => toggleWindow('1day')}
+              className={cn(
+                'gap-1.5',
+                is1Day && 'ring-2 ring-primary ring-offset-2',
+              )}
+            >
+              <CalendarDays className="h-4 w-4" />
+              {is1Day ? 'Back to Monthly' : '+ 1 Day / Previous'}
+            </Button>
+            <Button
+              variant={is7Day ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => toggleWindow('7day')}
+              className={cn(
+                'gap-1.5',
+                is7Day && 'ring-2 ring-primary ring-offset-2',
+              )}
+            >
+              <CalendarDays className="h-4 w-4" />
+              {is7Day ? 'Back to Monthly' : '+ Past 7 days'}
+            </Button>
+          </div>
         </div>
 
         {/* Main content */}
-        {is7Day ? (
-          <Window7DayPanel gameId={selectedGameId} />
+        {windowDays !== null ? (
+          <WindowSummaryPanel gameId={selectedGameId} days={windowDays} />
         ) : activeSummary ? (
           <PeriodBody data={activeSummary} />
         ) : monthList.length === 0 ? (
-          <CurrentMonthEmptyState gameId={selectedGameId} />
+          <CurrentMonthEmptyState
+            gameId={selectedGameId}
+            onPickWindow={(d) => setSelectedKey(d === 1 ? '1day' : '7day')}
+          />
         ) : null}
       </div>
     </ErrorBoundary>
