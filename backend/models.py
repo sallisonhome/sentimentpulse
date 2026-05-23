@@ -131,6 +131,22 @@ class SentimentRecord(Base):
         DateTime, server_default=func.now(), nullable=False
     )
 
+    # ── §18 Sentiment Trust Chain audit columns (added by migration 0005) ──────
+    # signal_quality: 'low' (0-2 tokens) | 'medium' (3-6) | 'high' (7+)
+    signal_quality: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # language: ISO 639-1 code e.g. 'en', 'ru', 'es', or 'und' for undetectable
+    language: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # original_label: model's pre-floor label when demoted (set by PR #10)
+    original_label: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # sentiment_conflict: True when title and body labels disagreed (set by PR #11)
+    sentiment_conflict: Mapped[Optional[bool]] = mapped_column(
+        Boolean, nullable=True, default=False
+    )
+    # applied_rules: JSON list of lexicon rule IDs that fired (set by PR #11)
+    applied_rules: Mapped[Optional[list]] = mapped_column(
+        JSON, nullable=True, default=list
+    )
+
     raw_post: Mapped["RawPost"] = relationship("RawPost", back_populates="sentiment_record")
 
 

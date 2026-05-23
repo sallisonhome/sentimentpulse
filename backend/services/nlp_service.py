@@ -140,6 +140,66 @@ def classify_batch(texts: list[str]) -> list[tuple[str, float]]:
         return [_classify_vader(t) for t in texts]
 
 
+# ── §18 Gate-aware entry points ─────────────────────────────────────────────
+
+def classify_with_gate(text: str) -> dict:
+    """
+    Classify a single text string and apply the §18 signal-volume + language gates.
+
+    Returns a dict with keys:
+        label          — final sentiment label after gates ('positive'|'negative'|'neutral')
+        score          — final confidence score [0, 1] after gates
+        signal_quality — 'low' | 'medium' | 'high'
+        language       — ISO 639-1 code or 'und'
+
+    Backward-compatible: classify_sentiment() / classify_batch() are unchanged.
+    """
+    from services.sentiment_gate import (
+        apply_signal_and_language_gate,
+        detect_language,
+    )
+
+    raw_label, raw_score = classify_sentiment(text)
+    language = detect_language(text)
+    final_label, final_score, signal_quality = apply_signal_and_language_gate(
+        text, raw_label, raw_score, language
+    )
+    return {
+        "label": final_label,
+        "score": final_score,
+        "signal_quality": signal_quality,
+        "language": language,
+    }
+
+
+def classify_batch_with_gate(texts: list[str]) -> list[dict]:
+    """
+    Classify a list of texts and apply the §18 gates to each.
+
+    Returns a list of dicts (same structure as classify_with_gate()),
+    in the same order as `texts`.
+    """
+    from services.sentiment_gate import (
+        apply_signal_and_language_gate,
+        detect_language,
+    )
+
+    raw_results = classify_batch(texts)
+    output = []
+    for text, (raw_label, raw_score) in zip(texts, raw_results):
+        language = detect_language(text)
+        final_label, final_score, signal_quality = apply_signal_and_language_gate(
+            text, raw_label, raw_score, language
+        )
+        output.append({
+            "label": final_label,
+            "score": final_score,
+            "signal_quality": signal_quality,
+            "language": language,
+        })
+    return output
+
+
 # ── Private helpers ───────────────────────────────────────────────────────────
 
 def _classify_roberta_single(text: str) -> tuple[str, float]:
