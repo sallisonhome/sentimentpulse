@@ -107,7 +107,7 @@ def reclassify(game_id: int | None = None, dry_run: bool = False) -> None:
                     sr.language = result["language"]
                     sr.original_label = result.get("original_label")
                     sr.sentiment_conflict = result.get("sentiment_conflict", False)
-                    # applied_rules stays [] until PR #11 lexicon overlay
+                    sr.applied_rules = result.get("applied_rules", [])  # §18 Layer 4 lexicon
 
             if not dry_run:
                 try:
