@@ -201,6 +201,39 @@ powershell -ExecutionPolicy Bypass -File "C:\sentimentpulse\reddit_fetcher\fetch
 
 This rule exists because alternatives have been offered in error before. Any deviation is a regression.
 
+### 18. Sentiment Trust Chain — No Confident Label Without Sufficient Signal
+
+A post's sentiment label is only as trustworthy as the textual signal under it.  Misclassified labels poison topic clusters, summaries, and recommendations downstream — just like §13 / §14 / §15 protect against fabricated, off-topic, or low-volume insights, §18 protects against confident sentiment labels that the underlying text does not support.
+
+**Hard rules — enforced at the data layer in `nlp_service.classify_with_gate()`:**
+
+1. **Signal-volume gate.** Count substantive tokens (alphabetic words ≥ 3 chars, after stopword removal).
+   - 0–2 substantive tokens → force `neutral`, score = 0.5.
+   - 3–6 substantive tokens → classify but cap the stored score at 0.6.
+   - 7+ substantive tokens → classify normally.
+
+2. **Language gate.** Detect language. Any post not detected as English (and we have no tuned multilingual model) → force `neutral`.
+
+3. **Title vs body separation.** When both title and body ≥ 30 chars exist, classify each independently.
+   - Labels match → final label = same, final score = `min(title_score, body_score)`.
+   - Labels disagree, **and** the title is a rhetorical question (ends with `?`, body ≥ 100 chars) → **body wins**.
+   - Labels disagree, no rhetorical signal → body wins (longer signal), final score capped at 0.65, set `sentiment_conflict = true`.
+
+4. **Confidence floor — strict 0.70.** After all prior steps, if final confidence is below 0.70, demote the label to `neutral` and record the original label in `original_label` for audit. This is non-negotiable. The user explicitly chose the strict threshold over moderate (0.60) and light (0.55) options.
+
+5. **Gaming-domain lexicon overlay (PR #11).** A YAML rule file `backend/services/sentiment_rules.yaml` overrides the model on patterns the model is known to get wrong (rhetorical bug-list questions, praise emoji + body confirmation, etc.). Each rule fires deterministically and is logged per post for audit.
+
+**Audit columns added to `sentiment_records`:**
+- `signal_quality` (`low` / `medium` / `high`) — from the signal-volume gate
+- `language` (ISO 639-1) — from langdetect
+- `original_label` — the model's pre-floor label, when demoted
+- `sentiment_conflict` (boolean) — set when title and body disagreed
+- `applied_rules` (JSON list) — lexicon rules that fired
+
+**Reclassification.** Every time §18 logic changes materially, all historical posts must be reclassified end-to-end (`backend/reclassify_all_sentiments.py`). The user explicitly chose this over "only new posts" so historical summaries and topic_trends remain consistent with current labelling.
+
+**Why this matters.** A confident wrong label is worse than no label — it drives recommendations, bold ideas, and executive summaries in the wrong direction. §18's job is to ensure every label we ship is *supported by its text*.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation
