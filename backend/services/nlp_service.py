@@ -307,6 +307,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
             "language": "und",
             "original_label": None,
             "sentiment_conflict": False,
+            "applied_rules": [],
         }
 
     # ── (a) Language detection on combined text ───────────────────────────────
@@ -330,6 +331,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
             "language": language,
             "original_label": None,
             "sentiment_conflict": False,
+            "applied_rules": [],
         }
 
     # ── (c) Low signal → immediate neutral ───────────────────────────────────
@@ -341,6 +343,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
             "language": language,
             "original_label": None,
             "sentiment_conflict": False,
+            "applied_rules": [],
         }
 
     # ── (d) Classify title and body independently ─────────────────────────────
@@ -491,6 +494,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
                 "language": "und",
                 "original_label": None,
                 "sentiment_conflict": False,
+                "applied_rules": [],
             })
             continue
 
@@ -502,6 +506,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
                 "language": lang,
                 "original_label": None,
                 "sentiment_conflict": False,
+                "applied_rules": [],
             })
             continue
 
@@ -513,6 +518,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
                 "language": lang,
                 "original_label": None,
                 "sentiment_conflict": False,
+                "applied_rules": [],
             })
             continue
 

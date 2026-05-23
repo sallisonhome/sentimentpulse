@@ -674,7 +674,7 @@ class TestClassifyWithGateV2:
         from services.nlp_service import classify_with_gate_v2
         result = classify_with_gate_v2("Great game!", "")
         expected_keys = {"label", "score", "signal_quality", "language",
-                         "original_label", "sentiment_conflict"}
+                         "original_label", "sentiment_conflict", "applied_rules"}
         assert set(result.keys()) == expected_keys
 
     # ── classify_batch_with_gate_v2 smoke tests ───────────────────────────────
