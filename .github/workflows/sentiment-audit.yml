@@ -23,17 +23,17 @@ jobs:
             source .venv/bin/activate
 
             echo "── 1. Which classifier is loaded? ──"
-            python -c "
-            import os
-            from config import settings
-            print('lightweight_nlp setting:', settings.lightweight_nlp)
-            print('NLP_MODE env var:', os.environ.get('NLP_MODE', '(unset)'))
-            from services import nlp_service
-            nlp_service.load_model()
-            print('_use_vader (after load):', nlp_service._use_vader)
-            print('_pipeline loaded:', nlp_service._pipeline is not None)
-            print('Model name constant:', nlp_service._MODEL_NAME)
-            "
+            python <<'PY'
+import os
+from config import settings
+print('lightweight_nlp setting:', settings.lightweight_nlp)
+print('NLP_MODE env var:', os.environ.get('NLP_MODE', '(unset)'))
+from services import nlp_service
+nlp_service.load_model()
+print('_use_vader (after load):', nlp_service._use_vader)
+print('_pipeline loaded:', nlp_service._pipeline is not None)
+print('Model name constant:', nlp_service._MODEL_NAME)
+PY
             deactivate
 
             echo ""
