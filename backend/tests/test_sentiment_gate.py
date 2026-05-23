@@ -453,3 +453,277 @@ class TestClassifyWithGate:
     def test_classify_batch_with_gate_empty_list(self):
         from services.nlp_service import classify_batch_with_gate
         assert classify_batch_with_gate([]) == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PR #10 Extension: classify_with_gate_v2 orchestration tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestClassifyWithGateV2:
+    """
+    Tests for the full §18 pipeline: classify_with_gate_v2(title, body).
+
+    All model calls are mocked so we control (label, score) outputs without
+    loading the heavy RoBERTa model.
+    """
+
+    @pytest.fixture(autouse=True)
+    def use_vader(self, monkeypatch):
+        """Force VADER mode for all tests in this class."""
+        import services.nlp_service as nlp
+        monkeypatch.setattr(nlp, "_use_vader", True)
+        monkeypatch.setattr(nlp, "_pipeline", None)
+
+    def _mock_classify_batch(self, monkeypatch, results: list[tuple[str, float]]):
+        """
+        Patch classify_batch in nlp_service to return a controlled sequence.
+        classify_with_gate_v2 calls classify_sentiment() which calls
+        _classify_vader(); we patch classify_batch instead for batch tests,
+        but for classify_with_gate_v2 individual calls we patch classify_sentiment.
+        """
+        import services.nlp_service as nlp
+        call_iter = iter(results)
+
+        def fake_classify_sentiment(text: str):
+            try:
+                return next(call_iter)
+            except StopIteration:
+                return ("neutral", 0.5)
+
+        monkeypatch.setattr(nlp, "classify_sentiment", fake_classify_sentiment)
+
+    # ── Regression case 1: "Lone White Wolf 🐺" no body ──────────────────────
+
+    def test_lone_white_wolf_no_body_becomes_neutral(self, monkeypatch):
+        """
+        'Lone White Wolf 🐺' with no body:
+          - combined = "Lone White Wolf 🐺" → 3 substantive tokens → signal=medium
+          - body is empty → only title classified
+          - model returns positive 0.9, but medium cap → 0.6
+          - 0.6 < 0.70 floor → demoted to neutral
+          - original_label = 'positive' (or whatever model returns)
+        """
+        import services.nlp_service as nlp
+        # Mock classify_sentiment to return high-confidence positive (pre-cap)
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: ("positive", 0.9)
+        )
+        from services.nlp_service import classify_with_gate_v2
+        result = classify_with_gate_v2("Lone White Wolf 🐺", "")
+
+        # Signal should be medium (3 tokens)
+        assert result["signal_quality"] == "medium"
+        # Final label must be neutral (0.6 capped score < 0.70 floor)
+        assert result["label"] == "neutral"
+        assert result["score"] == 0.5
+        # Original label recorded
+        assert result["original_label"] == "positive"
+
+    # ── Regression case 2: Rhetorical bug-list post ───────────────────────────
+
+    def test_rhetorical_bug_list_classifies_negative(self, monkeypatch):
+        """
+        "So did the patch just straight up break more than it fixed?" with a long
+        bug-list body:
+          - Title label: positive (model confused by neutral phrasing)
+          - Body label: negative (explicit bug list)
+          - Rhetorical question → body wins, no conflict flag
+          - Body score 0.85 → passes 0.70 floor → stays negative
+        """
+        import services.nlp_service as nlp
+        # title → positive 0.75, body → negative 0.85
+        call_results = iter([("positive", 0.75), ("negative", 0.85)])
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: next(call_results)
+        )
+        from services.nlp_service import classify_with_gate_v2
+
+        title = "So did the patch just straight up break more than it fixed?"
+        body = (
+            "List of things broken since the update: "
+            "1. Audio is completely missing in combat. "
+            "2. The save system corrupts files randomly. "
+            "3. Enemy AI is completely broken and non-functional. "
+            "4. Framerate issues are worse than ever. "
+            "Completely unplayable experience overall."
+        )
+        result = classify_with_gate_v2(title, body)
+
+        # Must classify as NEGATIVE (body wins via rhetorical path)
+        assert result["label"] == "negative"
+        # No conflict flag because it was rhetorical
+        assert result["sentiment_conflict"] is False
+        # Score not capped at 0.65 (rhetorical path skips the cap)
+        assert result["score"] == 0.85
+
+    # ── Regression case 3: Russian post → neutral (language gate) ─────────────
+
+    def test_russian_post_language_gate_neutral(self, monkeypatch):
+        """Russian-language post → language gate fires → neutral."""
+        import services.nlp_service as nlp
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: ("positive", 0.95)
+        )
+        from services.nlp_service import classify_with_gate_v2
+        title = "Отличная игра"
+        body = (
+            "Эта игра имеет невероятную графику и плавный игровой процесс. "
+            "Мне очень нравится играть в неё каждый день. Рекомендую всем."
+        )
+        result = classify_with_gate_v2(title, body)
+        assert result["label"] == "neutral"
+        assert result["score"] == 0.5
+        assert result["language"] != "en"
+
+    # ── Title and body agree → keep label ─────────────────────────────────────
+
+    def test_title_body_agree_label_kept(self, monkeypatch):
+        """When title and body both return positive → keep positive label."""
+        import services.nlp_service as nlp
+        call_results = iter([("positive", 0.85), ("positive", 0.90)])
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: next(call_results)
+        )
+        from services.nlp_service import classify_with_gate_v2
+
+        title = "Fantastic game update!"
+        body = (
+            "The new patch improved everything. Combat is smoother, "
+            "graphics are better, and the framerate is now perfectly stable "
+            "across all scenes and encounters in the game."
+        )
+        result = classify_with_gate_v2(title, body)
+        assert result["label"] == "positive"
+        assert result["sentiment_conflict"] is False
+        # Score should be min(0.85, 0.90) = 0.85 (≥ 0.70 floor)
+        assert abs(result["score"] - 0.85) < 1e-9
+
+    # ── Title and body disagree, no rhetorical → conflict flag, score capped ──
+
+    def test_title_body_disagree_conflict_flag(self, monkeypatch):
+        """Non-rhetorical disagreement → conflict=True, score ≤ 0.65."""
+        import services.nlp_service as nlp
+        call_results = iter([("positive", 0.80), ("negative", 0.78)])
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: next(call_results)
+        )
+        from services.nlp_service import classify_with_gate_v2
+
+        title = "The game just got a new update."
+        body = (
+            "Unfortunately this update ruined performance for many players. "
+            "Crashes are more frequent and the audio is completely broken now. "
+            "Many players are requesting a rollback."
+        )
+        result = classify_with_gate_v2(title, body)
+        assert result["sentiment_conflict"] is True
+        assert result["score"] <= 0.65
+
+    # ── Title and body disagree, rhetorical → no conflict flag ────────────────
+
+    def test_title_body_disagree_rhetorical_no_conflict(self, monkeypatch):
+        """Rhetorical question → body wins, conflict=False."""
+        import services.nlp_service as nlp
+        call_results = iter([("neutral", 0.70), ("negative", 0.82)])
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: next(call_results)
+        )
+        from services.nlp_service import classify_with_gate_v2
+
+        title = "Did they even test this before releasing it?"
+        body = (
+            "Because the bugs are absolutely everywhere. The combat system "
+            "crashes on specific enemy types, the inventory corrupts on save, "
+            "and the sound design is completely missing in certain areas."
+        )
+        result = classify_with_gate_v2(title, body)
+        assert result["sentiment_conflict"] is False
+        assert result["label"] == "negative"
+
+    # ── Empty input → neutral ─────────────────────────────────────────────────
+
+    def test_empty_input_returns_neutral(self, monkeypatch):
+        """Both title and body empty → neutral 0.5 (backward compat guard)."""
+        import services.nlp_service as nlp
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: ("positive", 0.99)
+        )
+        from services.nlp_service import classify_with_gate_v2
+        result = classify_with_gate_v2("", "")
+        assert result["label"] == "neutral"
+        assert result["score"] == 0.5
+
+    # ── Return structure validation ────────────────────────────────────────────
+
+    def test_return_dict_has_all_keys(self, monkeypatch):
+        """classify_with_gate_v2 returns all six §18 keys."""
+        import services.nlp_service as nlp
+        monkeypatch.setattr(
+            nlp, "classify_sentiment",
+            lambda text: ("positive", 0.95)
+        )
+        from services.nlp_service import classify_with_gate_v2
+        result = classify_with_gate_v2("Great game!", "")
+        expected_keys = {"label", "score", "signal_quality", "language",
+                         "original_label", "sentiment_conflict"}
+        assert set(result.keys()) == expected_keys
+
+    # ── classify_batch_with_gate_v2 smoke tests ───────────────────────────────
+
+    def test_batch_v2_empty_list(self):
+        """classify_batch_with_gate_v2([]) → []."""
+        from services.nlp_service import classify_batch_with_gate_v2
+        assert classify_batch_with_gate_v2([]) == []
+
+    def test_batch_v2_returns_correct_count(self, monkeypatch):
+        """classify_batch_with_gate_v2 returns one result per item."""
+        import services.nlp_service as nlp
+        monkeypatch.setattr(
+            nlp, "classify_batch",
+            lambda texts: [("positive", 0.9)] * len(texts)
+        )
+        from services.nlp_service import classify_batch_with_gate_v2
+        items = [
+            {"title": "Great!", "body": ""},
+            {"title": "Terrible!", "body": ""},
+            {"title": "Meh.", "body": ""},
+        ]
+        results = classify_batch_with_gate_v2(items)
+        assert len(results) == 3
+        for r in results:
+            assert "label" in r
+            assert "score" in r
+            assert "signal_quality" in r
+            assert "language" in r
+            assert "original_label" in r
+            assert "sentiment_conflict" in r
+
+    def test_batch_v2_high_confidence_positive_stays_positive(self, monkeypatch):
+        """
+        High-signal item with positive 0.90 in both title+body slots → stays positive
+        (0.90 ≥ 0.70 floor).
+        """
+        import services.nlp_service as nlp
+        # classify_batch is called with [title_text, body_text, ...]
+        # For one item, that's 2 slots → both return positive 0.90
+        monkeypatch.setattr(
+            nlp, "classify_batch",
+            lambda texts: [("positive", 0.90)] * len(texts)
+        )
+        from services.nlp_service import classify_batch_with_gate_v2
+        body = (
+            "The combat system feels incredibly responsive and satisfying. "
+            "Enemy animations are detailed and varied. "
+            "Level design encourages exploration."
+        )
+        items = [{"title": "Amazing game with great combat mechanics!", "body": body}]
+        results = classify_batch_with_gate_v2(items)
+        assert results[0]["label"] == "positive"
+        assert results[0]["score"] >= 0.70

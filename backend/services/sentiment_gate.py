@@ -1,15 +1,19 @@
 """
-§18 Sentiment Trust Chain — signal-volume gate (Layer 1) and language gate (Layer 5).
+§18 Sentiment Trust Chain — signal-volume gate (Layer 1), language gate (Layer 5),
+title/body separation (Layer 2), and confidence floor (Layer 3).
 
-This module is the entry point for the two gates implemented in PR #9.
-Layers 2, 3, 4 (title/body separation, confidence floor, lexicon overlay)
-are implemented in PR #10 and PR #11 respectively.
+PR #9 implemented Layers 1 + 5.
+PR #10 adds Layers 2 + 3 (this file is extended here).
+Layer 4 (lexicon overlay) is PR #11.
 
 Public API
 ----------
 count_substantive_tokens(text)         -> int
 detect_language(text)                  -> str   (ISO 639-1 or 'und')
 apply_signal_and_language_gate(...)    -> tuple[str, float, str]
+is_rhetorical_question(title, body)    -> bool
+combine_title_body(...)                -> tuple[str, float, bool]
+apply_confidence_floor(...)            -> tuple[str, float, str | None]
 """
 import logging
 import re
@@ -236,3 +240,99 @@ def apply_signal_and_language_gate(
 
     # signal_quality == "high"
     return (raw_label, raw_score, "high")
+
+
+# ── §18 Layer 2: Title vs body separation ─────────────────────────────────────
+
+def is_rhetorical_question(title: str, body: str) -> bool:
+    """
+    Return True iff the title ends with '?' AND the body has ≥ 100 characters.
+
+    This signals a rhetorical question post (e.g. "Did they break more than they
+    fixed?") where the body contains the real sentiment signal and the title's
+    question mark should not trigger a conflict flag.
+
+    Parameters
+    ----------
+    title : str  — the post title (may be empty)
+    body  : str  — the post body  (may be empty)
+    """
+    return title.strip().endswith("?") and len(body) >= 100
+
+
+def combine_title_body(
+    title_label: str,
+    title_score: float,
+    body_label: str,
+    body_score: float,
+    title: str,
+    body: str,
+) -> tuple[str, float, bool]:
+    """
+    Combine independent title and body classifications per §18 rule 3.
+
+    Parameters
+    ----------
+    title_label  : model label for the title text
+    title_score  : model confidence for the title text
+    body_label   : model label for the body text
+    body_score   : model confidence for the body text
+    title        : raw title string (used for rhetorical detection)
+    body         : raw body string  (used for rhetorical detection)
+
+    Returns
+    -------
+    (final_label, final_score, sentiment_conflict) where:
+        final_label       — the winning label
+        final_score       — the final confidence score
+        sentiment_conflict— True when labels disagreed with no rhetorical signal
+
+    Rules (applied in order)
+    ------------------------
+    1. Labels match → (same_label, min(title_score, body_score), False)
+    2. Labels disagree AND rhetorical question → (body_label, body_score, False)
+       Body wins; no conflict flag because the rhetorical signal is intentional.
+    3. Labels disagree, no rhetorical signal → (body_label, min(body_score, 0.65), True)
+       Body wins (longer / richer signal); score capped at 0.65; conflict flagged.
+    """
+    if title_label == body_label:
+        return (title_label, min(title_score, body_score), False)
+
+    # Labels disagree — check for rhetorical question
+    if is_rhetorical_question(title, body):
+        return (body_label, body_score, False)
+
+    # Labels disagree, no rhetorical signal — body wins, capped score, conflict
+    return (body_label, min(body_score, 0.65), True)
+
+
+# ── §18 Layer 3: Confidence floor — strict 0.70 ───────────────────────────────
+
+def apply_confidence_floor(
+    label: str,
+    score: float,
+    threshold: float = 0.70,
+) -> tuple[str, float, str | None]:
+    """
+    Demote any non-neutral label below the confidence threshold to 'neutral'.
+
+    Per §18 rule 4: after all prior steps, if final confidence < 0.70, the
+    label is demoted to 'neutral' and the original label is recorded for audit.
+    The threshold is non-negotiable (user chose strict 0.70 over 0.60/0.55).
+
+    Parameters
+    ----------
+    label     : the label to evaluate ('positive' | 'negative' | 'neutral')
+    score     : the confidence score [0, 1]
+    threshold : the confidence floor (default 0.70)
+
+    Returns
+    -------
+    (final_label, final_score, original_label) where:
+        final_label    — 'neutral' if demoted, else the original label
+        final_score    — 0.5 if demoted, else the original score
+        original_label — the pre-demotion label string if demoted, else None
+    """
+    if label != "neutral" and score < threshold:
+        return ("neutral", 0.5, label)
+    return (label, score, None)

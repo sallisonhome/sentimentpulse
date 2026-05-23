@@ -40,7 +40,7 @@ from models import (
     SourceEnum,
     TopicTrend,
 )
-from services.nlp_service import classify_batch, classify_batch_with_gate, load_model
+from services.nlp_service import classify_batch, classify_batch_with_gate, classify_batch_with_gate_v2, load_model
 from services.reddit_service import (
     discover_subreddits,
     fetch_post_comments,
@@ -388,9 +388,9 @@ def _step5_classify_sentiment(
         log_lines.append(f"[Step 5] '{game.name}': no unclassified posts.")
         return
 
-    texts = [_post_text(p) for p in unprocessed]
+    items = [{'title': p.title or '', 'body': p.body or ''} for p in unprocessed]
     try:
-        results = classify_batch_with_gate(texts)
+        results = classify_batch_with_gate_v2(items)
     except Exception as exc:
         msg = f"[Step 5] Batch classification failed for '{game.name}': {exc}"
         errors.append(msg)
@@ -405,11 +405,11 @@ def _step5_classify_sentiment(
             sentiment=SentimentEnum(label),
             sentiment_score=score,
             topics=[],
-            # §18 audit columns — populated here; others set by PR #10/#11
+            # §18 audit columns — all populated by PR #10
             signal_quality=result["signal_quality"],
             language=result["language"],
-            original_label=None,       # set by PR #10 (confidence floor)
-            sentiment_conflict=False,  # set by PR #11 (title/body gate)
+            original_label=result.get("original_label"),
+            sentiment_conflict=result.get("sentiment_conflict", False),
             applied_rules=[],          # set by PR #11 (lexicon overlay)
         ))
 
