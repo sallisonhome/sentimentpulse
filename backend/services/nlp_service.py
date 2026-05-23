@@ -248,11 +248,11 @@ def _truncate(text: str) -> str:
     return text[:_MAX_INPUT_CHARS] if text else ""
 
 
-# ── §18 PR #10: Full trust-chain gate (Layers 1-3) ───────────────────────────
+# ── §18 PR #11: Full trust-chain gate (Layers 1-5 inc. Layer 4 lexicon) ────────
 
 def classify_with_gate_v2(title: str, body: str) -> dict:
     """
-    Full §18 trust-chain gate for a single post (Layers 1, 2, 3, 5).
+    Full §18 trust-chain gate for a single post (Layers 1, 2, 3, 4, 5).
 
     Changed signature vs the PR #9 `classify_with_gate(text)`: accepts
     separate title and body strings so Layer 2 (title/body separation) can
@@ -270,7 +270,9 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
        Else: call combine_title_body() → (label, score, conflict).
     g. apply_confidence_floor(): if final_score < 0.70 → demote to neutral,
        record original_label.
-    h. Return dict with all §18 audit fields.
+    h. (Layer 4) apply_lexicon_rules(): gaming-domain override rules.
+       Only fires when language=en AND signal_quality != low.
+    i. Return dict with all §18 audit fields.
 
     Returns
     -------
@@ -281,6 +283,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
         language       : ISO 639-1 or 'und',
         original_label : str | None   (pre-floor label when demoted),
         sentiment_conflict : bool,
+        applied_rules  : list[str]    (rule IDs that fired; [] when none),
     }
     """
     from services.sentiment_gate import (
@@ -304,6 +307,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
             "language": "und",
             "original_label": None,
             "sentiment_conflict": False,
+            "applied_rules": [],
         }
 
     # ── (a) Language detection on combined text ───────────────────────────────
@@ -327,6 +331,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
             "language": language,
             "original_label": None,
             "sentiment_conflict": False,
+            "applied_rules": [],
         }
 
     # ── (c) Low signal → immediate neutral ───────────────────────────────────
@@ -338,6 +343,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
             "language": language,
             "original_label": None,
             "sentiment_conflict": False,
+            "applied_rules": [],
         }
 
     # ── (d) Classify title and body independently ─────────────────────────────
@@ -377,7 +383,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
         final_label, final_score
     )
 
-    return {
+    pre_lexicon = {
         "label": final_label,
         "score": final_score,
         "signal_quality": signal_quality,
@@ -385,6 +391,11 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
         "original_label": original_label,
         "sentiment_conflict": sentiment_conflict,
     }
+
+    # ── (h) Layer 4: gaming-domain lexicon overlay ───────────────────────────
+    from services.sentiment_lexicon import _get_rules, apply_lexicon_rules  # noqa: PLC0415
+    rules = _get_rules()
+    return apply_lexicon_rules(title, body, pre_lexicon, rules)
 
 
 def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
@@ -483,6 +494,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
                 "language": "und",
                 "original_label": None,
                 "sentiment_conflict": False,
+                "applied_rules": [],
             })
             continue
 
@@ -494,6 +506,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
                 "language": lang,
                 "original_label": None,
                 "sentiment_conflict": False,
+                "applied_rules": [],
             })
             continue
 
@@ -505,6 +518,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
                 "language": lang,
                 "original_label": None,
                 "sentiment_conflict": False,
+                "applied_rules": [],
             })
             continue
 
@@ -538,13 +552,20 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
             final_label, final_score
         )
 
-        output.append({
+        pre_lexicon = {
             "label": final_label,
             "score": final_score,
             "signal_quality": sq,
             "language": lang,
             "original_label": original_label,
             "sentiment_conflict": sentiment_conflict,
-        })
+        }
+
+        # Layer 4: gaming-domain lexicon overlay
+        from services.sentiment_lexicon import _get_rules, apply_lexicon_rules  # noqa: PLC0415
+        lexicon_rules = _get_rules()
+        item_title = (item.get("title") or "").strip()
+        item_body = (item.get("body") or "").strip()
+        output.append(apply_lexicon_rules(item_title, item_body, pre_lexicon, lexicon_rules))
 
     return output

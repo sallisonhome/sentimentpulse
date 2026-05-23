@@ -1,0 +1,138 @@
+version: 1
+description: §18 Layer 4 — gaming-domain lexicon overlay rules
+
+# Priority system
+# ---------------
+# Higher priority values win when multiple rules match the same post.
+# Rules with equal priority are evaluated in file order (last match wins
+# among ties). Default priority is 100 when the field is omitted.
+#
+# Rule evaluation short-circuits at the FIRST rule with the highest priority
+# that fires; however, ALL matching rules are recorded in `applied_rules`
+# for audit purposes regardless of which rule actually overrides the result.
+#
+# Hot-reload
+# ----------
+# This file is hot-reloadable at runtime. To add a new rule without
+# redeploying: edit this file on the droplet and call reload_rules() from
+# the sentiment_lexicon module (e.g. via a scheduled task or manual trigger).
+# No code changes or service restart required.
+
+rules:
+  - id: bug_list_force_negative
+    description: Body contains 3+ bug/glitch/broken/crash/exploit/nerf terms → force negative
+    priority: 90
+    when:
+      body_term_count:
+        terms:
+          - bug
+          - bugged
+          - glitch
+          - broken
+          - crash
+          - exploit
+          - unplayable
+          - refund
+          - doesn't work
+          - doesnt work
+          - can't play
+          - cant play
+          - wont start
+          - won't start
+          - freeze
+          - freezes
+          - freezing
+          - nerf
+          - nerfed
+        min: 3
+    set:
+      label: negative
+      score: 0.85
+      reason: bug_list_threshold
+
+  - id: rhetorical_break_question
+    description: Title is a rhetorical "did X break Y" question with substantive body → force negative
+    priority: 95
+    when:
+      title_matches_any:
+        - "(?i)did.*(break|broke|breaks|ruin|ruined)"
+        - "(?i)why is.*(broken|bugged|crashing|unplayable)"
+        - "(?i)is this.*(a joke|serious|intended)"
+      title_ends_with: "?"
+      body_min_chars: 80
+    set:
+      label: negative
+      score: 0.80
+      reason: rhetorical_negative
+
+  - id: praise_emoji_plus_confirmation
+    description: Title has praise emoji AND body contains praise terms → force positive
+    priority: 85
+    when:
+      title_contains_any:
+        - "❤️"
+        - "🔥"
+        - "🙌"
+        - "😍"
+        - "👌"
+        - "👏"
+        - "🥇"
+      body_contains_any:
+        - love
+        - perfect
+        - amazing
+        - best ever
+        - "10/10"
+        - masterpiece
+        - goty
+    set:
+      label: positive
+      score: 0.85
+      reason: praise_emoji_confirmation
+
+  - id: sarcastic_thanks_devs
+    description: Phrases like "thanks devs" or "great job devs" sandwiched with bug/break content → force negative
+    priority: 92
+    when:
+      text_matches_any:
+        - "(?i)(thanks|thank you|great job|nice job)[, !]+(devs?|developers?|saber|studio)"
+      text_contains_any:
+        - bugged
+        - broken
+        - unplayable
+        - crash
+        - refund
+        - garbage
+    set:
+      label: negative
+      score: 0.80
+      reason: sarcastic_thanks
+
+  - id: refund_signal
+    description: '"refund" or "uninstalled" in body → strong negative signal'
+    priority: 88
+    when:
+      body_contains_any:
+        - refund
+        - refunded
+        - uninstalled
+        - uninstalling
+        - gonna uninstall
+        - deleting this game
+    set:
+      label: negative
+      score: 0.85
+      reason: refund_or_uninstall
+
+  - id: 10_out_of_10
+    description: 10/10 or "best game" pattern → strong positive
+    priority: 87
+    when:
+      text_matches_any:
+        - "(?i)\\b10\\s*/\\s*10\\b"
+        - "(?i)best (game|fps|shooter) (ever|of the year|i.ve played)"
+        - "(?i)goty( contender)?"
+    set:
+      label: positive
+      score: 0.85
+      reason: goty_or_10_10

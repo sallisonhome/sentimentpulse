@@ -410,7 +410,7 @@ def _step5_classify_sentiment(
             language=result["language"],
             original_label=result.get("original_label"),
             sentiment_conflict=result.get("sentiment_conflict", False),
-            applied_rules=[],          # set by PR #11 (lexicon overlay)
+            applied_rules=result.get("applied_rules", []),   # §18 Layer 4 lexicon
         ))
 
     try:
