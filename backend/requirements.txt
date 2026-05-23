@@ -25,6 +25,7 @@ transformers>=4.44.0
 torch>=2.6.0
 vaderSentiment==3.3.2
 nltk==3.8.1
+langdetect==1.0.9
 
 # ── NLP — topic modeling ──────────────────────────────────────────────────────
 scikit-learn>=1.6.0

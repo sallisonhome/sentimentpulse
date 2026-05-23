@@ -40,7 +40,7 @@ from models import (
     SourceEnum,
     TopicTrend,
 )
-from services.nlp_service import classify_batch, load_model
+from services.nlp_service import classify_batch, classify_batch_with_gate, load_model
 from services.reddit_service import (
     discover_subreddits,
     fetch_post_comments,
@@ -390,19 +390,27 @@ def _step5_classify_sentiment(
 
     texts = [_post_text(p) for p in unprocessed]
     try:
-        results = classify_batch(texts)
+        results = classify_batch_with_gate(texts)
     except Exception as exc:
         msg = f"[Step 5] Batch classification failed for '{game.name}': {exc}"
         errors.append(msg)
         logger.error(msg)
         return
 
-    for post, (label, score) in zip(unprocessed, results):
+    for post, result in zip(unprocessed, results):
+        label = result["label"]
+        score = result["score"]
         db.add(SentimentRecord(
             raw_post_id=post.id,
             sentiment=SentimentEnum(label),
             sentiment_score=score,
             topics=[],
+            # §18 audit columns — populated here; others set by PR #10/#11
+            signal_quality=result["signal_quality"],
+            language=result["language"],
+            original_label=None,       # set by PR #10 (confidence floor)
+            sentiment_conflict=False,  # set by PR #11 (title/body gate)
+            applied_rules=[],          # set by PR #11 (lexicon overlay)
         ))
 
     try:
