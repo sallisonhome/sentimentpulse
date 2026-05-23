@@ -1,0 +1,85 @@
+name: Diagnose Langdetect
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Diagnose
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+            source .venv/bin/activate
+
+            echo "── 1. Is langdetect installed? ──"
+            python -c "import langdetect; print('version:', langdetect.__version__ if hasattr(langdetect, '__version__') else 'unknown'); print('module:', langdetect.__file__)" 2>&1
+
+            echo ""
+            echo "── 2. Direct langdetect call ──"
+            python <<'PY'
+try:
+    from langdetect import detect, DetectorFactory
+    DetectorFactory.seed = 0
+    for text in [
+        "Hello, how is the game today?",
+        "The new patch breaks everything, armor loadouts reset.",
+        "Just finished my first match and loved the new modifiers.",
+        "игра не может прогрузить косметику. как решить?",
+        "Lone White Wolf",
+    ]:
+        try:
+            lang = detect(text)
+            print(f"  {text[:50]!r} -> {lang}")
+        except Exception as e:
+            print(f"  {text[:50]!r} -> ERROR: {e}")
+except ImportError as e:
+    print(f"langdetect not importable: {e}")
+PY
+
+            echo ""
+            echo "── 3. detect_language() from our module ──"
+            python <<'PY'
+from services.sentiment_gate import detect_language
+for text in [
+    "Hello, how is the game today?",
+    "The new patch breaks everything, armor loadouts reset.",
+    "Just finished my first match and loved the new modifiers.",
+    "игра не может прогрузить косметику. как решить?",
+    "Lone White Wolf",
+    "",
+]:
+    print(f"  {text[:50]!r} -> {detect_language(text)!r}")
+PY
+
+            echo ""
+            echo "── 4. classify_with_gate_v2 on the test cases ──"
+            python <<'PY'
+from services.nlp_service import classify_with_gate_v2, load_model
+load_model()
+cases = [
+    ("Hello, how is the game today?", ""),
+    ("Game is amazing", "I have been having so much fun with the new patch, every match is a blast."),
+    ("Lone White Wolf 🐺", ""),
+    ("So did the patch just straight up break more than it fixed?",
+     "Armor loadouts resetting everytime I log off, siege wave accolades bugged, new siege wave modifiers basically making solo play with bots LITERALLY impossible"),
+]
+for title, body in cases:
+    r = classify_with_gate_v2(title, body)
+    print(f"  title={title[:50]!r}")
+    print(f"  body_len={len(body)}")
+    print(f"  -> {r}")
+    print()
+PY
+            deactivate
+          EOF
