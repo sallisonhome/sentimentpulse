@@ -1,0 +1,96 @@
+name: Reclassify All Sentiments (§18)
+
+# Runs backend/reclassify_all_sentiments.py on the droplet to reclassify
+# every historical post under the full §18 Sentiment Trust Chain pipeline
+# (signal-volume gate, language gate, title/body separation, 0.70 floor).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reclassify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Reclassify
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+            source .venv/bin/activate
+
+            echo "── 1. Pre-flight stats ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT sentiment, COUNT(*) AS n
+              FROM sentiment_records
+              GROUP BY sentiment
+              ORDER BY n DESC;
+            "
+
+            echo ""
+            echo "── 2. Dry run first (sample 1 game, no writes) ──"
+            python reclassify_all_sentiments.py --dry-run --game-id 24 2>&1 | tail -20
+
+            echo ""
+            echo "── 3. Full reclassification (all games, all posts) ──"
+            START=$(date +%s)
+            python reclassify_all_sentiments.py 2>&1 | tail -50
+            END=$(date +%s)
+            echo ""
+            echo "Wall clock: $((END - START)) seconds"
+
+            echo ""
+            echo "── 4. Post-reclassification stats ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT sentiment, COUNT(*) AS n
+              FROM sentiment_records
+              GROUP BY sentiment
+              ORDER BY n DESC;
+            "
+
+            echo ""
+            echo "── 5. Audit columns populated ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT signal_quality, COUNT(*) AS n
+              FROM sentiment_records
+              GROUP BY signal_quality
+              ORDER BY n DESC;
+            "
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT language, COUNT(*) AS n
+              FROM sentiment_records
+              GROUP BY language
+              ORDER BY n DESC
+              LIMIT 10;
+            "
+
+            echo ""
+            echo "── 6. Verify the screenshot's SM2 misclassified posts ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT
+                substr(rp.title, 1, 60) AS title,
+                sr.sentiment,
+                ROUND(sr.sentiment_score, 3) AS score,
+                sr.signal_quality AS sig,
+                sr.language AS lang,
+                sr.original_label AS orig,
+                sr.sentiment_conflict AS conflict
+              FROM raw_posts rp
+              JOIN sentiment_records sr ON sr.raw_post_id = rp.id
+              WHERE rp.game_id = (SELECT id FROM games WHERE name LIKE '%Warhammer%Space Marine 2%')
+                AND (rp.title LIKE '%Lone White Wolf%'
+                  OR rp.title LIKE '%patch just straight up break%'
+                  OR rp.title LIKE '%прогрузить%');
+            "
+
+            deactivate
+            echo ""
+            echo "── RECLASSIFICATION COMPLETE ──"
+          EOF
