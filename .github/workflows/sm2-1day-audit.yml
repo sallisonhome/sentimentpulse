@@ -1,0 +1,97 @@
+name: SM2 1-day Window Audit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Audit
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+
+            echo "── 1. Cached SM2 1-day window row ──"
+            sqlite3 -header sentimentpulse.db "
+              SELECT id, ingest_date, total_posts, positive_count, negative_count, neutral_count,
+                     top_positive_topics, top_negative_topics, top_neutral_topics,
+                     substr(executive_summary, 1, 400) AS exec_preview
+              FROM window_summaries
+              WHERE game_id = (SELECT id FROM games WHERE name LIKE '%Warhammer%Space Marine 2%')
+                AND window_days = 1
+              ORDER BY ingest_date DESC LIMIT 1;
+            "
+
+            echo ""
+            echo "── 2. Posts on 2026-05-23 (the 1-day window) for SM2 ──"
+            sqlite3 -header -column sentimentpulse.db "
+              SELECT sr.sentiment,
+                     COUNT(*) AS n,
+                     SUM(CASE WHEN json_array_length(COALESCE(sr.topics, '[]')) > 0 THEN 1 ELSE 0 END) AS with_topics
+              FROM raw_posts rp
+              JOIN sentiment_records sr ON sr.raw_post_id = rp.id
+              WHERE rp.game_id = (SELECT id FROM games WHERE name LIKE '%Warhammer%Space Marine 2%')
+                AND date(COALESCE(rp.post_date, rp.collected_at)) = '2026-05-23'
+              GROUP BY sr.sentiment
+              ORDER BY n DESC;
+            "
+
+            echo ""
+            echo "── 3. Sample of negative SM2 posts on 2026-05-23 (what the summary should be talking about) ──"
+            sqlite3 sentimentpulse.db "
+              SELECT
+                substr(rp.title, 1, 70) AS title,
+                substr(rp.body,  1, 100) AS body,
+                sr.sentiment_score
+              FROM raw_posts rp
+              JOIN sentiment_records sr ON sr.raw_post_id = rp.id
+              WHERE rp.game_id = (SELECT id FROM games WHERE name LIKE '%Warhammer%Space Marine 2%')
+                AND date(COALESCE(rp.post_date, rp.collected_at)) = '2026-05-23'
+                AND sr.sentiment = 'negative'
+              ORDER BY sr.sentiment_score DESC
+              LIMIT 10;
+            "
+
+            echo ""
+            echo "── 4. Topic frequency on 2026-05-23 (raw aggregate, what _aggregate_posts SHOULD return) ──"
+            python <<'PY'
+            import json
+            from collections import defaultdict
+            from datetime import date
+            from database import SessionLocal
+            from models import RawPost, SentimentRecord, Game
+            from sqlalchemy import func
+
+            db = SessionLocal()
+            try:
+                sm2 = db.query(Game).filter(Game.name.like('%Warhammer%Space Marine 2%')).first()
+                eff = func.coalesce(RawPost.post_date, RawPost.collected_at)
+                rows = (
+                    db.query(SentimentRecord.sentiment, SentimentRecord.topics)
+                    .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+                    .filter(RawPost.game_id == sm2.id)
+                    .filter(func.date(eff) == '2026-05-23')
+                    .all()
+                )
+                by_sent = defaultdict(lambda: defaultdict(int))
+                for sent, topics in rows:
+                    for t in (topics or []):
+                        by_sent[sent.value][t] += 1
+                for s in ('positive', 'negative', 'neutral'):
+                    counts = by_sent.get(s, {})
+                    top = sorted(counts.items(), key=lambda x: -x[1])[:8]
+                    print(f"  {s}: total_with_topics={sum(counts.values())} top={top}")
+            finally:
+                db.close()
+            PY
+          EOF
