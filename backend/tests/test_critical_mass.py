@@ -238,7 +238,7 @@ class TestInsufficientSignalSentinel:
                 pos_topics=["Combat", "Story"],
                 neg_topics=["Performance"],
                 neu_topics=["Updates"],
-                total_posts=15,
+                pos_count=8, neg_count=4, neu_count=3,
             )
 
         # Claude client must NOT have been consulted
@@ -259,7 +259,7 @@ class TestInsufficientSignalSentinel:
                 pos_topics=[],
                 neg_topics=[],
                 neu_topics=[],
-                total_posts=0,
+                pos_count=0, neg_count=0, neu_count=0,
             )
         mock_get_client.assert_not_called()
         assert "Insufficient signal" in exec_summary
@@ -276,7 +276,7 @@ class TestInsufficientSignalSentinel:
                 pos_topics=["Gameplay"],
                 neg_topics=["Bugs"],
                 neu_topics=[],
-                total_posts=19,
+                pos_count=10, neg_count=5, neu_count=4,
             )
         mock_get_client.assert_not_called()
         assert "Insufficient signal" in exec_summary
@@ -295,7 +295,7 @@ class TestInsufficientSignalSentinel:
                 pos_topics=["Gameplay"],
                 neg_topics=["Bugs"],
                 neu_topics=["Updates"],
-                total_posts=20,
+                pos_count=10, neg_count=7, neu_count=3,
             )
         # _get_client must have been called (normal path entered)
         mock_get_client.assert_called_once()
@@ -311,7 +311,7 @@ class TestInsufficientSignalSentinel:
                 pos_topics=["Gameplay", "Graphics"],
                 neg_topics=["Performance"],
                 neu_topics=["Balance"],
-                total_posts=25,
+                pos_count=15, neg_count=6, neu_count=4,
             )
         mock_get_client.assert_called_once()
         assert "Insufficient signal" not in exec_summary
@@ -325,7 +325,7 @@ class TestInsufficientSignalSentinel:
                 pos_topics=["Story", "Combat"],
                 neg_topics=["Bugs"],
                 neu_topics=["Updates"],
-                total_posts=100,
+                pos_count=60, neg_count=25, neu_count=15,
             )
         mock_get_client.assert_called_once()
         assert "Insufficient signal" not in exec_summary
@@ -345,7 +345,7 @@ class TestSentinelFormat:
                 pos_topics=[],
                 neg_topics=[],
                 neu_topics=[],
-                total_posts=7,
+                pos_count=4, neg_count=2, neu_count=1,
             )
         assert "7" in exec_summary
 
@@ -358,7 +358,7 @@ class TestSentinelFormat:
                 pos_topics=[],
                 neg_topics=[],
                 neu_topics=[],
-                total_posts=12,
+                pos_count=7, neg_count=3, neu_count=2,
             )
         assert "substantive posts" in exec_summary
 
@@ -371,7 +371,7 @@ class TestSentinelFormat:
                 pos_topics=[],
                 neg_topics=[],
                 neu_topics=[],
-                total_posts=5,
+                pos_count=3, neg_count=1, neu_count=1,
             )
         assert rec_actions is None
 
@@ -384,7 +384,7 @@ class TestSentinelFormat:
                 pos_topics=[],
                 neg_topics=[],
                 neu_topics=[],
-                total_posts=5,
+                pos_count=3, neg_count=1, neu_count=1,
             )
         assert bold_ideas == []
         assert isinstance(bold_ideas, list)
