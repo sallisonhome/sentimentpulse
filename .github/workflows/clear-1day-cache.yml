@@ -1,0 +1,35 @@
+name: Clear 1-day Window Cache
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Clear
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+
+            echo "── Before: 1-day WindowSummary rows ──"
+            sqlite3 -header sentimentpulse.db "SELECT id, game_id, ingest_date, total_posts, positive_count, negative_count, neutral_count FROM window_summaries WHERE window_days = 1;"
+
+            echo ""
+            echo "── DELETE all 1-day cached rows ──"
+            sqlite3 sentimentpulse.db "DELETE FROM window_summaries WHERE window_days = 1;"
+            echo "Deleted. Remaining:"
+            sqlite3 sentimentpulse.db "SELECT COUNT(*) FROM window_summaries WHERE window_days = 1;"
+
+            echo ""
+            echo "── Done. Next click on '+ 1 Day / Previous' will regenerate under the fix. ──"
+          EOF
