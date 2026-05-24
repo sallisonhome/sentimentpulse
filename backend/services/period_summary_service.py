@@ -9,6 +9,13 @@ Both call Claude via _call_claude_for_period() which is cache-unaware;
 the caching layer is implemented here before calling Claude.
 
 Bold ideas: gracefully returns [] when Claude responds with "NONE".
+
+1-day window special path: when days==1, topic aggregation bypasses the
+cached SentimentRecord.topics (which are empty for single-day windows due to
+the §15 critical-mass gate requiring ≥2 distinct days). Instead it calls
+topic_service.extract_topics_with_metadata directly with a relaxed gate:
+≥3 distinct posts AND ≥3 distinct authors (day-span requirement dropped).
+See _aggregate_posts_1day() and CLAUDE.md §15 for details.
 """
 import logging
 import re
@@ -83,7 +90,9 @@ def generate_monthly_summary(
         pos_topics=top_pos,
         neg_topics=top_neg,
         neu_topics=top_neu,
-        total_posts=total,
+        pos_count=pos,
+        neg_count=neg,
+        neu_count=neu,
     )
 
     # Upsert
@@ -190,9 +199,21 @@ def generate_window_summary(
     end_str   = ingest_date.strftime("%-d %b, %Y")
     window_label = f"Past {days} days · {start_str} – {end_str}"
 
-    pos, neg, neu, top_pos, top_neg, top_neu = _aggregate_posts(
-        db, game_id, window_start, window_end
-    )
+    # §15 conflict-resolution: a 1-day window can never satisfy the ≥2-day-span
+    # requirement in the nightly _step6_extract_topics gate, so
+    # SentimentRecord.topics will always be empty for posts on a single day.
+    # When days==1 we bypass the cached topics entirely and run a RELAXED topic
+    # extraction directly on the day's posts (≥3 posts AND ≥3 authors, no
+    # day-span requirement). Multi-day windows keep the existing cached path.
+    # See CLAUDE.md §15 for the full critical-mass gate specification.
+    if days == 1:
+        pos, neg, neu, top_pos, top_neg, top_neu = _aggregate_posts_1day(
+            db, game_id, ingest_date
+        )
+    else:
+        pos, neg, neu, top_pos, top_neg, top_neu = _aggregate_posts(
+            db, game_id, window_start, window_end
+        )
     total = pos + neg + neu
 
     exec_summary, rec_actions, bold_ideas = _call_claude_for_period(
@@ -201,7 +222,9 @@ def generate_window_summary(
         pos_topics=top_pos,
         neg_topics=top_neg,
         neu_topics=top_neu,
-        total_posts=total,
+        pos_count=pos,
+        neg_count=neg,
+        neu_count=neu,
     )
 
     row = WindowSummary(
@@ -292,6 +315,118 @@ def _aggregate_posts(
     return pos, neg, neu, top_pos, top_neg, top_neu
 
 
+# §15 conflict-resolution: relaxed critical-mass gate for 1-day windows.
+# The nightly _step6_extract_topics enforces ≥3 posts AND ≥3 authors AND
+# ≥2 distinct days. A 1-day window can never satisfy the day-span requirement,
+# so we drop it here. The post and author thresholds are kept to preserve the
+# spirit of §15 (no topic surfaces from a single voice or a single post).
+_1DAY_MIN_POSTS   = 3   # same as §15 post threshold
+_1DAY_MIN_AUTHORS = 3   # same as §15 author threshold
+_1DAY_TOP_TOPICS  = 5   # max topics per sentiment bucket
+
+
+def _aggregate_posts_1day(
+    db: Session,
+    game_id: int,
+    day: date,
+) -> tuple[int, int, int, list[str], list[str], list[str]]:
+    """
+    Aggregate sentiment counts and derive topics for a single-day window.
+
+    MOTIVATION (§15 conflict-resolution):
+    The nightly ingestor's _step6_extract_topics stores topic labels per post
+    only when ≥3 posts AND ≥3 authors AND ≥2 distinct days are present in the
+    candidate corpus. A 1-day window can never satisfy the day-span gate, so
+    SentimentRecord.topics is always empty for same-day posts. Calling
+    _aggregate_posts on a 1-day window therefore always yields top_*=[].
+
+    This helper bypasses the cached topics and calls
+    topic_service.extract_topics_with_metadata directly, applying only the
+    relaxed gate: ≥3 distinct posts AND ≥3 distinct authors (no day-span
+    requirement, because a 1-day window obviously can’t satisfy it). Per-
+    sentiment clusters that pass the gate are returned as topic labels (up to
+    _1DAY_TOP_TOPICS per sentiment, ordered by post_count descending).
+
+    See CLAUDE.md §15 for the full critical-mass gate specification.
+
+    Returns (pos, neg, neu, top_positive, top_negative, top_neutral).
+    """
+    from services import topic_service  # noqa: PLC0415  (local to avoid circular)
+
+    start_dt = datetime.combine(day, datetime.min.time())
+    end_dt   = datetime.combine(day, datetime.max.time())
+
+    effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
+
+    # Collect sentiment + text + author per post for this single day
+    rows = (
+        db.query(
+            SentimentRecord.sentiment,
+            RawPost.title,
+            RawPost.body,
+            RawPost.author,
+        )
+        .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+        .filter(
+            RawPost.game_id == game_id,
+            effective_date >= start_dt,
+            effective_date <= end_dt,
+        )
+        .all()
+    )
+
+    # Group posts by sentiment bucket
+    buckets: dict[str, list[tuple[str, str]]] = {
+        "positive": [],
+        "negative": [],
+        "neutral": [],
+    }
+    for sentiment, title, body, author in rows:
+        text = (title or "") + ("\n" + body if body else "")
+        buckets[sentiment.value].append((text, author or "unknown"))
+
+    pos = len(buckets["positive"])
+    neg = len(buckets["negative"])
+    neu = len(buckets["neutral"])
+
+    # For each sentiment bucket run topic extraction with relaxed §15 gate
+    def _topics_for_bucket(posts: list[tuple[str, str]]) -> list[str]:
+        if not posts:
+            return []
+        texts      = [t for t, _ in posts]
+        author_ids = [a for _, a in posts]
+        # day_ids all the same single day string (day-span gate not applied here)
+        day_str    = str(day)
+        day_ids    = [day_str] * len(posts)
+        try:
+            clusters = topic_service.extract_topics_with_metadata(
+                texts, author_ids, day_ids
+            )
+        except Exception as exc:
+            logger.warning(
+                "_aggregate_posts_1day: topic extraction failed for day=%s: %s",
+                day, exc
+            )
+            return []
+
+        # Apply relaxed critical-mass: ≥3 posts AND ≥3 distinct authors
+        # (day-span requirement dropped — see CLAUDE.md §15 conflict-resolution)
+        passing = [
+            c for c in clusters
+            if c["post_count"] >= _1DAY_MIN_POSTS
+            and len(c["author_ids"]) >= _1DAY_MIN_AUTHORS
+        ]
+        # Sort by post_count descending, return top N labels
+        passing.sort(key=lambda c: -c["post_count"])
+        return [c["label"] for c in passing[:_1DAY_TOP_TOPICS]]
+
+    top_pos = _topics_for_bucket(buckets["positive"])
+    top_neg = _topics_for_bucket(buckets["negative"])
+    top_neu = _topics_for_bucket(buckets["neutral"])
+
+    return pos, neg, neu, top_pos, top_neg, top_neu
+
+
 # Minimum number of substantive posts required before attempting a confident
 # AI summary.  Below this threshold the pipeline returns the insufficient-signal
 # sentinel without calling Claude (§15).
@@ -304,10 +439,17 @@ def _call_claude_for_period(
     pos_topics: list[str],
     neg_topics: list[str],
     neu_topics: list[str],
-    total_posts: int,
+    pos_count: int,
+    neg_count: int,
+    neu_count: int,
 ) -> tuple[str, Optional[str], list[str]]:
     """
     Call Claude for (exec_summary, recommended_actions, bold_ideas).
+
+    Bug 2 fix: accepts pos_count/neg_count/neu_count instead of total_posts so
+    the exec-summary prompt can include the actual breakdown. This prevents
+    Claude from writing "no clear negative signals" next to a significant
+    negative count, which contradicts the KPI numbers shown in the dashboard.
 
     Returns placeholder strings if the API key is missing or calls fail.
     recommended_actions: Optional[str] — None when Claude returns NONE or all
@@ -317,7 +459,10 @@ def _call_claude_for_period(
 
     §15 total-volume gate: if total_posts < _MIN_SUBSTANTIVE_POSTS, returns the
     insufficient-signal sentinel immediately without calling Claude.
+    This fix only applies when Claude is actually invoked (total >= 20).
     """
+    total_posts = pos_count + neg_count + neu_count
+
     # ── §15: Insufficient-signal sentinel ────────────────────────────────────
     if total_posts < _MIN_SUBSTANTIVE_POSTS:
         logger.info(
@@ -351,7 +496,7 @@ def _call_claude_for_period(
     neg_str = ", ".join(neg_topics) if neg_topics else "No clear negative signals"
     neu_str = ", ".join(neu_topics) if neu_topics else "General neutral discussion"
 
-    exec_summary  = _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts)
+    exec_summary  = _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts, pos_count, neg_count, neu_count)
     rec_actions   = _call_actions(client, game_name, window_label, pos_str, neg_str, neu_str)
     bold_ideas    = _call_bold_ideas(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts)
 
@@ -415,7 +560,25 @@ _OUTPUT_STYLE = (
 )
 
 
-def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts) -> str:
+def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
+               pos_count: int = 0, neg_count: int = 0, neu_count: int = 0) -> str:
+    # Bug 2 fix: compute breakdown strings and negative percentage so the
+    # prompt can REQUIRE Claude to reference actual counts numerically.
+    neg_pct = (neg_count / total_posts * 100) if total_posts > 0 else 0.0
+    pos_pct = (pos_count / total_posts * 100) if total_posts > 0 else 0.0
+    neu_pct = (neu_count / total_posts * 100) if total_posts > 0 else 0.0
+
+    # Build the banned-phrase instruction only when negative is meaningful (>5%)
+    if neg_pct > 5.0:
+        banned_phrase_instruction = (
+            f"BANNED PHRASES (do NOT use ANY of these when negative_pct > 5%): "
+            f"\"no clear negative signals\", \"no friction points\", \"no negative signals\", "
+            f"\"stable player satisfaction\", \"absence of friction\". "
+            f"These are factually wrong given {neg_count} negative posts ({neg_pct:.1f}% of total).\n"
+        )
+    else:
+        banned_phrase_instruction = ""
+
     prompt = (
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
         + _OUTPUT_STYLE +
@@ -425,12 +588,19 @@ def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total
         f"- Lead with the dominant signal in 1 sentence, then 2-4 sentences of supporting detail.\n"
         f"- Cite topic names exactly as provided.\n"
         f"- NO parenthetical lists of examples. NO 'this suggests... which means... and therefore...' chains.\n"
-        f"- If post volume is low, say so plainly in 1 short sentence and keep the rest equally short.\n\n"
-        f"Data ({window_label}):\n"
+        f"- If post volume is low, say so plainly in 1 short sentence and keep the rest equally short.\n"
+        f"- Your first sentence MUST reference the actual positive AND negative counts numerically "
+        f"(e.g. '{pos_count} positive vs {neg_count} negative posts'). "
+        f"Do NOT say 'no clear negative signals' if the negative count is greater than 5% of total.\n"
+        + banned_phrase_instruction +
+        f"\nData ({window_label}):\n"
+        f"Positive: {pos_count} ({pos_pct:.1f}%)\n"
+        f"Negative: {neg_count} ({neg_pct:.1f}%)\n"
+        f"Neutral:  {neu_count} ({neu_pct:.1f}%)\n"
+        f"Total posts analyzed: {total_posts}\n"
         f"Top positive topics: {pos_str}\n"
         f"Top negative topics: {neg_str}\n"
-        f"Top neutral topics: {neu_str}\n"
-        f"Total posts analyzed: {total_posts}\n\n"
+        f"Top neutral topics: {neu_str}\n\n"
         f"Write ONLY the summary paragraph. No bullet points, no headings, no preamble."
     )
     try:
