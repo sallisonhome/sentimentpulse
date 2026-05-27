@@ -3,18 +3,17 @@ name: Deploy to Droplet
 # CLAUDE.md §16 — Auto-Deploy via GitHub Actions
 #
 # Runs on every push to main (including PR merges) and via manual trigger.
-# Connects to the droplet via SSH, pulls main, runs Alembic migrations,
-# rebuilds the frontend, restarts the systemd service, and prints a
-# health-check summary.
+# Connects to the droplet via SSH, pulls main, installs deps for ALL apps,
+# runs Alembic migrations (SentimentPulse), rebuilds ALL frontends, and
+# restarts the systemd services that exist on this droplet.
+#
+# Apps deployed:
+#   1. SentimentPulse  — port 8000  (frontend/, backend/)
+#   2. GTM Studio      — port 8001  (gtm/frontend/, gtm/backend/)
 #
 # Required secrets:
 #   DROPLET_SSH_KEY   — ed25519 private key whose pubkey is in
 #                       /root/.ssh/authorized_keys on the droplet.
-#
-# Required repo variables (defaults shown below):
-#   DROPLET_HOST = 104.236.239.46
-#   DROPLET_USER = root
-#   DROPLET_PATH = /opt/sentimentpulse
 
 on:
   push:
@@ -28,7 +27,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Configure SSH
         run: |
@@ -43,45 +42,74 @@ jobs:
             set -euo pipefail
             cd /opt/sentimentpulse
 
-            echo "── git pull ──────────────────────────────────"
+            echo "## git pull ##"
             git fetch origin main
             git reset --hard origin/main
             git log -1 --oneline
 
-            echo "── pip install (backend deps) ────────────────"
+            export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
+            which node || echo "node not in PATH"
+            which npm  || echo "npm not in PATH"
+
+            echo ""
+            echo "## SentimentPulse backend deps + migrations ##"
             cd backend
             source .venv/bin/activate
-            # Install any newly-added dependencies from requirements.txt.
-            # --upgrade-strategy only-if-needed keeps existing pins stable
-            # while installing any net-new package introduced by this commit.
             pip install --quiet --upgrade-strategy only-if-needed -r requirements.txt
-
-            echo "── alembic upgrade ───────────────────────────"
             alembic upgrade head
             deactivate
             cd ..
 
-            echo "── frontend build ────────────────────────────"
-            export PATH="/usr/local/bin:/usr/bin:/bin:$PATH"
-            which node || echo "node not in PATH"
-            which npm || echo "npm not in PATH"
+            echo ""
+            echo "## SentimentPulse frontend build ##"
             if [ -d frontend ] && [ -f frontend/package.json ]; then
               cd frontend
-              # Use npm install (not ci) so out-of-sync lockfiles don't block deploy.
-              # Capture full output so any failure is visible in the workflow log.
               npm install --no-audit --no-fund
               npm run build
               cd ..
             else
-              echo "frontend/ or package.json missing, skipping build"
+              echo "frontend/ missing, skipping"
             fi
 
-            echo "── restart backend ───────────────────────────"
-            systemctl restart sentimentpulse
-            sleep 3
-            systemctl is-active sentimentpulse
+            echo ""
+            echo "## GTM Studio backend deps ##"
+            if [ -f gtm/backend/requirements.txt ] && [ -d gtm/backend/.venv ]; then
+              cd gtm/backend
+              source .venv/bin/activate
+              pip install --quiet --upgrade-strategy only-if-needed -r requirements.txt
+              deactivate
+              cd ../..
+            elif [ -f gtm/backend/requirements.txt ]; then
+              echo "WARN: gtm/backend/.venv missing — backend deps NOT installed"
+            else
+              echo "gtm/backend/requirements.txt missing, skipping"
+            fi
 
-            echo "── deploy OK ─────────────────────────────────"
+            echo ""
+            echo "## GTM Studio frontend build ##"
+            if [ -d gtm/frontend ] && [ -f gtm/frontend/package.json ]; then
+              cd gtm/frontend
+              npm install --no-audit --no-fund
+              npm run build
+              cd ../..
+            else
+              echo "gtm/frontend/ missing, skipping"
+            fi
+
+            echo ""
+            echo "## restart services ##"
+            for svc in sentimentpulse gtmstudio; do
+              if systemctl list-unit-files | grep -q "^${svc}.service"; then
+                systemctl restart "$svc"
+                sleep 2
+                systemctl is-active "$svc" && echo "$svc: active" || echo "$svc: FAILED"
+              else
+                echo "$svc.service not installed; skipping"
+              fi
+            done
+
+            echo ""
+            echo "## deploy OK ##"
           EOF
 
       - name: Cleanup
