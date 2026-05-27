@@ -98,8 +98,12 @@ jobs:
 
             echo ""
             echo "## restart services ##"
+            # Match service unit lines like 'sentimentpulse.service enabled enabled'.
+            # Escape the literal '.' in the regex so '^name.service' doesn't false-positive,
+            # AND use awk to test field 1 exactly (more reliable than grep on the full row).
+            installed_units=$(systemctl list-unit-files --type=service --no-legend | awk '{print $1}')
             for svc in sentimentpulse gtmstudio; do
-              if systemctl list-unit-files | grep -q "^${svc}.service"; then
+              if echo "$installed_units" | grep -qx "${svc}.service"; then
                 systemctl restart "$svc"
                 sleep 2
                 systemctl is-active "$svc" && echo "$svc: active" || echo "$svc: FAILED"
