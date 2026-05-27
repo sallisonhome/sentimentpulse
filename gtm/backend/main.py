@@ -278,6 +278,84 @@ def clone_deck(deck_id: str):
     return {"theme": row["theme"], "inputs": json.loads(row["inputs_json"])}
 
 
+@app.get("/library/{deck_id}/slides")
+def library_slides(deck_id: str):
+    """Return (or lazily generate) per-slide PNG URLs for a library deck."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, title, theme, inputs_json FROM gtm_decks"
+            " WHERE id = ? AND deleted_at IS NULL AND is_private = 0",
+            [deck_id],
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Deck not found")
+
+    cache_dir = LIBRARY_DIR / deck_id / "slides"
+
+    # Cache hit: directory exists and has at least one PNG
+    if cache_dir.exists():
+        cached_pngs = sorted(cache_dir.glob("*.png"))
+        if cached_pngs:
+            return {
+                "deck_id": deck_id,
+                "title": row["title"],
+                "theme": row["theme"],
+                "slide_count": len(cached_pngs),
+                "pngs": [
+                    f"/gtm/api/library/{deck_id}/slides/{p.name}"
+                    for p in cached_pngs
+                ],
+            }
+
+    # Cache miss: render PNGs into cache_dir
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        inputs = FormInputs(**json.loads(row["inputs_json"]))
+        result = _render_to(cache_dir, inputs, row["theme"])
+        pngs: list[Path] = result["pngs"]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Slide render failed for deck %s", deck_id
+        )
+        # Clean up partial output to avoid a corrupted cache
+        shutil.rmtree(cache_dir, ignore_errors=True)
+        raise HTTPException(500, f"Slide render failed: {e}")
+
+    return {
+        "deck_id": deck_id,
+        "title": row["title"],
+        "theme": row["theme"],
+        "slide_count": len(pngs),
+        "pngs": [
+            f"/gtm/api/library/{deck_id}/slides/{p.name}"
+            for p in pngs
+        ],
+    }
+
+
+@app.get("/library/{deck_id}/slides/{name}")
+def library_slide_png(deck_id: str, name: str):
+    """Serve a single cached slide PNG for a library deck."""
+    if "/" in name or ".." in name:
+        raise HTTPException(400, "Invalid filename")
+    if not name.endswith(".png"):
+        raise HTTPException(400, "Invalid filename: must end with .png")
+    # Visibility check
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM gtm_decks"
+            " WHERE id = ? AND deleted_at IS NULL AND is_private = 0",
+            [deck_id],
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Deck not found")
+    p = LIBRARY_DIR / deck_id / "slides" / name
+    if not p.exists():
+        raise HTTPException(404, "Slide PNG not found")
+    return FileResponse(p, media_type="image/png")
+
+
 # ── Preview workflow ─────────────────────────────────────────────────────────
 
 

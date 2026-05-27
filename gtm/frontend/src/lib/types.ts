@@ -58,3 +58,11 @@ export type RoadmapPhase = {
   window: string;
   bullets: string[];
 };
+
+export type SlidesResponse = {
+  deck_id: string;
+  title: string;
+  theme: Theme;
+  slide_count: number;
+  pngs: string[];
+};
