@@ -9,6 +9,7 @@ import { Preview } from "./pages/Preview";
 import { Download } from "./pages/Download";
 import { Example } from "./pages/Example";
 import { Admin } from "./pages/Admin";
+import { Viewer } from "./pages/Viewer";
 import { NotFound } from "./pages/NotFound";
 
 export default function App() {
@@ -26,6 +27,7 @@ export default function App() {
                 <Route path="/preview/:sessionId" component={Preview} />
                 <Route path="/decks/:deckId" component={Download} />
                 <Route path="/example" component={Example} />
+                <Route path="/library/:deckId/view" component={Viewer} />
                 <Route path="/admin" component={Admin} />
                 <Route component={NotFound} />
               </Switch>

@@ -205,6 +205,13 @@ function DeckCard({
       </div>
 
       <div className="mt-auto flex flex-wrap items-center gap-2">
+        <Link
+          className="btn-primary"
+          href={`/library/${d.id}/view`}
+          data-testid={`button-view-${d.id}`}
+        >
+          View
+        </Link>
         <a
           className="btn-secondary"
           href={api.downloadUrl(d.id, "pptx")}

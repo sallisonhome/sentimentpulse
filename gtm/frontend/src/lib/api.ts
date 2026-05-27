@@ -86,6 +86,12 @@ export const api = {
   resolvePng: (url: string) =>
     url.startsWith("http") || url.startsWith("/") ? url : `${API_BASE}/${url}`,
 
+  // ── Library deck viewer ──
+  slidesUrl: (deckId: string): string =>
+    `${API_BASE}/library/${deckId}/slides`,
+  fetchSlides: (deckId: string) =>
+    request<import("./types").SlidesResponse>(`/library/${deckId}/slides`),
+
   // ── Admin ──
   adminLogin: (password: string) =>
     request<{ ok: boolean }>(`/admin/login`, {

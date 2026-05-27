@@ -3,8 +3,8 @@ import { PageHeader } from "../components/PageHeader";
 import { api } from "../lib/api";
 
 export function Download() {
-  const [, params] = useRoute("/decks/:deckId");
-  const id = params?.deckId || "";
+  const [, params] = useRoute<{ deckId: string }>("/decks/:deckId");
+  const id = params?.deckId ?? "";
   return (
     <div>
       <PageHeader

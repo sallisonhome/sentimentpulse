@@ -17,9 +17,9 @@ const CHIPS = [
 ];
 
 export function Preview() {
-  const [match, params] = useRoute("/preview/:sessionId");
+  const [match, params] = useRoute<{ sessionId: string }>("/preview/:sessionId");
   const [, setLoc] = useLocation();
-  const sessionId = params?.sessionId || "";
+  const sessionId = params?.sessionId ?? "";
   const { deckTheme } = useDeckTheme();
 
   const [data, setData] = useState<PreviewResponse | null>(null);
