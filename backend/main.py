@@ -19,6 +19,7 @@ from database import SessionLocal, engine
 from models import Base, Publisher
 from routers import dashboard, games, ingest, posts, publisher, reddit_upload, summaries, topics
 from scheduler import create_scheduler
+from services.bluesky_log_buffer import install_buffer as install_bluesky_log_buffer
 from services.nlp_service import load_model
 
 logging.basicConfig(
@@ -58,6 +59,11 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to seed publisher: %s", exc)
         finally:
             db.close()
+
+    # Mirror bluesky_service log records into an in-memory ring buffer so the
+    # diagnostic endpoint can surface them without journalctl access.
+    if install_bluesky_log_buffer():
+        logger.info("Bluesky log ring buffer installed.")
 
     # Pre-load NLP model (synchronous; happens once at startup)
     load_model()

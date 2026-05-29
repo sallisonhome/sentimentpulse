@@ -103,6 +103,25 @@ def diag_bluesky(
         le=100,
         description="Limit passed to fetch_bluesky_posts_for_game when probe=true.",
     ),
+    warnings_level: str = Query(
+        "INFO",
+        pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$",
+        description="Minimum log level to include in recent_warnings.",
+    ),
+    warnings_max: int = Query(
+        100,
+        ge=1,
+        le=400,
+        description="Max number of log lines to include in recent_warnings.",
+    ),
+    clear_warnings: bool = Query(
+        False,
+        description=(
+            "If true (and probe=true), drop all buffered log lines BEFORE "
+            "running the probe so the response shows only probe-emitted "
+            "log records.  Has no effect when probe=false."
+        ),
+    ),
 ):
     """Diagnostic endpoint for Bluesky ingestion (read-only).
 
@@ -119,6 +138,10 @@ def diag_bluesky(
     pw = os.environ.get("BLUESKY_APP_PASSWORD", "")
     enabled = os.environ.get("BLUESKY_ENABLED", "")
 
+    # Read ring buffer up-front so the response always carries it.
+    from services.bluesky_log_buffer import get_recent as get_recent_logs
+    from services.bluesky_log_buffer import clear as clear_log_buffer
+
     out: dict = {
         "env": {
             "BLUESKY_HANDLE_present": bool(handle.strip()),
@@ -130,11 +153,17 @@ def diag_bluesky(
         },
         "log_path_today": str(_LOG_DIR / f"ingest_{date.today().isoformat()}.log"),
         "recent_log_lines": _bluesky_log_lines(),
+        "recent_warnings": [],   # populated below
         "probe": {"attempted": False, "count": None, "error": None,
                   "sample_titles": []},
     }
 
     if probe:
+        # Optionally clear the buffer so the response shows only probe records.
+        if clear_warnings:
+            dropped = clear_log_buffer()
+            out["probe"]["cleared_buffer_lines"] = dropped
+
         out["probe"]["attempted"] = True
         out["probe"]["limit_used"] = probe_limit
         try:
@@ -190,4 +219,9 @@ def diag_bluesky(
         except Exception as exc:  # noqa: BLE001
             out["probe"]["error"] = f"{type(exc).__name__}: {exc}"
 
+    # Always populate recent_warnings at the end so probe-emitted lines are
+    # included.
+    out["recent_warnings"] = get_recent_logs(
+        max_lines=warnings_max, level_min=warnings_level
+    )
     return out
