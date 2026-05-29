@@ -1,0 +1,50 @@
+name: SP API vs DB
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Audit
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+
+            echo "## sqlite3 direct count"
+            sqlite3 /opt/sentimentpulse/backend/sentimentpulse.db "SELECT COUNT(*) AS games, (SELECT COUNT(*) FROM raw_posts) AS raw_posts FROM games;"
+
+            echo ""
+            echo "## sqlite3 first 5 game names"
+            sqlite3 /opt/sentimentpulse/backend/sentimentpulse.db "SELECT id, name FROM games LIMIT 5;"
+
+            echo ""
+            echo "## /api/games via localhost"
+            curl -sS -o /tmp/games.json -w "HTTP %{http_code} bytes %{size_download}\n" http://127.0.0.1:8000/api/games
+            head -c 500 /tmp/games.json
+            echo ""
+
+            echo ""
+            echo "## /api/ingest/status via localhost"
+            curl -sS http://127.0.0.1:8000/api/ingest/status
+            echo ""
+
+            echo ""
+            echo "## /api/games via public nginx"
+            curl -sS -o /tmp/games2.json -w "HTTP %{http_code} bytes %{size_download}\n" http://104.236.239.46/api/games
+            head -c 500 /tmp/games2.json
+            echo ""
+
+            echo ""
+            echo "## Backend log lines mentioning database or sqlite (last 80 lines)"
+            journalctl -u sentimentpulse --no-pager -n 200 --since "20 minutes ago" 2>&1 | grep -iE "sqlite|database|error|traceback|sqlalchemy" | tail -20
+          EOF
