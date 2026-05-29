@@ -1,0 +1,55 @@
+name: Probe Arctic Shift from Droplet
+
+# One-shot diagnostic. Tests whether the production droplet's residential-like
+# DigitalOcean IP can reach Arctic Shift through Cloudflare, OR whether
+# Cloudflare blocks datacenter IPs (which would invalidate the "let the
+# droplet pull Reddit data" idea).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Probe
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            echo "── droplet outbound IP ──"
+            curl -sS https://api.ipify.org && echo
+
+            echo ""
+            echo "── Arctic Shift response from droplet ──"
+            curl -sS -A "SentimentPulse/1.0 (by /u/halfbaked)" \
+                 -H "Accept: application/json" \
+                 -o /tmp/probe.json \
+                 -w "HTTP_CODE=%{http_code}\nTIME=%{time_total}s\n" \
+                 "https://arctic-shift.photon-reddit.com/api/posts/search?subreddit=Spacemarine&limit=5&sort=desc"
+
+            echo ""
+            echo "── response body (first 250 chars) ──"
+            head -c 250 /tmp/probe.json
+            echo ""
+
+            echo ""
+            echo "── valid JSON with posts? ──"
+            python3 -c "
+            import json
+            d = json.load(open('/tmp/probe.json'))
+            posts = d.get('data', [])
+            print(f'posts: {len(posts) if posts else 0}')
+            if posts:
+                print(f'first title: {posts[0].get(\"title\", \"\")[:60]}')
+            else:
+                print(f'error: {d.get(\"error\", d)}')
+            " 2>&1 | head -5
+          EOF
