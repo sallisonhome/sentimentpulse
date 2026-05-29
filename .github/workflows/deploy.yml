@@ -38,14 +38,39 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Deploy
+      - name: Upload Bluesky credentials to droplet
         env:
           BSKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
           BSKY_PW: ${{ secrets.BLUESKY_APP_PASSWORD }}
         run: |
+          # Write secrets to a temp file on the runner, then scp to droplet.
+          # Keeps the deploy heredoc fully quoted so in-script vars like $PATH,
+          # $svc, $installed_units etc. are NOT expanded by the GH runner shell.
+          umask 077
+          {
+            printf 'BSKY_HANDLE=%s\n' "$BSKY_HANDLE"
+            printf 'BSKY_PW=%s\n'     "$BSKY_PW"
+          } > /tmp/bsky_creds.env
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            /tmp/bsky_creds.env root@104.236.239.46:/root/bsky_creds.env
+          rm -f /tmp/bsky_creds.env
+
+      - name: Deploy
+        run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-            "BSKY_HANDLE=$BSKY_HANDLE BSKY_PW=$BSKY_PW bash -s" root@104.236.239.46 << 'EOF'
+            root@104.236.239.46 bash -s << 'EOF'
             set -euo pipefail
+
+            # Load Bluesky credentials uploaded by the previous step.
+            # File is 0600 by scp; remove after sourcing so it does not linger.
+            BSKY_HANDLE=""
+            BSKY_PW=""
+            if [ -f /root/bsky_creds.env ]; then
+              # shellcheck disable=SC1091
+              . /root/bsky_creds.env
+              rm -f /root/bsky_creds.env
+            fi
+
             cd /opt/sentimentpulse
 
             echo "## git pull ##"
