@@ -1,0 +1,49 @@
+name: SP Health Check (post-Reddit-upload)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Health
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+
+            echo "── 1. Service status ──"
+            systemctl is-active sentimentpulse || true
+            systemctl status sentimentpulse --no-pager -l | head -25 || true
+
+            echo ""
+            echo "── 2. Database row counts ──"
+            sqlite3 -header sentimentpulse.db "SELECT 'games' AS table_name, COUNT(*) AS n FROM games UNION ALL SELECT 'raw_posts', COUNT(*) FROM raw_posts UNION ALL SELECT 'sentiment_records', COUNT(*) FROM sentiment_records UNION ALL SELECT 'monthly_summaries', COUNT(*) FROM monthly_summaries UNION ALL SELECT 'window_summaries', COUNT(*) FROM window_summaries;"
+
+            echo ""
+            echo "── 3. DB file size + recent change ──"
+            ls -la sentimentpulse.db
+            echo ""
+            echo "── 4. /api/games HTTP response ──"
+            curl -sS -o /tmp/games.json -w "HTTP %{http_code}\n" http://127.0.0.1:8000/api/games
+            head -c 600 /tmp/games.json
+            echo ""
+
+            echo ""
+            echo "── 5. /api/ingest/status ──"
+            curl -sS http://127.0.0.1:8000/api/ingest/status
+
+            echo ""
+            echo ""
+            echo "── 6. Most recent backend log lines (errors first) ──"
+            journalctl -u sentimentpulse --no-pager -n 80 --since "30 minutes ago" 2>&1 | tail -60 || true
+          EOF
