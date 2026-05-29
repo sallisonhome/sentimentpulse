@@ -344,14 +344,47 @@ def fetch_subreddit_posts(
     game_name: str = "",
 ) -> list[dict]:
     """
-    Fetch posts for a game from the pre-fetched GitHub Gist data.
+    Fetch posts from a subreddit, trying Arctic Shift first.
 
-    A GitHub Action runs daily on GitHub's servers (not blocked by Reddit),
-    fetches posts from all configured subreddits, and uploads the data to
-    a Gist. This function reads from that Gist.
+    Strategy (in order):
+      1. Arctic Shift — free public Reddit archive, confirmed reachable from
+         the droplet as of May 2026. Returns Reddit-format JSON.
+      2. GitHub Gist — pre-fetched data uploaded by the PowerShell fetcher
+         or a GitHub Action.  Still useful as a fast cache or manual override.
+      3. PullPush API — last-resort archive fallback.
 
-    Falls back to PullPush if the Gist has no data for this game.
+    The existing Gist and PullPush paths are kept intact and remain dormant
+    unless Arctic Shift returns no results, ensuring backward compatibility.
     """
+    # ── 1. Try Arctic Shift first ─────────────────────────────────────────────
+    try:
+        from services.arctic_shift_service import (
+            fetch_arctic_shift_subreddit_posts,
+            ARCTIC_SHIFT_GENERAL_SUBS,
+        )
+        is_general = subreddit_name.lower() in {
+            s.lower() for s in ARCTIC_SHIFT_GENERAL_SUBS
+        }
+        posts = fetch_arctic_shift_subreddit_posts(
+            subreddit_name,
+            limit=limit,
+            game_name=game_name,
+            is_general_sub=is_general,
+        )
+        if posts:
+            logger.info(
+                "arctic_shift: r/%s → %d posts (game='%s')",
+                subreddit_name, len(posts), game_name,
+            )
+            return posts
+        logger.info(
+            "arctic_shift: r/%s returned 0 posts (game='%s') — falling back",
+            subreddit_name, game_name,
+        )
+    except Exception as exc:
+        logger.warning("arctic_shift failed for r/%s: %s", subreddit_name, exc)
+
+    # ── 2. Gist fallback — pre-fetched data from PowerShell fetcher ───────────
     # This function is called per-subreddit, but the Gist data is per-game.
     # We return the full game's posts on the first subreddit call, and
     # empty for subsequent subs to avoid duplicates.
@@ -376,7 +409,7 @@ def fetch_subreddit_posts(
             logger.info("Loaded %d post(s) for '%s' from Reddit Gist", len(posts), game_name)
             return posts
 
-    # Fallback to PullPush if no Gist data
+    # ── 3. PullPush fallback — last-resort Reddit archive ─────────────────────
     logger.info("No Gist data for '%s' / r/%s — trying PullPush", game_name, subreddit_name)
     return _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
 
