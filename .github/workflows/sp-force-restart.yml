@@ -1,0 +1,64 @@
+name: SP Force Restart
+
+on:
+  workflow_dispatch:
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Restart
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+
+            echo "── BEFORE: service state ──"
+            systemctl is-active sentimentpulse || true
+            systemctl is-failed sentimentpulse || true
+
+            echo ""
+            echo "── Force kill any stuck uvicorn process on port 8000 ──"
+            STUCK=$(lsof -t -i :8000 2>/dev/null || true)
+            if [ -n "$STUCK" ]; then
+              echo "Killing PID(s): $STUCK"
+              kill -9 $STUCK 2>/dev/null || true
+              sleep 2
+            else
+              echo "No process on port 8000"
+            fi
+
+            echo ""
+            echo "── Reset systemd state + restart ──"
+            systemctl reset-failed sentimentpulse 2>/dev/null || true
+            systemctl stop sentimentpulse 2>/dev/null || true
+            sleep 2
+            systemctl start sentimentpulse
+            sleep 5
+
+            echo ""
+            echo "── AFTER: service state ──"
+            systemctl is-active sentimentpulse
+            systemctl status sentimentpulse --no-pager -l | head -15
+
+            echo ""
+            echo "── /api/games sanity ──"
+            curl -sS -o /tmp/g.json -w "HTTP %{http_code}\n" http://127.0.0.1:8000/api/games
+            python3 -c "
+            import json
+            d = json.load(open('/tmp/g.json'))
+            print(f'games returned: {len(d) if isinstance(d, list) else \"non-list response\"}')
+            " 2>&1 | head -3
+
+            echo ""
+            echo "── /api/ingest/status ──"
+            curl -sS http://127.0.0.1:8000/api/ingest/status
+            echo ""
+          EOF
