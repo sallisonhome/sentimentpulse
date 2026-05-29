@@ -9,7 +9,15 @@ $ErrorActionPreference = "Continue"
 $DROPLET_URL = "http://104.236.239.46/api/reddit/upload"
 # ──────────────────────────────────────────────────────────────────────────────
 
-$BASE = "https://www.reddit.com"
+# Arctic Shift is the working Pushshift-style Reddit archive that succeeded
+# Pushshift after Reddit's 2023 API policy change. Reddit itself now returns
+# HTTP 403 on all anonymous .json endpoints (changed late May 2026), so the
+# fetcher routes through Arctic Shift's free public API instead.
+#
+# Data lag: a few minutes to a few hours behind live Reddit. Acceptable for
+# SentimentPulse's daily ingest. See CLAUDE.md §17 for the canonical command.
+$BASE = "https://arctic-shift.photon-reddit.com/api/posts/search"
+$REDDIT_BASE = "https://www.reddit.com"  # only used for building permalink URLs
 
 $GAMES = @{
     "1"   = @{ Name="Docked"; Subs=@("gaming","pcgaming") }
@@ -59,10 +67,7 @@ function Test-PostMentionsGame($post, $query) {
     return $false
 }
 
-# Reddit's API rules require a descriptive User-Agent that identifies the app
-# and a contact handle. Default PowerShell UAs (no UA header → "Mozilla/5.0
-# (Windows NT; Microsoft Windows ...) PowerShell/...") are now hard-blocked
-# by Reddit's anti-bot layer. See CLAUDE.md §17 for the canonical fetch flow.
+# Arctic Shift accepts plain HTTP requests; a descriptive UA is courteous.
 $REDDIT_USER_AGENT = "SentimentPulse/1.0 (by /u/halfbaked)"
 $REDDIT_HEADERS = @{
     "User-Agent" = $REDDIT_USER_AGENT
@@ -90,51 +95,62 @@ function Fetch-Reddit($url) {
     }
 }
 
+# Convert a single Arctic Shift / Reddit-format post row to our payload shape.
+function ConvertTo-PostPayload($post) {
+    return @{
+        external_id = $post.id
+        author      = if ($post.author) { $post.author } else { "[deleted]" }
+        title       = if ($post.title) { $post.title } else { "" }
+        body        = if ($post.selftext) {
+                          $post.selftext.Substring(0, [Math]::Min(2000, $post.selftext.Length))
+                      } else { "" }
+        url         = "$REDDIT_BASE$($post.permalink)"
+        upvotes     = [Math]::Max(0, [int]$post.score)
+        post_date   = if ($post.created_utc) {
+                          [DateTimeOffset]::FromUnixTimeSeconds([long]$post.created_utc).ToString("o")
+                      } else { $null }
+    }
+}
+
 function Fetch-Subreddit($subName, $gameName, $limit) {
     $isGeneral = $GENERAL_SUBS -contains $subName.ToLower()
     $seen = @{}
 
     if ($gameName -and $isGeneral) {
+        # Keyword search inside a general subreddit (e.g. r/gaming + "John Wick").
+        # Arctic Shift doesn't have a single 'q' param like Reddit's API —
+        # it has SEPARATE 'title' and 'selftext' filters. We query each, merge,
+        # and post-filter via Test-PostMentionsGame to mirror the original
+        # relevance gate.
         $query = Get-SearchQuery $gameName
-        foreach ($sort in @("new","relevance")) {
-            $url = "$BASE/r/$subName/search.json?q=$([uri]::EscapeDataString($query))&sort=$sort&limit=$limit&restrict_sr=1&raw_json=1"
+        $qEnc = [uri]::EscapeDataString($query)
+        $subEnc = [uri]::EscapeDataString($subName)
+
+        foreach ($field in @("title","selftext")) {
+            $url = "$BASE`?subreddit=$subEnc&${field}=$qEnc&limit=$limit&sort=desc"
             $data = Fetch-Reddit $url
-            if (-not $data) { continue }
-            foreach ($child in $data.data.children) {
-                $post = $child.data
+            if (-not $data -or -not $data.data) { continue }
+            foreach ($post in $data.data) {
                 $postId = $post.id
                 if ($postId -and -not $seen.ContainsKey($postId)) {
-                    $pd = @{
-                        external_id = $post.id
-                        author = if ($post.author) { $post.author } else { "[deleted]" }
-                        title = if ($post.title) { $post.title } else { "" }
-                        body = if ($post.selftext) { $post.selftext.Substring(0, [Math]::Min(2000, $post.selftext.Length)) } else { "" }
-                        url = "$BASE$($post.permalink)"
-                        upvotes = [Math]::Max(0, [int]$post.score)
-                        post_date = if ($post.created_utc) { [DateTimeOffset]::FromUnixTimeSeconds([long]$post.created_utc).ToString("o") } else { $null }
-                    }
+                    $pd = ConvertTo-PostPayload $post
                     if (Test-PostMentionsGame $pd $query) { $seen[$postId] = $pd }
                 }
             }
         }
     } else {
-        foreach ($feed in @("new","hot")) {
-            $url = "$BASE/r/$subName/$feed.json?limit=$limit&raw_json=1"
-            $data = Fetch-Reddit $url
-            if (-not $data) { continue }
-            foreach ($child in $data.data.children) {
-                $post = $child.data
+        # "New" + "hot" feed equivalents on Arctic Shift are both just
+        # 'sort=desc' on created_utc. The archive doesn't have a separate 'hot'
+        # signal, so we issue ONE request instead of two; this matches the
+        # original script's de-dupe behavior anyway since both feeds returned
+        # overlapping post sets.
+        $url = "$BASE`?subreddit=$([uri]::EscapeDataString($subName))&limit=$limit&sort=desc"
+        $data = Fetch-Reddit $url
+        if ($data -and $data.data) {
+            foreach ($post in $data.data) {
                 $postId = $post.id
                 if ($postId -and -not $seen.ContainsKey($postId)) {
-                    $seen[$postId] = @{
-                        external_id = $post.id
-                        author = if ($post.author) { $post.author } else { "[deleted]" }
-                        title = if ($post.title) { $post.title } else { "" }
-                        body = if ($post.selftext) { $post.selftext.Substring(0, [Math]::Min(2000, $post.selftext.Length)) } else { "" }
-                        url = "$BASE$($post.permalink)"
-                        upvotes = [Math]::Max(0, [int]$post.score)
-                        post_date = if ($post.created_utc) { [DateTimeOffset]::FromUnixTimeSeconds([long]$post.created_utc).ToString("o") } else { $null }
-                    }
+                    $seen[$postId] = ConvertTo-PostPayload $post
                 }
             }
         }
