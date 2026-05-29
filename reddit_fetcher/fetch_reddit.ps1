@@ -74,24 +74,44 @@ $REDDIT_HEADERS = @{
     "Accept"     = "application/json"
 }
 
+# We use curl.exe (ships with Windows 10/11 by default at
+# C:\Windows\System32\curl.exe) instead of PowerShell's Invoke-RestMethod
+# because Cloudflare bot-detection fingerprints Invoke-RestMethod's TLS
+# handshake / HTTP/2 negotiation and returns 403 on requests that work
+# fine in browsers and curl. Verified May 29 2026 that:
+#   - Arctic Shift returns 200 + JSON to a web browser from this same IP
+#   - Arctic Shift returns 200 + JSON to curl from this same IP
+#   - Arctic Shift returns 403 to Invoke-RestMethod from this same IP
 function Fetch-Reddit($url) {
+    $tempOut = [System.IO.Path]::GetTempFileName()
     try {
-        $response = Invoke-RestMethod -Uri $url `
-            -Headers $REDDIT_HEADERS `
-            -UseBasicParsing `
-            -TimeoutSec 15
+        # -sS: silent except for errors. -A: User-Agent. -H: extra headers.
+        # -w: write the HTTP status code to stdout AFTER the body is saved.
+        # --max-time: total request timeout, including connect.
+        # -o: write body to temp file (separates body from status code).
+        $statusCode = & curl.exe `
+            -sS `
+            -A $REDDIT_USER_AGENT `
+            -H "Accept: application/json" `
+            --max-time 15 `
+            -o $tempOut `
+            -w "%{http_code}" `
+            $url 2>$null
+
         Start-Sleep -Seconds 2
-        return $response
-    } catch {
-        # Surface the real HTTP status code so we don't keep mistaking other
-        # error classes for 403s (the previous code printed " 403" on ANY
-        # exception, masking 429s, timeouts, DNS failures, etc.).
-        $status = "ERR"
-        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-            $status = [int]$_.Exception.Response.StatusCode
+
+        if ($statusCode -eq "200") {
+            $body = Get-Content $tempOut -Raw -ErrorAction Stop
+            return ($body | ConvertFrom-Json)
+        } else {
+            Write-Host " $statusCode" -NoNewline -ForegroundColor Yellow
+            return $null
         }
-        Write-Host " $status" -NoNewline -ForegroundColor Yellow
+    } catch {
+        Write-Host " ERR" -NoNewline -ForegroundColor Yellow
         return $null
+    } finally {
+        if (Test-Path $tempOut) { Remove-Item $tempOut -Force -ErrorAction SilentlyContinue }
     }
 }
 
