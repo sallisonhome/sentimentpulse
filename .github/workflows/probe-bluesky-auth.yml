@@ -1,0 +1,81 @@
+name: Probe Bluesky Auth from Droplet
+
+on:
+  workflow_dispatch:
+    inputs:
+      handle:
+        description: 'Bluesky handle (with .bsky.social if applicable)'
+        required: true
+        type: string
+      app_password:
+        description: 'App password from Bluesky Settings → App Passwords'
+        required: true
+        type: string
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Probe
+        env:
+          BSKY_HANDLE: ${{ inputs.handle }}
+          BSKY_APP_PW: ${{ inputs.app_password }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
+            "BSKY_HANDLE='$BSKY_HANDLE' BSKY_APP_PW='$BSKY_APP_PW' bash -s" << 'EOF'
+            set -euo pipefail
+
+            echo "## 1. createSession"
+            SESS=$(curl -sS -X POST "https://bsky.social/xrpc/com.atproto.server.createSession" \
+              -H "Content-Type: application/json" \
+              -A "SentimentPulse/1.0 (Saber Interactive game intel)" \
+              -d "{\"identifier\": \"${BSKY_HANDLE}\", \"password\": \"${BSKY_APP_PW}\"}" \
+              -w "\nHTTP_CODE=%{http_code}")
+            HTTP_CODE=$(echo "$SESS" | grep -oP 'HTTP_CODE=\K\d+')
+            BODY=$(echo "$SESS" | sed 's/HTTP_CODE=.*//')
+            echo "createSession HTTP_CODE: $HTTP_CODE"
+            if [ "$HTTP_CODE" != "200" ]; then
+              echo "BODY: $BODY"
+              exit 1
+            fi
+            ACCESS_JWT=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['accessJwt'])")
+            echo "accessJwt length: ${#ACCESS_JWT} chars"
+
+            echo ""
+            echo "## 2. authenticated searchPosts"
+            curl -sS -A "SentimentPulse/1.0 (Saber Interactive game intel)" \
+                 -H "Authorization: Bearer $ACCESS_JWT" \
+                 -H "Accept: application/json" \
+                 -o /tmp/bsky.json \
+                 -w "HTTP_CODE=%{http_code} TIME=%{time_total}s\n" \
+                 "https://bsky.social/xrpc/app.bsky.feed.searchPosts?q=%22Space+Marine+2%22&limit=5&sort=latest"
+
+            echo ""
+            echo "## 3. response body (first 300 chars)"
+            head -c 300 /tmp/bsky.json
+            echo ""
+
+            echo ""
+            echo "## 4. parsed"
+            python3 -c "
+            import json
+            try:
+                d = json.load(open('/tmp/bsky.json'))
+                posts = d.get('posts', [])
+                print(f'posts returned: {len(posts)}')
+                for p in posts[:3]:
+                    handle = p.get('author', {}).get('handle', '?')
+                    text = p.get('record', {}).get('text', '')[:80]
+                    print(f'  [{handle}] {text}')
+            except Exception as e:
+                print(f'parse error: {e}')
+            "
+          EOF
