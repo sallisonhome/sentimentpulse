@@ -21,6 +21,7 @@ Design principles
 - The module-level `_status` dict is read by GET /api/ingest/status.
 """
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -48,6 +49,7 @@ from services.reddit_service import (
     _game_search_query,
     _post_mentions_game,
 )
+from services.bluesky_service import fetch_bluesky_posts_for_game
 from services.steam_service import (
     fetch_reviews,
     get_games_by_developer,
@@ -137,6 +139,26 @@ def run_ingestion() -> dict:
 
                 # ── Step 4 ────────────────────────────────────────────────────
                 game_posts += _step4_reddit(db, game, log_lines, errors)
+
+                # ── Step 4b: Bluesky ──────────────────────────────────────────
+                # Bluesky runs whenever both BLUESKY_HANDLE and BLUESKY_APP_PASSWORD
+                # are set in the environment.  The authenticated bsky.social endpoint
+                # is confirmed live from the droplet IP (verified May 29 2026).
+                # Setting BLUESKY_ENABLED=false explicitly is still respected as a
+                # kill-switch.
+                bsky_kill_switch = os.environ.get("BLUESKY_ENABLED", "").lower() == "false"
+                bsky_handle = os.environ.get("BLUESKY_HANDLE", "").strip()
+                bsky_pw = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
+                if bsky_kill_switch:
+                    log_lines.append(
+                        f"[Step 4b] '{game.name}': Bluesky disabled (BLUESKY_ENABLED=false)"
+                    )
+                elif not bsky_handle or not bsky_pw:
+                    log_lines.append(
+                        f"[Step 4b] '{game.name}': Bluesky skipped (no credentials)"
+                    )
+                else:
+                    game_posts += _step4b_bluesky(db, game, log_lines, errors)
 
                 # ── Step 5 ────────────────────────────────────────────────────
                 _step5_classify_sentiment(db, game, log_lines, errors)
@@ -358,6 +380,31 @@ def _step4_reddit(
 
     log_lines.append(
         f"[Step 4] '{game.name}': {total_saved} new Reddit post(s)/comment(s)."
+    )
+    return total_saved
+
+
+# ── Step 4b: Bluesky ────────────────────────────────────────────────────────
+
+def _step4b_bluesky(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> int:
+    """Fetch Bluesky posts mentioning the game."""
+    try:
+        posts = fetch_bluesky_posts_for_game(game.name, limit=100)
+        total_saved = _bulk_save_posts(
+            db, game.id, SourceEnum.bluesky, posts, errors,
+        )
+    except Exception as exc:
+        msg = f"[Step 4b] Bluesky error for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        return 0
+    log_lines.append(
+        f"[Step 4b] '{game.name}': {total_saved} new Bluesky post(s)."
     )
     return total_saved
 

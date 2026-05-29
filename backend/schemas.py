@@ -117,6 +117,7 @@ class VolumePoint(BaseModel):
     steam_review: int
     steam_forum: int
     reddit: int
+    bluesky: int = 0
     total: int
 
 

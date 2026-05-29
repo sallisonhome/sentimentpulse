@@ -171,7 +171,7 @@ def get_dashboard(
     vol_map: dict[date, dict[str, int]] = {}
     for row in vol_rows:
         d = _to_date(row.day)
-        vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0})
+        vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0})
         vol_map[d][row.source.value] = row.cnt
 
     volume_points = [
@@ -180,6 +180,7 @@ def get_dashboard(
             steam_review=counts.get("steam_review", 0),
             steam_forum=counts.get("steam_forum", 0),
             reddit=counts.get("reddit", 0),
+            bluesky=counts.get("bluesky", 0),
             total=sum(counts.values()),
         )
         for d, counts in sorted(vol_map.items())
