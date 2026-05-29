@@ -18,6 +18,7 @@ const SOURCE_COLORS = {
   steam_review: '#3b82f6',
   steam_forum:  '#a855f7',
   reddit:       '#f97316',
+  bluesky:      '#0085ff',  // Bluesky brand blue
 }
 
 interface VolumeBySourceChartProps {
@@ -59,7 +60,8 @@ export default function VolumeBySourceChart({ data }: VolumeBySourceChartProps) 
             />
             <Bar dataKey="steam_review" stackId="a" fill={SOURCE_COLORS.steam_review} radius={[0, 0, 0, 0]} />
             <Bar dataKey="steam_forum"  stackId="a" fill={SOURCE_COLORS.steam_forum}  radius={[0, 0, 0, 0]} />
-            <Bar dataKey="reddit"       stackId="a" fill={SOURCE_COLORS.reddit}       radius={[3, 3, 0, 0]} />
+            <Bar dataKey="reddit"       stackId="a" fill={SOURCE_COLORS.reddit}       radius={[0, 0, 0, 0]} />
+            <Bar dataKey="bluesky"      stackId="a" fill={SOURCE_COLORS.bluesky}      radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </CardContent>

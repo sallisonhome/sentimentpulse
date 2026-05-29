@@ -2,7 +2,7 @@
 
 export type Period = 'today' | 'weekly' | 'monthly' | 'quarterly' | 'lifetime'
 export type Sentiment = 'positive' | 'negative' | 'neutral'
-export type Source = 'steam_review' | 'steam_forum' | 'reddit'
+export type Source = 'steam_review' | 'steam_forum' | 'reddit' | 'bluesky'
 export type TrendDirection = 'rising' | 'falling' | 'stable'
 export type VelocityDirection = 'improving' | 'stable' | 'declining'
 
@@ -83,6 +83,7 @@ export interface VolumePoint {
   steam_review: number
   steam_forum: number
   reddit: number
+  bluesky: number
   total: number
 }
 

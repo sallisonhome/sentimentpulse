@@ -97,6 +97,12 @@ def diag_bluesky(
         "Warhammer 40,000: Space Marine 2",
         description="Game name to use when probe=true.",
     ),
+    probe_limit: int = Query(
+        5,
+        ge=1,
+        le=100,
+        description="Limit passed to fetch_bluesky_posts_for_game when probe=true.",
+    ),
 ):
     """Diagnostic endpoint for Bluesky ingestion (read-only).
 
@@ -130,19 +136,57 @@ def diag_bluesky(
 
     if probe:
         out["probe"]["attempted"] = True
+        out["probe"]["limit_used"] = probe_limit
         try:
             # Import lazily so a missing module never breaks the rest of the
             # diagnostic response.
-            from services.bluesky_service import fetch_bluesky_posts_for_game
-            posts = fetch_bluesky_posts_for_game(probe_game, limit=5)
+            from services.bluesky_service import (
+                fetch_bluesky_posts_for_game,
+                _build_search_query,
+                _fetch_page,
+                _get_session,
+                _post_mentions_game,
+            )
+            from services.reddit_service import _game_search_query
+
+            # ── Full pipeline output (what the ingestor sees) ───────────────
+            posts = fetch_bluesky_posts_for_game(probe_game, limit=probe_limit)
             out["probe"]["count"] = len(posts)
-            # Each post is the dict shape that _bulk_save_posts expects;
-            # surface just enough to confirm shape & filtering without
-            # leaking author handles or full text.
             out["probe"]["sample_titles"] = [
                 (p.get("title") or p.get("body") or "")[:80]
                 for p in posts[:3]
             ]
+
+            # ── Unfiltered page-1 output (before relevance filter) ──────────
+            # Lets us see how many raw posts Bluesky returns for this query
+            # and how many pass _post_mentions_game.
+            sess = _get_session()
+            if sess is None:
+                out["probe"]["raw_page1"] = {"error": "no session"}
+            else:
+                jwt = sess.get_access_jwt()
+                if not jwt:
+                    out["probe"]["raw_page1"] = {"error": "no jwt"}
+                else:
+                    search_q = _build_search_query(probe_game)
+                    filter_q = _game_search_query(probe_game)
+                    raw_posts, next_cursor, http_status = _fetch_page(
+                        search_q, min(probe_limit, 100), None, jwt
+                    )
+                    mention_pass = [
+                        p for p in raw_posts if _post_mentions_game(p, filter_q)
+                    ]
+                    out["probe"]["raw_page1"] = {
+                        "http_status": http_status,
+                        "search_query": search_q,
+                        "filter_query": filter_q,
+                        "raw_count": len(raw_posts),
+                        "after_relevance_filter": len(mention_pass),
+                        "next_cursor_present": bool(next_cursor),
+                        "first_3_raw_bodies": [
+                            (p.get("body") or "")[:120] for p in raw_posts[:3]
+                        ],
+                    }
         except Exception as exc:  # noqa: BLE001
             out["probe"]["error"] = f"{type(exc).__name__}: {exc}"
 

@@ -33,7 +33,12 @@ export function relativeTime(isoString: string | null | undefined): string {
 
 /** Map a source string to a display label */
 export function sourceLabel(source: string): string {
-  return { steam_review: 'Steam Review', steam_forum: 'Steam Forum', reddit: 'Reddit' }[source] ?? source
+  return {
+    steam_review: 'Steam Review',
+    steam_forum:  'Steam Forum',
+    reddit:       'Reddit',
+    bluesky:      'Bluesky',
+  }[source] ?? source
 }
 
 /** Convert a Period to a lookback in days (null = no limit / lifetime) */

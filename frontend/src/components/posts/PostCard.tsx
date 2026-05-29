@@ -11,6 +11,7 @@ const SOURCE_COLORS: Record<Source, string> = {
   steam_review: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
   steam_forum:  'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
   reddit:       'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',
+  bluesky:      'bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-200',
 }
 
 const BODY_PREVIEW_LEN = 240

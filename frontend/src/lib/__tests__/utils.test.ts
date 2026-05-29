@@ -100,6 +100,10 @@ describe('sourceLabel', () => {
     expect(sourceLabel('reddit')).toBe('Reddit')
   })
 
+  it('maps bluesky', () => {
+    expect(sourceLabel('bluesky')).toBe('Bluesky')
+  })
+
   it('returns the raw string for unknown sources', () => {
     expect(sourceLabel('unknown_source')).toBe('unknown_source')
   })
