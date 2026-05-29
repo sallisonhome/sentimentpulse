@@ -59,13 +59,33 @@ function Test-PostMentionsGame($post, $query) {
     return $false
 }
 
+# Reddit's API rules require a descriptive User-Agent that identifies the app
+# and a contact handle. Default PowerShell UAs (no UA header → "Mozilla/5.0
+# (Windows NT; Microsoft Windows ...) PowerShell/...") are now hard-blocked
+# by Reddit's anti-bot layer. See CLAUDE.md §17 for the canonical fetch flow.
+$REDDIT_USER_AGENT = "SentimentPulse/1.0 (by /u/halfbaked)"
+$REDDIT_HEADERS = @{
+    "User-Agent" = $REDDIT_USER_AGENT
+    "Accept"     = "application/json"
+}
+
 function Fetch-Reddit($url) {
     try {
-        $response = Invoke-RestMethod -Uri $url -UseBasicParsing -TimeoutSec 15
+        $response = Invoke-RestMethod -Uri $url `
+            -Headers $REDDIT_HEADERS `
+            -UseBasicParsing `
+            -TimeoutSec 15
         Start-Sleep -Seconds 2
         return $response
     } catch {
-        Write-Host " 403" -NoNewline -ForegroundColor Yellow
+        # Surface the real HTTP status code so we don't keep mistaking other
+        # error classes for 403s (the previous code printed " 403" on ANY
+        # exception, masking 429s, timeouts, DNS failures, etc.).
+        $status = "ERR"
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $status = [int]$_.Exception.Response.StatusCode
+        }
+        Write-Host " $status" -NoNewline -ForegroundColor Yellow
         return $null
     }
 }
