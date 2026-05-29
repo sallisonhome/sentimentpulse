@@ -26,6 +26,7 @@ import logging
 import os
 import threading
 import time
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -252,7 +253,20 @@ def _convert_post(raw: dict) -> Optional[dict]:
     body_raw = record_obj.get("text") or ""
     body = body_raw[:2000]
 
-    post_date = record_obj.get("createdAt") or None
+    # Parse createdAt (ISO 8601) to a Python datetime so SQLAlchemy's DateTime
+    # column can store it.  Bluesky uses RFC 3339 with a trailing 'Z' for UTC,
+    # which Python's fromisoformat only accepts on 3.11+; we normalize 'Z' to
+    # '+00:00' for portability.  If parsing fails we fall back to None rather
+    # than dropping the post.
+    post_date: Optional[datetime] = None
+    created_at_raw = record_obj.get("createdAt")
+    if created_at_raw:
+        try:
+            post_date = datetime.fromisoformat(
+                created_at_raw.replace("Z", "+00:00")
+            )
+        except (ValueError, TypeError, AttributeError):
+            post_date = None
 
     # Build browser-accessible URL from handle + rkey (last path segment of URI)
     rkey = uri.split("/")[-1]
@@ -274,7 +288,7 @@ def _convert_post(raw: dict) -> Optional[dict]:
         "body": body,
         "url": url,
         "upvotes": upvotes,
-        "post_date": post_date,  # ISO 8601 string, preserved as-is
+        "post_date": post_date,  # datetime object (or None on parse failure)
     }
 
 

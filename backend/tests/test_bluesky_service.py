@@ -324,7 +324,13 @@ def test_single_page_returns_correct_dict_shape(monkeypatch):
     assert "Space Marine" in r["body"]
     assert r["upvotes"] == 10
     assert "bsky.app" in r["url"]
-    assert r["post_date"] == "2026-05-29T18:00:00Z"
+    # post_date is now a parsed datetime (not the raw ISO string) so that
+    # SQLAlchemy's DateTime column can store it.
+    assert isinstance(r["post_date"], datetime)
+    assert r["post_date"].year == 2026
+    assert r["post_date"].month == 5
+    assert r["post_date"].day == 29
+    assert r["post_date"].hour == 18
 
 
 # ── Test 2: Multi-page search follows cursor up to MAX_PAGES ──────────────────
@@ -568,9 +574,13 @@ def test_external_id_is_full_at_uri(monkeypatch):
     assert results[0]["external_id"] == full_uri
 
 
-# ── Test 15: post_date is preserved as ISO 8601 string ────────────────────────
+# ── Test 15: post_date is parsed to a Python datetime (regression test) ────────────
 
 def test_post_date_preserved_as_iso8601(monkeypatch):
+    """createdAt must be parsed to a Python datetime so SQLAlchemy's DateTime
+    column can store it (regression test for the silent-rollback bug where
+    every Bluesky post failed to insert because post_date was an ISO string).
+    """
     _set_credentials(monkeypatch)
     iso_date = "2026-05-29T18:30:00.000Z"
     post = _make_post(text="Space Marine 2 gameplay", created_at=iso_date)
@@ -581,13 +591,48 @@ def test_post_date_preserved_as_iso8601(monkeypatch):
         results = fetch_bluesky_posts_for_game("Space Marine 2", limit=10)
 
     assert len(results) == 1
-    assert results[0]["post_date"] == iso_date
-    # Should be parseable by datetime.fromisoformat (after stripping trailing Z)
-    date_str = results[0]["post_date"]
-    parsed = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    parsed = results[0]["post_date"]
+    assert isinstance(parsed, datetime), (
+        f"post_date must be a datetime, got {type(parsed).__name__}: {parsed!r}"
+    )
     assert parsed.year == 2026
     assert parsed.month == 5
     assert parsed.day == 29
+    assert parsed.hour == 18
+    assert parsed.minute == 30
+
+
+def test_post_date_none_when_created_at_missing(monkeypatch):
+    """Posts without a createdAt field should yield post_date=None instead of
+    crashing the pipeline."""
+    _set_credentials(monkeypatch)
+    post = _make_post(text="Space Marine 2 chatter")
+    post["record"].pop("createdAt", None)
+
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([post]))
+        results = fetch_bluesky_posts_for_game("Space Marine 2", limit=10)
+
+    assert len(results) == 1
+    assert results[0]["post_date"] is None
+
+
+def test_post_date_none_when_created_at_unparseable(monkeypatch):
+    """Malformed createdAt values should yield post_date=None (not crash)."""
+    _set_credentials(monkeypatch)
+    post = _make_post(
+        text="Space Marine 2 chatter",
+        created_at="not-a-valid-iso-date",
+    )
+
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([post]))
+        results = fetch_bluesky_posts_for_game("Space Marine 2", limit=10)
+
+    assert len(results) == 1
+    assert results[0]["post_date"] is None
 
 
 # ── Test 16: upvotes defaults to 0 when likeCount is missing ──────────────────

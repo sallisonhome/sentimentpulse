@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -929,6 +930,8 @@ def _bulk_save_posts(
     }
 
     saved = 0
+    skipped_due_to_error = 0
+    first_error_logged = False
     for pd in post_data_list:
         if pd["external_id"] in known:
             continue
@@ -948,9 +951,39 @@ def _bulk_save_posts(
             db.commit()
             known.add(pd["external_id"])  # Track so next game skips it
             saved += 1
-        except Exception:
+        except IntegrityError:
+            # Duplicate / unique-constraint hit — expected, swallow silently.
             db.rollback()
-            known.add(pd["external_id"])  # Already exists, skip silently
+            known.add(pd["external_id"])
+        except Exception as exc:  # noqa: BLE001
+            # Anything else (type mismatch, length overflow, etc.) is a real
+            # data quality issue.  Log the FIRST one per call so we don't
+            # spam, but make sure it's surfaced — silently swallowing every
+            # exception masks bugs like the Bluesky post_date type bug
+            # (string vs datetime) that caused PR #17 to land 0 posts.
+            db.rollback()
+            known.add(pd["external_id"])
+            skipped_due_to_error += 1
+            if not first_error_logged:
+                first_error_logged = True
+                logger.warning(
+                    "_bulk_save_posts: insert failed for source=%s game_id=%d "
+                    "external_id=%s — %s: %s",
+                    source.value if hasattr(source, "value") else source,
+                    game_id,
+                    pd.get("external_id", "")[:80],
+                    type(exc).__name__,
+                    str(exc)[:300],
+                )
+
+    if skipped_due_to_error > 0:
+        logger.warning(
+            "_bulk_save_posts: %d post(s) skipped due to insert errors "
+            "(source=%s game_id=%d). See earlier WARNING for the first cause.",
+            skipped_due_to_error,
+            source.value if hasattr(source, "value") else source,
+            game_id,
+        )
 
     return saved
 
