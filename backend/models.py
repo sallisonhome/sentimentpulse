@@ -17,6 +17,7 @@ class SourceEnum(str, enum.Enum):
     steam_review = "steam_review"
     steam_forum = "steam_forum"
     reddit = "reddit"
+    bluesky = "bluesky"
 
 
 class SentimentEnum(str, enum.Enum):

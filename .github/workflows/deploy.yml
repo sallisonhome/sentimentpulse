@@ -12,8 +12,10 @@ name: Deploy to Droplet
 #   2. GTM Studio      — port 8001  (gtm/frontend/, gtm/backend/)
 #
 # Required secrets:
-#   DROPLET_SSH_KEY   — ed25519 private key whose pubkey is in
-#                       /root/.ssh/authorized_keys on the droplet.
+#   DROPLET_SSH_KEY        — ed25519 private key whose pubkey is in
+#                            /root/.ssh/authorized_keys on the droplet.
+#   BLUESKY_HANDLE         — Bluesky account handle (e.g. myaccount.bsky.social)
+#   BLUESKY_APP_PASSWORD   — App password from Bluesky Settings → App passwords
 
 on:
   push:
@@ -37,8 +39,12 @@ jobs:
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy
+        env:
+          BSKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
+          BSKY_PW: ${{ secrets.BLUESKY_APP_PASSWORD }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            "BSKY_HANDLE=$BSKY_HANDLE BSKY_PW=$BSKY_PW bash -s" root@104.236.239.46 << 'EOF'
             set -euo pipefail
             cd /opt/sentimentpulse
 
@@ -94,6 +100,20 @@ jobs:
               cd ../..
             else
               echo "gtm/frontend/ missing, skipping"
+            fi
+
+            echo ""
+            echo "## Update Bluesky credentials in .env (idempotent) ##"
+            ENV_FILE=/opt/sentimentpulse/.env
+            if [ -n "${BSKY_HANDLE:-}" ] && [ -n "${BSKY_PW:-}" ]; then
+              # Remove old lines if present, then append fresh ones
+              sed -i '/^BLUESKY_HANDLE=/d' "$ENV_FILE"
+              sed -i '/^BLUESKY_APP_PASSWORD=/d' "$ENV_FILE"
+              echo "BLUESKY_HANDLE=${BSKY_HANDLE}" >> "$ENV_FILE"
+              echo "BLUESKY_APP_PASSWORD=${BSKY_PW}" >> "$ENV_FILE"
+              echo "Bluesky credentials updated in .env"
+            else
+              echo "Bluesky secrets not provided to workflow; .env untouched"
             fi
 
             echo ""

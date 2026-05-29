@@ -30,7 +30,7 @@ def get_posts(
         None, description="positive | negative | neutral"
     ),
     source: Optional[str] = Query(
-        None, description="steam_review | steam_forum | reddit"
+        None, description="steam_review | steam_forum | reddit | bluesky"
     ),
     date_from: Optional[str] = Query(
         None, description="ISO date string, e.g. 2024-01-15"
@@ -81,7 +81,7 @@ def get_posts(
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid source '{source}'. "
-                       f"Valid values: steam_review, steam_forum, reddit",
+                       f"Valid values: steam_review, steam_forum, reddit, bluesky",
             )
         q = q.filter(RawPost.source == src)
 
