@@ -1,0 +1,78 @@
+name: SP DB Locate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  locate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Locate
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+
+            echo "── 1. Find ALL sentimentpulse.db files on disk ──"
+            find / -name 'sentimentpulse.db' -size +0 2>/dev/null | head -20
+
+            echo ""
+            echo "── 2. For each, size + games count + raw_posts count ──"
+            for db in $(find / -name 'sentimentpulse.db' -size +0 2>/dev/null); do
+              echo "FILE: $db"
+              echo "  size: $(ls -la "$db" | awk '{print $5}')"
+              echo "  mtime: $(stat -c %y "$db")"
+              echo "  games: $(sqlite3 "$db" 'SELECT COUNT(*) FROM games' 2>&1)"
+              echo "  raw_posts: $(sqlite3 "$db" 'SELECT COUNT(*) FROM raw_posts' 2>&1)"
+              echo ""
+            done
+
+            echo "── 3. Which DB file does the live uvicorn process have open? ──"
+            UVICORN_PID=$(systemctl show sentimentpulse -p MainPID --value 2>/dev/null || echo "")
+            if [ -n "$UVICORN_PID" ] && [ "$UVICORN_PID" != "0" ]; then
+              echo "Main PID: $UVICORN_PID"
+              lsof -p "$UVICORN_PID" 2>/dev/null | grep -E '\.db|\.db-' | head -5
+            else
+              echo "Service has no running MainPID"
+            fi
+
+            echo ""
+            echo "── 4. Backend systemd unit file (which WorkingDirectory + ExecStart?) ──"
+            systemctl cat sentimentpulse | grep -E 'WorkingDirectory|ExecStart|EnvironmentFile' | head -5
+
+            echo ""
+            echo "── 5. DATABASE_URL or DB_PATH env vars in service env file ──"
+            ENV_FILE=$(systemctl show sentimentpulse -p EnvironmentFiles --value 2>/dev/null | awk '{print $1}' | tr -d '()')
+            if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+              echo "EnvironmentFile: $ENV_FILE"
+              grep -iE 'DB|DATABASE|SQLITE' "$ENV_FILE" | head -10 || echo "(no DB env vars found)"
+            else
+              echo "No EnvironmentFile configured"
+            fi
+
+            echo ""
+            echo "── 6. Settings/database.py logic — what path does the app resolve? ──"
+            cd /opt/sentimentpulse/backend
+            source .venv/bin/activate
+            python <<'PY'
+            from database import engine, SessionLocal
+            print(f"engine URL: {engine.url}")
+            print(f"engine file: {engine.url.database}")
+            import os
+            print(f"abs path: {os.path.abspath(engine.url.database)}")
+            print(f"file exists: {os.path.exists(os.path.abspath(engine.url.database))}")
+            if os.path.exists(os.path.abspath(engine.url.database)):
+                print(f"file size: {os.path.getsize(os.path.abspath(engine.url.database))}")
+            from models import Game
+            with SessionLocal() as db:
+                print(f"games in DB the app sees: {db.query(Game).count()}")
+            PY
+            deactivate
+          EOF
