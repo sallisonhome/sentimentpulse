@@ -241,6 +241,81 @@ def diag_bluesky(
     return out
 
 
+# ── Sentiment record topics probe ────────────────────────────────
+
+@router.get("/diag/sr_topics")
+def diag_sr_topics(
+    game_id: int = Query(..., description="Game id to inspect."),
+    days: int = Query(7, ge=1, le=90, description="Look back N days."),
+):
+    """Report SentimentRecord.topics population for a game in the last N days.
+
+    Diagnoses why the period-summary aggregator returns top_*_topics=[]
+    when DailySummary.top_*_topics is populated.
+    """
+    from datetime import date, datetime as _dt, timedelta
+    from sqlalchemy import func
+    from models import RawPost, SentimentRecord, Game
+    from database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        game = db.query(Game).filter(Game.id == game_id).first()
+        if not game:
+            return {"error": f"no game with id={game_id}"}
+
+        window_end = date.today()
+        window_start = window_end - timedelta(days=days - 1)
+        start_dt = _dt.combine(window_start, _dt.min.time())
+        end_dt = _dt.combine(window_end, _dt.max.time())
+        effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
+
+        rows = (
+            db.query(SentimentRecord.id, SentimentRecord.sentiment,
+                     SentimentRecord.topics, RawPost.id,
+                     effective_date.label("eff_date"))
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(
+                RawPost.game_id == game_id,
+                effective_date >= start_dt,
+                effective_date <= end_dt,
+            )
+            .all()
+        )
+
+        total = len(rows)
+        with_topics = sum(1 for r in rows if r[2])
+        empty_list = sum(1 for r in rows if r[2] == [])
+        null_topics = sum(1 for r in rows if r[2] is None)
+
+        # Sample some with topics + some without
+        with_sample = [r for r in rows if r[2]][:5]
+        without_sample = [r for r in rows if not r[2]][:5]
+
+        return {
+            "game_id": game_id,
+            "game_name": game.name,
+            "window_start": str(window_start),
+            "window_end": str(window_end),
+            "total_sentiment_records": total,
+            "with_topics_populated": with_topics,
+            "empty_list": empty_list,
+            "null": null_topics,
+            "sample_with_topics": [
+                {"sr_id": r[0], "sentiment": r[1].value if r[1] else None,
+                 "topics": r[2], "eff_date": str(r[4])}
+                for r in with_sample
+            ],
+            "sample_without_topics": [
+                {"sr_id": r[0], "sentiment": r[1].value if r[1] else None,
+                 "topics_repr": repr(r[2]), "eff_date": str(r[4])}
+                for r in without_sample
+            ],
+        }
+    finally:
+        db.close()
+
+
 # ── Reddit save-path probe ───────────────────────────────────────────
 
 @router.get("/diag/reddit_save")

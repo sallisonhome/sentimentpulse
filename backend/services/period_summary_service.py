@@ -83,6 +83,12 @@ def generate_monthly_summary(
     )
     total = pos + neg + neu
 
+    # Specifics-extraction (2026-05-30 hardening): pull real post samples and
+    # surface distinctive entities so the summary can name specific events,
+    # DLCs, levels, weapons, etc. — not just generic topic buckets.
+    sample_posts = _sample_posts_for_window(db, game_id, window_start, window_end)
+    distinctive = _distinctive_entities(sample_posts)
+
     # Call Claude (even if total==0; let the LLM handle sparse data gracefully)
     exec_summary, rec_actions, bold_ideas = _call_claude_for_period(
         game_name=game.name,
@@ -93,6 +99,8 @@ def generate_monthly_summary(
         pos_count=pos,
         neg_count=neg,
         neu_count=neu,
+        sample_posts=sample_posts,
+        distinctive_entities=distinctive,
     )
 
     # Upsert
@@ -216,6 +224,10 @@ def generate_window_summary(
         )
     total = pos + neg + neu
 
+    # Specifics-extraction (2026-05-30 hardening): same as monthly path.
+    sample_posts = _sample_posts_for_window(db, game_id, window_start, window_end)
+    distinctive = _distinctive_entities(sample_posts)
+
     exec_summary, rec_actions, bold_ideas = _call_claude_for_period(
         game_name=game.name,
         window_label=window_label,
@@ -225,6 +237,8 @@ def generate_window_summary(
         pos_count=pos,
         neg_count=neg,
         neu_count=neu,
+        sample_posts=sample_posts,
+        distinctive_entities=distinctive,
     )
 
     row = WindowSummary(
@@ -424,8 +438,233 @@ def _aggregate_posts_1day(
     top_neg = _topics_for_bucket(buckets["negative"])
     top_neu = _topics_for_bucket(buckets["neutral"])
 
+    # ── Humanize raw n-gram labels (parity with nightly Step 6) ─────────────
+    # Without this the 1-day window returns labels like "fun + posted + originally"
+    # which look like database leakage and don't give Claude anything to anchor on.
+    # See CLAUDE.md §19: this is part of the executive-summary hardening.
+    game = db.query(Game).filter_by(id=game_id).first()
+    if game and (top_pos or top_neg or top_neu):
+        try:
+            from services.topic_service import humanize_topic_labels  # noqa: PLC0415
+            humanized = humanize_topic_labels(
+                game.name,
+                {"positive": top_pos, "negative": top_neg, "neutral": top_neu},
+            )
+            top_pos = humanized.get("positive", top_pos)
+            top_neg = humanized.get("negative", top_neg)
+            top_neu = humanized.get("neutral", top_neu)
+        except Exception as exc:
+            logger.warning(
+                "_aggregate_posts_1day: humanization failed for game=%d: %s — keeping raw labels.",
+                game_id, exc,
+            )
+
     return pos, neg, neu, top_pos, top_neg, top_neu
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Specifics-extraction helpers (the core of the executive-summary hardening).
+#
+# The pre-2026-05-30 pipeline only passed cluster LABELS (e.g. "Combat
+# Mechanics") to Claude.  Those labels are pre-humanized into generic buckets
+# by design (CLAUDE.md §13 forbids inventing concepts), so the resulting
+# executive summary never named real events: a free DLC release, a specific
+# boss fight, a weapon balance change.
+#
+# These helpers add two new inputs to the Claude prompt:
+#   - sample_posts        : up to 12 representative posts per window
+#   - distinctive_entities: proper-noun-ish tokens that appear unusually often
+#                            in this window (TF against a small baseline)
+#
+# Together they give Claude raw, specific material to anchor 2+ sentences on,
+# while the existing topic labels still carry sentiment-bucketed structure.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Maximum sample posts to surface to Claude.  Keep small so prompt cost stays low.
+_SAMPLE_POSTS_PER_BUCKET = 4   # × 3 sentiment buckets = 12 posts max
+_SAMPLE_POST_TEXT_CHARS  = 280 # truncate each post to ~tweet-length
+
+# Maximum distinctive entities to surface. ~20 is enough headroom for Claude
+# to find 3-5 specific anchors per summary.
+_MAX_DISTINCTIVE_ENTITIES = 20
+
+# Minimum mention count for an entity to qualify as "distinctive". Below this
+# we treat it as noise.
+_MIN_ENTITY_MENTIONS = 3
+
+
+def _sample_posts_for_window(
+    db: Session,
+    game_id: int,
+    window_start: date,
+    window_end: date,
+    per_bucket: int = _SAMPLE_POSTS_PER_BUCKET,
+) -> dict[str, list[str]]:
+    """Return up to per_bucket representative posts per sentiment bucket.
+
+    Selection ranks by upvotes DESC then post_date DESC so the most
+    engagement-heavy posts surface first.  Each post text is the post title +
+    body trimmed to _SAMPLE_POST_TEXT_CHARS so the prompt stays compact.
+
+    Returns {"positive": [...], "negative": [...], "neutral": [...]}.
+    """
+    start_dt = datetime.combine(window_start, datetime.min.time())
+    end_dt   = datetime.combine(window_end,   datetime.max.time())
+    effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
+
+    out: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
+    for sentiment in (SentimentEnum.positive, SentimentEnum.negative, SentimentEnum.neutral):
+        rows = (
+            db.query(RawPost.title, RawPost.body, RawPost.upvotes, RawPost.url)
+            .join(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
+            .filter(
+                RawPost.game_id == game_id,
+                SentimentRecord.sentiment == sentiment,
+                effective_date >= start_dt,
+                effective_date <= end_dt,
+            )
+            .order_by(RawPost.upvotes.desc().nullslast(), effective_date.desc())
+            .limit(per_bucket * 3)  # over-fetch so we can dedup near-identical
+            .all()
+        )
+        seen_prefixes: set[str] = set()
+        bucket: list[str] = []
+        for title, body, upvotes, _url in rows:
+            text = (title or "").strip()
+            if body and body.strip():
+                if text:
+                    text = f"{text} — {body.strip()}"
+                else:
+                    text = body.strip()
+            text = text[:_SAMPLE_POST_TEXT_CHARS].strip()
+            if len(text) < 30:
+                continue
+            # Dedup by first-60-char prefix to filter near-identical reposts
+            prefix = text[:60].lower()
+            if prefix in seen_prefixes:
+                continue
+            seen_prefixes.add(prefix)
+            bucket.append(text)
+            if len(bucket) >= per_bucket:
+                break
+        out[sentiment.value] = bucket
+    return out
+
+
+# Stop words & common gaming verbs we never want to surface as "distinctive entities"
+_ENTITY_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "have", "has", "from", "but",
+    "you", "they", "are", "was", "were", "been", "being", "than", "then",
+    "what", "when", "where", "who", "why", "how", "all", "any", "can", "could",
+    "would", "should", "may", "might", "must", "will", "shall", "did", "does",
+    "into", "onto", "out", "off", "over", "under", "more", "less", "most",
+    "least", "very", "really", "actually", "just", "only", "even", "also",
+    "still", "ever", "never", "always", "some", "many", "much", "few", "lot",
+    "lots", "thing", "things", "stuff", "way", "ways", "time", "times", "day",
+    "days", "week", "weeks", "month", "months", "year", "years",
+    "game", "games", "play", "player", "players", "playing", "played", "play",
+    "post", "posts", "comment", "comments", "reddit", "subreddit", "steam",
+    "good", "bad", "great", "awesome", "fun", "boring", "love", "hate",
+    "like", "want", "need", "feel", "think", "know", "say", "said", "see",
+    "look", "go", "going", "come", "get", "got", "make", "made", "take",
+    "use", "used", "give", "find", "found",
+    "yes", "no", "yeah", "yep", "nope",
+    "https", "http", "com", "www", "imgur", "youtube", "youtu",
+})
+
+
+def _distinctive_entities(
+    sample_posts_by_sentiment: dict[str, list[str]],
+    max_entities: int = _MAX_DISTINCTIVE_ENTITIES,
+) -> list[str]:
+    """Surface tokens that look like specific entities — capitalized words,
+    multi-word capitalized phrases, version numbers, hashtags, and unusually
+    distinctive lowercase tokens.
+
+    Args:
+        sample_posts_by_sentiment: output of _sample_posts_for_window().
+        max_entities: cap on returned distinct entity strings.
+
+    Returns ordered list of entity strings, most-mentioned first.
+
+    Design notes:
+      - Capitalized multi-word phrases (e.g. "Tyranid Warrior", "Salamanders
+        Champion Pack") are highest signal.  We capture sequences of
+        Capitalized tokens.
+      - Version numbers (e.g. "v1.7", "1.7.2", "patch 1.7") are next highest.
+      - Single capitalized tokens NOT at sentence start are also useful.
+      - Lowercase tokens that appear in ≥3 distinct posts and aren't in
+        _ENTITY_STOPWORDS are surfaced as a fallback.
+    """
+    all_text = "\n".join(
+        p for posts in sample_posts_by_sentiment.values() for p in posts
+    )
+    if not all_text.strip():
+        return []
+
+    # ── 1. Capitalized phrases (1-4 words) ──────────────────────────────────
+    # Match runs of Capitalized tokens, optionally with "of"/"the"/"&" between.
+    cap_phrase_re = re.compile(
+        r"\b([A-Z][a-zA-Z0-9]+(?:\s+(?:of\s+|the\s+|&\s+|and\s+)?[A-Z][a-zA-Z0-9]+){0,3})\b"
+    )
+    # ── 2. Version-number-ish patterns ──────────────────────────────────────
+    version_re = re.compile(r"\b(?:v|patch|update|build)?\s*(\d+\.\d+(?:\.\d+)?)\b", re.IGNORECASE)
+    # ── 3. Hashtags / @-mentions (often event handles) ───────────────────────
+    tag_re = re.compile(r"[#@]\w{3,}")
+
+    counts: dict[str, int] = {}
+    posts_containing: dict[str, set[int]] = {}
+
+    post_idx = 0
+    for posts in sample_posts_by_sentiment.values():
+        for text in posts:
+            this_post_entities: set[str] = set()
+            for m in cap_phrase_re.finditer(text):
+                phrase = m.group(1).strip()
+                # Drop single-word stopwords (e.g. "The") and game-name-only
+                if len(phrase) < 3:
+                    continue
+                lower = phrase.lower()
+                if lower in _ENTITY_STOPWORDS:
+                    continue
+                this_post_entities.add(phrase)
+            for m in version_re.finditer(text):
+                this_post_entities.add(m.group(0).strip())
+            for m in tag_re.finditer(text):
+                this_post_entities.add(m.group(0))
+            for ent in this_post_entities:
+                counts[ent] = counts.get(ent, 0) + 1
+                posts_containing.setdefault(ent, set()).add(post_idx)
+            post_idx += 1
+
+    # Keep only entities mentioned in >=_MIN_ENTITY_MENTIONS distinct posts
+    qualifying = [
+        (ent, len(posts_containing[ent]))
+        for ent in counts
+        if len(posts_containing[ent]) >= _MIN_ENTITY_MENTIONS
+    ]
+    # Sort by post-mention count descending; tie-break by total mentions
+    qualifying.sort(key=lambda x: (-x[1], -counts[x[0]]))
+
+    # Lower the threshold to >=2 if we don't have enough entities yet
+    if len(qualifying) < 5:
+        relaxed = [
+            (ent, len(posts_containing[ent]))
+            for ent in counts
+            if len(posts_containing[ent]) >= 2
+        ]
+        relaxed.sort(key=lambda x: (-x[1], -counts[x[0]]))
+        # Merge, preserving dedup and order
+        seen = {e for e, _ in qualifying}
+        for ent, c in relaxed:
+            if ent not in seen and len(qualifying) < max_entities:
+                qualifying.append((ent, c))
+                seen.add(ent)
+
+    return [ent for ent, _ in qualifying[:max_entities]]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 # Minimum number of substantive posts required before attempting a confident
 # AI summary.  Below this threshold the pipeline returns the insufficient-signal
@@ -442,6 +681,8 @@ def _call_claude_for_period(
     pos_count: int,
     neg_count: int,
     neu_count: int,
+    sample_posts: Optional[dict[str, list[str]]] = None,
+    distinctive_entities: Optional[list[str]] = None,
 ) -> tuple[str, Optional[str], list[str]]:
     """
     Call Claude for (exec_summary, recommended_actions, bold_ideas).
@@ -496,9 +737,29 @@ def _call_claude_for_period(
     neg_str = ", ".join(neg_topics) if neg_topics else "No clear negative signals"
     neu_str = ", ".join(neu_topics) if neu_topics else "General neutral discussion"
 
-    exec_summary  = _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts, pos_count, neg_count, neu_count)
-    rec_actions   = _call_actions(client, game_name, window_label, pos_str, neg_str, neu_str)
-    bold_ideas    = _call_bold_ideas(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts)
+    # Sample posts and distinctive entities give Claude raw, specific material
+    # to anchor on (e.g. a DLC release, a boss name, a weapon balance change).
+    # Without them the summary collapses to abstract "general sentiment" prose
+    # — see CLAUDE.md §19 and the 2026-05-30 hardening pass.
+    sample_posts = sample_posts or {"positive": [], "negative": [], "neutral": []}
+    distinctive_entities = distinctive_entities or []
+
+    exec_summary  = _call_exec(
+        client, game_name, window_label, pos_str, neg_str, neu_str,
+        total_posts, pos_count, neg_count, neu_count,
+        sample_posts=sample_posts,
+        distinctive_entities=distinctive_entities,
+    )
+    rec_actions   = _call_actions(
+        client, game_name, window_label, pos_str, neg_str, neu_str,
+        sample_posts=sample_posts,
+        distinctive_entities=distinctive_entities,
+    )
+    bold_ideas    = _call_bold_ideas(
+        client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
+        sample_posts=sample_posts,
+        distinctive_entities=distinctive_entities,
+    )
 
     return exec_summary, rec_actions, bold_ideas
 
@@ -560,8 +821,45 @@ _OUTPUT_STYLE = (
 )
 
 
-def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
-               pos_count: int = 0, neg_count: int = 0, neu_count: int = 0) -> str:
+def _format_sample_posts_block(sample_posts: dict[str, list[str]]) -> str:
+    """Render sample posts as a clearly-labelled block for the prompt.
+
+    Returns empty string if no samples exist.  Each post is preceded by its
+    sentiment bucket so Claude can attribute specifics correctly.
+    """
+    parts: list[str] = []
+    for sentiment in ("positive", "negative", "neutral"):
+        posts = sample_posts.get(sentiment) or []
+        if not posts:
+            continue
+        parts.append(f"-- {sentiment.upper()} samples --")
+        for i, text in enumerate(posts, 1):
+            single_line = " ".join(text.split())  # collapse whitespace
+            parts.append(f"  {sentiment[0].upper()}{i}. {single_line}")
+    return "\n".join(parts)
+
+
+def _format_entities_block(distinctive_entities: list[str]) -> str:
+    """Render distinctive entities as a comma list, or empty string if none."""
+    if not distinctive_entities:
+        return ""
+    return ", ".join(distinctive_entities)
+
+
+def _call_exec(
+    client,
+    game_name,
+    window_label,
+    pos_str,
+    neg_str,
+    neu_str,
+    total_posts,
+    pos_count: int = 0,
+    neg_count: int = 0,
+    neu_count: int = 0,
+    sample_posts: Optional[dict[str, list[str]]] = None,
+    distinctive_entities: Optional[list[str]] = None,
+) -> str:
     # Bug 2 fix: compute breakdown strings and negative percentage so the
     # prompt can REQUIRE Claude to reference actual counts numerically.
     neg_pct = (neg_count / total_posts * 100) if total_posts > 0 else 0.0
@@ -579,14 +877,45 @@ def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total
     else:
         banned_phrase_instruction = ""
 
+    sample_posts = sample_posts or {}
+    distinctive_entities = distinctive_entities or []
+    samples_block = _format_sample_posts_block(sample_posts)
+    entities_block = _format_entities_block(distinctive_entities)
+
+    # Specifics-anchoring requirement: when we have either samples or entities,
+    # the summary MUST name something specific.  This is the core of the
+    # 2026-05-30 hardening pass — generic "sentiment is positive" prose is
+    # banned when concrete material is available.
+    has_specifics = bool(samples_block) or bool(entities_block)
+    if has_specifics:
+        specificity_requirement = (
+            "SPECIFICITY REQUIREMENT (hard rule):\n"
+            "- At least 2 of your 3-5 sentences MUST cite something specific from the SAMPLE POSTS "
+            "or DISTINCTIVE ENTITIES below — a named feature, level, weapon, character, mode, patch "
+            "number, update name, content drop, or event.\n"
+            "- Use the actual name as it appears (don't paraphrase \"Tyranid Warrior\" as \"a tough enemy\").\n"
+            "- Tie each specific to a sentiment direction supported by the data (e.g. \"Tyranid Warrior "
+            "boss fight is the loudest negative thread\", or \"praise for the free Salamanders Chapter "
+            "Pack drove most positive volume\").\n"
+            "- If multiple specifics compete for attention, lead with the one mentioned in the most posts.\n"
+            "- Do NOT invent specifics that aren't in the samples or entities list. Stick to what the data shows.\n\n"
+        )
+    else:
+        specificity_requirement = (
+            "NO SPECIFICS AVAILABLE: sample posts and distinctive entities are both empty.\n"
+            "Write a short, honest paragraph noting the period saw mostly general discussion "
+            "without a clear dominant event or topic. Keep it to 2-3 sentences.\n\n"
+        )
+
     prompt = (
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         f"Write a TIGHT 3-5 sentence executive summary of community sentiment covering {window_label}.\n\n"
+        + specificity_requirement +
         f"Concision rules:\n"
         f"- 120 WORDS MAX. Aim for 80-100.\n"
         f"- Lead with the dominant signal in 1 sentence, then 2-4 sentences of supporting detail.\n"
-        f"- Cite topic names exactly as provided.\n"
+        f"- Cite topic names and entity names exactly as provided.\n"
         f"- NO parenthetical lists of examples. NO 'this suggests... which means... and therefore...' chains.\n"
         f"- If post volume is low, say so plainly in 1 short sentence and keep the rest equally short.\n"
         f"- Your first sentence MUST reference the actual positive AND negative counts numerically "
@@ -601,8 +930,17 @@ def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total
         f"Top positive topics: {pos_str}\n"
         f"Top negative topics: {neg_str}\n"
         f"Top neutral topics: {neu_str}\n\n"
-        f"Write ONLY the summary paragraph. No bullet points, no headings, no preamble."
     )
+
+    if entities_block:
+        prompt += f"DISTINCTIVE ENTITIES surfaced in this window (use as specific anchors):\n  {entities_block}\n\n"
+    if samples_block:
+        prompt += (
+            "REPRESENTATIVE SAMPLE POSTS (top-upvoted in each sentiment, truncated):\n"
+            f"{samples_block}\n\n"
+        )
+    prompt += "Write ONLY the summary paragraph. No bullet points, no headings, no preamble."
+
     try:
         message = client.messages.create(
             model=_MODEL,
@@ -615,31 +953,66 @@ def _call_exec(client, game_name, window_label, pos_str, neg_str, neu_str, total
         return _placeholder_summary(game_name, window_label, total_posts)
 
 
-def _call_actions(client, game_name, window_label, pos_str, neg_str, neu_str) -> str:
+def _call_actions(
+    client,
+    game_name,
+    window_label,
+    pos_str,
+    neg_str,
+    neu_str,
+    sample_posts: Optional[dict[str, list[str]]] = None,
+    distinctive_entities: Optional[list[str]] = None,
+) -> str:
+    sample_posts = sample_posts or {}
+    distinctive_entities = distinctive_entities or []
+    samples_block = _format_sample_posts_block(sample_posts)
+    entities_block = _format_entities_block(distinctive_entities)
+
+    # When we have specifics, recommendations should bold a SPECIFIC entity
+    # name (e.g. **Salamanders Chapter Pack**) rather than a generic topic
+    # bucket like **Combat Mechanics** — the latter doesn't tell a PM what to
+    # actually do.
+    if entities_block or samples_block:
+        specificity_clause = (
+            "PREFERENCE: when a distinctive entity (named DLC, level, weapon, character, "
+            "patch number, mode, etc.) is available, bold THAT NAME instead of a generic "
+            "topic label. Specifics > buckets. Pick the entity that has the strongest "
+            "sentiment signal in the samples.\n\n"
+        )
+    else:
+        specificity_clause = ""
+
     prompt = (
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         f"Write 3-5 sprint-board-ready recommendations. Each one MUST follow this format strictly:\n\n"
-        f"  <Imperative verb> **<exact topic label>** — <what to do, in <=15 words>.\n\n"
+        f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=15 words>.\n\n"
+        + specificity_clause +
         f"Hard concision rules:\n"
         f"- 25 WORDS MAX per recommendation. Aim for 15-20.\n"
         f"- Start with an imperative verb (Ship, Patch, Audit, Launch, Amplify, Clarify, Document, Sunset, etc.).\n"
-        f"- Bold the topic label exactly as provided, using **double asterisks**.\n"
+        f"- Bold the entity or label exactly as provided, using **double asterisks**.\n"
         f"- NO parenthetical examples, NO 'this is your clearest signal' framing, NO 'should anchor messaging through next quarter' filler.\n"
         f"- ONE sentence per recommendation. No semicolons. No 'and... and...' chains. If you need two ideas, write two recommendations.\n\n"
-        f"Good example:\n"
-        f"  1. Ship **Loadout Variety** showcase content highlighting the configurations community is praising.\n"
-        f"  2. Patch **Performance Issues** crashes flagged in the negative cluster before next major beat.\n\n"
-        f"Bad example (too verbose, has parenthetical and filler):\n"
-        f"  1. Lean into **Loadout Variety** momentum by shipping comparative feature breakdowns (mechanic-by-mechanic comparisons, control nuances, build philosophy) that reinforce differentiation—this positive signal is your clearest community validation point and should anchor messaging through next quarter.\n\n"
+        f"Good example (specific entity, named):\n"
+        f"  1. Patch **Tyranid Warrior** boss fight — ammo and health scarcity flagged across multiple negative posts.\n"
+        f"  2. Amplify **Salamanders Chapter Pack** — free DLC drop driving most positive volume this week.\n\n"
+        f"Bad example (too generic, no entity):\n"
+        f"  1. Lean into **Combat Mechanics** momentum by shipping comparative feature breakdowns…\n\n"
         f"If you genuinely cannot produce 3+ actionable recommendations from the available topics, "
         f"respond with the SINGLE LINE: NONE — nothing else, no explanation.\n\n"
         f"Data ({window_label}):\n"
         f"Negative topics: {neg_str}\n"
         f"Neutral topics: {neu_str}\n"
         f"Positive topics: {pos_str}\n\n"
-        f"Output: numbered list (1. ... 2. ... 3. ...). Plain prose, no markdown headings."
     )
+
+    if entities_block:
+        prompt += f"DISTINCTIVE ENTITIES surfaced in this window:\n  {entities_block}\n\n"
+    if samples_block:
+        prompt += f"REPRESENTATIVE SAMPLE POSTS:\n{samples_block}\n\n"
+    prompt += "Output: numbered list (1. ... 2. ... 3. ...). Plain prose, no markdown headings."
+
     try:
         message = client.messages.create(
             model=_MODEL,
@@ -653,32 +1026,57 @@ def _call_actions(client, game_name, window_label, pos_str, neg_str, neu_str) ->
         return _placeholder_actions()
 
 
-def _call_bold_ideas(client, game_name, window_label, pos_str, neg_str, neu_str, total_posts) -> list[str]:
+def _call_bold_ideas(
+    client,
+    game_name,
+    window_label,
+    pos_str,
+    neg_str,
+    neu_str,
+    total_posts,
+    sample_posts: Optional[dict[str, list[str]]] = None,
+    distinctive_entities: Optional[list[str]] = None,
+) -> list[str]:
+    sample_posts = sample_posts or {}
+    distinctive_entities = distinctive_entities or []
+    samples_block = _format_sample_posts_block(sample_posts)
+    entities_block = _format_entities_block(distinctive_entities)
+
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
         f"Looking at community signals from {window_label}, find opportunities a typical analyst would MISS.\n\n"
         + _OUTPUT_STYLE +
-        f"If — and only if — the topic labels reveal something genuinely worth flagging as a bold move "
-        f"beyond the obvious fixes, propose 1 or 2 bold ideas.\n\n"
+        f"If — and only if — the data reveals something genuinely worth flagging as a bold move "
+        f"beyond the obvious fixes, propose 1 or 2 bold ideas. The bold move should reference a "
+        f"SPECIFIC entity from the samples or distinctive entities list — not a generic bucket.\n\n"
         f"Concision rules:\n"
         f"- 40 WORDS MAX per idea. Aim for 25-30.\n"
         f"- One sentence stating the bold move, optionally one second sentence on why.\n"
-        f"- Bold the referenced topic label exactly as provided, using **double asterisks**.\n"
+        f"- Bold the referenced entity or label exactly as it appears, using **double asterisks**.\n"
         f"- Be surprising or non-obvious (community event, partnership angle, unexpected creative response).\n"
         f"- NO 'this is your X' framing. NO 'compounds loyalty' or 'lock in goodwill' filler.\n\n"
         f"If nothing in the data clearly supports a bold idea, respond with the SINGLE LINE: NONE — nothing else. "
-        f"Most periods should return NONE. Only fire when there is a real signal.\n\n"
+        f"Most periods should return NONE. Only fire when there is a real signal anchored on a specific entity.\n\n"
         f"Data ({window_label}):\n"
         f"Positive topics: {pos_str}\n"
         f"Negative topics: {neg_str}\n"
         f"Neutral topics: {neu_str}\n"
         f"Total posts: {total_posts}\n\n"
+    )
+
+    if entities_block:
+        prompt += f"DISTINCTIVE ENTITIES:\n  {entities_block}\n\n"
+    if samples_block:
+        prompt += f"REPRESENTATIVE SAMPLE POSTS:\n{samples_block}\n\n"
+
+    prompt += (
         f"Format (when ideas exist):\n"
-        f"1. <Tight bold idea naming a **topic label**, 25-40 words>\n"
+        f"1. <Tight bold idea naming a **specific entity**, 25-40 words>\n"
         f"2. <Optional second>\n\n"
         f"No markdown headings. No \"# Analysis\" or \"## Key Observation\" sections. "
         f"No preamble. Either the numbered list, or NONE."
     )
+
     try:
         message = client.messages.create(
             model=_MODEL,
