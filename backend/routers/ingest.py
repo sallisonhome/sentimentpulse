@@ -241,6 +241,166 @@ def diag_bluesky(
     return out
 
 
+# ── Reddit save-path probe ───────────────────────────────────────────
+
+@router.get("/diag/reddit_save")
+def diag_reddit_save(
+    game_id: int = Query(..., description="Game id to use for the probe."),
+    subreddit: str = Query(..., description="Subreddit name to fetch from (e.g. 'Spacemarine')."),
+    limit: int = Query(10, ge=1, le=50),
+    dry_run: bool = Query(
+        True,
+        description=(
+            "If true (default) NO rows are written.  We still walk the same "
+            "code path as a real ingest and report what WOULD happen."
+        ),
+    ),
+):
+    """Trace one fetch_subreddit_posts → _bulk_save_posts call end-to-end and
+    report per-step counts so we can see EXACTLY where posts disappear.
+
+    Returns:
+      fetch:
+        count                  — len(posts) returned by fetch_subreddit_posts
+        first_3_external_ids   — the IDs we tried to save (first 3 only)
+        first_post_keys        — keys present on the first dict (to spot
+                                  shape mismatches: missing fields, etc.)
+        first_post_types       — type of each value on the first dict
+                                  (this is what catches str vs datetime
+                                  bugs like the Bluesky one)
+      dedup:
+        already_in_db          — count of fetched IDs that match an
+                                  existing (external_id, source=reddit) row
+        new_ids                — count of fetched IDs that are NEW
+      save:
+        attempted (dry_run=true) or actual_inserts (dry_run=false)
+        per_post_outcomes      — list of {external_id, outcome,
+                                  error_class, error_message} for the
+                                  first 10 posts.
+
+    Read-only when dry_run=true.  Writes real rows when dry_run=false.
+    """
+    from services.reddit_service import fetch_subreddit_posts
+    from models import RawPost, SourceEnum, Game
+    from database import SessionLocal
+
+    out: dict = {
+        "game_id": game_id,
+        "subreddit": subreddit,
+        "limit": limit,
+        "dry_run": dry_run,
+        "fetch": {},
+        "dedup": {},
+        "save": {},
+    }
+
+    db = SessionLocal()
+    try:
+        game = db.query(Game).filter(Game.id == game_id).first()
+        if not game:
+            return {"error": f"no game with id={game_id}"}
+        out["game_name"] = game.name
+
+        # ── Step 1: fetch ────────────────────────────────────────────
+        posts = fetch_subreddit_posts(subreddit, limit=limit, game_name=game.name)
+        out["fetch"]["count"] = len(posts)
+        out["fetch"]["first_3_external_ids"] = [
+            p.get("external_id") for p in posts[:3]
+        ]
+        if posts:
+            first = posts[0]
+            out["fetch"]["first_post_keys"] = sorted(first.keys())
+            out["fetch"]["first_post_types"] = {
+                k: type(v).__name__ for k, v in first.items()
+            }
+            # Surface the actual value of post_date so we can confirm if it's
+            # a string (the Bluesky-style bug) or a datetime.
+            out["fetch"]["first_post_post_date_repr"] = repr(first.get("post_date"))
+
+        if not posts:
+            return out
+
+        # ── Step 2: dedup check (same query _bulk_save_posts runs) ──────────
+        external_ids = [p["external_id"] for p in posts]
+        known: set[str] = {
+            row[0]
+            for row in db.query(RawPost.external_id).filter(
+                RawPost.external_id.in_(external_ids),
+                RawPost.source == SourceEnum.reddit,
+            )
+        }
+        out["dedup"]["already_in_db"] = len(known)
+        out["dedup"]["new_ids"] = len(external_ids) - len(known)
+        out["dedup"]["sample_already_in_db"] = list(known)[:5]
+
+        # ── Step 3: per-post save trace ─────────────────────────────────
+        outcomes: list[dict] = []
+        actual_inserts = 0
+        for pd in posts[:10]:
+            ext = pd.get("external_id", "")
+            if ext in known:
+                outcomes.append({
+                    "external_id": ext,
+                    "outcome": "skipped_duplicate",
+                    "error_class": None,
+                    "error_message": None,
+                })
+                continue
+
+            row = RawPost(
+                game_id=game.id,
+                source=SourceEnum.reddit,
+                external_id=ext,
+                author=pd.get("author"),
+                title=pd.get("title"),
+                body=pd.get("body"),
+                url=pd.get("url"),
+                upvotes=pd.get("upvotes", 0),
+                post_date=pd.get("post_date"),
+            )
+            db.add(row)
+            try:
+                if dry_run:
+                    # Force the SQL to be emitted so we see any conversion
+                    # errors, then roll back.
+                    db.flush()
+                    db.rollback()
+                    outcomes.append({
+                        "external_id": ext,
+                        "outcome": "would_insert",
+                        "error_class": None,
+                        "error_message": None,
+                    })
+                else:
+                    db.commit()
+                    actual_inserts += 1
+                    outcomes.append({
+                        "external_id": ext,
+                        "outcome": "inserted",
+                        "error_class": None,
+                        "error_message": None,
+                    })
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                outcomes.append({
+                    "external_id": ext,
+                    "outcome": "insert_failed",
+                    "error_class": type(exc).__name__,
+                    "error_message": str(exc)[:400],
+                })
+
+        out["save"]["per_post_outcomes"] = outcomes
+        if dry_run:
+            out["save"]["actual_inserts"] = 0
+            out["save"]["note"] = "dry_run=true — nothing was written"
+        else:
+            out["save"]["actual_inserts"] = actual_inserts
+    finally:
+        db.close()
+
+    return out
+
+
 # ── General ingest log tail (any source / any keyword) ──────────────────
 
 @router.get("/diag/log")
