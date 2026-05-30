@@ -149,6 +149,14 @@ def get_monthly_summary(
 def create_window_summary(
     game_id: int,
     body: WindowSummaryRequest = Body(default=WindowSummaryRequest()),
+    force: bool = Query(
+        False,
+        description=(
+            "If true, delete the existing WindowSummary row for "
+            "(game_id, days, today's ingest_date) before generating. "
+            "Use after deploying summary-prompt changes to bust the cache."
+        ),
+    ),
     db: Session = Depends(get_db),
 ):
     """
@@ -158,8 +166,41 @@ def create_window_summary(
     so the same calendar day always returns the same result instantly.
 
     Synchronously calls Claude when not cached; expect ~10-15 s on cache miss.
+
+    Pass ?force=true to bust today's cache and force a fresh generation.
     """
     _get_game_or_404(db, game_id)
+
+    # ── Cache-bust (force=true) ─────────────────────────────────────────────
+    if force:
+        from models import WindowSummary, RawPost
+        from sqlalchemy import func
+        # Re-derive ingest_date the same way generate_window_summary does so
+        # we delete the exact row that would otherwise be returned.
+        effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
+        max_dt = (
+            db.query(func.max(effective_date))
+            .filter(RawPost.game_id == game_id)
+            .scalar()
+        )
+        if max_dt is not None:
+            from datetime import datetime as _dt, date as _date
+            if isinstance(max_dt, _dt):
+                ingest_date = max_dt.date()
+            elif isinstance(max_dt, _date):
+                ingest_date = max_dt
+            else:
+                ingest_date = date.today()
+            (
+                db.query(WindowSummary)
+                .filter_by(
+                    game_id=game_id,
+                    window_days=body.days,
+                    ingest_date=ingest_date,
+                )
+                .delete()
+            )
+            db.commit()
 
     try:
         row = _pss.generate_window_summary(db, game_id=game_id, days=body.days)
