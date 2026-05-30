@@ -64,18 +64,32 @@ def trigger_ingestion(background_tasks: BackgroundTasks):
 def _bluesky_log_lines(max_lines: int = 60) -> list[str]:
     """Return recent Step 4b / Bluesky lines from today's (then yesterday's)
     ingest log file.  Empty list if neither log file exists."""
+    return _ingest_log_lines(
+        substrings=("Step 4b", "Bluesky", "bluesky"),
+        max_lines=max_lines,
+    )
+
+
+def _ingest_log_lines(
+    substrings: tuple[str, ...],
+    max_lines: int = 200,
+    lookback_days: int = 2,
+) -> list[str]:
+    """Generic ingest-log tail.  Returns lines from today's (then earlier)
+    ingest log file that contain ANY of `substrings`.  Empty list if no
+    relevant log file exists.
+    """
     matches: list[str] = []
-    for offset in (0, 1):  # today, then yesterday
+    for offset in range(lookback_days):
         d = date.today() - timedelta(days=offset)
         path = _LOG_DIR / f"ingest_{d.isoformat()}.log"
         if not path.exists():
             continue
         try:
             with path.open("r", encoding="utf-8", errors="replace") as fh:
-                # Read the file once; for our log sizes this is cheap.
                 for line in fh.readlines():
                     s = line.rstrip("\n")
-                    if ("Step 4b" in s) or ("Bluesky" in s) or ("bluesky" in s):
+                    if any(needle in s for needle in substrings):
                         matches.append(f"{d.isoformat()}: {s.strip()}")
         except Exception as exc:  # noqa: BLE001
             matches.append(f"{d.isoformat()}: <error reading log: {exc}>")
@@ -225,3 +239,50 @@ def diag_bluesky(
         max_lines=warnings_max, level_min=warnings_level
     )
     return out
+
+
+# ── General ingest log tail (any source / any keyword) ──────────────────
+
+@router.get("/diag/log")
+def diag_log(
+    needle: str = Query(
+        ...,
+        min_length=1,
+        max_length=200,
+        description=(
+            "Substring(s) to search for in the ingest log.  Comma-separated "
+            "values are OR'd together (e.g. 'Step 3,Step 4,error')."
+        ),
+    ),
+    max_lines: int = Query(
+        200,
+        ge=1,
+        le=2000,
+        description="Max number of matching lines to return.",
+    ),
+    lookback_days: int = Query(
+        2,
+        ge=1,
+        le=14,
+        description="How many days of log files to walk back if today is empty.",
+    ),
+):
+    """Read-only tail of the ingest log, filtered by substring.  Useful for
+    diagnosing Reddit / Steam / Bluesky / Discord ingestion runs without
+    SSH access to the droplet.
+    """
+    substrings = tuple(s.strip() for s in needle.split(",") if s.strip())
+    if not substrings:
+        return {"lines": [], "needle": needle, "count": 0}
+    lines = _ingest_log_lines(
+        substrings=substrings,
+        max_lines=max_lines,
+        lookback_days=lookback_days,
+    )
+    return {
+        "needle": needle,
+        "substrings": list(substrings),
+        "lookback_days": lookback_days,
+        "count": len(lines),
+        "lines": lines,
+    }
