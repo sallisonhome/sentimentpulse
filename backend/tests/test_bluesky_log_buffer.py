@@ -22,12 +22,25 @@ def test_install_buffer_is_idempotent():
     second = buf.install_buffer()
     assert first in (True, False)  # depends on prior state
     assert second is False
-    # Confirm only one handler is attached
-    bsky_logger = logging.getLogger("services.bluesky_service")
-    handler_count = sum(
-        1 for h in bsky_logger.handlers if isinstance(h, buf.RingBufferHandler)
-    )
-    assert handler_count == 1
+    # Confirm exactly one handler is attached to each watched logger
+    for log_name in buf._LOG_NAMES:
+        log = logging.getLogger(log_name)
+        handler_count = sum(
+            1 for h in log.handlers if isinstance(h, buf.RingBufferHandler)
+        )
+        assert handler_count == 1, f"{log_name}: expected 1 handler, got {handler_count}"
+
+
+def test_buffer_captures_all_watched_sources():
+    """Records emitted by any source service must land in the buffer."""
+    buf.install_buffer()
+    for log_name in buf._LOG_NAMES:
+        logging.getLogger(log_name).warning("smoke from %s", log_name)
+    lines = buf.get_recent()
+    for log_name in buf._LOG_NAMES:
+        assert any(log_name in l for l in lines), (
+            f"Buffer missing record from {log_name}.  Lines: {lines}"
+        )
 
 
 def test_emit_captures_warning():

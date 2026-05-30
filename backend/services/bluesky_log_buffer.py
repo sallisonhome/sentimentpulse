@@ -1,25 +1,33 @@
-"""In-memory ring buffer for `services.bluesky_service` log records.
+"""In-memory ring buffer for ingest-source log records.
 
 Why this exists:
   When the daily ingestion runs in a FastAPI BackgroundTasks worker, any
-  WARNING / INFO / ERROR emitted by bluesky_service.py is sent to the root
-  logger (and ultimately journalctl).  The agent that operates this app
-  cannot SSH to the droplet to read journalctl, so we mirror those records
-  into an in-process ring buffer and expose them via /api/ingest/diag/bluesky.
+  WARNING / INFO / ERROR emitted by bluesky_service.py, arctic_shift_service.py,
+  reddit_service.py, or steam_service.py is sent to the root logger (and
+  ultimately journalctl).  The agent that operates this app cannot SSH to the
+  droplet to read journalctl, so we mirror those records into an in-process
+  ring buffer and expose them via /api/ingest/diag/bluesky and /api/ingest/diag/sources.
+
+Historical note:
+  This module was originally named bluesky_log_buffer because it was created
+  to debug a Bluesky-only ingestion bug.  The module name is preserved for
+  backwards compatibility, but the buffer now captures every ingest source
+  service so the same diagnostic pattern can find silent failures in
+  Reddit/Arctic Shift/Steam too.
 
 Design:
-  - Single module-level `collections.deque(maxlen=400)` of formatted strings.
+  - Single module-level `collections.deque(maxlen=800)` of formatted strings.
   - Thread-safe (deque is atomic for append, but we also lock the snapshot
     function so a reader sees a consistent view).
   - A `RingBufferHandler` subclass of logging.Handler is attached exactly once
-    to the `services.bluesky_service` logger via install_buffer().
+    to each watched logger via install_buffer().
   - Idempotent: re-installing does not double-attach.
 
 Privacy:
-  This buffer mirrors what bluesky_service.py already logs.  That module
-  is careful to NEVER log JWTs or passwords; it logs handle (which is
-  effectively public), HTTP status codes, post counts, and exception
-  classes.  The buffer simply preserves those records.
+  This buffer mirrors what those modules already log.  They are careful to
+  NEVER log JWTs, passwords, or auth tokens; they log handle (effectively
+  public), HTTP status codes, post counts, and exception classes.  The
+  buffer simply preserves those records.
 """
 from __future__ import annotations
 
@@ -30,8 +38,17 @@ from datetime import datetime, timezone
 from typing import Deque, List
 
 
-_LOG_NAME = "services.bluesky_service"
-_BUFFER_MAXLEN = 400
+# All ingest source loggers we mirror.  Adding a new source means adding its
+# logger name here — nothing else.
+_LOG_NAMES = (
+    "services.bluesky_service",
+    "services.arctic_shift_service",
+    "services.reddit_service",
+    "services.steam_service",
+)
+# Backwards-compat single-name constant (the original bluesky-only logger).
+_LOG_NAME = _LOG_NAMES[0]
+_BUFFER_MAXLEN = 800
 
 _buffer: Deque[str] = deque(maxlen=_BUFFER_MAXLEN)
 _lock = threading.Lock()
@@ -61,7 +78,7 @@ class RingBufferHandler(logging.Handler):
 
 
 def install_buffer() -> bool:
-    """Attach the RingBufferHandler to the bluesky_service logger.
+    """Attach the RingBufferHandler to all watched ingest source loggers.
 
     Idempotent: returns True on first install, False if already installed.
     """
@@ -70,9 +87,10 @@ def install_buffer() -> bool:
         if _installed:
             return False
         handler = RingBufferHandler(level=logging.DEBUG)
-        target = logging.getLogger(_LOG_NAME)
-        # Don't change the logger's existing level — just observe.
-        target.addHandler(handler)
+        for log_name in _LOG_NAMES:
+            target = logging.getLogger(log_name)
+            # Don't change the logger's existing level — just observe.
+            target.addHandler(handler)
         _installed = True
         return True
 
