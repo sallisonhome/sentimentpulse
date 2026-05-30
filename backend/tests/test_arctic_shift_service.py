@@ -306,9 +306,14 @@ def test_url_built_from_permalink():
     assert results[0]["url"] == "https://www.reddit.com/r/Spacemarine/comments/u1/great_mission/"
 
 
-# ── Test 14: post_date is ISO 8601 parseable by datetime.fromisoformat ─────────
+# ── Test 14: post_date is a Python datetime (regression test) ───────────────
 
-def test_post_date_is_iso8601():
+def test_post_date_is_datetime_not_string():
+    """created_utc must be parsed to a Python datetime so SQLAlchemy's
+    DateTime column can store it.  Regression test for the 2026-05-30 silent
+    failure where every Reddit insert was rejected with StatementError because
+    post_date was an ISO 8601 string.  See CLAUDE.md §19.
+    """
     post = _make_post(post_id="d1", created_utc=1_700_000_000.0)
 
     with requests_mock_module.Mocker() as m:
@@ -318,12 +323,43 @@ def test_post_date_is_iso8601():
         )
 
     assert len(results) == 1
-    post_date_str = results[0]["post_date"]
-    assert post_date_str is not None
-    # Must be parseable by datetime.fromisoformat
-    parsed = datetime.fromisoformat(post_date_str)
-    # Should be UTC — verify it round-trips to the expected unix timestamp
-    assert abs(parsed.timestamp() - 1_700_000_000.0) < 1
+    post_date = results[0]["post_date"]
+    assert isinstance(post_date, datetime), (
+        f"post_date must be a datetime, got {type(post_date).__name__}: {post_date!r}"
+    )
+    # Should be tz-aware UTC and round-trip to the expected unix timestamp
+    assert post_date.tzinfo is not None
+    assert abs(post_date.timestamp() - 1_700_000_000.0) < 1
+
+
+def test_post_date_none_when_created_utc_missing():
+    """Posts without created_utc should yield post_date=None, not crash."""
+    post = _make_post(post_id="d2", created_utc=1_700_000_000.0)
+    post.pop("created_utc", None)
+
+    with requests_mock_module.Mocker() as m:
+        m.get(ARCTIC_SHIFT_BASE, json=_arctic_ok([post]))
+        results = fetch_arctic_shift_subreddit_posts(
+            "Spacemarine", limit=10, game_name="", is_general_sub=False
+        )
+
+    assert len(results) == 1
+    assert results[0]["post_date"] is None
+
+
+def test_post_date_none_when_created_utc_malformed():
+    """Posts with garbage created_utc should yield post_date=None, not crash."""
+    post = _make_post(post_id="d3", created_utc=1_700_000_000.0)
+    post["created_utc"] = "not-a-number"
+
+    with requests_mock_module.Mocker() as m:
+        m.get(ARCTIC_SHIFT_BASE, json=_arctic_ok([post]))
+        results = fetch_arctic_shift_subreddit_posts(
+            "Spacemarine", limit=10, game_name="", is_general_sub=False
+        )
+
+    assert len(results) == 1
+    assert results[0]["post_date"] is None
 
 
 # ── Test 15: ARCTIC_SHIFT_GENERAL_SUBS contains expected values ───────────────

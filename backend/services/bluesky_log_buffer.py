@@ -38,13 +38,17 @@ from datetime import datetime, timezone
 from typing import Deque, List
 
 
-# All ingest source loggers we mirror.  Adding a new source means adding its
+# All ingest-related loggers we mirror.  Adding a new source means adding its
 # logger name here — nothing else.
+# services.ingestor is included so _bulk_save_posts insert-failure warnings
+# (which surface ground-truth save-path bugs like the 2026-05-30 Reddit
+# post_date type bug) are visible in the diag endpoint.
 _LOG_NAMES = (
     "services.bluesky_service",
     "services.arctic_shift_service",
     "services.reddit_service",
     "services.steam_service",
+    "services.ingestor",
 )
 # Backwards-compat single-name constant (the original bluesky-only logger).
 _LOG_NAME = _LOG_NAMES[0]

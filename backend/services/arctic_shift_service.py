@@ -99,14 +99,19 @@ def _convert_post(raw: dict) -> Optional[dict]:
     if not external_id:
         return None
 
-    # Build ISO-8601 post_date from created_utc unix timestamp
-    post_date: Optional[str] = None
+    # Parse created_utc (unix timestamp) into a Python datetime so SQLAlchemy's
+    # DateTime column can store it.  Previous versions used .isoformat() which
+    # returned a string; SQLite rejects string inputs to DateTime columns with
+    # StatementError(TypeError), and _bulk_save_posts caught those silently,
+    # resulting in 0 Reddit rows saved despite Arctic Shift returning posts.
+    # See CLAUDE.md §19 (ground truth) and lessons.md 2026-05-30.
+    post_date: Optional[datetime] = None
     created = raw.get("created_utc")
     if created is not None:
         try:
             post_date = datetime.fromtimestamp(
                 float(created), tz=timezone.utc
-            ).isoformat()
+            )
         except (ValueError, TypeError, OSError):
             post_date = None
 
