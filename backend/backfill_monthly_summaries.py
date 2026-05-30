@@ -4,9 +4,12 @@ actually contain posts.
 
 Usage:
     cd backend
-    python backfill_monthly_summaries.py                 # default: last 24 months
+    python backfill_monthly_summaries.py                          # default: last 24 months
     python backfill_monthly_summaries.py --max-months-back 36
     python backfill_monthly_summaries.py --dry-run
+    python backfill_monthly_summaries.py --force --only-months 2026-03 2026-04
+        # Force-regenerate Mar+Apr 2026 for every active game (overwrites existing rows)
+    python backfill_monthly_summaries.py --force --only-months 2026-04 --game-id 24
 
 For each active game the script:
   1. Determines the earliest post date and the most recent FULL completed month.
@@ -76,10 +79,27 @@ def _floor_start(earliest: date, today: date, max_months_back: int) -> date:
     return max(earliest, floor_date)
 
 
-def backfill(dry_run: bool = False, max_months_back: int = 24) -> None:
+def _parse_month_str(s: str) -> tuple[int, int]:
+    """Parse 'YYYY-MM' into (year, month).  Raises on bad input."""
+    parts = s.split("-")
+    if len(parts) != 2:
+        raise ValueError(f"Bad month spec '{s}' — expected YYYY-MM")
+    return int(parts[0]), int(parts[1])
+
+
+def backfill(
+    dry_run: bool = False,
+    max_months_back: int = 24,
+    force: bool = False,
+    only_months: list[tuple[int, int]] | None = None,
+    game_id: int | None = None,
+) -> None:
     db = SessionLocal()
     try:
-        active_games = db.query(Game).filter_by(is_active=True).all()
+        q = db.query(Game).filter_by(is_active=True)
+        if game_id is not None:
+            q = q.filter(Game.id == game_id)
+        active_games = q.all()
         if not active_games:
             logger.info("No active games found — nothing to backfill.")
             return
@@ -152,14 +172,20 @@ def backfill(dry_run: bool = False, max_months_back: int = 24) -> None:
 
             for year, month in _month_range(earliest, last_full_end):
                 # Check if already exists
+                # When --only-months is supplied, skip every other month.
+                if only_months is not None and (year, month) not in only_months:
+                    continue
+
                 existing = (
                     db.query(MonthlySummary)
                     .filter_by(game_id=game.id, period_year=year, period_month=month)
                     .first()
                 )
-                if existing:
+                if existing and not force:
                     game_skipped_existing += 1
                     continue
+                # When --force is set, generate_monthly_summary's upsert logic
+                # will overwrite the existing row with fresh Claude output.
 
                 # Count posts that actually fall inside this month — if zero,
                 # skip without making any Claude calls.
@@ -231,8 +257,36 @@ if __name__ == "__main__":
         help="Cap how far back to look from today (default: 24 months). Guards "
              "against bogus epoch/NULL-coerced post dates.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Regenerate (overwrite) existing MonthlySummary rows instead of skipping them. "
+             "Use after a prompt change to refresh historical summaries with new logic.",
+    )
+    parser.add_argument(
+        "--only-months",
+        nargs="+",
+        metavar="YYYY-MM",
+        help="Restrict generation to specific months only (space-separated YYYY-MM list).",
+    )
+    parser.add_argument(
+        "--game-id",
+        type=int,
+        default=None,
+        help="Restrict to a single game id (default: all active games).",
+    )
     args = parser.parse_args()
 
     if args.dry_run:
         logger.info("=== DRY RUN mode — no data will be written ===")
-    backfill(dry_run=args.dry_run, max_months_back=args.max_months_back)
+    only_months = (
+        [_parse_month_str(s) for s in args.only_months]
+        if args.only_months else None
+    )
+    backfill(
+        dry_run=args.dry_run,
+        max_months_back=args.max_months_back,
+        force=args.force,
+        only_months=only_months,
+        game_id=args.game_id,
+    )

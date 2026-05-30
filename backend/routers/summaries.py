@@ -143,7 +143,36 @@ def get_monthly_summary(
     return MonthlySummaryResponseWithLabel.from_orm_with_label(row)
 
 
-# ── Window (On-demand) Summary ────────────────────────────────────────────────
+@router.post(
+    "/{game_id}/monthly-summaries/{year}/{month}/regenerate",
+    response_model=MonthlySummaryResponseWithLabel,
+)
+def regenerate_monthly_summary(
+    game_id: int,
+    year: int,
+    month: int,
+    db: Session = Depends(get_db),
+):
+    """Force-regenerate the MonthlySummary for (game_id, year, month).
+
+    `generate_monthly_summary` is upsert-safe: any existing row is overwritten
+    in place with fresh Claude output using the current prompt logic.
+    Synchronous; expect ~30 s on cache miss.
+
+    Used to backfill historical summaries with new prompt logic without
+    waiting for the next 1st-of-month cron rollover.
+    """
+    _get_game_or_404(db, game_id)
+    try:
+        row = _pss.generate_monthly_summary(db, game_id=game_id, year=year, month=month)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Regeneration failed: {exc}")
+    return MonthlySummaryResponseWithLabel.from_orm_with_label(row)
+
+
+# ── Window (On-demand) Summary ───────────────────────────────────────────────
 
 @router.post("/{game_id}/window-summary", response_model=WindowSummaryResponse)
 def create_window_summary(
