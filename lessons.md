@@ -6,6 +6,34 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-05-30 — Never declare success on intermediate signals; verify ground truth
+
+**Mistake (two confirmed instances, one detected by the user):**
+
+1. **2026-05-29 Bluesky rollout.** Claimed "2,167 posts saved across 26/28 games" based on the dashboard endpoint and `bluesky_metric posts=100 status=ok` log lines. Did not run a direct DB count of rows where `collected_at >= run_started_at`. Reality happened to be correct, but the verification was unsafe — the same proxy would have missed an analogous Reddit failure.
+
+2. **2026-05-30 Reddit cron diagnosis.** Earlier today's cron pulled 0 Reddit posts. While investigating, claimed "Reddit is working perfectly right now" after a manual ingest, citing `arctic_shift_metric ... status=ok posts=25-49` lines in the live ring buffer. The user pushed back and asked me to actually verify the claim. A direct DB count showed **zero** Reddit rows saved across all 28 active games today — despite Arctic Shift returning 25-49 posts per subreddit. The buffer's `status=ok` was a fetch-side signal; persistence was the actual question, and persistence was 0.
+
+The second case is the harmful one. If the user had not pushed back, I would have built retry/notification infrastructure on top of a still-broken save path. The retry would never "recover" anything because the bug was never about fetch volume — it was about persistence dropping every post silently.
+
+**Rule (now permanent, formalized as CLAUDE.md §19):**
+
+Before declaring success on anything that produces persistent state, identify the **ground truth** of the claim and run the direct query/check that measures it. Specifically:
+
+- **Ingest success** = `SELECT COUNT(*) FROM raw_posts WHERE source=? AND collected_at >= run_started_at`. Not log lines. Not status field. Not buffer counters.
+- **Bug fix success** = the original failing user action now produces the expected outcome. Not "tests pass". Not "function returned non-empty".
+- **Deploy success** = a fresh request to the live endpoint returns the new behavior. Not the green CI checkmark.
+
+When the bug being fixed was "X ran but didn't persist", the post-fix verification MUST measure persistence — not that the buggy step now reports success. The signals that lied during the bug cannot be the proof of the fix.
+
+Differentiate "fetched" from "saved" in every observability statement: those are two different facts and they are not interchangeable.
+
+When the user reports the symptom is still present after a claimed fix, STOP and re-verify ground truth before proposing any new fix. Don't assume "transient". Don't change scope. The user observed reality.
+
+See `CLAUDE.md` §19 for the full canonical rule.
+
+---
+
 ## 2026-05-29 — Never ask the user to run a command without including the command
 
 **Mistake (twice in one session, in the same debugging thread):**

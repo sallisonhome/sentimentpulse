@@ -234,6 +234,33 @@ A post's sentiment label is only as trustworthy as the textual signal under it. 
 
 **Why this matters.** A confident wrong label is worse than no label — it drives recommendations, bold ideas, and executive summaries in the wrong direction. §18's job is to ensure every label we ship is *supported by its text*.
 
+### 19. End-to-End Ground Truth — Never Declare Success on Intermediate Signals (CRITICAL — always-on)
+
+**A success claim is only valid when the user-facing or persistent state has been DIRECTLY verified.** Intermediate signals — log lines, fetch counters, ring buffer entries, HTTP 200s, "the function returned posts", green CI checks — indicate that a step ran. They do NOT confirm the goal was achieved.
+
+The rule:
+
+1. **Identify the ground truth for the claim** before declaring success. Examples:
+   - "Ingest succeeded" → ground truth is **new rows in `raw_posts` with `collected_at >= run_started_at`**, not log lines saying "fetched N posts" and not the run-status field.
+   - "Feature shipped" → ground truth is **the live URL renders the change**, not "deploy returned conclusion=success".
+   - "Bug fixed" → ground truth is **the original failing user action now succeeds**, not "unit tests pass".
+   - "Posts saved" → ground truth is **`SELECT COUNT(*)` returns the expected delta**, not `_bulk_save_posts` log line.
+   - "Deployed" → ground truth is **a request to the live endpoint returns the new behavior**, not the GH Actions checkmark.
+
+2. **Run the ground-truth query/check directly and paste the result before claiming success.** Never substitute a proxy. If the ground truth is a DB count, run the count query. If it's a rendered page, hit the URL. If it's a saved file, read the file.
+
+3. **Especially after fixes to silent-failure code paths.** When the bug being fixed was "X ran but didn't persist", the post-fix verification MUST measure persistence — not just that the buggy step now reports "success". Counters, logs, and `_metric` lines are EXACTLY the signals that lied during the bug. They cannot be the proof of the fix.
+
+4. **Differentiate "fetched" from "saved" in every observability statement.** "Arctic Shift returned 25 posts" is a fetch-side claim. "25 new rows landed in raw_posts" is the save-side claim. The first does not imply the second. Never use them interchangeably in any status report to the user.
+
+5. **When the user reports the symptom is still present after a claimed fix, STOP and verify ground truth before any other action.** Do not propose a new fix, do not assume "transient" or "race condition", do not change scope. The user observed reality; the prior verification was insufficient. Re-verify with the actual ground truth and trace the gap.
+
+**Anti-patterns this prevents (recorded as cautionary examples — see `lessons.md`):**
+- **2026-05-29 Bluesky:** Claimed "2,167 posts saved across 26/28 games" based on dashboard endpoint counts and log lines saying `bluesky_metric posts=100 status=ok`. Did not run a DB-level count by `collected_at >= today_run_start`. Reality was correct here, but the verification process was unsafe — it would have missed the symmetric Reddit bug.
+- **2026-05-30 Reddit:** Claimed "Reddit fetching successful" based on `arctic_shift_metric ... status=ok posts=25-49` lines in the ring buffer. Did not check whether any rows landed in `raw_posts`. The user noticed before I did. Zero rows had actually saved. The buffer's `status=ok` was a fetch-side signal, not a persistence signal.
+
+**Why this is a CRITICAL principle, not a guideline.** Declaring a broken thing fixed compounds: the next bug investigation starts from a false premise. The user loses trust in every subsequent claim. And in a data pipeline specifically, a quiet wrong claim means real data is missing from analyses for as long as it takes for someone to notice independently.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation
