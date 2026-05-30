@@ -7,7 +7,7 @@ import SkeletonCard from '../components/shared/SkeletonCard'
 import { Button } from '../components/ui/button'
 import { Separator } from '../components/ui/separator'
 import { relativeTime } from '../lib/utils'
-import { RefreshCw, CheckCircle, XCircle } from 'lucide-react'
+import { RefreshCw, CheckCircle, XCircle, AlertTriangle } from 'lucide-react'
 
 export default function SettingsPage() {
   const { data: publisher, isLoading: pubLoading }   = usePublisher()
@@ -56,11 +56,23 @@ export default function SettingsPage() {
                     <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
                   ) : ingestStatus.last_run_status === 'success' ? (
                     <CheckCircle className="h-4 w-4 text-green-500" />
+                  ) : ingestStatus.last_run_status === 'partial_failure' ? (
+                    <AlertTriangle className="h-4 w-4 text-amber-500" />
+                  ) : ingestStatus.last_run_status === 'partial' ? (
+                    <AlertTriangle className="h-4 w-4 text-amber-500" />
                   ) : ingestStatus.last_run_status ? (
                     <XCircle className="h-4 w-4 text-red-500" />
                   ) : null}
-                  <span className="font-medium capitalize">
-                    {ingestStatus.is_running ? 'Running…' : (ingestStatus.last_run_status || 'Never run')}
+                  <span className="font-medium">
+                    {ingestStatus.is_running
+                      ? 'Running…'
+                      : ingestStatus.last_run_status === 'partial_failure'
+                        ? 'Partial failure'
+                        : ingestStatus.last_run_status === 'partial'
+                          ? 'Partial'
+                          : ingestStatus.last_run_status
+                            ? ingestStatus.last_run_status.charAt(0).toUpperCase() + ingestStatus.last_run_status.slice(1)
+                            : 'Never run'}
                   </span>
                 </div>
                 <p className="text-muted-foreground">
@@ -71,6 +83,34 @@ export default function SettingsPage() {
                   Posts collected (lifetime): {ingestStatus.posts_collected.toLocaleString()} &middot;
                   Games processed: {ingestStatus.games_processed}
                 </p>
+
+                {/* Per-source health — currently Reddit only */}
+                {ingestStatus.reddit_health && ingestStatus.reddit_health !== 'unknown' && (
+                  <p className="text-muted-foreground flex items-center gap-1.5 pt-1">
+                    <span className="font-medium">Reddit:</span>
+                    {ingestStatus.reddit_health === 'ok' && (
+                      <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
+                        <CheckCircle className="h-3 w-3" /> ok
+                      </span>
+                    )}
+                    {ingestStatus.reddit_health === 'degraded' && (
+                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                        <AlertTriangle className="h-3 w-3" /> degraded (recovered after {ingestStatus.reddit_retries} retr{ingestStatus.reddit_retries === 1 ? 'y' : 'ies'})
+                      </span>
+                    )}
+                    {ingestStatus.reddit_health === 'failed' && (
+                      <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
+                        <XCircle className="h-3 w-3" /> failed (0 posts after {ingestStatus.reddit_retries} retr{ingestStatus.reddit_retries === 1 ? 'y' : 'ies'})
+                      </span>
+                    )}
+                    {ingestStatus.reddit_health === 'skipped' && (
+                      <span className="text-muted-foreground">skipped (no subreddits configured)</span>
+                    )}
+                    {ingestStatus.reddit_health === 'ok' && (
+                      <span className="text-muted-foreground">· {ingestStatus.reddit_fetched_total.toLocaleString()} fetched</span>
+                    )}
+                  </p>
+                )}
               </div>
               <Button
                 size="sm"

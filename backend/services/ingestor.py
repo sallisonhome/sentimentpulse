@@ -22,6 +22,7 @@ Design principles
 """
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -75,11 +76,27 @@ _LOG_DIR = Path(__file__).parent.parent / "logs"
 _status: dict = {
     "is_running": False,
     "last_run_at": None,          # ISO-8601 string
-    "last_run_status": "never",   # "never" | "success" | "partial" | "error"
+    # last_run_status values:
+    #   "never"            — first boot, no run yet
+    #   "success"          — all sources fetched data
+    #   "partial"          — some games errored mid-run, but overall ok
+    #   "partial_failure"  — Reddit returned 0 fetches across every game even
+    #                        after retries (soft alarm state).
+    #   "error"            — a fatal exception aborted the run
+    "last_run_status": "never",
     "last_run_errors": [],
     "games_processed": 0,
     "posts_collected": 0,
     "next_run_at": None,          # ISO-8601 string — set by scheduler
+    # Per-source health snapshot from the most recent run.  Each value:
+    #   "ok"        — fetched > 0
+    #   "degraded"  — first attempt fetched 0 but a retry recovered
+    #   "failed"    — fetched 0 even after all retries
+    #   "skipped"   — no eligible games (no subreddits configured)
+    #   "unknown"   — no run has happened yet
+    "reddit_health": "unknown",
+    "reddit_fetched_total": 0,
+    "reddit_retries": 0,          # number of full-Step-4 retries actually run
 }
 
 
@@ -113,6 +130,11 @@ def run_ingestion() -> dict:
     errors: list[str] = []
     games_processed = 0
     posts_collected = 0
+    # Pre-declare with safe defaults so the `finally` block can always read
+    # them, even if a fatal exception fires before the per-source phase.
+    reddit_health = "unknown"
+    reddit_fetched_total = 0
+    reddit_retries = 0
 
     # Ensure the NLP model is loaded before processing any posts
     load_model()
@@ -129,60 +151,146 @@ def run_ingestion() -> dict:
             f"[Step 1] {len(active_games)} active game(s) queued."
         )
 
+        # Per-run aggregates that drive run-level health verdicts at the end.
+        reddit_fetched_total = 0
+        reddit_retries = 0
+        per_game_posts: dict[int, int] = {}
+
+        def _safe_run_steps_2_to_4b(game: Game) -> tuple[int, int]:
+            """Run the fetching steps (2, 3, 4, 4b) for one game.
+
+            Returns (game_posts, reddit_fetched) for run-level aggregation.
+            Sentiment/topics/summary (Steps 5-7) are deferred to a second
+            pass so they always run AFTER any Reddit retries land their data.
+            """
+            game_posts_local = 0
+            reddit_fetched_local = 0
+
+            game_posts_local += _step2_steam_reviews(db, game, log_lines, errors)
+            game_posts_local += _step3_steam_forums(db, game, log_lines, errors)
+
+            saved, fetched = _step4_reddit(db, game, log_lines, errors)
+            game_posts_local += saved
+            reddit_fetched_local = fetched
+
+            # Bluesky runs when both creds are set; respects BLUESKY_ENABLED=false kill-switch.
+            bsky_kill_switch = os.environ.get("BLUESKY_ENABLED", "").lower() == "false"
+            bsky_handle = os.environ.get("BLUESKY_HANDLE", "").strip()
+            bsky_pw = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
+            if bsky_kill_switch:
+                log_lines.append(
+                    f"[Step 4b] '{game.name}': Bluesky disabled (BLUESKY_ENABLED=false)"
+                )
+            elif not bsky_handle or not bsky_pw:
+                log_lines.append(
+                    f"[Step 4b] '{game.name}': Bluesky skipped (no credentials)"
+                )
+            else:
+                game_posts_local += _step4b_bluesky(db, game, log_lines, errors)
+
+            return game_posts_local, reddit_fetched_local
+
+        # Phase A: fetch sources (Steps 2 -> 4b) for every active game
         for game in active_games:
-            game_posts = 0
             try:
-                # ── Step 2 ────────────────────────────────────────────────────
-                game_posts += _step2_steam_reviews(db, game, log_lines, errors)
-
-                # ── Step 3 ────────────────────────────────────────────────────
-                game_posts += _step3_steam_forums(db, game, log_lines, errors)
-
-                # ── Step 4 ────────────────────────────────────────────────────
-                game_posts += _step4_reddit(db, game, log_lines, errors)
-
-                # ── Step 4b: Bluesky ──────────────────────────────────────────
-                # Bluesky runs whenever both BLUESKY_HANDLE and BLUESKY_APP_PASSWORD
-                # are set in the environment.  The authenticated bsky.social endpoint
-                # is confirmed live from the droplet IP (verified May 29 2026).
-                # Setting BLUESKY_ENABLED=false explicitly is still respected as a
-                # kill-switch.
-                bsky_kill_switch = os.environ.get("BLUESKY_ENABLED", "").lower() == "false"
-                bsky_handle = os.environ.get("BLUESKY_HANDLE", "").strip()
-                bsky_pw = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
-                if bsky_kill_switch:
-                    log_lines.append(
-                        f"[Step 4b] '{game.name}': Bluesky disabled (BLUESKY_ENABLED=false)"
-                    )
-                elif not bsky_handle or not bsky_pw:
-                    log_lines.append(
-                        f"[Step 4b] '{game.name}': Bluesky skipped (no credentials)"
-                    )
-                else:
-                    game_posts += _step4b_bluesky(db, game, log_lines, errors)
-
-                # ── Step 5 ────────────────────────────────────────────────────
-                _step5_classify_sentiment(db, game, log_lines, errors)
-
-                # ── Step 6 ────────────────────────────────────────────────────
-                _step6_extract_topics(db, game, log_lines, errors)
-
-                # ── Step 7 ────────────────────────────────────────────────────
-                _step7_daily_summary(db, game, log_lines, errors)
-
-                games_processed += 1
-                posts_collected += game_posts
-
+                game_posts, reddit_fetched = _safe_run_steps_2_to_4b(game)
+                per_game_posts[game.id] = per_game_posts.get(game.id, 0) + game_posts
+                reddit_fetched_total += reddit_fetched
             except Exception as exc:
                 msg = f"Unhandled error processing game '{game.name}': {exc}"
                 errors.append(msg)
                 logger.exception(msg)
-                # Continue with next game — never abort the whole pipeline
+                # Continue with next game - never abort the whole pipeline
 
-        # ── Step 9: Monthly summaries on 1st of month ───────────────────────────
+        # Phase B: Reddit-retry loop
+        # Hardening: if EVERY active game returned 0 Reddit posts fetched
+        # despite having subreddits configured, Arctic Shift was either
+        # down, rate-limiting the droplet, or transiently misbehaving.
+        # Try the whole Reddit phase again with exponential backoff.
+        eligible_games = [g for g in active_games if g.subreddits]
+        backoffs = [60, 300]  # 1 min, then 5 min
+
+        while (
+            reddit_fetched_total == 0
+            and eligible_games
+            and reddit_retries < len(backoffs)
+        ):
+            delay = backoffs[reddit_retries]
+            reddit_retries += 1
+            msg = (
+                f"[Step 4] Reddit returned 0 fetches across all "
+                f"{len(eligible_games)} eligible game(s).  Sleeping {delay}s "
+                f"before retry #{reddit_retries}/{len(backoffs)}..."
+            )
+            log_lines.append(msg)
+            logger.warning(msg)
+            time.sleep(delay)
+
+            retry_fetched = 0
+            for game in eligible_games:
+                try:
+                    saved, fetched = _step4_reddit(db, game, log_lines, errors)
+                    per_game_posts[game.id] = (
+                        per_game_posts.get(game.id, 0) + saved
+                    )
+                    retry_fetched += fetched
+                except Exception as exc:
+                    err = (
+                        f"[Step 4 retry #{reddit_retries}] Unhandled error "
+                        f"for '{game.name}': {exc}"
+                    )
+                    errors.append(err)
+                    logger.exception(err)
+
+            reddit_fetched_total += retry_fetched
+            log_lines.append(
+                f"[Step 4 retry #{reddit_retries}] fetched {retry_fetched} "
+                f"posts across {len(eligible_games)} eligible game(s)."
+            )
+
+        # Compute reddit_health verdict for the run.
+        if not eligible_games:
+            reddit_health = "skipped"
+        elif reddit_fetched_total == 0:
+            reddit_health = "failed"
+        elif reddit_retries > 0:
+            reddit_health = "degraded"
+        else:
+            reddit_health = "ok"
+
+        # Phase C: per-game analysis (Steps 5 -> 7)
+        # Runs AFTER any Reddit retries so today's summary includes all
+        # data that landed today - not just the first-pass results.
+        for game in active_games:
+            try:
+                _step5_classify_sentiment(db, game, log_lines, errors)
+                _step6_extract_topics(db, game, log_lines, errors)
+                _step7_daily_summary(db, game, log_lines, errors)
+                games_processed += 1
+                posts_collected += per_game_posts.get(game.id, 0)
+            except Exception as exc:
+                msg = f"Steps 5-7 error for '{game.name}': {exc}"
+                errors.append(msg)
+                logger.exception(msg)
+
+        # Step 9: Monthly summaries on 1st of month
         _step9_monthly_summaries(db, active_games, log_lines, errors)
 
-        final_status = "success" if not errors else "partial"
+        # Final status precedence:
+        #   error  >  partial_failure  >  partial  >  success
+        # partial_failure is dedicated to per-source structural failures
+        # (currently Reddit; can extend to Bluesky etc.).
+        if reddit_health == "failed":
+            final_status = "partial_failure"
+            log_lines.append(
+                "[Run] WARNING: Reddit fetched 0 posts across all eligible "
+                f"games even after {reddit_retries} retry attempt(s).  "
+                "Marking run as partial_failure."
+            )
+        elif errors:
+            final_status = "partial"
+        else:
+            final_status = "success"
 
     except Exception as exc:
         msg = f"Fatal ingestion error: {exc}"
@@ -200,12 +308,18 @@ def run_ingestion() -> dict:
         _status["last_run_errors"] = errors
         _status["games_processed"] = games_processed
         _status["posts_collected"] = posts_collected
+        _status["reddit_health"] = reddit_health
+        _status["reddit_fetched_total"] = reddit_fetched_total
+        _status["reddit_retries"] = reddit_retries
 
     return {
         "status": final_status,
         "games_processed": games_processed,
         "posts_collected": posts_collected,
         "errors": errors,
+        "reddit_health": reddit_health,
+        "reddit_fetched_total": reddit_fetched_total,
+        "reddit_retries": reddit_retries,
     }
 
 
@@ -344,16 +458,26 @@ def _step4_reddit(
     game: Game,
     log_lines: list,
     errors: list,
-) -> int:
-    """Fetch Reddit posts + comments from configured subreddits."""
+) -> tuple[int, int]:
+    """Fetch Reddit posts from configured subreddits.
+
+    Returns:
+        (saved, fetched) tuple.
+            saved   — count of NEW rows inserted into raw_posts
+            fetched — count of submissions Arctic Shift actually returned
+                      across all subreddits for this game (duplicates included).
+                      Used by run_ingestion to detect when the whole Reddit
+                      phase silently fetched nothing.
+    """
     subreddits: list[str] = game.subreddits or []
     if not subreddits:
         log_lines.append(
             f"[Step 4] '{game.name}': no subreddits configured — skipping Reddit."
         )
-        return 0
+        return 0, 0
 
     total_saved = 0
+    total_fetched = 0
     for raw_sub in subreddits:
         # Normalise: accept full URLs like https://www.reddit.com/r/gaming/,
         # "r/gaming", or plain names like "gaming"
@@ -366,6 +490,7 @@ def _step4_reddit(
             continue
         try:
             submissions = fetch_subreddit_posts(sub_name, limit=25, game_name=game.name)
+            total_fetched += len(submissions)
             total_saved += _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
             )
@@ -380,9 +505,10 @@ def _step4_reddit(
             logger.error(msg)
 
     log_lines.append(
-        f"[Step 4] '{game.name}': {total_saved} new Reddit post(s)/comment(s)."
+        f"[Step 4] '{game.name}': {total_saved} new Reddit post(s) "
+        f"(fetched {total_fetched})."
     )
-    return total_saved
+    return total_saved, total_fetched
 
 
 # ── Step 4b: Bluesky ────────────────────────────────────────────────────────

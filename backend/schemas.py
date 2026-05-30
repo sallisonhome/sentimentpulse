@@ -190,11 +190,17 @@ class PostsPageResponse(BaseModel):
 class IngestStatusResponse(BaseModel):
     is_running: bool
     last_run_at: Optional[str] = None
+    # "never" | "success" | "partial" | "partial_failure" | "error"
     last_run_status: str
     last_run_errors: List[str] = Field(default_factory=list)
     games_processed: int = 0
     posts_collected: int = 0
     next_run_at: Optional[str] = None
+    # Per-source health from the most recent run.
+    # "unknown" | "skipped" | "ok" | "degraded" | "failed"
+    reddit_health: str = "unknown"
+    reddit_fetched_total: int = 0
+    reddit_retries: int = 0
 
 
 class IngestRunResponse(BaseModel):

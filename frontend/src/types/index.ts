@@ -192,14 +192,31 @@ export interface WindowSummary {
 
 // ── Ingestion ─────────────────────────────────────────────────────────────────
 
+export type IngestRunStatus =
+  | 'never'
+  | 'success'
+  | 'partial'
+  | 'partial_failure'
+  | 'error'
+
+export type SourceHealth =
+  | 'unknown'
+  | 'skipped'
+  | 'ok'
+  | 'degraded'
+  | 'failed'
+
 export interface IngestStatus {
   is_running: boolean
   last_run_at: string | null
-  last_run_status: string
+  last_run_status: IngestRunStatus | string
   last_run_errors: string[]
   games_processed: number
   posts_collected: number
   next_run_at: string | null
+  reddit_health: SourceHealth | string
+  reddit_fetched_total: number
+  reddit_retries: number
 }
 
 export interface IngestRunResult {
