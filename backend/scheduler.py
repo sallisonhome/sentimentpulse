@@ -26,6 +26,7 @@ from tzlocal import get_localzone
 logger = logging.getLogger(__name__)
 
 _JOB_ID = "daily_ingestion"
+_SMOKE_JOB_ID = "weekly_smoke_test"
 
 # Module-level scheduler instance — created once in create_scheduler()
 _scheduler: Optional[BackgroundScheduler] = None
@@ -59,8 +60,20 @@ def create_scheduler() -> BackgroundScheduler:
         replace_existing=True,
     )
 
+    # Weekly source smoke test — Gap 1 hardening.  Runs Sunday 03:00 local,
+    # one hour after the daily ingest, so the smoke test never collides with
+    # an ongoing ingestion and we get an early-week health signal.
+    _scheduler.add_job(
+        _smoke_test_job,
+        trigger=CronTrigger(day_of_week="sun", hour=3, minute=0),
+        id=_SMOKE_JOB_ID,
+        name="Weekly source smoke test",
+        replace_existing=True,
+    )
+
     logger.info(
-        f"Scheduler created — daily ingestion job registered at {ingest_hour:02d}:{ingest_minute:02d} local time."
+        f"Scheduler created — daily ingestion at {ingest_hour:02d}:{ingest_minute:02d} "
+        f"+ weekly smoke test Sun 03:00 local time."
     )
     return _scheduler
 
@@ -97,3 +110,15 @@ def _ingest_job() -> None:
         set_next_run(datetime.fromisoformat(next_iso))
 
     logger.info("Scheduled daily ingestion complete. Next run: %s", next_iso)
+
+
+def _smoke_test_job() -> None:
+    """APScheduler entry-point for the weekly source smoke test."""
+    from services.source_smoke_test import run_smoke_test  # noqa: PLC0415
+
+    logger.info("Scheduled weekly smoke test starting.")
+    result = run_smoke_test()
+    logger.info(
+        "Scheduled weekly smoke test complete. overall_status=%s",
+        result.get("overall_status"),
+    )

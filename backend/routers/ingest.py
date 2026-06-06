@@ -521,3 +521,26 @@ def diag_log(
         "count": len(lines),
         "lines": lines,
     }
+
+
+# ── Weekly smoke test diag (Gap 1) ────────────────────────────────────────────
+
+@router.get("/diag/smoke_test")
+def diag_smoke_test():
+    """Return the most recent weekly source smoke test results.
+
+    Reads `services.source_smoke_test._smoke_status` so the frontend can
+    surface upstream-API regressions before they zero-out a cron run.
+    """
+    from services.source_smoke_test import get_smoke_status
+    return get_smoke_status()
+
+
+@router.post("/diag/smoke_test/run")
+def diag_smoke_test_run():
+    """Manually trigger the weekly smoke test (for ops / on-demand QA).
+
+    Synchronous — the smoke test is fast (~10s) so we don't background it.
+    """
+    from services.source_smoke_test import run_smoke_test
+    return run_smoke_test()

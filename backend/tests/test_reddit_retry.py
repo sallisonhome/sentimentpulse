@@ -45,18 +45,30 @@ def db_with_games():
 # Helpers: monkeypatch every dependency run_ingestion touches so we can drive
 # its control flow purely through _step4_reddit.
 
-def _patches_for(reddit_step_side_effect):
-    """Build the patch context for run_ingestion that no-ops every step
-    except _step4_reddit (which uses the given side_effect)."""
+def _patches_for(
+    reddit_step_side_effect,
+    *,
+    steam_review_return=(1, 10),
+    steam_forum_return=(1, 10),
+    bluesky_return=(1, 10),
+):
+    """Build the patch context for run_ingestion.
+
+    Defaults make Steam and Bluesky 'healthy' so they don't trigger
+    partial_failure during Reddit-focused tests.  Override per-source
+    return values to exercise specific scenarios.
+
+    All source steps now return (saved, fetched) tuples.
+    """
     return [
         patch("services.ingestor.SessionLocal", autospec=True),
         patch("services.ingestor.load_model", lambda: None),
         patch("services.ingestor.time.sleep", lambda _: None),  # skip backoffs
         patch("services.ingestor._step1_discover_games"),
-        patch("services.ingestor._step2_steam_reviews", return_value=0),
-        patch("services.ingestor._step3_steam_forums", return_value=0),
+        patch("services.ingestor._step2_steam_reviews", return_value=steam_review_return),
+        patch("services.ingestor._step3_steam_forums", return_value=steam_forum_return),
         patch("services.ingestor._step4_reddit", side_effect=reddit_step_side_effect),
-        patch("services.ingestor._step4b_bluesky", return_value=0),
+        patch("services.ingestor._step4b_bluesky", return_value=bluesky_return),
         patch("services.ingestor._step5_classify_sentiment"),
         patch("services.ingestor._step6_extract_topics"),
         patch("services.ingestor._step7_daily_summary"),
@@ -136,10 +148,10 @@ def test_all_retries_exhausted(db_with_games):
 
 
 def test_no_eligible_games_marks_skipped(db_with_games):
-    """If no game has subreddits configured -> skipped / success.
+    """If no game has subreddits configured -> reddit_health=skipped.
 
-    We simulate this by replacing _step1_discover_games' return value with
-    only the game that has no subreddits.
+    Reddit alone returning skipped should NOT mark the run as partial_failure
+    — status stays success because the other sources still ingested.
     """
     from services import ingestor
     no_sub_games = [g for g in db_with_games.query(Game).all() if not g.subreddits]
@@ -158,4 +170,121 @@ def test_no_eligible_games_marks_skipped(db_with_games):
 
     assert result["reddit_health"] == "skipped"
     assert result["reddit_retries"] == 0
+    assert result["status"] == "success"
+
+
+# ── New tests for cross-source partial_failure hardening (2026-06-06) ─────────
+
+def test_bluesky_failure_marks_partial_failure(db_with_games, monkeypatch):
+    """If Bluesky returns 0 fetched across all games even after retries,
+    the run must be marked partial_failure even when Reddit is healthy.
+    Regression test for the 2026-06-06 silent failure."""
+    # Bluesky eligibility requires creds env vars
+    monkeypatch.setenv("BLUESKY_HANDLE", "test.bsky.social")
+    monkeypatch.setenv("BLUESKY_APP_PASSWORD", "test-pw-test-pw")
+    monkeypatch.delenv("BLUESKY_ENABLED", raising=False)
+
+    def step4(db, game, log, errs):
+        if not game.subreddits:
+            return (0, 0)
+        return (5, 25)  # Reddit healthy
+
+    patches = _patches_for(
+        step4,
+        bluesky_return=(0, 0),   # Bluesky always returns 0 fetched
+    )
+    started = [p.start() for p in patches]
+    try:
+        from services import ingestor
+        started[0].return_value = db_with_games
+        started[3].return_value = db_with_games.query(Game).all()
+        ingestor._status["is_running"] = False
+        result = ingestor.run_ingestion()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["reddit_health"] == "ok"
+    assert result["bluesky_health"] == "failed"
+    assert result["bluesky_retries"] == 2  # both backoffs exhausted
+    assert result["status"] == "partial_failure"
+
+
+def test_steam_review_failure_marks_partial_failure(db_with_games):
+    """If Steam reviews returns 0 fetched across all games, the run must
+    be marked partial_failure even when other sources are healthy."""
+    def step4(db, game, log, errs):
+        if not game.subreddits:
+            return (0, 0)
+        return (5, 25)
+
+    patches = _patches_for(
+        step4,
+        steam_review_return=(0, 0),  # Steam reviews silent
+    )
+    started = [p.start() for p in patches]
+    try:
+        from services import ingestor
+        started[0].return_value = db_with_games
+        started[3].return_value = db_with_games.query(Game).all()
+        ingestor._status["is_running"] = False
+        result = ingestor.run_ingestion()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["steam_review_health"] == "failed"
+    assert result["status"] == "partial_failure"
+
+
+def test_bluesky_retry_recovers(db_with_games, monkeypatch):
+    """First-pass Bluesky returns 0 but retry succeeds -> bluesky_health=degraded
+    and overall status=success."""
+    monkeypatch.setenv("BLUESKY_HANDLE", "test.bsky.social")
+    monkeypatch.setenv("BLUESKY_APP_PASSWORD", "test-pw-test-pw")
+    monkeypatch.delenv("BLUESKY_ENABLED", raising=False)
+
+    call_count = {"n": 0}
+
+    def bluesky_step(db, game, log, errs):
+        call_count["n"] += 1
+        # First 3 calls (one per game in Phase A) return 0; later calls (retry) succeed
+        if call_count["n"] <= 3:
+            return (0, 0)
+        return (5, 25)
+
+    def reddit_step(db, game, log, errs):
+        if not game.subreddits:
+            return (0, 0)
+        return (5, 25)
+
+    # Build patches manually so we can set side_effect on the bluesky one
+    patches = [
+        patch("services.ingestor.SessionLocal", autospec=True),
+        patch("services.ingestor.load_model", lambda: None),
+        patch("services.ingestor.time.sleep", lambda _: None),
+        patch("services.ingestor._step1_discover_games"),
+        patch("services.ingestor._step2_steam_reviews", return_value=(1, 10)),
+        patch("services.ingestor._step3_steam_forums", return_value=(1, 10)),
+        patch("services.ingestor._step4_reddit", side_effect=reddit_step),
+        patch("services.ingestor._step4b_bluesky", side_effect=bluesky_step),
+        patch("services.ingestor._step5_classify_sentiment"),
+        patch("services.ingestor._step6_extract_topics"),
+        patch("services.ingestor._step7_daily_summary"),
+        patch("services.ingestor._step9_monthly_summaries"),
+        patch("services.ingestor._step8_write_log"),
+    ]
+    started = [p.start() for p in patches]
+    try:
+        from services import ingestor
+        started[0].return_value = db_with_games
+        started[3].return_value = db_with_games.query(Game).all()
+        ingestor._status["is_running"] = False
+        result = ingestor.run_ingestion()
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert result["bluesky_health"] == "degraded"
+    assert result["bluesky_retries"] == 1
     assert result["status"] == "success"

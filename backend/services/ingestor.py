@@ -80,8 +80,9 @@ _status: dict = {
     #   "never"            — first boot, no run yet
     #   "success"          — all sources fetched data
     #   "partial"          — some games errored mid-run, but overall ok
-    #   "partial_failure"  — Reddit returned 0 fetches across every game even
-    #                        after retries (soft alarm state).
+    #   "partial_failure"  — ANY source returned 0 fetches across every
+    #                        eligible game (even after retries where applicable).
+    #                        Currently triggered by Reddit, Bluesky, and Steam.
     #   "error"            — a fatal exception aborted the run
     "last_run_status": "never",
     "last_run_errors": [],
@@ -89,14 +90,23 @@ _status: dict = {
     "posts_collected": 0,
     "next_run_at": None,          # ISO-8601 string — set by scheduler
     # Per-source health snapshot from the most recent run.  Each value:
-    #   "ok"        — fetched > 0
+    #   "ok"        — fetched > 0 on first attempt
     #   "degraded"  — first attempt fetched 0 but a retry recovered
     #   "failed"    — fetched 0 even after all retries
-    #   "skipped"   — no eligible games (no subreddits configured)
+    #   "skipped"   — no eligible games (no subreddits, no creds, etc.)
+    #   "silent"    — fetched > 0 today but ≥90% drop vs prior-7d baseline
+    #                 (set by silent-source detector after the run)
     #   "unknown"   — no run has happened yet
     "reddit_health": "unknown",
     "reddit_fetched_total": 0,
     "reddit_retries": 0,          # number of full-Step-4 retries actually run
+    "bluesky_health": "unknown",
+    "bluesky_fetched_total": 0,
+    "bluesky_retries": 0,
+    "steam_review_health": "unknown",
+    "steam_review_fetched_total": 0,
+    "steam_forum_health": "unknown",
+    "steam_forum_fetched_total": 0,
 }
 
 
@@ -135,6 +145,13 @@ def run_ingestion() -> dict:
     reddit_health = "unknown"
     reddit_fetched_total = 0
     reddit_retries = 0
+    bluesky_health = "unknown"
+    bluesky_fetched_total = 0
+    bluesky_retries = 0
+    steam_review_health = "unknown"
+    steam_review_fetched_total = 0
+    steam_forum_health = "unknown"
+    steam_forum_fetched_total = 0
 
     # Ensure the NLP model is loaded before processing any posts
     load_model()
@@ -152,31 +169,47 @@ def run_ingestion() -> dict:
         )
 
         # Per-run aggregates that drive run-level health verdicts at the end.
+        # Captured per source so we can detect silent-failure regressions on
+        # ANY source independently — not just Reddit.  CLAUDE.md §19.
         reddit_fetched_total = 0
         reddit_retries = 0
+        bluesky_fetched_total = 0
+        bluesky_retries = 0
+        steam_review_fetched_total = 0
+        steam_forum_fetched_total = 0
         per_game_posts: dict[int, int] = {}
 
-        def _safe_run_steps_2_to_4b(game: Game) -> tuple[int, int]:
+        # Bluesky eligibility: both creds set and kill-switch off.
+        # Resolved once per run so per-game function can be pure.
+        bsky_kill_switch = os.environ.get("BLUESKY_ENABLED", "").lower() == "false"
+        bsky_handle = os.environ.get("BLUESKY_HANDLE", "").strip()
+        bsky_pw = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
+        bluesky_eligible = bool(bsky_handle and bsky_pw and not bsky_kill_switch)
+
+        def _safe_run_steps_2_to_4b(game: Game) -> tuple[int, int, int, int, int]:
             """Run the fetching steps (2, 3, 4, 4b) for one game.
 
-            Returns (game_posts, reddit_fetched) for run-level aggregation.
+            Returns 5-tuple:
+                (game_posts,
+                 reddit_fetched, bluesky_fetched,
+                 steam_review_fetched, steam_forum_fetched)
+
             Sentiment/topics/summary (Steps 5-7) are deferred to a second
-            pass so they always run AFTER any Reddit retries land their data.
+            pass so they always run AFTER any retries land their data.
             """
             game_posts_local = 0
-            reddit_fetched_local = 0
 
-            game_posts_local += _step2_steam_reviews(db, game, log_lines, errors)
-            game_posts_local += _step3_steam_forums(db, game, log_lines, errors)
+            sr_saved, sr_fetched = _step2_steam_reviews(db, game, log_lines, errors)
+            game_posts_local += sr_saved
 
-            saved, fetched = _step4_reddit(db, game, log_lines, errors)
-            game_posts_local += saved
-            reddit_fetched_local = fetched
+            sf_saved, sf_fetched = _step3_steam_forums(db, game, log_lines, errors)
+            game_posts_local += sf_saved
 
-            # Bluesky runs when both creds are set; respects BLUESKY_ENABLED=false kill-switch.
-            bsky_kill_switch = os.environ.get("BLUESKY_ENABLED", "").lower() == "false"
-            bsky_handle = os.environ.get("BLUESKY_HANDLE", "").strip()
-            bsky_pw = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
+            r_saved, r_fetched = _step4_reddit(db, game, log_lines, errors)
+            game_posts_local += r_saved
+
+            b_saved = 0
+            b_fetched = 0
             if bsky_kill_switch:
                 log_lines.append(
                     f"[Step 4b] '{game.name}': Bluesky disabled (BLUESKY_ENABLED=false)"
@@ -186,48 +219,51 @@ def run_ingestion() -> dict:
                     f"[Step 4b] '{game.name}': Bluesky skipped (no credentials)"
                 )
             else:
-                game_posts_local += _step4b_bluesky(db, game, log_lines, errors)
+                b_saved, b_fetched = _step4b_bluesky(db, game, log_lines, errors)
+                game_posts_local += b_saved
 
-            return game_posts_local, reddit_fetched_local
+            return game_posts_local, r_fetched, b_fetched, sr_fetched, sf_fetched
 
-        # Phase A: fetch sources (Steps 2 -> 4b) for every active game
+        # ── Phase A: fetch sources (Steps 2 -> 4b) for every active game ────────
         for game in active_games:
             try:
-                game_posts, reddit_fetched = _safe_run_steps_2_to_4b(game)
+                (game_posts, r_f, b_f, sr_f, sf_f) = _safe_run_steps_2_to_4b(game)
                 per_game_posts[game.id] = per_game_posts.get(game.id, 0) + game_posts
-                reddit_fetched_total += reddit_fetched
+                reddit_fetched_total += r_f
+                bluesky_fetched_total += b_f
+                steam_review_fetched_total += sr_f
+                steam_forum_fetched_total += sf_f
             except Exception as exc:
                 msg = f"Unhandled error processing game '{game.name}': {exc}"
                 errors.append(msg)
                 logger.exception(msg)
                 # Continue with next game - never abort the whole pipeline
 
-        # Phase B: Reddit-retry loop
-        # Hardening: if EVERY active game returned 0 Reddit posts fetched
-        # despite having subreddits configured, Arctic Shift was either
-        # down, rate-limiting the droplet, or transiently misbehaving.
-        # Try the whole Reddit phase again with exponential backoff.
-        eligible_games = [g for g in active_games if g.subreddits]
-        backoffs = [60, 300]  # 1 min, then 5 min
+        # ── Phase B.1: Reddit retry-with-backoff ─────────────────────────────
+        # If EVERY active game returned 0 Reddit posts fetched despite having
+        # subreddits configured, Arctic Shift was down, rate-limiting, or
+        # transiently misbehaving.  Try again with exponential backoff.
+        eligible_reddit_games = [g for g in active_games if g.subreddits]
+        reddit_backoffs = [60, 300]  # 1 min, then 5 min
 
         while (
             reddit_fetched_total == 0
-            and eligible_games
-            and reddit_retries < len(backoffs)
+            and eligible_reddit_games
+            and reddit_retries < len(reddit_backoffs)
         ):
-            delay = backoffs[reddit_retries]
+            delay = reddit_backoffs[reddit_retries]
             reddit_retries += 1
             msg = (
                 f"[Step 4] Reddit returned 0 fetches across all "
-                f"{len(eligible_games)} eligible game(s).  Sleeping {delay}s "
-                f"before retry #{reddit_retries}/{len(backoffs)}..."
+                f"{len(eligible_reddit_games)} eligible game(s).  Sleeping {delay}s "
+                f"before retry #{reddit_retries}/{len(reddit_backoffs)}..."
             )
             log_lines.append(msg)
             logger.warning(msg)
             time.sleep(delay)
 
             retry_fetched = 0
-            for game in eligible_games:
+            for game in eligible_reddit_games:
                 try:
                     saved, fetched = _step4_reddit(db, game, log_lines, errors)
                     per_game_posts[game.id] = (
@@ -245,22 +281,97 @@ def run_ingestion() -> dict:
             reddit_fetched_total += retry_fetched
             log_lines.append(
                 f"[Step 4 retry #{reddit_retries}] fetched {retry_fetched} "
-                f"posts across {len(eligible_games)} eligible game(s)."
+                f"posts across {len(eligible_reddit_games)} eligible game(s)."
             )
 
-        # Compute reddit_health verdict for the run.
-        if not eligible_games:
-            reddit_health = "skipped"
-        elif reddit_fetched_total == 0:
-            reddit_health = "failed"
-        elif reddit_retries > 0:
-            reddit_health = "degraded"
-        else:
-            reddit_health = "ok"
+        # ── Phase B.2: Bluesky retry-with-backoff (symmetric to Reddit) ─────────
+        bluesky_backoffs = [60, 300]
+        while (
+            bluesky_eligible
+            and bluesky_fetched_total == 0
+            and active_games
+            and bluesky_retries < len(bluesky_backoffs)
+        ):
+            delay = bluesky_backoffs[bluesky_retries]
+            bluesky_retries += 1
+            msg = (
+                f"[Step 4b] Bluesky returned 0 fetches across all "
+                f"{len(active_games)} game(s).  Sleeping {delay}s before "
+                f"retry #{bluesky_retries}/{len(bluesky_backoffs)}..."
+            )
+            log_lines.append(msg)
+            logger.warning(msg)
+            time.sleep(delay)
+
+            retry_fetched = 0
+            for game in active_games:
+                try:
+                    saved, fetched = _step4b_bluesky(db, game, log_lines, errors)
+                    per_game_posts[game.id] = (
+                        per_game_posts.get(game.id, 0) + saved
+                    )
+                    retry_fetched += fetched
+                except Exception as exc:
+                    err = (
+                        f"[Step 4b retry #{bluesky_retries}] Unhandled error "
+                        f"for '{game.name}': {exc}"
+                    )
+                    errors.append(err)
+                    logger.exception(err)
+
+            bluesky_fetched_total += retry_fetched
+            log_lines.append(
+                f"[Step 4b retry #{bluesky_retries}] fetched {retry_fetched} "
+                f"posts across {len(active_games)} game(s)."
+            )
+
+        # ── Compute per-source health verdicts ───────────────────────────────
+        def _verdict(eligible: bool, fetched_total: int, retries: int) -> str:
+            if not eligible:
+                return "skipped"
+            if fetched_total == 0:
+                return "failed"
+            if retries > 0:
+                return "degraded"
+            return "ok"
+
+        reddit_health = _verdict(
+            bool(eligible_reddit_games), reddit_fetched_total, reddit_retries
+        )
+        bluesky_health = _verdict(
+            bluesky_eligible, bluesky_fetched_total, bluesky_retries
+        )
+        # Steam doesn't have retry semantics yet (Steam outages are usually
+        # short and the next-day cron recovers).  We still compute health so
+        # partial_failure surfaces if Steam goes 0 across every active game.
+        steam_review_health = _verdict(
+            bool(active_games), steam_review_fetched_total, 0
+        )
+        steam_forum_health = _verdict(
+            bool(active_games), steam_forum_fetched_total, 0
+        )
+
+        # ── Silent-source detection (Gap 3) ──────────────────────────────────
+        # For each source whose fresh verdict is 'ok', compare last-24h DB
+        # rows against the prior-7d daily average.  If today is ≥90% below
+        # the baseline AND the baseline is non-trivial, override the verdict
+        # to 'silent' — fetches succeeded but persistence collapsed (the
+        # exact pattern of the 2026-05-30 Reddit and 2026-06-06 Bluesky
+        # regressions).  CLAUDE.md §19: log lines and counters are not
+        # ground truth; the user-facing row count is.
+        silent_results = _detect_silent_sources(db, log_lines)
+        if silent_results.get("reddit") and reddit_health == "ok":
+            reddit_health = "silent"
+        if silent_results.get("bluesky") and bluesky_health == "ok":
+            bluesky_health = "silent"
+        if silent_results.get("steam_review") and steam_review_health == "ok":
+            steam_review_health = "silent"
+        if silent_results.get("steam_forum") and steam_forum_health == "ok":
+            steam_forum_health = "silent"
 
         # Phase C: per-game analysis (Steps 5 -> 7)
-        # Runs AFTER any Reddit retries so today's summary includes all
-        # data that landed today - not just the first-pass results.
+        # Runs AFTER any retries so today's summary includes all data that
+        # landed today — not just the first-pass results.
         for game in active_games:
             try:
                 _step5_classify_sentiment(db, game, log_lines, errors)
@@ -278,14 +389,39 @@ def run_ingestion() -> dict:
 
         # Final status precedence:
         #   error  >  partial_failure  >  partial  >  success
-        # partial_failure is dedicated to per-source structural failures
-        # (currently Reddit; can extend to Bluesky etc.).
-        if reddit_health == "failed":
+        # partial_failure fires if ANY source is in 'failed' state.
+        failed_sources = [
+            name for name, health in (
+                ("Reddit", reddit_health),
+                ("Bluesky", bluesky_health),
+                ("Steam reviews", steam_review_health),
+                ("Steam forums", steam_forum_health),
+            ) if health == "failed"
+        ]
+        silent_sources = [
+            name for name, health in (
+                ("Reddit", reddit_health),
+                ("Bluesky", bluesky_health),
+                ("Steam reviews", steam_review_health),
+                ("Steam forums", steam_forum_health),
+            ) if health == "silent"
+        ]
+        if failed_sources:
             final_status = "partial_failure"
             log_lines.append(
-                "[Run] WARNING: Reddit fetched 0 posts across all eligible "
-                f"games even after {reddit_retries} retry attempt(s).  "
+                "[Run] WARNING: the following source(s) fetched 0 posts "
+                f"across all eligible games: {', '.join(failed_sources)}.  "
                 "Marking run as partial_failure."
+            )
+        elif silent_sources:
+            # Silent sources are also treated as partial_failure so the
+            # status endpoint + frontend banner can alert immediately —
+            # row counts collapsing by ≥90% is just as bad as fetched=0.
+            final_status = "partial_failure"
+            log_lines.append(
+                "[Run] WARNING: the following source(s) are silent — "
+                "≥90% drop in last-24h row count vs prior-7d baseline: "
+                f"{', '.join(silent_sources)}.  Marking run as partial_failure."
             )
         elif errors:
             final_status = "partial"
@@ -311,6 +447,13 @@ def run_ingestion() -> dict:
         _status["reddit_health"] = reddit_health
         _status["reddit_fetched_total"] = reddit_fetched_total
         _status["reddit_retries"] = reddit_retries
+        _status["bluesky_health"] = bluesky_health
+        _status["bluesky_fetched_total"] = bluesky_fetched_total
+        _status["bluesky_retries"] = bluesky_retries
+        _status["steam_review_health"] = steam_review_health
+        _status["steam_review_fetched_total"] = steam_review_fetched_total
+        _status["steam_forum_health"] = steam_forum_health
+        _status["steam_forum_fetched_total"] = steam_forum_fetched_total
 
     return {
         "status": final_status,
@@ -320,7 +463,97 @@ def run_ingestion() -> dict:
         "reddit_health": reddit_health,
         "reddit_fetched_total": reddit_fetched_total,
         "reddit_retries": reddit_retries,
+        "bluesky_health": bluesky_health,
+        "bluesky_fetched_total": bluesky_fetched_total,
+        "bluesky_retries": bluesky_retries,
+        "steam_review_health": steam_review_health,
+        "steam_review_fetched_total": steam_review_fetched_total,
+        "steam_forum_health": steam_forum_health,
+        "steam_forum_fetched_total": steam_forum_fetched_total,
     }
+
+
+# ── Silent-source detector ────────────────────────────────────────────────────
+# Threshold constants are module-level so tests can monkeypatch them without
+# threading parameters through every call site.
+_SILENT_DROP_RATIO = 0.10       # today < 10% of prior-7d avg ⇒ silent
+_SILENT_MIN_BASELINE = 5.0       # prior-7d daily average must be ≥ this to
+                                 # flag silent (avoids noise on quiet sources)
+
+
+def _detect_silent_sources(db: Session, log_lines: list) -> dict[str, bool]:
+    """
+    Return {source_name: True} for any source whose last-24h RawPost row
+    count has dropped ≥ (1 - _SILENT_DROP_RATIO) below the prior-7d daily
+    average AND whose baseline is ≥ _SILENT_MIN_BASELINE rows/day.
+
+    This is the ground-truth check that catches silent regressions where
+    fetched > 0 (fetch counters are green) but persistence collapses —
+    the exact failure mode of the 2026-05-30 Reddit and 2026-06-06
+    Bluesky bugs.  CLAUDE.md §19.
+
+    The detector reads `raw_posts.collected_at` — the persisted, user-
+    facing column — not any in-memory counter.
+    """
+    results: dict[str, bool] = {}
+    now = datetime.now(timezone.utc)
+    last_24h_start = now - timedelta(hours=24)
+    prior_7d_start = now - timedelta(days=8)
+    prior_7d_end = last_24h_start  # exclusive upper bound = last_24h_start
+
+    sources = [
+        ("reddit", SourceEnum.reddit),
+        ("bluesky", SourceEnum.bluesky),
+        ("steam_review", SourceEnum.steam_review),
+        ("steam_forum", SourceEnum.steam_forum),
+    ]
+    for key, source_enum in sources:
+        try:
+            today_count = (
+                db.query(func.count(RawPost.id))
+                .filter(RawPost.source == source_enum)
+                .filter(RawPost.collected_at >= last_24h_start)
+                .scalar()
+                or 0
+            )
+            prior_count = (
+                db.query(func.count(RawPost.id))
+                .filter(RawPost.source == source_enum)
+                .filter(RawPost.collected_at >= prior_7d_start)
+                .filter(RawPost.collected_at < prior_7d_end)
+                .scalar()
+                or 0
+            )
+            prior_daily_avg = prior_count / 7.0
+
+            # Need a meaningful baseline; otherwise a quiet/new source
+            # would always look 'silent'.
+            if prior_daily_avg < _SILENT_MIN_BASELINE:
+                results[key] = False
+                log_lines.append(
+                    f"[Silent-check] {key}: baseline {prior_daily_avg:.1f}/day "
+                    f"below threshold {_SILENT_MIN_BASELINE}/day — skipped."
+                )
+                continue
+
+            ratio = today_count / prior_daily_avg if prior_daily_avg else 0
+            is_silent = ratio < _SILENT_DROP_RATIO
+            results[key] = is_silent
+            log_lines.append(
+                f"[Silent-check] {key}: today={today_count}, "
+                f"prior_7d_avg={prior_daily_avg:.1f}/day, ratio={ratio:.2%} "
+                f"({'SILENT' if is_silent else 'ok'})."
+            )
+        except Exception as exc:
+            # Never let detector errors break a successful run.
+            logger.exception(
+                f"Silent-source detector failed for {key}: {exc}"
+            )
+            results[key] = False
+            log_lines.append(
+                f"[Silent-check] {key}: detector error ({exc}); skipped."
+            )
+    return results
 
 
 # ── Step 1: Game Discovery ────────────────────────────────────────────────────
@@ -403,8 +636,14 @@ def _step2_steam_reviews(
     game: Game,
     log_lines: list,
     errors: list,
-) -> int:
-    """Fetch Steam reviews; return count of newly saved posts."""
+) -> tuple[int, int]:
+    """Fetch Steam reviews.
+
+    Returns:
+        (saved, fetched).  Fetched counts the reviews returned by the Steam
+        API (duplicates included); the run loop uses per-source fetched
+        totals to detect silent-failure regressions.
+    """
     try:
         known_ids: set[str] = {
             row[0]
@@ -418,13 +657,13 @@ def _step2_steam_reviews(
         msg = f"[Step 2] Steam reviews failed for '{game.name}': {exc}"
         errors.append(msg)
         logger.error(msg)
-        return 0
+        return 0, 0
 
     saved = _bulk_save_posts(db, game.id, SourceEnum.steam_review, reviews, errors)
     log_lines.append(
         f"[Step 2] '{game.name}': {saved} new review(s) (fetched {len(reviews)})."
     )
-    return saved
+    return saved, len(reviews)
 
 
 # ── Step 3: Steam Forums ──────────────────────────────────────────────────────
@@ -434,21 +673,21 @@ def _step3_steam_forums(
     game: Game,
     log_lines: list,
     errors: list,
-) -> int:
-    """Scrape Steam forum threads; return count of newly saved posts."""
+) -> tuple[int, int]:
+    """Scrape Steam forum threads.  Returns (saved, fetched)."""
     try:
         posts = scrape_forum_threads(game.steam_app_id, max_threads=10)
     except Exception as exc:
         msg = f"[Step 3] Steam forums failed for '{game.name}': {exc}"
         errors.append(msg)
         logger.error(msg)
-        return 0
+        return 0, 0
 
     saved = _bulk_save_posts(db, game.id, SourceEnum.steam_forum, posts, errors)
     log_lines.append(
         f"[Step 3] '{game.name}': {saved} new forum post(s) (fetched {len(posts)})."
     )
-    return saved
+    return saved, len(posts)
 
 
 # ── Step 4: Reddit ────────────────────────────────────────────────────────────
@@ -518,8 +757,13 @@ def _step4b_bluesky(
     game: Game,
     log_lines: list,
     errors: list,
-) -> int:
-    """Fetch Bluesky posts mentioning the game."""
+) -> tuple[int, int]:
+    """Fetch Bluesky posts mentioning the game.  Returns (saved, fetched).
+
+    Fetched counts posts Bluesky returned for this game (duplicates included);
+    the run loop uses the per-source total to detect silent-failure regressions
+    and to trigger retry-with-backoff (parallel to Reddit) when the total is 0.
+    """
     try:
         posts = fetch_bluesky_posts_for_game(game.name, limit=100)
         total_saved = _bulk_save_posts(
@@ -529,11 +773,12 @@ def _step4b_bluesky(
         msg = f"[Step 4b] Bluesky error for '{game.name}': {exc}"
         errors.append(msg)
         logger.error(msg)
-        return 0
+        return 0, 0
     log_lines.append(
-        f"[Step 4b] '{game.name}': {total_saved} new Bluesky post(s)."
+        f"[Step 4b] '{game.name}': {total_saved} new Bluesky post(s) "
+        f"(fetched {len(posts)})."
     )
-    return total_saved
+    return total_saved, len(posts)
 
 
 # ── Step 5: Sentiment Classification ─────────────────────────────────────────
