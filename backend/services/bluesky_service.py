@@ -317,7 +317,16 @@ def _fetch_page(
         params["cursor"] = cursor
 
     url = f"{BLUESKY_BASE}{BLUESKY_SEARCH_PATH}"
-    headers = {**_BASE_HEADERS, "Authorization": f"Bearer {access_jwt}"}
+    # IMPORTANT: app.bsky.feed.searchPosts is an AppView query.  Calling it on
+    # bsky.social (our PDS host) requires the atproto-proxy header so the PDS
+    # routes the request to the Bluesky AppView.  Without this header the PDS
+    # returns HTTP 400 because the endpoint isn't implemented on the PDS itself.
+    # See https://atproto.com/specs/xrpc#service-proxying
+    headers = {
+        **_BASE_HEADERS,
+        "Authorization": f"Bearer {access_jwt}",
+        "atproto-proxy": "did:web:api.bsky.app#bsky_appview",
+    }
     try:
         resp = requests.get(url, params=params, headers=headers, timeout=_TIMEOUT)
     except Exception as exc:
@@ -329,7 +338,14 @@ def _fetch_page(
         return [], None, 401
 
     if resp.status_code != 200:
-        logger.warning("bluesky: HTTP %d for query=%r", resp.status_code, query)
+        # Surface the response body (Bluesky returns {error, message}) so
+        # silent-failure debugging doesn't require running this locally.
+        # CLAUDE.md §19: never hide signals that would let us detect a bug.
+        body_preview = (resp.text or "")[:300]
+        logger.warning(
+            "bluesky: HTTP %d for query=%r body=%s",
+            resp.status_code, query, body_preview,
+        )
         return [], None, resp.status_code
 
     try:
@@ -396,9 +412,14 @@ def fetch_bluesky_posts_for_game(
         return []
 
     # ── Setup ─────────────────────────────────────────────────────────────────
+    # status starts as 'ok' but flips to 'http_<code>' on the first non-200
+    # response we observe.  Previously it stayed 'ok' regardless of HTTP
+    # errors, which masked the 2026-06 bluesky.social atproto-proxy routing
+    # change for 2+ days.  CLAUDE.md §19: don't log status=ok on a failed call.
     status = "ok"
     total_posts = 0
     total_pages = 0
+    last_http_status: Optional[int] = None
 
     results: list[dict] = []
     search_query = _build_search_query(game_name)
@@ -424,6 +445,14 @@ def fetch_bluesky_posts_for_game(
                 search_query, min(remaining, 100), cursor, access_jwt
             )
             total_pages = page_num
+            last_http_status = http_status
+            # Flip status to a structured error code on the FIRST non-200 we
+            # see this call.  Don't overwrite a later 200 — we want the worst
+            # observed state to be sticky so the metric line tells the truth.
+            if status == "ok" and http_status is not None and http_status != 200:
+                status = f"http_{http_status}"
+            elif status == "ok" and http_status is None:
+                status = "network_error"
 
             # Handle 401: retry once after refresh/re-login
             if http_status == 401 and not _401_retried:
@@ -441,6 +470,12 @@ def fetch_bluesky_posts_for_game(
                 posts, next_cursor, http_status = _fetch_page(
                     search_query, min(remaining, 100), cursor, access_jwt
                 )
+                last_http_status = http_status
+                # If the retry recovered, clear the prior http_401 from status
+                if http_status == 200 and status == "http_401":
+                    status = "ok"
+                elif http_status is not None and http_status not in (200, 401):
+                    status = f"http_{http_status}"
                 if http_status == 401:
                     logger.warning("bluesky: still HTTP 401 after re-login, giving up")
                     return []

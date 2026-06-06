@@ -706,3 +706,85 @@ def test_invalidate_clears_access_jwt():
     session._refresh_jwt = FAKE_REFRESH_JWT
     session.invalidate()
     assert session._access_jwt is None
+
+
+# ── Test 21: atproto-proxy header is sent on searchPosts (regression) ────────
+
+def test_atproto_proxy_header_routes_to_appview(monkeypatch):
+    """app.bsky.feed.searchPosts on bsky.social is an AppView query and MUST
+    include the `atproto-proxy: did:web:api.bsky.app#bsky_appview` header,
+    otherwise the PDS returns HTTP 400.  Regression test for the 2026-06-06
+    silent failure that dropped Bluesky ingestion for 2 days."""
+    _set_credentials(monkeypatch)
+    post = _make_post(text="Space Marine 2 gameplay")
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([post]))
+        fetch_bluesky_posts_for_game("Space Marine 2", limit=10)
+
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    assert len(search_calls) >= 1
+    proxy_header = search_calls[0].headers.get("atproto-proxy")
+    assert proxy_header == "did:web:api.bsky.app#bsky_appview", (
+        f"Expected atproto-proxy header for AppView routing, got: {proxy_header!r}. "
+        f"Without this header bsky.social returns HTTP 400 because searchPosts "
+        f"is implemented on the AppView, not the PDS."
+    )
+
+
+# ── Test 22: status flips to http_<code> on non-200 (regression) ─────────────
+
+def test_metric_status_reflects_http_error(monkeypatch, caplog):
+    """The bluesky_metric line MUST report status != 'ok' when the upstream
+    returns a non-200 code.  Previously status stayed 'ok' regardless,
+    which masked the 2026-06-06 HTTP 400 failure for 2 days."""
+    import logging as _logging
+    _set_credentials(monkeypatch)
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, status_code=400, json={"error": "InvalidRequest", "message": "test"})
+        with caplog.at_level(_logging.INFO, logger="services.bluesky_service"):
+            fetch_bluesky_posts_for_game("Test Game", limit=10)
+
+    metric_lines = [
+        r.getMessage() for r in caplog.records
+        if "bluesky_metric" in r.getMessage()
+    ]
+    assert metric_lines, "Expected at least one bluesky_metric log line"
+    last_metric = metric_lines[-1]
+    assert "status=http_400" in last_metric, (
+        f"Expected status=http_400 on HTTP 400 response, got: {last_metric}"
+    )
+    assert "status=ok" not in last_metric, (
+        f"Status must NOT be 'ok' when upstream returned non-200, got: {last_metric}"
+    )
+
+
+# ── Test 23: HTTP error body is included in WARNING log (regression) ─────────
+
+def test_http_error_logs_response_body(monkeypatch, caplog):
+    """When Bluesky returns non-200, the warning log MUST include a snippet of
+    the response body so we can see WHY it failed without running locally."""
+    import logging as _logging
+    _set_credentials(monkeypatch)
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, status_code=400,
+              json={"error": "InvalidRequest", "message": "Bad search syntax"})
+        with caplog.at_level(_logging.WARNING, logger="services.bluesky_service"):
+            fetch_bluesky_posts_for_game("Test Game", limit=10)
+
+    warning_lines = [
+        r.getMessage() for r in caplog.records
+        if "HTTP 400" in r.getMessage()
+    ]
+    assert warning_lines, "Expected at least one HTTP 400 warning"
+    # The body content must be in the warning so we can debug from logs alone
+    body_visible = any(
+        "InvalidRequest" in line or "Bad search syntax" in line
+        for line in warning_lines
+    )
+    assert body_visible, (
+        f"HTTP 400 warning must include response body. "
+        f"Got: {warning_lines}"
+    )
