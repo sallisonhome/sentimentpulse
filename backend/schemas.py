@@ -197,10 +197,17 @@ class IngestStatusResponse(BaseModel):
     posts_collected: int = 0
     next_run_at: Optional[str] = None
     # Per-source health from the most recent run.
-    # "unknown" | "skipped" | "ok" | "degraded" | "failed"
+    # "unknown" | "skipped" | "ok" | "degraded" | "failed" | "silent"
     reddit_health: str = "unknown"
     reddit_fetched_total: int = 0
     reddit_retries: int = 0
+    bluesky_health: str = "unknown"
+    bluesky_fetched_total: int = 0
+    bluesky_retries: int = 0
+    steam_review_health: str = "unknown"
+    steam_review_fetched_total: int = 0
+    steam_forum_health: str = "unknown"
+    steam_forum_fetched_total: int = 0
 
 
 class IngestRunResponse(BaseModel):
