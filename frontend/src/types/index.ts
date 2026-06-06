@@ -205,6 +205,7 @@ export type SourceHealth =
   | 'ok'
   | 'degraded'
   | 'failed'
+  | 'silent'
 
 export interface IngestStatus {
   is_running: boolean
@@ -217,6 +218,13 @@ export interface IngestStatus {
   reddit_health: SourceHealth | string
   reddit_fetched_total: number
   reddit_retries: number
+  bluesky_health?: SourceHealth | string
+  bluesky_fetched_total?: number
+  bluesky_retries?: number
+  steam_review_health?: SourceHealth | string
+  steam_review_fetched_total?: number
+  steam_forum_health?: SourceHealth | string
+  steam_forum_fetched_total?: number
 }
 
 export interface IngestRunResult {

@@ -7,7 +7,67 @@ import SkeletonCard from '../components/shared/SkeletonCard'
 import { Button } from '../components/ui/button'
 import { Separator } from '../components/ui/separator'
 import { relativeTime } from '../lib/utils'
-import { RefreshCw, CheckCircle, XCircle, AlertTriangle } from 'lucide-react'
+import { RefreshCw, CheckCircle, XCircle, AlertTriangle, EyeOff } from 'lucide-react'
+import type { IngestStatus } from '../types'
+
+// Render a single source's health line.  Covers ok / degraded / failed /
+// silent / skipped — values produced by the backend per-source verdict
+// machinery in services/ingestor.py.
+function SourceHealthRow(props: {
+  label: string
+  health?: string
+  fetched?: number
+  retries?: number
+}) {
+  const { label, health, fetched = 0, retries = 0 } = props
+  if (!health || health === 'unknown') return null
+  const retryWord = retries === 1 ? 'retry' : 'retries'
+  return (
+    <p className="text-muted-foreground flex items-center gap-1.5 pt-1">
+      <span className="font-medium">{label}:</span>
+      {health === 'ok' && (
+        <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
+          <CheckCircle className="h-3 w-3" /> ok
+        </span>
+      )}
+      {health === 'degraded' && (
+        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="h-3 w-3" /> degraded (recovered after {retries} {retryWord})
+        </span>
+      )}
+      {health === 'failed' && (
+        <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
+          <XCircle className="h-3 w-3" /> failed (0 posts after {retries} {retryWord})
+        </span>
+      )}
+      {health === 'silent' && (
+        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+          <EyeOff className="h-3 w-3" /> silent (≥90% drop vs prior‑7d baseline)
+        </span>
+      )}
+      {health === 'skipped' && (
+        <span className="text-muted-foreground">skipped (not eligible this run)</span>
+      )}
+      {health === 'ok' && (
+        <span className="text-muted-foreground">· {fetched.toLocaleString()} fetched</span>
+      )}
+    </p>
+  )
+}
+
+// Compute a list of source labels whose health indicates a regression we
+// want to surface as a top-of-card amber banner.
+function degradedSources(status: IngestStatus): string[] {
+  const out: string[] = []
+  const check = (label: string, health?: string) => {
+    if (health === 'failed' || health === 'silent') out.push(`${label} (${health})`)
+  }
+  check('Reddit', status.reddit_health)
+  check('Bluesky', status.bluesky_health)
+  check('Steam reviews', status.steam_review_health)
+  check('Steam forums', status.steam_forum_health)
+  return out
+}
 
 export default function SettingsPage() {
   const { data: publisher, isLoading: pubLoading }   = usePublisher()
@@ -84,33 +144,29 @@ export default function SettingsPage() {
                   Games processed: {ingestStatus.games_processed}
                 </p>
 
-                {/* Per-source health — currently Reddit only */}
-                {ingestStatus.reddit_health && ingestStatus.reddit_health !== 'unknown' && (
-                  <p className="text-muted-foreground flex items-center gap-1.5 pt-1">
-                    <span className="font-medium">Reddit:</span>
-                    {ingestStatus.reddit_health === 'ok' && (
-                      <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
-                        <CheckCircle className="h-3 w-3" /> ok
-                      </span>
-                    )}
-                    {ingestStatus.reddit_health === 'degraded' && (
-                      <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                        <AlertTriangle className="h-3 w-3" /> degraded (recovered after {ingestStatus.reddit_retries} retr{ingestStatus.reddit_retries === 1 ? 'y' : 'ies'})
-                      </span>
-                    )}
-                    {ingestStatus.reddit_health === 'failed' && (
-                      <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
-                        <XCircle className="h-3 w-3" /> failed (0 posts after {ingestStatus.reddit_retries} retr{ingestStatus.reddit_retries === 1 ? 'y' : 'ies'})
-                      </span>
-                    )}
-                    {ingestStatus.reddit_health === 'skipped' && (
-                      <span className="text-muted-foreground">skipped (no subreddits configured)</span>
-                    )}
-                    {ingestStatus.reddit_health === 'ok' && (
-                      <span className="text-muted-foreground">· {ingestStatus.reddit_fetched_total.toLocaleString()} fetched</span>
-                    )}
-                  </p>
-                )}
+                {/* Per-source health — Reddit, Bluesky, Steam reviews, Steam forums */}
+                <SourceHealthRow
+                  label="Reddit"
+                  health={ingestStatus.reddit_health}
+                  fetched={ingestStatus.reddit_fetched_total}
+                  retries={ingestStatus.reddit_retries}
+                />
+                <SourceHealthRow
+                  label="Bluesky"
+                  health={ingestStatus.bluesky_health}
+                  fetched={ingestStatus.bluesky_fetched_total}
+                  retries={ingestStatus.bluesky_retries}
+                />
+                <SourceHealthRow
+                  label="Steam reviews"
+                  health={ingestStatus.steam_review_health}
+                  fetched={ingestStatus.steam_review_fetched_total}
+                />
+                <SourceHealthRow
+                  label="Steam forums"
+                  health={ingestStatus.steam_forum_health}
+                  fetched={ingestStatus.steam_forum_fetched_total}
+                />
               </div>
               <Button
                 size="sm"
@@ -122,6 +178,26 @@ export default function SettingsPage() {
                 Run now
               </Button>
             </div>
+
+            {/* Amber banner for failed or silent sources — hardened against
+                future regressions per the Gap 2 + Gap 3 work. */}
+            {(() => {
+              const flagged = degradedSources(ingestStatus)
+              if (flagged.length === 0) return null
+              return (
+                <div className="mt-2 flex items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="h-4 w-4 mt-0.5 flex-none" />
+                  <div>
+                    <p className="font-medium">Source regression detected</p>
+                    <p>
+                      {flagged.join(', ')} — investigate before next cron. Silent
+                      sources fetched but persisted &lt;10% of their prior‑7d
+                      baseline; failed sources fetched 0 posts after retries.
+                    </p>
+                  </div>
+                </div>
+              )
+            })()}
 
             {ingestStatus.last_run_errors.length > 0 && (
               <div className="mt-2 rounded bg-destructive/10 p-2">
