@@ -193,6 +193,12 @@ def test_bluesky_failure_marks_partial_failure(db_with_games, monkeypatch):
         step4,
         bluesky_return=(0, 0),   # Bluesky always returns 0 fetched
     )
+    # Pin Bluesky auth-health helpers so the 2026-06-07 #2/#4 hardening
+    # doesn't flip this test's expected verdict to 'auth_broken'.  We're
+    # specifically testing the upstream-quiet failure mode here.
+    patches.append(patch("services.bluesky_service.get_auth_health", return_value="ok"))
+    patches.append(patch("services.bluesky_service.force_session_recreate", return_value=True))
+
     started = [p.start() for p in patches]
     try:
         from services import ingestor
@@ -206,7 +212,8 @@ def test_bluesky_failure_marks_partial_failure(db_with_games, monkeypatch):
 
     assert result["reddit_health"] == "ok"
     assert result["bluesky_health"] == "failed"
-    assert result["bluesky_retries"] == 2  # both backoffs exhausted
+    # Phase B uses up both backoff retries (2); auto-recovery adds 1 more.
+    assert result["bluesky_retries"] == 3
     assert result["status"] == "partial_failure"
 
 

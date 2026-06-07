@@ -206,6 +206,7 @@ export type SourceHealth =
   | 'degraded'
   | 'failed'
   | 'silent'
+  | 'auth_broken'
 
 export interface IngestStatus {
   is_running: boolean

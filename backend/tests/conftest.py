@@ -25,6 +25,22 @@ def _register_models():
     import models  # noqa: F401
 
 
+# ── Reset Bluesky session singleton between tests ────────────────────────
+# The Bluesky service uses a module-level _session singleton.  Tests that
+# touch authentication (proactive refresh, force_recreate, ingestor end-to-end)
+# can leave it in a 'refresh_failed' state, which then poisons subsequent
+# ingestor tests that read get_auth_health().  An autouse fixture resets the
+# singleton before every test so each test starts from a clean slate.
+@pytest.fixture(autouse=True)
+def _reset_bluesky_session_singleton():
+    try:
+        import services.bluesky_service as _bsvc
+        _bsvc._session = None
+    except Exception:
+        pass
+    yield
+
+
 # ── Per-test engine factory ────────────────────────────────────────────────────
 
 def _make_test_engine():

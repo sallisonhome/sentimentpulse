@@ -7,7 +7,7 @@ import SkeletonCard from '../components/shared/SkeletonCard'
 import { Button } from '../components/ui/button'
 import { Separator } from '../components/ui/separator'
 import { relativeTime } from '../lib/utils'
-import { RefreshCw, CheckCircle, XCircle, AlertTriangle, EyeOff } from 'lucide-react'
+import { RefreshCw, CheckCircle, XCircle, AlertTriangle, EyeOff, KeyRound } from 'lucide-react'
 import type { IngestStatus } from '../types'
 
 // Render a single source's health line.  Covers ok / degraded / failed /
@@ -45,6 +45,11 @@ function SourceHealthRow(props: {
           <EyeOff className="h-3 w-3" /> silent (≥90% drop vs prior‑7d baseline)
         </span>
       )}
+      {health === 'auth_broken' && (
+        <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
+          <KeyRound className="h-3 w-3" /> auth broken (rotate app password / re-auth account)
+        </span>
+      )}
       {health === 'skipped' && (
         <span className="text-muted-foreground">skipped (not eligible this run)</span>
       )}
@@ -60,7 +65,9 @@ function SourceHealthRow(props: {
 function degradedSources(status: IngestStatus): string[] {
   const out: string[] = []
   const check = (label: string, health?: string) => {
-    if (health === 'failed' || health === 'silent') out.push(`${label} (${health})`)
+    if (health === 'failed' || health === 'silent' || health === 'auth_broken') {
+      out.push(`${label} (${health})`)
+    }
   }
   check('Reddit', status.reddit_health)
   check('Bluesky', status.bluesky_health)

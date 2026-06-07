@@ -16,12 +16,13 @@ def test_all_sources_ok():
 
     with patch.object(sst, "_probe_reddit", return_value=5), \
          patch.object(sst, "_probe_bluesky", return_value=3), \
+         patch.object(sst, "_probe_bluesky_auth", return_value=1), \
          patch.object(sst, "_probe_steam_reviews", return_value=10), \
          patch.object(sst, "_probe_steam_forums", return_value=2):
         result = sst.run_smoke_test()
 
     assert result["overall_status"] == "ok"
-    for key in ("reddit", "bluesky", "steam_review", "steam_forum"):
+    for key in ("reddit", "bluesky", "bluesky_auth", "steam_review", "steam_forum"):
         assert result["results"][key]["status"] == "ok"
         assert result["results"][key]["count"] > 0
 
@@ -32,6 +33,7 @@ def test_single_source_zero_marks_degraded():
 
     with patch.object(sst, "_probe_reddit", return_value=0), \
          patch.object(sst, "_probe_bluesky", return_value=3), \
+         patch.object(sst, "_probe_bluesky_auth", return_value=1), \
          patch.object(sst, "_probe_steam_reviews", return_value=10), \
          patch.object(sst, "_probe_steam_forums", return_value=2):
         result = sst.run_smoke_test()
@@ -39,6 +41,7 @@ def test_single_source_zero_marks_degraded():
     assert result["overall_status"] == "degraded"
     assert result["results"]["reddit"]["status"] == "degraded"
     assert result["results"]["bluesky"]["status"] == "ok"
+    assert result["results"]["bluesky_auth"]["status"] == "ok"
     assert result["results"]["steam_review"]["status"] == "ok"
     assert result["results"]["steam_forum"]["status"] == "ok"
 
@@ -51,6 +54,7 @@ def test_probe_exception_flagged_degraded_but_run_continues():
         raise RuntimeError("upstream 500")
 
     with patch.object(sst, "_probe_bluesky", side_effect=boom), \
+         patch.object(sst, "_probe_bluesky_auth", return_value=1), \
          patch.object(sst, "_probe_reddit", return_value=5), \
          patch.object(sst, "_probe_steam_reviews", return_value=10), \
          patch.object(sst, "_probe_steam_forums", return_value=2):
@@ -70,6 +74,7 @@ def test_get_smoke_status_returns_last_run():
 
     with patch.object(sst, "_probe_reddit", return_value=1), \
          patch.object(sst, "_probe_bluesky", return_value=1), \
+         patch.object(sst, "_probe_bluesky_auth", return_value=1), \
          patch.object(sst, "_probe_steam_reviews", return_value=1), \
          patch.object(sst, "_probe_steam_forums", return_value=1):
         sst.run_smoke_test()
@@ -78,7 +83,7 @@ def test_get_smoke_status_returns_last_run():
     assert snap["overall_status"] == "ok"
     assert snap["last_run_at"] is not None
     assert set(snap["results"].keys()) == {
-        "reddit", "bluesky", "steam_review", "steam_forum"
+        "reddit", "bluesky", "bluesky_auth", "steam_review", "steam_forum"
     }
 
 
@@ -93,10 +98,34 @@ def test_all_sources_zero_marks_degraded():
 
     with patch.object(sst, "_probe_reddit", return_value=0), \
          patch.object(sst, "_probe_bluesky", return_value=0), \
+         patch.object(sst, "_probe_bluesky_auth", return_value=0), \
          patch.object(sst, "_probe_steam_reviews", return_value=0), \
          patch.object(sst, "_probe_steam_forums", return_value=0):
         result = sst.run_smoke_test()
 
     assert result["overall_status"] == "degraded"
-    for key in ("reddit", "bluesky", "steam_review", "steam_forum"):
+    for key in ("reddit", "bluesky", "bluesky_auth", "steam_review", "steam_forum"):
         assert result["results"][key]["status"] == "degraded"
+
+
+def test_bluesky_auth_probe_failure_marks_degraded():
+    """#3: when only the auth probe fails (refreshSession returned False),
+    the smoke test must surface a degraded auth probe even though the
+    regular Bluesky search probe still succeeds with a cached token."""
+    from services import source_smoke_test as sst
+
+    def auth_boom():
+        raise RuntimeError("refresh() returned False (auth_health=refresh_failed)")
+
+    with patch.object(sst, "_probe_reddit", return_value=5), \
+         patch.object(sst, "_probe_bluesky", return_value=3), \
+         patch.object(sst, "_probe_bluesky_auth", side_effect=auth_boom), \
+         patch.object(sst, "_probe_steam_reviews", return_value=10), \
+         patch.object(sst, "_probe_steam_forums", return_value=2):
+        result = sst.run_smoke_test()
+
+    assert result["overall_status"] == "degraded"
+    assert result["results"]["bluesky_auth"]["status"] == "degraded"
+    assert "refresh_failed" in (result["results"]["bluesky_auth"]["error"] or "")
+    # Search probe is independent and still healthy
+    assert result["results"]["bluesky"]["status"] == "ok"

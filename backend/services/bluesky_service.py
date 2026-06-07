@@ -66,23 +66,63 @@ class _BlueskySession:
     JWTs are NEVER written to logs.
     """
 
+    # Proactive refresh threshold.  Bluesky's accessJwt TTL is ~2h but the
+    # exact lifetime is not contract-stable, so we refresh well before the
+    # documented expiry to avoid hitting ExpiredToken mid-cron.  Our daily
+    # cron typically completes in <30min, but Bluesky retries can stretch a
+    # run to >90min; refreshing every 50min covers both cases with margin.
+    _PROACTIVE_REFRESH_SECONDS = 50 * 60
+
     def __init__(self, handle: str, app_password: str) -> None:
         self.handle = handle
         self.app_password = app_password
         self._access_jwt: Optional[str] = None
         self._refresh_jwt: Optional[str] = None
+        self._session_created_at: Optional[float] = None  # epoch seconds
         self._lock = threading.Lock()
+        # Public auth-health snapshot — read by ingestor to surface in
+        # bluesky_health.  None until the first auth attempt completes.
+        # "ok"             — most recent auth call (create OR refresh) succeeded
+        # "refresh_failed" — refresh AND re-createSession both failed
+        # "create_failed"  — createSession failed (creds or rate limit)
+        self.auth_health: Optional[str] = None
 
     # ── Public ────────────────────────────────────────────────────────────────
 
+    def session_age_seconds(self) -> Optional[float]:
+        """Return age of the cached access JWT in seconds, or None if no session."""
+        if self._session_created_at is None:
+            return None
+        return time.time() - self._session_created_at
+
+    def needs_proactive_refresh(self) -> bool:
+        """True when the cached JWT is older than _PROACTIVE_REFRESH_SECONDS."""
+        age = self.session_age_seconds()
+        return age is not None and age >= self._PROACTIVE_REFRESH_SECONDS
+
     def get_access_jwt(self) -> Optional[str]:
         """Return a valid accessJwt, creating/refreshing as needed.
+
+        Proactively refreshes the session if it's older than
+        _PROACTIVE_REFRESH_SECONDS — this is the core hardening that prevents
+        the 2026-06-07 ExpiredToken-mid-cron failure from recurring.  When
+        the proactive refresh fails we keep the existing (possibly still
+        valid) JWT rather than nuking it; reactive 401/400 ExpiredToken
+        handling will catch any subsequent failure.
 
         Returns None on auth failure.  Never logs the JWT itself.
         """
         with self._lock:
             if self._access_jwt is None:
-                self._create_session()
+                self._create_session_locked()
+                return self._access_jwt
+            if self.needs_proactive_refresh():
+                logger.info(
+                    "bluesky: proactive refresh (session age %.0fs ≥ %ds)",
+                    self.session_age_seconds() or 0,
+                    self._PROACTIVE_REFRESH_SECONDS,
+                )
+                self._refresh_or_recreate_locked()
             return self._access_jwt
 
     def invalidate(self) -> None:
@@ -96,20 +136,52 @@ class _BlueskySession:
         Returns True on success, False if all auth attempts fail.
         """
         with self._lock:
-            ok = self._refresh_session()
-            if not ok:
-                logger.info("bluesky: refresh failed, attempting full re-login")
-                self._access_jwt = None
-                self._refresh_jwt = None
-                return self._create_session()
+            return self._refresh_or_recreate_locked()
+
+    def force_recreate(self) -> bool:
+        """Drop the cached session entirely and createSession from scratch.
+
+        Used by the cron-end auto-recovery (#4) when bluesky_health=failed
+        and we want to guarantee the next attempt uses a fresh server-side
+        session, bypassing both the cached accessJwt and refreshJwt.
+        """
+        with self._lock:
+            logger.info("bluesky: force_recreate — dropping all cached tokens")
+            self._access_jwt = None
+            self._refresh_jwt = None
+            self._session_created_at = None
+            return self._create_session_locked()
+
+    def _refresh_or_recreate_locked(self) -> bool:
+        """Caller must hold self._lock.  Refresh, falling back to re-login.
+
+        On total failure leaves auth_health='refresh_failed' or 'create_failed'
+        so ingestor.py can distinguish auth-broken from no-results.
+        """
+        ok = self._refresh_session()
+        if ok:
             return True
+        logger.info("bluesky: refresh failed, attempting full re-login")
+        self._access_jwt = None
+        self._refresh_jwt = None
+        created = self._create_session_locked()
+        if not created:
+            self.auth_health = "refresh_failed"
+        return created
 
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _create_session(self) -> bool:
-        """POST /xrpc/com.atproto.server.createSession.
+        """Top-level createSession that acquires the lock (back-compat for
+        any callers using the old API).  Prefer _create_session_locked."""
+        with self._lock:
+            return self._create_session_locked()
 
-        Stores accessJwt and refreshJwt on success.
+    def _create_session_locked(self) -> bool:
+        """POST /xrpc/com.atproto.server.createSession.  Caller MUST hold self._lock.
+
+        Stores accessJwt and refreshJwt on success, and records the timestamp
+        so needs_proactive_refresh() can detect token aging.
         Returns True on success, False otherwise.
         """
         url = f"{BLUESKY_BASE}{_CREATE_SESSION_PATH}"
@@ -122,6 +194,7 @@ class _BlueskySession:
             )
         except Exception as exc:
             logger.warning("bluesky: createSession request failed — %s", exc)
+            self.auth_health = "create_failed"
             return False
 
         if resp.status_code != 200:
@@ -129,22 +202,27 @@ class _BlueskySession:
                 "bluesky: createSession HTTP %d for handle=%r",
                 resp.status_code, self.handle,
             )
+            self.auth_health = "create_failed"
             return False
 
         try:
             data = resp.json()
         except Exception as exc:
             logger.warning("bluesky: createSession JSON parse error — %s", exc)
+            self.auth_health = "create_failed"
             return False
 
         access = data.get("accessJwt")
         refresh = data.get("refreshJwt")
         if not access:
             logger.warning("bluesky: createSession returned no accessJwt")
+            self.auth_health = "create_failed"
             return False
 
         self._access_jwt = access
         self._refresh_jwt = refresh
+        self._session_created_at = time.time()
+        self.auth_health = "ok"
         logger.info("bluesky: session created for handle=%r", self.handle)
         return True
 
@@ -183,6 +261,8 @@ class _BlueskySession:
         self._access_jwt = access
         if refresh:
             self._refresh_jwt = refresh
+        self._session_created_at = time.time()
+        self.auth_health = "ok"
         logger.info("bluesky: session refreshed for handle=%r", self.handle)
         return True
 
@@ -192,6 +272,28 @@ class _BlueskySession:
 # Lazy-initialized after env is loaded; guarded by _session_init_lock.
 _session: Optional[_BlueskySession] = None
 _session_init_lock = threading.Lock()
+
+
+def get_auth_health() -> Optional[str]:
+    """Public read of the singleton session's auth_health.
+
+    Returns None if no session has been created in this process yet, else
+    one of 'ok' / 'refresh_failed' / 'create_failed'.  Ingestor reads this
+    after a Bluesky run to distinguish auth-broken from genuinely-no-posts
+    (#2 in the 2026-06-07 hardening plan).
+    """
+    if _session is None:
+        return None
+    return _session.auth_health
+
+
+def force_session_recreate() -> bool:
+    """Public helper for the cron-end auto-recovery (#4) — drops the cached
+    session and runs createSession from scratch.  Returns True on success."""
+    sess = _get_session()
+    if sess is None:
+        return False
+    return sess.force_recreate()
 
 
 def _get_session() -> Optional[_BlueskySession]:

@@ -341,6 +341,27 @@ def run_ingestion() -> dict:
         bluesky_health = _verdict(
             bluesky_eligible, bluesky_fetched_total, bluesky_retries
         )
+        # ── #2: surface Bluesky auth failures distinctly ──────────────────────
+        # If we fetched 0 because our session couldn't authenticate, that's
+        # operator-actionable (creds/account state) — not the same as the
+        # upstream being temporarily quiet.  Read the singleton session's
+        # auth_health and upgrade the verdict accordingly.  Auth health takes
+        # precedence over fetched-count-based verdicts because a broken
+        # session would also produce fetched=0.
+        if bluesky_eligible:
+            try:
+                from services.bluesky_service import get_auth_health as _bsky_auth_health
+                bsky_auth = _bsky_auth_health()
+                if bsky_auth in ("refresh_failed", "create_failed"):
+                    bluesky_health = "auth_broken"
+                    log_lines.append(
+                        f"[Step 4b] Bluesky auth_health={bsky_auth} — marking "
+                        f"bluesky_health=auth_broken (operator action likely required: "
+                        f"verify BLUESKY_APP_PASSWORD / account state)."
+                    )
+            except Exception as exc:
+                # Never let an auth-health probe crash the run.
+                logger.exception(f"Bluesky auth_health probe failed: {exc}")
         # Steam doesn't have retry semantics yet (Steam outages are usually
         # short and the next-day cron recovers).  We still compute health so
         # partial_failure surfaces if Steam goes 0 across every active game.
@@ -369,6 +390,64 @@ def run_ingestion() -> dict:
         if silent_results.get("steam_forum") and steam_forum_health == "ok":
             steam_forum_health = "silent"
 
+        # ── #4: cron-end auto-recovery for Bluesky ─────────────────────────
+        # If Bluesky landed in 'failed' (0 fetches after backoff retries) but
+        # auth_health didn't explicitly say broken, do ONE more attempt with
+        # a forced fresh createSession.  Same-day recovery beats waiting for
+        # tomorrow's cron.  Skipped when:
+        #   • health is already 'auth_broken'  (creds are bad, no point retrying)
+        #   • health is 'ok'/'degraded'/'silent' (already recovered or not
+        #     a fetch-zero situation)
+        if (
+            bluesky_eligible
+            and bluesky_health == "failed"
+            and active_games
+        ):
+            log_lines.append(
+                "[Step 4b auto-recovery] bluesky_health=failed; forcing fresh "
+                "createSession + one final retry across all eligible games."
+            )
+            try:
+                from services.bluesky_service import force_session_recreate
+                recreated = force_session_recreate()
+                if not recreated:
+                    log_lines.append(
+                        "[Step 4b auto-recovery] force_session_recreate() "
+                        "failed — marking bluesky_health=auth_broken."
+                    )
+                    bluesky_health = "auth_broken"
+                else:
+                    recovery_saved = 0
+                    recovery_fetched = 0
+                    for game in active_games:
+                        try:
+                            saved, fetched = _step4b_bluesky(
+                                db, game, log_lines, errors
+                            )
+                            recovery_saved += saved
+                            recovery_fetched += fetched
+                        except Exception as exc:
+                            logger.exception(
+                                f"Bluesky auto-recovery for {game.name}: {exc}"
+                            )
+                    posts_collected += recovery_saved
+                    bluesky_fetched_total += recovery_fetched
+                    log_lines.append(
+                        f"[Step 4b auto-recovery] recovered {recovery_saved} "
+                        f"saved / {recovery_fetched} fetched."
+                    )
+                    # Re-evaluate health with the recovery pass counted.
+                    bluesky_retries += 1
+                    bluesky_health = _verdict(
+                        bluesky_eligible, bluesky_fetched_total, bluesky_retries
+                    )
+            except Exception as exc:
+                # Auto-recovery is best-effort; never let it crash the run.
+                logger.exception(f"Bluesky auto-recovery failed: {exc}")
+                log_lines.append(
+                    f"[Step 4b auto-recovery] raised — {exc}"
+                )
+
         # Phase C: per-game analysis (Steps 5 -> 7)
         # Runs AFTER any retries so today's summary includes all data that
         # landed today — not just the first-pass results.
@@ -389,14 +468,17 @@ def run_ingestion() -> dict:
 
         # Final status precedence:
         #   error  >  partial_failure  >  partial  >  success
-        # partial_failure fires if ANY source is in 'failed' state.
+        # partial_failure fires if ANY source is in a failure-class verdict.
+        # auth_broken counts as failure-class because the operator must
+        # intervene (rotate app password, re-auth account, etc.).
+        FAILURE_VERDICTS = ("failed", "auth_broken")
         failed_sources = [
-            name for name, health in (
+            f"{name} ({health})" for name, health in (
                 ("Reddit", reddit_health),
                 ("Bluesky", bluesky_health),
                 ("Steam reviews", steam_review_health),
                 ("Steam forums", steam_forum_health),
-            ) if health == "failed"
+            ) if health in FAILURE_VERDICTS
         ]
         silent_sources = [
             name for name, health in (

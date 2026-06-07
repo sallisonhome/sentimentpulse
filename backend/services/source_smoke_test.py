@@ -83,11 +83,41 @@ def _probe_steam_forums() -> int:
     return len(threads or [])
 
 
+def _probe_bluesky_auth() -> int:
+    """Hardening #3: exercise Bluesky's refreshSession to catch auth-token
+    expiry / app-password revocation BEFORE a daily cron silently fetches 0.
+
+    Strategy:
+      1. Ensure a session exists (creates one if not).
+      2. Call session.refresh() and assert it returns True.
+    A passing probe means BOTH refreshSession and (on fallback) createSession
+    are working with the current credentials.  Returns 1 on success so the
+    'count > 0 → ok' contract of the smoke test holds.
+    """
+    if not (os.getenv("BLUESKY_HANDLE") and os.getenv("BLUESKY_APP_PASSWORD")):
+        raise RuntimeError("BLUESKY_HANDLE / BLUESKY_APP_PASSWORD not set")
+    from services.bluesky_service import _get_session
+    sess = _get_session()
+    if sess is None:
+        raise RuntimeError("Bluesky session singleton unavailable")
+    # Touch get_access_jwt to ensure a session is created on first run.
+    jwt = sess.get_access_jwt()
+    if not jwt:
+        raise RuntimeError("createSession failed (no access JWT)")
+    ok = sess.refresh()
+    if not ok:
+        raise RuntimeError(
+            f"refresh() returned False (auth_health={sess.auth_health})"
+        )
+    return 1
+
+
 # Probes are looked up by attribute name at call time (not captured by
 # reference) so tests can monkeypatch individual probes via patch.object.
 _PROBES = [
     ("reddit", "Reddit", "_probe_reddit"),
     ("bluesky", "Bluesky", "_probe_bluesky"),
+    ("bluesky_auth", "Bluesky auth", "_probe_bluesky_auth"),
     ("steam_review", "Steam reviews", "_probe_steam_reviews"),
     ("steam_forum", "Steam forums", "_probe_steam_forums"),
 ]
