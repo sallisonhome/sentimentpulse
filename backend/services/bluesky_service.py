@@ -346,6 +346,19 @@ def _fetch_page(
             "bluesky: HTTP %d for query=%r body=%s",
             resp.status_code, query, body_preview,
         )
+        # Bluesky's AppView returns HTTP 400 with body {"error":"ExpiredToken",
+        # "message":"Token has expired"} when a long-running cron outlives
+        # the ~2h access-token TTL.  Spec implies 401, but the live PDS sends
+        # 400.  Normalize to 401 here so the caller's existing refresh-on-401
+        # retry path runs.  Caught by the 2026-06-07 partial_failure cron
+        # — the exact failure the Gap 2 hardening was designed to surface.
+        if "ExpiredToken" in body_preview or "Token has expired" in body_preview:
+            logger.warning(
+                "bluesky: HTTP %d body indicates ExpiredToken — normalizing to "
+                "401 to trigger session refresh.",
+                resp.status_code,
+            )
+            return [], None, 401
         return [], None, resp.status_code
 
     try:

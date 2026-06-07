@@ -274,6 +274,75 @@ def test_fetch_retries_once_on_401_after_refresh(monkeypatch):
     assert len(search_calls) == 2
 
 
+def test_fetch_retries_once_on_http_400_expired_token(monkeypatch):
+    """Regression test for 2026-06-07: Bluesky AppView returns HTTP 400 with
+    body {"error":"ExpiredToken","message":"Token has expired"} when a
+    long-running cron outlives the ~2h access-token TTL.  Spec implies 401
+    but the live PDS sends 400.  We must normalize that body to a 401 so
+    the refresh-on-401 retry path runs.  Without this, every cron that
+    runs longer than 2 hours silently fetches 0 Bluesky posts — the exact
+    failure that fired the 2026-06-07 partial_failure on the droplet."""
+    _set_credentials(monkeypatch)
+
+    post = _make_post(text="Space Marine 2 is great")
+
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.post(REFRESH_SESSION_URL, json={
+            "accessJwt": FAKE_ACCESS_JWT_2,
+            "refreshJwt": FAKE_REFRESH_JWT_2,
+            "handle": "test.bsky.social",
+            "did": "did:plc:testuser",
+        })
+        # First search: HTTP 400 + ExpiredToken body (what the live PDS sends).
+        # Second search: 200 (after the normalize-to-401 path triggers refresh).
+        m.get(SEARCH_URL, [
+            {
+                "status_code": 400,
+                "json": {"error": "ExpiredToken", "message": "Token has expired"},
+            },
+            {"json": _bsky_ok([post]), "status_code": 200},
+        ])
+        results = fetch_bluesky_posts_for_game("Space Marine 2", limit=10)
+
+    assert len(results) == 1, (
+        "ExpiredToken in a 400 body must be treated like 401 so the session "
+        "refresh fires and the retry recovers the page."
+    )
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    assert len(search_calls) == 2
+    # Verify refresh was actually called (not just a re-createSession).
+    refresh_calls = [r for r in m.request_history if REFRESH_SESSION_URL in r.url]
+    assert len(refresh_calls) >= 1
+
+
+def test_http_400_without_expired_token_is_not_retried(monkeypatch):
+    """A generic HTTP 400 (e.g. malformed query) must NOT trigger the
+    refresh-and-retry path — only ExpiredToken bodies do.  Prevents the
+    normalization from masking real query-shape bugs."""
+    _set_credentials(monkeypatch)
+
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.post(REFRESH_SESSION_URL, json={
+            "accessJwt": FAKE_ACCESS_JWT_2,
+            "refreshJwt": FAKE_REFRESH_JWT_2,
+            "handle": "test.bsky.social",
+            "did": "did:plc:testuser",
+        })
+        m.get(SEARCH_URL, status_code=400, json={
+            "error": "InvalidRequest", "message": "bad query",
+        })
+        results = fetch_bluesky_posts_for_game("Space Marine 2", limit=10)
+
+    assert results == []
+    # Only the initial search should have fired — no retry, no refresh.
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    assert len(search_calls) == 1
+    refresh_calls = [r for r in m.request_history if REFRESH_SESSION_URL in r.url]
+    assert len(refresh_calls) == 0
+
+
 # ── New Test S10: fetch returns empty when auth fully fails ───────────────────
 
 def test_fetch_returns_empty_when_auth_fully_fails(monkeypatch):
