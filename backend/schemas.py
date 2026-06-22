@@ -63,6 +63,24 @@ class GameSettingsUpdate(BaseModel):
     subreddits: Optional[List[str]] = None
 
 
+class GameCreate(BaseModel):
+    """POST body for manually adding a Steam-published game.
+
+    Use this when Steam's publisher facet excludes a legitimately-published
+    title (e.g. Bus Bound app 2095420 — published by Saber Interactive Inc.
+    per SteamDB but missing from the Saber Interactive facet results, so
+    auto-discovery in /api/publisher won't pick it up).
+
+    Only steam_app_id is required.  If `name` is omitted the endpoint will
+    fetch it from Steam's appdetails API.  If `subreddits` is omitted the
+    endpoint will run auto-discovery against Reddit.
+    """
+    steam_app_id: int
+    name: Optional[str] = None
+    subreddits: Optional[List[str]] = None
+    is_active: bool = True
+
+
 # ── Daily Summaries ───────────────────────────────────────────────────────────
 
 class DailySummaryResponse(BaseModel):
