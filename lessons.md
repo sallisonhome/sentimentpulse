@@ -6,6 +6,42 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-06-24 — Verify domain ownership before suggesting DNS work (§19 violation)
+
+**What happened.** During the Resend email-sender setup, the agent suggested using `mail.sentimentpulse.com` as the verified sending domain for the digest. Reasoning was: "the domain name matches the product name, so the user must own it." The agent then registered `mail.sentimentpulse.com` in the user's Resend account and prepared DKIM / SPF / MX records, all before checking whether the user actually owned `sentimentpulse.com`.
+
+The user pushed back: "i thought we didn't reserve a domain like sentimentpulse.com for this site and are just relying on the IP address." Ground-truth check (`curl https://sentimentpulse.com/`, `dig +short A sentimentpulse.com`) revealed:
+
+- The domain resolves to `15.197.225.128` / `3.33.251.168` (AWS Global Accelerator) — NOT the SentimentPulse droplet IP `104.236.239.46`.
+- The domain serves an unrelated commercial product called "Sentiment Pulse | AI-Powered Stock Analysis."
+- The user's actual SentimentPulse app lives only at `http://104.236.239.46/sentiment/` — a droplet IP path, no domain attached.
+
+The agent had been about to walk the user through a 20-minute Cloudflare nameserver-switch + 3 DNS-record exercise on a domain they don't own.
+
+**Why this happened.** The agent treated a *name match* as ownership evidence. It also conflated memory notes from `lifetime-class-booker` (which has its own domain setup) with SentimentPulse. The agent's mental model assumed every product has a matching domain, which is not how this user works — SentimentPulse is currently a droplet-IP-only deployment.
+
+**Rule (permanent, no exceptions):**
+
+Before suggesting ANY DNS work, domain configuration, registrar changes, or claiming a domain on behalf of the user, the agent MUST:
+
+1. **Run `dig +short A <domain>` and `curl <domain>`** to see where the domain points and what it serves.
+2. **Confirm with the user explicitly** that they own/control the domain. A name match ("sentimentpulse.com matches SentimentPulse") is NOT evidence of ownership.
+3. **Check the actual production URL** the user uses to access the app, not the domain the agent assumed.
+
+This is a specific instance of CLAUDE.md §19: ground truth must be verified before action, never assumed from naming coincidences. "Domain X exists with a related name" is an intermediate signal; "the user owns and controls Domain X" is the ground truth that authorizes DNS work.
+
+The cost of guessing wrong here was bounded only because the user caught it. If the user had said "sure, sounds good" the agent would have walked them through a 20-min DNS-on-a-domain-they-don't-own exercise that would have failed at the very first step.
+
+**What to do for transactional email when the user has no domain:**
+
+- Either ask the user to pick + register a domain, OR
+- Restrict the recipient list to only the Resend account owner's verified address (the no-domain-needed path), OR
+- Use a domain the user has already verified ownership of (confirmed by an actual question and an actual whois / DNS check, not by name resemblance).
+
+Written 2026-06-24 after the agent registered `mail.sentimentpulse.com` in Resend and had to delete it via `DELETE /domains/{id}` to clean up the mistake.
+
+---
+
 ## 2026-05-30 — Never declare success on intermediate signals; verify ground truth
 
 **Mistake (two confirmed instances, one detected by the user):**
