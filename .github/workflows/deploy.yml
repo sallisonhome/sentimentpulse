@@ -61,12 +61,26 @@ jobs:
           # Empty values are written as empty strings; the droplet-side script
           # detects empty and skips the .env update for that key, leaving any
           # existing value in place (idempotent across deploys).
+          #
+          # CRITICAL: the file is sourced on the droplet with POSIX `.`, so any
+          # value containing spaces, <>, &, |, $, etc. must be single-quoted.
+          # Bluesky values don't have specials, but RESEND_FROM can be
+          # 'Display Name <addr@domain>' — the spaces + angle brackets break
+          # shell-source parsing without quoting (regression 2026-06-24).
+          # We wrap every value in single quotes and escape any single-quote
+          # inside via the standard '"'"' sh-quote trick.
+          quote_single() {
+            local v="$1"
+            # Escape internal single quotes
+            v=${v//\'/\'\"\'\"\'}
+            printf "'%s'\n" "$v"
+          }
           umask 077
           {
-            printf 'BSKY_HANDLE=%s\n'    "$BSKY_HANDLE"
-            printf 'BSKY_PW=%s\n'        "$BSKY_PW"
-            printf 'RESEND_API_KEY=%s\n' "$RESEND_API_KEY"
-            printf 'RESEND_FROM=%s\n'    "$RESEND_FROM"
+            printf 'BSKY_HANDLE=';    quote_single "$BSKY_HANDLE"
+            printf 'BSKY_PW=';        quote_single "$BSKY_PW"
+            printf 'RESEND_API_KEY='; quote_single "$RESEND_API_KEY"
+            printf 'RESEND_FROM=';    quote_single "$RESEND_FROM"
           } > /tmp/bsky_creds.env
           scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             /tmp/bsky_creds.env root@104.236.239.46:/root/bsky_creds.env
