@@ -260,6 +260,8 @@ class MonthlySummaryResponse(BaseModel):
     executive_summary: Optional[str] = None
     recommended_actions: Optional[str] = None
     bold_ideas: Optional[list] = None
+    # CLAUDE.md §20 layer 3: see WindowSummaryResponse.citation_map.
+    citation_map: Optional[dict] = None
     generated_at: datetime
     # Computed label, e.g. "April 2026" — populated in from_orm_with_label
     month_label: str = ""
@@ -295,6 +297,9 @@ class WindowSummaryResponse(BaseModel):
     executive_summary: Optional[str] = None
     recommended_actions: Optional[str] = None
     bold_ideas: Optional[list] = None
+    # CLAUDE.md §20 layer 3: maps [P-NNN] tokens in summary text to source
+    # posts so the frontend can render citations as clickable superscripts.
+    citation_map: Optional[dict] = None
     generated_at: datetime
 
 

@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from models import (
+    DailySummary,
     Game,
     MonthlySummary,
     RawPost,
@@ -39,12 +40,18 @@ from models import (
 logger = logging.getLogger(__name__)
 
 _MODEL = "claude-haiku-4-5-20251001"
-_MAX_TOKENS_SUMMARY = 500
+# Token budgets bumped 2026-06-24: the [P-NNN] citation tokens added by
+# CLAUDE.md §20 layer 3 consume ~25 tokens per text block (3-5 sentences
+# each ending with a citation).  Without the bump, the LLM was being
+# squeezed and returning fewer/shorter items than before citation
+# grounding.  These ceilings give the model headroom to produce the same
+# content density as pre-§20 plus the new citations.
+_MAX_TOKENS_SUMMARY = 700
 # Tightened from 700 → 350 to discourage verbose multi-clause recommendations.
 # With the 25-word-per-item budget, 5 items × ~40 tokens = 200 tokens; 350 leaves
 # comfortable headroom while still capping runaway prose.
-_MAX_TOKENS_ACTIONS = 350
-_MAX_TOKENS_BOLD = 400
+_MAX_TOKENS_ACTIONS = 600
+_MAX_TOKENS_BOLD = 600
 
 MONTH_NAMES = [
     "", "January", "February", "March", "April", "May", "June",
@@ -314,28 +321,69 @@ def _aggregate_posts(
     neg = count_map.get("negative", 0)
     neu = count_map.get("neutral", 0)
 
-    # Collect top-5 topics per sentiment from SentimentRecord.topics (JSON lists)
-    def _top_topics(sentiment: SentimentEnum) -> list[str]:
-        rows = (
-            db.query(SentimentRecord.topics)
-            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
-            .filter(
-                RawPost.game_id == game_id,
-                SentimentRecord.sentiment == sentiment,
-                effective_date >= start_dt,
-                effective_date <= end_dt,
-            )
-            .all()
+    # Top topics per sentiment.  Architecturally we have two sources:
+    #   1. SentimentRecord.topics — per-post JSON list, populated by the
+    #      nightly _step6_extract_topics gate which only runs on data with
+    #      >=2-day span.  Recent posts therefore have topics=[] until the
+    #      next nightly run, which leaves window summaries with no topic
+    #      signal whenever they cover today's posts.
+    #   2. DailySummary.top_{pos,neg,neu}_topics — already aggregated per
+    #      day from the same data source AND populated every day, so a
+    #      brand-new day has topics ready by the time the per-day rollup
+    #      finishes.
+    #
+    # We aggregate from DailySummary rows in the window.  Each day's top-5
+    # contributes 5/4/3/2/1 weighted vote count so a topic that ranks #1 on
+    # three days outranks one that ranks #5 on five days.  We then take the
+    # top-5 by weighted vote count.  Falls back to the SentimentRecord path
+    # when DailySummary has no rows in the window (cold-start case).
+    daily_rows = (
+        db.query(DailySummary)
+        .filter(
+            DailySummary.game_id == game_id,
+            DailySummary.summary_date >= window_start,
+            DailySummary.summary_date <= window_end,
         )
-        freq: dict[str, int] = {}
-        for (topics,) in rows:
-            for topic in (topics or []):
-                freq[topic] = freq.get(topic, 0) + 1
+        .all()
+    )
+
+    def _weighted_top(attr: str) -> list[str]:
+        freq: dict[str, float] = {}
+        for row in daily_rows:
+            topics = getattr(row, attr, None) or []
+            for rank, topic in enumerate(topics[:5]):
+                # Rank weight: 5,4,3,2,1 — #1 gets 5 votes, #5 gets 1.
+                freq[topic] = freq.get(topic, 0.0) + (5 - rank)
         return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])[:5]]
 
-    top_pos = _top_topics(SentimentEnum.positive)
-    top_neg = _top_topics(SentimentEnum.negative)
-    top_neu = _top_topics(SentimentEnum.neutral)
+    top_pos = _weighted_top("top_positive_topics")
+    top_neg = _weighted_top("top_negative_topics")
+    top_neu = _weighted_top("top_neutral_topics")
+
+    # Fallback: if no DailySummary rows in the window (cold-start) fall back
+    # to the per-record SentimentRecord.topics path.
+    if not daily_rows or (not top_pos and not top_neg and not top_neu):
+        def _record_top_topics(sentiment: SentimentEnum) -> list[str]:
+            rows = (
+                db.query(SentimentRecord.topics)
+                .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+                .filter(
+                    RawPost.game_id == game_id,
+                    SentimentRecord.sentiment == sentiment,
+                    effective_date >= start_dt,
+                    effective_date <= end_dt,
+                )
+                .all()
+            )
+            freq: dict[str, int] = {}
+            for (topics,) in rows:
+                for topic in (topics or []):
+                    freq[topic] = freq.get(topic, 0) + 1
+            return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])[:5]]
+
+        if not top_pos: top_pos = _record_top_topics(SentimentEnum.positive)
+        if not top_neg: top_neg = _record_top_topics(SentimentEnum.negative)
+        if not top_neu: top_neu = _record_top_topics(SentimentEnum.neutral)
 
     return pos, neg, neu, top_pos, top_neg, top_neu
 
@@ -1725,7 +1773,7 @@ def _call_actions(
         + _OUTPUT_STYLE +
         anti_fab +
         citation_clause +
-        f"Write 3-5 sprint-board-ready recommendations. Each one MUST follow this format strictly:\n\n"
+        f"Write 4-6 sprint-board-ready recommendations covering the breadth of signal in the data. Each one MUST follow this format strictly:\n\n"
         f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=15 words>.\n\n"
         + specificity_clause +
         f"Hard concision rules:\n"
@@ -1820,8 +1868,10 @@ def _call_bold_ideas(
         f"- Bold the referenced entity or label exactly as it appears, using **double asterisks**.\n"
         f"- Be surprising or non-obvious (community event, partnership angle, unexpected creative response).\n"
         f"- NO 'this is your X' framing. NO 'compounds loyalty' or 'lock in goodwill' filler.\n\n"
-        f"If nothing in the data clearly supports a bold idea, respond with the SINGLE LINE: NONE — nothing else. "
-        f"Most periods should return NONE. Only fire when there is a real signal anchored on a specific entity.\n\n"
+        f"If — after honestly reviewing the data — nothing supports a bold idea, respond with the SINGLE LINE: NONE.\n"
+        f"BUT: when sample posts AND distinctive entities are present, you should usually find 1-2 real opportunities. "
+        f"Return NONE only when the data truly shows no actionable signal beyond the obvious fixes already covered "
+        f"by the recommended actions.\n\n"
         f"Data ({window_label}):\n"
         f"Positive topics: {pos_str}\n"
         f"Negative topics: {neg_str}\n"
