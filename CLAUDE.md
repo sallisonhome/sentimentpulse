@@ -261,6 +261,33 @@ The rule:
 
 **Why this is a CRITICAL principle, not a guideline.** Declaring a broken thing fixed compounds: the next bug investigation starts from a false premise. The user loses trust in every subsequent claim. And in a data pipeline specifically, a quiet wrong claim means real data is missing from analyses for as long as it takes for someone to notice independently.
 
+### 20. Confirm-or-Omit — Never Invent Context, Only Confirm It Explicitly (CRITICAL — always-on, every summary, every recommendation, every bold idea)
+
+**Hard, firm, no-exceptions requirement directed by the user 2026-06-24 after the Hellraiser/Jamie Clayton fabrication.**
+
+The rule, verbatim from the user:
+
+> *"On SentimentPulse summaries NEVER invent context, only confirm context explicitly. If you can't confirm do not create an issue positive or negative from the posts we are accumulating."*
+
+In operational terms:
+
+1. **Every claim in every summary, every recommended action, and every bold idea must be confirmable against a specific post in the source data fed into that LLM call.** Confirmable means: the agent could point at the exact post(s) — title + body — that establish the claim. If you cannot point to the post, the claim does not get made.
+
+2. **No background knowledge is admissible.** Franchise history, prior games, movies, lore, voice actors from other adaptations, parent-company catalog, genre conventions, competitive titles, business model assumptions — none of these are valid inputs to the output. Only the post corpus actually passed to the prompt is admissible. If Doug Bradley is in the posts and Jamie Clayton is not, the model writes about Bradley or it writes nothing about casting.
+
+3. **No issue, positive or negative, gets surfaced from posts that don't confirm it.** This is the symmetric form of the rule. An ambiguous post does not become a positive signal because the franchise has good buzz. A complaint about an unrelated game does not become a negative signal for the focal entity. If a post does not confirm the issue specifically and unambiguously, that issue does not exist for the purposes of this output.
+
+4. **The output of "nothing to say" is preferred over the output of "something invented".** When evidence is thin: write less. Drop the section. Respond NONE. The cost of saying nothing is bounded. The cost of saying something fabricated is unbounded — it misleads strategy and erodes trust in every other summary.
+
+5. **This applies to ALL three LLM calls in `period_summary_service.py`** (`_call_exec`, `_call_actions`, `_call_bold_ideas`) AND to any future prompt added to the project. The shared `_anti_fabrication_clause()` helper is the mechanical enforcement. New prompts must invoke it.
+
+**Anti-patterns this prevents:**
+- **2026-06-24 Hellraiser / Jamie Clayton:** Live digest cited "Jamie Clayton voice casting" as a Recommended Action and proposed partnering with her in a Big Idea. Ground truth: zero posts mentioned Clayton; one post explicitly said "Doug Bradley returns to voice Pinhead." The LLM autocompleted Clayton from background knowledge of the 2022 Hulu film. The exec-summary prompt's anti-fabrication clause caught it (the summary correctly stayed generic — "voice casting preferences" without naming a person), but the actions + bold-ideas prompts had no such constraint and freely invented her. Fix: shared `_anti_fabrication_clause()` invoked from all three prompts plus this §20 rule promoting confirm-or-omit from a prompt-level instruction to a project-wide requirement.
+
+**Relationship to §13, §14, §15.** §13 said "no inventing concepts." §14 said "no conflating post subject with entity properties." §15 said "no surfacing without critical mass." §20 is the operational synthesis: **every individual surfaced claim must be confirmable, or it does not get surfaced.** §20 is the rule you check first; §13/§14/§15 explain why each class of violation is wrong.
+
+**Implementation expectation.** Every prompt-builder in the codebase must, before asking the LLM to surface anything, inject an anti-fabrication clause that (a) restricts valid entities to the data shown, (b) forbids background knowledge, (c) provides a fallback to NONE when data is thin. Regression tests must assert the clause is in the prompt — not just that the *current* outputs happen to be clean.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation

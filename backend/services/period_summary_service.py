@@ -846,6 +846,48 @@ def _format_entities_block(distinctive_entities: list[str]) -> str:
     return ", ".join(distinctive_entities)
 
 
+def _anti_fabrication_clause(
+    samples_block: str,
+    entities_block: str,
+) -> str:
+    """Return the shared 'never fabricate names' instruction.
+
+    REGRESSION (2026-06-24, Hellraiser): the live Hellraiser digest cited
+    "Jamie Clayton voice casting" in recommendations + bold ideas.  Ground
+    truth in raw_posts: zero posts mention Clayton; one post explicitly
+    says "Doug Bradley returns to voice Pinhead".  The model autocompleted
+    Clayton from background knowledge of the 2022 reboot film, because the
+    actions + bold-ideas prompts told it to "reference a SPECIFIC entity"
+    without constraining specifics to the input.
+
+    The exec-summary prompt already has an anti-fabrication rule for this
+    reason — it must be repeated in every prompt that asks for specifics.
+    """
+    # If we have nothing concrete to anchor on, do not invite specifics at all.
+    if not (samples_block or entities_block):
+        return (
+            "NO SPECIFICS AVAILABLE: sample posts and distinctive entities are both empty. "
+            "Do NOT invent named entities (people, characters, DLC, levels, patches, modes). "
+            "If you cannot honestly anchor on something from the data, respond NONE.\n\n"
+        )
+    return (
+        "ANTI-FABRICATION RULES (HARD):\n"
+        "- You MAY ONLY reference proper-noun entities (people's names, character names, DLC\n"
+        "  names, patch versions, mode names, level names, weapon names, etc.) that appear\n"
+        "  verbatim in the DISTINCTIVE ENTITIES list OR the REPRESENTATIVE SAMPLE POSTS\n"
+        "  below.\n"
+        "- Do NOT invoke ANY background knowledge about the franchise, its prior games,\n"
+        "  its movies, its actors, or its lore. If the community didn't talk about it in\n"
+        "  the data shown, it does not exist for the purposes of this output.\n"
+        "- Real example of the failure mode: an earlier output suggested partnering with a\n"
+        "  voice actor from the franchise's MOVIES who was never mentioned by the community,\n"
+        "  while ignoring the actor the community actually praised. Do not do this.\n"
+        "- If you cannot find a proper-noun entity in the provided data, fall back to a\n"
+        "  topic label from the topics lists (positive/negative/neutral topics), or respond\n"
+        "  NONE if even that is not actionable.\n\n"
+    )
+
+
 def _call_exec(
     client,
     game_name,
@@ -981,10 +1023,12 @@ def _call_actions(
         )
     else:
         specificity_clause = ""
+    anti_fab = _anti_fabrication_clause(samples_block, entities_block)
 
     prompt = (
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
         + _OUTPUT_STYLE +
+        anti_fab +
         f"Write 3-5 sprint-board-ready recommendations. Each one MUST follow this format strictly:\n\n"
         f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=15 words>.\n\n"
         + specificity_clause +
@@ -1041,14 +1085,18 @@ def _call_bold_ideas(
     distinctive_entities = distinctive_entities or []
     samples_block = _format_sample_posts_block(sample_posts)
     entities_block = _format_entities_block(distinctive_entities)
+    anti_fab = _anti_fabrication_clause(samples_block, entities_block)
 
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
         f"Looking at community signals from {window_label}, find opportunities a typical analyst would MISS.\n\n"
         + _OUTPUT_STYLE +
+        anti_fab +
         f"If — and only if — the data reveals something genuinely worth flagging as a bold move "
         f"beyond the obvious fixes, propose 1 or 2 bold ideas. The bold move should reference a "
         f"SPECIFIC entity from the samples or distinctive entities list — not a generic bucket.\n\n"
+        f"REMINDER: only entities that appear verbatim in the data below are valid bold-move anchors. "
+        f"Background knowledge about the franchise (prior actors, movies, lore) does not count.\n\n"
         f"Concision rules:\n"
         f"- 40 WORDS MAX per idea. Aim for 25-30.\n"
         f"- One sentence stating the bold move, optionally one second sentence on why.\n"
