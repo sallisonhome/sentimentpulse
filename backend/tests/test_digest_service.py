@@ -318,6 +318,13 @@ class TestRenderDigest:
 # ── Recipients / send pipeline ────────────────────────────────────────────────
 
 class TestSend:
+    """Send pipeline tests — verify Resend HTTPS path + retry semantics.
+
+    DigitalOcean blocks outbound SMTP on droplets, so the production path
+    is Resend's HTTPS API (api.resend.com:443).  Tests mock _post_to_resend
+    so they never actually hit the network.
+    """
+
     def test_no_recipients_returns_no_send(self, db, monkeypatch):
         for gid, name in ds.PRIORITY_TITLES:
             _seed_game(db, gid, name, 2000 + gid)
@@ -325,37 +332,137 @@ class TestSend:
         assert result["sent"] is False
         assert result["reason"] == "no_recipients"
 
-    def test_no_smtp_config_returns_not_configured(self, db, monkeypatch):
+    def test_no_resend_api_key_returns_not_configured(self, db, monkeypatch):
         from models import DigestRecipient
         db.add(DigestRecipient(email="a@example.com", is_active=True))
         db.commit()
         for gid, name in ds.PRIORITY_TITLES:
             _seed_game(db, gid, name, 3000 + gid)
-        monkeypatch.delenv("SMTP_HOST", raising=False)
-        monkeypatch.delenv("SMTP_USERNAME", raising=False)
-        monkeypatch.delenv("SMTP_PASSWORD", raising=False)
-        monkeypatch.delenv("DIGEST_FROM_EMAIL", raising=False)
+        monkeypatch.delenv("RESEND_API_KEY", raising=False)
         result = ds.send_weekly_digest(db, today=date(2026, 6, 24))
         assert result["sent"] is False
-        assert result["reason"] == "smtp_not_configured"
+        assert result["reason"] == "resend_not_configured"
 
-    def test_send_called_when_smtp_and_recipients_present(self, db, monkeypatch):
+    def test_send_succeeds_on_first_try(self, db, monkeypatch):
+        """Happy path: Resend POST returns 200, only the active recipient
+        is passed (inactive ones are filtered out)."""
         from unittest.mock import patch
         from models import DigestRecipient
         db.add(DigestRecipient(email="a@example.com", is_active=True))
-        db.add(DigestRecipient(email="b@example.com", is_active=False))  # inactive
+        db.add(DigestRecipient(email="b@example.com", is_active=False))
         db.commit()
         for gid, name in ds.PRIORITY_TITLES:
             _seed_game(db, gid, name, 4000 + gid)
-        monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
-        monkeypatch.setenv("SMTP_PORT", "587")
-        monkeypatch.setenv("SMTP_USERNAME", "user")
-        monkeypatch.setenv("SMTP_PASSWORD", "pw")
-        monkeypatch.setenv("DIGEST_FROM_EMAIL", "noreply@example.com")
-        with patch("services.digest_service._send_email",
-                   return_value={"sent": True, "recipients": 1}) as mock_send:
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        with patch("services.digest_service._post_to_resend",
+                   return_value={"kind": "ok", "status": 200, "body": ""}) as mock_post:
             result = ds.send_weekly_digest(db, today=date(2026, 6, 24))
         assert result["sent"] is True
-        # Only the active recipient should be passed
-        called_recipients = mock_send.call_args[0][1]
-        assert called_recipients == ["a@example.com"]
+        assert result["provider"] == "resend"
+        # Only the active recipient is passed (3rd positional arg)
+        recipients_arg = mock_post.call_args[0][3]
+        assert recipients_arg == ["a@example.com"]
+        # And the API key from env was used
+        api_key_arg = mock_post.call_args[0][0]
+        assert api_key_arg == "re_test_key"
+        # Only one POST attempt (no retry on success)
+        assert mock_post.call_count == 1
+
+    def test_4xx_fatal_does_not_retry(self, db, monkeypatch):
+        """4xx (e.g. 401 invalid api key, 422 invalid from-address) must
+        NOT be retried — those are config bugs, retrying burns API quota."""
+        from unittest.mock import patch
+        from models import DigestRecipient
+        db.add(DigestRecipient(email="a@example.com", is_active=True))
+        db.commit()
+        for gid, name in ds.PRIORITY_TITLES:
+            _seed_game(db, gid, name, 5000 + gid)
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        with patch("services.digest_service._post_to_resend",
+                   return_value={"kind": "fatal", "status": 401, "body": "unauthorized"}) as mock_post:
+            result = ds.send_weekly_digest(db, today=date(2026, 6, 24))
+        assert result["sent"] is False
+        assert result["reason"] == "resend_fatal"
+        assert "401" in result["error"]
+        assert mock_post.call_count == 1  # NO retry
+
+    def test_5xx_retries_once_and_succeeds(self, db, monkeypatch):
+        """Transient 5xx → retry once → succeeds."""
+        from unittest.mock import patch
+        from models import DigestRecipient
+        db.add(DigestRecipient(email="a@example.com", is_active=True))
+        db.commit()
+        for gid, name in ds.PRIORITY_TITLES:
+            _seed_game(db, gid, name, 6000 + gid)
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        monkeypatch.setattr("services.digest_service._RESEND_RETRY_BACKOFF_SECONDS", 0)
+        results = [
+            {"kind": "retryable", "status": 503, "body": "upstream"},
+            {"kind": "ok", "status": 200, "body": ""},
+        ]
+        with patch("services.digest_service._post_to_resend",
+                   side_effect=results) as mock_post:
+            result = ds.send_weekly_digest(db, today=date(2026, 6, 24))
+        assert result["sent"] is True
+        assert result.get("retried") is True
+        assert mock_post.call_count == 2
+
+    def test_429_rate_limit_retries(self, db, monkeypatch):
+        """429 is treated as retryable.  After-retry-still-failing surfaces
+        as resend_transient with the status code in the error message."""
+        from unittest.mock import patch
+        from models import DigestRecipient
+        db.add(DigestRecipient(email="a@example.com", is_active=True))
+        db.commit()
+        for gid, name in ds.PRIORITY_TITLES:
+            _seed_game(db, gid, name, 7000 + gid)
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        monkeypatch.setattr("services.digest_service._RESEND_RETRY_BACKOFF_SECONDS", 0)
+        results = [
+            {"kind": "retryable", "status": 429, "body": "rate limited"},
+            {"kind": "retryable", "status": 429, "body": "rate limited"},
+        ]
+        with patch("services.digest_service._post_to_resend",
+                   side_effect=results) as mock_post:
+            result = ds.send_weekly_digest(db, today=date(2026, 6, 24))
+        assert result["sent"] is False
+        assert result["reason"] == "resend_transient"
+        assert "429" in result["error"]
+        assert mock_post.call_count == 2
+
+    def test_network_error_retries_once(self, db, monkeypatch):
+        """Network/DNS/TLS error → retry once."""
+        from unittest.mock import patch
+        from models import DigestRecipient
+        db.add(DigestRecipient(email="a@example.com", is_active=True))
+        db.commit()
+        for gid, name in ds.PRIORITY_TITLES:
+            _seed_game(db, gid, name, 8000 + gid)
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        monkeypatch.setattr("services.digest_service._RESEND_RETRY_BACKOFF_SECONDS", 0)
+        results = [
+            {"kind": "network", "message": "dns lookup failed"},
+            {"kind": "ok", "status": 200, "body": ""},
+        ]
+        with patch("services.digest_service._post_to_resend",
+                   side_effect=results) as mock_post:
+            result = ds.send_weekly_digest(db, today=date(2026, 6, 24))
+        assert result["sent"] is True
+        assert mock_post.call_count == 2
+
+    def test_resend_from_env_override(self, db, monkeypatch):
+        """RESEND_FROM env var must be used when set, instead of default."""
+        from unittest.mock import patch
+        from models import DigestRecipient
+        db.add(DigestRecipient(email="a@example.com", is_active=True))
+        db.commit()
+        for gid, name in ds.PRIORITY_TITLES:
+            _seed_game(db, gid, name, 9000 + gid)
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        monkeypatch.setenv("RESEND_FROM",
+                           "SentimentPulse <digest@verified.example.com>")
+        with patch("services.digest_service._post_to_resend",
+                   return_value={"kind": "ok", "status": 200, "body": ""}) as mock_post:
+            ds.send_weekly_digest(db, today=date(2026, 6, 24))
+        # 2nd positional arg is from_addr
+        assert mock_post.call_args[0][1] == "SentimentPulse <digest@verified.example.com>"

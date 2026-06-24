@@ -12,22 +12,41 @@ Each title's section presents:
 Weekly:  uses 7-day window-summaries (regenerated if cache is stale)
 Monthly: uses MonthlySummary rows for the prior calendar month
 
-Send pipeline: stdlib smtplib over TLS with SMTP credentials from env
-(SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, DIGEST_FROM_EMAIL,
-DIGEST_FROM_NAME).  If SMTP env is incomplete, send_*() returns
-{"sent": False, "reason": "smtp_not_configured"} without raising — this
-lets us deploy + preview before credentials are wired.
+Send pipeline: Resend HTTPS API (port 443), mirroring the pattern proven
+out in lifetime-class-booker and SlangIt.  DigitalOcean blocks outbound
+SMTP ports (25/465/587) on droplets, so SMTP is NOT a viable transport
+in production — it would time out silently.  Configuration:
+
+  RESEND_API_KEY  (required)  — https://resend.com API key
+  RESEND_FROM     (optional)  — 'Name <addr@domain>'.  Defaults to
+                                'SentimentPulse Intelligence <onboarding@resend.dev>',
+                                which works immediately without domain
+                                verification, BUT Resend's free tier with
+                                the default sender only delivers to the
+                                Resend account owner's verified email.
+                                Verify a domain at resend.com/domains to
+                                send to arbitrary recipients.
+
+Retry semantics (matches lifetime bot):
+  • 429 (rate limit) or 5xx → retry once after 1.5s backoff
+  • Network/DNS/TLS error → retry once
+  • 4xx auth/validation → fatal, do NOT retry (config problem)
+
+If RESEND_API_KEY is unset, send_*() returns {"sent": False,
+"reason": "resend_not_configured"} without raising — this lets us
+deploy + preview before credentials are wired.
 """
 from __future__ import annotations
 
 import html
+import json
 import logging
 import os
-import smtplib
-import ssl
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from email.message import EmailMessage
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -582,25 +601,17 @@ def build_monthly_digest(
     }
 
 
-# ── SMTP send ────────────────────────────────────────────────────────────────
+# ── Resend HTTPS send ─────────────────────────────────────────────────────
+# Mirrors lifetime-class-booker/automation/email-sender.ts and SlangIt's
+# Resend wiring.  DigitalOcean blocks outbound SMTP (25/465/587) so the
+# HTTPS path (api.resend.com:443) is the ONLY transport that actually
+# works from the production droplet.  Stdlib urllib is used rather than
+# adding a `resend` or `requests` dependency — the API surface is small
+# enough that the dependency surface isn't worth it for the email path.
 
-def _smtp_config() -> Optional[dict]:
-    """Return SMTP env or None if incomplete.  Logs which key is missing
-    so ops can fix it without reading source code."""
-    cfg = {
-        "host":     os.getenv("SMTP_HOST"),
-        "port":     int(os.getenv("SMTP_PORT", "587") or 587),
-        "username": os.getenv("SMTP_USERNAME"),
-        "password": os.getenv("SMTP_PASSWORD"),
-        "from_email": os.getenv("DIGEST_FROM_EMAIL"),
-        "from_name":  os.getenv("DIGEST_FROM_NAME", "SentimentPulse Intelligence"),
-    }
-    missing = [k for k, v in cfg.items()
-               if k != "from_name" and not v]
-    if missing:
-        logger.warning("digest send skipped: missing SMTP env keys: %s", missing)
-        return None
-    return cfg
+_RESEND_URL = "https://api.resend.com/emails"
+_RESEND_TIMEOUT = 30  # seconds
+_RESEND_RETRY_BACKOFF_SECONDS = 1.5
 
 
 def _active_recipients(db: Session) -> list[str]:
@@ -608,66 +619,124 @@ def _active_recipients(db: Session) -> list[str]:
     return [r.email for r in rows]
 
 
-def _send_email(
-    cfg: dict, recipients: list[str], subject: str, html_body: str
+def _post_to_resend(
+    api_key: str, from_addr: str, subject: str,
+    to: list[str], html_body: str,
 ) -> dict:
-    """Single SMTP transaction sending to all recipients (BCC).
-
-    Returns a dict describing the result.  Never raises — failures are
-    captured and logged so the scheduler keeps running.
     """
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = f'{cfg["from_name"]} <{cfg["from_email"]}>'
-    msg["To"]   = cfg["from_email"]      # primary "to" is the from address
-    msg["Bcc"]  = ", ".join(recipients)  # recipients via Bcc so their
-                                          # addresses don't leak to each other
-    msg.set_content(
-        "This is an HTML email. View it in a Markdown- or HTML-capable client."
-    )
-    msg.add_alternative(html_body, subtype="html")
+    Single POST to the Resend API.  Classifies the outcome so the caller
+    can decide whether to retry.
 
+    Returns a dict whose `kind` is one of:
+      "ok"        — 200/2xx, email accepted
+      "retryable" — 429 or 5xx (transient, worth one retry)
+      "fatal"     — 4xx auth/validation (retry won't help)
+      "network"   — connection/DNS/TLS error (retry once)
+    """
+    body = json.dumps({
+        "from": from_addr,
+        "to": to,
+        "subject": subject,
+        "html": html_body,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        _RESEND_URL,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
     try:
-        ctx = ssl.create_default_context()
-        with smtplib.SMTP(cfg["host"], cfg["port"], timeout=30) as s:
-            s.starttls(context=ctx)
-            s.login(cfg["username"], cfg["password"])
-            s.send_message(msg)
-        return {"sent": True, "recipients": len(recipients)}
-    except Exception as exc:
-        logger.exception("digest send failed: %s", exc)
-        return {"sent": False, "reason": "smtp_error", "error": str(exc)}
+        with urllib.request.urlopen(req, timeout=_RESEND_TIMEOUT) as resp:
+            status = resp.status
+            preview = (resp.read(200) or b"").decode("utf-8", errors="replace")
+            return {"kind": "ok", "status": status, "body": preview}
+    except urllib.error.HTTPError as e:
+        text = (e.read(300) or b"").decode("utf-8", errors="replace")
+        if e.code == 429 or 500 <= e.code <= 599:
+            return {"kind": "retryable", "status": e.code, "body": text}
+        return {"kind": "fatal", "status": e.code, "body": text}
+    except urllib.error.URLError as e:
+        return {"kind": "network", "message": str(e.reason)}
+    except Exception as e:
+        # Defensive: any other exception (TLS, timeout, socket reset)
+        # is treated as a network error so the retry path covers it.
+        return {"kind": "network", "message": str(e)}
+
+
+def _send_via_resend(
+    subject: str, recipients: list[str], html_body: str,
+) -> dict:
+    """Send `html_body` to `recipients` via Resend.  Retries once on
+    transient failures.  Never raises."""
+    api_key = os.getenv("RESEND_API_KEY")
+    if not api_key:
+        return {"sent": False, "reason": "resend_not_configured"}
+    from_addr = os.getenv(
+        "RESEND_FROM",
+        "SentimentPulse Intelligence <onboarding@resend.dev>",
+    )
+
+    first = _post_to_resend(api_key, from_addr, subject, recipients, html_body)
+    if first["kind"] == "ok":
+        return {"sent": True, "recipients": len(recipients),
+                "provider": "resend"}
+    if first["kind"] == "fatal":
+        err = f"Resend {first['status']}: {first['body']}"
+        logger.error("digest send fatal: %s", err)
+        return {"sent": False, "reason": "resend_fatal", "error": err}
+
+    # Transient — log + sleep + retry exactly once.
+    if first["kind"] == "retryable":
+        logger.warning(
+            "digest send: Resend transient %d, retrying in %.1fs",
+            first["status"], _RESEND_RETRY_BACKOFF_SECONDS,
+        )
+    else:
+        logger.warning(
+            "digest send: network error %r, retrying in %.1fs",
+            first.get("message"), _RESEND_RETRY_BACKOFF_SECONDS,
+        )
+    time.sleep(_RESEND_RETRY_BACKOFF_SECONDS)
+
+    second = _post_to_resend(api_key, from_addr, subject, recipients, html_body)
+    if second["kind"] == "ok":
+        logger.info("digest send: Resend retry succeeded")
+        return {"sent": True, "recipients": len(recipients),
+                "provider": "resend", "retried": True}
+    if second["kind"] == "fatal":
+        err = f"Resend {second['status']} (after retry): {second['body']}"
+        return {"sent": False, "reason": "resend_fatal", "error": err}
+    if second["kind"] == "retryable":
+        err = f"Resend {second['status']} (after retry): {second['body']}"
+        return {"sent": False, "reason": "resend_transient", "error": err}
+    return {"sent": False, "reason": "resend_network",
+            "error": f"network error (after retry): {second.get('message')}"}
 
 
 def send_weekly_digest(db: Session, today: Optional[date] = None) -> dict:
-    """Build + send the weekly digest.  Wired up by the APScheduler job."""
+    """Build + send the weekly digest via Resend.  Wired by APScheduler."""
     built = build_weekly_digest(db, today=today)
     recipients = _active_recipients(db)
     if not recipients:
         logger.info("weekly digest built but no active recipients — skipping send")
         return {"sent": False, "reason": "no_recipients",
                 "subject": built["subject"], "html_length": len(built["html"])}
-    cfg = _smtp_config()
-    if cfg is None:
-        return {"sent": False, "reason": "smtp_not_configured",
-                "subject": built["subject"], "html_length": len(built["html"])}
-    sent = _send_email(cfg, recipients, built["subject"], built["html"])
-    sent["subject"] = built["subject"]
-    return sent
+    result = _send_via_resend(built["subject"], recipients, built["html"])
+    result["subject"] = built["subject"]
+    return result
 
 
 def send_monthly_digest(db: Session, today: Optional[date] = None) -> dict:
-    """Build + send the monthly digest."""
+    """Build + send the monthly digest via Resend."""
     built = build_monthly_digest(db, today=today)
     recipients = _active_recipients(db)
     if not recipients:
         logger.info("monthly digest built but no active recipients — skipping send")
         return {"sent": False, "reason": "no_recipients",
                 "subject": built["subject"], "html_length": len(built["html"])}
-    cfg = _smtp_config()
-    if cfg is None:
-        return {"sent": False, "reason": "smtp_not_configured",
-                "subject": built["subject"], "html_length": len(built["html"])}
-    sent = _send_email(cfg, recipients, built["subject"], built["html"])
-    sent["subject"] = built["subject"]
-    return sent
+    result = _send_via_resend(built["subject"], recipients, built["html"])
+    result["subject"] = built["subject"]
+    return result
