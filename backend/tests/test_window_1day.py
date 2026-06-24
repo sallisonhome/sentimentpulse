@@ -215,23 +215,26 @@ class TestAggregatePosts1DayGate:
             "Single-day cluster should pass the relaxed §15 gate for 1-day windows"
         )
 
-    def test_top_5_cap(self, db, game):
-        """Only up to 5 topics per sentiment bucket are returned."""
+    def test_top_n_cap(self, db, game):
+        """Only up to _1DAY_TOP_TOPICS topics per sentiment bucket are returned.
+        Raised 2026-06-24 from 5 → 8 to give the LLM more signal handles."""
         from models import SentimentEnum
         day = date(2024, 1, 15)
-        for i in range(10):
+        for i in range(15):
             _insert_post(db, game.id, SentimentEnum.positive, f"user_{i}", day, f"cap_{i}")
         db.commit()
 
-        # 8 clusters that all pass the gate
+        # 12 clusters that all pass the gate
         clusters = [
             _make_cluster(f"topic_{i} + game + fun", post_count=3 + i, author_count=3)
-            for i in range(8)
+            for i in range(12)
         ]
         with patch("services.topic_service.extract_topics_with_metadata", return_value=clusters):
             _, _, _, top_pos, _, _ = pss._aggregate_posts_1day(db, game.id, day)
 
-        assert len(top_pos) <= 5, f"Expected ≤5 topics, got {len(top_pos)}"
+        assert len(top_pos) <= pss._1DAY_TOP_TOPICS, (
+            f"Expected ≤{pss._1DAY_TOP_TOPICS} topics, got {len(top_pos)}"
+        )
 
     def test_ordering_by_post_count_descending(self, db, game):
         """Topics are returned ordered by post_count descending."""

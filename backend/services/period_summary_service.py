@@ -354,7 +354,11 @@ def _aggregate_posts(
             for rank, topic in enumerate(topics[:5]):
                 # Rank weight: 5,4,3,2,1 — #1 gets 5 votes, #5 gets 1.
                 freq[topic] = freq.get(topic, 0.0) + (5 - rank)
-        return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])[:5]]
+        # Surface up to 8 topics (was 5) so the LLM has more signal handles to
+        # anchor recommendations + bold ideas on, especially for high-volume
+        # titles where the daily top-5 churn means more distinct topics deserve
+        # to surface across the window.
+        return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])[:8]]
 
     top_pos = _weighted_top("top_positive_topics")
     top_neg = _weighted_top("top_negative_topics")
@@ -379,7 +383,7 @@ def _aggregate_posts(
             for (topics,) in rows:
                 for topic in (topics or []):
                     freq[topic] = freq.get(topic, 0) + 1
-            return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])[:5]]
+            return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])[:8]]
 
         if not top_pos: top_pos = _record_top_topics(SentimentEnum.positive)
         if not top_neg: top_neg = _record_top_topics(SentimentEnum.negative)
@@ -395,7 +399,7 @@ def _aggregate_posts(
 # spirit of §15 (no topic surfaces from a single voice or a single post).
 _1DAY_MIN_POSTS   = 3   # same as §15 post threshold
 _1DAY_MIN_AUTHORS = 3   # same as §15 author threshold
-_1DAY_TOP_TOPICS  = 5   # max topics per sentiment bucket
+_1DAY_TOP_TOPICS  = 8   # max topics per sentiment bucket (raised from 5 → 8 to match window aggregation)
 
 
 def _aggregate_posts_1day(
@@ -540,7 +544,11 @@ def _aggregate_posts_1day(
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Maximum sample posts to surface to Claude.  Keep small so prompt cost stays low.
-_SAMPLE_POSTS_PER_BUCKET = 4   # × 3 sentiment buckets = 12 posts max
+# Bumped 2026-06-24 from 4 → 8 per bucket (24 posts max instead of 12) so the
+# model has wider signal to anchor recommendations + bold ideas on.  Cost is
+# ~150-200 tokens of additional prompt input — negligible against Claude
+# Haiku input pricing (~$0.10/MTok input) and the output-quality win.
+_SAMPLE_POSTS_PER_BUCKET = 8   # × 3 sentiment buckets = 24 posts max
 _SAMPLE_POST_TEXT_CHARS  = 280 # truncate each post to ~tweet-length
 
 # Maximum distinctive entities to surface. ~20 is enough headroom for Claude
@@ -1680,7 +1688,7 @@ def _call_exec(
         + citation_clause
         + specificity_requirement +
         f"Concision rules:\n"
-        f"- 120 WORDS MAX. Aim for 80-100.\n"
+        f"- 200 WORDS MAX. Aim for 140-170.\n"
         f"- Lead with the dominant signal in 1 sentence, then 2-4 sentences of supporting detail.\n"
         f"- Cite topic names and entity names exactly as provided.\n"
         f"- NO parenthetical lists of examples. NO 'this suggests... which means... and therefore...' chains.\n"
@@ -1774,10 +1782,10 @@ def _call_actions(
         anti_fab +
         citation_clause +
         f"Write 4-6 sprint-board-ready recommendations covering the breadth of signal in the data. Each one MUST follow this format strictly:\n\n"
-        f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=15 words>.\n\n"
+        f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=25 words>.\n\n"
         + specificity_clause +
         f"Hard concision rules:\n"
-        f"- 25 WORDS MAX per recommendation. Aim for 15-20.\n"
+        f"- 35 WORDS MAX per recommendation. Aim for 22-30.\n"
         f"- Start with an imperative verb (Ship, Patch, Audit, Launch, Amplify, Clarify, Document, Sunset, etc.).\n"
         f"- Bold the entity or label exactly as provided, using **double asterisks**.\n"
         f"- NO parenthetical examples, NO 'this is your clearest signal' framing, NO 'should anchor messaging through next quarter' filler.\n"
