@@ -205,6 +205,53 @@ class TestBuildMonthlyBlock:
         assert block.pos_neg_ratio == "10.0:1"
 
 
+# ── Markdown converter ──────────────────────────────────────────────────
+
+class TestMarkdownConverter:
+    def test_numbered_list_with_blank_lines_between_items_is_one_list(self):
+        """REGRESSION (2026-06-24): the LLM emits numbered recommendations
+        separated by blank lines:
+
+            1. Item one
+
+            2. Item two
+
+            3. Item three
+
+        Earlier rendering wrapped each item in its own <ol>, causing every
+        item to show '1.' in the email.  Blank lines between numbered items
+        must be treated as in-list spacing, NOT a list terminator.
+        """
+        text = "1. First action.\n\n2. Second action.\n\n3. Third action."
+        html = ds._markdown_to_email_html(text)
+        # Exactly one <ol> ... </ol> block
+        assert html.count("<ol") == 1
+        assert html.count("</ol>") == 1
+        # All three items inside the same list
+        assert html.count("<li") == 3
+        # First text appears once, in the only list
+        assert "First action." in html
+        assert "Second action." in html
+        assert "Third action." in html
+
+    def test_numbered_list_terminates_when_non_numbered_text_follows(self):
+        text = "1. First.\n\n2. Second.\n\nClosing paragraph here."
+        html = ds._markdown_to_email_html(text)
+        assert html.count("<ol") == 1
+        # Then a paragraph after the list
+        assert "<p" in html
+        assert "Closing paragraph here." in html
+
+    def test_bold_is_rendered_as_strong(self):
+        html = ds._markdown_to_email_html("Ship **the bug fix** today.")
+        assert "<strong>the bug fix</strong>" in html
+
+    def test_xss_is_escaped(self):
+        html = ds._markdown_to_email_html("Use <script>alert(1)</script>")
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+
 # ── HTML rendering smoke tests ───────────────────────────────────────────────
 
 class TestRenderDigest:

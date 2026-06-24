@@ -277,11 +277,19 @@ def _markdown_to_email_html(text: str) -> str:
                 in_list = True
             out.append(f'<li style="margin:0 0 8px 0;">{m.group(1)}</li>')
         elif line == "":
+            # Blank line: end any open paragraph, but DO NOT close an open
+            # <ol> — LLM output puts blank lines between numbered items for
+            # readability, and we want them to render as ONE list with
+            # 1/2/3 numbering, not three separate <ol>s that all show '1.'.
+            # The list only closes when the next non-blank line is NOT a
+            # numbered item.
             flush_para()
+        else:
+            # Non-blank, non-numbered line — if we were in a list, close it
+            # first so this becomes a fresh paragraph.
             if in_list:
                 out.append("</ol>")
                 in_list = False
-        else:
             para_buf.append(line)
 
     flush_para()
