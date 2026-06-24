@@ -149,3 +149,108 @@ class TestPromptsIncludeAntiFabrication:
         )
         assert "NO SPECIFICS AVAILABLE" in prompt
         assert "Do NOT invent named entities" in prompt
+
+
+# ── Post-LLM fact-check gate ─────────────────────────────────────────────────
+
+class TestFactCheckGate:
+    """REGRESSION (2026-06-24): even with anti-fabrication prompt rules,
+    Claude still surfaced "Jamie Clayton voicing Pinhead" for Hellraiser
+    because she's strongly associated with the franchise in training data.
+    Prompt instructions nudge the model; this gate ENFORCES."""
+
+    HELLRAISER_SAMPLES = {
+        "positive": [
+            "Doug Bradley returns to voice Pinhead in Hellraiser Revival",
+            "We played an early build of Clive Barker's Hellraiser: Revival",
+        ],
+        "negative": [
+            "Why has Pinhead got a double voice? He never had them in any films",
+        ],
+        "neutral": [
+            "Saber Interactive and Boss Team Games launching October 8th 2026",
+        ],
+    }
+    HELLRAISER_ENTITIES = ["Doug Bradley", "Pinhead", "Hellraiser Revival",
+                            "Saber Interactive", "Clive Barker"]
+    GAME = "Clive Barker's Hellraiser: Revival"
+
+    def test_fact_check_flags_jamie_clayton(self):
+        text = "Document Jamie Clayton voice casting decisions for Pinhead."
+        fabs = pss._fact_check_for_fabrications(
+            text, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
+        )
+        assert "Clayton" in fabs
+        assert "Jamie" in fabs
+        # Pinhead is in the samples → must NOT be flagged
+        assert "Pinhead" not in fabs
+        # Doug Bradley is in entities → must NOT be flagged
+        # (Note: case-insensitive matching is applied internally)
+
+    def test_fact_check_accepts_real_entities(self):
+        text = "Amplify Doug Bradley casting and the Pinhead double-voice."
+        fabs = pss._fact_check_for_fabrications(
+            text, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
+        )
+        assert fabs == [], f"expected no fabrications, got {fabs}"
+
+    def test_fact_check_ignores_months_and_common_words(self):
+        text = "Announce on October 8th. The community is waiting."
+        fabs = pss._fact_check_for_fabrications(
+            text, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
+        )
+        assert "October" not in fabs
+
+    def test_sanitize_recommendations_drops_clayton_line(self):
+        text = """1. Amplify **Clive Barker's vision** — source material respect.
+
+2. Document **voice cast decisions** — Jamie Clayton signals appetite for casting.
+
+3. Clarify **preorder strategy** — confirm timeline publicly."""
+        out = pss._sanitize_recommendations(
+            text, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
+        )
+        assert "Jamie" not in out
+        assert "Clayton" not in out
+        # The other two recs survive AND get renumbered 1, 2
+        assert "Clive Barker" in out
+        assert "preorder strategy" in out
+        # Renumbered cleanly
+        assert out.startswith("1.")
+        assert "\n\n2." in out
+        assert "3." not in out  # only 2 survivors, not 3
+
+    def test_sanitize_recommendations_all_dropped_returns_empty(self):
+        """If every recommendation contains a fabrication, return '' so the
+        caller can fall back to NONE."""
+        text = "1. Partner Jamie Clayton for DLC.\n\n2. Cast Jamie Clayton again."
+        out = pss._sanitize_recommendations(
+            text, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
+        )
+        assert out == ""
+
+    def test_sanitize_bold_ideas_drops_clayton(self):
+        ideas = [
+            "Lean into **Jamie Clayton** casting speculation as official reveal.",
+            "Amplify **Clive Barker's** creative authority in messaging.",
+        ]
+        out = pss._sanitize_bold_ideas(
+            ideas, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
+        )
+        assert len(out) == 1
+        assert "Clive Barker" in out[0]
+        assert "Clayton" not in out[0]
+
+    def test_sanitize_executive_summary_drops_clayton_sentence(self):
+        text = (
+            "Community sentiment for the game is positive. "
+            "Jamie Clayton voicing Pinhead emerged as a point of interest. "
+            "Pre-launch chatter dominates."
+        )
+        out = pss._sanitize_executive_summary(
+            text, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
+        )
+        assert "Clayton" not in out
+        assert "Jamie" not in out
+        assert "Community sentiment" in out
+        assert "Pre-launch chatter" in out

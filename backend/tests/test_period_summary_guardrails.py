@@ -174,7 +174,13 @@ class TestCallActionsPrompt:
         assert result is None
 
     def test_actions_strips_meta_leak_lines(self):
-        # The exact bug from the user's screenshot
+        # The exact bug from the user's screenshot.  Updated 2026-06-24 to
+        # use topic strings whose full multi-word form IS in the input, so
+        # the fact-check gate (CLAUDE.md §20) doesn't drop the test lines as
+        # fabrications.  The original test passed pos_str="Combat" but
+        # expected the LLM output "Combat Mechanics" to pass through — that's
+        # exactly the class of expansion-from-background-knowledge fabrication
+        # §20 was added to catch.  We now pass the full topic labels.
         bad_response = (
             "**Reason:** The positive topics are either too generic.\n"
             "I cannot provide actionable recommendations based on this data.\n"
@@ -183,8 +189,10 @@ class TestCallActionsPrompt:
             "Another real recommendation that references Story Mode and has substance."
         )
         client = _CapturingClient(response=bad_response)
-        result = pss._call_actions(client, "Test Game", "April 2026",
-                                    "Combat", "Story", "Trailers")
+        result = pss._call_actions(
+            client, "Test Game", "April 2026",
+            "Combat Mechanics", "Story Mode", "Trailers",
+        )
         # Output should retain the real recommendations and drop the meta-leak
         assert result is not None
         assert "I cannot" not in result

@@ -888,6 +888,251 @@ def _anti_fabrication_clause(
     )
 
 
+# ── Post-LLM fact-check gate ──────────────────────────────────────────────────
+# CLAUDE.md §20 (Confirm-or-Omit) prompt-level rules + this post-LLM filter
+# together form a belt-and-suspenders guard against the model fabricating
+# named entities from its background knowledge of the franchise.
+#
+# The 2026-06-24 Hellraiser regression demonstrated that prompt instructions
+# alone are insufficient: even after adding an explicit anti-fabrication
+# clause to every prompt, Claude still surfaced "Jamie Clayton voicing
+# Pinhead" because she is strongly associated with the Hellraiser franchise
+# in its training data.  Prompt rules nudge the model; this gate ENFORCES.
+
+# Common English / calendar words that look like proper nouns but aren't
+# entities.  These are allowed through the gate without being in the input.
+_COMMON_CAPITALIZED = frozenset({
+    # Months
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+    # Days
+    "monday", "tuesday", "wednesday", "thursday", "friday",
+    "saturday", "sunday",
+    # Sentence-leading words that auto-capitalize
+    "the", "a", "an", "and", "or", "but", "if", "when", "while", "this",
+    "that", "these", "those", "their", "his", "her", "they", "we", "you",
+    "i", "it", "is", "are", "was", "were", "early", "late", "first",
+    "second", "third", "many", "most", "some", "any", "no", "yes",
+    # Gaming-platform / generic terms
+    "steam", "playstation", "ps5", "ps4", "xbox", "pc", "switch", "epic",
+    "reddit", "bluesky", "youtube", "twitch", "discord", "twitter",
+    "tiktok", "facebook", "instagram", "north", "south", "east", "west",
+})
+
+# Tokens to extract for whitelist building.  Keep alphanumerics, apostrophes,
+# hyphens.  Letters-only check for "is this a proper noun candidate" comes
+# afterwards.
+_WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9'\-]+")
+
+# Capitalized-token check for candidate extraction: a leading uppercase letter
+# followed by more letters (covers "Clayton", "Pinhead", "Hellraiser") but
+# NOT all-caps acronyms (which the model rarely fabricates) and NOT single
+# capital letters.
+_PROPER_NOUN_RE = re.compile(r"^[A-Z][a-zA-Z']+$")
+
+
+def _build_input_whitelist(
+    game_name: str,
+    sample_posts: dict[str, list[str]],
+    distinctive_entities: list[str],
+    topic_labels: Optional[list[str]] = None,
+) -> set[str]:
+    """Lowercase-word whitelist drawn from every input the LLM saw.
+
+    Anything in the LLM's output that appears here (case-insensitive) is
+    considered grounded in the data.  Anything not here is a fabrication
+    candidate.
+    """
+    whitelist: set[str] = set(_COMMON_CAPITALIZED)
+    sources: list[str] = []
+    sources.append(game_name or "")
+    for bucket in (sample_posts or {}).values():
+        sources.extend(bucket)
+    sources.extend(distinctive_entities or [])
+    sources.extend(topic_labels or [])
+    for src in sources:
+        for tok in _WORD_TOKEN_RE.findall(src):
+            whitelist.add(tok.lower())
+    return whitelist
+
+
+def _extract_proper_noun_candidates(text: str) -> list[str]:
+    """Return capitalized proper-noun-shaped tokens that appear in `text`
+    in positions where they are likely to be entity references, not
+    sentence-start capitalization artifacts.
+
+    Strategy:
+      • Every bolded entity (**X**) contributes its capitalized tokens.
+      • Every non-sentence-start capitalized token in the prose contributes.
+    """
+    cands: set[str] = set()
+    # Bolded entities first — these are unambiguously entity references in
+    # our prompt format.
+    for m in re.finditer(r"\*\*([^*]+)\*\*", text):
+        for tok in _WORD_TOKEN_RE.findall(m.group(1)):
+            if _PROPER_NOUN_RE.match(tok):
+                cands.add(tok)
+    # Mid-sentence capitalized tokens in the rest of the prose.
+    # Split on sentence boundaries then look at words 2..N (word 1 may be
+    # capitalized due to sentence-initial position, not because it's a name).
+    for sent in re.split(r"(?<=[.!?])\s+", text):
+        # Drop a leading numbered-list marker like "1. " or "2) "
+        sent = re.sub(r"^\s*\d+[\.\)]\s*", "", sent)
+        tokens = _WORD_TOKEN_RE.findall(sent)
+        for i, tok in enumerate(tokens):
+            if i == 0:
+                continue
+            if _PROPER_NOUN_RE.match(tok):
+                cands.add(tok)
+    return sorted(cands)
+
+
+def _fact_check_for_fabrications(
+    text: str,
+    game_name: str,
+    sample_posts: dict[str, list[str]],
+    distinctive_entities: list[str],
+    topic_labels: Optional[list[str]] = None,
+) -> list[str]:
+    """Return the list of fabricated proper nouns found in `text`.
+
+    A fabrication is a capitalized proper-noun-shaped token in `text` whose
+    lowercased form does NOT appear anywhere in the LLM's input data.
+
+    Empty list means the output passes the fact check.
+    """
+    if not text:
+        return []
+    whitelist = _build_input_whitelist(
+        game_name, sample_posts, distinctive_entities, topic_labels,
+    )
+    candidates = _extract_proper_noun_candidates(text)
+    return [c for c in candidates if c.lower() not in whitelist]
+
+
+def _sanitize_recommendations(
+    text: str,
+    game_name: str,
+    sample_posts: dict[str, list[str]],
+    distinctive_entities: list[str],
+    topic_labels: Optional[list[str]] = None,
+) -> str:
+    """Drop any numbered recommendation line containing a fabricated name.
+
+    Numbered lists are line-oriented — we can surgically remove just the
+    offending item and renumber the survivors.  If sanitization removes
+    EVERY item, returns "" so the caller can fall back to NONE.
+    """
+    fabs = _fact_check_for_fabrications(
+        text, game_name, sample_posts, distinctive_entities, topic_labels,
+    )
+    if not fabs:
+        return text
+    fab_set = {f.lower() for f in fabs}
+    logger.warning(
+        "Fact-check dropping recommendations containing fabricated names: %s",
+        fabs,
+    )
+    # Split into lines, identify which lines contain fab names, drop them.
+    surviving: list[str] = []
+    current_item: list[str] = []
+    def flush():
+        nonlocal current_item
+        if not current_item:
+            return
+        item_text = " ".join(current_item)
+        item_tokens = {t.lower() for t in _WORD_TOKEN_RE.findall(item_text)}
+        if item_tokens & fab_set:
+            current_item = []
+            return
+        surviving.append(item_text)
+        current_item = []
+    for line in text.split("\n"):
+        if re.match(r"^\s*\d+\.\s", line):
+            flush()
+            current_item.append(line.strip())
+        elif line.strip():
+            current_item.append(line.strip())
+        else:
+            flush()
+    flush()
+    if not surviving:
+        return ""
+    # Renumber.
+    out_lines: list[str] = []
+    n = 1
+    for s in surviving:
+        # Strip the existing "N. " prefix if present, re-prefix with new number.
+        s_clean = re.sub(r"^\s*\d+\.\s*", "", s)
+        out_lines.append(f"{n}. {s_clean}")
+        n += 1
+    return "\n\n".join(out_lines)
+
+
+def _sanitize_bold_ideas(
+    ideas: list[str],
+    game_name: str,
+    sample_posts: dict[str, list[str]],
+    distinctive_entities: list[str],
+    topic_labels: Optional[list[str]] = None,
+) -> list[str]:
+    """Drop any bold idea that contains a fabricated proper noun."""
+    if not ideas:
+        return ideas
+    surviving: list[str] = []
+    for idea in ideas:
+        fabs = _fact_check_for_fabrications(
+            idea, game_name, sample_posts, distinctive_entities, topic_labels,
+        )
+        if fabs:
+            logger.warning(
+                "Fact-check dropping bold idea containing fabricated names %s: %s",
+                fabs, idea[:120],
+            )
+            continue
+        surviving.append(idea)
+    return surviving
+
+
+def _sanitize_executive_summary(
+    text: str,
+    game_name: str,
+    sample_posts: dict[str, list[str]],
+    distinctive_entities: list[str],
+    topic_labels: Optional[list[str]] = None,
+) -> str:
+    """Drop any sentence in the executive summary that contains a fabricated
+    proper noun.  Unlike recommendations, the exec summary is free prose, so
+    sentence-level surgery is the finest viable cut.
+
+    If sanitization removes every sentence, returns a short honest note.
+    """
+    fabs = _fact_check_for_fabrications(
+        text, game_name, sample_posts, distinctive_entities, topic_labels,
+    )
+    if not fabs:
+        return text
+    fab_set = {f.lower() for f in fabs}
+    logger.warning(
+        "Fact-check dropping exec-summary sentences containing fabricated names: %s",
+        fabs,
+    )
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    keep: list[str] = []
+    for s in sentences:
+        s_tokens = {t.lower() for t in _WORD_TOKEN_RE.findall(s)}
+        if s_tokens & fab_set:
+            continue
+        keep.append(s.strip())
+    if not keep:
+        return (
+            "Community sentiment was mixed during this window, but specific "
+            "entity-level claims could not be confirmed from the available "
+            "posts.  See topic breakdowns for grounded detail."
+        )
+    return " ".join(keep)
+
+
 def _call_exec(
     client,
     game_name,
@@ -989,7 +1234,13 @@ def _call_exec(
             max_tokens=_MAX_TOKENS_SUMMARY,
             messages=[{"role": "user", "content": prompt}],
         )
-        return message.content[0].text.strip()
+        raw = message.content[0].text.strip()
+        # CLAUDE.md §20: post-LLM fact-check gate. Drop any sentence that
+        # references a proper noun the LLM invented from background knowledge.
+        topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
+        return _sanitize_executive_summary(
+            raw, game_name, sample_posts, distinctive_entities, topic_labels,
+        )
     except Exception as exc:
         logger.error("Claude exec summary error for '%s': %s", game_name, exc)
         return _placeholder_summary(game_name, window_label, total_posts)
@@ -1064,7 +1315,16 @@ def _call_actions(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
-        return _parse_recommended_actions(raw)
+        parsed = _parse_recommended_actions(raw)
+        if parsed is None:
+            return parsed
+        # CLAUDE.md §20: drop any recommendation referencing a fabricated
+        # proper noun.  Returns None if every recommendation gets dropped.
+        topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
+        sanitized = _sanitize_recommendations(
+            parsed, game_name, sample_posts, distinctive_entities, topic_labels,
+        )
+        return sanitized or None
     except Exception as exc:
         logger.error("Claude actions error for '%s': %s", game_name, exc)
         return _placeholder_actions()
@@ -1132,7 +1392,13 @@ def _call_bold_ideas(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
-        return _parse_bold_ideas(raw)
+        parsed = _parse_bold_ideas(raw)
+        # CLAUDE.md §20: drop any bold idea that references a fabricated
+        # proper noun.  An idea built on an invented entity is just a guess.
+        topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
+        return _sanitize_bold_ideas(
+            parsed, game_name, sample_posts, distinctive_entities, topic_labels,
+        )
     except Exception as exc:
         logger.error("Claude bold ideas error for '%s': %s", game_name, exc)
         return []
