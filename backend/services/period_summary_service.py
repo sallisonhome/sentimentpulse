@@ -86,11 +86,14 @@ def generate_monthly_summary(
     # Specifics-extraction (2026-05-30 hardening): pull real post samples and
     # surface distinctive entities so the summary can name specific events,
     # DLCs, levels, weapons, etc. — not just generic topic buckets.
-    sample_posts = _sample_posts_for_window(db, game_id, window_start, window_end)
+    # CLAUDE.md §20 (2026-06-24): also pull the with-ids variant so the
+    # citation grounding + self-criticism layers can verify every claim.
+    sample_posts_with_ids = _sample_posts_with_ids(db, game_id, window_start, window_end)
+    sample_posts = {k: [p["text"] for p in v] for k, v in sample_posts_with_ids.items()}
     distinctive = _distinctive_entities(sample_posts)
 
     # Call Claude (even if total==0; let the LLM handle sparse data gracefully)
-    exec_summary, rec_actions, bold_ideas = _call_claude_for_period(
+    exec_summary, rec_actions, bold_ideas, citation_map = _call_claude_for_period(
         game_name=game.name,
         window_label=window_label,
         pos_topics=top_pos,
@@ -101,6 +104,7 @@ def generate_monthly_summary(
         neu_count=neu,
         sample_posts=sample_posts,
         distinctive_entities=distinctive,
+        sample_posts_with_ids=sample_posts_with_ids,
     )
 
     # Upsert
@@ -120,6 +124,7 @@ def generate_monthly_summary(
         existing.executive_summary = exec_summary
         existing.recommended_actions = rec_actions
         existing.bold_ideas = bold_ideas
+        existing.citation_map = citation_map or None
         existing.generated_at = datetime.utcnow()
         row = existing
     else:
@@ -137,6 +142,7 @@ def generate_monthly_summary(
             executive_summary=exec_summary,
             recommended_actions=rec_actions,
             bold_ideas=bold_ideas,
+            citation_map=citation_map or None,
         )
         db.add(row)
 
@@ -225,10 +231,13 @@ def generate_window_summary(
     total = pos + neg + neu
 
     # Specifics-extraction (2026-05-30 hardening): same as monthly path.
-    sample_posts = _sample_posts_for_window(db, game_id, window_start, window_end)
+    # CLAUDE.md §20 (2026-06-24): pull with-ids variant for citation
+    # grounding + self-criticism layers.
+    sample_posts_with_ids = _sample_posts_with_ids(db, game_id, window_start, window_end)
+    sample_posts = {k: [p["text"] for p in v] for k, v in sample_posts_with_ids.items()}
     distinctive = _distinctive_entities(sample_posts)
 
-    exec_summary, rec_actions, bold_ideas = _call_claude_for_period(
+    exec_summary, rec_actions, bold_ideas, citation_map = _call_claude_for_period(
         game_name=game.name,
         window_label=window_label,
         pos_topics=top_pos,
@@ -239,6 +248,7 @@ def generate_window_summary(
         neu_count=neu,
         sample_posts=sample_posts,
         distinctive_entities=distinctive,
+        sample_posts_with_ids=sample_posts_with_ids,
     )
 
     row = WindowSummary(
@@ -255,6 +265,7 @@ def generate_window_summary(
         executive_summary=exec_summary,
         recommended_actions=rec_actions,
         bold_ideas=bold_ideas,
+        citation_map=citation_map or None,
     )
     db.add(row)
     db.commit()
@@ -683,7 +694,14 @@ def _call_claude_for_period(
     neu_count: int,
     sample_posts: Optional[dict[str, list[str]]] = None,
     distinctive_entities: Optional[list[str]] = None,
-) -> tuple[str, Optional[str], list[str]]:
+    # CLAUDE.md §20 layers 3+4: optional citation infrastructure.  When
+    # provided, the LLM is required to cite [P-NNN] tokens on every claim,
+    # uncited claims are dropped, and a second LLM call validates each
+    # cited claim against the actual post text.  Callers that want the
+    # protection pass both args; legacy callers can omit them and get the
+    # previous behavior (prompt rule + proper-noun fact check only).
+    sample_posts_with_ids: Optional[dict[str, list[dict]]] = None,
+) -> tuple[str, Optional[str], list[str], dict[str, dict]]:
     """
     Call Claude for (exec_summary, recommended_actions, bold_ideas).
 
@@ -714,7 +732,7 @@ def _call_claude_for_period(
             f"Insufficient signal for confident reporting "
             f"(only {total_posts} substantive posts in this window)."
         )
-        return exec_summary, None, []
+        return exec_summary, None, [], {}
 
     client = _get_client()
     if client is None:
@@ -722,6 +740,7 @@ def _call_claude_for_period(
             _placeholder_summary(game_name, window_label, total_posts),
             _placeholder_actions(),
             [],
+            {},
         )
 
     # Quarantine poisoned topic labels before they reach the LLM. Any label
@@ -744,24 +763,38 @@ def _call_claude_for_period(
     sample_posts = sample_posts or {"positive": [], "negative": [], "neutral": []}
     distinctive_entities = distinctive_entities or []
 
+    # Build the citation map up front so every prompt + sanitizer uses the
+    # same [P-NNN] namespace.  Empty when caller didn't pass the with-ids
+    # variant of samples (legacy path).
+    annotated_samples: dict[str, list[dict]] = {"positive": [], "negative": [], "neutral": []}
+    citation_map: dict[str, dict] = {}
+    if sample_posts_with_ids:
+        annotated_samples, citation_map = _assign_citation_ids(sample_posts_with_ids)
+
     exec_summary  = _call_exec(
         client, game_name, window_label, pos_str, neg_str, neu_str,
         total_posts, pos_count, neg_count, neu_count,
         sample_posts=sample_posts,
         distinctive_entities=distinctive_entities,
+        annotated_samples=annotated_samples,
+        citation_map=citation_map,
     )
     rec_actions   = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,
         sample_posts=sample_posts,
         distinctive_entities=distinctive_entities,
+        annotated_samples=annotated_samples,
+        citation_map=citation_map,
     )
     bold_ideas    = _call_bold_ideas(
         client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
         sample_posts=sample_posts,
         distinctive_entities=distinctive_entities,
+        annotated_samples=annotated_samples,
+        citation_map=citation_map,
     )
 
-    return exec_summary, rec_actions, bold_ideas
+    return exec_summary, rec_actions, bold_ideas, citation_map
 
 
 # ── Topic-label quarantine (CLAUDE.md §13 defense in depth) ─────────────────────
@@ -819,6 +852,394 @@ _OUTPUT_STYLE = (
     "- If you genuinely have nothing useful to say, follow the empty-output sentinel for the section (specified below). "
     "Do NOT write a meta-explanation about why you're empty.\n\n"
 )
+
+
+# ── Citation grounding + self-criticism (CLAUDE.md §20 layers 3+4) ──────────
+#
+# Layer 1 (prompt rule) and layer 2 (post-LLM proper-noun fact check) catch
+# fabricated named entities but NOT semantic hallucination — claims that use
+# only real names but invent the relationship/quantity/direction between them.
+#
+# Layers 3 and 4 close that gap:
+#
+#   Layer 3 — Citation Grounding.  Every sample post is assigned a stable
+#   token [P-NNN] and the prompts require every sentence/item to end with at
+#   least one such citation.  Sentences without a valid citation are dropped
+#   post-LLM.  The user-visible email renders citations as superscript links
+#   to the actual post URLs so claims are auditable.
+#
+#   Layer 4 — Self-Criticism Pass.  A second Claude call is given (output
+#   text, source posts that were cited) and asked to verdict each sentence
+#   as SUPPORTED or UNSUPPORTED against the post it cites.  Unsupported
+#   sentences are stripped.  Costs ~1 extra LLM call per LLM-produced output
+#   block.
+
+# Matches a bracketed citation segment, e.g. [P-001] or [P-001, P-003] or
+# [P-001; P-002].  We extract each P-NNN inside via a second pass.
+_CITATION_BRACKET_RE = re.compile(r"\[((?:P-\d{1,4}[\s,;]*)+)\]")
+_CITATION_INNER_RE = re.compile(r"P-(\d{1,4})")
+
+
+def _sample_posts_with_ids(
+    db: Session,
+    game_id: int,
+    window_start: date,
+    window_end: date,
+    per_bucket: int = _SAMPLE_POSTS_PER_BUCKET,
+) -> dict[str, list[dict]]:
+    """Sibling of _sample_posts_for_window() that ALSO returns post id + url.
+
+    Returns {"positive": [{"id": int, "text": str, "url": str | None}, ...],
+             "negative": [...], "neutral": [...]}.
+
+    The id is the SentimentPulse internal RawPost.id — stable for the
+    lifetime of the row, useful for both prompt-side citations and later
+    UI link rendering.
+    """
+    start_dt = datetime.combine(window_start, datetime.min.time())
+    end_dt   = datetime.combine(window_end,   datetime.max.time())
+    effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
+
+    out: dict[str, list[dict]] = {"positive": [], "negative": [], "neutral": []}
+    for sentiment in (SentimentEnum.positive, SentimentEnum.negative, SentimentEnum.neutral):
+        rows = (
+            db.query(RawPost.id, RawPost.title, RawPost.body, RawPost.upvotes, RawPost.url)
+            .join(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
+            .filter(
+                RawPost.game_id == game_id,
+                SentimentRecord.sentiment == sentiment,
+                effective_date >= start_dt,
+                effective_date <= end_dt,
+            )
+            .order_by(RawPost.upvotes.desc().nullslast(), effective_date.desc())
+            .limit(per_bucket * 3)
+            .all()
+        )
+        seen_prefixes: set[str] = set()
+        bucket: list[dict] = []
+        for pid, title, body, _upvotes, url in rows:
+            text = (title or "").strip()
+            if body and body.strip():
+                text = f"{text} — {body.strip()}" if text else body.strip()
+            text = text[:_SAMPLE_POST_TEXT_CHARS].strip()
+            if len(text) < 30:
+                continue
+            prefix = text[:60].lower()
+            if prefix in seen_prefixes:
+                continue
+            seen_prefixes.add(prefix)
+            bucket.append({"id": int(pid), "text": text, "url": url})
+            if len(bucket) >= per_bucket:
+                break
+        out[sentiment.value] = bucket
+    return out
+
+
+def _assign_citation_ids(
+    sample_posts_with_ids: dict[str, list[dict]],
+) -> tuple[dict[str, list[dict]], dict[str, dict]]:
+    """Assign each sample post a [P-NNN] citation token.
+
+    Returns:
+      (annotated_samples, citation_map)
+    where annotated_samples is the input shape with an added "cite" key per
+    post (e.g. "P-001"), and citation_map maps the cite string -> the post
+    dict, used by the post-LLM filter to validate citations and by the
+    email renderer to resolve them to URLs.
+
+    Numbering is stable across sentiment buckets: positives first (P-001..),
+    then negatives, then neutrals.  This gives the LLM a single contiguous
+    citation namespace it can reason about.
+    """
+    citation_map: dict[str, dict] = {}
+    annotated: dict[str, list[dict]] = {"positive": [], "negative": [], "neutral": []}
+    counter = 1
+    for sentiment in ("positive", "negative", "neutral"):
+        for post in sample_posts_with_ids.get(sentiment) or []:
+            cite = f"P-{counter:03d}"
+            counter += 1
+            annotated_post = dict(post)
+            annotated_post["cite"] = cite
+            annotated_post["sentiment"] = sentiment
+            annotated[sentiment].append(annotated_post)
+            citation_map[cite] = annotated_post
+    return annotated, citation_map
+
+
+def _format_sample_posts_block_with_citations(
+    annotated_samples: dict[str, list[dict]],
+) -> str:
+    """Same shape as _format_sample_posts_block, but each post is rendered
+    with its [P-NNN] token at the start so the LLM can cite it."""
+    parts: list[str] = []
+    for sentiment in ("positive", "negative", "neutral"):
+        posts = annotated_samples.get(sentiment) or []
+        if not posts:
+            continue
+        parts.append(f"-- {sentiment.upper()} samples --")
+        for post in posts:
+            single_line = " ".join(post["text"].split())
+            parts.append(f"  [{post['cite']}] {single_line}")
+    return "\n".join(parts)
+
+
+def _citation_requirement_clause(citation_map: dict[str, dict]) -> str:
+    """Mandatory clause: every claim must end with at least one [P-NNN]
+    citation, where the cited posts exist in the citation_map."""
+    if not citation_map:
+        return ""
+    valid_cites = ", ".join(sorted(citation_map.keys()))
+    return (
+        "CITATION REQUIREMENT (HARD):\n"
+        "- Every sentence (executive summary) or every numbered item\n"
+        "  (recommendations and bold ideas) MUST end with at least one\n"
+        "  citation in square brackets referencing a sample post you saw\n"
+        "  in the data block below.  Format: [P-001] or [P-001, P-003].\n"
+        "- The citation must come from this allowed list ONLY:\n"
+        f"  {valid_cites}\n"
+        "- If a claim has no supporting sample post, do NOT make the claim.\n"
+        "- Output without citations will be dropped.  Cite or omit.\n\n"
+    )
+
+
+def _extract_citations(text: str) -> set[str]:
+    """Return all P-NNN tokens found in bracketed citations inside `text`.
+
+    Supports compound forms: [P-001], [P-001, P-002], [P-001; P-003].
+    Does NOT match bare P-001 outside brackets so noise in unrelated prose
+    cannot accidentally satisfy the citation requirement.
+    """
+    out: set[str] = set()
+    for bracket_match in _CITATION_BRACKET_RE.finditer(text or ""):
+        inside = bracket_match.group(1)
+        for m in _CITATION_INNER_RE.finditer(inside):
+            out.add(f"P-{int(m.group(1)):03d}")
+    return out
+
+
+def _strip_uncited_sentences(text: str, citation_map: dict[str, dict]) -> str:
+    """Drop any sentence in `text` that lacks a citation (or cites an
+    unknown P-NNN).  Returns "" if every sentence drops."""
+    if not citation_map or not text:
+        return text
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    keep: list[str] = []
+    for s in sentences:
+        cites = _extract_citations(s)
+        if not cites:
+            continue
+        if not (cites & set(citation_map.keys())):
+            # Cites only invalid P-NNN tokens — drop.
+            continue
+        keep.append(s.strip())
+    return " ".join(keep)
+
+
+def _strip_uncited_items(text: str, citation_map: dict[str, dict]) -> str:
+    """For numbered-list output: drop items whose entire body lacks a
+    citation.  Renumbers survivors.  Returns "" if every item drops."""
+    if not citation_map or not text:
+        return text
+    valid = set(citation_map.keys())
+    items: list[str] = []
+    current: list[str] = []
+
+    def flush():
+        nonlocal current
+        if not current:
+            return
+        item = " ".join(current).strip()
+        cites = _extract_citations(item)
+        if cites and (cites & valid):
+            items.append(item)
+        current = []
+
+    for line in text.split("\n"):
+        if re.match(r"^\s*\d+\.\s", line):
+            flush()
+            current.append(line.strip())
+        elif line.strip():
+            current.append(line.strip())
+        else:
+            flush()
+    flush()
+    if not items:
+        return ""
+    out: list[str] = []
+    for n, item in enumerate(items, 1):
+        cleaned = re.sub(r"^\s*\d+\.\s*", "", item)
+        out.append(f"{n}. {cleaned}")
+    return "\n\n".join(out)
+
+
+def _strip_uncited_bold_ideas(
+    ideas: list[str], citation_map: dict[str, dict],
+) -> list[str]:
+    """Drop any bold idea that lacks a valid citation."""
+    if not citation_map or not ideas:
+        return ideas
+    valid = set(citation_map.keys())
+    surviving: list[str] = []
+    for idea in ideas:
+        cites = _extract_citations(idea)
+        if cites and (cites & valid):
+            surviving.append(idea)
+    return surviving
+
+
+# ── Self-criticism pass (layer 4) ────────────────────────────────────────────
+
+_SELF_CRIT_MAX_TOKENS = 400
+_SELF_CRIT_SENTENCE_DELIM = "###~SENT~###"  # unlikely to appear in real text
+
+
+def _self_criticize(
+    client,
+    text: str,
+    citation_map: dict[str, dict],
+    block_kind: str,  # "exec_summary" | "recommendations" | "bold_ideas"
+) -> str:
+    """Run a 2nd Claude call asking it to flag any sentence that is NOT
+    supported by the post text it cites.  Strips unsupported sentences.
+
+    Skipped silently when:
+      • citation_map is empty (no posts to validate against)
+      • text is empty (nothing to check)
+      • the call raises (we keep the LLM's first-pass output rather than
+        wipe everything because a critic call failed)
+    """
+    if not text or not citation_map:
+        return text
+    # Build a compact "post text" lookup for the prompt
+    posts_lookup: list[str] = []
+    for cite, post in citation_map.items():
+        # Use a slightly longer slice in the critic prompt than in the main
+        # prompt so the critic has more context to verify against.
+        snippet = " ".join((post.get("text") or "").split())[:500]
+        posts_lookup.append(f"  [{cite}] {snippet}")
+    posts_block = "\n".join(posts_lookup)
+
+    crit_prompt = (
+        "You are a fact-checking pass.  An earlier LLM produced the text below "
+        "and tagged each claim with a citation in square brackets pointing to a "
+        "source post.  Your job is to verdict each sentence (or numbered item) "
+        "as SUPPORTED or UNSUPPORTED by the post(s) it cites.\n\n"
+        "Rules:\n"
+        "- A sentence is SUPPORTED only if the post it cites genuinely contains "
+        "the specific claim being made.  Topical proximity is NOT support.\n"
+        "- Do not bring in outside knowledge.  Only the post text shown below "
+        "is admissible evidence.\n"
+        "- If a sentence cites multiple posts, support from any ONE of them is "
+        "enough; the sentence is SUPPORTED.\n"
+        "- If the sentence cites a post that does not contain the claim, UNSUPPORTED.\n"
+        "- If the sentence has no citation at all, UNSUPPORTED.\n\n"
+        f"BLOCK KIND: {block_kind}\n\n"
+        "SOURCE POSTS (the only admissible evidence):\n"
+        f"{posts_block}\n\n"
+        "TEXT TO VERIFY (sentences are separated by the delimiter "
+        f"{_SELF_CRIT_SENTENCE_DELIM} ):\n"
+    )
+
+    # Split into sentence-level chunks with a stable delimiter so we can
+    # parse the critic's verdicts back into our sentence list.
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if not sentences:
+        return text
+    crit_prompt += (
+        _SELF_CRIT_SENTENCE_DELIM.join(sentences) + "\n\n"
+        "Output: one line per sentence in the same order as above, "
+        "either:\n"
+        "  SUPPORTED\n"
+        "  UNSUPPORTED <one-line reason citing which cited post failed>\n"
+        "No preamble.  No markdown.  Exactly one line per sentence."
+    )
+
+    try:
+        message = client.messages.create(
+            model=_MODEL,
+            max_tokens=_SELF_CRIT_MAX_TOKENS,
+            messages=[{"role": "user", "content": crit_prompt}],
+        )
+        verdicts = message.content[0].text.strip().split("\n")
+    except Exception as exc:
+        logger.warning("Self-criticism pass raised, keeping first-pass output: %s", exc)
+        return text
+
+    if len(verdicts) < len(sentences):
+        # Critic returned malformed output (fewer verdicts than sentences).
+        # Don't risk dropping good content — keep original.
+        logger.warning(
+            "Self-criticism returned %d verdicts for %d sentences; keeping original",
+            len(verdicts), len(sentences),
+        )
+        return text
+
+    keep: list[str] = []
+    for sent, verdict in zip(sentences, verdicts):
+        v = verdict.strip().upper()
+        if v.startswith("SUPPORTED"):
+            keep.append(sent)
+        else:
+            logger.info(
+                "Self-criticism dropping unsupported sentence: %s | reason=%s",
+                sent[:120], verdict.strip()[:200],
+            )
+    if not keep:
+        # Every sentence rejected — fall back to a low-signal placeholder.
+        return ""
+    return " ".join(keep)
+
+
+def _self_criticize_items(
+    client, text: str, citation_map: dict[str, dict], block_kind: str,
+) -> str:
+    """Sentence-equivalent for numbered-item output (recommendations).
+    Treats each numbered item as a "sentence" for criticism purposes.
+    Renumbers survivors."""
+    if not text or not citation_map:
+        return text
+    # Split into numbered items
+    items: list[str] = []
+    current: list[str] = []
+    for line in text.split("\n"):
+        if re.match(r"^\s*\d+\.\s", line):
+            if current:
+                items.append(" ".join(current).strip())
+                current = []
+            current.append(line.strip())
+        elif line.strip():
+            current.append(line.strip())
+    if current:
+        items.append(" ".join(current).strip())
+    if not items:
+        return text
+
+    # Strip numbering for criticism (it's noise to the critic)
+    naked_items = [re.sub(r"^\s*\d+\.\s*", "", item) for item in items]
+    joined = (" " + _SELF_CRIT_SENTENCE_DELIM + " ").join(naked_items) + "."
+    survived = _self_criticize(client, joined, citation_map, block_kind)
+    if not survived:
+        return ""
+    # Re-split on the delimiter to recover items
+    surviving_items = [s.strip().rstrip(".") for s in survived.split(_SELF_CRIT_SENTENCE_DELIM) if s.strip()]
+    if not surviving_items:
+        return ""
+    return "\n\n".join(f"{n}. {item}" for n, item in enumerate(surviving_items, 1))
+
+
+def _self_criticize_bold_ideas(
+    client, ideas: list[str], citation_map: dict[str, dict],
+) -> list[str]:
+    """Apply self-criticism to each bold idea, drop unsupported ones."""
+    if not ideas or not citation_map:
+        return ideas
+    survived: list[str] = []
+    for idea in ideas:
+        # Treat each idea as a single-sentence block for the critic.
+        out = _self_criticize(client, idea, citation_map, "bold_ideas")
+        if out:
+            survived.append(out)
+    return survived
 
 
 def _format_sample_posts_block(sample_posts: dict[str, list[str]]) -> str:
@@ -1146,6 +1567,9 @@ def _call_exec(
     neu_count: int = 0,
     sample_posts: Optional[dict[str, list[str]]] = None,
     distinctive_entities: Optional[list[str]] = None,
+    # CLAUDE.md §20 layers 3+4: citation grounding + self-criticism.
+    annotated_samples: Optional[dict[str, list[dict]]] = None,
+    citation_map: Optional[dict[str, dict]] = None,
 ) -> str:
     # Bug 2 fix: compute breakdown strings and negative percentage so the
     # prompt can REQUIRE Claude to reference actual counts numerically.
@@ -1166,8 +1590,15 @@ def _call_exec(
 
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
-    samples_block = _format_sample_posts_block(sample_posts)
+    citation_map = citation_map or {}
+    # Prefer citation-annotated samples block when we have one so the LLM
+    # sees [P-NNN] tokens it can echo back; falls back to plain block.
+    if annotated_samples and citation_map:
+        samples_block = _format_sample_posts_block_with_citations(annotated_samples)
+    else:
+        samples_block = _format_sample_posts_block(sample_posts)
     entities_block = _format_entities_block(distinctive_entities)
+    citation_clause = _citation_requirement_clause(citation_map)
 
     # Specifics-anchoring requirement: when we have either samples or entities,
     # the summary MUST name something specific.  This is the core of the
@@ -1198,6 +1629,7 @@ def _call_exec(
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         f"Write a TIGHT 3-5 sentence executive summary of community sentiment covering {window_label}.\n\n"
+        + citation_clause
         + specificity_requirement +
         f"Concision rules:\n"
         f"- 120 WORDS MAX. Aim for 80-100.\n"
@@ -1235,8 +1667,13 @@ def _call_exec(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
-        # CLAUDE.md §20: post-LLM fact-check gate. Drop any sentence that
-        # references a proper noun the LLM invented from background knowledge.
+        # CLAUDE.md §20 layer 3: drop sentences that lack a valid [P-NNN]
+        # citation when citation infra is active.
+        raw = _strip_uncited_sentences(raw, citation_map)
+        # CLAUDE.md §20 layer 4: second-pass self-criticism.  Skipped when
+        # citation_map is empty (legacy callers).
+        raw = _self_criticize(client, raw, citation_map, "exec_summary")
+        # CLAUDE.md §20 layer 2: post-LLM proper-noun fact-check gate.
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
         return _sanitize_executive_summary(
             raw, game_name, sample_posts, distinctive_entities, topic_labels,
@@ -1255,11 +1692,18 @@ def _call_actions(
     neu_str,
     sample_posts: Optional[dict[str, list[str]]] = None,
     distinctive_entities: Optional[list[str]] = None,
+    annotated_samples: Optional[dict[str, list[dict]]] = None,
+    citation_map: Optional[dict[str, dict]] = None,
 ) -> str:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
-    samples_block = _format_sample_posts_block(sample_posts)
+    citation_map = citation_map or {}
+    if annotated_samples and citation_map:
+        samples_block = _format_sample_posts_block_with_citations(annotated_samples)
+    else:
+        samples_block = _format_sample_posts_block(sample_posts)
     entities_block = _format_entities_block(distinctive_entities)
+    citation_clause = _citation_requirement_clause(citation_map)
 
     # When we have specifics, recommendations should bold a SPECIFIC entity
     # name (e.g. **Salamanders Chapter Pack**) rather than a generic topic
@@ -1280,6 +1724,7 @@ def _call_actions(
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         anti_fab +
+        citation_clause +
         f"Write 3-5 sprint-board-ready recommendations. Each one MUST follow this format strictly:\n\n"
         f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=15 words>.\n\n"
         + specificity_clause +
@@ -1315,11 +1760,15 @@ def _call_actions(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
+        # CLAUDE.md §20 layer 3: drop uncited items BEFORE structural parsing
+        # so we keep numbering consistent.
+        raw = _strip_uncited_items(raw, citation_map)
+        # CLAUDE.md §20 layer 4: self-criticism on items.
+        raw = _self_criticize_items(client, raw, citation_map, "recommendations")
         parsed = _parse_recommended_actions(raw)
         if parsed is None:
             return parsed
-        # CLAUDE.md §20: drop any recommendation referencing a fabricated
-        # proper noun.  Returns None if every recommendation gets dropped.
+        # CLAUDE.md §20 layer 2: proper-noun fact-check.
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
         sanitized = _sanitize_recommendations(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
@@ -1340,18 +1789,26 @@ def _call_bold_ideas(
     total_posts,
     sample_posts: Optional[dict[str, list[str]]] = None,
     distinctive_entities: Optional[list[str]] = None,
+    annotated_samples: Optional[dict[str, list[dict]]] = None,
+    citation_map: Optional[dict[str, dict]] = None,
 ) -> list[str]:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
-    samples_block = _format_sample_posts_block(sample_posts)
+    citation_map = citation_map or {}
+    if annotated_samples and citation_map:
+        samples_block = _format_sample_posts_block_with_citations(annotated_samples)
+    else:
+        samples_block = _format_sample_posts_block(sample_posts)
     entities_block = _format_entities_block(distinctive_entities)
     anti_fab = _anti_fabrication_clause(samples_block, entities_block)
+    citation_clause = _citation_requirement_clause(citation_map)
 
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
         f"Looking at community signals from {window_label}, find opportunities a typical analyst would MISS.\n\n"
         + _OUTPUT_STYLE +
         anti_fab +
+        citation_clause +
         f"If — and only if — the data reveals something genuinely worth flagging as a bold move "
         f"beyond the obvious fixes, propose 1 or 2 bold ideas. The bold move should reference a "
         f"SPECIFIC entity from the samples or distinctive entities list — not a generic bucket.\n\n"
@@ -1393,8 +1850,11 @@ def _call_bold_ideas(
         )
         raw = message.content[0].text.strip()
         parsed = _parse_bold_ideas(raw)
-        # CLAUDE.md §20: drop any bold idea that references a fabricated
-        # proper noun.  An idea built on an invented entity is just a guess.
+        # CLAUDE.md §20 layer 3: drop uncited bold ideas.
+        parsed = _strip_uncited_bold_ideas(parsed, citation_map)
+        # CLAUDE.md §20 layer 4: self-criticism on each idea.
+        parsed = _self_criticize_bold_ideas(client, parsed, citation_map)
+        # CLAUDE.md §20 layer 2: proper-noun fact-check.
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
         return _sanitize_bold_ideas(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,

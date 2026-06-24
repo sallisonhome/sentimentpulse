@@ -508,3 +508,66 @@ class TestUserAgent:
             "Resend's Cloudflare edge bans default urllib UA — we MUST set one. "
             f"Got: {ua!r}"
         )
+
+
+class TestCitationRendering:
+    """CLAUDE.md §20 layer 3: [P-NNN] tokens in summary text render as
+    superscript links resolving to the source post URL stored in
+    WindowSummary.citation_map."""
+
+    CMAP = {
+        "P-001": {"id": 101, "url": "https://reddit.com/r/Hellraiser/post/abc", "sentiment": "positive"},
+        "P-002": {"id": 102, "url": "https://bsky.app/profile/x/post/y", "sentiment": "negative"},
+        "P-003": {"id": 103, "url": None, "sentiment": "neutral"},
+    }
+
+    def test_single_citation_renders_as_sup_link(self):
+        text = "Doug Bradley returns to voice Pinhead [P-001]."
+        out = ds._markdown_to_email_html(text, citation_map=self.CMAP)
+        assert "<sup" in out
+        assert "https://reddit.com/r/Hellraiser/post/abc" in out
+        # Ordinal stripped of zero-pad
+        assert ">1</a>" in out
+        # Raw token gone
+        assert "[P-001]" not in out
+
+    def test_multi_citation_renders_multiple_links(self):
+        text = "Doug Bradley returns to voice Pinhead [P-001, P-002]."
+        out = ds._markdown_to_email_html(text, citation_map=self.CMAP)
+        assert "https://reddit.com/r/Hellraiser/post/abc" in out
+        assert "https://bsky.app/profile/x/post/y" in out
+        assert ">1</a>" in out
+        assert ">2</a>" in out
+
+    def test_citation_without_url_falls_back_to_plain_ordinal(self):
+        text = "Reboot fatigue concerns [P-003]."
+        out = ds._markdown_to_email_html(text, citation_map=self.CMAP)
+        assert "<sup" in out
+        # No anchor because the cited post has no URL
+        assert "href=" not in out.split("<sup")[1].split("</sup>")[0]
+        assert "[3]" in out
+
+    def test_legacy_row_strips_tokens(self):
+        """Rows pre-dating layer 3 have no citation_map.  Tokens get removed
+        from user-visible text rather than shown raw."""
+        text = "Doug Bradley returns [P-001]."
+        out = ds._markdown_to_email_html(text, citation_map=None)
+        assert "[P-001]" not in out
+        assert "P-001" not in out
+        assert "Doug Bradley" in out
+
+    def test_citation_url_is_html_escaped(self):
+        text = "Click [P-001]."
+        cmap = {"P-001": {"id": 99, "url": "https://x/?a=1&b=2\"c", "sentiment": "positive"}}
+        out = ds._markdown_to_email_html(text, citation_map=cmap)
+        # & must be entity-escaped
+        assert "&amp;" in out
+        # Quote inside URL must be escaped
+        assert "&quot;" in out
+
+    def test_inline_md_passes_citation_map_through(self):
+        text = "Lean into **Doug Bradley** reveal [P-001]."
+        out = ds._inline_md(text, citation_map=self.CMAP)
+        assert "<strong>Doug Bradley</strong>" in out
+        assert "<sup" in out
+        assert ">1</a>" in out

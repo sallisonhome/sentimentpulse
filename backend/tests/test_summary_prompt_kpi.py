@@ -207,7 +207,7 @@ class TestCallClaudeForPeriodSignature:
     def test_total_posts_computed_from_counts(self):
         """total_posts is computed internally as pos+neg+neu."""
         # 5 + 3 + 2 = 10 < 20 → sentinel
-        exec_summary, rec_actions, bold_ideas = pss._call_claude_for_period(
+        exec_summary, rec_actions, bold_ideas, _citation_map = pss._call_claude_for_period(
             game_name="Test Game",
             window_label="Jan 2024",
             pos_topics=[],
@@ -247,7 +247,7 @@ class TestCallClaudeForPeriodSignature:
             patch.object(pss, "_aggregate_posts",
                          return_value=(15, 10, 8, ["Gameplay"], ["Bugs"], ["Discussion"])),
             patch.object(pss, "_call_claude_for_period",
-                         return_value=("summary", None, [])) as mock_claude,
+                         return_value=("summary", None, [], {})) as mock_claude,
         ):
             try:
                 pss.generate_monthly_summary(db, game.id, 2024, 1)

@@ -42,6 +42,7 @@ import html
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -91,6 +92,10 @@ class TitleBlock:
     bold_ideas: list[str]
     period_label: str        # e.g. "Jun 17 – Jun 24, 2026" or "May 2026"
     has_data: bool           # False → render a "no signal" placeholder
+    # CLAUDE.md §20 layer 3: maps [P-NNN] tokens in summary text back to
+    # source posts.  None (or missing) when row pre-dates citation infra;
+    # renderer treats this as a legacy row and leaves tokens unchanged.
+    citation_map: Optional[dict] = None
 
     @property
     def sentiment_tone(self) -> str:
@@ -187,6 +192,7 @@ def build_weekly_block(
         recommended_actions=summary.recommended_actions or "",
         bold_ideas=list(summary.bold_ideas or []),
         period_label=period_label, has_data=True,
+        citation_map=getattr(summary, "citation_map", None),
     )
 
 
@@ -229,6 +235,7 @@ def build_monthly_block(
         recommended_actions=row.recommended_actions or "",
         bold_ideas=list(row.bold_ideas or []),
         period_label=period_label, has_data=True,
+        citation_map=getattr(row, "citation_map", None),
     )
 
 
@@ -248,12 +255,13 @@ _NEGATIVE     = "#b91c1c"
 _NEUTRAL_CHIP = "#475569"
 
 
-def _markdown_to_email_html(text: str) -> str:
+def _markdown_to_email_html(text: str, citation_map: Optional[dict] = None) -> str:
     """
     Render the narrow subset of Markdown that period_summary_service emits:
       • **bold** → <strong>
       • Numbered lists '1. ' → <ol>
       • Blank-line paragraphs
+      • [P-NNN] → <sup> link to source post (CLAUDE.md §20 layer 3)
 
     Deliberately minimal so we don't depend on a Markdown library in the
     email path (where dependency surface matters for security review).
@@ -263,8 +271,9 @@ def _markdown_to_email_html(text: str) -> str:
         return ""
     text = html.escape(text)
     # **bold** → <strong>
-    import re
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    # [P-NNN] → superscript link
+    text = _render_citations(text, citation_map)
 
     # Detect numbered-list blocks (lines that start with "1. ", "2. ", ...)
     lines = text.split("\n")
@@ -371,7 +380,7 @@ def _render_title_section(b: TitleBlock) -> str:
         bold_html = ""
         if b.bold_ideas:
             bold_items = "".join(
-                f'<li style="margin:0 0 10px 0;">{_inline_md(idea)}</li>'
+                f'<li style="margin:0 0 10px 0;">{_inline_md(idea, b.citation_map)}</li>'
                 for idea in b.bold_ideas
             )
             bold_html = (
@@ -384,13 +393,13 @@ def _render_title_section(b: TitleBlock) -> str:
             f'  <div style="font-size:12px; font-weight:700; letter-spacing:.06em; '
             f'  color:{_BRAND_ACCENT}; text-transform:uppercase; margin-bottom:6px;">'
             f'  Executive Summary</div>'
-            f'  {_markdown_to_email_html(b.executive_summary)}'
+            f'  {_markdown_to_email_html(b.executive_summary, b.citation_map)}'
             f'</div>'
             f'<div style="margin-bottom:18px;">'
             f'  <div style="font-size:12px; font-weight:700; letter-spacing:.06em; '
             f'  color:{_BRAND_ACCENT}; text-transform:uppercase; margin-bottom:6px;">'
             f'  Recommended Actions</div>'
-            f'  {_markdown_to_email_html(b.recommended_actions)}'
+            f'  {_markdown_to_email_html(b.recommended_actions, b.citation_map)}'
             f'</div>'
             + (
                 f'<div>'
@@ -421,11 +430,67 @@ def _render_title_section(b: TitleBlock) -> str:
     )
 
 
-def _inline_md(text: str) -> str:
-    """Inline-only Markdown: escape + **bold**.  For list items where we
-    don't want block-level <p>/<ol> wrapping."""
-    import re
-    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html.escape(text or ""))
+# ── Citation rendering (CLAUDE.md §20 layer 3) ────────────────────────────────
+# Tokens like [P-001] and [P-001, P-003] in summary text are converted to
+# small superscript clickable links resolving to the source-post URLs stored
+# in WindowSummary.citation_map / MonthlySummary.citation_map.
+
+_CITE_BRACKET_RE_EMAIL = re.compile(r"\[((?:P-\d{1,4}[\s,;]*)+)\]")
+_CITE_INNER_RE_EMAIL = re.compile(r"P-(\d{1,4})")
+
+
+def _render_citations(text: str, citation_map: Optional[dict]) -> str:
+    """Replace [P-NNN] tokens in `text` with superscript anchor links.
+
+    `text` may already be HTML-escaped; this only touches the literal
+    bracket-token pattern so it's safe to run before or after escape.
+    When `citation_map` is None/empty (legacy row), tokens are stripped
+    entirely to keep the user-visible text clean.
+    """
+    if not text:
+        return text
+    cmap = citation_map or {}
+
+    def repl(m):
+        inside = m.group(1)
+        # Collect each P-NNN in order of appearance, dedup-preserving.
+        seen: list[str] = []
+        for inner in _CITE_INNER_RE_EMAIL.finditer(inside):
+            tok = f"P-{int(inner.group(1)):03d}"
+            if tok not in seen:
+                seen.append(tok)
+        if not seen:
+            return ""
+        if not cmap:
+            return ""  # legacy row: hide tokens rather than show raw [P-001]
+        anchors: list[str] = []
+        for tok in seen:
+            post = cmap.get(tok)
+            ordinal = int(tok.split("-")[1])
+            if post and post.get("url"):
+                url_esc = html.escape(post["url"], quote=True)
+                anchors.append(
+                    f'<a href="{url_esc}" style="color:{_BRAND_ACCENT}; '
+                    f'text-decoration:none;">{ordinal}</a>'
+                )
+            else:
+                # Cited token has no URL in the map — render the ordinal
+                # without a link so the claim still shows it was cited.
+                anchors.append(str(ordinal))
+        joined = ",".join(anchors)
+        return (
+            f'<sup style="font-size:10px; color:{_TEXT_MUTED}; '
+            f'margin-left:2px;">[{joined}]</sup>'
+        )
+
+    return _CITE_BRACKET_RE_EMAIL.sub(repl, text)
+
+
+def _inline_md(text: str, citation_map: Optional[dict] = None) -> str:
+    """Inline-only Markdown: escape + **bold** + [P-NNN] superscript links.
+    For list items where we don't want block-level <p>/<ol> wrapping."""
+    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html.escape(text or ""))
+    return _render_citations(out, citation_map)
 
 
 def render_digest_html(

@@ -57,7 +57,7 @@ class TestGenerateWindowSummary:
         """On a cache miss, a new WindowSummary row is created."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec text", "actions text", []),
+            return_value=("exec text", "actions text", [], {}),
         ) as mock_claude:
             row = generate_window_summary(db, game.id, days=7)
 
@@ -70,7 +70,7 @@ class TestGenerateWindowSummary:
         """On a cache HIT, Claude is not called again."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec text", "actions text", []),
+            return_value=("exec text", "actions text", [], {}),
         ) as mock_claude:
             row1 = generate_window_summary(db, game.id, days=7)
             row2 = generate_window_summary(db, game.id, days=7)
@@ -107,7 +107,7 @@ class TestGenerateWindowSummary:
         # Now generate with NO posts in DB → ingest_date defaults to today
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("new exec", "new actions", []),
+            return_value=("new exec", "new actions", [], {}),
         ) as mock_claude:
             # This should be a cache miss since today != 2024-04-01
             new_row = generate_window_summary(db, game.id, days=7)
@@ -124,7 +124,7 @@ class TestGenerateWindowSummary:
         """Posts within the 7-day window from the max post date are counted."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", []),
+            return_value=("exec", "actions", [], {}),
         ):
             row = generate_window_summary(db, game.id, days=7)
 
@@ -135,7 +135,7 @@ class TestGenerateWindowSummary:
         """7-day and 14-day summaries are cached separately."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", []),
+            return_value=("exec", "actions", [], {}),
         ):
             row_7  = generate_window_summary(db, game.id, days=7)
             row_14 = generate_window_summary(db, game.id, days=14)
@@ -153,7 +153,7 @@ class TestWindowSummaryEndpoint:
         """POST /window-summary returns a WindowSummaryResponse."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec text", "1. Action.", []),
+            return_value=("exec text", "1. Action.", [], {}),
         ):
             r = client.post(
                 f"/api/games/{game.id}/window-summary",
@@ -171,7 +171,7 @@ class TestWindowSummaryEndpoint:
         """POST with empty body defaults to days=7."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", []),
+            return_value=("exec", "actions", [], {}),
         ):
             r = client.post(f"/api/games/{game.id}/window-summary", json={})
 
@@ -182,7 +182,7 @@ class TestWindowSummaryEndpoint:
         """Second POST for the same cache key returns without Claude call."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", []),
+            return_value=("exec", "actions", [], {}),
         ) as mock_claude:
             r1 = client.post(f"/api/games/{game.id}/window-summary", json={"days": 7})
             r2 = client.post(f"/api/games/{game.id}/window-summary", json={"days": 7})
@@ -201,7 +201,7 @@ class TestWindowSummaryEndpoint:
         """When Claude returns bold ideas, they appear in the response."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", ["Bold idea number one"]),
+            return_value=("exec", "actions", ["Bold idea number one"], {}),
         ):
             r = client.post(f"/api/games/{game.id}/window-summary", json={"days": 7})
 

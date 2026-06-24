@@ -320,7 +320,7 @@ class TestGenerateWindowSummaryUsing1DayPath:
                          return_value=(5, 3, 2, ["Gameplay"], ["Fuel Changes"], [])) as mock_1day,
             patch.object(pss, "_aggregate_posts") as mock_std,
             patch.object(pss, "_call_claude_for_period",
-                         return_value=("summary", None, [])),
+                         return_value=("summary", None, [], {})),
         ):
             from models import RawPost, SourceEnum, SentimentRecord, SentimentEnum
             from datetime import datetime
@@ -360,7 +360,7 @@ class TestGenerateWindowSummaryUsing1DayPath:
             patch.object(pss, "_aggregate_posts",
                          return_value=(5, 3, 2, ["Gameplay"], ["Fuel Changes"], [])) as mock_std,
             patch.object(pss, "_call_claude_for_period",
-                         return_value=("summary", None, [])),
+                         return_value=("summary", None, [], {})),
         ):
             from models import RawPost, SourceEnum, SentimentRecord, SentimentEnum
             from datetime import datetime

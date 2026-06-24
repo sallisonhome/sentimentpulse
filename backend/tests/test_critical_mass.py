@@ -232,7 +232,7 @@ class TestInsufficientSignalSentinel:
     def test_15_posts_triggers_sentinel_no_claude(self):
         """With only 15 posts, the sentinel is returned and Claude is NOT called."""
         with patch.object(pss, "_get_client") as mock_get_client:
-            exec_summary, rec_actions, bold_ideas = pss._call_claude_for_period(
+            exec_summary, rec_actions, bold_ideas, _citation_map = pss._call_claude_for_period(
                 game_name="Test Game",
                 window_label="January 2024",
                 pos_topics=["Combat", "Story"],
@@ -253,7 +253,7 @@ class TestInsufficientSignalSentinel:
     def test_0_posts_triggers_sentinel(self):
         """0 posts → sentinel."""
         with patch.object(pss, "_get_client") as mock_get_client:
-            exec_summary, rec_actions, bold_ideas = pss._call_claude_for_period(
+            exec_summary, rec_actions, bold_ideas, _citation_map = pss._call_claude_for_period(
                 game_name="Test Game",
                 window_label="February 2024",
                 pos_topics=[],
@@ -270,7 +270,7 @@ class TestInsufficientSignalSentinel:
     def test_19_posts_triggers_sentinel(self):
         """19 posts → sentinel (one below threshold)."""
         with patch.object(pss, "_get_client") as mock_get_client:
-            exec_summary, rec_actions, bold_ideas = pss._call_claude_for_period(
+            exec_summary, rec_actions, bold_ideas, _citation_map = pss._call_claude_for_period(
                 game_name="Test Game",
                 window_label="March 2024",
                 pos_topics=["Gameplay"],
@@ -289,7 +289,7 @@ class TestInsufficientSignalSentinel:
         We return None from the client factory so no actual Claude call is made.
         """
         with patch.object(pss, "_get_client", return_value=None) as mock_get_client:
-            exec_summary, rec_actions, bold_ideas = pss._call_claude_for_period(
+            exec_summary, rec_actions, bold_ideas, _citation_map = pss._call_claude_for_period(
                 game_name="Test Game",
                 window_label="April 2024",
                 pos_topics=["Gameplay"],
@@ -305,7 +305,7 @@ class TestInsufficientSignalSentinel:
     def test_25_posts_uses_normal_path(self):
         """25 posts → normal path, not sentinel."""
         with patch.object(pss, "_get_client", return_value=None) as mock_get_client:
-            exec_summary, rec_actions, bold_ideas = pss._call_claude_for_period(
+            exec_summary, rec_actions, bold_ideas, _citation_map = pss._call_claude_for_period(
                 game_name="Test Game",
                 window_label="May 2024",
                 pos_topics=["Gameplay", "Graphics"],
@@ -319,7 +319,7 @@ class TestInsufficientSignalSentinel:
     def test_100_posts_uses_normal_path(self):
         """100 posts → clearly above threshold → normal path."""
         with patch.object(pss, "_get_client", return_value=None) as mock_get_client:
-            exec_summary, _actions, _ideas = pss._call_claude_for_period(
+            exec_summary, _actions, _ideas, _cmap = pss._call_claude_for_period(
                 game_name="Busy Game",
                 window_label="June 2024",
                 pos_topics=["Story", "Combat"],
@@ -339,7 +339,7 @@ class TestSentinelFormat:
     def test_sentinel_contains_post_count(self):
         """Sentinel must include the exact number of posts."""
         with patch.object(pss, "_get_client"):
-            exec_summary, _, _ = pss._call_claude_for_period(
+            exec_summary, _, _, _cmap = pss._call_claude_for_period(
                 game_name="A Game",
                 window_label="Test Window",
                 pos_topics=[],
@@ -352,7 +352,7 @@ class TestSentinelFormat:
     def test_sentinel_mentions_substantive_posts(self):
         """Sentinel message should mention 'substantive posts' per spec."""
         with patch.object(pss, "_get_client"):
-            exec_summary, _, _ = pss._call_claude_for_period(
+            exec_summary, _, _, _cmap = pss._call_claude_for_period(
                 game_name="A Game",
                 window_label="Test Window",
                 pos_topics=[],
@@ -365,7 +365,7 @@ class TestSentinelFormat:
     def test_sentinel_rec_actions_is_none(self):
         """recommended_actions must be None (not empty string, not placeholder)."""
         with patch.object(pss, "_get_client"):
-            _exec, rec_actions, _ideas = pss._call_claude_for_period(
+            _exec, rec_actions, _ideas, _cmap = pss._call_claude_for_period(
                 game_name="A Game",
                 window_label="Test Window",
                 pos_topics=[],
@@ -378,7 +378,7 @@ class TestSentinelFormat:
     def test_sentinel_bold_ideas_is_empty_list(self):
         """bold_ideas must be [] (not None)."""
         with patch.object(pss, "_get_client"):
-            _exec, _actions, bold_ideas = pss._call_claude_for_period(
+            _exec, _actions, bold_ideas, _cmap = pss._call_claude_for_period(
                 game_name="A Game",
                 window_label="Test Window",
                 pos_topics=[],

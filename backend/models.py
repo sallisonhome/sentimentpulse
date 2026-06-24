@@ -241,6 +241,11 @@ class MonthlySummary(Base):
     executive_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recommended_actions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     bold_ideas: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # CLAUDE.md §20 layer 3: maps each [P-NNN] token in the summary text
+    # back to its source post (id, url, sentiment) so the email renderer
+    # can resolve citations to clickable superscript links.  Nullable;
+    # rows pre-dating layers 3+4 simply render without citations.
+    citation_map: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -273,6 +278,8 @@ class WindowSummary(Base):
     executive_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     recommended_actions: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     bold_ideas: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    # CLAUDE.md §20 layer 3: see MonthlySummary.citation_map.
+    citation_map: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

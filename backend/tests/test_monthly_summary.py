@@ -79,7 +79,7 @@ class TestGenerateMonthlySummary:
         """generate_monthly_summary creates a MonthlySummary row."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec text", "actions text", []),
+            return_value=("exec text", "actions text", [], {}),
         ):
             row = generate_monthly_summary(db, game.id, 2024, 4)
 
@@ -94,7 +94,7 @@ class TestGenerateMonthlySummary:
 
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", []),
+            return_value=("exec", "actions", [], {}),
         ):
             row = generate_monthly_summary(db, game.id, 2024, 4)
 
@@ -107,7 +107,7 @@ class TestGenerateMonthlySummary:
 
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", []),
+            return_value=("exec", "actions", [], {}),
         ):
             row = generate_monthly_summary(db, game.id, 2024, 4)
 
@@ -118,7 +118,7 @@ class TestGenerateMonthlySummary:
         """Re-generating the same month updates the row instead of creating a duplicate."""
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("first exec", "first actions", []),
+            return_value=("first exec", "first actions", [], {}),
         ):
             row1 = generate_monthly_summary(db, game.id, 2024, 3)
 
@@ -126,7 +126,7 @@ class TestGenerateMonthlySummary:
 
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("second exec", "second actions", ["Bold idea here"]),
+            return_value=("second exec", "second actions", ["Bold idea here"], {}),
         ):
             row2 = generate_monthly_summary(db, game.id, 2024, 3)
 
@@ -147,7 +147,7 @@ class TestGenerateMonthlySummary:
 
         with patch(
             "services.period_summary_service._call_claude_for_period",
-            return_value=("exec", "actions", []),
+            return_value=("exec", "actions", [], {}),
         ):
             row = generate_monthly_summary(db, game.id, 2024, 5)
 
