@@ -466,3 +466,45 @@ class TestSend:
             ds.send_weekly_digest(db, today=date(2026, 6, 24))
         # 2nd positional arg is from_addr
         assert mock_post.call_args[0][1] == "SentimentPulse <digest@verified.example.com>"
+
+
+# ── Cloudflare-1010 / urllib User-Agent regression ───────────────────────────
+
+class TestUserAgent:
+    """Regression test (2026-06-24): Resend's Cloudflare edge returns HTTP 403
+    with body 'error code: 1010' for Python's default urllib User-Agent. Our
+    _post_to_resend must explicitly set a User-Agent header so the request
+    doesn't get blocked at the edge."""
+
+    def test_request_includes_user_agent_header(self, monkeypatch):
+        """The Request object built by _post_to_resend must carry a non-default
+        User-Agent header.  We inspect the urllib.request.Request that gets
+        passed to urlopen, NOT the default urllib UA."""
+        from unittest.mock import patch, MagicMock
+        from services import digest_service as ds
+
+        captured_request = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured_request["req"] = req
+            # Build a fake response that satisfies the `with urlopen() as r:`
+            # context manager protocol used inside _post_to_resend.
+            class FakeResp:
+                status = 200
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+                def read(self, n): return b'{"id":"fake"}'
+            return FakeResp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = ds._post_to_resend(
+                "re_fake", "SentimentPulse <x@y.com>",
+                "subj", ["recipient@example.com"], "<p>html</p>",
+            )
+        assert result["kind"] == "ok"
+        req = captured_request["req"]
+        ua = req.get_header("User-agent")  # urllib normalizes header keys
+        assert ua is not None and "SentimentPulse" in ua, (
+            "Resend's Cloudflare edge bans default urllib UA — we MUST set one. "
+            f"Got: {ua!r}"
+        )

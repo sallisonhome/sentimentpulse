@@ -646,6 +646,12 @@ def _post_to_resend(
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
+            # Resend's Cloudflare edge returns HTTP 403 / error 1010 for
+            # requests with Python's default urllib User-Agent — it's on a
+            # banned-signature list.  A simple identifying UA bypasses the
+            # block.  Verified 2026-06-24: Python-urllib/3.13 → 403, this UA
+            # → 200.
+            "User-Agent": "SentimentPulse/1.0 (+https://github.com/sallisonhome/sentimentpulse)",
         },
     )
     try:
