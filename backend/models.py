@@ -278,3 +278,23 @@ class WindowSummary(Base):
     )
 
     game: Mapped["Game"] = relationship("Game", back_populates="window_summaries")
+
+
+class DigestRecipient(Base):
+    """
+    Email address that receives the weekly + monthly executive digests.
+
+    Managed via /api/digest/recipients (GET/POST/DELETE) and the Settings
+    page in the frontend.  No UI-side editing of the games list — that's
+    intentionally fixed in code to the 8 active titles the operator
+    specified on 2026-06-24 so the digest's value proposition stays
+    consistent and doesn't accidentally pick up DLC variants.
+    """
+    __tablename__ = "digest_recipients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )

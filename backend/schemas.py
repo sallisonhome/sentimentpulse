@@ -306,3 +306,18 @@ class WindowSummaryRequest(BaseModel):
 # GameDetailResponse references DailySummaryResponse which is defined below it;
 # model_rebuild() resolves the forward ref after both classes exist.
 GameDetailResponse.model_rebuild()
+
+
+# ── Digest Recipients ─────────────────────────────────────────────────────────
+
+class DigestRecipientResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    email: str
+    is_active: bool
+    created_at: datetime
+
+
+class DigestRecipientCreate(BaseModel):
+    email: str

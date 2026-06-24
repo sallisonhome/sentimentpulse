@@ -1,13 +1,22 @@
+import { useState } from 'react'
 import { useAllGames } from '../hooks/useGames'
 import { usePublisher } from '../hooks/usePublisher'
 import { useIngestStatus, useTriggerIngest } from '../hooks/useIngest'
+import {
+  useAddDigestRecipient,
+  useDeleteDigestRecipient,
+  useDigestRecipients,
+  useToggleDigestRecipient,
+} from '../hooks/useDigestRecipients'
 import GameSettingsCard from '../components/settings/GameSettingsCard'
 import EmptyState from '../components/shared/EmptyState'
 import SkeletonCard from '../components/shared/SkeletonCard'
 import { Button } from '../components/ui/button'
+import { Input } from '../components/ui/input'
+import { Switch } from '../components/ui/switch'
 import { Separator } from '../components/ui/separator'
 import { relativeTime } from '../lib/utils'
-import { RefreshCw, CheckCircle, XCircle, AlertTriangle, EyeOff, KeyRound } from 'lucide-react'
+import { RefreshCw, CheckCircle, XCircle, AlertTriangle, EyeOff, KeyRound, Mail, Trash2, ExternalLink } from 'lucide-react'
 import type { IngestStatus } from '../types'
 
 // Render a single source's health line.  Covers ok / degraded / failed /
@@ -220,7 +229,12 @@ export default function SettingsPage() {
 
       <Separator />
 
-      {/* ── Games ──────────────────────────────────────────────────────── */}
+      {/* Digest Recipients */}
+      <DigestRecipientsSection />
+
+      <Separator />
+
+      {/* Games ──────────────────────────────────────────────────────── */}
       <section className="space-y-3">
         <div>
           <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Games</h3>
@@ -244,5 +258,131 @@ export default function SettingsPage() {
         )}
       </section>
     </div>
+  )
+}
+
+// ── Digest Recipients section ───────────────────────────────────────────────
+// Lets the operator add/remove/toggle email addresses that receive the
+// weekly Monday 07:00 ET executive digest and the monthly 1st-of-month
+// digest.  Recipient list is the only digest config exposed in the UI;
+// the 8 priority titles and send schedule are fixed in backend code.
+function DigestRecipientsSection() {
+  const { data: recipients, isLoading } = useDigestRecipients()
+  const addRecipient = useAddDigestRecipient()
+  const deleteRecipient = useDeleteDigestRecipient()
+  const toggleRecipient = useToggleDigestRecipient()
+  const [emailInput, setEmailInput] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  const handleAdd = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    const email = emailInput.trim()
+    if (!email) return
+    try {
+      await addRecipient.mutateAsync(email)
+      setEmailInput('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add recipient')
+    }
+  }
+
+  return (
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+          Digest Email Recipients
+        </h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          Email addresses that receive the weekly (Mondays 07:00 ET) and monthly
+          (1st of month, 07:00 ET) executive digests covering the eight priority
+          Saber titles, with sentiment ratio, summary, recommendations, and big ideas.
+        </p>
+      </div>
+
+      {/* Preview links — lets you QA the rendered HTML without a live send */}
+      <div className="flex flex-wrap gap-2 text-xs">
+        <a
+          href="/api/digest/preview/weekly"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-primary hover:underline"
+        >
+          <ExternalLink className="h-3 w-3" /> Preview weekly
+        </a>
+        <a
+          href="/api/digest/preview/monthly"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 text-primary hover:underline"
+        >
+          <ExternalLink className="h-3 w-3" /> Preview monthly
+        </a>
+      </div>
+
+      {/* Add new recipient */}
+      <form onSubmit={handleAdd} className="flex flex-col gap-2 sm:flex-row">
+        <Input
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          placeholder="someone@example.com"
+          value={emailInput}
+          onChange={e => setEmailInput(e.target.value)}
+          disabled={addRecipient.isPending}
+          className="flex-1"
+        />
+        <Button type="submit" disabled={addRecipient.isPending || !emailInput.trim()}>
+          <Mail className="mr-2 h-4 w-4" />
+          {addRecipient.isPending ? 'Adding…' : 'Add recipient'}
+        </Button>
+      </form>
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
+      {/* List */}
+      {isLoading ? (
+        <SkeletonCard lines={2} />
+      ) : !recipients?.length ? (
+        <EmptyState
+          title="No recipients yet"
+          description="Add at least one email address above to start receiving the executive digest."
+        />
+      ) : (
+        <div className="space-y-2">
+          {recipients.map(r => (
+            <div
+              key={r.id}
+              className="flex items-center justify-between gap-3 rounded border bg-card p-3"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{r.email}</p>
+                <p className="text-xs text-muted-foreground">
+                  Added {relativeTime(r.created_at)} · {r.is_active ? 'active' : 'paused (won’t receive emails)'}
+                </p>
+              </div>
+              <Switch
+                checked={r.is_active}
+                onCheckedChange={(checked) =>
+                  toggleRecipient.mutate({ id: r.id, is_active: checked })
+                }
+                aria-label={`Toggle ${r.email}`}
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => {
+                  if (confirm(`Remove ${r.email} from the digest?`)) {
+                    deleteRecipient.mutate(r.id)
+                  }
+                }}
+                aria-label={`Remove ${r.email}`}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }

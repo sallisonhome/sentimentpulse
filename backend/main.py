@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from database import SessionLocal, engine
 from models import Base, Publisher
-from routers import dashboard, games, ingest, posts, publisher, reddit_upload, summaries, topics
+from routers import dashboard, digest, games, ingest, posts, publisher, reddit_upload, summaries, topics
 from scheduler import create_scheduler
 from services.bluesky_log_buffer import install_buffer as install_bluesky_log_buffer
 from services.nlp_service import load_model
@@ -114,6 +114,7 @@ app.include_router(topics.router,    prefix=_API_PREFIX)
 app.include_router(posts.router,     prefix=_API_PREFIX)
 app.include_router(ingest.router,    prefix=_API_PREFIX)
 app.include_router(reddit_upload.router, prefix=_API_PREFIX)
+app.include_router(digest.router,        prefix=_API_PREFIX)
 
 
 # ── Utility endpoints ─────────────────────────────────────────────────────────
