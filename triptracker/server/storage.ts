@@ -276,6 +276,7 @@ export class MemStorage implements IStorage {
         { action: "Send MFN clause summary to 505 Games", owner: "Sam Park", dueDate: "2026-03-28" },
         { action: "Internal review: min guarantee structure for 505 & Thunderful", owner: "Alex Chen", dueDate: "2026-04-05" },
       ],
+      citationMap: null,
       generatedAt: new Date(),
       lastRefreshedAt: new Date(),
     };
@@ -294,6 +295,7 @@ export class MemStorage implements IStorage {
         { action: "Explore min-guarantee deal for Thunderful Metal: Hellsinger 2", owner: "Jordan Rivera", dueDate: "2025-09-15" },
         { action: "Share EOS achievement system roadmap with Thunderful", owner: "Jordan Rivera", dueDate: "2025-09-10" },
       ],
+      citationMap: null,
       generatedAt: new Date(),
       lastRefreshedAt: new Date(),
     };
@@ -379,6 +381,7 @@ export class MemStorage implements IStorage {
         { action: "Send marketing co-op proposal to Acme", owner: "Sam Park", dueDate: "2025-07-01" },
         { action: "Prepare conversion rate deck for Fjord", owner: "Sam Park", dueDate: "2025-07-15" },
       ],
+      citationMap: null,
       generatedAt: new Date(), lastRefreshedAt: new Date(),
     };
     this.execSummaries.set(dummyE1.id, des1);
@@ -627,6 +630,7 @@ export class MemStorage implements IStorage {
       lastRefreshedAt: new Date(),
       macroThemes: null, highlights: null, negatives: null, recommendations: null,
       topOpportunities: null, topRisks: null, topActions: null,
+      citationMap: null,
       ...data,
     };
     this.execSummaries.set(data.eventId, summary);

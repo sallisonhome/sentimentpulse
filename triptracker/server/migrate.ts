@@ -203,6 +203,7 @@ async function createTablesIfNotExist() {
       top_opportunities JSON,
       top_risks JSON,
       top_actions JSON,
+      citation_map JSON,
       generated_at TIMESTAMP DEFAULT NOW(),
       last_refreshed_at TIMESTAMP DEFAULT NOW()
     );
@@ -396,6 +397,12 @@ async function addMissingColumns() {
   await db.execute(sql`
     DO $$ BEGIN
       ALTER TABLE events ADD COLUMN IF NOT EXISTS is_dummy BOOLEAN NOT NULL DEFAULT FALSE;
+    EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+  `);
+  // Confirm-or-Omit layer 3: citation_map JSON on exec summaries
+  await db.execute(sql`
+    DO $$ BEGIN
+      ALTER TABLE event_executive_summaries ADD COLUMN IF NOT EXISTS citation_map JSON;
     EXCEPTION WHEN duplicate_column THEN NULL; END $$;
   `);
 }

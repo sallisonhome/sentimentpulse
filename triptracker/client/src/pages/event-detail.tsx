@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import type { EventWithStats, MeetingWithDetails, EventExecutiveSummary } from "@shared/schema";
@@ -27,6 +27,83 @@ const dealStatusLabels: Record<string, string> = {
   lost: "Lost",
 };
 
+// Confirm-or-Omit layer 3 (client side): convert [M-NNN] tokens in summary
+// text into small clickable superscripts that scroll to the source meeting
+// card.  When citationMap is null (legacy rows), tokens are silently stripped
+// so users don't see raw [M-001] artifacts.
+const CITE_BRACKET_RE = /\[((?:M-\d{1,4}[\s,;]*)+)\]/g;
+const CITE_INNER_RE = /M-(\d{1,4})/g;
+
+type CitationEntry = { meetingId: number; companyName: string; sentiment: string };
+type ExecCitationMap = Record<string, CitationEntry> | null | undefined;
+
+function scrollToMeeting(meetingId: number) {
+  const el = document.querySelector(`[data-testid="meeting-row-${meetingId}"]`);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("ring-2", "ring-primary", "ring-offset-2");
+    setTimeout(() => el.classList.remove("ring-2", "ring-primary", "ring-offset-2"), 1800);
+  }
+}
+
+/** Render text with [M-NNN] tokens converted to clickable superscript chips. */
+function renderWithCitations(text: string | null | undefined, citationMap: ExecCitationMap): React.ReactNode {
+  if (!text) return null;
+  const cmap = citationMap ?? {};
+  const hasCmap = Object.keys(cmap).length > 0;
+  const out: React.ReactNode[] = [];
+  let lastIndex = 0;
+  let key = 0;
+  CITE_BRACKET_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CITE_BRACKET_RE.exec(text)) !== null) {
+    if (m.index > lastIndex) out.push(text.slice(lastIndex, m.index));
+    if (!hasCmap) {
+      // Legacy row — strip the token entirely.
+      lastIndex = m.index + m[0].length;
+      continue;
+    }
+    const inside = m[1];
+    const tokens: string[] = [];
+    CITE_INNER_RE.lastIndex = 0;
+    let inner: RegExpExecArray | null;
+    while ((inner = CITE_INNER_RE.exec(inside)) !== null) {
+      tokens.push(`M-${String(parseInt(inner[1], 10)).padStart(3, "0")}`);
+    }
+    const links: React.ReactNode[] = [];
+    tokens.forEach((tok, idx) => {
+      const entry = cmap[tok];
+      const ordinal = parseInt(tok.split("-")[1], 10);
+      if (entry) {
+        links.push(
+          <button
+            key={`${key}-${idx}`}
+            type="button"
+            onClick={(e) => { e.preventDefault(); scrollToMeeting(entry.meetingId); }}
+            title={`${entry.companyName} (${entry.sentiment})`}
+            className="text-primary hover:underline cursor-pointer"
+            data-testid={`citation-${tok}`}
+          >
+            {ordinal}
+          </button>
+        );
+      } else {
+        links.push(<span key={`${key}-${idx}`}>{ordinal}</span>);
+      }
+      if (idx < tokens.length - 1) links.push(<span key={`${key}-${idx}-sep`}>,</span>);
+    });
+    out.push(
+      <sup key={`sup-${key}`} className="text-[10px] text-muted-foreground ml-0.5">
+        [{links}]
+      </sup>
+    );
+    key++;
+    lastIndex = m.index + m[0].length;
+  }
+  if (lastIndex < text.length) out.push(text.slice(lastIndex));
+  return <>{out}</>;
+}
+
 function ExecSummaryPanel({ eventId }: { eventId: number }) {
   const { data: summary } = useQuery<EventExecutiveSummary>({
     queryKey: ["/api/events", eventId, "executive-summary"],
@@ -39,6 +116,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
     refetchInterval: 7000,
     refetchIntervalInBackground: false,
   });
+  const citationMap = summary?.citationMap as ExecCitationMap;
 
   if (!summary) {
     return (
@@ -67,7 +145,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
         {summary.macroThemes && (
           <div>
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1">Macro Themes</p>
-            <p className="text-sm leading-relaxed">{summary.macroThemes}</p>
+            <p className="text-sm leading-relaxed">{renderWithCitations(summary.macroThemes, citationMap)}</p>
           </div>
         )}
         {summary.highlights && (
@@ -75,7 +153,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
               <TrendingUp className="w-3 h-3 text-emerald-500" />Highlights
             </p>
-            <p className="text-sm leading-relaxed text-emerald-800 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-950/40 rounded-md p-2.5 border border-emerald-200 dark:border-emerald-900">{summary.highlights}</p>
+            <p className="text-sm leading-relaxed text-emerald-800 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-950/40 rounded-md p-2.5 border border-emerald-200 dark:border-emerald-900">{renderWithCitations(summary.highlights, citationMap)}</p>
           </div>
         )}
         {summary.negatives && (
@@ -83,7 +161,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
               <AlertTriangle className="w-3 h-3 text-red-500" />Key Risks / Negatives
             </p>
-            <p className="text-sm leading-relaxed text-red-800 dark:text-red-200 bg-red-50 dark:bg-red-950/40 rounded-md p-2.5 border border-red-200 dark:border-red-900">{summary.negatives}</p>
+            <p className="text-sm leading-relaxed text-red-800 dark:text-red-200 bg-red-50 dark:bg-red-950/40 rounded-md p-2.5 border border-red-200 dark:border-red-900">{renderWithCitations(summary.negatives, citationMap)}</p>
           </div>
         )}
         {summary.recommendations && (
@@ -91,7 +169,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 flex items-center gap-1">
               <Zap className="w-3 h-3 text-amber-500" />Recommendations
             </p>
-            <p className="text-sm leading-relaxed">{summary.recommendations}</p>
+            <p className="text-sm leading-relaxed">{renderWithCitations(summary.recommendations, citationMap)}</p>
           </div>
         )}
 
@@ -105,7 +183,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
                   {(summary.topOpportunities as string[]).map((o, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs">
                       <span className="w-4 h-4 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-700 dark:text-emerald-300 flex items-center justify-center shrink-0 font-bold text-[10px]">{i + 1}</span>
-                      <span>{o}</span>
+                      <span>{renderWithCitations(o, citationMap)}</span>
                     </div>
                   ))}
                 </div>
@@ -118,7 +196,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
                   {(summary.topRisks as string[]).map((r, i) => (
                     <div key={i} className="flex items-start gap-2 text-xs">
                       <span className="w-4 h-4 rounded-full bg-red-100 dark:bg-red-900 text-red-700 dark:text-red-300 flex items-center justify-center shrink-0 font-bold text-[10px]">{i + 1}</span>
-                      <span>{r}</span>
+                      <span>{renderWithCitations(r, citationMap)}</span>
                     </div>
                   ))}
                 </div>
@@ -132,7 +210,7 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
                     <div key={i} className="flex items-start gap-2 text-xs p-2 bg-amber-50 dark:bg-amber-950/30 rounded border border-amber-200 dark:border-amber-900">
                       <Zap className="w-3 h-3 text-amber-500 mt-0.5 shrink-0" />
                       <div>
-                        <span className="font-medium">{a.action}</span>
+                        <span className="font-medium">{renderWithCitations(a.action, citationMap)}</span>
                         <span className="text-muted-foreground ml-1">→ {a.owner}</span>
                         {a.dueDate && <span className="text-muted-foreground ml-1">· Due {a.dueDate}</span>}
                       </div>

@@ -268,6 +268,13 @@ export const eventExecutiveSummaries = pgTable("event_executive_summaries", {
   topActions: json("top_actions").$type<
     { action: string; owner: string; dueDate?: string }[]
   >(),
+  // CLAUDE.md §20-equivalent (Confirm-or-Omit) layer 3: maps [M-NNN] tokens
+  // in every text field back to the meeting that grounds the claim. Null when
+  // row pre-dates citation grounding; client treats null as legacy and strips
+  // any stray tokens.
+  citationMap: json("citation_map").$type<
+    Record<string, { meetingId: number; companyName: string; sentiment: string }>
+  >(),
   generatedAt: timestamp("generated_at").defaultNow(),
   lastRefreshedAt: timestamp("last_refreshed_at").defaultNow(),
 });

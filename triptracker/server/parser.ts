@@ -509,30 +509,252 @@ export async function parseAndIngest(
   return result;
 }
 
-// ─── Exec Summary generation ──────────────────────────────────────────────────
+// ─── Exec Summary generation ────────────────────────────────────────
+//
+// Confirm-or-Omit layers (mirrors SentimentPulse CLAUDE.md §20):
+//
+//   Layer 1 (prompt rule)        — the system prompt forbids inventing
+//     companies, games, contacts, deal terms, dates, or follow-ups not
+//     present in the meeting data.
+//   Layer 3 (citation grounding) — each meeting gets a stable [M-NNN]
+//     token; every claim in macroThemes / highlights / negatives /
+//     recommendations / topOpportunities / topRisks / topActions.action
+//     must end with at least one valid [M-NNN].  Uncited content is
+//     stripped post-LLM.
+//   Layer 4 (self-criticism)     — a second Claude call verdicts each
+//     sentence (or array item) as SUPPORTED or UNSUPPORTED against the
+//     meeting(s) it cites; unsupported content is stripped.  Degrade-safe:
+//     critic errors or malformed verdicts keep first-pass output.
+//
+// The persisted citationMap lets the client render every [M-NNN] as a
+// clickable superscript that scrolls to the source meeting card.
+
+type CitationMap = Record<
+  string,
+  { meetingId: number; companyName: string; sentiment: string }
+>;
+
+type AnnotatedMeeting = {
+  cite: string;            // "M-001"
+  meetingId: number;
+  companyName: string;
+  sentiment: string;
+  block: string;           // already-formatted block fed to the LLM
+};
 
 const EXEC_SUMMARY_PROMPT = `You are an expert analyst summarizing Epic Games Store (EGS) business development trip reports.
 Given a list of meetings extracted from a trip report, generate an executive summary.
 
+CONFIRM-OR-OMIT RULE (HARD):
+- Every claim you make must be confirmable against ONE OR MORE of the specific MEETING blocks supplied below.
+- Do NOT invent companies, games, deal terms, contact names, dates, follow-ups, sentiment, or quotes that are not literally present in the meetings.
+- Do NOT use background knowledge about the games industry, EGS history, prior deals with these companies, or franchise lore as evidence. Only the meeting blocks shown are admissible evidence.
+- Saying nothing is preferred over saying something invented. It is acceptable to return an empty array or short text if the data does not support more.
+
+CITATION REQUIREMENT (HARD):
+- Every sentence in macroThemes / highlights / negatives / recommendations MUST end with at least one citation in square brackets referencing a meeting block, in the format [M-001] or [M-001, M-003].
+- Every string item in topOpportunities / topRisks MUST end with at least one such citation.
+- Every topActions[].action field MUST end with at least one such citation.
+- Citations may ONLY use M-NNN tokens that appear in the data block below. Inventing a token will be detected and the whole claim dropped.
+- Output without citations will be dropped post-LLM. Cite or omit.
+
 Return ONLY a valid JSON object with these exact fields (no markdown fences, no extra text):
 
 {
-  "macroThemes": "2-4 sentence narrative of the overarching themes and market signals from this event",
-  "highlights": "2-4 sentence summary of the most positive outcomes, strong leads, and wins",
-  "negatives": "2-4 sentence summary of rejections, blockers, risks, and concerns raised",
-  "recommendations": "2-4 sentence list of recommended next steps and priorities for the team",
-  "topOpportunities": ["opportunity 1", "opportunity 2", "opportunity 3"],
-  "topRisks": ["risk 1", "risk 2", "risk 3"],
+  "macroThemes": "2-4 sentence narrative of the overarching themes and market signals — each sentence ends with [M-NNN].",
+  "highlights": "2-4 sentence summary of the most positive outcomes — each sentence ends with [M-NNN].",
+  "negatives": "2-4 sentence summary of rejections, blockers, risks — each sentence ends with [M-NNN].",
+  "recommendations": "2-4 sentence list of recommended next steps — each sentence ends with [M-NNN].",
+  "topOpportunities": ["opportunity description [M-NNN]", "another [M-NNN]"],
+  "topRisks": ["risk description [M-NNN]", "another [M-NNN]"],
   "topActions": [
-    { "action": "specific action", "owner": "team or person", "dueDate": "optional date or null" }
+    { "action": "specific action [M-NNN]", "owner": "team or person", "dueDate": "optional date or null" }
   ]
 }
 
 Rules:
 - Base everything strictly on the meeting data provided.
-- topOpportunities and topRisks should be arrays of 2-4 concise strings each.
-- topActions should be 2-5 specific, actionable items.
+- topOpportunities and topRisks should be arrays of 2-4 concise strings each (each ending with [M-NNN]).
+- topActions should be 2-5 specific, actionable items (each action field ending with [M-NNN]).
 - Omit dueDate from action items if not clearly mentioned in the data.`;
+
+// ── Helpers ───────────────────────────────────────────────────────
+const CITE_BRACKET_RE = /\[((?:M-\d{1,4}[\s,;]*)+)\]/g;
+const CITE_INNER_RE = /M-(\d{1,4})/g;
+
+function extractCitations(text: string): Set<string> {
+  const out = new Set<string>();
+  if (!text) return out;
+  CITE_BRACKET_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = CITE_BRACKET_RE.exec(text)) !== null) {
+    const inside = m[1];
+    CITE_INNER_RE.lastIndex = 0;
+    let inner: RegExpExecArray | null;
+    while ((inner = CITE_INNER_RE.exec(inside)) !== null) {
+      out.add(`M-${String(parseInt(inner[1], 10)).padStart(3, "0")}`);
+    }
+  }
+  return out;
+}
+
+function hasAnyValidCite(cites: Set<string>, valid: Set<string>): boolean {
+  if (cites.size === 0) return false;
+  const arr = Array.from(cites);
+  for (let i = 0; i < arr.length; i++) {
+    if (valid.has(arr[i])) return true;
+  }
+  return false;
+}
+
+function stripUncitedSentences(text: string, citationMap: CitationMap): string {
+  if (!text || Object.keys(citationMap).length === 0) return text;
+  const valid = new Set(Object.keys(citationMap));
+  const sentences = text.split(/(?<=[.!?])\s+/);
+  const keep: string[] = [];
+  for (const s of sentences) {
+    const cites = extractCitations(s);
+    if (!hasAnyValidCite(cites, valid)) continue;
+    keep.push(s.trim());
+  }
+  return keep.join(" ");
+}
+
+function filterCitedItems(items: string[] | undefined, citationMap: CitationMap): string[] {
+  if (!items || items.length === 0) return [];
+  if (Object.keys(citationMap).length === 0) return items;
+  const valid = new Set(Object.keys(citationMap));
+  return items.filter(item => {
+    const cites = extractCitations(item);
+    return hasAnyValidCite(cites, valid);
+  });
+}
+
+function filterCitedActions(
+  actions: { action: string; owner?: string; dueDate?: string }[] | undefined,
+  citationMap: CitationMap,
+): { action: string; owner: string; dueDate?: string }[] {
+  if (!actions || actions.length === 0) return [];
+  if (Object.keys(citationMap).length === 0) {
+    return actions.map(a => ({ action: a.action, owner: a.owner ?? "", dueDate: a.dueDate }));
+  }
+  const valid = new Set(Object.keys(citationMap));
+  return actions
+    .filter(a => {
+      const cites = extractCitations(a.action || "");
+      return hasAnyValidCite(cites, valid);
+    })
+    .map(a => ({ action: a.action, owner: a.owner ?? "", dueDate: a.dueDate }));
+}
+
+function buildMeetingBlocks(allMeetings: any[]): {
+  annotated: AnnotatedMeeting[];
+  citationMap: CitationMap;
+  promptBlock: string;
+} {
+  const annotated: AnnotatedMeeting[] = [];
+  const citationMap: CitationMap = {};
+  let counter = 1;
+  for (const m of allMeetings) {
+    const cite = `M-${String(counter).padStart(3, "0")}`;
+    counter++;
+    const companyName = (m as any).company?.name ?? "Unknown";
+    const sentiment = m.overallSentiment ?? "neutral";
+    const parts: string[] = [];
+    parts.push(`Company: ${companyName}`);
+    parts.push(`Sentiment: ${sentiment}`);
+    if (m.summary) parts.push(`Summary: ${m.summary}`);
+    if (m.detailedNotes) parts.push(`Notes: ${m.detailedNotes.slice(0, 800)}`);
+    if (m.followUpActions) parts.push(`Follow-ups: ${m.followUpActions}`);
+    const block = `[${cite}] ${parts.join(" | ")}`;
+    annotated.push({ cite, meetingId: m.id, companyName, sentiment, block });
+    citationMap[cite] = { meetingId: m.id, companyName, sentiment };
+  }
+  const promptBlock = annotated.map(a => a.block).join("\n---\n");
+  return { annotated, citationMap, promptBlock };
+}
+
+// ── Layer 4: Self-criticism ──────────────────────────────────────────
+const SELF_CRIT_DELIM = "###~SENT~###";
+
+async function selfCriticizeSentences(
+  client: Anthropic,
+  sentences: string[],
+  citationMap: CitationMap,
+  blockKind: string,
+  meetingPromptBlock: string,
+): Promise<string[]> {
+  if (sentences.length === 0) return sentences;
+  if (Object.keys(citationMap).length === 0) return sentences;
+
+  const critPrompt = `You are a fact-checking pass.  An earlier LLM produced the sentences below and tagged each one with a citation in square brackets pointing to a specific MEETING block.  Your job is to verdict each sentence as SUPPORTED or UNSUPPORTED by the meeting(s) it cites.
+
+Rules:
+- A sentence is SUPPORTED only if the cited meeting block(s) genuinely contain the specific claim being made.  Topical proximity is NOT support.
+- Do not bring in outside knowledge.  Only the meeting blocks shown below are admissible evidence.
+- If a sentence cites multiple meetings, support from any ONE of them is enough; the sentence is SUPPORTED.
+- If the sentence cites a meeting that does not contain the claim, UNSUPPORTED.
+- If the sentence has no citation at all, UNSUPPORTED.
+
+BLOCK KIND: ${blockKind}
+
+MEETING BLOCKS (the only admissible evidence):
+${meetingPromptBlock}
+
+SENTENCES TO VERIFY (separated by the delimiter ${SELF_CRIT_DELIM}):
+${sentences.join(SELF_CRIT_DELIM)}
+
+Output: one line per sentence in the same order as above, either:
+  SUPPORTED
+  UNSUPPORTED <one-line reason citing which cited meeting failed>
+No preamble.  No markdown.  Exactly one line per sentence.`;
+
+  try {
+    let critText = "";
+    const critStream = await client.messages.stream({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: critPrompt }],
+    });
+    for await (const chunk of critStream) {
+      if (chunk.type === "content_block_delta" && chunk.delta.type === "text_delta") {
+        critText += chunk.delta.text;
+      }
+    }
+    const verdicts = critText.trim().split(/\r?\n/);
+    if (verdicts.length < sentences.length) {
+      log(`[parser] self-criticism returned ${verdicts.length} verdicts for ${sentences.length} sentences — keeping original`, "parser");
+      return sentences;
+    }
+    const keep: string[] = [];
+    for (let i = 0; i < sentences.length; i++) {
+      const v = (verdicts[i] || "").trim().toUpperCase();
+      if (v.startsWith("SUPPORTED")) {
+        keep.push(sentences[i]);
+      } else {
+        log(`[parser] self-crit dropping (${blockKind}): ${sentences[i].slice(0, 120)} | ${verdicts[i]?.slice(0, 200) ?? ""}`, "parser");
+      }
+    }
+    return keep;
+  } catch (err: any) {
+    log(`[parser] self-criticism raised, keeping first-pass: ${err.message}`, "parser");
+    return sentences;
+  }
+}
+
+async function selfCriticizeText(
+  client: Anthropic,
+  text: string,
+  citationMap: CitationMap,
+  blockKind: string,
+  meetingPromptBlock: string,
+): Promise<string> {
+  if (!text) return text;
+  const sentences = text.split(/(?<=[.!?])\s+/).map(s => s.trim()).filter(Boolean);
+  if (sentences.length === 0) return text;
+  const kept = await selfCriticizeSentences(client, sentences, citationMap, blockKind, meetingPromptBlock);
+  return kept.join(" ");
+}
 
 export async function generateExecSummary(
   eventId: number,
@@ -552,16 +774,8 @@ export async function generateExecSummary(
       return;
     }
 
-    // Serialize meeting data for Claude
-    const meetingsSummary = allMeetings.map(m => {
-      const parts: string[] = [];
-      parts.push(`Company: ${(m as any).company?.name ?? "Unknown"}`);
-      parts.push(`Sentiment: ${m.overallSentiment}`);
-      if (m.summary) parts.push(`Summary: ${m.summary}`);
-      if (m.detailedNotes) parts.push(`Notes: ${m.detailedNotes.slice(0, 800)}`);
-      if (m.followUpActions) parts.push(`Follow-ups: ${m.followUpActions}`);
-      return parts.join(" | ");
-    }).join("\n---\n");
+    // Layer 3 setup: assign [M-NNN] tokens + build prompt block
+    const { citationMap, promptBlock } = buildMeetingBlocks(allMeetings);
 
     const client = new Anthropic({ apiKey });
     // Use streaming to avoid Anthropic's 10-minute non-streaming timeout
@@ -573,7 +787,7 @@ export async function generateExecSummary(
       messages: [
         {
           role: "user",
-          content: `Generate an executive summary for the event "${eventName}" based on these ${allMeetings.length} meetings:\n\n${meetingsSummary}`,
+          content: `Generate an executive summary for the event "${eventName}" based on these ${allMeetings.length} meetings.\n\nEvery sentence and every array item MUST end with at least one [M-NNN] citation drawn from the meeting blocks below.\n\nMEETING BLOCKS:\n${promptBlock}`,
         },
       ],
     });
@@ -589,19 +803,52 @@ export async function generateExecSummary(
 
     const parsed = JSON.parse(jsonStr);
 
+    // Layer 3 (citation drop) — strip text/items lacking valid [M-NNN]
+    let macroThemes = stripUncitedSentences(parsed.macroThemes ?? "", citationMap);
+    let highlights = stripUncitedSentences(parsed.highlights ?? "", citationMap);
+    let negatives = stripUncitedSentences(parsed.negatives ?? "", citationMap);
+    let recommendations = stripUncitedSentences(parsed.recommendations ?? "", citationMap);
+    let topOpportunities = filterCitedItems(parsed.topOpportunities, citationMap);
+    let topRisks = filterCitedItems(parsed.topRisks, citationMap);
+    let topActions = filterCitedActions(parsed.topActions, citationMap);
+
+    // Layer 4 (self-criticism) — second-pass verdict per sentence/item.
+    macroThemes      = await selfCriticizeText(client, macroThemes,      citationMap, "macroThemes",      promptBlock);
+    highlights       = await selfCriticizeText(client, highlights,       citationMap, "highlights",       promptBlock);
+    negatives        = await selfCriticizeText(client, negatives,        citationMap, "negatives",        promptBlock);
+    recommendations  = await selfCriticizeText(client, recommendations,  citationMap, "recommendations",  promptBlock);
+    topOpportunities = await selfCriticizeSentences(client, topOpportunities, citationMap, "topOpportunities", promptBlock);
+    topRisks         = await selfCriticizeSentences(client, topRisks,         citationMap, "topRisks",         promptBlock);
+    if (topActions.length > 0) {
+      const actionStrings = topActions.map(a => a.action);
+      const survivingActions = await selfCriticizeSentences(client, actionStrings, citationMap, "topActions", promptBlock);
+      const survivingSet = new Set(survivingActions);
+      topActions = topActions.filter(a => survivingSet.has(a.action));
+    }
+
     await storage.upsertExecSummary({
       eventId,
-      macroThemes: parsed.macroThemes ?? null,
-      highlights: parsed.highlights ?? null,
-      negatives: parsed.negatives ?? null,
-      recommendations: parsed.recommendations ?? null,
-      topOpportunities: parsed.topOpportunities ?? null,
-      topRisks: parsed.topRisks ?? null,
-      topActions: parsed.topActions ?? null,
+      macroThemes: macroThemes || null,
+      highlights: highlights || null,
+      negatives: negatives || null,
+      recommendations: recommendations || null,
+      topOpportunities: topOpportunities.length > 0 ? topOpportunities : null,
+      topRisks: topRisks.length > 0 ? topRisks : null,
+      topActions: topActions.length > 0 ? topActions : null,
+      citationMap,
     });
 
-    log(`[parser] exec summary generated for event=${eventId}`, "parser");
+    log(`[parser] exec summary generated for event=${eventId} (citations=${Object.keys(citationMap).length})`, "parser");
   } catch (err: any) {
     log(`[parser] exec summary generation failed for event=${eventId}: ${err.message}`, "parser");
   }
 }
+
+// Export pure helpers for unit tests
+export const __test_only = {
+  extractCitations,
+  stripUncitedSentences,
+  filterCitedItems,
+  filterCitedActions,
+  buildMeetingBlocks,
+};
