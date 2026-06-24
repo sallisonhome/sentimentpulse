@@ -16,6 +16,16 @@ name: Deploy to Droplet
 #                            /root/.ssh/authorized_keys on the droplet.
 #   BLUESKY_HANDLE         — Bluesky account handle (e.g. myaccount.bsky.social)
 #   BLUESKY_APP_PASSWORD   — App password from Bluesky Settings → App passwords
+# Optional secrets (digest email):
+#   RESEND_API_KEY         — Resend HTTPS API key (https://resend.com/api-keys).
+#                            Required for weekly + monthly executive digest sends.
+#                            Without it, the digest cron logs
+#                            'resend_not_configured' and does NOT email.
+#   RESEND_FROM            — Optional 'Name <addr@verified-domain>'.  Defaults
+#                            to 'SentimentPulse Intelligence <onboarding@resend.dev>'.
+#                            Default sender only delivers to the Resend account
+#                            owner's verified address; set this once a domain
+#                            is verified at resend.com/domains for arbitrary recipients.
 
 on:
   push:
@@ -38,18 +48,25 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Upload Bluesky credentials to droplet
+      - name: Upload Bluesky + Resend credentials to droplet
         env:
           BSKY_HANDLE: ${{ secrets.BLUESKY_HANDLE }}
           BSKY_PW: ${{ secrets.BLUESKY_APP_PASSWORD }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
         run: |
           # Write secrets to a temp file on the runner, then scp to droplet.
           # Keeps the deploy heredoc fully quoted so in-script vars like $PATH,
           # $svc, $installed_units etc. are NOT expanded by the GH runner shell.
+          # Empty values are written as empty strings; the droplet-side script
+          # detects empty and skips the .env update for that key, leaving any
+          # existing value in place (idempotent across deploys).
           umask 077
           {
-            printf 'BSKY_HANDLE=%s\n' "$BSKY_HANDLE"
-            printf 'BSKY_PW=%s\n'     "$BSKY_PW"
+            printf 'BSKY_HANDLE=%s\n'    "$BSKY_HANDLE"
+            printf 'BSKY_PW=%s\n'        "$BSKY_PW"
+            printf 'RESEND_API_KEY=%s\n' "$RESEND_API_KEY"
+            printf 'RESEND_FROM=%s\n'    "$RESEND_FROM"
           } > /tmp/bsky_creds.env
           scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             /tmp/bsky_creds.env root@104.236.239.46:/root/bsky_creds.env
@@ -61,10 +78,12 @@ jobs:
             root@104.236.239.46 bash -s << 'EOF'
             set -euo pipefail
 
-            # Load Bluesky credentials uploaded by the previous step.
+            # Load Bluesky + Resend credentials uploaded by the previous step.
             # File is 0600 by scp; remove after sourcing so it does not linger.
             BSKY_HANDLE=""
             BSKY_PW=""
+            RESEND_API_KEY=""
+            RESEND_FROM=""
             if [ -f /root/bsky_creds.env ]; then
               # shellcheck disable=SC1091
               . /root/bsky_creds.env
@@ -139,6 +158,24 @@ jobs:
               echo "Bluesky credentials updated in .env"
             else
               echo "Bluesky secrets not provided to workflow; .env untouched"
+            fi
+
+            echo ""
+            echo "## Update Resend credentials in .env (idempotent) ##"
+            # Only touch RESEND_API_KEY if the GH secret was set this run.
+            # Empty secret ⇒ leave any existing value in place so a missing
+            # secret in one deploy doesn't wipe a previously-good key.
+            if [ -n "${RESEND_API_KEY:-}" ]; then
+              sed -i '/^RESEND_API_KEY=/d' "$ENV_FILE"
+              echo "RESEND_API_KEY=${RESEND_API_KEY}" >> "$ENV_FILE"
+              echo "RESEND_API_KEY updated in .env"
+            else
+              echo "RESEND_API_KEY secret not provided this deploy; .env untouched"
+            fi
+            if [ -n "${RESEND_FROM:-}" ]; then
+              sed -i '/^RESEND_FROM=/d' "$ENV_FILE"
+              echo "RESEND_FROM=${RESEND_FROM}" >> "$ENV_FILE"
+              echo "RESEND_FROM updated in .env"
             fi
 
             echo ""
