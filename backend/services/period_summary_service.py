@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from config import settings
@@ -258,6 +259,39 @@ def generate_window_summary(
         sample_posts_with_ids=sample_posts_with_ids,
     )
 
+    # Upsert: a concurrent request (e.g. React StrictMode double-mount, browser
+    # refresh racing the in-flight call, or two clients hitting force=true in
+    # parallel) may have already inserted a row for the same
+    # (game_id, window_days, ingest_date) tuple between our cache MISS check
+    # above and this INSERT.  Look up one more time inside the critical section
+    # and UPDATE in place if found, INSERT only if truly absent.  This makes
+    # the function safe under concurrent calls without needing row-level locks.
+    existing: Optional[WindowSummary] = (
+        db.query(WindowSummary)
+        .filter_by(game_id=game_id, window_days=days, ingest_date=ingest_date)
+        .first()
+    )
+    if existing is not None:
+        existing.positive_count       = pos
+        existing.negative_count       = neg
+        existing.neutral_count        = neu
+        existing.total_posts          = total
+        existing.top_positive_topics  = top_pos
+        existing.top_negative_topics  = top_neg
+        existing.top_neutral_topics   = top_neu
+        existing.executive_summary    = exec_summary
+        existing.recommended_actions  = rec_actions
+        existing.bold_ideas           = bold_ideas
+        existing.citation_map         = citation_map or None
+        existing.generated_at         = datetime.utcnow()
+        db.commit()
+        db.refresh(existing)
+        logger.info(
+            "Window summary UPSERT (concurrent insert detected): game=%d days=%d ingest_date=%s total=%d",
+            game_id, days, ingest_date, total
+        )
+        return existing
+
     row = WindowSummary(
         game_id=game_id,
         window_days=days,
@@ -275,7 +309,26 @@ def generate_window_summary(
         citation_map=citation_map or None,
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Lost the race — another request inserted between our pre-INSERT
+        # check and our commit.  Roll back, fetch the winner, return it.
+        db.rollback()
+        winner: Optional[WindowSummary] = (
+            db.query(WindowSummary)
+            .filter_by(game_id=game_id, window_days=days, ingest_date=ingest_date)
+            .first()
+        )
+        if winner is None:
+            # Shouldn't happen — IntegrityError without a winning row means
+            # a different constraint failed.  Re-raise so the caller sees it.
+            raise
+        logger.info(
+            "Window summary INSERT lost race; returning winner: game=%d days=%d ingest_date=%s",
+            game_id, days, ingest_date,
+        )
+        return winner
     db.refresh(row)
     logger.info(
         "Window summary MISS → generated: game=%d days=%d ingest_date=%s total=%d",
