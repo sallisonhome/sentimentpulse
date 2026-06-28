@@ -1303,18 +1303,112 @@ def _self_criticize_items(
     return "\n\n".join(f"{n}. {item}" for n, item in enumerate(surviving_items, 1))
 
 
+# Orphan-pronoun / dangling-reference detection (2026-06-28 hardening).
+# A bold idea that starts a clause with an unanchored "this X" or "the X"
+# is incoherent to the reader because we cannot see what "X" was supposed
+# to refer to.  We drop such ideas outright — surfacing a confusing
+# sentence is worse than surfacing nothing.
+_ORPHAN_REFERENCE_PATTERNS = (
+    # "this analog", "this comparison", "this approach", "this signal", etc.
+    # Require the noun is generic (analog, comparison, etc.) AND no prior
+    # clause in the same item introduces it.
+    re.compile(
+        r"\b(?:this|that|the)\s+"
+        r"(?:analog|analogy|comparison|reference|approach|signal|entity|"
+        r"trend|pattern|issue|complaint|concern|topic|criticism|"
+        r"sentiment|demand|interest|reception|theme|narrative|argument)\b",
+        re.I,
+    ),
+)
+
+_INTRODUCING_VERB_RE = re.compile(
+    r"\b(?:reject(?:ed)?|prefer(?:red)?|compare(?:d)?|cit(?:e|ed|ing)|"
+    r"name(?:d)?|mention(?:ed)?|identif(?:y|ied)|highlight(?:ed)?|"
+    r"call(?:ed)?\s+out|flag(?:ged)?|introduc(?:e|ed))\b", re.I,
+)
+
+
+def _has_orphan_reference(idea: str) -> bool:
+    """True if `idea` contains a 'this X' / 'the X' reference with no
+    earlier clause in the same idea that introduces X.
+
+    Heuristic: split on commas / clauses; for each clause that matches an
+    orphan pattern, look at all clauses STRICTLY BEFORE it.  If none of
+    those earlier clauses contain an introducing verb ("rejected", "named",
+    "compared", etc.), the reference is orphan.
+
+    This is intentionally conservative: a bold idea that has the full chain
+    "Community **rejected** the Bioshock comparison, signaling that this
+    analog…" will NOT be flagged because "rejected" appears earlier in the
+    same idea.
+    """
+    if not idea:
+        return False
+    # Split on clause boundaries (commas, semicolons, periods).  We use a
+    # weak split that keeps order — we only need before/after relationships.
+    clauses = [c.strip() for c in re.split(r"[,;.]\s*", idea) if c.strip()]
+    for i, clause in enumerate(clauses):
+        for pat in _ORPHAN_REFERENCE_PATTERNS:
+            if pat.search(clause):
+                earlier = " ".join(clauses[:i])
+                if not _INTRODUCING_VERB_RE.search(earlier):
+                    return True
+    return False
+
+
+def _strip_orphan_reference_ideas(ideas: list[str]) -> list[str]:
+    """Drop bold ideas whose only surviving clause references an antecedent
+    that no earlier clause in the same idea introduced."""
+    survived: list[str] = []
+    for idea in ideas:
+        if _has_orphan_reference(idea):
+            logger.warning(
+                "Dropping bold idea with orphan reference: %s", idea[:200],
+            )
+            continue
+        survived.append(idea)
+    return survived
+
+
 def _self_criticize_bold_ideas(
     client, ideas: list[str], citation_map: dict[str, dict],
 ) -> list[str]:
-    """Apply self-criticism to each bold idea, drop unsupported ones."""
+    """Apply self-criticism to each bold idea.
+
+    Atomic-unit rule (CLAUDE.md §20 hardening 2026-06-28): a bold idea is
+    treated as ONE atomic unit, not split sentence-by-sentence.  Earlier,
+    splitting on `[.!?]` and dropping individual sentences produced orphan-
+    pronoun artifacts like "Community explicitly rejected this analog…"
+    where the previous sentence that named the analog was stripped.
+
+    A 2-sentence idea where the second sentence depends on the first cannot
+    survive partial stripping.  If ANY sentence in the idea is UNSUPPORTED,
+    we drop the whole idea.
+    """
     if not ideas or not citation_map:
         return ideas
     survived: list[str] = []
     for idea in ideas:
-        # Treat each idea as a single-sentence block for the critic.
-        out = _self_criticize(client, idea, citation_map, "bold_ideas")
-        if out:
-            survived.append(out)
+        # Split into sentences just to count.  If any sentence would be
+        # dropped, the whole idea is dropped.
+        original_sents = [
+            s.strip() for s in re.split(r"(?<=[.!?])\s+", idea) if s.strip()
+        ]
+        critiqued = _self_criticize(client, idea, citation_map, "bold_ideas")
+        critiqued_sents = [
+            s.strip() for s in re.split(r"(?<=[.!?])\s+", critiqued) if s.strip()
+        ]
+        # Drop the idea outright if the critic removed any sentence — partial
+        # survival creates dangling references.
+        if len(critiqued_sents) < len(original_sents):
+            logger.info(
+                "Bold-idea critic stripped %d/%d sentences; dropping whole idea: %s",
+                len(original_sents) - len(critiqued_sents), len(original_sents),
+                idea[:120],
+            )
+            continue
+        if critiqued:
+            survived.append(critiqued)
     return survived
 
 
@@ -2097,13 +2191,19 @@ def _call_bold_ideas(
         parsed = _parse_bold_ideas(raw)
         # CLAUDE.md §20 layer 3: drop uncited bold ideas.
         parsed = _strip_uncited_bold_ideas(parsed, citation_map)
-        # CLAUDE.md §20 layer 4: self-criticism on each idea.
+        # CLAUDE.md §20 layer 4: self-criticism on each idea (atomic-unit rule).
         parsed = _self_criticize_bold_ideas(client, parsed, citation_map)
         # CLAUDE.md §20 layer 2: proper-noun fact-check.
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
-        return _sanitize_bold_ideas(
+        parsed = _sanitize_bold_ideas(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
         )
+        # CLAUDE.md §20 layer 5 (2026-06-28): orphan-reference guard.  Even
+        # after the above passes, an idea whose subject was stripped by an
+        # earlier sanitizer can leave a dangling 'this analog' clause.  Drop
+        # any idea that contains an unanchored reference.
+        parsed = _strip_orphan_reference_ideas(parsed)
+        return parsed
     except Exception as exc:
         logger.error("Claude bold ideas error for '%s': %s", game_name, exc)
         return []

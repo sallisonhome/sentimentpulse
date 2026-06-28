@@ -569,3 +569,93 @@ class TestReleaseStatusClause:
     def test_unclear_clause_defaults_to_caution(self):
         clause = pss._release_status_clause("unclear")
         assert "UNCLEAR" in clause
+
+
+# ── Orphan-reference detection (2026-06-28 hardening) ──
+# Failure mode caught in production: a Hellraiser bold idea read "Community
+# explicitly rejected this analog [P-003, P-005, P-006], signaling players
+# expect **Hellraiser Revival** to define its own identity rather than lean
+# on immersive-sim legacy."  The first half of the original idea ("the
+# Bioshock comparison was rejected...") was stripped by an earlier pass,
+# leaving "this analog" with no antecedent.
+
+class TestOrphanReferenceDetection:
+
+    def test_detects_orphan_this_analog(self):
+        idea = "Community explicitly rejected this analog [P-003], signaling players expect **Hellraiser Revival** to define its own identity."
+        assert pss._has_orphan_reference(idea) is True
+
+    def test_detects_orphan_this_comparison(self):
+        idea = "The community pushed back on this comparison [P-001], suggesting they want a fresh identity."
+        assert pss._has_orphan_reference(idea) is True
+
+    def test_detects_orphan_the_complaint(self):
+        idea = "Address the complaint [P-001] by shipping a roadmap update."
+        assert pss._has_orphan_reference(idea) is True
+
+    def test_allows_introduced_reference(self):
+        """When an earlier clause introduces the antecedent via an
+        introducing verb (rejected, named, compared, etc.), the 'this X'
+        reference is fine."""
+        idea = (
+            "Community rejected the Bioshock comparison [P-003], signaling "
+            "that this analog [P-005] does not capture the studio's intent."
+        )
+        assert pss._has_orphan_reference(idea) is False
+
+    def test_allows_idea_without_orphan_words(self):
+        idea = "Lean into **Doug Bradley** voice reveal as marketing centerpiece [P-001]."
+        assert pss._has_orphan_reference(idea) is False
+
+    def test_strip_drops_orphan_ideas(self):
+        ideas = [
+            "Community explicitly rejected this analog [P-003], signaling identity shift.",
+            "Lean into **Doug Bradley** voice reveal [P-001].",
+        ]
+        out = pss._strip_orphan_reference_ideas(ideas)
+        assert len(out) == 1
+        assert "Doug Bradley" in out[0]
+
+    def test_strip_keeps_all_clean_ideas(self):
+        ideas = [
+            "Lean into **Doug Bradley** voice reveal [P-001].",
+            "Position **Clive Barker** as creative anchor [P-002].",
+        ]
+        out = pss._strip_orphan_reference_ideas(ideas)
+        assert len(out) == 2
+
+
+class TestBoldIdeaAtomicCriticism:
+    """If the critic strips one sentence of a 2-sentence bold idea, the
+    whole idea must be dropped — partial survival creates dangling refs."""
+
+    SAMPLES = {
+        "positive": [
+            {"id": 101, "text": "Doug Bradley returns to voice Pinhead.",
+             "url": "https://x/1"},
+        ],
+        "negative": [], "neutral": [],
+    }
+
+    def test_drop_idea_when_critic_strips_any_sentence(self):
+        _, citation_map = pss._assign_citation_ids(self.SAMPLES)
+        # Two-sentence idea; critic accepts sentence 1, rejects sentence 2.
+        client = MagicMock()
+        message1 = MagicMock()
+        message1.content = [MagicMock(text="SUPPORTED\nUNSUPPORTED no such claim")]
+        client.messages.create.return_value = message1
+        ideas = [
+            "Doug Bradley returns to voice [P-001]. Community will riot if anyone else is cast [P-001]."
+        ]
+        out = pss._self_criticize_bold_ideas(client, ideas, citation_map)
+        assert out == []  # whole idea dropped
+
+    def test_keep_idea_when_all_sentences_supported(self):
+        _, citation_map = pss._assign_citation_ids(self.SAMPLES)
+        client = MagicMock()
+        message = MagicMock()
+        message.content = [MagicMock(text="SUPPORTED\nSUPPORTED")]
+        client.messages.create.return_value = message
+        ideas = ["Doug Bradley returns [P-001]. Community is excited [P-001]."]
+        out = pss._self_criticize_bold_ideas(client, ideas, citation_map)
+        assert len(out) == 1
