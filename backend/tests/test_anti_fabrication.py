@@ -457,3 +457,115 @@ class TestSelfCriticism:
         out = pss._self_criticize_bold_ideas(client, ideas, citation_map)
         assert len(out) == 1
         assert "Doug Bradley" in out[0]
+
+
+# ── Release-status detection + pre-release sanitizer (2026-06-28 hardening) ──
+# After the Hellraiser regression where a pre-release game got a "Patch Game
+# Difficulty Settings ... before October release window" recommendation, we
+# added a release-status heuristic + a layer-2b sanitizer.  These tests pin
+# down both behaviors.
+
+class TestReleaseStatusInference:
+
+    def test_prerelease_signals_dominate(self):
+        block = (
+            "[P-001] Just watched the trailer, looking forward to wishlisting "
+            "this. Coming soon to PS5. (P-001 / positive / 2026-06-15) "
+            "[P-002] Based on the trailer it looks generic. (P-002 / negative)"
+        )
+        assert pss._infer_release_status(block) == "pre-release"
+
+    def test_released_signals_dominate(self):
+        block = (
+            "[P-001] Patch 13 broke the meta. Matchmaking queues are bad. "
+            "[P-002] Server stability since the patch has been awful, lots of "
+            "disconnects mid-match. Performance issues on console too."
+        )
+        assert pss._infer_release_status(block) == "released"
+
+    def test_no_signals_is_unclear(self):
+        block = "[P-001] Cool game. Looks fun."
+        assert pss._infer_release_status(block) == "unclear"
+
+    def test_empty_block_is_unclear(self):
+        assert pss._infer_release_status("") == "unclear"
+
+
+class TestPreReleaseSanitizer:
+    """The canonical violation: 'Patch Difficulty Settings before October
+    release window' against an unreleased game must be dropped."""
+
+    def test_drops_patch_verb_in_prerelease(self):
+        text = (
+            "1. Patch **Game Difficulty Settings** — balance pass required before October release window [P-021]\n\n"
+            "2. Clarify **Clive Barker's Vision** — messaging must distinguish franchise direction [P-020]"
+        )
+        out = pss._sanitize_recommendations_for_release_status(text, "pre-release")
+        assert "Patch" not in out
+        assert "difficulty settings" not in out.lower()
+        # Survivor renumbered to 1
+        assert out.startswith("1. Clarify")
+
+    def test_drops_hotfix_rebalance_in_prerelease(self):
+        text = (
+            "1. Hotfix **Combat Mechanics** — quick fix needed [P-001]\n\n"
+            "2. Rebalance **Weapon Stats** — nerf the rifle [P-002]\n\n"
+            "3. Communicate **Roadmap** — share plans with community [P-003]"
+        )
+        out = pss._sanitize_recommendations_for_release_status(text, "pre-release")
+        assert "Hotfix" not in out
+        assert "Rebalance" not in out
+        assert out.startswith("1. Communicate")
+
+    def test_drops_balance_pass_phrase(self):
+        text = (
+            "1. Address **Combat Tuning** — balance pass required this sprint [P-001]\n\n"
+            "2. Document **Roadmap** — share plans [P-002]"
+        )
+        out = pss._sanitize_recommendations_for_release_status(text, "pre-release")
+        assert "balance pass" not in out.lower()
+        assert "Document" in out
+
+    def test_drops_before_october_release_phrase(self):
+        text = (
+            "1. Ship **Polish Update** — improvements needed before October release [P-001]\n\n"
+            "2. Reframe **Tone** — emphasize horror creativity [P-002]"
+        )
+        out = pss._sanitize_recommendations_for_release_status(text, "pre-release")
+        assert "before october release" not in out.lower()
+        assert "Reframe" in out
+
+    def test_noop_when_released(self):
+        text = "1. Patch **Combat** — fix balance [P-001]"
+        out = pss._sanitize_recommendations_for_release_status(text, "released")
+        assert out == text
+
+    def test_noop_when_unclear(self):
+        text = "1. Patch **Combat** — fix balance [P-001]"
+        out = pss._sanitize_recommendations_for_release_status(text, "unclear")
+        assert out == text
+
+    def test_all_dropped_returns_empty(self):
+        text = (
+            "1. Patch **A** — fix [P-001]\n\n"
+            "2. Hotfix **B** — fix [P-002]"
+        )
+        out = pss._sanitize_recommendations_for_release_status(text, "pre-release")
+        assert out == ""
+
+
+class TestReleaseStatusClause:
+
+    def test_prerelease_clause_lists_forbidden_verbs(self):
+        clause = pss._release_status_clause("pre-release")
+        for verb in ("Patch", "Hotfix", "Rebalance", "Nerf"):
+            assert verb in clause, f"Pre-release clause should warn about {verb}"
+        assert "PRE-RELEASE" in clause
+
+    def test_released_clause_allows_live_verbs(self):
+        clause = pss._release_status_clause("released")
+        assert "LIVE" in clause or "RELEASED" in clause
+
+    def test_unclear_clause_defaults_to_caution(self):
+        clause = pss._release_status_clause("unclear")
+        assert "UNCLEAR" in clause

@@ -1176,11 +1176,11 @@ def _self_criticize(
     posts_block = "\n".join(posts_lookup)
 
     crit_prompt = (
-        "You are a fact-checking pass.  An earlier LLM produced the text below "
-        "and tagged each claim with a citation in square brackets pointing to a "
-        "source post.  Your job is to verdict each sentence (or numbered item) "
-        "as SUPPORTED or UNSUPPORTED by the post(s) it cites.\n\n"
-        "Rules:\n"
+        "You are a STRICT fact-checking pass.  An earlier LLM produced the "
+        "text below and tagged each claim with a citation in square brackets "
+        "pointing to a source post.  Your job is to verdict each sentence (or "
+        "numbered item) as SUPPORTED or UNSUPPORTED by the post(s) it cites.\n\n"
+        "Core rules:\n"
         "- A sentence is SUPPORTED only if the post it cites genuinely contains "
         "the specific claim being made.  Topical proximity is NOT support.\n"
         "- Do not bring in outside knowledge.  Only the post text shown below "
@@ -1189,6 +1189,26 @@ def _self_criticize(
         "enough; the sentence is SUPPORTED.\n"
         "- If the sentence cites a post that does not contain the claim, UNSUPPORTED.\n"
         "- If the sentence has no citation at all, UNSUPPORTED.\n\n"
+        "Specific-entity grounding (CLAUDE.md §20, hardened 2026-06-28):\n"
+        "- If the sentence names a SPECIFIC mechanic, feature, or system "
+        "(e.g. 'difficulty settings', 'matchmaking', 'weapon balance', 'Siege "
+        "mode', 'stratagem stacking'), the cited post must literally name that "
+        "same mechanic or use words clearly referring to it.  Generic complaints "
+        "('it looks generic', 'disappointed in gameplay', 'window dressing') do "
+        "NOT support a specific-mechanic recommendation.  UNSUPPORTED.\n"
+        "- If the sentence claims a DATE, DEADLINE, RELEASE WINDOW, or version "
+        "number ('before October release', 'by Q1', 'in patch 14', 'within 2 "
+        "weeks'), the cited post must literally contain that date/version, or "
+        "the sentence is UNSUPPORTED.  The current date or general industry "
+        "knowledge is not admissible.\n"
+        "- If the sentence prescribes a POST-LAUNCH action ('patch', 'hotfix', "
+        "'rebalance', 'update the live game') and the cited post is clearly "
+        "discussing a pre-release game (mentions trailers, reveals, wishlist, "
+        "announcement, 'looking forward', 'looks like it will', 'after seeing "
+        "gameplay', 'preview'), mark UNSUPPORTED.  A game that is not out "
+        "cannot be patched.\n"
+        "- When in doubt, UNSUPPORTED.  Saying nothing is preferred over saying "
+        "something the post does not support.\n\n"
         f"BLOCK KIND: {block_kind}\n\n"
         "SOURCE POSTS (the only admissible evidence):\n"
         f"{posts_block}\n\n"
@@ -1321,6 +1341,91 @@ def _format_entities_block(distinctive_entities: list[str]) -> str:
     if not distinctive_entities:
         return ""
     return ", ".join(distinctive_entities)
+
+
+# Words that strongly indicate the game is NOT YET RELEASED — community is
+# reacting to trailers, reveals, gameplay previews, marketing, wishlist
+# pages, etc.  Used by _infer_release_status() to decide whether to allow
+# post-launch verbs like 'Patch' / 'Hotfix' in recommendations.
+_PRERELEASE_SIGNALS = frozenset({
+    "trailer", "trailers", "reveal", "revealed", "announcement", "announced",
+    "wishlist", "wishlisted", "preview", "previews", "showcase", "reveal trailer",
+    "looking forward", "can't wait", "hyped", "upcoming", "pre-order", "preorder",
+    "coming soon", "release date", "release window", "launches", "launch date",
+    "after seeing gameplay", "based on the trailer", "first look", "summer game fest",
+    "sgf", "gamescom", "the game awards", "tga reveal", "announce trailer",
+    "gameplay reveal", "gameplay preview", "dev diary", "dev diaries",
+    "behind the scenes", "sizzle reel", "teaser",
+})
+
+# Words that strongly indicate the game IS RELEASED and community is
+# discussing the live game (patches, performance, multiplayer activity, etc.)
+_POSTRELEASE_SIGNALS = frozenset({
+    "patch", "patches", "patched", "hotfix", "hotfixed", "update", "updated",
+    "nerfed", "buffed", "meta", "current meta", "grinding", "grind", "endgame",
+    "servers", "server down", "matchmaking", "queue times", "disconnect",
+    "disconnected", "crashes", "crashing", "performance issues", "fps drops",
+    "frame drops", "latest patch", "this patch", "current patch",
+    "after the update", "since the patch", "prestige", "battle pass",
+    "season pass", "current season", "playing it now", "hours played",
+    "already played", "finished the campaign", "beat the boss",
+})
+
+
+def _infer_release_status(samples_block: str) -> str:
+    """Best-effort label for whether the game is pre-release or live, based
+    on the language used in the sample posts.  Returns one of:
+        "pre-release"  — strong pre-release signal, do not allow patch/hotfix
+        "released"     — strong post-release signal, allow patch/hotfix
+        "unclear"      — neither strong signal; let the LLM choose conservatively
+
+    Heuristic: count case-insensitive substring hits of the two signal sets in
+    the samples block.  This isn't perfect (e.g. a released game can still
+    have 'release date' chatter for a DLC) but it's directionally correct on
+    every title in the priority list and turns the violations the user just
+    caught into unambiguous critic flags.
+    """
+    if not samples_block:
+        return "unclear"
+    haystack = samples_block.lower()
+    pre = sum(1 for w in _PRERELEASE_SIGNALS if w in haystack)
+    post = sum(1 for w in _POSTRELEASE_SIGNALS if w in haystack)
+    if pre >= 2 and pre > post * 2:
+        return "pre-release"
+    if post >= 2 and post > pre * 2:
+        return "released"
+    return "unclear"
+
+
+def _release_status_clause(status: str) -> str:
+    """Return a prompt fragment instructing the LLM to choose verbs and
+    actions appropriate to whether the game is shipped."""
+    if status == "pre-release":
+        return (
+            "GAME RELEASE STATUS: PRE-RELEASE (community is reacting to trailers, "
+            "reveals, previews, or marketing — the game is NOT YET PLAYABLE).\n"
+            "- DO NOT use verbs that imply the game is live: Patch, Hotfix, "
+            "Rebalance, Nerf, Buff, Ship Update, Roll Back, Revert.\n"
+            "- DO NOT reference patch versions, balance passes, server issues, "
+            "matchmaking, or performance unless the community explicitly raised "
+            "them about a public demo or beta.\n"
+            "- Allowed verbs: Clarify, Communicate, Reframe, Showcase, Address, "
+            "Document, Publish, Reveal, Demonstrate, Counter-position, Reassure.\n"
+            "- Recommendations must target MARKETING, MESSAGING, COMMUNITY, and "
+            "PR levers — not gameplay fixes that cannot exist yet.\n\n"
+        )
+    if status == "released":
+        return (
+            "GAME RELEASE STATUS: LIVE / RELEASED (community is discussing the "
+            "actual playable game). Patch, Hotfix, Rebalance, and live-game "
+            "verbs are all appropriate when the data supports them.\n\n"
+        )
+    # unclear
+    return (
+        "GAME RELEASE STATUS: UNCLEAR. If you are not certain the game is live, "
+        "avoid prescribing post-launch fixes (Patch, Hotfix, Rebalance).  When "
+        "in doubt, recommend communication or messaging actions instead.\n\n"
+    )
 
 
 def _anti_fabrication_clause(
@@ -1546,6 +1651,62 @@ def _sanitize_recommendations(
     return "\n\n".join(out_lines)
 
 
+# Post-launch verbs / phrases that imply the game is live and patchable.
+# Hardened 2026-06-28 after Hellraiser (unreleased) got a "Patch Game
+# Difficulty Settings ... before October release window" recommendation.
+_POST_LAUNCH_VERB_PATTERNS = (
+    re.compile(r"^\s*\d+\.\s*\*?\*?(patch|hotfix|rebalance|nerf|buff|revert|roll\s*back|ship\s+update)\b", re.I),
+    re.compile(r"\b(balance\s+pass|live\s+game|live\s+server|matchmaking\s+queue|server\s+stability)\b", re.I),
+    re.compile(r"\bbefore\s+(?:the\s+)?(?:october|november|december|january|february|march|april|may|june|july|august|september)\s+release", re.I),
+)
+
+
+def _sanitize_recommendations_for_release_status(text: str, release_status: str) -> str:
+    """Drop numbered recommendations that prescribe a post-launch action when
+    the game is detected as pre-release.  Belt-and-suspenders alongside the
+    prompt instruction in _release_status_clause and the layer-4 critic.
+
+    A 'patch'/'hotfix'/'rebalance' recommendation against a game that has
+    not shipped is the canonical §20 violation we want to make impossible.
+    """
+    if release_status != "pre-release" or not text:
+        return text
+    items: list[str] = []
+    current_item: list[str] = []
+    def flush():
+        nonlocal current_item
+        if not current_item:
+            return
+        item_text = "\n".join(current_item)
+        for pat in _POST_LAUNCH_VERB_PATTERNS:
+            if pat.search(item_text):
+                logger.warning(
+                    "Release-status sanitizer dropping pre-release recommendation: %s",
+                    item_text[:200],
+                )
+                current_item = []
+                return
+        items.append(item_text)
+        current_item = []
+    for line in text.split("\n"):
+        if re.match(r"^\s*\d+\.\s", line):
+            flush()
+            current_item.append(line)
+        else:
+            current_item.append(line)
+    flush()
+    if not items:
+        return ""
+    # Renumber survivors.
+    out_lines: list[str] = []
+    n = 1
+    for it in items:
+        cleaned = re.sub(r"^\s*\d+\.\s*", "", it.strip())
+        out_lines.append(f"{n}. {cleaned}")
+        n += 1
+    return "\n\n".join(out_lines)
+
+
 def _sanitize_bold_ideas(
     ideas: list[str],
     game_name: str,
@@ -1681,10 +1842,14 @@ def _call_exec(
             "without a clear dominant event or topic. Keep it to 2-3 sentences.\n\n"
         )
 
+    release_status = _infer_release_status(samples_block)
+    release_clause = _release_status_clause(release_status)
+
     prompt = (
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         f"Write a TIGHT 3-5 sentence executive summary of community sentiment covering {window_label}.\n\n"
+        + release_clause
         + citation_clause
         + specificity_requirement +
         f"Concision rules:\n"
@@ -1776,17 +1941,27 @@ def _call_actions(
         specificity_clause = ""
     anti_fab = _anti_fabrication_clause(samples_block, entities_block)
 
+    release_status = _infer_release_status(samples_block)
+    release_clause = _release_status_clause(release_status)
+
+    # The default verb suggestion list shifts based on whether the game is live.
+    if release_status == "pre-release":
+        verb_examples = "Clarify, Communicate, Reframe, Address, Document, Publish, Reveal, Showcase, Reassure, Counter-position"
+    else:
+        verb_examples = "Ship, Patch, Audit, Launch, Amplify, Clarify, Document, Sunset"
+
     prompt = (
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         anti_fab +
+        release_clause +
         citation_clause +
         f"Write 4-6 sprint-board-ready recommendations covering the breadth of signal in the data. Each one MUST follow this format strictly:\n\n"
         f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=25 words>.\n\n"
         + specificity_clause +
         f"Hard concision rules:\n"
         f"- 35 WORDS MAX per recommendation. Aim for 22-30.\n"
-        f"- Start with an imperative verb (Ship, Patch, Audit, Launch, Amplify, Clarify, Document, Sunset, etc.).\n"
+        f"- Start with an imperative verb ({verb_examples}).\n"
         f"- Bold the entity or label exactly as provided, using **double asterisks**.\n"
         f"- NO parenthetical examples, NO 'this is your clearest signal' framing, NO 'should anchor messaging through next quarter' filler.\n"
         f"- ONE sentence per recommendation. No semicolons. No 'and... and...' chains. If you need two ideas, write two recommendations.\n\n"
@@ -1829,6 +2004,14 @@ def _call_actions(
         sanitized = _sanitize_recommendations(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
         )
+        # CLAUDE.md §20 layer 2b (2026-06-28): release-status gate.  Drop any
+        # surviving recommendation that prescribes a post-launch action when
+        # the data shows the game is pre-release.  This is the canonical
+        # "Patch Difficulty Settings" violation we're closing.
+        if sanitized:
+            sanitized = _sanitize_recommendations_for_release_status(
+                sanitized, release_status,
+            )
         return sanitized or None
     except Exception as exc:
         logger.error("Claude actions error for '%s': %s", game_name, exc)
@@ -1859,11 +2042,15 @@ def _call_bold_ideas(
     anti_fab = _anti_fabrication_clause(samples_block, entities_block)
     citation_clause = _citation_requirement_clause(citation_map)
 
+    release_status = _infer_release_status(samples_block)
+    release_clause = _release_status_clause(release_status)
+
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
         f"Looking at community signals from {window_label}, find opportunities a typical analyst would MISS.\n\n"
         + _OUTPUT_STYLE +
         anti_fab +
+        release_clause +
         citation_clause +
         f"If — and only if — the data reveals something genuinely worth flagging as a bold move "
         f"beyond the obvious fixes, propose 1 or 2 bold ideas. The bold move should reference a "
