@@ -590,25 +590,27 @@ def _topic_critical_mass_table(
             theme = (
                 weight >= _TOPIC_REC_MIN_WEIGHT and day_count >= _TOPIC_REC_MIN_DAYS
             ) or weight >= _TOPIC_REC_SINGLE_DAY_WEIGHT
-            # §21h (2026-06-29): force-demote NEGATIVE / NEUTRAL narrow-
-            # audience topics even if they cross the weight/day threshold.
-            # A single-locale negative concern ("Turkish Language Support"
-            # as a negative-bucket complaint, "Regional Content Issues") is
-            # not a broad-base liability; it's a single audience-of-interest
-            # cluster.  Treating it as a theme led to two live execs leading
-            # with "Regional Content Issues..." as the headline.
+            # §21h (revised §25d 2026-06-29): force-demote ALL narrow-
+            # audience topics regardless of sentiment, even if they cross
+            # the weight/day threshold.  A single-locale label (Turkish/
+            # Spanish/Welsh/etc.) is by definition not broad-base community
+            # signal — it's a single audience-of-interest cluster.
             #
-            # POSITIVE narrow-audience topics are NOT demoted: a studio's
-            # deliberate localization play ("Welsh Voice Acting", "Brazilian
-            # Portuguese support") generating community celebration IS a
-            # real marketing asset and a legitimate theme to amplify.
-            if (
-                theme
-                and sentiment in ("negative", "neutral")
-                and _topic_is_narrow_audience(label)
-            ):
+            # The earlier exception preserved POSITIVE narrow-audience as
+            # theme-tier to protect Welsh VO on Bus Bound, but it also let
+            # "Turkish Language Support" lead Hellraiser's exec twice from
+            # a tiny Turkish-poster cluster repeating across days.  The
+            # exception was too broad.
+            #
+            # Legitimate localization stories (Welsh VO, deliberate
+            # publisher localization plays) still surface to the LLM via
+            # the SAMPLE POSTS block — the LLM can call them out from
+            # quoted post text.  The topic-label hierarchy is for theme-
+            # tier signal classification, and a single-locale topic is
+            # not theme-tier by definition.
+            if theme and _topic_is_narrow_audience(label):
                 logger.info(
-                    "§21h: demoting narrow-audience %s topic %r from theme to monitor-only "
+                    "§21h/§25d: demoting narrow-audience %s topic %r from theme to monitor-only "
                     "(weight=%d days=%d)", sentiment, label, weight, day_count,
                 )
                 tier = "monitor-only"
@@ -1373,6 +1375,7 @@ def _call_claude_for_period(
                 pos_str=", ".join(pos_topics) if pos_topics else "",
                 neg_str=", ".join(neg_topics) if neg_topics else "",
                 pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
+                critical_mass_table=critical_mass_table,
             ),
             _placeholder_actions(),
             [],
@@ -1382,11 +1385,36 @@ def _call_claude_for_period(
     # Quarantine poisoned topic labels before they reach the LLM. Any label
     # containing a forbidden-concept token (free-to-play / battle pass /
     # monetization / etc.) is dropped so Claude can't anchor a summary on it.
-    # If quarantining empties a sentiment's list, we substitute a generic
-    # fallback so the LLM still has something to talk about.
     pos_topics = _quarantine_topics(pos_topics)
     neg_topics = _quarantine_topics(neg_topics)
     neu_topics = _quarantine_topics(neu_topics)
+
+    # §25d (2026-06-29): monitor-only topics MUST NOT lead the displayed
+    # topic strings.  §21b/§21h already classify narrow-audience labels
+    # (Turkish/Spanish/Regional/etc.) as monitor-only in the critical-mass
+    # table, but the prompt was being shown the ranked topic list with
+    # those labels in front — causing the LLM to anchor on them as the
+    # "top positive theme" even when they were single-poster noise.
+    #
+    # Demote any monitor-only label to the END of its bucket list, and
+    # only fall back to it if no theme-tier topic exists.  The LLM should
+    # see theme-tier topics first.
+    def _demote_monitor_only(
+        labels: list[str], bucket: str,
+    ) -> list[str]:
+        if not critical_mass_table:
+            return labels
+        tier_lookup = {
+            t[0].lower(): t[3] if len(t) >= 4 else "theme"
+            for t in (critical_mass_table.get(bucket) or [])
+        }
+        themes = [L for L in labels if tier_lookup.get(L.lower(), "theme") == "theme"]
+        monitors = [L for L in labels if tier_lookup.get(L.lower(), "theme") == "monitor-only"]
+        return themes + monitors
+
+    pos_topics = _demote_monitor_only(pos_topics, "positive")
+    neg_topics = _demote_monitor_only(neg_topics, "negative")
+    neu_topics = _demote_monitor_only(neu_topics, "neutral")
 
     pos_str = ", ".join(pos_topics) if pos_topics else "General positive sentiment"
     neg_str = ", ".join(neg_topics) if neg_topics else "No clear negative signals"
@@ -3468,7 +3496,27 @@ def _call_exec(
             "REPRESENTATIVE SAMPLE POSTS (top-upvoted in each sentiment, truncated):\n"
             f"{samples_block}\n\n"
         )
-    prompt += "Write ONLY the summary paragraph. No bullet points, no headings, no preamble."
+    # §25e (2026-06-29): explicit theme-coverage + bias-toward-posts clause.
+    prompt += (
+        "\n\n§25e COVERAGE RULES (MANDATORY):\n"
+        "  - Your summary MUST span at least 3 distinct topics drawn from "
+        "the positive/negative/neutral buckets shown above.  Do NOT lead "
+        "with a single topic or write a one-sided summary when both "
+        "positive AND negative theme topics exist.\n"
+        "  - BIAS toward [P-NNN] community posts as your primary evidence: "
+        "cite them for what posters are saying, asking for, complaining "
+        "about, celebrating, or comparing.  Editorial [E-NNN] citations "
+        "are SUPPLEMENTARY — use only when they add context the posts "
+        "alone don't show (release timing, comparable launches, industry "
+        "framing).  An exec built mostly on editorial citations FAILS.\n"
+        "  - Do NOT lead with regional / localization / single-locale "
+        "topics (Turkish, Spanish, Welsh, Regional, etc.).  These are "
+        "narrow-audience signals; they may be mentioned briefly in the "
+        "closing sentence at most.\n"
+        "  - Length: 3-5 sentences of analyst voice prose.  No bullet "
+        "points, no headings, no preamble.\n\n"
+        "Write ONLY the summary paragraph."
+    )
 
     exec_trace: dict = {"game_name": game_name, "total_posts": total_posts}
     try:
@@ -3544,6 +3592,7 @@ def _call_exec(
                 game_name, window_label, total_posts,
                 pos_str=pos_str, neg_str=neg_str,
                 pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
+                critical_mass_table=critical_mass_table,
             )
         exec_trace["placeholder_fired"] = False
         _record_exec_trace(exec_trace)
@@ -3557,6 +3606,7 @@ def _call_exec(
             game_name, window_label, total_posts,
             pos_str=pos_str, neg_str=neg_str,
             pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
+            critical_mass_table=critical_mass_table,
         )
 
 
@@ -4459,26 +4509,41 @@ def _placeholder_summary(
     pos_count: int = 0,
     neg_count: int = 0,
     neu_count: int = 0,
+    critical_mass_table: Optional[dict] = None,
 ) -> str:
     """Honest low-signal fallback when the LLM result was discarded or empty.
 
-    §24e (2026-06-29): when the sanitizer cuts a real LLM exec to a
-    fragment, the placeholder used to render as 'community sentiment ...
-    was mixed without a single dominant theme reaching critical mass'.
-    That is misleading on high-volume titles where there ARE dominant
-    topics; the LLM just produced an output the gates rejected.  When
-    pos_str / neg_str are provided, the placeholder now grounds itself
-    on the top topics + counts so the analyst still sees specifics.
+    §24e + §25d (2026-06-29): grounded fallback that selects the lead label
+    from THEME-TIER topics only.  Monitor-only labels (Turkish/Spanish/
+    Regional/etc., §21h-demoted) are NEVER shown as the lead.  When no
+    theme-tier label exists, the placeholder says so honestly rather than
+    promoting a monitor-only label to the headline.
     """
     if total_posts < _MIN_SUBSTANTIVE_POSTS:
         return (
             f"Insufficient signal for confident reporting "
             f"(only {total_posts} substantive posts in this window)."
         )
+
+    # §25d: pick lead labels from theme-tier topics ONLY.
+    def _theme_lead(bucket: str) -> str:
+        if not critical_mass_table:
+            return ""
+        for entry in (critical_mass_table.get(bucket) or []):
+            if len(entry) >= 4 and entry[3] == "theme" and entry[0]:
+                return entry[0]
+        return ""
+
     # §24e: build a grounded fallback when we have topic data.
     if pos_str or neg_str:
-        pos_lead = pos_str.split(",")[0].strip() if pos_str else ""
-        neg_lead = neg_str.split(",")[0].strip() if neg_str else ""
+        # Prefer theme-tier picks; fall back to raw-string lead only when
+        # NO critical-mass table is available (legacy callers).
+        pos_lead = _theme_lead("positive")
+        neg_lead = _theme_lead("negative")
+        if not pos_lead and not critical_mass_table and pos_str:
+            pos_lead = pos_str.split(",")[0].strip()
+        if not neg_lead and not critical_mass_table and neg_str:
+            neg_lead = neg_str.split(",")[0].strip()
         parts: list[str] = []
         parts.append(
             f"Community discussion across {total_posts} posts during "

@@ -473,6 +473,32 @@ The rule, in operational terms:
 
 **Pre-ship readback requirement (applied always when verification gates are new or under review).** Before declaring a fix done after a §25-class defect, the agent must quote each exec sentence + each rec line + each bold idea back to the user with the supporting source passage cited inline. "All clean" without the source quotes is not acceptable. This satisfies both §23 (audit the deliverable) and §25 (verify against sources).
 
+### 25d. Monitor-only topics must not lead the surface (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29 after the Hellraiser weekly exec twice shipped with "Turkish Language Support" as the top positive topic when it was a single-poster monitor-only signal.**
+
+**The rule.** A topic that §21b / §21h have classified as `monitor-only` in the critical-mass table MUST NOT appear in the leading position of the `pos_str` / `neg_str` / `neu_str` strings shown to the exec LLM, NOR in the "Top positive topic" / "Top negative concern" line of the §24e grounded placeholder.  Monitor-only labels may appear in the trailing position of the displayed list (so the LLM has the full picture) but must not be the headline.
+
+The critical-mass table tiers each topic as `theme` or `monitor-only`.  Theme-tier topics are broad-base community signal; monitor-only topics are real but too thin (single poster, single day, narrow audience).  The exec headline must be drawn from theme-tier topics; if none exist, the placeholder says so honestly rather than promoting a monitor-only label to the lead.
+
+**Implementation expectation.** `_call_claude_for_period` reorders `pos_topics`/`neg_topics`/`neu_topics` so theme-tier labels come first and monitor-only labels are pushed to the end.  `_placeholder_summary` walks the same critical-mass table to pick the lead label; when no theme-tier label exists in a bucket, the placeholder must NOT cite a monitor-only label as "Top positive topic."  Unit tests must include the Hellraiser shape (Turkish leading the positive bucket, demoted to monitor-only by §21h) and assert the exec headline does NOT name Turkish.
+
+### 25e. Exec summary must cover high-level themes across post buckets, biased toward user posts (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29: "EXEC SUMMARIES MUST contain a summary of the topic high level topics and context across user posts and editorial but bias toward user posts."**
+
+**The rule.** Every executive summary above the §15 substantive-post threshold must:
+
+1. **Cover at least 3 distinct theme-tier topics** drawn from the positive, negative, and neutral buckets (not all 3 must be present — e.g. a window with no negative theme tier topic is fine — but the exec must span at least 3 surface-worthy topics in total across whichever buckets have them).
+2. **Bias toward user-post evidence.** Cite [P-NNN] community posts as the primary source for sentiment, framing, and what posters are saying.  Editorial citations [E-NNN] are SUPPLEMENTARY — used to add context (release timing, comparable launches, industry framing the posts reference) when an editorial article supports it.  An exec that cites only editorial without grounding in posts FAILS this rule.
+3. **Convey both sides** when both exist.  If the bucket has both positive theme topics and negative theme topics with at least one substantive post each, the exec must reflect both — not be a one-sided amplification or a one-sided complaint.
+4. **Be light prose, not a topic enumeration.** Exec summary is narrative — it weaves topics into 3-5 sentences of analyst voice, not a bulleted list and not a series of restatements of topic labels.
+5. **Recommended actions and bold ideas SHOULD relate to the exec themes when possible.** Not strictly required (per user direction: "it can also speak to positive and negative trends in posts for the time period or other relevant general observations"), but the default is alignment.
+
+**Implementation expectation.** `_validate_summary_output()` (§22 pre-flight) is extended with a `_exec_covers_min_themes` check: after the verifier runs, the surviving exec must reference at least 3 distinct theme-tier topic labels from the critical-mass table.  When it doesn't, run ONE retry with a fix-list hint naming the missed themes.  If the retry still fails, fall through to the grounded placeholder (which is allowed to be terse).
+
+The exec prompt itself names this constraint explicitly: "Your summary MUST span at least 3 distinct theme-tier topics drawn from the positive/negative/neutral buckets above; do NOT lead with a single topic; bias toward [P-NNN] community posts as evidence; cite [E-NNN] editorial articles only when adding context the posts alone don't provide."
+
 ### 24. Editorial-Research Hybrid Bold Ideas (CRITICAL — always-on)
 
 **Hard requirement directed by the user 2026-06-29 after the bold-ideas pipeline was producing post-anchored amplifications only — unable to generate speculative cohort-reach ideas grounded in real-world editorial context.**

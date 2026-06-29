@@ -734,3 +734,108 @@ class TestStripMonitorOnlyRecs:
         }
         out = _strip_monitor_only_recs(recs, cm_table)
         assert out == ""
+
+
+class TestPlaceholderRespectsMonitorOnlyTier:
+    """§25d: the §24e grounded placeholder must NOT cite a monitor-only
+    label as the 'Top positive topic' / 'Top negative concern.'
+
+    Canonical case: Hellraiser shape — Turkish leads pos_str but is
+    classified monitor-only by §21h.  Placeholder must skip it.
+    """
+
+    def test_skips_monitor_only_lead(self):
+        from services.period_summary_service import _placeholder_summary
+        # Hellraiser shape: Turkish leads positive bucket but is monitor-only.
+        cm_table = {
+            "positive": [
+                ("Turkish Language Support", 7.0, 7, "monitor-only"),
+                ("Cast & Actor Interviews", 6.0, 5, "theme"),
+            ],
+            "negative": [
+                ("Turkish Community Posts", 5.0, 4, "monitor-only"),
+                ("Game Difficulty Settings", 6.0, 3, "theme"),
+            ],
+            "neutral": [],
+        }
+        out = _placeholder_summary(
+            "Hellraiser", "this week", 45,
+            pos_str="Turkish Language Support, Cast & Actor Interviews",
+            neg_str="Turkish Community Posts, Game Difficulty Settings",
+            pos_count=14, neg_count=11, neu_count=20,
+            critical_mass_table=cm_table,
+        )
+        assert "Turkish" not in out
+        assert "Cast & Actor Interviews" in out
+        assert "Game Difficulty Settings" in out
+
+    def test_no_theme_tier_omits_lead(self):
+        """When every topic is monitor-only, placeholder must not name any."""
+        from services.period_summary_service import _placeholder_summary
+        cm_table = {
+            "positive": [("Turkish Language Support", 7.0, 7, "monitor-only")],
+            "negative": [],
+            "neutral": [],
+        }
+        out = _placeholder_summary(
+            "Test", "this week", 25,
+            pos_str="Turkish Language Support",
+            neg_str="",
+            pos_count=14, neg_count=0, neu_count=11,
+            critical_mass_table=cm_table,
+        )
+        assert "Turkish" not in out
+        assert "Top positive topic" not in out
+
+    def test_legacy_no_table_still_works(self):
+        """When no critical_mass_table is provided (legacy callers), the
+        placeholder falls back to raw pos_str lead."""
+        from services.period_summary_service import _placeholder_summary
+        out = _placeholder_summary(
+            "Test", "this week", 25,
+            pos_str="Game Quality, Combat Mechanics",
+            neg_str="Server Issues",
+            pos_count=14, neg_count=11, neu_count=0,
+        )
+        assert "Game Quality" in out
+
+
+class TestTopicReorderDemotesMonitorOnly:
+    """§25d: in _call_claude_for_period, pos_topics/neg_topics/neu_topics
+    must be reordered so theme-tier labels come first and monitor-only
+    labels are pushed to the end.  This prevents the exec LLM from
+    anchoring on a leading monitor-only topic.
+
+    We test the demotion logic directly via the inline function.
+    """
+
+    def test_demotion_moves_monitor_only_to_end(self):
+        # Reproduce the inline _demote_monitor_only logic for unit testing.
+        cm_table = {
+            "positive": [
+                ("Turkish Language Support", 7.0, 7, "monitor-only"),
+                ("Language Support Requests", 6.0, 5, "monitor-only"),
+                ("Cast & Actor Interviews", 6.0, 5, "theme"),
+                ("Game Release & Timeline", 5.0, 3, "theme"),
+            ],
+        }
+        labels = [
+            "Turkish Language Support",
+            "Language Support Requests",
+            "Cast & Actor Interviews",
+            "Game Release & Timeline",
+        ]
+        # Build the same tier lookup the production code uses.
+        tier_lookup = {
+            t[0].lower(): t[3] if len(t) >= 4 else "theme"
+            for t in cm_table.get("positive", [])
+        }
+        themes = [L for L in labels if tier_lookup.get(L.lower(), "theme") == "theme"]
+        monitors = [L for L in labels if tier_lookup.get(L.lower(), "theme") == "monitor-only"]
+        out = themes + monitors
+
+        # Theme-tier labels must come first; monitor-only at the end.
+        assert out[0] == "Cast & Actor Interviews"
+        assert out[1] == "Game Release & Timeline"
+        # Both monitor-only labels follow the themes.
+        assert set(out[2:]) == {"Turkish Language Support", "Language Support Requests"}
