@@ -1056,9 +1056,16 @@ def _validate_summary_output(
     return failures
 
 
-def _truncate_to_max_recommendations(text: Optional[str]) -> Optional[str]:
-    """Hard cap recommendations at _REC_COUNT_MAX.  Used at persist time as
-    the safety net for check 6."""
+def _enforce_format_contract(text: Optional[str]) -> Optional[str]:
+    """Drop recommendations that violate the surface format contract:
+      - empty stubs (citation-only after the number prefix),
+      - no imperative verb opener,
+      - no bolded entity (**...**).
+
+    These are §22 mechanical checks.  Better to ship 2 valid items than
+    3 items where one is an off-format paragraph dump that pretends to
+    be a recommendation.  Called at persist time after the LLM pipeline.
+    """
     if not text:
         return text
     items: list[str] = []
@@ -1079,15 +1086,34 @@ def _truncate_to_max_recommendations(text: Optional[str]) -> Optional[str]:
         else:
             flush()
     flush()
-    if len(items) <= _REC_COUNT_MAX:
-        return text
-    kept = items[:_REC_COUNT_MAX]
-    # Renumber survivors.
+
+    survivors: list[str] = []
+    for item in items:
+        if not _item_has_substantive_content(item):
+            logger.info("§22 format-contract: dropping empty-stub %r", item[:60])
+            continue
+        if not _RECOMMENDATION_VERB_RE.match(item):
+            logger.info("§22 format-contract: dropping non-imperative %r", item[:80])
+            continue
+        if "**" not in item:
+            logger.info("§22 format-contract: dropping missing-bold %r", item[:80])
+            continue
+        survivors.append(item)
+
+    if not survivors:
+        return ""
+    # Renumber + cap at max.
+    capped = survivors[:_REC_COUNT_MAX]
     out: list[str] = []
-    for n, item in enumerate(kept, 1):
+    for n, item in enumerate(capped, 1):
         cleaned = re.sub(r"^\d+\.\s*", "", item.strip())
         out.append(f"{n}. {cleaned}")
     return "\n\n".join(out)
+
+
+# Backward-compatible alias — some callers still use the old name.
+def _truncate_to_max_recommendations(text: Optional[str]) -> Optional[str]:
+    return _enforce_format_contract(text)
 
 
 def _call_claude_for_period(
@@ -2542,11 +2568,17 @@ def _call_exec(
         # CLAUDE.md §20 layer 4: second-pass self-criticism.  Skipped when
         # citation_map is empty (legacy callers).
         raw = _self_criticize(client, raw, citation_map, "exec_summary")
+        # CLAUDE.md §22 (2026-06-29): re-scrub orphan discourse markers
+        # AFTER all stripping passes — the critic can drop sentences too,
+        # producing a new orphan opener that the layer-3 scrub didn't see.
+        raw = _scrub_orphan_opener(raw)
         # CLAUDE.md §20 layer 2: post-LLM proper-noun fact-check gate.
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
-        return _sanitize_executive_summary(
+        result = _sanitize_executive_summary(
             raw, game_name, sample_posts, distinctive_entities, topic_labels,
         )
+        # Final scrub after sanitizer too — belt-and-suspenders.
+        return _scrub_orphan_opener(result)
     except Exception as exc:
         logger.error("Claude exec summary error for '%s': %s", game_name, exc)
         return _placeholder_summary(game_name, window_label, total_posts)

@@ -1026,15 +1026,68 @@ class TestValidateSummaryOutput:
         assert any("missing bolded entity" in f for f in failures)
 
 
-class TestTruncateToMaxRecommendations:
+class TestEnforceFormatContract:
+    """§22 format-contract enforcement: drops empty stubs, non-imperative
+    openers, missing-bold items, and caps at _REC_COUNT_MAX."""
+
+    def _make(self, n: int) -> str:
+        return "\n\n".join(
+            f"{i}. Patch **Server Stability** — fix matchmaking [P-001]"
+            for i in range(1, n + 1)
+        )
 
     def test_under_max_unchanged(self):
-        text = "1. A [P-001]\n\n2. B [P-001]\n\n3. C [P-001]"
-        assert pss._truncate_to_max_recommendations(text) == text
+        text = self._make(3)
+        assert pss._enforce_format_contract(text) == text
 
     def test_over_max_truncated_and_renumbered(self):
-        text = "\n\n".join(f"{n}. Item{n} [P-001]" for n in range(1, 8))
-        out = pss._truncate_to_max_recommendations(text)
+        text = self._make(7)
+        out = pss._enforce_format_contract(text)
         items = [l for l in out.split("\n") if l.strip().startswith(tuple("0123456789"))]
         assert len(items) == 5
         assert items[-1].startswith("5.")
+
+    def test_drops_empty_stub(self):
+        text = (
+            "1. [P-001]\n\n"
+            "2. Patch **Server Stability** — fix [P-001]\n\n"
+            "3. Audit **Sniper Balance** — DPS [P-001]"
+        )
+        out = pss._enforce_format_contract(text)
+        items = [l for l in out.split("\n") if l.strip().startswith(tuple("0123456789"))]
+        assert len(items) == 2
+        # Survivors renumbered.
+        assert items[0].startswith("1. Patch")
+        assert items[1].startswith("2. Audit")
+
+    def test_drops_non_imperative_verb(self):
+        text = (
+            "1. Note that **Server** is broken [P-001]\n\n"
+            "2. Patch **Server Stability** — fix [P-001]"
+        )
+        out = pss._enforce_format_contract(text)
+        items = [l for l in out.split("\n") if l.strip().startswith(tuple("0123456789"))]
+        assert len(items) == 1
+        assert items[0].startswith("1. Patch")
+
+    def test_drops_missing_bold(self):
+        text = (
+            "1. Patch Server Stability — no bold tags [P-001]\n\n"
+            "2. Patch **Server Stability** — fix [P-001]"
+        )
+        out = pss._enforce_format_contract(text)
+        items = [l for l in out.split("\n") if l.strip().startswith(tuple("0123456789"))]
+        assert len(items) == 1
+        assert "**" in items[0]
+
+
+class TestTruncateToMaxRecommendations:
+    """Backward-compat alias for _enforce_format_contract."""
+
+    def test_alias_dispatches_to_enforce_format_contract(self):
+        text = "\n\n".join(
+            f"{i}. Patch **Topic{i}** — fix [P-001]" for i in range(1, 7)
+        )
+        out = pss._truncate_to_max_recommendations(text)
+        items = [l for l in out.split("\n") if l.strip().startswith(tuple("0123456789"))]
+        assert len(items) == 5
