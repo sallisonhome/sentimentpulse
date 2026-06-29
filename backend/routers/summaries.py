@@ -43,6 +43,68 @@ def get_bold_ideas_trace():
     return {"trace": _pss.get_bold_trace_buffer()}
 
 
+@_diag_router.post("/editorial-cache-clear")
+def clear_editorial_cache(
+    game_id: Optional[int] = None,
+    scope: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """§24 admin endpoint: delete cached editorial articles.
+
+    Optional filters:
+      - game_id: clear only one game's cache
+      - scope: 'weekly' or 'monthly', clear only one scope
+    Both omitted: clears the entire editorial_articles table (use with care).
+
+    Returns the row count deleted.
+    """
+    from models import EditorialArticle
+    q = db.query(EditorialArticle)
+    if game_id is not None:
+        q = q.filter(EditorialArticle.game_id == game_id)
+    if scope is not None:
+        q = q.filter(EditorialArticle.scope == scope)
+    deleted = q.delete(synchronize_session=False)
+    db.commit()
+    return {"deleted": deleted, "game_id": game_id, "scope": scope}
+
+
+@_diag_router.get("/editorial-cache-summary")
+def editorial_cache_summary(db: Session = Depends(get_db)):
+    """§24 admin endpoint: count editorial articles per (game_id, scope, cycle_start)."""
+    from models import EditorialArticle, Game
+    from sqlalchemy import func as _f
+    rows = (
+        db.query(
+            EditorialArticle.game_id,
+            Game.name,
+            EditorialArticle.scope,
+            EditorialArticle.cycle_start,
+            _f.count(EditorialArticle.id).label("article_count"),
+        )
+        .join(Game, Game.id == EditorialArticle.game_id)
+        .group_by(
+            EditorialArticle.game_id, Game.name,
+            EditorialArticle.scope, EditorialArticle.cycle_start,
+        )
+        .order_by(EditorialArticle.cycle_start.desc(), EditorialArticle.game_id)
+        .all()
+    )
+    return {
+        "batches": [
+            {
+                "game_id": r.game_id,
+                "game_name": r.name,
+                "scope": r.scope,
+                "cycle_start": r.cycle_start.isoformat() if r.cycle_start else None,
+                "article_count": r.article_count,
+            }
+            for r in rows
+        ],
+        "total_batches": len(rows),
+    }
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _period_start(period: PeriodEnum) -> Optional[date]:
