@@ -73,6 +73,14 @@ class Game(Base):
     # The right play in that case is 'lean into the comparison + add what
     # makes us authentically the IP', NOT 'distance from RE'.
     commercial_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # CLAUDE.md §24 (Editorial-Research Hybrid Bold Ideas, 2026-06-29):
+    # Per-title demographic + IP-awareness brief used by the bold-ideas
+    # prompt to ground speculative cohort-reach reasoning.  E.g.
+    # Hellraiser → "<40 cohort doesn't know the IP outside of Pinhead
+    # imagery; awareness gap is the marketing barrier".  Turok → "35-45
+    # cohort with N64 nostalgia, exotic-weapons memory (Cerebral Bore,
+    # bow weapons) is the loyalty anchor".
+    demographic_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
@@ -90,6 +98,9 @@ class Game(Base):
     )
     window_summaries: Mapped[List["WindowSummary"]] = relationship(
         "WindowSummary", back_populates="game"
+    )
+    editorial_articles: Mapped[List["EditorialArticle"]] = relationship(
+        "EditorialArticle", back_populates="game", cascade="all, delete-orphan",
     )
 
 
@@ -315,3 +326,50 @@ class DigestRecipient(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
+
+
+class EditorialArticle(Base):
+    """
+    CLAUDE.md §24 — per-title editorial research cache.
+
+    One row per article fetched for a given (game_id, scope, cycle_start)
+    batch.  The bold-ideas LLM call reads the LATEST batch for a
+    (game_id, scope, cycle_start) tuple and surfaces each article as a
+    [E-NNN] citable evidence item alongside the in-window [P-NNN] post
+    citations.
+
+    Cache key (uniqueness): (game_id, scope, cycle_start, url) — re-running
+    a digest cycle reuses the existing batch rather than re-fetching.
+    Different cycle_start values (e.g. weekly vs monthly) get separate
+    batches per §24's "separate caches" decision.
+    """
+    __tablename__ = "editorial_articles"
+    __table_args__ = (
+        UniqueConstraint(
+            "game_id", "scope", "cycle_start", "url",
+            name="uq_editorial_articles_game_scope_cycle_url",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    game_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("games.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    cycle_start: Mapped[date] = mapped_column(Date, nullable=False)
+    cycle_end: Mapped[date] = mapped_column(Date, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    publication: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True,
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False,
+    )
+    body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    cite: Mapped[str] = mapped_column(String(8), nullable=False)
+
+    game: Mapped["Game"] = relationship("Game", back_populates="editorial_articles")

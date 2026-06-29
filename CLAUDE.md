@@ -356,6 +356,24 @@ The rule, in operational terms:
 
 **Implementation expectation.** Unit tests must include both positive cases (orphan `this analog` with no introducer = drop) and explicit negative cases (`Address the complaint` = keep, `lean into this trend` = keep, etc.).
 
+### 21h. Narrow-Audience Theme Demotion (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29 after the Hellraiser and Turok weekly execs led with "Regional Content Issues" / "Turkish Language Support" as broad-base liability themes — when in reality these were single audience-of-interest clusters that only crossed the §21b weight/day threshold because the same handful of Turkish-speaking posters were active across multiple days.**
+
+**The rule.** A NEGATIVE or NEUTRAL topic label that names a specific locale, country, language, or single-SKU scope (Turkish/Spanish/Brazilian/etc.; "Regional Content Issues"; "Collectors Edition Spain") is force-demoted to monitor-only even if it crosses the §21b weight/day threshold.  The audience is too narrow for the topic to be a broad-base liability theme.
+
+**Exception:** POSITIVE narrow-audience topics are NOT demoted.  A studio's deliberate localization play (Welsh VO on Bus Bound) generating community celebration IS a real marketing asset and a legitimate theme to amplify.
+
+**Implementation expectation.** `_topic_is_narrow_audience(label)` matches a curated `_NARROW_AUDIENCE_MARKERS` list (40+ language/country/regional/SKU markers).  Adding a marker requires evidence of consistent narrow-audience scope; generic gaming nouns must NOT be added.
+
+### 22b. Low-Rec-Count Single-Retry (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29 after Toxic Commando shipped 1 recommendation in the live digest despite 968 substantive posts and theme-tier topics available.**
+
+**The rule.** When `_call_actions` produces fewer than `_REC_COUNT_MIN` valid recommendations on a substantive title (`total_posts ≥ _MIN_SUBSTANTIVE_POSTS`) with at least one theme-tier topic available, run ONE retry pass with an explicit fix-list hint injected at the top of the prompt naming the count gap ("your previous output had N items but the digest requires at least M").  Bounded to a single retry to avoid runaway LLM call counts.  If the retry produces fewer items than the first attempt, the original output is kept.
+
+**Implementation expectation.** `_retry_actions_if_below_min()` is called inline within `_call_claude_for_period` after the first-pass `_call_actions`.  Unit tests must cover the three no-retry conditions (count at min, posts below substantive, no theme-tier topics) plus the retry-fires case.
+
 ### 22. Pre-Flight QA on Summary Outputs Before Asking The User To Approve (CRITICAL — always-on, every summary, every digest)
 
 **Hard requirement directed by the user 2026-06-29 after the Toxic Commando / Turok / Bus Bound output had mechanically-detectable surface defects (orphan "However," opener, `1. [P-007]` empty-stub recommendations, sub-3 recommendation counts).**
@@ -391,6 +409,24 @@ The rule, in operational terms:
 7. **In the audit narrative, be specific about what was checked AND what was NOT.** "I audited X across all 8 titles and confirmed Y; I have NOT yet checked Z" is honest and useful. "All 8 clean ✓" without naming the surface is a lie waiting to be discovered.
 
 **This rule supersedes any expedience consideration.** When in doubt, audit more. When the user has already caught one defect in this work item, audit far more before next ship.
+
+### 24. Editorial-Research Hybrid Bold Ideas (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29 after the bold-ideas pipeline was producing post-anchored amplifications only — unable to generate speculative cohort-reach ideas grounded in real-world editorial context.**
+
+**The rule.** Bold ideas may anchor on EITHER a `[P-NNN]` community post citation OR an `[E-NNN]` editorial citation drawn from a per-title press/analyst coverage cache.  Each idea MUST cite at least one of the two.  Pure invention without any citation remains forbidden.  Speculative reasoning about cohorts, IP-awareness gaps, and demographic plays IS allowed when the underlying signal is supported by a cited post or editorial article.
+
+Exec summary and recommended actions remain post-citation-only (strict §20) — only bold ideas use the hybrid rule.
+
+**Editorial cache schema** (`editorial_articles` table): one row per (game_id, scope, cycle_start, url).  scope is `'weekly'` or `'monthly'` (separate caches per user decision).  Each row holds the article URL, headline, lead-paragraphs body, LLM-generated single-paragraph evidence summary, and a sequential `E-001`, `E-002`, ... cite tag assigned per cycle.
+
+**Search source.** Google News RSS (no API key, no auth) with query `"{game_name}" gaming` and a `when:Nd` recency filter (30d weekly, 90d monthly).  Custom User-Agent per §17.  Trusted publications (IGN, Polygon, Eurogamer, Fangoria, etc.) ranked first; dedupe by publisher domain; target 7 articles per cycle.
+
+**Demographic context.** Per-title `games.demographic_context` TEXT column holds a brief describing target cohorts and IP-awareness gaps.  Used by the bold-ideas prompt to ground speculative cohort-reach reasoning.  Editable via PATCH `/api/games/{id}` and seeded for the 8 priority titles via `POST /api/games/seed-demographic-context`.
+
+**Renderer.** `[E-NNN]` markers render as superscript anchor links to the article URL (label `E1`, `E2`, ... to distinguish from post citations).  Each title section ships an "Editorial context (§24)" footer listing up to 5 articles consulted, with publication + headline + link.
+
+**Implementation expectation.** `editorial_research_service.py` exposes `fetch_editorial_for_title(db, game_id, scope, cycle_start, cycle_end)` — idempotent (cache-hit reuses existing batch).  Failure to fetch must NOT block the rest of the digest; `_safe_fetch_editorial()` catches any exception and returns `[]`.  Bold-ideas prompt branches on `editorial_articles` presence: when present, the prompt opens to speculative cohort reasoning + hybrid `[P/E]` citation; when absent, the prompt falls back to the strict §20 anchor-in-posts rule.
 
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items

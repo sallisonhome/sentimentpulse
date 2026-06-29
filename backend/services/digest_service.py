@@ -96,6 +96,13 @@ class TitleBlock:
     # source posts.  None (or missing) when row pre-dates citation infra;
     # renderer treats this as a legacy row and leaves tokens unchanged.
     citation_map: Optional[dict] = None
+    # CLAUDE.md §24 (2026-06-29): list of EditorialArticle-shaped dicts for
+    # this title's cycle.  Each entry: {cite, url, title, publication,
+    # published_at, summary}.  Renderer surfaces these as inline [E-NNN]
+    # anchor links (handled via _render_citations once the entries are
+    # merged into citation_map) AND as a bottom-of-section "Editorial
+    # context" footer per the user's hybrid UX decision.
+    editorial_articles: Optional[list] = None
 
     @property
     def sentiment_tone(self) -> str:
@@ -181,6 +188,19 @@ def build_weekly_block(
             period_label=period_label, has_data=False,
         )
 
+    # §24: read the LATEST weekly editorial batch for this title so the
+    # renderer can surface [E-NNN] anchor links and the Editorial-context
+    # footer.  Most recent cycle wins; we don't filter by cycle_start to
+    # cover the case where the digest is rendered on a day after the
+    # editorial fetch ran.
+    editorial_articles = _load_latest_editorial(db, game_id, scope="weekly")
+    # Merge editorial entries into citation_map so [E-NNN] tokens in the
+    # persisted bold_ideas / exec / rec text resolve to anchor links.
+    summary_cmap = dict(getattr(summary, "citation_map", None) or {})
+    if editorial_articles:
+        from services.editorial_research_service import editorial_citation_map
+        summary_cmap.update(editorial_citation_map(editorial_articles))
+
     return TitleBlock(
         game_id=game_id, name=name,
         total_posts=summary.total_posts,
@@ -192,8 +212,53 @@ def build_weekly_block(
         recommended_actions=summary.recommended_actions or "",
         bold_ideas=list(summary.bold_ideas or []),
         period_label=period_label, has_data=True,
-        citation_map=getattr(summary, "citation_map", None),
+        citation_map=summary_cmap or None,
+        editorial_articles=[
+            {
+                "cite": a.cite, "url": a.url, "title": a.title,
+                "publication": a.publication,
+                "published_at": a.published_at,
+                "summary": a.summary,
+            }
+            for a in editorial_articles
+        ] if editorial_articles else None,
     )
+
+
+def _load_latest_editorial(db: Session, game_id: int, scope: str) -> list:
+    """§24: load the most recent editorial batch for (game_id, scope).
+
+    Returns [] when no batch exists.  Tolerant of missing table / model
+    (e.g. before migrations land in legacy environments) -- in that
+    case logs a warning and returns [].
+    """
+    try:
+        from models import EditorialArticle
+        latest_cycle = (
+            db.query(EditorialArticle.cycle_start)
+            .filter(
+                EditorialArticle.game_id == game_id,
+                EditorialArticle.scope == scope,
+            )
+            .order_by(EditorialArticle.cycle_start.desc())
+            .first()
+        )
+        if not latest_cycle:
+            return []
+        cycle_start = latest_cycle[0]
+        rows = (
+            db.query(EditorialArticle)
+            .filter_by(game_id=game_id, scope=scope, cycle_start=cycle_start)
+            .order_by(EditorialArticle.cite)
+            .all()
+        )
+        return list(rows)
+    except Exception as exc:
+        logger.info(
+            "§24: editorial load skipped (game_id=%d scope=%s): %s",
+            game_id, scope, exc,
+        )
+        return []
 
 
 def build_monthly_block(
@@ -224,6 +289,13 @@ def build_monthly_block(
             period_label=period_label, has_data=False,
         )
 
+    # §24: monthly editorial cache (separate from weekly).
+    editorial_articles = _load_latest_editorial(db, game_id, scope="monthly")
+    row_cmap = dict(getattr(row, "citation_map", None) or {})
+    if editorial_articles:
+        from services.editorial_research_service import editorial_citation_map
+        row_cmap.update(editorial_citation_map(editorial_articles))
+
     return TitleBlock(
         game_id=game_id, name=name,
         total_posts=row.total_posts,
@@ -235,7 +307,16 @@ def build_monthly_block(
         recommended_actions=row.recommended_actions or "",
         bold_ideas=list(row.bold_ideas or []),
         period_label=period_label, has_data=True,
-        citation_map=getattr(row, "citation_map", None),
+        citation_map=row_cmap or None,
+        editorial_articles=[
+            {
+                "cite": a.cite, "url": a.url, "title": a.title,
+                "publication": a.publication,
+                "published_at": a.published_at,
+                "summary": a.summary,
+            }
+            for a in editorial_articles
+        ] if editorial_articles else None,
     )
 
 
@@ -367,6 +448,57 @@ def _render_metrics_strip(b: TitleBlock) -> str:
     )
 
 
+def _render_editorial_footer(b: TitleBlock) -> str:
+    """§24: render the small 'Editorial context' footer per title.
+
+    Shows up to 5 articles consulted for this cycle's bold-ideas, each as
+    a single line with publication, headline, and a small text-link.
+    Returns empty string when no editorial articles are present.
+    """
+    if not b.editorial_articles:
+        return ""
+    rows: list[str] = []
+    for art in b.editorial_articles[:5]:
+        # Each article entry is a dict (from EditorialArticle.__dict__
+        # or the editorial_citation_map shape) with cite/title/url/
+        # publication/published_at/summary.
+        cite = art.get("cite", "") if isinstance(art, dict) else getattr(art, "cite", "")
+        title = art.get("title") if isinstance(art, dict) else getattr(art, "title", None)
+        url = art.get("url") if isinstance(art, dict) else getattr(art, "url", None)
+        pub = art.get("publication") if isinstance(art, dict) else getattr(art, "publication", None)
+        if not (title and url):
+            continue
+        # 'E1', 'E2', ... bare ordinal-style label for compactness.
+        try:
+            ord_str = str(int(cite.split("-")[1])) if cite and "-" in cite else ""
+        except Exception:
+            ord_str = ""
+        title_esc = html.escape(title[:160])
+        url_esc = html.escape(url, quote=True)
+        pub_esc = html.escape(pub or "")
+        prefix = f"[E{ord_str}] " if ord_str else ""
+        rows.append(
+            f'<li style="margin:0 0 4px 0;">'
+            f'<span style="color:{_TEXT_MUTED}; font-size:12px;">{prefix}</span>'
+            f'<a href="{url_esc}" style="color:{_BRAND_ACCENT}; text-decoration:none;">'
+            f'{title_esc}</a>'
+            + (f' <span style="color:{_TEXT_MUTED}; font-size:12px;">— {pub_esc}</span>' if pub_esc else "")
+            + '</li>'
+        )
+    if not rows:
+        return ""
+    items = "".join(rows)
+    return (
+        f'<div style="margin-top:14px; padding-top:12px; border-top:1px dashed {_BORDER};">'
+        f'  <div style="font-size:11px; font-weight:700; letter-spacing:.06em; '
+        f'  color:{_TEXT_MUTED}; text-transform:uppercase; margin-bottom:6px;">'
+        f'  Editorial context (§24)</div>'
+        f'  <ul style="margin:0 0 0 18px; padding:0; color:{_TEXT_PRIMARY}; '
+        f'  font-size:13px; line-height:1.45;">{items}</ul>'
+        f'</div>'
+    )
+
+
 def _render_title_section(b: TitleBlock) -> str:
     """One full title section: name, period, metrics strip, then three sub-sections."""
     if not b.has_data:
@@ -410,6 +542,7 @@ def _render_title_section(b: TitleBlock) -> str:
                 f'</div>'
                 if b.bold_ideas else ""
             )
+            + _render_editorial_footer(b)
         )
 
     return (
@@ -435,8 +568,11 @@ def _render_title_section(b: TitleBlock) -> str:
 # small superscript clickable links resolving to the source-post URLs stored
 # in WindowSummary.citation_map / MonthlySummary.citation_map.
 
-_CITE_BRACKET_RE_EMAIL = re.compile(r"\[((?:P-\d{1,4}[\s,;]*)+)\]")
-_CITE_INNER_RE_EMAIL = re.compile(r"P-(\d{1,4})")
+# §24 (2026-06-29): renderer accepts P-NNN (post) and E-NNN (editorial)
+# citations.  Mixed brackets like [P-001, E-003] resolve into superscript
+# anchor lists ordered as they appear in the bracket.
+_CITE_BRACKET_RE_EMAIL = re.compile(r"\[((?:[PE]-\d{1,4}[\s,;]*)+)\]")
+_CITE_INNER_RE_EMAIL = re.compile(r"([PE])-(\d{1,4})")
 
 
 def _render_citations(text: str, citation_map: Optional[dict]) -> str:
@@ -453,10 +589,15 @@ def _render_citations(text: str, citation_map: Optional[dict]) -> str:
 
     def repl(m):
         inside = m.group(1)
-        # Collect each P-NNN in order of appearance, dedup-preserving.
+        # Collect each citation token in order of appearance, dedup-preserving.
+        # §24: tokens may be P-NNN (post) or E-NNN (editorial).  Display label
+        # uses the bare ordinal for posts (legacy behaviour) and "E{ordinal}"
+        # prefix for editorial to make the source class visible.
         seen: list[str] = []
         for inner in _CITE_INNER_RE_EMAIL.finditer(inside):
-            tok = f"P-{int(inner.group(1)):03d}"
+            kind = inner.group(1).upper()
+            n = int(inner.group(2))
+            tok = f"{kind}-{n:03d}"
             if tok not in seen:
                 seen.append(tok)
         if not seen:
@@ -465,18 +606,20 @@ def _render_citations(text: str, citation_map: Optional[dict]) -> str:
             return ""  # legacy row: hide tokens rather than show raw [P-001]
         anchors: list[str] = []
         for tok in seen:
-            post = cmap.get(tok)
-            ordinal = int(tok.split("-")[1])
-            if post and post.get("url"):
-                url_esc = html.escape(post["url"], quote=True)
+            entry = cmap.get(tok)
+            kind, ordinal_str = tok.split("-")
+            ordinal = int(ordinal_str)
+            # Editorial citations get an 'E' prefix on the displayed label
+            # so the reader knows which source class the citation points to.
+            display = str(ordinal) if kind == "P" else f"E{ordinal}"
+            if entry and entry.get("url"):
+                url_esc = html.escape(entry["url"], quote=True)
                 anchors.append(
                     f'<a href="{url_esc}" style="color:{_BRAND_ACCENT}; '
-                    f'text-decoration:none;">{ordinal}</a>'
+                    f'text-decoration:none;">{display}</a>'
                 )
             else:
-                # Cited token has no URL in the map — render the ordinal
-                # without a link so the claim still shows it was cited.
-                anchors.append(str(ordinal))
+                anchors.append(display)
         joined = ",".join(anchors)
         return (
             f'<sup style="font-size:10px; color:{_TEXT_MUTED}; '

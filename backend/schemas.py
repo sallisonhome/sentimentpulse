@@ -51,6 +51,8 @@ class GameResponse(BaseModel):
     subreddits: Optional[list] = None
     # CLAUDE.md §21 commercial strategic context (per-title positioning brief)
     commercial_context: Optional[str] = None
+    # CLAUDE.md §24 demographic + IP-awareness brief (per-title)
+    demographic_context: Optional[str] = None
     created_at: datetime
 
 
@@ -61,11 +63,13 @@ class GameDetailResponse(GameResponse):
 
 class GameSettingsUpdate(BaseModel):
     """PATCH body for toggling active flag, overriding subreddits, or
-    editing the per-title commercial-strategic context brief."""
+    editing the per-title commercial-strategic / demographic context briefs."""
     is_active: Optional[bool] = None
     subreddits: Optional[List[str]] = None
     # CLAUDE.md §21: pass an empty string to clear; omit to leave unchanged.
     commercial_context: Optional[str] = None
+    # CLAUDE.md §24: same semantics — empty string clears, omit to leave.
+    demographic_context: Optional[str] = None
 
 
 class GameCreate(BaseModel):

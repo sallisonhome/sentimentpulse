@@ -103,6 +103,16 @@ def generate_monthly_summary(
     # CLAUDE.md §21b: critical-mass tiers for the monthly window.
     cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
 
+    # CLAUDE.md §24: fetch (or reuse cached) editorial articles for this
+    # monthly cycle.  Safe to run with total<MIN_SUBSTANTIVE_POSTS — the
+    # editorial cache key is on the cycle, not the post volume.  When
+    # _call_claude_for_period decides to skip Claude (§15 insufficient-
+    # signal sentinel), the editorial articles aren't used; that's fine.
+    editorial_articles = _safe_fetch_editorial(
+        db, game_id=game_id, scope="monthly",
+        cycle_start=window_start, cycle_end=window_end,
+    )
+
     # Call Claude (even if total==0; let the LLM handle sparse data gracefully)
     exec_summary, rec_actions, bold_ideas, citation_map = _call_claude_for_period(
         game_name=game.name,
@@ -118,6 +128,8 @@ def generate_monthly_summary(
         sample_posts_with_ids=sample_posts_with_ids,
         commercial_context=game.commercial_context,
         critical_mass_table=cm_table,
+        editorial_articles=editorial_articles,
+        demographic_context=game.demographic_context,
     )
 
     # CLAUDE.md §22: pre-flight QA + max-count safety net.
@@ -269,6 +281,14 @@ def generate_window_summary(
     # for display purposes only.
     cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
 
+    # CLAUDE.md §24: weekly editorial cache.  Separate from monthly (§24
+    # uses scope='weekly' here vs 'monthly' in generate_monthly_summary,
+    # giving distinct caches per the user decision).
+    editorial_articles = _safe_fetch_editorial(
+        db, game_id=game_id, scope="weekly",
+        cycle_start=window_start, cycle_end=window_end,
+    )
+
     exec_summary, rec_actions, bold_ideas, citation_map = _call_claude_for_period(
         game_name=game.name,
         window_label=window_label,
@@ -283,6 +303,8 @@ def generate_window_summary(
         sample_posts_with_ids=sample_posts_with_ids,
         commercial_context=game.commercial_context,
         critical_mass_table=cm_table,
+        editorial_articles=editorial_articles,
+        demographic_context=game.demographic_context,
     )
 
     # CLAUDE.md §22: pre-flight QA + max-count safety net.
@@ -1273,6 +1295,14 @@ def _call_claude_for_period(
     # per-topic table of (label, weight, day_appearances, tier).  Only
     # tier=='theme' topics may drive a LIABILITY recommendation.
     critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
+    # CLAUDE.md §24 (Editorial-Research Hybrid Bold Ideas, 2026-06-29):
+    # pre-fetched editorial articles for this title + cycle, plus the
+    # demographic-context brief.  Passed only to the bold-ideas call; the
+    # exec and recommendations remain post-only (strict §20) per the
+    # hybrid scope decision.  Empty when §24 is not yet wired or no
+    # articles were available.
+    editorial_articles: Optional[list] = None,
+    demographic_context: Optional[str] = None,
 ) -> tuple[str, Optional[str], list[str], dict[str, dict]]:
     """
     Call Claude for (exec_summary, recommended_actions, bold_ideas).
@@ -1393,6 +1423,8 @@ def _call_claude_for_period(
         citation_map=citation_map,
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
+        editorial_articles=editorial_articles,
+        demographic_context=demographic_context,
     )
 
     return exec_summary, rec_actions, bold_ideas, citation_map
@@ -1475,10 +1507,11 @@ _OUTPUT_STYLE = (
 #   sentences are stripped.  Costs ~1 extra LLM call per LLM-produced output
 #   block.
 
-# Matches a bracketed citation segment, e.g. [P-001] or [P-001, P-003] or
-# [P-001; P-002].  We extract each P-NNN inside via a second pass.
-_CITATION_BRACKET_RE = re.compile(r"\[((?:P-\d{1,4}[\s,;]*)+)\]")
-_CITATION_INNER_RE = re.compile(r"P-(\d{1,4})")
+# Matches a bracketed citation segment.  Accepts P-NNN (post citations,
+# original §20) and E-NNN (editorial citations, §24 2026-06-29) and
+# mixed groups like [P-001, E-003].
+_CITATION_BRACKET_RE = re.compile(r"\[((?:[PE]-\d{1,4}[\s,;]*)+)\]")
+_CITATION_INNER_RE = re.compile(r"([PE])-(\d{1,4})")
 
 
 def _sample_posts_with_ids(
@@ -1604,17 +1637,22 @@ def _citation_requirement_clause(citation_map: dict[str, dict]) -> str:
 
 
 def _extract_citations(text: str) -> set[str]:
-    """Return all P-NNN tokens found in bracketed citations inside `text`.
+    """Return all P-NNN and E-NNN tokens found in bracketed citations inside `text`.
 
-    Supports compound forms: [P-001], [P-001, P-002], [P-001; P-003].
-    Does NOT match bare P-001 outside brackets so noise in unrelated prose
-    cannot accidentally satisfy the citation requirement.
+    Supports compound forms: [P-001], [P-001, P-002], [P-001; P-003],
+    and mixed P/E groups: [P-001, E-003].  §24 2026-06-29 added the
+    E-NNN form for editorial citations.
+
+    Does NOT match bare P-001 outside brackets so noise in unrelated
+    prose cannot accidentally satisfy the citation requirement.
     """
     out: set[str] = set()
     for bracket_match in _CITATION_BRACKET_RE.finditer(text or ""):
         inside = bracket_match.group(1)
         for m in _CITATION_INNER_RE.finditer(inside):
-            out.add(f"P-{int(m.group(1)):03d}")
+            kind = m.group(1).upper()
+            n = int(m.group(2))
+            out.add(f"{kind}-{n:03d}")
     return out
 
 
@@ -1738,9 +1776,10 @@ def _strip_uncited_sentences(text: str, citation_map: dict[str, dict]) -> str:
 #   '1. [P-007]'
 #   '2.   [P-005, P-013]  '
 #   '3. [P-001] [P-002]'  (multiple separate citation groups, no prose)
+#   '4. [E-002, P-005]'   (§24 hybrid citations)
 # 2026-06-29 fix after Toxic Commando / Turok regen produced empty stubs.
 _EMPTY_ITEM_RE = re.compile(
-    r"^\s*\d+\.\s*(?:\[(?:P-\d{1,4}[\s,;]*)+\]\s*)+$",
+    r"^\s*\d+\.\s*(?:\[(?:[PE]-\d{1,4}[\s,;]*)+\]\s*)+$",
     re.IGNORECASE,
 )
 
@@ -3002,6 +3041,40 @@ def _call_exec(
         return _placeholder_summary(game_name, window_label, total_posts)
 
 
+def _safe_fetch_editorial(
+    db,
+    *,
+    game_id: int,
+    scope: str,
+    cycle_start,
+    cycle_end,
+) -> list:
+    """§24: thin wrapper around editorial_research_service.fetch_editorial_for_title
+    that catches any failure (network, parse, LLM) and returns [] so the
+    digest path continues even when editorial fetch fails entirely.
+
+    Editorial is a NICE-TO-HAVE for bold ideas — a failure here must NOT
+    block the rest of the digest.
+    """
+    try:
+        from services.editorial_research_service import fetch_editorial_for_title
+        client = _get_client()
+        return fetch_editorial_for_title(
+            db,
+            game_id=game_id,
+            scope=scope,
+            cycle_start=cycle_start,
+            cycle_end=cycle_end,
+            anthropic_client=client,
+        )
+    except Exception as exc:
+        logger.warning(
+            "§24: editorial fetch failed (game_id=%d scope=%s); continuing without: %s",
+            game_id, scope, exc,
+        )
+        return []
+
+
 def _count_valid_recommendations(rec_actions: Optional[str]) -> int:
     """Count numbered items in rec_actions that pass the format contract.
     Returns 0 if rec_actions is None / empty / NONE-shaped.
@@ -3270,16 +3343,43 @@ def _call_bold_ideas(
     commercial_context: Optional[str] = None,
     # CLAUDE.md §21b: per-topic critical-mass tiers.
     critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
+    # CLAUDE.md §24 (2026-06-29): hybrid editorial citations.
+    editorial_articles: Optional[list] = None,
+    demographic_context: Optional[str] = None,
 ) -> list[str]:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
-    citation_map = citation_map or {}
+    citation_map = dict(citation_map or {})
     if annotated_samples and citation_map:
         samples_block = _format_sample_posts_block_with_citations(annotated_samples)
     else:
         samples_block = _format_sample_posts_block(sample_posts)
     entities_block = _format_entities_block(distinctive_entities)
     anti_fab = _anti_fabrication_clause(samples_block, entities_block)
+
+    # §24 (2026-06-29): merge editorial articles into the citation map and
+    # build a SOURCE EDITORIAL block for the prompt.  When present, the
+    # bold-ideas LLM is allowed to anchor ideas on either [P-NNN] (post)
+    # or [E-NNN] (editorial) citations — the hybrid rule.
+    editorial_block = ""
+    if editorial_articles:
+        try:
+            from services.editorial_research_service import (
+                format_editorial_for_prompt,
+                editorial_citation_map,
+            )
+            editorial_block = format_editorial_for_prompt(editorial_articles)
+            editorial_cmap = editorial_citation_map(editorial_articles)
+            # Merge into the existing citation_map so downstream gates
+            # accept E-NNN citations alongside P-NNN.
+            citation_map.update(editorial_cmap)
+        except Exception as exc:
+            logger.warning(
+                "§24: editorial integration failed for '%s': %s",
+                game_name, exc,
+            )
+            editorial_block = ""
+
     citation_clause = _citation_requirement_clause(citation_map)
 
     release_status = _infer_release_status(samples_block)
@@ -3288,6 +3388,47 @@ def _call_bold_ideas(
     commercial_clause = _commercial_context_clause(commercial_context)
     # CLAUDE.md §21b: recommendation-class critical mass.
     cm_block = _format_critical_mass_block(critical_mass_table or {})
+    # §24: demographic-context brief, when configured per-title.
+    demographic_clause = ""
+    if demographic_context:
+        demographic_clause = (
+            "PER-TITLE DEMOGRAPHIC + IP-AWARENESS BRIEF (§24):\n"
+            f"{demographic_context.strip()}\n\n"
+            "Use this brief to ground SPECULATIVE bold ideas about cohort "
+            "reach.  Speculative reasoning about target demographics is "
+            "allowed when the idea is anchored on either a [P-NNN] post "
+            "OR an [E-NNN] editorial citation that supports the underlying "
+            "signal.  The brief itself is NOT a citation — it's context.\n\n"
+        )
+
+    # §24 hybrid-citation framing: when editorial is present, the prompt
+    # opens up to speculative cohort-reach reasoning; when editorial is
+    # absent, the prompt falls back to the strict §20 anchor-in-posts rule.
+    bold_ideas_anchor_clause = (
+        f"Propose 1 or 2 bold ideas that go BEYOND the obvious fixes already in the recommended actions. "
+        f"The bold move should reference a SPECIFIC entity from the data below — not a generic bucket.\n\n"
+    )
+    if editorial_articles:
+        bold_ideas_anchor_clause += (
+            "§24 HYBRID CITATION (READ CAREFULLY):\n"
+            "Bold ideas may anchor on EITHER a community post citation\n"
+            "  [P-NNN] (in-window sample posts), OR\n"
+            "  [E-NNN] (recent editorial coverage from press/analyst sources).\n"
+            "Each idea MUST cite at least one of [P-NNN] or [E-NNN].  Pure "
+            "invention without any citation is forbidden.\n\n"
+            "SPECULATIVE REASONING IS ALLOWED — e.g. 'reach the <40 cohort "
+            "that knows Pinhead imagery but not the franchise' — as long as "
+            "the idea's underlying signal is supported by a cited post OR "
+            "editorial article.  The editorial article does NOT need to "
+            "literally propose the bold move; it must contain the signal "
+            "(awareness gap, demographic dynamic, comparable title launch "
+            "strategy, IP positioning) that the bold move addresses.\n\n"
+        )
+    else:
+        bold_ideas_anchor_clause += (
+            "REMINDER: only entities that appear verbatim in the data below are valid bold-move anchors. "
+            "Background knowledge about the franchise (prior actors, movies, lore) does not count.\n\n"
+        )
 
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
@@ -3295,22 +3436,24 @@ def _call_bold_ideas(
         + _OUTPUT_STYLE +
         anti_fab +
         commercial_clause +
+        demographic_clause +
         _SIGNAL_CLASSIFICATION_CLAUSE +
         (cm_block + "\n" if cm_block else "") +
         release_clause +
         citation_clause +
-        f"Propose 1 or 2 bold ideas that go BEYOND the obvious fixes already in the recommended actions. "
-        f"The bold move should reference a SPECIFIC entity from the samples or distinctive entities list — "
-        f"not a generic bucket.\n\n"
-        f"REMINDER: only entities that appear verbatim in the data below are valid bold-move anchors. "
-        f"Background knowledge about the franchise (prior actors, movies, lore) does not count.\n\n"
+        bold_ideas_anchor_clause +
         f"Concision rules:\n"
         f"- 40 WORDS MAX per idea. Aim for 25-30.\n"
         f"- One sentence stating the bold move, optionally one second sentence on why.\n"
         f"- Bold the referenced entity or label exactly as it appears, using **double asterisks**.\n"
         f"- Be surprising or non-obvious (community event, partnership angle, unexpected creative response).\n"
         f"- NO 'this is your X' framing. NO 'compounds loyalty' or 'lock in goodwill' filler.\n"
-        f"- Cite the [P-NNN] post that supports the idea.\n\n"
+        + (
+            f"- Cite at least one [P-NNN] post OR [E-NNN] editorial article that supports the idea.\n\n"
+            if editorial_articles else
+            f"- Cite the [P-NNN] post that supports the idea.\n\n"
+        )
+        +
         f"The §21b critical-mass gate applies to LIABILITY recommendations only.  Bold ideas that "
         f"AMPLIFY a positive signal (talent involvement, press coverage, organic genre comparisons, "
         f"community events) are always allowed even when no negative topic reaches theme tier.\n\n"
@@ -3330,12 +3473,19 @@ def _call_bold_ideas(
         prompt += f"DISTINCTIVE ENTITIES:\n  {entities_block}\n\n"
     if samples_block:
         prompt += f"REPRESENTATIVE SAMPLE POSTS:\n{samples_block}\n\n"
+    if editorial_block:
+        prompt += f"{editorial_block}\n\n"
 
+    # §24: example shape changes when editorial is present — the citation
+    # placeholder shows the hybrid choice.
+    citation_placeholder = (
+        "[P-NNN or E-NNN]" if editorial_articles else "[P-NNN]"
+    )
     prompt += (
         f"OUTPUT FORMAT (MANDATORY — read carefully):\n"
         f"Your response MUST be ONE of these two shapes, and NOTHING ELSE:\n\n"
         f"  SHAPE A (1-2 bold ideas):\n"
-        f"  1. <Imperative-verb opener> **specific entity** — <rationale, 25-40 words>. [P-NNN]\n"
+        f"  1. <Imperative-verb opener> **specific entity** — <rationale, 25-40 words>. {citation_placeholder}\n"
         f"  2. <Optional second, same shape>\n\n"
         f"  SHAPE B (no actionable bold idea found):\n"
         f"  NONE\n\n"

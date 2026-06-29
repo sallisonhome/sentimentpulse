@@ -200,6 +200,10 @@ def update_game(
     if data.commercial_context is not None:
         # Empty string → NULL so prompts fall back to heuristic default.
         game.commercial_context = data.commercial_context.strip() or None
+    if data.demographic_context is not None:
+        # §24: empty string → NULL so bold-ideas prompt skips the
+        # demographic clause.
+        game.demographic_context = data.demographic_context.strip() or None
 
     try:
         db.commit()
@@ -224,4 +228,19 @@ def seed_commercial_context_endpoint(
     # Lazy import so the seed file's heredoc doesn't slow boot when unused.
     from seed_commercial_context import seed_default_commercial_context
     result = seed_default_commercial_context(db, overwrite=overwrite)
+    return {"result": result, "overwrite": overwrite}
+
+
+@router.post("/seed-demographic-context")
+def seed_demographic_context_endpoint(
+    overwrite: bool = False,
+    db: Session = Depends(get_db),
+):
+    """§24: Apply default per-title demographic + IP-awareness briefs to
+    any of the 8 priority titles missing one.  Idempotent: by default
+    skips titles that already have a brief (pass overwrite=true to
+    force replacement).
+    """
+    from seed_demographic_context import seed_default_demographic_context
+    result = seed_default_demographic_context(db, overwrite=overwrite)
     return {"result": result, "overwrite": overwrite}
