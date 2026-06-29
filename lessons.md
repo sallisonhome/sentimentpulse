@@ -431,4 +431,38 @@ The bold-ideas prompt was also rewritten with explicit SHAPE A / SHAPE B framing
 
 ---
 
+## 2026-06-29 — Hellraiser "competing titles in asymmetric multiplayer" + Turok Turkish-star (§25)
+
+**What happened.**
+
+Live weekly digest shipped two confabulations across the same regen cycle:
+
+1. **Hellraiser exec:** "A notable friction arises around IP licensing conflicts with competing Hellraiser titles in the asymmetrical multiplayer space, though community sentiment suggests single-player positioning itself as a valid differentiator rather than a weakness [P-004, P-015]." Ground truth: no source contained any claim about competing Hellraiser titles, IP licensing disputes, or asymmetric multiplayer Hellraiser games. The cited posts contained the word "Hellraiser" but no factual claim of competitor existence. The LLM constructed the claim from background knowledge of the gaming press cycle and the per-sentence critic approved because the entity overlapped.
+
+2. **Turok exec + rec #4:** "Localization requests (Turkish language support) appear but lack critical mass" was the exec's closer (acceptable framing on its own), BUT rec #4 elevated it to "Communicate Turkish language support status — document localization roadmap..." — turning a single-poster signal into a top-N recommendation despite §21h already demoting it to monitor-only at the tier-assignment layer. Per-poster sentiment (P-004) existed; per-poster sentiment had been correctly tiered as monitor-only; the rec gate downstream did not enforce the tier.
+
+**Why §20, §21b, §21h, §22, §24, §24e all failed to catch these.**
+
+Every prior anti-fabrication layer in this project (§20 entity whitelist, §21b critical-mass classification, §21h narrow-audience demotion, §22 pre-flight QA, §24c grounding gate) checks for the *presence* of an entity in cited sources — a necessary but insufficient condition. The Hellraiser confabulation passed every one because "Hellraiser" is the game title and obviously appears in cited posts. The Turkish rec passed because P-004 exists and the topic label is in the data — the rec sanitizer never checked the tier.
+
+This was the SAME root-cause pattern repeating in a new shape. §20 / §21 / §22 / §24 each tried to fix it after a specific bad output; each closed one shape and the failure recurred in another.
+
+**Fix (§25).**
+
+1. **Verification gate with HARD vs COMMUNITY-OBSERVED classification.** `_verify_claims_against_sources(text, citation_map)` runs as the final layer on exec, recs, and bold ideas. For each sentence/item: classify HARD or COMMUNITY-OBSERVED, then require a quoted passage from a cited source. HARD claims need a passage containing the specific factual substance. COMMUNITY-OBSERVED claims need a passage containing the matching community statement (community wishes are valid evidence of community wishes; they do NOT need an external-world confirmation). Sentences whose claims come back UNSUPPORTED are dropped.
+
+2. **Companion monitor-only rec gate.** `_strip_monitor_only_recs(rec_text, critical_mass_table)` drops any numbered recommendation whose bolded entity or topic-label substring matches a monitor-only entry. Symmetrical to `_strip_monitor_only_lead` (which has existed for exec since §21b). Without this, the LLM can ignore the monitor-only instruction in the prompt and the rec leaks.
+
+3. **Diagnostic infrastructure (permanent).** `/api/diagnostics/verification-trace` exposes a 20-entry ring buffer of per-sentence verifier verdicts. The trace is how the user audits a digest's grounding without reading every source post.
+
+**Generalizable principle — the key one to internalize.**
+
+When the same class of defect (fabrication, confabulation, off-tier surfacing) recurs across multiple shipped fix cycles, *stop adding shape-specific gates* and instead ask: *what universal property of the output am I failing to enforce?* For §20…§24e, the implicit property was "the entity is in the source." The actual property the user needed was "the substance of the claim is in the source." Layering more entity-presence checks could never catch the latter. Forcing the verifier to *quote* the supporting passage — not say yes/no — is the mechanism that closes the gap.
+
+**The HARD vs COMMUNITY-OBSERVED split is essential and was missed in the first draft of §25.** Without it, the verifier would have dropped legitimate community-wish framings (Turkish-localization requests, Tek Bow nostalgia, Doom comparisons) because no real-world fact backs them. The post IS the evidence of community sentiment; the post does NOT validate the community's wish as a market fact.
+
+**Pre-ship check to add for any future §25-class concern.** Before declaring a fix done after a confabulation defect, the agent must quote each exec sentence + each rec line + each bold idea back to the user with the supporting source passage cited inline. "All clean" without the source quotes is not acceptable. See §23 (audit the deliverable) and §25 (verify against sources).
+
+---
+
 <!-- Add new lessons above this line, newest first. -->

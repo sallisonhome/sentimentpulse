@@ -13,6 +13,14 @@ Graceful degradation:
   - anthropic package missing → log, return placeholder.
 
 This means a missing or broken Claude key never stops the ingestion pipeline.
+
+CLAUDE.md §25 — anti-confabulation contract (CRITICAL):
+  This older summary-service path (used by per-day DailySummary generation
+  in the ingestor) is on the SAME §25 contract as period_summary_service.
+  Any claim in exec_summary or recommended_actions must be classified HARD
+  or COMMUNITY-OBSERVED and verified by quoting the supporting passage from
+  a cited source.  When refactoring this file, port the verification gate
+  from period_summary_service.py.  Read CLAUDE.md §25 first.
 """
 import logging
 from typing import Optional

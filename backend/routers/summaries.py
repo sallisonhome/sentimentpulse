@@ -58,6 +58,18 @@ def get_recs_trace():
     return {"trace": _pss.get_recs_trace_buffer()}
 
 
+@_diag_router.get("/verification-trace")
+def get_verification_trace():
+    """§25: return the last N _verify_claims_against_sources trace entries.
+
+    Each entry records the block kind (exec_summary/recommendations/
+    bold_ideas), input preview, verifier raw output, per-unit verdicts
+    (kept or dropped), and counts before/after the verification pass.
+    Used to audit a digest's grounding without reading every source post.
+    """
+    return {"trace": _pss.get_verify_trace_buffer()}
+
+
 @_diag_router.post("/editorial-cache-clear")
 def clear_editorial_cache(
     game_id: Optional[int] = None,

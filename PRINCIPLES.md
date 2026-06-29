@@ -21,6 +21,18 @@ If a response would require breaking any of these rules, choose honesty over hel
 
 **No inventing, no speculating** (applies to summaries, topic labels, recommendations, and user-facing insights): only use firm, interpretable content. Never guess ambiguous comments. Tag ambiguous or unclear content as neutral and exclude it from summaries and recommendations. Never introduce concepts that do not appear in the source. When in doubt, output less rather than fabricate.
 
+### 1.1 HARD vs COMMUNITY-OBSERVED claims (anti-confabulation)
+
+Every claim in any user-facing summary, recommendation, or bold idea falls into one of two categories. Each is verified differently before it ships.
+
+- **HARD claims** assert something is true about the world: a competing title exists, a partnership has been announced, a comparable game launched on date X, an IP-licensing dispute is active, a publisher reported Y revenue, a demographic skews Z%. HARD claims require a quoted passage from a cited [P-NNN] post or [E-NNN] editorial body that contains the claim's specific factual substance. Topical adjacency is not enough. If no quoted support exists, the claim is dropped.
+
+- **COMMUNITY-OBSERVED claims** describe what posters are saying, asking for, wishing, expressing, comparing, requesting, fearing, or celebrating: "community is asking for Turkish localization," "posters wish the Tek Bow returns," "players compare it favorably to Doom." These are valid when the cited post contains the matching community statement — the post IS the evidence of community sentiment.
+
+**Framing distinction is mandatory.** A community wish must be framed as a community wish, never as an industry fact. "Community is asking for Turkish localization" is valid; "Turkish localization is launching" requires a HARD-evidence editorial confirmation. "Posters call out IP-licensing concerns about other Hellraiser games being made" is valid; "There are competing Hellraiser titles in the asymmetrical multiplayer space" is a HARD claim and is dropped unless a cited source confirms it.
+
+**Operational mechanism (this repo).** See CLAUDE.md §25 for the full contract. A `_verify_claims_against_sources` gate runs as the FINAL layer on every exec_summary, recommended_actions, and bold_ideas output. The verifier requires a quoted passage — not yes/no — because forcing a quote makes confabulation impossible to fake. Any sentence whose claim cannot be supported by a quoted passage from a cited source is dropped.
+
 ---
 
 ## 2. QA Before Commit (second priority)

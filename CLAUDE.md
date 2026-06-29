@@ -410,6 +410,69 @@ The rule, in operational terms:
 
 **This rule supersedes any expedience consideration.** When in doubt, audit more. When the user has already caught one defect in this work item, audit far more before next ship.
 
+### 25. Verified Evidence — Every Inferred Claim Must Quote A Source (CRITICAL — supersedes all)
+
+**Hard requirement directed by the user 2026-06-29 after the Hellraiser weekly exec confabulated "IP licensing conflicts with competing Hellraiser titles in the asymmetrical multiplayer space" — a claim with ZERO evidence in any post, in any editorial article body, or in commercial/demographic context.**
+
+**The pattern §25 closes.** Sessions §20 / §21 / §22 / §24 / §24e each tried to fix anti-fabrication after a specific bad output. The failure recurred each time, in a new shape, because every layer was checking "is the cited entity *mentioned* in the cited source?" — not "is the *specific claim* directly supported by the source's *quoted text*?". The LLM was constructing false narratives around real cited material and the per-sentence critic was rubber-stamping them because the entity overlapped.
+
+**The rule (absolute).**
+
+1. **A claim is HARD or COMMUNITY-OBSERVED. Treat each kind differently.**
+
+   - **HARD claims** assert that something is true ABOUT THE WORLD: a competing title exists, a partnership has been announced, a comparable game launched on date X, an IP-licensing dispute is active, a publisher reported Y revenue, a demographic skews Z%, a regulatory event happened, a market event occurred. These are factual assertions independent of any commenter's opinion or wish.
+
+   - **COMMUNITY-OBSERVED claims** describe what posters in this window are *saying, asking for, wishing, expressing, comparing, requesting, fearing, celebrating, or feeling*: "community is asking for Turkish localization," "posters wish the Tek Bow returns," "players compare it favorably to Doom," "community is split on difficulty," "users request a roadmap." These describe sentiment / desire / framing, not external-world fact.
+
+2. **HARD claims must be backed by a quoted passage from a cited [P-NNN] post or [E-NNN] editorial body.** Topical adjacency is not enough. "The post mentions Hellraiser" does NOT support "there are competing Hellraiser titles in asymmetrical multiplayer." The supporting passage must contain the claim's specific factual substance. If no such passage exists, the claim is dropped.
+
+3. **COMMUNITY-OBSERVED claims are valid when the cited source contains the corresponding community statement.** Examples that ARE legitimate:
+   - "Community is asking for Turkish localization [P-004]" — because P-004 contains a Turkish-language request, even though no real Turkish version has been announced.
+   - "Posters wish weapon-nostalgia nods like the Tek Bow return [P-011]" — because P-011 expresses that wish, even though no announcement confirms a Tek Bow.
+   - "Players compare Origins favorably to Doom-like fast gunplay [P-006]" — because P-006 makes that comparison.
+   These are valid even though no external real-world fact has been verified — the post IS the evidence of community sentiment, and the claim accurately reports what the community said.
+
+4. **The framing distinction is mandatory.** A community wish must be framed as a community wish, not as an industry fact.
+   -  Correct: "Community is asking for Turkish localization."
+   - Incorrect: "Turkish localization is launching." (Hard claim; needs an editorial body confirming it.)
+   - Correct: "Posters call out IP-licensing concerns about other Hellraiser games being made."
+   - Incorrect: "There are competing Hellraiser titles in the asymmetrical multiplayer space." (Hard claim about competitor existence; needs a cited source that confirms it; if none, drop.)
+
+5. **The verifier asks both questions per sentence:**
+   - (a) What kind of claim is this — HARD or COMMUNITY-OBSERVED?
+   - (b) If HARD: quote the supporting passage from a cited source that confirms the external-world fact, or respond UNSUPPORTED. If COMMUNITY-OBSERVED: quote the supporting passage from a cited post that contains the matching community statement, or respond UNSUPPORTED.
+   Sentences whose claims come back UNSUPPORTED are dropped.
+
+6. **"I cannot confirm this in the sources" — DROP the sentence.** Per §20 rule 4: the output of "nothing to say" is preferred over the output of "something invented." Per §25: confidence comes from the source quote, not the LLM's plausibility judgment.
+
+7. **This applies to ALL three LLM output blocks** (exec_summary, recommended_actions, bold_ideas) and to ALL user-facing summary prompts in this project, including app-side per-day summaries.
+
+8. **Implementation contract.** A `_verify_claims_against_sources(text, citation_map)` gate runs as the FINAL layer on exec, recs, and bold ideas (after parse, strip-uncited, critic, sanitize, orphan-strip, grounding). The verifier prompt MUST require quoted passages — not yes/no — because forcing a quote makes confabulation impossible to fake. The prompt MUST distinguish HARD vs COMMUNITY-OBSERVED so legitimate community-wish framings (Turkish localization request, Tek Bow nostalgia) are preserved.
+
+9. **The verification gate is not optional.** Disabling it for cost or speed is not acceptable. The cost of a hallucinated digest is unbounded — it misleads strategy and erodes trust in every other summary. The cost of N extra LLM calls per digest is bounded.
+
+10. **Diagnostic infrastructure is permanent.** `_verify_claims_against_sources` records a trace entry per call (input text, per-sentence HARD/COMMUNITY-OBSERVED classification, supporting quote or UNSUPPORTED, dropped sentences) visible at `/api/diagnostics/verification-trace`. The trace is how the user audits a digest's grounding without reading every source post.
+
+11. **Test contract.** §25 regression tests must include:
+    - One positive HARD case: a HARD claim that IS quoted verbatim in the source survives.
+    - One negative HARD case: `test_confabulation_competing_titles_dropped` — "competing Hellraiser titles exist" must be dropped because no source contains the factual claim.
+    - One positive COMMUNITY-OBSERVED case: `test_community_wish_preserved` — "community asks for Turkish localization" must survive when a cited post contains the request.
+    - One negative COMMUNITY-OBSERVED case: an invented community sentiment (no post contains the matching statement) must be dropped.
+
+**Relationship to §20.** §20 said "every individual surfaced claim must be confirmable." §20's gates checked for the *presence* of an entity in cited sources — a necessary but insufficient condition. §25 strengthens this to: the *substance* of the claim must be confirmable, demonstrated by a quoted passage. §20 was right in spirit and incomplete in mechanism. §25 is the operational closure.
+
+**Anti-patterns this prevents (each is a real shipped defect this session):**
+
+- **2026-06-29 Hellraiser / competing titles confabulation:** Exec said "IP licensing conflicts with competing Hellraiser titles in the asymmetrical multiplayer space [P-004, P-015]". The cited posts contained the word "Hellraiser" but did NOT claim competing titles exist. The per-sentence critic approved because the entity overlapped. §25 forces the critic to quote the supporting passage; no passage exists; sentence dropped.
+
+- **2026-06-29 Turok / Turkish-language star confabulation:** Exec & rec #4 elevated "Turkish language support" to a primary surface claim despite being a single-poster signal (P-004 only). §21h had already demoted it to monitor-only at tier-assignment time, but the LLM still cited it because the post existed. §25 forces verification AND §25-companion rule below: monitor-only-tier topics may not become a primary surface claim regardless of LLM compliance.
+
+- **2026-06-24 Hellraiser / Jamie Clayton fabrication (historical):** §20 closed this at the entity layer. §25 would also close it at the claim layer.
+
+**Companion rule — monitor-only topics get a post-LLM rec gate.** A `_strip_monitor_only_recs(rec_text, critical_mass_table)` gate drops any numbered recommendation whose bolded entity or topic-label substring matches a monitor-only entry in the critical-mass table. Symmetrical to `_strip_monitor_only_lead` for exec. Without this, a single-poster topic (Turkish, Spanish, Brazilian, etc.) leaks into the rec list as a low-stakes "Clarify" or "Communicate" item that doesn't deserve top-N surface area.
+
+**Pre-ship readback requirement (applied always when verification gates are new or under review).** Before declaring a fix done after a §25-class defect, the agent must quote each exec sentence + each rec line + each bold idea back to the user with the supporting source passage cited inline. "All clean" without the source quotes is not acceptable. This satisfies both §23 (audit the deliverable) and §25 (verify against sources).
+
 ### 24. Editorial-Research Hybrid Bold Ideas (CRITICAL — always-on)
 
 **Hard requirement directed by the user 2026-06-29 after the bold-ideas pipeline was producing post-anchored amplifications only — unable to generate speculative cohort-reach ideas grounded in real-world editorial context.**

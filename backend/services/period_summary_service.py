@@ -16,6 +16,15 @@ the §15 critical-mass gate requiring ≥2 distinct days). Instead it calls
 topic_service.extract_topics_with_metadata directly with a relaxed gate:
 ≥3 distinct posts AND ≥3 distinct authors (day-span requirement dropped).
 See _aggregate_posts_1day() and CLAUDE.md §15 for details.
+
+CLAUDE.md §25 — anti-confabulation contract (CRITICAL):
+  Every claim in any output of _call_exec / _call_actions / _call_bold_ideas
+  must be classified HARD or COMMUNITY-OBSERVED, then verified by quoting
+  the supporting passage from a cited [P-NNN] post or [E-NNN] editorial.
+  HARD claims require a passage containing the factual substance.
+  COMMUNITY-OBSERVED claims require a passage containing the matching
+  community statement.  Sentences/items whose claims come back UNSUPPORTED
+  are dropped.  Read CLAUDE.md §25 BEFORE editing the verification gate.
 """
 import logging
 import re
@@ -2096,6 +2105,198 @@ def _self_criticize_items(
     return "\n\n".join(f"{n}. {item}" for n, item in enumerate(cleaned, 1))
 
 
+# §25 VERIFICATION GATE — anti-confabulation (2026-06-29).
+#
+# Read CLAUDE.md §25 BEFORE modifying any of the helpers in this section.
+# The contract: every claim in every user-facing summary block must be
+# classified HARD or COMMUNITY-OBSERVED, then verified by quoting the
+# supporting passage from a cited source.  Topical adjacency is not
+# enough.  The verifier prompt MUST require a quoted passage — not
+# yes/no — because forcing a quote makes confabulation impossible to fake.
+
+_VERIFY_TRACE_BUFFER: deque = deque(maxlen=20)
+_VERIFY_MAX_TOKENS = 700
+
+
+def _record_verify_trace(entry: dict) -> None:
+    _VERIFY_TRACE_BUFFER.append(entry)
+
+
+def get_verify_trace_buffer() -> list[dict]:
+    """§25: snapshot of the verification ring buffer for diagnostics."""
+    return list(_VERIFY_TRACE_BUFFER)
+
+
+_VERIFY_PROMPT = (
+    "You are an EVIDENCE-VERIFIER for a marketing-decision-support system.  "
+    "For each sentence/item below, you must do TWO things:\n\n"
+    "  (a) CLASSIFY the claim as HARD or COMMUNITY-OBSERVED.\n"
+    "      • HARD = asserts something is true ABOUT THE WORLD: a competing "
+    "title exists, a partnership has been announced, a comparable game "
+    "launched on date X, an IP-licensing dispute is active, a publisher "
+    "reported Y revenue, a demographic skews Z%, a regulatory event "
+    "happened, a market event occurred.\n"
+    "      • COMMUNITY-OBSERVED = describes what POSTERS in this window are "
+    "saying, asking for, wishing, expressing, comparing, requesting, "
+    "fearing, celebrating, or feeling.  Example phrasings: 'community is "
+    "asking for', 'posters wish', 'players compare', 'community is split', "
+    "'users request', 'community celebrates'.\n\n"
+    "  (b) VERIFY against the cited SOURCES.\n"
+    "      • If HARD: find the cited [P-NNN] post or [E-NNN] editorial body "
+    "whose text directly contains the specific factual substance.  Quote "
+    "that passage.  If no source contains the factual substance: respond "
+    "UNSUPPORTED.\n"
+    "      • If COMMUNITY-OBSERVED: find the cited [P-NNN] post whose text "
+    "contains the matching community statement (the wish, request, "
+    "comparison, complaint, celebration the claim describes).  Quote that "
+    "passage.  If no cited post contains the matching statement: respond "
+    "UNSUPPORTED.\n\n"
+    "Pure marketing-action verbs (Amplify, Spotlight, Lean into, Patch, "
+    "Clarify, Communicate, Launch, Partner with, Host) followed by an "
+    "entity that IS in a cited source are NOT claims — they are proposals.  "
+    "For these, verify only that the entity is present in a cited source.  "
+    "If the proposal's entity exists in a source, respond SUPPORTED with "
+    "the entity passage.\n\n"
+    "FORMAT (one verdict per sentence, on its own line):\n"
+    "  SUPPORTED [HARD|COMMUNITY|PROPOSAL] cite=[P-NNN or E-NNN] quote=\"...\"\n"
+    "  UNSUPPORTED [reason in <=20 words]\n\n"
+    "Be conservative.  When the cited source mentions the entity but does "
+    "NOT contain the specific claim's substance, respond UNSUPPORTED.  "
+    "Topical adjacency is not enough — the supporting passage must contain "
+    "the claim itself.\n\n"
+    "SOURCES (the only admissible evidence):\n"
+    "{sources_block}\n\n"
+    "SENTENCES TO VERIFY (one per line, prefixed with index):\n"
+    "{sentences_block}\n\n"
+    "OUTPUT one verdict line per index, in order."
+)
+
+
+def _verify_claims_against_sources(
+    client,
+    text: str,
+    citation_map: dict[str, dict],
+    block_kind: str,  # "exec_summary" | "recommendations" | "bold_ideas"
+) -> str:
+    """§25 final verification gate.
+
+    Asks the LLM to quote the supporting passage for each claim from a
+    cited source.  Drops sentences/items whose claims come back
+    UNSUPPORTED.  Distinguishes HARD vs COMMUNITY-OBSERVED so legitimate
+    community-wish framings (Turkish localization request, Tek Bow
+    nostalgia, Doom comparisons) are preserved.
+
+    For exec_summary and bold_ideas: split on sentence boundaries.
+    For recommendations: split on numbered items.
+
+    When the verifier call fails or returns malformed output, the
+    original text is preserved (don't risk destroying good content for
+    a transient LLM error).
+    """
+    if not client or not text or not citation_map:
+        return text
+
+    trace: dict = {
+        "block_kind": block_kind,
+        "input_len": len(text),
+        "input_preview": text[:400],
+    }
+
+    # Build sources block.
+    sources_lines: list[str] = []
+    for cite, post in citation_map.items():
+        snippet = " ".join((post.get("text") or "").split())[:600]
+        sources_lines.append(f"  [{cite}] {snippet}")
+    sources_block = "\n".join(sources_lines)
+
+    # Split input into units (sentences for exec/bold; numbered items for recs).
+    if block_kind == "recommendations":
+        units: list[str] = []
+        current: list[str] = []
+        for line in text.split("\n"):
+            if re.match(r"^\s*\d+\.\s", line):
+                if current:
+                    units.append(" ".join(current).strip())
+                    current = []
+                current.append(line.strip())
+            elif line.strip():
+                current.append(line.strip())
+        if current:
+            units.append(" ".join(current).strip())
+    else:
+        # Sentence-level for exec_summary and bold_ideas.
+        units = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+
+    if not units:
+        trace["units"] = 0
+        _record_verify_trace(trace)
+        return text
+    trace["units_in"] = len(units)
+
+    # Build the sentences block.
+    sentences_block = "\n".join(f"  [{i+1}] {u}" for i, u in enumerate(units))
+    prompt = _VERIFY_PROMPT.format(
+        sources_block=sources_block,
+        sentences_block=sentences_block,
+    )
+
+    try:
+        message = client.messages.create(
+            model=_MODEL,
+            max_tokens=_VERIFY_MAX_TOKENS,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = message.content[0].text.strip()
+        trace["verifier_raw"] = raw[:2000]
+    except Exception as exc:
+        logger.warning("§25 verifier call failed: %s; keeping original", exc)
+        trace["error"] = str(exc)
+        _record_verify_trace(trace)
+        return text
+
+    # Parse one verdict per line.  Lines that don't match are tolerated.
+    verdicts = [line.strip() for line in raw.split("\n") if line.strip()]
+    if len(verdicts) < len(units):
+        logger.warning(
+            "§25 verifier returned %d verdicts for %d units; keeping original",
+            len(verdicts), len(units),
+        )
+        trace["verdict_count"] = len(verdicts)
+        trace["action"] = "keep_original_malformed"
+        _record_verify_trace(trace)
+        return text
+
+    per_unit: list[dict] = []
+    keep: list[str] = []
+    for unit, verdict in zip(units, verdicts):
+        v_up = verdict.upper()
+        is_supported = v_up.startswith("SUPPORTED")
+        per_unit.append({
+            "unit": unit[:200],
+            "verdict": verdict[:300],
+            "kept": is_supported,
+        })
+        if is_supported:
+            keep.append(unit)
+        else:
+            logger.warning(
+                "§25 dropping unsupported %s claim: %s | verdict=%s",
+                block_kind, unit[:140], verdict[:200],
+            )
+    trace["per_unit"] = per_unit
+    trace["units_out"] = len(keep)
+    _record_verify_trace(trace)
+
+    if not keep:
+        return ""
+
+    if block_kind == "recommendations":
+        # Re-strip numbering, renumber survivors.
+        naked = [re.sub(r"^\s*\d+\.\s*", "", item) for item in keep]
+        return "\n\n".join(f"{i+1}. {item}" for i, item in enumerate(naked))
+    return " ".join(keep)
+
+
 # Orphan-pronoun / dangling-reference detection (2026-06-28 hardening).
 # A bold idea that starts a clause with an unanchored "this X" or "the X"
 # is incoherent to the reader because we cannot see what "X" was supposed
@@ -3015,6 +3216,73 @@ def _strip_monitor_only_lead(text: str, monitor_topic_labels: list[str]) -> str:
     return text
 
 
+def _strip_monitor_only_recs(
+    rec_text: Optional[str],
+    critical_mass_table: Optional[dict],
+) -> Optional[str]:
+    """§25 companion gate: drop any numbered recommendation whose bolded
+    entity or topic-label matches a monitor-only entry in the critical-mass
+    table.
+
+    Symmetrical to `_strip_monitor_only_lead` for the exec.  Without this,
+    a single-poster topic (Turkish, Spanish, Brazilian, etc.) that §21h
+    correctly tiered as monitor-only can still leak into the rec list as
+    a low-stakes "Clarify" or "Communicate" item.
+
+    Match logic: case-insensitive substring of any monitor-only label
+    anywhere in the rec item.  Survivors are renumbered.
+    """
+    if not rec_text or not critical_mass_table:
+        return rec_text
+    # Collect all monitor-only labels across sentiment buckets.
+    monitor_labels: list[str] = []
+    for bucket_items in critical_mass_table.values():
+        for entry in (bucket_items or []):
+            if len(entry) < 4:
+                continue
+            label, _w, _d, tier = entry
+            if tier == "monitor-only" and label:
+                monitor_labels.append(label.lower())
+    if not monitor_labels:
+        return rec_text
+    # Parse into numbered items.
+    items: list[str] = []
+    current: list[str] = []
+    for line in rec_text.split("\n"):
+        if re.match(r"^\s*\d+\.\s", line):
+            if current:
+                items.append(" ".join(current).strip())
+                current = []
+            current.append(line.strip())
+        elif line.strip():
+            current.append(line.strip())
+    if current:
+        items.append(" ".join(current).strip())
+    if not items:
+        return rec_text
+    # Filter: drop any item containing a monitor-only label substring.
+    kept: list[str] = []
+    for item in items:
+        item_low = item.lower()
+        dropped_label: Optional[str] = None
+        for label in monitor_labels:
+            if label in item_low:
+                dropped_label = label
+                break
+        if dropped_label:
+            logger.warning(
+                "§25 stripping rec on monitor-only topic %r: %s",
+                dropped_label, item[:160],
+            )
+            continue
+        kept.append(item)
+    if not kept:
+        return ""
+    # Renumber survivors.
+    naked = [re.sub(r"^\s*\d+[\.\)]\s*", "", item) for item in kept]
+    return "\n\n".join(f"{i+1}. {item}" for i, item in enumerate(naked))
+
+
 def _call_exec(
     client,
     game_name,
@@ -3221,11 +3489,23 @@ def _call_exec(
         # nonsense.
         is_frag = _looks_like_fragment_lead(result)
         exec_trace["is_fragment_lead"] = is_frag
+        exec_trace["after_final_scrub_preview"] = result[:300]
+        # §25: FINAL verification gate.  Drop any sentence whose claim
+        # cannot be supported by a quoted passage from a cited source.
+        before = len(result)
+        result = _verify_claims_against_sources(
+            client, result, citation_map, "exec_summary",
+        )
+        exec_trace["after_verify_len"] = len(result or "")
+        exec_trace["lost_to_verify"] = before - len(result or "")
+        # Final scrub after verify pass (verify may have stripped a lead).
+        result = _scrub_orphan_opener(result or "")
+        is_frag_post_verify = _looks_like_fragment_lead(result)
         exec_trace["final_preview"] = result[:300]
-        if not result.strip() or is_frag:
+        if not result.strip() or is_frag_post_verify:
             logger.warning(
-                "Exec summary produced fragmentary/empty result for '%s' (raw=%s); falling back to placeholder",
-                game_name, result[:200],
+                "Exec summary fragmentary/empty after §25 verify for '%s'; placeholder",
+                game_name,
             )
             exec_trace["placeholder_fired"] = True
             _record_exec_trace(exec_trace)
@@ -3565,6 +3845,16 @@ def _call_actions(
                 sanitized, release_status,
             )
         recs_trace["after_release_gate"] = sanitized.count("\n") + 1 if sanitized else 0
+        # §25 companion gate: strip recs anchored on monitor-only topics.
+        if sanitized:
+            sanitized = _strip_monitor_only_recs(sanitized, critical_mass_table)
+        recs_trace["after_strip_monitor_only"] = (sanitized.count("\n") + 1) if sanitized else 0
+        # §25: FINAL verification gate — require quoted source passage per item.
+        if sanitized:
+            sanitized = _verify_claims_against_sources(
+                client, sanitized, citation_map, "recommendations",
+            )
+        recs_trace["after_verify"] = (sanitized.count("\n") + 1) if sanitized else 0
         final_count = _count_valid_recommendations(sanitized)
         recs_trace["final_valid_count"] = final_count
         recs_trace["final_preview"] = (sanitized or "")[:500]
@@ -3822,6 +4112,25 @@ def _call_bold_ideas(
         )
         trace["after_grounding"] = len(parsed)
         trace["lost_to_grounding"] = before - len(parsed)
+        # CLAUDE.md §25 layer 7: FINAL verification gate.  Per-idea sentence
+        # verification: each bold idea must have its claim(s) quoted from
+        # a cited source.
+        before = len(parsed)
+        verified: list[str] = []
+        for idea in parsed:
+            kept_text = _verify_claims_against_sources(
+                client, idea, citation_map, "bold_ideas",
+            )
+            if kept_text and kept_text.strip():
+                verified.append(kept_text)
+            else:
+                logger.warning(
+                    "§25 dropped bold idea (no claim survived verification): %s",
+                    idea[:140],
+                )
+        parsed = verified
+        trace["after_verify"] = len(parsed)
+        trace["lost_to_verify"] = before - len(parsed)
         trace["final"] = len(parsed)
         _record_bold_trace(trace)
         return parsed

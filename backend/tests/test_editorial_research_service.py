@@ -516,3 +516,221 @@ class TestBoldIdeaFabricationTolerance:
             distinctive_entities=[],
         )
         assert out == ideas
+
+
+# ── §25: anti-confabulation verification gate ──────────────────────────────
+
+
+class _FakeAnthropicVerifier:
+    """Test double for the Anthropic client used by _verify_claims_against_sources.
+
+    Stores the prompt it was called with and returns a scripted verdict
+    string.  One instance per test so each test controls verdict format.
+    """
+
+    def __init__(self, scripted_verdicts: str):
+        self.scripted_verdicts = scripted_verdicts
+        self.calls = []
+        self.messages = self
+
+    def create(self, model, max_tokens, messages):
+        self.calls.append({"model": model, "messages": messages})
+        text = self.scripted_verdicts
+        # Mimic the SDK shape: message.content[0].text
+        return type("M", (), {
+            "content": [type("C", (), {"text": text})()]
+        })()
+
+
+class TestVerifyClaimsAgainstSources:
+    """§25 contract:
+      - HARD claims with no quoted support → DROPPED
+      - COMMUNITY-OBSERVED claims with matching post statement → KEPT
+      - PROPOSAL items with cited entity → KEPT
+      - Malformed verifier output → original kept (don't risk destruction)
+    """
+
+    def _cmap(self):
+        return {
+            "P-001": {"text": "Doug Bradley returns to voice Pinhead is huge for fans", "url": "x"},
+            "P-004": {"text": "Please add Turkish language support for the game!", "url": "x"},
+            "P-006": {"text": "The early build gameplay is pretty amazing", "url": "x"},
+            "P-014": {"text": "Clive Barker doing oversight is the authentic vision", "url": "x"},
+        }
+
+    def test_confabulation_competing_titles_dropped(self):
+        # The canonical Hellraiser confabulation: cited posts mention
+        # "Hellraiser" but contain NO claim about competing titles.
+        from services.period_summary_service import _verify_claims_against_sources
+        text = (
+            "IP licensing conflicts with competing Hellraiser titles in the "
+            "asymmetric multiplayer space are creating friction [P-014]."
+        )
+        client = _FakeAnthropicVerifier(
+            "UNSUPPORTED no source contains the competing-titles claim"
+        )
+        out = _verify_claims_against_sources(
+            client, text, self._cmap(), "exec_summary",
+        )
+        assert out == ""
+
+    def test_community_wish_preserved(self):
+        # Community-observed claim with matching post → KEPT.
+        from services.period_summary_service import _verify_claims_against_sources
+        text = "Community is asking for Turkish language support [P-004]."
+        client = _FakeAnthropicVerifier(
+            'SUPPORTED [COMMUNITY] cite=[P-004] quote="Please add Turkish language support"'
+        )
+        out = _verify_claims_against_sources(
+            client, text, self._cmap(), "exec_summary",
+        )
+        assert "Turkish" in out
+        assert out == text
+
+    def test_hard_claim_with_source_quote_preserved(self):
+        # A HARD claim that IS backed by a source quote survives.
+        from services.period_summary_service import _verify_claims_against_sources
+        text = "Doug Bradley returns to voice Pinhead in the upcoming title [P-001]."
+        client = _FakeAnthropicVerifier(
+            'SUPPORTED [HARD] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"'
+        )
+        out = _verify_claims_against_sources(
+            client, text, self._cmap(), "exec_summary",
+        )
+        assert out == text
+
+    def test_proposal_with_cited_entity_preserved(self):
+        # Pure marketing-action proposal ("Amplify X") with cited entity
+        # survives even though no factual claim needs verification.
+        from services.period_summary_service import _verify_claims_against_sources
+        text = "1. Amplify **Doug Bradley** vocal performance — community celebrates the return. [P-001]"
+        client = _FakeAnthropicVerifier(
+            'SUPPORTED [PROPOSAL] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"'
+        )
+        out = _verify_claims_against_sources(
+            client, text, self._cmap(), "recommendations",
+        )
+        assert "Doug Bradley" in out
+
+    def test_mixed_block_drops_only_unsupported_sentence(self):
+        # Two-sentence exec: one HARD-supported, one HARD-confabulated.
+        from services.period_summary_service import _verify_claims_against_sources
+        text = (
+            "Doug Bradley returns to voice Pinhead [P-001]. "
+            "IP licensing fights over competing Hellraiser titles dominate [P-014]."
+        )
+        verdicts = (
+            'SUPPORTED [HARD] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"\n'
+            "UNSUPPORTED no source mentions competing Hellraiser titles"
+        )
+        client = _FakeAnthropicVerifier(verdicts)
+        out = _verify_claims_against_sources(
+            client, text, self._cmap(), "exec_summary",
+        )
+        assert "Doug Bradley" in out
+        assert "competing" not in out
+
+    def test_malformed_verifier_output_keeps_original(self):
+        # Verifier returns fewer verdicts than units → keep original.
+        from services.period_summary_service import _verify_claims_against_sources
+        text = (
+            "Sentence one [P-001]. "
+            "Sentence two [P-004]. "
+            "Sentence three [P-006]."
+        )
+        # Only 1 verdict line for 3 sentences → malformed.
+        client = _FakeAnthropicVerifier(
+            "SUPPORTED [HARD] cite=[P-001] quote=\"...\""
+        )
+        out = _verify_claims_against_sources(
+            client, text, self._cmap(), "exec_summary",
+        )
+        assert out == text
+
+    def test_empty_text_short_circuits(self):
+        from services.period_summary_service import _verify_claims_against_sources
+        out = _verify_claims_against_sources(
+            _FakeAnthropicVerifier(""), "", self._cmap(), "exec_summary",
+        )
+        assert out == ""
+
+    def test_empty_citation_map_short_circuits(self):
+        # Without cited sources, the verifier has nothing to verify against.
+        from services.period_summary_service import _verify_claims_against_sources
+        client = _FakeAnthropicVerifier("")
+        out = _verify_claims_against_sources(
+            client, "Some text", {}, "exec_summary",
+        )
+        # Returns original — we don't drop content without evidence to check.
+        assert out == "Some text"
+
+    def test_no_client_short_circuits(self):
+        from services.period_summary_service import _verify_claims_against_sources
+        out = _verify_claims_against_sources(None, "x", {"P-001": {}}, "exec_summary")
+        assert out == "x"
+
+
+class TestStripMonitorOnlyRecs:
+    """§25 companion gate: drop recs anchored on monitor-only topics."""
+
+    def test_drops_turkish_rec_when_monitor_only(self):
+        # Turkish language tiered as monitor-only by §21h.
+        from services.period_summary_service import _strip_monitor_only_recs
+        recs = (
+            "1. Amplify Doom-like gunplay — community comparison. [P-006]\n\n"
+            "2. Communicate Turkish language support status — roadmap. [P-004]"
+        )
+        cm_table = {
+            "positive": [("Doom-like gunplay", 10.0, 3, "theme")],
+            "negative": [],
+            "neutral": [("Turkish Language Support", 5.0, 2, "monitor-only")],
+        }
+        out = _strip_monitor_only_recs(recs, cm_table)
+        assert "Turkish" not in out
+        assert "Doom-like" in out
+        assert out.startswith("1. Amplify Doom-like")
+
+    def test_keeps_all_when_no_monitor_only(self):
+        from services.period_summary_service import _strip_monitor_only_recs
+        recs = (
+            "1. First rec [P-001]\n\n"
+            "2. Second rec [P-002]"
+        )
+        cm_table = {
+            "positive": [("Foo", 10.0, 3, "theme")],
+            "negative": [],
+            "neutral": [],
+        }
+        assert _strip_monitor_only_recs(recs, cm_table) == recs
+
+    def test_renumbers_after_drop(self):
+        from services.period_summary_service import _strip_monitor_only_recs
+        recs = (
+            "1. Address Turkish concerns [P-004]\n\n"
+            "2. Amplify Doom comparison [P-006]\n\n"
+            "3. Spotlight Pinhead [P-001]"
+        )
+        cm_table = {
+            "positive": [],
+            "negative": [],
+            "neutral": [("Turkish concerns", 5.0, 2, "monitor-only")],
+        }
+        out = _strip_monitor_only_recs(recs, cm_table)
+        assert "Turkish" not in out
+        assert out.startswith("1. Amplify Doom")
+        assert "2. Spotlight Pinhead" in out
+
+    def test_empty_table_no_op(self):
+        from services.period_summary_service import _strip_monitor_only_recs
+        recs = "1. Some rec [P-001]"
+        assert _strip_monitor_only_recs(recs, None) == recs
+        assert _strip_monitor_only_recs(recs, {}) == recs
+
+    def test_drops_all_returns_empty(self):
+        from services.period_summary_service import _strip_monitor_only_recs
+        recs = "1. Communicate Turkish localization [P-004]"
+        cm_table = {
+            "neutral": [("Turkish localization", 5.0, 2, "monitor-only")],
+        }
+        out = _strip_monitor_only_recs(recs, cm_table)
+        assert out == ""
