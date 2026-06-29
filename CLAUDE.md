@@ -585,6 +585,197 @@ Exec summary and recommended actions remain post-citation-only (strict §20) —
 
 **Implementation expectation.** `editorial_research_service.py` exposes `fetch_editorial_for_title(db, game_id, scope, cycle_start, cycle_end)` — idempotent (cache-hit reuses existing batch).  Failure to fetch must NOT block the rest of the digest; `_safe_fetch_editorial()` catches any exception and returns `[]`.  Bold-ideas prompt branches on `editorial_articles` presence: when present, the prompt opens to speculative cohort reasoning + hybrid `[P/E]` citation; when absent, the prompt falls back to the strict §20 anchor-in-posts rule.
 
+### 26. Structured-output exec / recs / bold-ideas pipeline (CRITICAL — supersedes the §25-series filter stack for the three user-facing blocks)
+
+**Hard requirement directed by the user 2026-06-29 5:13 PM EDT in response to the §25-series grind:**
+
+> "Start over with everything if you must and it saves this insanely myopic grind you’re on regarding putting together an executive summary that is robust and accurate free of hallucinations — followed by related recommended actions, and 2-3 bold ideas since it’s not getting better it’s getting worse."
+
+**Why the §25-series approach failed.** It treated each new principle (no confabulation, no monitor-only lead, theme-coverage, neutral-as-leading-indicator, shipped-regional qualifier, volume gate) as a post-LLM *filter pass* on free-prose output. The filters fought each other: the verifier deleted whole sentences for over-claim, the monitor-only-lead-strip ran before AND after the verifier, the self-criticize layer killed legitimate items, and the min-length fallback replaced partially-verified analyst prose with a sterile placeholder. Each individual fix was right; the cumulative architecture was wrong.
+
+**§26 replaces all of that for the three user-facing blocks (exec, recs, bold-ideas).** All rules move INTO the prompt as positive constraints. Validation becomes programmatic (no second LLM call). One retry on validation failure. Placeholder only on hard API failure.
+
+**The §26 contract is a HARD REPLACEMENT for these §25-series filter passes:**
+
+* `_verify_claims_against_sources` (§25) — removed from exec/recs/bold-ideas paths.
+* `_self_criticize` on exec, `_self_criticize_items` on recs, `_self_criticize_bold_ideas` — removed from these paths.
+* `_strip_monitor_only_lead` post-LLM pass — removed. The rule moves into the prompt and is enforced by programmatic validation of `claim_type`.
+* `_strip_monitor_only_recs` post-LLM pass — removed for the same reason.
+* Min-length placeholder fallback — removed. Placeholder fires ONLY when the API call errors out or returns un-parseable output.
+
+**The §25-series principles remain canonical** — they're encoded INTO the §26 prompts and validators, not stacked on top as filters. §21b volume tiers, §25d monitor-only suppression, §25e theme coverage, §25f neutral-as-leading-indicator, §25h volume-only rule + shipped-regional qualifier: all of these are now PROMPT inputs + validator rules under §26.
+
+#### 26.1 Inputs (computed by `_call_claude_for_period`, passed to every block)
+
+* `theme_tier_topics: list[{label, sentiment, weight, days}]` — only theme-tier rows from the critical-mass table.
+* `low_volume_shipped_topics: list[{label, sentiment, weight, days}]` — §25h shipped-regional low-volume exception set.
+* `monitor_only_labels: list[str]`, `low_volume_labels: list[str]` — explicit do-not-headline lists.
+* `release_status: 'pre-release' | 'live' | 'unknown'` — from `_infer_release_status()`.
+* `dont_cover_topics: list[str]` — release-status × topic-class exclusions PLUS meta-topic exclusions. See §26.2.
+* `citation_map: dict[str, {text, sentiment, url}]` — [P-NNN] post citations.
+* `editorial_articles: list[{cite, title, url, body}]` — [E-NNN] supplementary context. May be empty.
+* `commercial_context, demographic_context` — per-title briefs.
+
+#### 26.2 The release-status × topic-class don’t-cover list
+
+A single helper `_dont_cover_topics(release_status, monitor_only_labels, low_volume_labels)` returns the exclusion set the prompt is shown.
+
+**For `release_status='pre-release'`, ALWAYS exclude (regardless of tier):**
+  - Localization / language-support / regional-availability discussion (premature pre-launch).
+  - Collector’s-edition logistics, pre-order codes, steelbook / physical-edition questions.
+  - Single-platform SKU availability speculation.
+  - Single-locale wishlist signals.
+
+**For ALL release statuses, ALWAYS exclude meta / community-management topics (user direction 2026-06-29 5:18 PM):**
+  - Subreddit moderation drama / mod-team discussion.
+  - Clan / brotherhood / guild recruitment threads.
+  - Datamine-of-the-week / weekly stratagem datamine roundups.
+  - Weekly megathread housekeeping (mod-pinned weekly recruitment, FAQ, low-effort threads).
+
+**For `release_status='live'`, do NOT auto-exclude post-launch localization, platform issues, or SKU questions** — these are valid signal when they hit volume. The volume gate (§25h) handles low-volume noise here.
+
+**Override:** any topic listed in the §25h `SHIPPED REGIONAL CONTENT` set escapes the localization auto-exclude, because community celebration of shipped regional content is a real marketing asset. It surfaces with the mandatory low-volume qualifier framing per §25h.
+
+#### 26.3 Exec summary contract (THE block that has been failing)
+
+**Length:** 180–260 words across 4–6 atomic sentences. (User direction 2026-06-29 5:18 PM EDT.)
+
+**Structured output (LLM returns JSON):**
+```json
+{
+  "sentences": [
+    {
+      "text": "<one atomic claim, prose form>",
+      "cites": ["P-001", "P-003"],
+      "claim_type": "community_observation" | "theme_summary" | "shipped_regional_qualified" | "editorial_context" | "volume_qualifier"
+    },
+    ...
+  ]
+}
+```
+
+**Atomic-sentence rule.** One sentence = one claim. "Bradley returns AND that’s why it justifies single-player AND it drives engagement" is THREE claims; the LLM must write three sentences, each cited.
+
+**Claim types and what they mean:**
+  - `community_observation` (most common): "posters celebrate X" / "community is asking about Y" / "complaints concentrate on Z" — each must cite ≥1 post.
+  - `theme_summary`: aggregates a theme-tier topic’s overall direction — must name a theme-tier topic AND cite ≥2 posts from that topic’s bucket.
+  - `shipped_regional_qualified`: surfaces a §25h shipped-regional low-volume topic with a mandatory qualifier ("low volume but among this week’s top topics: ...") — must cite ≥1 post; only allowed when `low_volume_shipped_topics` is non-empty.
+  - `editorial_context`: supplementary framing from `[E-NNN]` (release date, comparable launch, industry framing) — must cite ≥1 editorial article AND ≥1 post that anchors the framing in community discussion. Editorial-only execs FAIL validation.
+  - `volume_qualifier`: explicit acknowledgment of low post volume ("Community signal this window is light — N posts across M days") when warranted. No citations required.
+
+**Coverage rule (in prompt + validator):** The exec must contain ≥3 distinct topic threads across positive / negative / neutral buckets. If only one bucket has theme-tier topics, this relaxes to ≥2 threads. NEUTRAL theme-tier topics, when present, MUST be touched at least once — they are leading indicators (§25f).
+
+**Lead-headline rule (in prompt + validator):** The first sentence MUST be either `theme_summary` or `community_observation` anchored on a theme-tier topic, OR a `volume_qualifier` when no theme-tier topic exists in any bucket. It MUST NOT be `editorial_context`, `shipped_regional_qualified`, or any sentence whose cites all point to monitor-only / low-volume / don’t-cover topics.
+
+**Don’t-cover rule (in prompt):** Sentences MUST NOT be built on any topic listed in `dont_cover_topics` for the current release status. The validator does a label-substring check against each sentence’s claim.
+
+**Confabulation rule (in prompt):** Hard claims about the world outside the cited sources are forbidden. Examples of forbidden phrasings: "competing X title in the Y space" when no editorial confirms it; "publisher confirmed Z" when no source contains Z. The LLM is told the difference between COMMUNITY-OBSERVED ("posters say…") and HARD claims ("X is true about the world"). The validator does not re-check this with another LLM call — it relies on the cite-existence check + structural rules.
+
+#### 26.4 Recommendations contract
+
+**Length:** 3–5 numbered items. (Existing `_REC_COUNT_MIN=3`, `_REC_COUNT_MAX=5` constants stay.)
+
+**Structured output:**
+```json
+{
+  "recommendations": [
+    {
+      "action_verb": "Patch" | "Amplify" | "Spotlight" | "Clarify" | "Address" | "Document" | "Communicate" | "Showcase" | "Lean into" | "Embrace",
+      "subject": "<bolded entity or topic, will render as **subject**>",
+      "rationale": "<one-line why-this-matters>",
+      "cites": ["P-NNN", ...]
+    },
+    ...
+  ]
+}
+```
+
+**Eligibility (in prompt + validator):**
+  - Subject must NOT match a label in `monitor_only_labels` or `low_volume_labels` (case-insensitive substring), unless on the §25h shipped-regional exception list.
+  - Subject must NOT match a `dont_cover_topics` entry.
+  - Each rec must have ≥1 cite that resolves in the citation map.
+  - At most one editorial-only [E-NNN] cite per rec; cannot be the only cite.
+
+**Liability vs amplification (carried over from §21b):** LIABILITY recs (Patch / Address / Fix / Clarify) require a theme-tier negative or neutral topic. AMPLIFICATION recs (Amplify / Spotlight / Lean into / Showcase / Embrace) require a theme-tier positive topic OR a §25h shipped-regional qualified topic.
+
+#### 26.5 Bold ideas contract
+
+**Length:** 2–3 items.
+
+**Structured output:**
+```json
+{
+  "bold_ideas": [
+    {
+      "text": "<the bold idea, prose form>",
+      "cites": ["P-NNN", "E-NNN", ...],
+      "claim_type": "post_grounded" | "editorial_ladder"
+    },
+    ...
+  ]
+}
+```
+
+**post_grounded:** anchored entirely on cited posts (and optionally supported by editorial). Survives even if all cites are [P-NNN].
+
+**editorial_ladder:** ladders from editorial context (comparable launches, demographic / cohort framing) BUT must cite ≥1 post showing the community signal that justifies the ladder. "Editorial says X is hot; community is asking about it [P-NNN]" passes. "Editorial says X is hot" alone fails.
+
+**No fabricated competitor / partnership claims** — same confabulation rule as exec.
+
+#### 26.6 Validation + retry loop
+
+Each block:
+1. LLM call with the structured-output prompt.
+2. Parse JSON. If parse fails: ONE retry with feedback ("JSON did not parse: <error>"). If second parse fails: return placeholder.
+3. Programmatic validation (cite-existence, claim-type rules, coverage rule, lead-headline rule, eligibility, don’t-cover, length).
+4. If validation fails on ≥1 sentence/item: drop the failing sentence/item and check if the block still meets the floor (4 sentences for exec, 3 recs, 2 bold ideas).
+5. If below floor: ONE retry with the validation failures listed ("your sentence 2 cited only [P-005] which does not exist; sentence 4 was claim_type=editorial_context which cannot be the lead").
+6. After retry: accept whatever passes validation, even if below floor. Placeholder only on total failure.
+
+**No second LLM verifier call.** The validator is pure Python: regex, set lookups, and label-substring checks. Cheap, deterministic, debuggable.
+
+#### 26.7 What stays from the §25-series
+
+* `_topic_critical_mass_table` (§21b + §25h volume tiers) — still produces theme / monitor-only / low-volume.
+* `_shipped_regional_allowlist` and `_shipped_regional_low_volume_topics` (§25h) — still feed the prompt.
+* `_infer_release_status()` (§21) — still feeds the prompt.
+* `_assign_citation_ids` and the [P-NNN] / [E-NNN] citation_map — still the canonical citation namespace.
+* `editorial_research_service.py` (§24) — still pre-fetches editorial articles per cycle.
+* `_sanitize_executive_summary` proper-noun whitelist — stays as a defense against confabulated entity names, runs after the structured output is assembled into final prose.
+
+#### 26.8 What gets deleted
+
+All deleted in one commit:
+* `_verify_claims_against_sources` callers in `_call_exec`, `_call_actions`, `_call_bold_ideas` (the function itself stays for one release as defense-in-depth, but is no longer wired in; remove on the following release).
+* `_self_criticize`, `_self_criticize_items`, `_self_criticize_bold_ideas` callers (functions stay, callers removed).
+* `_strip_monitor_only_lead` caller in `_call_exec`.
+* `_strip_monitor_only_recs` caller in `_call_actions`.
+* The min-length placeholder fallback at the end of `_call_exec`.
+* The §22b retry path (`_retry_actions_if_below_min`) — replaced by the §26.6 in-call validation retry.
+* The prompt fragments enforcing "§25e+f COVERAGE RULES", "§25 verification gate" anti-confabulation language — their principles move into the new §26 prompts as positive constraints.
+
+#### 26.9 Diagnostics
+
+* `/api/diagnostics/exec-trace` ring buffer keeps its shape but the fields change to reflect the §26 pipeline: `{game_name, llm_raw_json, parse_ok, validation_failures, retry_fired, sentences_kept, sentences_dropped, placeholder_fired}`.
+* Same for `/api/diagnostics/recs-trace` and a new `/api/diagnostics/bold-ideas-trace`.
+* The old `verification-trace` endpoint stays but is empty after §26 ships — leaves it as a backstop if we ever re-enable the verifier.
+
+#### 26.10 Test contract
+
+New tests under `backend/tests/test_section_26.py`:
+  - `test_exec_atomic_sentences_parse_and_validate`
+  - `test_exec_rejects_non_theme_lead_when_themes_exist`
+  - `test_exec_volume_qualifier_lead_when_no_themes`
+  - `test_exec_dont_cover_pre_release_localization_excluded`
+  - `test_exec_dont_cover_meta_topics_excluded`
+  - `test_exec_shipped_regional_qualified_renders_with_qualifier_phrase`
+  - `test_exec_editorial_only_lead_fails_validation`
+  - `test_exec_invalid_cite_drops_sentence`
+  - `test_exec_validation_retry_fires_on_floor_breach`
+  - `test_exec_placeholder_only_on_total_failure`
+  - Same shape for recs (cite eligibility, monitor-only subject rejection, liability vs amplification).
+  - Same shape for bold ideas (post_grounded vs editorial_ladder, post-anchor required for ladder).
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation
