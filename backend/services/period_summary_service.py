@@ -569,6 +569,7 @@ _TOPIC_REC_SINGLE_DAY_WEIGHT = 8
 
 def _topic_critical_mass_table(
     db: Session, game_id: int, window_start, window_end,
+    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> dict[str, list[tuple[str, float, int, str]]]:
     """Return per-sentiment lists of (label, weight, day_appearances, tier).
 
@@ -611,27 +612,30 @@ def _topic_critical_mass_table(
             theme = (
                 weight >= _TOPIC_REC_MIN_WEIGHT and day_count >= _TOPIC_REC_MIN_DAYS
             ) or weight >= _TOPIC_REC_SINGLE_DAY_WEIGHT
-            # §21h (revised §25d 2026-06-29): force-demote ALL narrow-
-            # audience topics regardless of sentiment, even if they cross
-            # the weight/day threshold.  A single-locale label (Turkish/
-            # Spanish/Welsh/etc.) is by definition not broad-base community
-            # signal — it's a single audience-of-interest cluster.
+            # §21h (restored 2026-06-29 after §25d regression):
+            # Force-demote NEGATIVE / NEUTRAL narrow-audience topics that
+            # cross the weight/day threshold.  POSITIVE narrow-audience
+            # topics are PRESERVED as theme-tier so deliberate localization
+            # plays generating community celebration (Welsh VO on Bus Bound,
+            # Brazilian Portuguese launch on a deliberately-localized title)
+            # remain valid marketing assets to amplify.
             #
-            # The earlier exception preserved POSITIVE narrow-audience as
-            # theme-tier to protect Welsh VO on Bus Bound, but it also let
-            # "Turkish Language Support" lead Hellraiser's exec twice from
-            # a tiny Turkish-poster cluster repeating across days.  The
-            # exception was too broad.
-            #
-            # Legitimate localization stories (Welsh VO, deliberate
-            # publisher localization plays) still surface to the LLM via
-            # the SAMPLE POSTS block — the LLM can call them out from
-            # quoted post text.  The topic-label hierarchy is for theme-
-            # tier signal classification, and a single-locale topic is
-            # not theme-tier by definition.
-            if theme and _topic_is_narrow_audience(label):
+            # The Turkish-on-Hellraiser problem was a different shape —
+            # the LLM was leading exec/recs with single-locale topics even
+            # when they had broad-base alternatives available.  That's
+            # addressed by the exec prompt's §25e+f COVERAGE clause
+            # ("Do NOT lead with regional / localization / single-locale
+            # topics") and the _strip_monitor_only_recs gate, not by
+            # demoting positive narrow-audience as well.
+            if (
+                theme
+                and sentiment in ("negative", "neutral")
+                and _topic_is_narrow_audience(
+                    label, narrow_audience_allowlist=narrow_audience_allowlist,
+                )
+            ):
                 logger.info(
-                    "§21h/§25d: demoting narrow-audience %s topic %r from theme to monitor-only "
+                    "§21h: demoting narrow-audience %s topic %r from theme to monitor-only "
                     "(weight=%d days=%d)", sentiment, label, weight, day_count,
                 )
                 tier = "monitor-only"
@@ -681,13 +685,33 @@ _NARROW_AUDIENCE_RE = re.compile(
 )
 
 
-def _topic_is_narrow_audience(label: str) -> bool:
+def _topic_is_narrow_audience(
+    label: str,
+    narrow_audience_allowlist: Optional[list[str]] = None,
+) -> bool:
     """True if `label` names a single locale / platform / SKU / regional
     scope rather than a broad-base community theme.  §21h.
+
+    Per-game allowlist (§25d follow-up 2026-06-29): a marker token may be
+    exempted FOR ONE GAME when the title has a deliberate regional content
+    investment in that locale (e.g. Welsh VO on Bus Bound).  In that case,
+    posts about the marker are celebrating a real shipped product, not
+    expressing a localization-audience wish, and the topic should remain
+    eligible for theme-tier classification.  The allowlist is a list of
+    lowercase tokens; a label matching one of those tokens is treated as
+    NOT narrow-audience for the current call.
     """
     if not label:
         return False
-    return bool(_NARROW_AUDIENCE_RE.search(label))
+    if not _NARROW_AUDIENCE_RE.search(label):
+        return False
+    # §25d allowlist: per-game exemption for deliberate regional content plays.
+    if narrow_audience_allowlist:
+        label_low = label.lower()
+        for token in narrow_audience_allowlist:
+            if token.lower() in label_low:
+                return False
+    return True
 
 
 def _format_critical_mass_block(
