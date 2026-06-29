@@ -466,3 +466,53 @@ class TestEditorialGroundingGate:
             ideas, {"P-007": {}, "E-002": {}}, editorial_available=True,
         )
         assert out == ideas
+
+
+class TestBoldIdeaFabricationTolerance:
+    """§24e relax (2026-06-29): bold ideas with a small number of
+    unrecognised proper nouns are KEPT (not dropped).  The §24c grounding
+    gate already requires a [P-NNN] citation per idea, so the speculation
+    is anchored to community signal.  Strict per-token fact-checking was
+    rejecting genuinely-good ideas that named real-world partners, model
+    numbers, or comparable titles not in the window's posts.
+    """
+
+    def test_keeps_idea_with_few_unrecognised_nouns(self):
+        from services.period_summary_service import _sanitize_bold_ideas
+        ideas = [
+            "Partner with **RIDE** (the BYD spinoff) for K9MD and K11M bus models"
+        ]
+        out = _sanitize_bold_ideas(
+            ideas,
+            game_name="Bus Bound",
+            sample_posts={"positive": ["Welsh voice acting is great"]},
+            distinctive_entities=[],
+        )
+        # 4 unrecognised tokens (RIDE, BYD, K9MD, K11M) is within tolerance.
+        assert out == ideas
+
+    def test_drops_idea_with_many_unrecognised_nouns(self):
+        from services.period_summary_service import _sanitize_bold_ideas
+        ideas = [
+            "Launch a **Foo** **Bar** **Baz** **Qux** **Quux** **Corge** "
+            "**Grault** **Garply** event"
+        ]
+        out = _sanitize_bold_ideas(
+            ideas,
+            game_name="Some Game",
+            sample_posts={"positive": []},
+            distinctive_entities=[],
+        )
+        # >4 unrecognised tokens — dropped.
+        assert out == []
+
+    def test_keeps_idea_with_no_unrecognised_nouns(self):
+        from services.period_summary_service import _sanitize_bold_ideas
+        ideas = ["Amplify Welsh voice acting [P-001]"]
+        out = _sanitize_bold_ideas(
+            ideas,
+            game_name="Bus Bound",
+            sample_posts={"positive": ["Welsh voice acting is great"]},
+            distinctive_entities=[],
+        )
+        assert out == ideas

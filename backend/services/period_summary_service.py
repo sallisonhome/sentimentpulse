@@ -2864,6 +2864,18 @@ def _enforce_editorial_grounding(
     return surviving
 
 
+# §24e (2026-06-29): tokens up to this many extra unique proper nouns
+# beyond the input whitelist are TOLERATED in a bold idea before the
+# sanitizer drops it.  Bold ideas are speculative by design (§24's whole
+# point) and may reference real-world model numbers, comparable titles,
+# or partner names that are not literally in our window's posts.  The
+# §24c grounding gate already requires a [P-NNN] citation, so the idea
+# is anchored to community signal even when the speculation introduces
+# new nouns.  Strict per-token fact-checking on bold ideas is at odds
+# with the §24 hybrid framework.
+_BOLD_IDEA_FAB_TOLERANCE = 4
+
+
 def _sanitize_bold_ideas(
     ideas: list[str],
     game_name: str,
@@ -2874,7 +2886,20 @@ def _sanitize_bold_ideas(
     commercial_context: Optional[str] = None,
     demographic_context: Optional[str] = None,
 ) -> list[str]:
-    """Drop any bold idea that contains a fabricated proper noun."""
+    """Drop only bold ideas with EXCESSIVE fabricated proper nouns.
+
+    §24e relax (2026-06-29): bold ideas are speculative within the §24
+    framework.  The §24c grounding gate already requires a [P-NNN]
+    citation per idea, so the speculation is anchored to community
+    signal.  Strict per-token fact-check (drop on any unknown noun) was
+    rejecting genuinely-good ideas that named real-world partners, model
+    numbers, or comparable titles not in our window's posts.
+
+    Policy: warn on any fabrication, but only DROP an idea when the
+    fabrication count exceeds _BOLD_IDEA_FAB_TOLERANCE.  Exec summary
+    and recommendations remain strict (they should be tightly anchored
+    in in-window data); bold ideas get this looser bar.
+    """
     if not ideas:
         return ideas
     surviving: list[str] = []
@@ -2885,12 +2910,19 @@ def _sanitize_bold_ideas(
             commercial_context=commercial_context,
             demographic_context=demographic_context,
         )
-        if fabs:
+        if fabs and len(fabs) > _BOLD_IDEA_FAB_TOLERANCE:
             logger.warning(
-                "Fact-check dropping bold idea containing fabricated names %s: %s",
-                fabs, idea[:120],
+                "§24e fact-check dropping bold idea with %d fabricated names "
+                "%s (tolerance=%d): %s",
+                len(fabs), fabs, _BOLD_IDEA_FAB_TOLERANCE, idea[:120],
             )
             continue
+        if fabs:
+            logger.info(
+                "§24e bold idea has %d unrecognised proper noun(s) %s; "
+                "keeping (within tolerance=%d): %s",
+                len(fabs), fabs, _BOLD_IDEA_FAB_TOLERANCE, idea[:120],
+            )
         surviving.append(idea)
     return surviving
 
@@ -3319,11 +3351,29 @@ def _retry_actions_if_below_min(
         "(total_posts=%d, themes_available=%s); running ONE retry pass",
         count, game_name, total_posts, has_theme,
     )
+    # §24e (2026-06-29): stronger retry hint.  Earlier wording produced
+    # 2 recs when 4 were needed (SM2 with 968 posts); the LLM treated the
+    # minimum as aspirational.  Now we name the specific shortfall and
+    # explicitly enumerate the playbooks the LLM should draw from.
     hint = (
-        f"Your previous response produced {count} valid recommendation(s) for "
-        f"a title with {total_posts} substantive community posts and "
-        f"theme-tier topics available.  The minimum target is "
-        f"{_REC_COUNT_MIN}-{_REC_COUNT_MAX}."
+        f"YOUR PREVIOUS RESPONSE PRODUCED ONLY {count} RECOMMENDATION(S) "
+        f"FOR A TITLE WITH {total_posts} COMMUNITY POSTS.  THIS IS NOT "
+        f"ACCEPTABLE.  PRODUCE AT LEAST {_REC_COUNT_MIN} GROUNDED "
+        f"RECOMMENDATIONS — IDEALLY {_REC_COUNT_MAX}.  \n\n"
+        f"Sources to draw recommendations from (in priority order):\n"
+        f"  1. NEGATIVE-bucket topics that are real liabilities — patches, "
+        f"fixes, communications.\n"
+        f"  2. POSITIVE-bucket topics that should be amplified — named "
+        f"talent, organic community comparisons, press momentum.\n"
+        f"  3. NEUTRAL-bucket topics where community is curious and a "
+        f"clarification or roadmap statement closes the gap.\n"
+        f"  4. DISTINCTIVE ENTITIES not yet addressed in your previous "
+        f"recommendations — specific characters, mechanics, factions, "
+        f"missions, weapons surfaced in this window.\n\n"
+        f"With {total_posts} substantive posts, there is signal across "
+        f"all 4 categories.  Cover the breadth of signal, not just the "
+        f"top theme.  AMPLIFICATIONS anchored on real positive signals "
+        f"are ALWAYS valid; do NOT refuse on critical-mass grounds."
     )
     retried = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,

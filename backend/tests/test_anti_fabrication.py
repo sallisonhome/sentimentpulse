@@ -229,7 +229,11 @@ class TestFactCheckGate:
         )
         assert out == ""
 
-    def test_sanitize_bold_ideas_drops_clayton(self):
+    def test_sanitize_bold_ideas_tolerates_few_unknown_nouns(self):
+        # §24e relax (2026-06-29): bold ideas are speculative within §24,
+        # and the §24c grounding gate already requires a [P-NNN] citation.
+        # A small number of unknown proper nouns (<=4) is tolerated.
+        # 'Jamie Clayton' produces 2 unknown tokens — within tolerance, kept.
         ideas = [
             "Lean into **Jamie Clayton** casting speculation as official reveal.",
             "Amplify **Clive Barker's** creative authority in messaging.",
@@ -237,9 +241,9 @@ class TestFactCheckGate:
         out = pss._sanitize_bold_ideas(
             ideas, self.GAME, self.HELLRAISER_SAMPLES, self.HELLRAISER_ENTITIES,
         )
-        assert len(out) == 1
-        assert "Clive Barker" in out[0]
-        assert "Clayton" not in out[0]
+        assert len(out) == 2
+        # Heavily-fabricated ideas (>4 unknown nouns) are still dropped —
+        # see TestBoldIdeaFabricationTolerance in test_editorial_research_service.py.
 
     def test_sanitize_executive_summary_drops_clayton_sentence(self):
         text = (
