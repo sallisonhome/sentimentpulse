@@ -725,14 +725,64 @@ def _shipped_regional_low_volume_topics(
 # The LLM enforces the don't-cover rule via the prompt; the validator enforces
 # it via substring match against sentence cites' topic labels.
 _PRERELEASE_DONT_COVER = [
+    # Localization / language patterns — pre-release localization talk is
+    # noise across the board.  Includes single-locale labels and language-
+    # request shapes the topic extractor produces.
     "localization",
     "language support",
+    "language requests",
+    "language localization",
+    "language options",
     "regional availability",
+    "regional content",
+    "regional issues",
+    "regional localization",
+    "regional release",
+    "regional audience",
+    "regional audiences",
+    "regional support",
+    # Single-locale community/post markers — e.g. 'Turkish Community Posts',
+    # 'Spanish Community Posts', 'Brazilian Community Posts'.  When the
+    # topic extractor labels a cluster by language/locale on a pre-release
+    # title, it's almost always a single-poster pool.
+    "turkish",
+    "spanish",
+    "brazilian",
+    "portuguese",
+    "french",
+    "german",
+    "italian",
+    "russian",
+    "japanese",
+    "korean",
+    "chinese",
+    "polish",
+    "czech",
+    "hungarian",
+    "romanian",
+    "arabic",
+    "hindi",
+    "thai",
+    "vietnamese",
+    "indonesian",
+    "swedish",
+    "norwegian",
+    "danish",
+    "finnish",
+    "dutch",
+    "greek",
+    # Note: 'welsh' / 'irish' / 'gaelic' / 'catalan' are NOT in this list
+    # because shipped regional content (§25h) uses them as marketing assets.
+    # The shipped-regional override in _dont_cover_topics handles that.
+    # SKU / pre-order / collector logistics on pre-release
     "collector's edition logistics",
+    "collector edition",
+    "collectors edition",
     "steelbook",
     "physical edition",
     "pre-order code",
     "pre-order",
+    "preorder",
     "single-platform SKU",
     "platform exclusivity speculation",
     "single-locale wishlist",
@@ -1722,6 +1772,7 @@ def _call_claude_for_period(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
+        dont_cover=_dont_cover,
     )
     # Strip again after retry in case the retry re-introduced a dont-cover rec.
     rec_actions = _strip_dont_cover_recs(rec_actions, _dont_cover)
@@ -4413,6 +4464,7 @@ def _retry_actions_if_below_min(
     commercial_context: Optional[str] = None,
     critical_mass_table: Optional[dict] = None,
     editorial_articles: Optional[list] = None,
+    dont_cover: Optional[list[str]] = None,
 ) -> Optional[str]:
     """§22b: if `rec_actions` has fewer than _REC_COUNT_MIN valid items on a
     substantive title with at least one theme-tier topic, do ONE retry
@@ -4449,6 +4501,16 @@ def _retry_actions_if_below_min(
     # 2 recs when 4 were needed (SM2 with 968 posts); the LLM treated the
     # minimum as aspirational.  Now we name the specific shortfall and
     # explicitly enumerate the playbooks the LLM should draw from.
+    # §26 (2026-06-29): include the dont_cover list in the retry hint so the
+    # LLM doesn't reproduce the same dont-cover recs that got stripped.
+    dont_cover_block = ""
+    if dont_cover:
+        dont_cover_block = (
+            "\n\nDO NOT WRITE RECOMMENDATIONS ABOUT (these were stripped "
+            "from your previous response):\n"
+            + "\n".join(f"  - {d}" for d in dont_cover[:20])
+            + "\n\nPick different topics for the new recommendations.\n"
+        )
     hint = (
         f"YOUR PREVIOUS RESPONSE PRODUCED ONLY {count} RECOMMENDATION(S) "
         f"FOR A TITLE WITH {total_posts} COMMUNITY POSTS.  THIS IS NOT "
@@ -4468,6 +4530,7 @@ def _retry_actions_if_below_min(
         f"all 4 categories.  Cover the breadth of signal, not just the "
         f"top theme.  AMPLIFICATIONS anchored on real positive signals "
         f"are ALWAYS valid; do NOT refuse on critical-mass grounds."
+        + dont_cover_block
     )
     retried = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,
