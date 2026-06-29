@@ -943,6 +943,22 @@ _MIN_SUBSTANTIVE_POSTS = 20
 # Both apply only when total_posts ≥ _MIN_SUBSTANTIVE_POSTS AND there is at
 # least one theme-tier topic available; otherwise fewer is fine.
 _REC_COUNT_MIN = 3
+
+# 2026-06-29 diagnostic ring buffer for bold-ideas trace.  Last N entries are
+# kept in memory; the diagnostic API endpoint reads from here.  Each entry is
+# a dict with keys: game_name, raw_preview, after_parse, after_strip_uncited,
+# after_self_criticize, after_sanitize, after_strip_orphan, final.
+from collections import deque
+_BOLD_TRACE_BUFFER: deque = deque(maxlen=20)
+
+
+def _record_bold_trace(entry: dict) -> None:
+    _BOLD_TRACE_BUFFER.append(entry)
+
+
+def get_bold_trace_buffer() -> list[dict]:
+    """Returns a snapshot of the bold-ideas trace ring buffer."""
+    return list(_BOLD_TRACE_BUFFER)
 _REC_COUNT_MAX = 5
 
 # Imperative verbs that a recommendation MUST start with after the
@@ -3042,6 +3058,7 @@ def _call_bold_ideas(
         f"No preamble. Either the numbered list, or NONE."
     )
 
+    trace: dict = {"game_name": game_name}
     try:
         message = client.messages.create(
             model=_MODEL,
@@ -3049,24 +3066,41 @@ def _call_bold_ideas(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
+        trace["raw_llm_len"] = len(raw)
+        trace["raw_preview"] = raw[:500]
         parsed = _parse_bold_ideas(raw)
+        trace["after_parse"] = len(parsed)
+        trace["after_parse_preview"] = [p[:200] for p in parsed]
         # CLAUDE.md §20 layer 3: drop uncited bold ideas.
+        before = len(parsed)
         parsed = _strip_uncited_bold_ideas(parsed, citation_map)
-        # CLAUDE.md §20 layer 4: self-criticism on each idea (atomic-unit rule).
+        trace["after_strip_uncited"] = len(parsed)
+        trace["lost_to_strip_uncited"] = before - len(parsed)
+        # CLAUDE.md §20 layer 4: self-criticism on each idea.
+        before = len(parsed)
         parsed = _self_criticize_bold_ideas(client, parsed, citation_map)
+        trace["after_self_criticize"] = len(parsed)
+        trace["lost_to_self_criticize"] = before - len(parsed)
         # CLAUDE.md §20 layer 2: proper-noun fact-check.
+        before = len(parsed)
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
         parsed = _sanitize_bold_ideas(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
         )
-        # CLAUDE.md §20 layer 5 (2026-06-28): orphan-reference guard.  Even
-        # after the above passes, an idea whose subject was stripped by an
-        # earlier sanitizer can leave a dangling 'this analog' clause.  Drop
-        # any idea that contains an unanchored reference.
+        trace["after_sanitize"] = len(parsed)
+        trace["lost_to_sanitize"] = before - len(parsed)
+        # CLAUDE.md §20 layer 5: orphan-reference guard.
+        before = len(parsed)
         parsed = _strip_orphan_reference_ideas(parsed)
+        trace["after_strip_orphan"] = len(parsed)
+        trace["lost_to_strip_orphan"] = before - len(parsed)
+        trace["final"] = len(parsed)
+        _record_bold_trace(trace)
         return parsed
     except Exception as exc:
         logger.error("Claude bold ideas error for '%s': %s", game_name, exc)
+        trace["error"] = str(exc)
+        _record_bold_trace(trace)
         return []
 
 

@@ -26,6 +26,22 @@ from services import period_summary_service as _pss
 
 router = APIRouter(prefix="/games", tags=["summaries"])
 
+# 2026-06-29 diagnostic: surface the in-memory bold-ideas trace ring buffer
+# so we can see which layer is dropping ideas in production.  This endpoint
+# lives outside the /games prefix and is read-only.
+_diag_router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
+
+
+@_diag_router.get("/bold-ideas-trace")
+def get_bold_ideas_trace():
+    """Return the last N _call_bold_ideas trace entries, newest last.
+
+    Each entry records the raw LLM length, after-parse count, and the
+    survivors at every sanitizer layer.  Used to diagnose why the live
+    digest is showing 0 bold ideas across substantive titles.
+    """
+    return {"trace": _pss.get_bold_trace_buffer()}
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
