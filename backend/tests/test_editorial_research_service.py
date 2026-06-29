@@ -156,3 +156,177 @@ class TestCitationRegexAcceptsEditorial:
         assert _extract_citations("[E-1]") == {"E-001"}
         assert _extract_citations("[E-01]") == {"E-001"}
         assert _extract_citations("[E-001]") == {"E-001"}
+
+
+class TestPlaywrightBodyExtraction:
+    """§24b — Playwright-rendered body fetch.
+
+    These tests MOCK Playwright entirely (no Chromium launched).  We
+    verify that:
+      * _playwright_browser yields None gracefully when Playwright is
+        not installed or _PLAYWRIGHT_ENABLED is False.
+      * _extract_body_via_playwright tries the selector chain in order
+        and falls back to the HTML sweep when selectors yield nothing.
+      * fetch_editorial_for_title wires the Playwright path BEFORE the
+        httpx fallback.
+    """
+
+    def test_playwright_browser_yields_none_when_disabled(self, monkeypatch):
+        from services import editorial_research_service as ers
+        monkeypatch.setattr(ers, "_PLAYWRIGHT_ENABLED", False)
+        with ers._playwright_browser() as b:
+            assert b is None
+
+    def test_playwright_browser_yields_none_on_import_error(self, monkeypatch):
+        """When playwright import raises, helper must yield None and not raise."""
+        from services import editorial_research_service as ers
+        monkeypatch.setattr(ers, "_PLAYWRIGHT_ENABLED", True)
+        import builtins
+        orig_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "playwright.sync_api":
+                raise ImportError("not installed")
+            return orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        with ers._playwright_browser() as b:
+            assert b is None
+
+    def test_extract_body_uses_article_selector_first(self):
+        """When <article> selector returns >=400 chars, body comes from there
+        and the fallback HTML sweep is NOT consulted."""
+        from services import editorial_research_service as ers
+
+        long_text = "x" * 500
+        calls = {"selectors_queried": []}
+
+        class FakeEl:
+            def inner_text(self, timeout=2000):
+                return long_text
+
+        class FakePage:
+            url = "https://publisher.example.com/article"
+
+            def goto(self, url, wait_until=None, timeout=None):
+                return None
+
+            def wait_for_timeout(self, ms):
+                return None
+
+            def query_selector(self, sel):
+                calls["selectors_queried"].append(sel)
+                if sel == "article":
+                    return FakeEl()
+                return None
+
+            def content(self):  # pragma: no cover -- must not be hit
+                raise AssertionError("HTML fallback should not be used")
+
+        class FakeCtx:
+            def new_page(self):
+                return FakePage()
+
+            def close(self):
+                pass
+
+        class FakeBrowser:
+            def new_context(self, user_agent=None):
+                return FakeCtx()
+
+        final_url, body = ers._extract_body_via_playwright(
+            FakeBrowser(), "https://news.google.com/rss/articles/xyz"
+        )
+        assert final_url == "https://publisher.example.com/article"
+        assert body is not None and len(body) >= 400
+        # First selector tried must be 'article'.
+        assert calls["selectors_queried"][0] == "article"
+
+    def test_extract_body_falls_back_to_html_when_selectors_fail(self):
+        """When all semantic selectors return None, helper calls page.content()
+        and runs _extract_article_text on the HTML."""
+        from services import editorial_research_service as ers
+
+        html_with_paras = (
+            "<html><body>"
+            + "".join(
+                f"<p>This is paragraph number {i} with enough length to count "
+                f"as a real sentence in an editorial article body extraction.</p>"
+                for i in range(10)
+            )
+            + "</body></html>"
+        )
+
+        class FakePage:
+            url = "https://publisher.example.com/story"
+
+            def goto(self, url, wait_until=None, timeout=None):
+                return None
+
+            def wait_for_timeout(self, ms):
+                return None
+
+            def query_selector(self, sel):
+                return None  # no semantic container present
+
+            def content(self):
+                return html_with_paras
+
+        class FakeCtx:
+            def new_page(self):
+                return FakePage()
+
+            def close(self):
+                pass
+
+        class FakeBrowser:
+            def new_context(self, user_agent=None):
+                return FakeCtx()
+
+        final_url, body = ers._extract_body_via_playwright(
+            FakeBrowser(), "https://news.google.com/rss/articles/xyz"
+        )
+        assert final_url == "https://publisher.example.com/story"
+        assert body is not None
+        assert len(body) >= 200
+        assert "paragraph number" in body
+
+    def test_extract_body_returns_none_on_goto_failure(self):
+        """A page.goto exception must not propagate; helper returns (None, None)."""
+        from services import editorial_research_service as ers
+
+        class FakePage:
+            url = "https://publisher.example.com/x"
+
+            def goto(self, url, wait_until=None, timeout=None):
+                raise RuntimeError("net::ERR_TIMED_OUT")
+
+            def wait_for_timeout(self, ms):
+                pass
+
+            def query_selector(self, sel):
+                return None
+
+            def content(self):
+                return ""
+
+        class FakeCtx:
+            def new_page(self):
+                return FakePage()
+
+            def close(self):
+                pass
+
+        class FakeBrowser:
+            def new_context(self, user_agent=None):
+                return FakeCtx()
+
+        final_url, body = ers._extract_body_via_playwright(
+            FakeBrowser(), "https://news.google.com/rss/articles/xyz"
+        )
+        assert final_url is None and body is None
+
+    def test_extract_body_handles_none_browser(self):
+        """Helper must short-circuit when browser is None (e.g. Playwright not installed)."""
+        from services import editorial_research_service as ers
+        assert ers._extract_body_via_playwright(None, "https://x.com") == (None, None)

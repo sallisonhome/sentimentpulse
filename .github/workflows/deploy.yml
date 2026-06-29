@@ -121,6 +121,26 @@ jobs:
             source .venv/bin/activate
             pip install --quiet --upgrade-strategy only-if-needed -r requirements.txt
             alembic upgrade head
+
+            # §24b (2026-06-29): install Playwright Chromium for editorial
+            # body fetching.  --with-deps installs system libraries the
+            # browser needs (libnss, libatk, etc.).  Idempotent: skip if
+            # the browser binary is already present (§16 auto-deploy may
+            # run on every push so we don't want to re-fetch ~150 MB each
+            # time).  Falls through silently if playwright is missing
+            # from requirements (older branches).
+            if python -c "import playwright" 2>/dev/null; then
+              if [ ! -d /root/.cache/ms-playwright ] || [ -z "$(ls /root/.cache/ms-playwright 2>/dev/null)" ]; then
+                echo "Installing Playwright Chromium + system deps..."
+                python -m playwright install --with-deps chromium || \
+                  echo "WARN: playwright install failed; editorial body fetch will fall back to title-only"
+              else
+                echo "Playwright Chromium already present, skipping install"
+              fi
+            else
+              echo "playwright not in requirements (older branch?), skipping browser install"
+            fi
+
             deactivate
             cd ..
 
