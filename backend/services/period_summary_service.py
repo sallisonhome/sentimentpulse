@@ -3732,11 +3732,37 @@ def _call_exec(
         # Final scrub after verify pass (verify may have stripped a lead).
         result = _scrub_orphan_opener(result or "")
         is_frag_post_verify = _looks_like_fragment_lead(result)
+        # §25g follow-up (2026-06-29): re-run the monitor-only lead gate AFTER
+        # the verifier.  If the verifier drops the substantive lead sentences
+        # but leaves a monitor-only single-locale sentence, the survivor must
+        # NOT become the exec lead — strip it and fall through to placeholder.
+        # Without this, Turok's exec collapsed to a single Turkish sentence
+        # because every other sentence overpacked claims the verifier rejected.
+        before_post_verify_strip = len(result)
+        result = _strip_monitor_only_lead(result, monitor_topics)
+        exec_trace["post_verify_monitor_strip_lost"] = before_post_verify_strip - len(result)
+        # If, after all that, we're below the §25e coverage bar (too short to
+        # cover 3+ theme-tier topics), force the placeholder so the surface
+        # gets a deterministic, theme-tier-led summary instead of a one-liner.
+        # 280 chars is roughly two short sentences — below the floor for a
+        # multi-theme summary, above the floor for an honest single sentence.
+        too_short_for_coverage = (
+            len(result.strip()) < 280
+            and any(
+                bucket
+                for bucket in (critical_mass_table or {}).values()
+                if any(
+                    len(t) >= 4 and t[3] == "theme" for t in (bucket or [])
+                )
+            )
+        )
         exec_trace["final_preview"] = result[:300]
-        if not result.strip() or is_frag_post_verify:
+        exec_trace["too_short_for_coverage"] = too_short_for_coverage
+        if not result.strip() or is_frag_post_verify or too_short_for_coverage:
             logger.warning(
-                "Exec summary fragmentary/empty after §25 verify for '%s'; placeholder",
-                game_name,
+                "Exec summary fragmentary/empty/too-short after §25 verify for '%s' "
+                "(len=%d frag=%s too_short=%s); falling back to placeholder",
+                game_name, len(result), is_frag_post_verify, too_short_for_coverage,
             )
             exec_trace["placeholder_fired"] = True
             _record_exec_trace(exec_trace)
