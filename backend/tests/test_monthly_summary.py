@@ -187,10 +187,14 @@ class TestParseBoldIdeas:
         assert len(result) == 1
 
     def test_multiline_idea(self):
+        # 2026-06-29 (§21g): bold-idea candidates must open with an
+        # imperative verb so exec-summary preambles and 'Key Signal:'
+        # framings get dropped before the critic runs.  Updated this
+        # fixture so both candidates open with real bold-idea verbs.
         raw = (
-            "1. A substantive bold idea about Performance Issues that spans\n"
-            "multiple lines for emphasis and context.\n"
-            "2. Another fully-formed recommendation referencing Story Mode for clarity."
+            "1. Address Performance Issues with a public roadmap update that\n"
+            "spans multiple lines for emphasis and context.\n"
+            "2. Spotlight Story Mode in a community-led narrative event for clarity."
         )
         result = _parse_bold_ideas(raw)
         assert len(result) >= 1

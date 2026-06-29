@@ -1761,46 +1761,85 @@ def _self_criticize(
         posts_lookup.append(f"  [{cite}] {snippet}")
     posts_block = "\n".join(posts_lookup)
 
-    crit_prompt = (
-        "You are a STRICT fact-checking pass.  An earlier LLM produced the "
-        "text below and tagged each claim with a citation in square brackets "
-        "pointing to a source post.  Your job is to verdict each sentence (or "
-        "numbered item) as SUPPORTED or UNSUPPORTED by the post(s) it cites.\n\n"
-        "Core rules:\n"
-        "- A sentence is SUPPORTED only if the post it cites genuinely contains "
-        "the specific claim being made.  Topical proximity is NOT support.\n"
-        "- Do not bring in outside knowledge.  Only the post text shown below "
-        "is admissible evidence.\n"
-        "- If a sentence cites multiple posts, support from any ONE of them is "
-        "enough; the sentence is SUPPORTED.\n"
-        "- If the sentence cites a post that does not contain the claim, UNSUPPORTED.\n"
-        "- If the sentence has no citation at all, UNSUPPORTED.\n\n"
-        "Specific-entity grounding (CLAUDE.md §20, hardened 2026-06-28):\n"
-        "- If the sentence names a SPECIFIC mechanic, feature, or system "
-        "(e.g. 'difficulty settings', 'matchmaking', 'weapon balance', 'Siege "
-        "mode', 'stratagem stacking'), the cited post must literally name that "
-        "same mechanic or use words clearly referring to it.  Generic complaints "
-        "('it looks generic', 'disappointed in gameplay', 'window dressing') do "
-        "NOT support a specific-mechanic recommendation.  UNSUPPORTED.\n"
-        "- If the sentence claims a DATE, DEADLINE, RELEASE WINDOW, or version "
-        "number ('before October release', 'by Q1', 'in patch 14', 'within 2 "
-        "weeks'), the cited post must literally contain that date/version, or "
-        "the sentence is UNSUPPORTED.  The current date or general industry "
-        "knowledge is not admissible.\n"
-        "- If the sentence prescribes a POST-LAUNCH action ('patch', 'hotfix', "
-        "'rebalance', 'update the live game') and the cited post is clearly "
-        "discussing a pre-release game (mentions trailers, reveals, wishlist, "
-        "announcement, 'looking forward', 'looks like it will', 'after seeing "
-        "gameplay', 'preview'), mark UNSUPPORTED.  A game that is not out "
-        "cannot be patched.\n"
-        "- When in doubt, UNSUPPORTED.  Saying nothing is preferred over saying "
-        "something the post does not support.\n\n"
-        f"BLOCK KIND: {block_kind}\n\n"
-        "SOURCE POSTS (the only admissible evidence):\n"
-        f"{posts_block}\n\n"
-        "TEXT TO VERIFY (sentences are separated by the delimiter "
-        f"{_SELF_CRIT_SENTENCE_DELIM} ):\n"
-    )
+    # 2026-06-29 (§21g): bold_ideas is interpretive by design — it proposes
+    # marketing/community moves, not factual claims.  Using the SAME strict
+    # standard as exec_summary destroyed 60–100% of ideas across substantive
+    # titles in the live trace.  Bold ideas get a relaxed "is the cited
+    # entity or topic actually referenced in the post?" test.  Exec and
+    # recommendations keep the strict standard.
+    if block_kind == "bold_ideas":
+        crit_prompt = (
+            "You are a citation-relevance reviewer for STRATEGIC BOLD IDEAS "
+            "(speculative marketing/community moves anchored on community "
+            "signal).  Bold ideas are interpretive by design — do NOT apply "
+            "strict fact-check criteria.\n\n"
+            "For each bold idea below, mark SUPPORTED if any of:\n"
+            "  • The idea cites a [P-NNN] post whose text mentions or relates "
+            "to the entity, person, comparison, or topic the idea references.\n"
+            "  • The idea names a specific entity (person, product, comparison, "
+            "event) and the cited post mentions that entity OR a clearly-"
+            "related concept.\n"
+            "  • The idea proposes a marketing move (Lean into, Amplify, "
+            "Spotlight, Partner with, Launch, Host) and the cited post "
+            "contains community signal that the move would address or "
+            "capitalize on.\n\n"
+            "Mark UNSUPPORTED ONLY when:\n"
+            "  • The idea cites no [P-NNN] post at all.\n"
+            "  • The idea cites a [P-NNN] post whose text is COMPLETELY "
+            "unrelated to the idea's subject (no entity overlap, no topical "
+            "connection, no plausible interpretive bridge).\n"
+            "  • The idea makes a hard date/version/release-window claim "
+            "that the cited post does not contain.\n\n"
+            "Bold ideas are NOT statements of fact — they are strategic "
+            "proposals.  Topical proximity IS support.  Lean SUPPORTED when "
+            "the cited post and the idea share an entity or theme.\n\n"
+            f"BLOCK KIND: {block_kind}\n\n"
+            "SOURCE POSTS (the only admissible evidence):\n"
+            f"{posts_block}\n\n"
+            "TEXT TO VERIFY (each sentence delimited by "
+            f"{_SELF_CRIT_SENTENCE_DELIM} ):\n"
+        )
+    else:
+        crit_prompt = (
+            "You are a STRICT fact-checking pass.  An earlier LLM produced the "
+            "text below and tagged each claim with a citation in square brackets "
+            "pointing to a source post.  Your job is to verdict each sentence (or "
+            "numbered item) as SUPPORTED or UNSUPPORTED by the post(s) it cites.\n\n"
+            "Core rules:\n"
+            "- A sentence is SUPPORTED only if the post it cites genuinely contains "
+            "the specific claim being made.  Topical proximity is NOT support.\n"
+            "- Do not bring in outside knowledge.  Only the post text shown below "
+            "is admissible evidence.\n"
+            "- If a sentence cites multiple posts, support from any ONE of them is "
+            "enough; the sentence is SUPPORTED.\n"
+            "- If the sentence cites a post that does not contain the claim, UNSUPPORTED.\n"
+            "- If the sentence has no citation at all, UNSUPPORTED.\n\n"
+            "Specific-entity grounding (CLAUDE.md §20, hardened 2026-06-28):\n"
+            "- If the sentence names a SPECIFIC mechanic, feature, or system "
+            "(e.g. 'difficulty settings', 'matchmaking', 'weapon balance', 'Siege "
+            "mode', 'stratagem stacking'), the cited post must literally name that "
+            "same mechanic or use words clearly referring to it.  Generic complaints "
+            "('it looks generic', 'disappointed in gameplay', 'window dressing') do "
+            "NOT support a specific-mechanic recommendation.  UNSUPPORTED.\n"
+            "- If the sentence claims a DATE, DEADLINE, RELEASE WINDOW, or version "
+            "number ('before October release', 'by Q1', 'in patch 14', 'within 2 "
+            "weeks'), the cited post must literally contain that date/version, or "
+            "the sentence is UNSUPPORTED.  The current date or general industry "
+            "knowledge is not admissible.\n"
+            "- If the sentence prescribes a POST-LAUNCH action ('patch', 'hotfix', "
+            "'rebalance', 'update the live game') and the cited post is clearly "
+            "discussing a pre-release game (mentions trailers, reveals, wishlist, "
+            "announcement, 'looking forward', 'looks like it will', 'after seeing "
+            "gameplay', 'preview'), mark UNSUPPORTED.  A game that is not out "
+            "cannot be patched.\n"
+            "- When in doubt, UNSUPPORTED.  Saying nothing is preferred over saying "
+            "something the post does not support.\n\n"
+            f"BLOCK KIND: {block_kind}\n\n"
+            "SOURCE POSTS (the only admissible evidence):\n"
+            f"{posts_block}\n\n"
+            "TEXT TO VERIFY (sentences are separated by the delimiter "
+            f"{_SELF_CRIT_SENTENCE_DELIM} ):\n"
+        )
 
     # Split into sentence-level chunks with a stable delimiter so we can
     # parse the critic's verdicts back into our sentence list.
@@ -2321,6 +2360,31 @@ _COMMON_CAPITALIZED = frozenset({
     "steam", "playstation", "ps5", "ps4", "xbox", "pc", "switch", "epic",
     "reddit", "bluesky", "youtube", "twitch", "discord", "twitter",
     "tiktok", "facebook", "instagram", "north", "south", "east", "west",
+    # 2026-06-29 (§21g): bolded-entity extractor was including the leading
+    # verb of bolded phrases (e.g. **Amplify Welsh VO**) and flagging the
+    # verb as a fabrication.  Add the bold-idea imperative-verb vocabulary
+    # here so verbs are never treated as fabricated proper nouns.
+    "lean", "amplify", "double", "anchor", "spotlight", "embrace",
+    "capitalize", "leverage", "harness", "elevate", "champion",
+    "highlight", "emphasize", "partner", "collaborate", "sponsor",
+    "host", "launch", "run", "organize", "feature", "promote",
+    "distribute", "seed", "cultivate", "grow", "recruit", "invite",
+    "create", "build", "design", "produce", "publish", "release",
+    "reveal", "drop", "ship", "clarify", "communicate", "document",
+    "showcase", "reassure", "announce", "share", "update", "explain",
+    "confirm", "acknowledge", "respond", "reframe", "reposition",
+    "audit", "investigate", "review", "analyze", "measure",
+    "benchmark", "track", "monitor", "surface", "expose", "probe",
+    "examine", "profile", "diagnose", "test", "experiment", "pilot",
+    "prototype", "trial", "invest", "expand", "sunset", "deploy",
+    "pivot", "tie", "connect", "bridge", "introduce", "address",
+    "patch", "hotfix", "rebalance", "nerf", "buff", "resolve",
+    "prioritize",
+    # Common business / marketing abbreviations that look like proper nouns
+    "pr", "qa", "ux", "ui", "ip", "dlc", "vo", "ai", "ml", "ar", "vr",
+    "hr", "ceo", "cto", "cmo", "pm", "kpi", "roi", "ttv", "mau", "dau",
+    "ccu", "faq", "api", "sdk", "cdn", "crm", "saas", "b2b", "b2c",
+    "ftue", "qoq", "yoy", "mtd", "ytd", "mvp", "poc", "rfp", "oem",
 })
 
 # Tokens to extract for whitelist building.  Keep alphanumerics, apostrophes,
@@ -2356,7 +2420,17 @@ def _build_input_whitelist(
     sources.extend(topic_labels or [])
     for src in sources:
         for tok in _WORD_TOKEN_RE.findall(src):
-            whitelist.add(tok.lower())
+            # 2026-06-29 (§21g): add both the bare form and the possessive
+            # form so a candidate like "Jeff's" matches when the post has
+            # "Jeff".  Likewise add the bare form when the source has the
+            # possessive.  This closes the "Jeff's flagged as fabrication"
+            # bug exposed by the bold-ideas live trace.
+            t = tok.lower()
+            whitelist.add(t)
+            if t.endswith("'s"):
+                whitelist.add(t[:-2])
+            else:
+                whitelist.add(t + "'s")
     return whitelist
 
 
@@ -3210,9 +3284,49 @@ def _parse_bold_ideas(raw: str) -> list[str]:
         if _looks_like_meta_leak(c):
             logger.info("Bold idea dropped (meta-leak): %r", c[:80])
             continue
+        # 2026-06-29 (§21g): drop preamble candidates that bled in when the
+        # LLM produced an exec block + 'Key Signal:' framing before the
+        # numbered list.  A real bold idea starts with an imperative verb
+        # (Amplify, Lean into, Partner with, Launch, Spotlight, Host,
+        # Sponsor, etc.) once we strip leading markdown decoration.
+        stripped_lead = re.sub(r"^[\s*#\-•]+", "", c).strip()
+        # Strip leading numbering if any (e.g. '1. Amplify ...').
+        stripped_lead = re.sub(r"^\d+\.\s*", "", stripped_lead).strip()
+        # Strip leading bold marker (e.g. '**Amplify ...').
+        stripped_lead = re.sub(r"^\*+\s*", "", stripped_lead).strip()
+        if not _BOLD_IDEA_IMPERATIVE_RE.match(stripped_lead):
+            logger.info(
+                "Bold idea dropped (no imperative-verb opener after parse): %r",
+                stripped_lead[:80],
+            )
+            continue
         cleaned.append(c)
 
     return cleaned
+
+
+# 2026-06-29 (§21g): bold-idea candidates must open with an imperative verb
+# from the strategic-marketing vocabulary.  Anything else — exec prose,
+# 'Key Signal:' framing, 'The community is...', 'Post [P-NNN]...' — is
+# preamble that bled into the parsed list and should be dropped before the
+# critic runs.  Verbs are intentionally broad (covers amplify-class +
+# partnership + content + investigation + launch verbs).
+_BOLD_IDEA_IMPERATIVE_RE = re.compile(
+    r"^(?:lean\s+into|amplify|double\s+down|anchor|spotlight|embrace|"
+    r"capitalize|leverage|harness|elevate|champion|highlight|emphasize|"
+    r"partner|collaborate|co-create|sponsor|host|launch|run|organize|"
+    r"feature|promote|distribute|seed|cultivate|grow|recruit|invite|"
+    r"create|build|design|produce|publish|release|reveal|drop|ship|"
+    r"clarify|communicate|document|showcase|reassure|announce|share|"
+    r"update|explain|confirm|acknowledge|respond|reframe|reposition|"
+    r"audit|investigate|review|analyze|measure|benchmark|track|monitor|"
+    r"surface|expose|probe|examine|profile|diagnose|test|experiment|"
+    r"pilot|prototype|trial|invest|expand|sunset|deploy|roll\s*out|"
+    r"pivot|tie|connect|bridge|introduce|kick\s*off|stand\s*up|"
+    r"address|patch|hotfix|rebalance|nerf|buff|resolve|prioritize|"
+    r"improve|optimize|tune|stabilize|polish|refine|fix|repair)\b",
+    re.IGNORECASE,
+)
 
 
 def _parse_recommended_actions(raw: str) -> Optional[str]:
