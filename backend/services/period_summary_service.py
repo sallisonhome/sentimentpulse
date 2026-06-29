@@ -1531,6 +1531,11 @@ def _call_claude_for_period(
     if sample_posts_with_ids:
         annotated_samples, citation_map = _assign_citation_ids(sample_posts_with_ids)
 
+    # §25g: derive the per-game narrow-audience allowlist from commercial_context
+    # so SHIPPED REGIONAL CONTENT tokens (e.g. Welsh on Bus Bound) are exempted
+    # from the marker-substring gate in _strip_monitor_only_recs.
+    narrow_audience_allowlist = _shipped_regional_allowlist(commercial_context)
+
     exec_summary  = _call_exec(
         client, game_name, window_label, pos_str, neg_str, neu_str,
         total_posts, pos_count, neg_count, neu_count,
@@ -1551,6 +1556,7 @@ def _call_claude_for_period(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
+        narrow_audience_allowlist=narrow_audience_allowlist,
     )
     # §22b + §24e: low-rec-count retry on every substantive title (no theme gate).
     rec_actions = _retry_actions_if_below_min(
@@ -1569,6 +1575,7 @@ def _call_claude_for_period(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
+        narrow_audience_allowlist=narrow_audience_allowlist,
     )
     bold_ideas    = _call_bold_ideas(
         client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
@@ -3374,6 +3381,7 @@ def _strip_monitor_only_lead(text: str, monitor_topic_labels: list[str]) -> str:
 def _strip_monitor_only_recs(
     rec_text: Optional[str],
     critical_mass_table: Optional[dict],
+    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> Optional[str]:
     """§25 companion gate: drop any numbered recommendation whose bolded
     entity or topic-label matches a monitor-only entry in the critical-mass
@@ -3386,19 +3394,32 @@ def _strip_monitor_only_recs(
 
     Match logic: case-insensitive substring of any monitor-only label
     anywhere in the rec item.  Survivors are renumbered.
+
+    §25g extension (2026-06-29): the topic-label substring match misses
+    cases where the LLM paraphrases the action subject (e.g. monitor-only
+    label is "Game Language Support Questions" but the rec reads "Clarify
+    localization support timeline, including Turkish language availability").
+    A second gate now drops any rec whose text matches a §21h narrow-
+    audience marker (Turkish, Spanish, Brazilian, Regional, Localization,
+    etc.) UNLESS the matched token is on the per-game allowlist (e.g. Welsh
+    on Bus Bound).  This makes the gate symmetrical to the critical-mass
+    table's narrow-audience demotion and prevents WISH-style language-
+    request recs from surviving when the topic label was correctly demoted.
     """
-    if not rec_text or not critical_mass_table:
+    if not rec_text:
         return rec_text
     # Collect all monitor-only labels across sentiment buckets.
     monitor_labels: list[str] = []
-    for bucket_items in critical_mass_table.values():
-        for entry in (bucket_items or []):
-            if len(entry) < 4:
-                continue
-            label, _w, _d, tier = entry
-            if tier == "monitor-only" and label:
-                monitor_labels.append(label.lower())
-    if not monitor_labels:
+    if critical_mass_table:
+        for bucket_items in critical_mass_table.values():
+            for entry in (bucket_items or []):
+                if len(entry) < 4:
+                    continue
+                label, _w, _d, tier = entry
+                if tier == "monitor-only" and label:
+                    monitor_labels.append(label.lower())
+    # If neither gate has any signal to act on, return unchanged.
+    if not monitor_labels and not _NARROW_AUDIENCE_RE.search(rec_text):
         return rec_text
     # Parse into numbered items.
     items: list[str] = []
@@ -3415,19 +3436,41 @@ def _strip_monitor_only_recs(
         items.append(" ".join(current).strip())
     if not items:
         return rec_text
-    # Filter: drop any item containing a monitor-only label substring.
+    # Filter: drop any item containing a monitor-only label substring
+    # OR matching a §21h narrow-audience marker that's not allowlisted (§25g).
+    allow_low = [t.lower() for t in (narrow_audience_allowlist or [])]
     kept: list[str] = []
     for item in items:
         item_low = item.lower()
         dropped_label: Optional[str] = None
+        dropped_reason: str = ""
+        # Gate A: substring match against monitor-only topic labels.
         for label in monitor_labels:
             if label in item_low:
                 dropped_label = label
+                dropped_reason = "monitor-only topic label"
                 break
+        # Gate B: §25g narrow-audience marker substring match, where the
+        # matched token is NOT on the per-game allowlist.  This catches the
+        # "Clarify localization timeline including Turkish" shape where the
+        # LLM paraphrased the action away from the demoted topic label but
+        # still anchored on a narrow-audience marker.
+        if not dropped_label:
+            m = _NARROW_AUDIENCE_RE.search(item)
+            if m:
+                matched = m.group(0).lower()
+                # Build an exempt set: matched token allowed if any allowlist
+                # token is a substring of the matched span, OR vice versa.
+                exempt = any(
+                    t in matched or matched in t for t in allow_low
+                )
+                if not exempt:
+                    dropped_label = matched
+                    dropped_reason = "narrow-audience marker (§25g)"
         if dropped_label:
             logger.warning(
-                "§25 stripping rec on monitor-only topic %r: %s",
-                dropped_label, item[:160],
+                "§25 stripping rec on %s %r: %s",
+                dropped_reason, dropped_label, item[:160],
             )
             continue
         kept.append(item)
@@ -3789,6 +3832,7 @@ def _retry_actions_if_below_min(
     commercial_context: Optional[str] = None,
     critical_mass_table: Optional[dict] = None,
     editorial_articles: Optional[list] = None,
+    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> Optional[str]:
     """§22b: if `rec_actions` has fewer than _REC_COUNT_MIN valid items on a
     substantive title with at least one theme-tier topic, do ONE retry
@@ -3855,6 +3899,7 @@ def _retry_actions_if_below_min(
         critical_mass_table=critical_mass_table,
         retry_fix_list_hint=hint,
         editorial_articles=editorial_articles,
+        narrow_audience_allowlist=narrow_audience_allowlist,
     )
     retried_count = _count_valid_recommendations(retried)
     if retried_count >= count:
@@ -3888,6 +3933,9 @@ def _call_actions(
     retry_fix_list_hint: Optional[str] = None,
     # §24e (2026-06-29): editorial articles contribute to fab whitelist.
     editorial_articles: Optional[list] = None,
+    # §25g (2026-06-29): per-game narrow-audience allowlist exempts shipped
+    # regional content (e.g. Welsh on Bus Bound) from the marker-substring gate.
+    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> str:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -4059,8 +4107,14 @@ def _call_actions(
             )
         recs_trace["after_release_gate"] = sanitized.count("\n") + 1 if sanitized else 0
         # §25 companion gate: strip recs anchored on monitor-only topics.
+        # §25g: also drop recs anchored on §21h narrow-audience markers (e.g.
+        # "localization timeline including Turkish") unless the matched token
+        # is on the per-game allowlist (e.g. Welsh on Bus Bound).
         if sanitized:
-            sanitized = _strip_monitor_only_recs(sanitized, critical_mass_table)
+            sanitized = _strip_monitor_only_recs(
+                sanitized, critical_mass_table,
+                narrow_audience_allowlist=narrow_audience_allowlist,
+            )
         recs_trace["after_strip_monitor_only"] = (sanitized.count("\n") + 1) if sanitized else 0
         # §25: FINAL verification gate — require quoted source passage per item.
         if sanitized:

@@ -15,6 +15,7 @@ from services.period_summary_service import (
     _retry_actions_if_below_min,
     _REC_COUNT_MIN,
     _shipped_regional_allowlist,
+    _strip_monitor_only_recs,
 )
 
 
@@ -135,6 +136,78 @@ class TestShippedRegionalAllowlistParser:
     def test_deduplicates_tokens(self):
         ctx = "SHIPPED REGIONAL CONTENT: Welsh, welsh, WELSH"
         assert _shipped_regional_allowlist(ctx) == ["welsh"]
+
+
+class TestStripMonitorOnlyRecsNarrowAudience:
+    """§25g: _strip_monitor_only_recs gate B — drop recs whose text matches a
+    §21h narrow-audience marker that's not on the per-game allowlist."""
+
+    def _rec(self, text: str) -> str:
+        return f"1. {text}"
+
+    def test_drops_turkish_localization_rec_no_allowlist(self):
+        rec = self._rec(
+            "Communicate **localization support timeline**, including "
+            "Turkish language availability \u2014 resolve emerging regional "
+            "support questions before launch. [P-004]"
+        )
+        out = _strip_monitor_only_recs(rec, critical_mass_table={})
+        assert out == "" or out is None or "Turkish" not in (out or "")
+
+    def test_keeps_welsh_rec_when_welsh_on_allowlist(self):
+        rec = self._rec(
+            "Amplify **Welsh VO cast and Emberville setting** \u2014 "
+            "community celebration of shipped Welsh-language content with "
+            "named voice talent. [P-001, P-016]"
+        )
+        out = _strip_monitor_only_recs(
+            rec, critical_mass_table={},
+            narrow_audience_allowlist=["welsh"],
+        )
+        # Renumbered survivor should still mention Welsh.
+        assert out and "Welsh" in out, f"expected Welsh rec to survive, got: {out!r}"
+
+    def test_drops_welsh_rec_when_welsh_NOT_on_allowlist(self):
+        # Same rec on a game whose commercial_context does NOT name Welsh —
+        # we treat the Welsh mention as a WISH and drop it.
+        rec = self._rec(
+            "Communicate **Welsh language support** roadmap \u2014 resolve "
+            "regional support requests before launch. [P-007]"
+        )
+        out = _strip_monitor_only_recs(rec, critical_mass_table={})
+        assert out == "" or out is None or "Welsh" not in (out or "")
+
+    def test_keeps_generic_rec_without_locale_markers(self):
+        rec = self._rec(
+            "Patch **execute animation collision** \u2014 high-impact "
+            "combat bug. [P-011]"
+        )
+        out = _strip_monitor_only_recs(rec, critical_mass_table={})
+        assert out and "execute animation" in out
+
+    def test_drops_brazilian_localization_rec(self):
+        rec = self._rec(
+            "Clarify **Brazilian Portuguese support** timeline. [P-022]"
+        )
+        out = _strip_monitor_only_recs(rec, critical_mass_table={})
+        assert out == "" or out is None or "Brazilian" not in (out or "")
+
+    def test_renumbers_survivors_after_dropping_locale_rec(self):
+        recs = (
+            "1. Patch **execute animation collision** [P-011]\n\n"
+            "2. Communicate **Turkish language support** roadmap [P-004]\n\n"
+            "3. Spotlight **co-op gameplay** [P-005]"
+        )
+        out = _strip_monitor_only_recs(recs, critical_mass_table={})
+        assert out and "Turkish" not in out
+        # Survivors should be renumbered 1. and 2.
+        assert "1. Patch" in out
+        assert "2. Spotlight" in out
+
+    def test_passes_through_when_no_table_and_no_markers(self):
+        rec = self._rec("Patch **combat bug** [P-001]")
+        out = _strip_monitor_only_recs(rec, critical_mass_table=None)
+        assert out == rec
 
 
 class TestCountValidRecommendations:
