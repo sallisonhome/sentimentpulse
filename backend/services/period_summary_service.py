@@ -3125,11 +3125,22 @@ def _call_bold_ideas(
         prompt += f"REPRESENTATIVE SAMPLE POSTS:\n{samples_block}\n\n"
 
     prompt += (
-        f"Format (when ideas exist):\n"
-        f"1. <Tight bold idea naming a **specific entity**, 25-40 words>\n"
-        f"2. <Optional second>\n\n"
-        f"No markdown headings. No \"# Analysis\" or \"## Key Observation\" sections. "
-        f"No preamble. Either the numbered list, or NONE."
+        f"OUTPUT FORMAT (MANDATORY — read carefully):\n"
+        f"Your response MUST be ONE of these two shapes, and NOTHING ELSE:\n\n"
+        f"  SHAPE A (1-2 bold ideas):\n"
+        f"  1. <Imperative-verb opener> **specific entity** — <rationale, 25-40 words>. [P-NNN]\n"
+        f"  2. <Optional second, same shape>\n\n"
+        f"  SHAPE B (no actionable bold idea found):\n"
+        f"  NONE\n\n"
+        f"HARD PROHIBITIONS — do NOT emit any of the following:\n"
+        f"  • NO '# EXECUTIVE SUMMARY', '## Analysis', '## Key Observation', or any markdown headings.\n"
+        f"  • NO '**Key Signal:**' or '**Observation:**' framing lines.\n"
+        f"  • NO preamble paragraphs describing the data before the numbered list.\n"
+        f"  • NO trailing commentary or analysis after the numbered list.\n"
+        f"  • Each numbered item MUST start with an imperative verb (Amplify, Lean into, "
+        f"Spotlight, Partner with, Launch, Host, Sponsor, Address, etc.) OR a bolded entity "
+        f"with the imperative verb in the same sentence.\n\n"
+        f"If your first instinct is to write an exec-summary preamble: don't. Skip directly to '1. <Verb>'."
     )
 
     trace: dict = {"game_name": game_name}
@@ -3286,18 +3297,13 @@ def _parse_bold_ideas(raw: str) -> list[str]:
             continue
         # 2026-06-29 (§21g): drop preamble candidates that bled in when the
         # LLM produced an exec block + 'Key Signal:' framing before the
-        # numbered list.  A real bold idea starts with an imperative verb
-        # (Amplify, Lean into, Partner with, Launch, Spotlight, Host,
-        # Sponsor, etc.) once we strip leading markdown decoration.
-        stripped_lead = re.sub(r"^[\s*#\-•]+", "", c).strip()
-        # Strip leading numbering if any (e.g. '1. Amplify ...').
-        stripped_lead = re.sub(r"^\d+\.\s*", "", stripped_lead).strip()
-        # Strip leading bold marker (e.g. '**Amplify ...').
-        stripped_lead = re.sub(r"^\*+\s*", "", stripped_lead).strip()
-        if not _BOLD_IDEA_IMPERATIVE_RE.match(stripped_lead):
+        # numbered list.  A real bold idea opens with an imperative verb
+        # OR a bolded entity followed by an imperative verb in the first
+        # sentence.
+        if not _bold_idea_has_imperative(c):
             logger.info(
-                "Bold idea dropped (no imperative-verb opener after parse): %r",
-                stripped_lead[:80],
+                "Bold idea dropped (no imperative verb in first sentence): %r",
+                c[:120],
             )
             continue
         cleaned.append(c)
@@ -3311,8 +3317,8 @@ def _parse_bold_ideas(raw: str) -> list[str]:
 # preamble that bled into the parsed list and should be dropped before the
 # critic runs.  Verbs are intentionally broad (covers amplify-class +
 # partnership + content + investigation + launch verbs).
-_BOLD_IDEA_IMPERATIVE_RE = re.compile(
-    r"^(?:lean\s+into|amplify|double\s+down|anchor|spotlight|embrace|"
+_BOLD_IDEA_IMPERATIVE_VERBS = (
+    r"lean\s+into|amplify|double\s+down|anchor|spotlight|embrace|"
     r"capitalize|leverage|harness|elevate|champion|highlight|emphasize|"
     r"partner|collaborate|co-create|sponsor|host|launch|run|organize|"
     r"feature|promote|distribute|seed|cultivate|grow|recruit|invite|"
@@ -3324,9 +3330,48 @@ _BOLD_IDEA_IMPERATIVE_RE = re.compile(
     r"pilot|prototype|trial|invest|expand|sunset|deploy|roll\s*out|"
     r"pivot|tie|connect|bridge|introduce|kick\s*off|stand\s*up|"
     r"address|patch|hotfix|rebalance|nerf|buff|resolve|prioritize|"
-    r"improve|optimize|tune|stabilize|polish|refine|fix|repair)\b",
+    r"improve|optimize|tune|stabilize|polish|refine|fix|repair|"
+    r"position|reposition|formalize|capitalise|recognise|recognize|"
+    r"convert|migrate|seed|nurture|onboard"
+)
+_BOLD_IDEA_IMPERATIVE_RE = re.compile(
+    r"^(?:" + _BOLD_IDEA_IMPERATIVE_VERBS + r")\b",
     re.IGNORECASE,
 )
+# 2026-06-29 (§21g): also accept candidates that open with a bolded entity
+# but include an imperative verb LATER in the first sentence.  Example from
+# live trace: "1. **Black Templars** faction community is self-organizing
+# around immersion and brotherhood [P-021]. Spotlight this organic..."  --
+# the imperative "Spotlight" comes after a subject-first clause but the
+# idea is still a valid bold-idea opener.
+_BOLD_IDEA_INLINE_VERB_RE = re.compile(
+    r"\b(?:" + _BOLD_IDEA_IMPERATIVE_VERBS + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _bold_idea_has_imperative(candidate: str) -> bool:
+    """True if `candidate` opens with (or contains in its first sentence)
+    an imperative verb appropriate to a bold idea.  Tolerates leading
+    markdown decoration, numbering, and bolded-entity subject openers.
+    """
+    if not candidate:
+        return False
+    # Strip leading markdown decoration (#, *, -, bullets, whitespace).
+    s = re.sub(r"^[\s*#\-•]+", "", candidate).strip()
+    # Strip leading numbering (e.g. '1. ' or '2) ').
+    s = re.sub(r"^\d+[\.\)]\s*", "", s).strip()
+    # Strip leading bold marker (e.g. '**Amplify ...' or '**Black Templars** ...').
+    s = re.sub(r"^\*+\s*", "", s).strip()
+    # Case 1: opens directly with an imperative verb.
+    if _BOLD_IDEA_IMPERATIVE_RE.match(s):
+        return True
+    # Case 2: opens with a bolded entity (subject-first), but the first
+    # sentence still contains an imperative verb later.
+    first_sentence = re.split(r"(?<=[.!?])\s+", s, maxsplit=1)[0]
+    if _BOLD_IDEA_INLINE_VERB_RE.search(first_sentence):
+        return True
+    return False
 
 
 def _parse_recommended_actions(raw: str) -> Optional[str]:

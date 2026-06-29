@@ -213,9 +213,14 @@ class TestCallBoldIdeasPrompt:
         pss._call_bold_ideas(client, "Test Game", "April 2026",
                              "Combat", "Story", "Trailers", 100)
         p = client.prompts[0]
-        # The new prompt must explicitly forbid the markdown-heading output we saw
-        assert "No markdown headings" in p
-        assert "# Analysis" in p
+        # 2026-06-29 (§21g): the prompt was rewritten to use "HARD
+        # PROHIBITIONS" framing after the LLM was leaking '# EXECUTIVE
+        # SUMMARY' preambles into the bold-ideas output across all 5
+        # substantive titles.  The new wording must still explicitly
+        # forbid markdown headings and name '# EXECUTIVE SUMMARY' /
+        # '## Analysis' / '## Key Observation' as the patterns to drop.
+        assert "# EXECUTIVE SUMMARY" in p or "# Analysis" in p
+        assert "markdown headings" in p.lower()
 
     def test_bold_ideas_preserves_none_escape(self):
         client = _CapturingClient(response="NONE")
