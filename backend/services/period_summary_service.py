@@ -131,13 +131,9 @@ def generate_monthly_summary(
     distinctive = _distinctive_entities(sample_posts)
 
     # CLAUDE.md §21b: critical-mass tiers for the monthly window.
-    # §25g: pass the per-game SHIPPED REGIONAL CONTENT allowlist parsed from
-    # the commercial_context brief, so deliberate localization plays remain
-    # theme-tier and don't get demoted by the §21h narrow-audience rule.
-    cm_table = _topic_critical_mass_table(
-        db, game_id, window_start, window_end,
-        narrow_audience_allowlist=_shipped_regional_allowlist(game.commercial_context),
-    )
+    # §25h: tiers are now {theme, low-volume, monitor-only} based purely on
+    # volume thresholds.  No pattern-based demotion.  See §25h in CLAUDE.md.
+    cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
 
     # CLAUDE.md §24: fetch (or reuse cached) editorial articles for this
     # monthly cycle.  Safe to run with total<MIN_SUBSTANTIVE_POSTS — the
@@ -315,13 +311,9 @@ def generate_window_summary(
     # only recommend action on themes that survived multiple-day or
     # high-weight evidence — not on single-poster topics that surfaced
     # for display purposes only.
-    # §25g: pass the per-game SHIPPED REGIONAL CONTENT allowlist parsed from
-    # the commercial_context brief, so deliberate localization plays remain
-    # theme-tier and don't get demoted by the §21h narrow-audience rule.
-    cm_table = _topic_critical_mass_table(
-        db, game_id, window_start, window_end,
-        narrow_audience_allowlist=_shipped_regional_allowlist(game.commercial_context),
-    )
+    # §25h: tiers are now {theme, low-volume, monitor-only} based purely on
+    # volume thresholds.  No pattern-based demotion.  See §25h in CLAUDE.md.
+    cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
 
     # CLAUDE.md §24: weekly editorial cache.  Separate from monthly (§24
     # uses scope='weekly' here vs 'monthly' in generate_monthly_summary,
@@ -577,21 +569,35 @@ _1DAY_MIN_AUTHORS = 3   # same as §15 author threshold
 _TOPIC_REC_MIN_WEIGHT       = 5
 _TOPIC_REC_MIN_DAYS         = 2
 _TOPIC_REC_SINGLE_DAY_WEIGHT = 8
+# §25h (2026-06-29): topics with weight ≤ _LOW_VOLUME_WEIGHT_MAX are not
+# recommendation-worthy on their own.  They rank in the top-5 only because
+# absolute weekly volume is so low that even single-post topics surface.
+# Tagged `low-volume` and may surface in the exec ONLY via the §25h
+# SHIPPED REGIONAL CONTENT exception, with a mandatory low-volume qualifier.
+_LOW_VOLUME_WEIGHT_MAX      = 2
 
 
 def _topic_critical_mass_table(
     db: Session, game_id: int, window_start, window_end,
-    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> dict[str, list[tuple[str, float, int, str]]]:
     """Return per-sentiment lists of (label, weight, day_appearances, tier).
 
     `tier` is one of:
-      'theme'         — cleared the recommendation threshold; OK to recommend.
-      'monitor-only'  — visible signal but too thin for a recommendation.
+      'theme'        — cleared the volume threshold; OK to recommend.
+      'low-volume'   — ranks in top-5 but weight ≤ _LOW_VOLUME_WEIGHT_MAX.
+                       Not recommendation-worthy on its own.  May surface
+                       in the exec ONLY via the §25h SHIPPED REGIONAL
+                       CONTENT exception with a mandatory low-volume
+                       qualifier.
+      'monitor-only' — visible in top-5 but does not clear theme threshold
+                       and is above the low-volume cutoff.  Listed for
+                       context; the prompt forbids recommending on it.
 
-    Used by the actions + bold-ideas prompts: only 'theme' tier topics may
-    drive a LIABILITY recommendation.  Topics marked 'monitor-only' get
-    listed for context but the prompt forbids recommending action on them.
+    §25h (2026-06-29): volume is the only rule.  The prior §21h pattern-
+    based narrow-audience demotion is gone; pattern matching can't tell a
+    one-post Turkish topic apart from a one-post Combat Mechanics topic,
+    and both should be filtered for the same reason — not enough posts.
+    Use the volume thresholds.  Period.
     """
     out: dict[str, list[tuple[str, float, int, str]]] = {
         "positive": [], "negative": [], "neutral": [],
@@ -624,96 +630,27 @@ def _topic_critical_mass_table(
             theme = (
                 weight >= _TOPIC_REC_MIN_WEIGHT and day_count >= _TOPIC_REC_MIN_DAYS
             ) or weight >= _TOPIC_REC_SINGLE_DAY_WEIGHT
-            # §21h (restored 2026-06-29 after §25d regression):
-            # Force-demote NEGATIVE / NEUTRAL narrow-audience topics that
-            # cross the weight/day threshold.  POSITIVE narrow-audience
-            # topics are PRESERVED as theme-tier so deliberate localization
-            # plays generating community celebration (Welsh VO on Bus Bound,
-            # Brazilian Portuguese launch on a deliberately-localized title)
-            # remain valid marketing assets to amplify.
-            #
-            # The Turkish-on-Hellraiser problem was a different shape —
-            # the LLM was leading exec/recs with single-locale topics even
-            # when they had broad-base alternatives available.  That's
-            # addressed by the exec prompt's §25e+f COVERAGE clause
-            # ("Do NOT lead with regional / localization / single-locale
-            # topics") and the _strip_monitor_only_recs gate, not by
-            # demoting positive narrow-audience as well.
-            if (
-                theme
-                and sentiment in ("negative", "neutral")
-                and _topic_is_narrow_audience(
-                    label, narrow_audience_allowlist=narrow_audience_allowlist,
-                )
-            ):
-                logger.info(
-                    "§21h: demoting narrow-audience %s topic %r from theme to monitor-only "
-                    "(weight=%d days=%d)", sentiment, label, weight, day_count,
-                )
-                tier = "monitor-only"
+            if theme:
+                tier = "theme"
+            elif weight <= _LOW_VOLUME_WEIGHT_MAX:
+                tier = "low-volume"
             else:
-                tier = "theme" if theme else "monitor-only"
+                tier = "monitor-only"
             tiered.append((label, weight, day_count, tier))
         out[sentiment] = tiered
     return out
 
 
-# §21h (2026-06-29): narrow-audience topic markers — labels that name a
-# specific locale, language, country, platform, storefront, or regional
-# content scope.  These are not BROAD-BASE community themes even when they
-# cross the weight/day threshold; they reflect a single audience-of-
-# interest cluster.  When a topic label matches any of these markers, the
-# topic is force-demoted to monitor-only.
-#
-# The list is intentionally specific.  Adding a marker requires evidence
-# that this scope is consistently narrow-audience (i.e. not a broad genre/
-# mechanic discussion).  Generic gaming nouns (e.g. "co-op", "campaign",
-# "matchmaking") MUST NOT be added here.
-_NARROW_AUDIENCE_MARKERS = (
-    # Languages / locales
-    r"\bturkish\b", r"\bspanish\b", r"\bfrench\b", r"\bgerman\b",
-    r"\bitalian\b", r"\bportuguese\b", r"\bbrazilian\b", r"\brussian\b",
-    r"\bchinese\b", r"\bjapanese\b", r"\bkorean\b", r"\barabic\b",
-    r"\bpolish\b", r"\bcze[ck]h\b", r"\bdutch\b", r"\bswedish\b",
-    r"\bnorwegian\b", r"\bdanish\b", r"\bfinnish\b", r"\bgreek\b",
-    r"\bhebrew\b", r"\bukrainian\b", r"\bvietnamese\b", r"\bthai\b",
-    r"\bindonesian\b", r"\bmalay\b", r"\bfilipino\b", r"\btagalog\b",
-    r"\bhindi\b", r"\bbengali\b", r"\bpersian\b", r"\bfarsi\b",
-    r"\bromanian\b", r"\bhungarian\b", r"\bbulgarian\b", r"\bserbian\b",
-    r"\bcroatian\b", r"\bcatalan\b", r"\bwelsh\b",
-    # Countries / regions in scope-narrowing context
-    r"\bin\s+turkey\b", r"\bin\s+brazil\b", r"\bin\s+spain\b",
-    r"\bin\s+china\b", r"\bin\s+japan\b", r"\bin\s+russia\b",
-    r"\bin\s+korea\b", r"\bin\s+india\b",
-    # Generic regional / localization labels
-    r"\bregional\b", r"\blocaliz(?:e|ed|ation|ing)\b",
-    r"\blanguage\s+support\b", r"\blanguage\s+request\b",
-    # Single-platform pre-order / SKU questions
-    r"\bcollector'?s\s+edition\b", r"\bsteelbook\b", r"\bpre-?order\s+code\b",
-    r"\bplatform-specific\b", r"\bphysical\s+edition\b",
-)
-_NARROW_AUDIENCE_RE = re.compile(
-    "|".join(_NARROW_AUDIENCE_MARKERS), re.IGNORECASE,
-)
-
-
-# §25g (2026-06-29): parse the per-game commercial_context for an explicit
-# SHIPPED REGIONAL CONTENT marker line, and return the lowercase tokens that
-# should be exempted from the narrow-audience demotion for THIS game.
+# §25h (2026-06-29): the SHIPPED REGIONAL CONTENT marker stays in
+# commercial_context, but its job is now narrower — it's the ONLY signal
+# that lets a low-volume topic surface in the exec, and only with a
+# mandatory low-volume qualifier framing.  No pattern-based regex; no
+# per-game allowlist plumbing into the critical-mass table.
 #
 # Recognized line forms (case-insensitive, anywhere in commercial_context):
 #   SHIPPED REGIONAL CONTENT: welsh, scots gaelic
 #   SHIPPED_REGIONAL_CONTENT: welsh
 #   SHIPPED LOCALIZATION: welsh, brazilian portuguese
-#
-# The right-hand side is split on commas; each token is lowercased and
-# stripped.  Multi-word tokens ("brazilian portuguese") are preserved as-is —
-# _topic_is_narrow_audience does a substring match against the topic label.
-#
-# This is the mechanism for the §25g Welsh-on-Bus-Bound vs Turkish-on-
-# Hellraiser distinction:  Welsh is SHIPPED CONTENT on Bus Bound (named cast,
-# real product) → exempted from demotion; Turkish on Hellraiser is a WISH
-# (no Turkish version exists) → no exemption, stays demoted.
 _SHIPPED_REGIONAL_RE = re.compile(
     r"^[ \t]*SHIPPED[_ ](?:REGIONAL[_ ]CONTENT|LOCALIZATION)[ \t]*:[ \t]*(.+)$",
     re.IGNORECASE | re.MULTILINE,
@@ -721,9 +658,15 @@ _SHIPPED_REGIONAL_RE = re.compile(
 
 
 def _shipped_regional_allowlist(commercial_context: Optional[str]) -> list[str]:
-    """Extract the SHIPPED REGIONAL CONTENT allowlist tokens from a game's
-    commercial_context brief.  Returns [] when the brief is empty or has no
-    marker line.  §25g.
+    """Extract the SHIPPED REGIONAL CONTENT tokens from a game's
+    commercial_context brief.  Returns [] when the brief is empty or has
+    no marker line.
+
+    Used only by the §25h low-volume qualifier path: when a top-5 topic
+    matches one of these tokens AND its tier is `low-volume`, the exec may
+    surface it with the mandatory "low volume but among top topics this
+    week" framing.  All other gates (§21h regex, narrow_audience_allowlist
+    plumbing) are removed.
     """
     if not commercial_context:
         return []
@@ -736,33 +679,33 @@ def _shipped_regional_allowlist(commercial_context: Optional[str]) -> list[str]:
     return tokens
 
 
-def _topic_is_narrow_audience(
-    label: str,
-    narrow_audience_allowlist: Optional[list[str]] = None,
-) -> bool:
-    """True if `label` names a single locale / platform / SKU / regional
-    scope rather than a broad-base community theme.  §21h.
+def _shipped_regional_low_volume_topics(
+    critical_mass_table: dict[str, list[tuple[str, float, int, str]]],
+    shipped_tokens: list[str],
+) -> list[tuple[str, str, float, int]]:
+    """§25h: return [(sentiment, label, weight, day_count)] for top-5 topics
+    whose label substring-matches any shipped-regional token AND whose tier
+    is `low-volume`.  Empty when no qualifying topic exists.
 
-    Per-game allowlist (§25d follow-up 2026-06-29): a marker token may be
-    exempted FOR ONE GAME when the title has a deliberate regional content
-    investment in that locale (e.g. Welsh VO on Bus Bound).  In that case,
-    posts about the marker are celebrating a real shipped product, not
-    expressing a localization-audience wish, and the topic should remain
-    eligible for theme-tier classification.  The allowlist is a list of
-    lowercase tokens; a label matching one of those tokens is treated as
-    NOT narrow-audience for the current call.
+    The caller renders an exec sentence in the form:
+      "Low volume but among this week's top topics: community celebration
+       of the shipped <token> [P-NNN]."
     """
-    if not label:
-        return False
-    if not _NARROW_AUDIENCE_RE.search(label):
-        return False
-    # §25d allowlist: per-game exemption for deliberate regional content plays.
-    if narrow_audience_allowlist:
-        label_low = label.lower()
-        for token in narrow_audience_allowlist:
-            if token.lower() in label_low:
-                return False
-    return True
+    if not shipped_tokens or not critical_mass_table:
+        return []
+    tokens_low = [t.lower() for t in shipped_tokens]
+    out: list[tuple[str, str, float, int]] = []
+    for sentiment, rows in critical_mass_table.items():
+        for entry in (rows or []):
+            if len(entry) < 4:
+                continue
+            label, weight, days, tier = entry
+            if tier != "low-volume":
+                continue
+            label_low = (label or "").lower()
+            if any(t in label_low for t in tokens_low):
+                out.append((sentiment, label, weight, days))
+    return out
 
 
 def _format_critical_mass_block(
@@ -1531,10 +1474,8 @@ def _call_claude_for_period(
     if sample_posts_with_ids:
         annotated_samples, citation_map = _assign_citation_ids(sample_posts_with_ids)
 
-    # §25g: derive the per-game narrow-audience allowlist from commercial_context
-    # so SHIPPED REGIONAL CONTENT tokens (e.g. Welsh on Bus Bound) are exempted
-    # from the marker-substring gate in _strip_monitor_only_recs.
-    narrow_audience_allowlist = _shipped_regional_allowlist(commercial_context)
+    # §25h: SHIPPED REGIONAL CONTENT low-volume exec exception is computed
+    # inside _call_exec from commercial_context + critical_mass_table.
 
     exec_summary  = _call_exec(
         client, game_name, window_label, pos_str, neg_str, neu_str,
@@ -1556,7 +1497,6 @@ def _call_claude_for_period(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
-        narrow_audience_allowlist=narrow_audience_allowlist,
     )
     # §22b + §24e: low-rec-count retry on every substantive title (no theme gate).
     rec_actions = _retry_actions_if_below_min(
@@ -1575,7 +1515,6 @@ def _call_claude_for_period(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
-        narrow_audience_allowlist=narrow_audience_allowlist,
     )
     bold_ideas    = _call_bold_ideas(
         client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
@@ -3381,45 +3320,36 @@ def _strip_monitor_only_lead(text: str, monitor_topic_labels: list[str]) -> str:
 def _strip_monitor_only_recs(
     rec_text: Optional[str],
     critical_mass_table: Optional[dict],
-    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> Optional[str]:
-    """§25 companion gate: drop any numbered recommendation whose bolded
-    entity or topic-label matches a monitor-only entry in the critical-mass
-    table.
+    """§25 companion gate: drop any numbered recommendation whose text
+    substring-matches a monitor-only OR low-volume entry in the critical-
+    mass table (§25h: both tiers are recommendation-ineligible).
 
     Symmetrical to `_strip_monitor_only_lead` for the exec.  Without this,
-    a single-poster topic (Turkish, Spanish, Brazilian, etc.) that §21h
-    correctly tiered as monitor-only can still leak into the rec list as
-    a low-stakes "Clarify" or "Communicate" item.
+    a topic that the volume gate correctly tiered below `theme` can still
+    leak into the rec list as a low-stakes "Clarify" or "Communicate" item.
 
-    Match logic: case-insensitive substring of any monitor-only label
-    anywhere in the rec item.  Survivors are renumbered.
+    §25h (2026-06-29): the prior pattern-based narrow-audience marker gate
+    is removed.  The literal topic-label substring match is the only gate.
+    Recommendation eligibility is now governed entirely by the volume tiers
+    — a Turkish-language topic with weight 1 fails for the same reason a
+    Combat-Mechanics topic with weight 1 fails: not enough posts.
 
-    §25g extension (2026-06-29): the topic-label substring match misses
-    cases where the LLM paraphrases the action subject (e.g. monitor-only
-    label is "Game Language Support Questions" but the rec reads "Clarify
-    localization support timeline, including Turkish language availability").
-    A second gate now drops any rec whose text matches a §21h narrow-
-    audience marker (Turkish, Spanish, Brazilian, Regional, Localization,
-    etc.) UNLESS the matched token is on the per-game allowlist (e.g. Welsh
-    on Bus Bound).  This makes the gate symmetrical to the critical-mass
-    table's narrow-audience demotion and prevents WISH-style language-
-    request recs from surviving when the topic label was correctly demoted.
+    Match logic: case-insensitive substring of any monitor-only or
+    low-volume label anywhere in the rec item.  Survivors are renumbered.
     """
-    if not rec_text:
+    if not rec_text or not critical_mass_table:
         return rec_text
-    # Collect all monitor-only labels across sentiment buckets.
+    # Collect all monitor-only AND low-volume labels across sentiment buckets.
     monitor_labels: list[str] = []
-    if critical_mass_table:
-        for bucket_items in critical_mass_table.values():
-            for entry in (bucket_items or []):
-                if len(entry) < 4:
-                    continue
-                label, _w, _d, tier = entry
-                if tier == "monitor-only" and label:
-                    monitor_labels.append(label.lower())
-    # If neither gate has any signal to act on, return unchanged.
-    if not monitor_labels and not _NARROW_AUDIENCE_RE.search(rec_text):
+    for bucket_items in critical_mass_table.values():
+        for entry in (bucket_items or []):
+            if len(entry) < 4:
+                continue
+            label, _w, _d, tier = entry
+            if tier in ("monitor-only", "low-volume") and label:
+                monitor_labels.append(label.lower())
+    if not monitor_labels:
         return rec_text
     # Parse into numbered items.
     items: list[str] = []
@@ -3436,41 +3366,20 @@ def _strip_monitor_only_recs(
         items.append(" ".join(current).strip())
     if not items:
         return rec_text
-    # Filter: drop any item containing a monitor-only label substring
-    # OR matching a §21h narrow-audience marker that's not allowlisted (§25g).
-    allow_low = [t.lower() for t in (narrow_audience_allowlist or [])]
+    # Filter: drop any item containing a monitor-only or low-volume topic
+    # label substring (§25h: the only gate; pattern-based regex removed).
     kept: list[str] = []
     for item in items:
         item_low = item.lower()
         dropped_label: Optional[str] = None
-        dropped_reason: str = ""
-        # Gate A: substring match against monitor-only topic labels.
         for label in monitor_labels:
             if label in item_low:
                 dropped_label = label
-                dropped_reason = "monitor-only topic label"
                 break
-        # Gate B: §25g narrow-audience marker substring match, where the
-        # matched token is NOT on the per-game allowlist.  This catches the
-        # "Clarify localization timeline including Turkish" shape where the
-        # LLM paraphrased the action away from the demoted topic label but
-        # still anchored on a narrow-audience marker.
-        if not dropped_label:
-            m = _NARROW_AUDIENCE_RE.search(item)
-            if m:
-                matched = m.group(0).lower()
-                # Build an exempt set: matched token allowed if any allowlist
-                # token is a substring of the matched span, OR vice versa.
-                exempt = any(
-                    t in matched or matched in t for t in allow_low
-                )
-                if not exempt:
-                    dropped_label = matched
-                    dropped_reason = "narrow-audience marker (§25g)"
         if dropped_label:
             logger.warning(
-                "§25 stripping rec on %s %r: %s",
-                dropped_reason, dropped_label, item[:160],
+                "§25h stripping rec on sub-theme topic-label %r: %s",
+                dropped_label, item[:160],
             )
             continue
         kept.append(item)
@@ -3570,29 +3479,46 @@ def _call_exec(
     cm_block = _format_critical_mass_block(critical_mass_table or {})
     # Hard guard: enumerate theme-tier topics that ARE eligible to lead and
     # monitor-only topics that are NOT.  This is stronger than the table alone.
+    # §25h: compute the SHIPPED REGIONAL CONTENT low-volume exception set for
+    # this game.  Used to relax the volume gate for ONE supporting sentence
+    # about deliberately-shipped regional content, with a mandatory low-
+    # volume qualifier framing.
+    shipped_regional_tokens = _shipped_regional_allowlist(commercial_context)
+    low_volume_shipped = _shipped_regional_low_volume_topics(
+        critical_mass_table or {}, shipped_regional_tokens,
+    )
+
     theme_topics: list[str] = []
-    monitor_topics: list[str] = []
+    monitor_topics: list[str] = []   # §25h: combined monitor-only + low-volume
+    low_volume_topics: list[str] = []
     for sentiment_bucket in ("positive", "negative", "neutral"):
         for label, _weight, _days, tier in (critical_mass_table or {}).get(sentiment_bucket, []):
             if tier == "theme":
                 theme_topics.append(f"{label!r} ({sentiment_bucket})")
+            elif tier == "low-volume":
+                low_volume_topics.append(f"{label!r} ({sentiment_bucket})")
+                monitor_topics.append(f"{label!r} ({sentiment_bucket})")
             elif tier == "monitor-only":
                 monitor_topics.append(f"{label!r} ({sentiment_bucket})")
     if theme_topics or monitor_topics:
         exec_cm_clause = (
-            "EXEC LEADING-THEME GATE (HARD RULE, §21b):\n"
+            "EXEC LEADING-THEME GATE (HARD RULE, §21b + §25h):\n"
             "- Your first/lead sentence MUST describe a topic from the THEME-TIER "
             "list below (or note overall mixed/neutral sentiment if no theme "
             "exists).\n"
-            "- You MAY NOT make a MONITOR-ONLY topic the lead, the headline "
-            "liability, or the dominant framing.  Monitor-only topics are "
-            "single-post or sub-threshold signal — mentioning them as the "
-            "primary theme is a factual misrepresentation of the data.\n"
+            "- You MAY NOT make a MONITOR-ONLY or LOW-VOLUME topic the lead, "
+            "the headline liability, or the dominant framing.  These topics are "
+            "sub-threshold signal — mentioning them as the primary theme is a "
+            "factual misrepresentation of the data.\n"
             "- A monitor-only topic MAY be referenced ONCE in a supporting "
             "sentence as 'worth watching' if relevant, but never as the "
             "headline.\n"
+            "- Low-volume topics (rank top-5 but ≤2 weight) MUST NOT be "
+            "mentioned at all unless they are part of the §25h SHIPPED REGIONAL "
+            "CONTENT exception (see below), in which case they must be framed "
+            "with the explicit low-volume qualifier.\n"
             f"  THEME-TIER (eligible to lead): {', '.join(theme_topics) if theme_topics else 'NONE — lead with overall mix instead'}\n"
-            f"  MONITOR-ONLY (NOT eligible to lead): {', '.join(monitor_topics) if monitor_topics else 'none'}\n\n"
+            f"  MONITOR-ONLY / LOW-VOLUME (NOT eligible to lead): {', '.join(monitor_topics) if monitor_topics else 'none'}\n\n"
         )
     else:
         exec_cm_clause = ""
@@ -3658,11 +3584,32 @@ def _call_exec(
         "posts alone don't show (release timing, comparable launches, "
         "industry framing).  An exec built mostly on editorial citations "
         "FAILS.\n"
-        "  - Do NOT lead with regional / localization / single-locale "
-        "topics (Turkish, Spanish, Welsh, Regional, etc.).  These are "
-        "narrow-audience signals; they may be mentioned briefly in the "
-        "closing sentence at most.\n"
-        "  - Length: 3-5 sentences of analyst voice prose.  No bullet "
+        "  - VOLUME-ONLY TOPIC GATE (§25h): a topic surfaces in the exec ONLY "
+        "if it appears in the THEME-TIER list above.  Topics tiered as "
+        "MONITOR-ONLY or LOW-VOLUME are sub-threshold and MUST NOT be the "
+        "lead, the headline, or the primary framing.  The rule is volume-"
+        "based and subject-matter-agnostic — a Combat-Mechanics topic with "
+        "weight 1 fails for the same reason a Turkish topic with weight 1 "
+        "fails: not enough posts.\n"
+        + ((
+            "  - SHIPPED REGIONAL CONTENT LOW-VOLUME EXCEPTION (§25h): the "
+            "following low-volume topic(s) name shipped regional content the "
+            "publisher has deliberately invested in, and community "
+            "celebration of that shipped content exists in this window even "
+            "at low volume:\n"
+            + "\n".join(
+                f"      - {label!r} ({sentiment}, weight={int(weight)}, days={days})"
+                for sentiment, label, weight, days in low_volume_shipped
+            )
+            + (
+                "\n    You MAY include ONE supporting sentence about this in "
+                "the exec, but ONLY with an explicit low-volume qualifier of "
+                "the form: \"Low volume but among this week\u2019s top topics: "
+                "...\" or equivalent.  Surfacing this topic without the "
+                "explicit low-volume qualifier is FORBIDDEN.\n\n"
+            )
+        ) if low_volume_shipped else "")
+        + "  - Length: 3-5 sentences of analyst voice prose.  No bullet "
         "points, no headings, no preamble.\n\n"
         "Write ONLY the summary paragraph."
     )
@@ -3858,7 +3805,6 @@ def _retry_actions_if_below_min(
     commercial_context: Optional[str] = None,
     critical_mass_table: Optional[dict] = None,
     editorial_articles: Optional[list] = None,
-    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> Optional[str]:
     """§22b: if `rec_actions` has fewer than _REC_COUNT_MIN valid items on a
     substantive title with at least one theme-tier topic, do ONE retry
@@ -3925,7 +3871,6 @@ def _retry_actions_if_below_min(
         critical_mass_table=critical_mass_table,
         retry_fix_list_hint=hint,
         editorial_articles=editorial_articles,
-        narrow_audience_allowlist=narrow_audience_allowlist,
     )
     retried_count = _count_valid_recommendations(retried)
     if retried_count >= count:
@@ -3959,9 +3904,6 @@ def _call_actions(
     retry_fix_list_hint: Optional[str] = None,
     # §24e (2026-06-29): editorial articles contribute to fab whitelist.
     editorial_articles: Optional[list] = None,
-    # §25g (2026-06-29): per-game narrow-audience allowlist exempts shipped
-    # regional content (e.g. Welsh on Bus Bound) from the marker-substring gate.
-    narrow_audience_allowlist: Optional[list[str]] = None,
 ) -> str:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -4139,15 +4081,11 @@ def _call_actions(
                 sanitized, release_status,
             )
         recs_trace["after_release_gate"] = sanitized.count("\n") + 1 if sanitized else 0
-        # §25 companion gate: strip recs anchored on monitor-only topics.
-        # §25g: also drop recs anchored on §21h narrow-audience markers (e.g.
-        # "localization timeline including Turkish") unless the matched token
-        # is on the per-game allowlist (e.g. Welsh on Bus Bound).
+        # §25 companion gate: strip recs anchored on monitor-only or low-volume
+        # topics by literal topic-label substring match.  §25h removed the
+        # pattern-based narrow-audience marker gate — volume is the only rule.
         if sanitized:
-            sanitized = _strip_monitor_only_recs(
-                sanitized, critical_mass_table,
-                narrow_audience_allowlist=narrow_audience_allowlist,
-            )
+            sanitized = _strip_monitor_only_recs(sanitized, critical_mass_table)
         recs_trace["after_strip_monitor_only"] = (sanitized.count("\n") + 1) if sanitized else 0
         # §25: FINAL verification gate — require quoted source passage per item.
         if sanitized:

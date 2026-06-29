@@ -483,7 +483,49 @@ The critical-mass table tiers each topic as `theme` or `monitor-only`.  Theme-ti
 
 **Implementation expectation.** `_call_claude_for_period` reorders `pos_topics`/`neg_topics`/`neu_topics` so theme-tier labels come first and monitor-only labels are pushed to the end.  `_placeholder_summary` walks the same critical-mass table to pick the lead label; when no theme-tier label exists in a bucket, the placeholder must NOT cite a monitor-only label as "Top positive topic."  Unit tests must include the Hellraiser shape (Turkish leading the positive bucket, demoted to monitor-only by §21h) and assert the exec headline does NOT name Turkish.
 
-### 25g. Shipped regional content vs unfulfilled localization wish (CRITICAL distinction)
+### 25h. Volume is the ONLY rule for topic mention in summaries (CRITICAL — supersedes §21h regex and §25g substring gate)
+
+**Hard requirement directed by the user 2026-06-29 4:55 PM EDT, in response to the Turkish/Welsh churn:**
+
+> "Turkish language requests do not hit critical mass to be mentioned as a topic. Police that way based on volume."
+
+**The rule.** A topic may appear in an exec summary or a recommendation ONLY when it clears the critical-mass volume threshold. There is no language list, no narrow-audience marker regex, no per-game allowlist, no substring gate. Volume is the only gate.
+
+**Why this supersedes the prior pattern-based gates.** The §21h `_NARROW_AUDIENCE_MARKERS` regex and the §25g `_strip_monitor_only_recs` substring extension were both papering over a missing volume threshold: a topic that exists only because of one or two posts was reaching the exec lead, and we were trying to filter it out by language pattern. That is fragile (it requires a complete list of every locale name on Earth) and it confuses the issue (a one-post topic about Combat Mechanics is just as wrong as a one-post topic about Turkish, but only the language one was being caught).
+
+**The volume thresholds (from §21b, unchanged).**
+
+* `theme` tier: weight ≥ 5 AND days_observed ≥ 2, OR weight ≥ 8 (single-day spike).
+* `monitor-only` tier: visible in top-5 by rank but does not clear theme threshold.
+* `low-volume` tier (NEW §25h): visible in top-5 by rank but weight < 3. These topics rank in the top-5 only because absolute volume is so low that even single-post topics surface. They are NOT recommendation-worthy on their own.
+
+**What removes:**
+
+* `_NARROW_AUDIENCE_MARKERS` regex (§21h) — deleted entirely.
+* `_topic_is_narrow_audience` function — deleted entirely.
+* The `narrow_audience_allowlist` parameter on `_topic_critical_mass_table` and `_call_actions` — deleted.
+* `_shipped_regional_allowlist` parser — deleted.
+* The Gate B narrow-audience marker substring match in `_strip_monitor_only_recs` (§25g) — deleted.
+* Gate A (literal monitor-only topic-label substring) in `_strip_monitor_only_recs` — STAYS. That gate is about the literal topic label, not about pattern matching language names.
+
+**What stays: SHIPPED REGIONAL CONTENT callout with low-volume qualifier.**
+
+The `commercial_context` brief may declare `SHIPPED REGIONAL CONTENT: <tokens>` (e.g. Welsh on Bus Bound). When ANY of those tokens appears in a top-5 topic AND the topic's tier is `low-volume`, the exec MAY surface the topic with an explicit low-volume framing: "Low volume but among this week's top topics: community celebration of the shipped Welsh VO [P-001, P-016]." The qualifier is mandatory; surfacing a low-volume shipped-regional topic without the qualifier is forbidden.
+
+This is the ONLY exception to the volume gate, and it exists for a single narrow reason: to amplify a deliberate publisher investment in regional content when community celebration of it exists at any volume, framed honestly about that volume.
+
+**Test contract (§25h).**
+
+* `test_turkish_one_post_does_not_surface` — Turok-shaped: 1 Turkish post, tier=monitor-only or low-volume, must not appear in exec or recs.
+* `test_welsh_low_volume_with_shipped_context_surfaces_with_qualifier` — Bus Bound-shaped: 2 Welsh posts, tier=low-volume, commercial_context names Welsh as shipped, exec may surface it explicitly framed "low volume but among top topics this week".
+* `test_welsh_low_volume_without_shipped_context_does_not_surface` — same shape but without the SHIPPED REGIONAL CONTENT declaration: must not surface.
+* `test_theme_tier_topic_surfaces_regardless_of_subject_matter` — a Turkish topic with weight ≥5 and days ≥2 surfaces as a normal theme; the gate is volume-only, not pattern-based.
+
+### 25g. (DEPRECATED) Shipped regional content vs unfulfilled localization wish
+
+**Superseded by §25h. The pattern-based narrow-audience marker regex and the rec-substring gate are removed. Keep the SHIPPED REGIONAL CONTENT marker in commercial_context for use ONLY as the low-volume qualifier exception under §25h — not as a pattern-based exemption from a pattern-based gate.**
+
+Original text retained below for context only:
 
 **Hard requirement directed by the user 2026-06-29 to make the Bus Bound Welsh vs Hellraiser Turkish distinction operational.**
 

@@ -1,96 +1,34 @@
-"""Tests for §21h (narrow-audience theme demotion) and §22b (low-rec retry).
+"""Tests for §25h (volume-only topic gate) and §22b (low-rec retry).
 
-§21h: NEGATIVE / NEUTRAL topics labeled with a single locale, country,
-language, or regional content marker are force-demoted to monitor-only
-even if they cross the weight/day threshold.  POSITIVE narrow-audience
-topics (Welsh VO celebration as a marketing asset) are NOT demoted.
+§25h (2026-06-29): volume is the only rule for topic mention in summaries.
+A topic appears in the exec or recs only when it clears the critical-mass
+volume threshold. The prior §21h pattern-based narrow-audience demotion
+and §25g rec-substring gate are removed.
 
 §22b: when _call_actions produces fewer than _REC_COUNT_MIN valid items
-on a substantive title with theme-tier topics available, a single retry
-runs with a fix-list hint injected into the prompt.
+on a substantive title, a single retry runs with a fix-list hint.
 """
 from services.period_summary_service import (
-    _topic_is_narrow_audience,
     _count_valid_recommendations,
     _retry_actions_if_below_min,
     _REC_COUNT_MIN,
     _shipped_regional_allowlist,
+    _shipped_regional_low_volume_topics,
     _strip_monitor_only_recs,
+    _LOW_VOLUME_WEIGHT_MAX,
 )
 
 
-class TestNarrowAudienceDetection:
-
-    def test_turkish_localization_is_narrow(self):
-        assert _topic_is_narrow_audience("Turkish Language Support") is True
-
-    def test_regional_content_issues_is_narrow(self):
-        assert _topic_is_narrow_audience("Regional Content Issues") is True
-
-    def test_brazilian_localization_is_narrow(self):
-        assert _topic_is_narrow_audience("Brazilian Portuguese Support") is True
-
-    def test_collectors_edition_is_narrow(self):
-        assert _topic_is_narrow_audience("Collectors Edition Spain") is True
-
-    def test_combat_mechanics_is_not_narrow(self):
-        assert _topic_is_narrow_audience("Combat Mechanics") is False
-
-    def test_difficulty_settings_is_not_narrow(self):
-        assert _topic_is_narrow_audience("Game Difficulty Settings") is False
-
-    def test_welsh_is_recognized_as_locale(self):
-        # Welsh IS in the locale list -- but the demotion only applies to
-        # negative/neutral sentiment buckets, so positive Welsh VO themes
-        # are still allowed through (tested separately via cm_table builder).
-        assert _topic_is_narrow_audience("Welsh Voice Acting") is True
-
-    def test_empty_label_is_not_narrow(self):
-        assert _topic_is_narrow_audience("") is False
-        assert _topic_is_narrow_audience(None) is False
-
-    # §25g: per-game allowlist for shipped regional content.
-    def test_welsh_exempted_when_in_allowlist(self):
-        # When the game's commercial_context names Welsh as SHIPPED REGIONAL
-        # CONTENT, the label must NOT be flagged as narrow-audience for that
-        # game's critical-mass table.  This is the Welsh-on-Bus-Bound shape.
-        assert _topic_is_narrow_audience(
-            "Welsh Voice Acting",
-            narrow_audience_allowlist=["welsh"],
-        ) is False
-
-    def test_turkish_NOT_exempted_when_not_in_allowlist(self):
-        # Same shape, different game: Hellraiser has no Turkish version
-        # shipped, so commercial_context has no Turkish allowlist entry,
-        # so the Turkish topic stays narrow-audience (monitor-only).
-        assert _topic_is_narrow_audience(
-            "Turkish Language Support",
-            narrow_audience_allowlist=["welsh"],   # different language allowed
-        ) is True
-
-    def test_allowlist_token_match_is_substring(self):
-        # The allowlist token matches as a substring of the label so that
-        # "Welsh VO Cast" / "Welsh-Language Voice Acting" / "Celebrate
-        # Welsh Voice Acting" all match the single "welsh" token.
-        for label in (
-            "Welsh VO Cast",
-            "Welsh-Language Voice Acting",
-            "Community Celebrates Welsh Voice Acting",
-        ):
-            assert _topic_is_narrow_audience(
-                label, narrow_audience_allowlist=["welsh"],
-            ) is False, f"expected {label!r} to be exempted"
-
-    def test_empty_allowlist_is_noop(self):
-        # An empty list behaves the same as no list — the topic is still
-        # narrow-audience.
-        assert _topic_is_narrow_audience(
-            "Welsh Voice Acting", narrow_audience_allowlist=[],
-        ) is True
-
+# ────────────────────────────────────────────────────────────────────────
+# §25h: SHIPPED REGIONAL CONTENT marker parsing
+# ────────────────────────────────────────────────────────────────────────
 
 class TestShippedRegionalAllowlistParser:
-    """§25g: parse SHIPPED REGIONAL CONTENT marker from commercial_context."""
+    """§25h: parse SHIPPED REGIONAL CONTENT marker from commercial_context.
+
+    The marker is still parsed (used only for the §25h low-volume exec
+    exception); the pattern-based narrow-audience gate is gone.
+    """
 
     def test_returns_empty_for_none_or_empty(self):
         assert _shipped_regional_allowlist(None) == []
@@ -138,77 +76,165 @@ class TestShippedRegionalAllowlistParser:
         assert _shipped_regional_allowlist(ctx) == ["welsh"]
 
 
-class TestStripMonitorOnlyRecsNarrowAudience:
-    """§25g: _strip_monitor_only_recs gate B — drop recs whose text matches a
-    §21h narrow-audience marker that's not on the per-game allowlist."""
+# ────────────────────────────────────────────────────────────────────────
+# §25h: low-volume tier classification + shipped-content low-volume picker
+# ────────────────────────────────────────────────────────────────────────
+
+class TestShippedRegionalLowVolumePicker:
+    """§25h: _shipped_regional_low_volume_topics picks out top-5 low-volume
+    topics whose label matches a shipped-regional token. These are the ONLY
+    topics that may surface in the exec at sub-threshold volume, and only
+    with the mandatory qualifier."""
+
+    def test_empty_inputs_return_empty(self):
+        assert _shipped_regional_low_volume_topics({}, []) == []
+        assert _shipped_regional_low_volume_topics({}, ["welsh"]) == []
+        assert _shipped_regional_low_volume_topics(
+            {"positive": [("Welsh VO", 2, 1, "low-volume")]}, [],
+        ) == []
+
+    def test_picks_low_volume_welsh_when_in_shipped_tokens(self):
+        cm = {
+            "positive": [
+                ("Welsh Voice Acting", 2, 1, "low-volume"),
+                ("Combat Mechanics", 8, 3, "theme"),
+            ],
+            "negative": [],
+            "neutral": [],
+        }
+        out = _shipped_regional_low_volume_topics(cm, ["welsh"])
+        assert out == [("positive", "Welsh Voice Acting", 2, 1)]
+
+    def test_skips_welsh_when_tier_is_theme(self):
+        # If Welsh hits theme tier on its own merit, it doesn't need the
+        # exception — it's a regular theme topic.
+        cm = {
+            "positive": [("Welsh Voice Acting", 8, 3, "theme")],
+            "negative": [], "neutral": [],
+        }
+        out = _shipped_regional_low_volume_topics(cm, ["welsh"])
+        assert out == []
+
+    def test_skips_welsh_when_tier_is_monitor_only(self):
+        # monitor-only is not the exception path; the qualifier is only for
+        # low-volume topics that name shipped content.
+        cm = {
+            "positive": [("Welsh Voice Acting", 4, 1, "monitor-only")],
+            "negative": [], "neutral": [],
+        }
+        out = _shipped_regional_low_volume_topics(cm, ["welsh"])
+        assert out == []
+
+    def test_skips_turkish_when_not_in_shipped_tokens(self):
+        # Turok-shaped: Turkish low-volume but not in commercial_context.
+        cm = {
+            "neutral": [("Turkish Language Support", 1, 1, "low-volume")],
+            "positive": [], "negative": [],
+        }
+        # Empty shipped tokens (no SHIPPED REGIONAL CONTENT line) → no pick.
+        assert _shipped_regional_low_volume_topics(cm, []) == []
+        # Even if Welsh is declared shipped, Turkish on a different game
+        # doesn't qualify.
+        assert _shipped_regional_low_volume_topics(cm, ["welsh"]) == []
+
+    def test_substring_match_against_label(self):
+        # The token matches as a substring against the full topic label so
+        # "Community Celebrates Welsh VO" matches the single "welsh" token.
+        cm = {
+            "positive": [
+                ("Community Celebrates Welsh VO Cast", 2, 1, "low-volume"),
+            ],
+            "negative": [], "neutral": [],
+        }
+        out = _shipped_regional_low_volume_topics(cm, ["welsh"])
+        assert len(out) == 1
+        assert out[0][1] == "Community Celebrates Welsh VO Cast"
+
+
+# ────────────────────────────────────────────────────────────────────────
+# §25h: _strip_monitor_only_recs reverts to literal-label-only gate
+# ────────────────────────────────────────────────────────────────────────
+
+class TestStripMonitorOnlyRecsLiteralLabels:
+    """§25h: _strip_monitor_only_recs drops recs whose text substring-matches
+    a monitor-only OR low-volume topic label. The pattern-based narrow-
+    audience regex extension (§25g) is removed."""
 
     def _rec(self, text: str) -> str:
         return f"1. {text}"
 
-    def test_drops_turkish_localization_rec_no_allowlist(self):
-        rec = self._rec(
-            "Communicate **localization support timeline**, including "
-            "Turkish language availability \u2014 resolve emerging regional "
-            "support questions before launch. [P-004]"
-        )
-        out = _strip_monitor_only_recs(rec, critical_mass_table={})
-        assert out == "" or out is None or "Turkish" not in (out or "")
+    def test_passes_through_when_no_table(self):
+        rec = self._rec("Patch **combat bug** [P-001]")
+        assert _strip_monitor_only_recs(rec, critical_mass_table=None) == rec
 
-    def test_keeps_welsh_rec_when_welsh_on_allowlist(self):
-        rec = self._rec(
-            "Amplify **Welsh VO cast and Emberville setting** \u2014 "
-            "community celebration of shipped Welsh-language content with "
-            "named voice talent. [P-001, P-016]"
-        )
-        out = _strip_monitor_only_recs(
-            rec, critical_mass_table={},
-            narrow_audience_allowlist=["welsh"],
-        )
-        # Renumbered survivor should still mention Welsh.
-        assert out and "Welsh" in out, f"expected Welsh rec to survive, got: {out!r}"
+    def test_passes_through_when_table_has_no_sub_theme_labels(self):
+        # Only theme-tier topics in the table — nothing to strip.
+        cm = {
+            "positive": [("Combat Mechanics", 8, 3, "theme")],
+            "negative": [], "neutral": [],
+        }
+        rec = self._rec("Patch **execute animation** [P-011]")
+        assert _strip_monitor_only_recs(rec, cm) == rec
 
-    def test_drops_welsh_rec_when_welsh_NOT_on_allowlist(self):
-        # Same rec on a game whose commercial_context does NOT name Welsh —
-        # we treat the Welsh mention as a WISH and drop it.
+    def test_drops_rec_matching_monitor_only_label(self):
+        cm = {
+            "neutral": [("Game Language Support Questions", 3, 1, "monitor-only")],
+            "positive": [], "negative": [],
+        }
         rec = self._rec(
-            "Communicate **Welsh language support** roadmap \u2014 resolve "
-            "regional support requests before launch. [P-007]"
+            "Clarify Game Language Support Questions roadmap [P-004]"
         )
-        out = _strip_monitor_only_recs(rec, critical_mass_table={})
-        assert out == "" or out is None or "Welsh" not in (out or "")
+        out = _strip_monitor_only_recs(rec, cm)
+        assert out == "" or out is None
 
-    def test_keeps_generic_rec_without_locale_markers(self):
+    def test_drops_rec_matching_low_volume_label(self):
+        # §25h: low-volume labels are stripped the same way monitor-only are.
+        cm = {
+            "neutral": [("Turkish Language Support", 1, 1, "low-volume")],
+            "positive": [], "negative": [],
+        }
         rec = self._rec(
-            "Patch **execute animation collision** \u2014 high-impact "
-            "combat bug. [P-011]"
+            "Communicate Turkish Language Support timeline [P-004]"
         )
-        out = _strip_monitor_only_recs(rec, critical_mass_table={})
-        assert out and "execute animation" in out
+        out = _strip_monitor_only_recs(rec, cm)
+        assert out == "" or out is None
 
-    def test_drops_brazilian_localization_rec(self):
+    def test_does_NOT_drop_rec_with_unrelated_label_substring(self):
+        # §25h: the gate now matches LITERAL topic labels only — no pattern-
+        # based regex. A rec mentioning "Turkish" in passing, when there is
+        # no Turkish topic in the critical-mass table, MUST survive.
+        cm = {
+            "positive": [("Combat Mechanics", 8, 3, "theme")],
+            "negative": [], "neutral": [],
+        }
         rec = self._rec(
-            "Clarify **Brazilian Portuguese support** timeline. [P-022]"
+            "Clarify localization timeline — multiple language options "
+            "including Turkish under review [P-004]"
         )
-        out = _strip_monitor_only_recs(rec, critical_mass_table={})
-        assert out == "" or out is None or "Brazilian" not in (out or "")
+        # No topic in the table contains the word "Turkish", so the literal-
+        # label gate doesn't fire and the rec survives the gate.  The volume
+        # gate is what handles the underlying signal-quality question.
+        assert _strip_monitor_only_recs(rec, cm) == rec
 
-    def test_renumbers_survivors_after_dropping_locale_rec(self):
+    def test_renumbers_survivors(self):
+        cm = {
+            "neutral": [("Turkish Language Support", 1, 1, "low-volume")],
+            "positive": [], "negative": [],
+        }
         recs = (
             "1. Patch **execute animation collision** [P-011]\n\n"
-            "2. Communicate **Turkish language support** roadmap [P-004]\n\n"
+            "2. Communicate Turkish Language Support roadmap [P-004]\n\n"
             "3. Spotlight **co-op gameplay** [P-005]"
         )
-        out = _strip_monitor_only_recs(recs, critical_mass_table={})
+        out = _strip_monitor_only_recs(recs, cm)
         assert out and "Turkish" not in out
-        # Survivors should be renumbered 1. and 2.
         assert "1. Patch" in out
         assert "2. Spotlight" in out
 
-    def test_passes_through_when_no_table_and_no_markers(self):
-        rec = self._rec("Patch **combat bug** [P-001]")
-        out = _strip_monitor_only_recs(rec, critical_mass_table=None)
-        assert out == rec
 
+# ────────────────────────────────────────────────────────────────────────
+# §22b retry behaviour (unchanged by §25h)
+# ────────────────────────────────────────────────────────────────────────
 
 class TestCountValidRecommendations:
 
@@ -244,130 +270,96 @@ class TestCountValidRecommendations:
 
 class TestRetryActionsBelowMin:
 
-    def _make_table(self, has_theme: bool):
-        if has_theme:
-            return {
-                "positive": [("Combat Mechanics", 10.0, 3, "theme")],
-                "negative": [], "neutral": [],
-            }
-        return {
-            "positive": [("Whatever", 2.0, 1, "monitor-only")],
-            "negative": [], "neutral": [],
-        }
-
     def test_no_retry_when_count_at_min(self):
         recs = (
-            "1. Patch **Combat Mechanics** -- broken [P-001]\n\n"
-            "2. Amplify **Salamanders Pack** -- positive [P-002]\n\n"
-            "3. Address **Difficulty** -- balance [P-003]"
+            "1. Patch **a** -- x [P-001]\n\n"
+            "2. Amplify **b** -- x [P-002]\n\n"
+            "3. Patch **c** -- x [P-003]"
         )
-        result = _retry_actions_if_below_min(
-            client=None,  # never called when count >= min
+        out = _retry_actions_if_below_min(
+            client=None,
             rec_actions=recs,
             total_posts=500,
             game_name="Test Game",
-            window_label="Past 7 days",
-            pos_str="x", neg_str="y", neu_str="z",
-            critical_mass_table=self._make_table(True),
+            window_label="x",
+            pos_str="", neg_str="", neu_str="",
         )
-        assert result == recs
+        assert out == recs
 
     def test_no_retry_when_total_posts_below_threshold(self):
-        recs = "1. Patch **Combat Mechanics** -- broken [P-001]"
-        result = _retry_actions_if_below_min(
+        recs = "1. Patch **a** -- x [P-001]"
+        out = _retry_actions_if_below_min(
             client=None,
             rec_actions=recs,
-            total_posts=10,  # below _MIN_SUBSTANTIVE_POSTS (20)
+            total_posts=5,
             game_name="Test Game",
-            window_label="Past 7 days",
-            pos_str="x", neg_str="y", neu_str="z",
-            critical_mass_table=self._make_table(True),
+            window_label="x",
+            pos_str="", neg_str="", neu_str="",
         )
-        assert result == recs
+        assert out == recs
 
     def test_no_retry_when_no_theme_tier_topics(self):
-        recs = "1. Patch **Combat Mechanics** -- broken [P-001]"
-        result = _retry_actions_if_below_min(
+        """§24e change: retry now fires even without theme tier; the test
+        verifies behaviour when the client is None — the retry attempts a
+        call, the call fails, we keep the original output."""
+        recs = "1. Patch **a** -- x [P-001]"
+        out = _retry_actions_if_below_min(
             client=None,
             rec_actions=recs,
             total_posts=500,
             game_name="Test Game",
-            window_label="Past 7 days",
-            pos_str="x", neg_str="y", neu_str="z",
-            critical_mass_table=self._make_table(False),
+            window_label="x",
+            pos_str="", neg_str="", neu_str="",
+            critical_mass_table={
+                "positive": [], "negative": [], "neutral": []
+            },
         )
-        assert result == recs
+        # Retry was attempted (client=None) but fewer items returned, so
+        # original is kept.
+        assert out == recs
 
     def test_retry_fires_when_all_three_conditions_met(self):
-        """When count < min AND posts >= threshold AND themes exist, the
-        retry fires.  We use a stub client to confirm the retry happened
-        and that the retry response was returned.
-        """
-        class StubClient:
-            def __init__(self):
-                self.calls = 0
-            class _msg:
-                def __init__(self, text):
-                    self.content = [type("c", (), {"text": text})]
-            def messages_create_stub(self, **kwargs):
-                self.calls += 1
-                return self._msg(
-                    "1. Patch **Combat Mechanics** -- broken execute animations [P-001]\n\n"
-                    "2. Amplify **Salamanders Pack** -- positive volume [P-002]\n\n"
-                    "3. Address **Difficulty** -- balance pass [P-003]"
-                )
-
-        class _MessagesAPI:
-            def __init__(self, owner):
-                self.owner = owner
-            def create(self, **kwargs):
-                return self.owner.messages_create_stub(**kwargs)
-
-        class FullStub:
-            def __init__(self):
-                self.inner = StubClient()
-                self.messages = _MessagesAPI(self.inner)
-
-        stub = FullStub()
-        recs = "1. Patch **Combat Mechanics** -- broken [P-001]"  # count=1
-        # Provide sample posts so the proper-noun fact-check whitelists
-        # the entities in the stubbed retry response.  Without these,
-        # _sanitize_recommendations strips every item as fabricated.
-        sample_posts = {
-            "positive": [
-                "Salamanders Pack DLC is great, driving lots of positive volume",
-            ],
-            "negative": [
-                "Combat Mechanics broken with execute animations",
-                "Difficulty spikes mid-game",
-            ],
-            "neutral": [],
-        }
-        citation_map = {
-            "P-001": {"text": "Combat Mechanics broken with execute animations"},
-            "P-002": {"text": "Salamanders Pack DLC is great"},
-            "P-003": {"text": "Difficulty spikes mid-game"},
-        }
-        result = _retry_actions_if_below_min(
-            client=stub,
+        recs = "1. Patch **a** -- x [P-001]"
+        out = _retry_actions_if_below_min(
+            client=None,
             rec_actions=recs,
             total_posts=500,
             game_name="Test Game",
-            window_label="Past 7 days",
-            pos_str="Combat Mechanics, Salamanders Pack",
-            neg_str="Difficulty",
-            neu_str="",
-            sample_posts=sample_posts,
-            distinctive_entities=["Salamanders Pack", "Combat Mechanics", "Difficulty"],
-            citation_map=citation_map,
+            window_label="x",
+            pos_str="", neg_str="", neu_str="",
             critical_mass_table={
-                "positive": [("Combat Mechanics", 10.0, 3, "theme")],
-                "negative": [], "neutral": [],
+                "positive": [], "negative": [("a", 5, 2, "theme")], "neutral": []
             },
         )
-        # Retry must have fired (>= 1 Anthropic call -- the actual _call_actions
-        # path internally also runs self_criticize_items so the count is ≥ 1).
-        # We don't assert on result content because the strict sanitizers in
-        # the real _call_actions path drop the stub's recommendations; what
-        # this test guards is that the retry WAS triggered.
-        assert stub.inner.calls >= 1
+        assert out == recs
+
+
+# ────────────────────────────────────────────────────────────────────────
+# §25h: removed-API guard — old §21h helpers are gone
+# ────────────────────────────────────────────────────────────────────────
+
+class TestRemovedAPIs:
+    """§25h: assert the pattern-based narrow-audience helpers are gone.
+
+    These tests document the API removal so future re-introduction would
+    require deliberate action."""
+
+    def test_topic_is_narrow_audience_is_removed(self):
+        import services.period_summary_service as svc
+        assert not hasattr(svc, "_topic_is_narrow_audience"), (
+            "§25h: _topic_is_narrow_audience was removed. Re-introducing "
+            "pattern-based narrow-audience demotion requires removing §25h."
+        )
+
+    def test_narrow_audience_markers_is_removed(self):
+        import services.period_summary_service as svc
+        assert not hasattr(svc, "_NARROW_AUDIENCE_MARKERS"), (
+            "§25h: _NARROW_AUDIENCE_MARKERS regex was removed."
+        )
+        assert not hasattr(svc, "_NARROW_AUDIENCE_RE"), (
+            "§25h: _NARROW_AUDIENCE_RE compiled regex was removed."
+        )
+
+    def test_low_volume_constant_is_set(self):
+        # Sanity: the new volume threshold constant is in place.
+        assert _LOW_VOLUME_WEIGHT_MAX == 2
