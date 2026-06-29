@@ -113,6 +113,7 @@ def generate_monthly_summary(
         sample_posts=sample_posts,
         distinctive_entities=distinctive,
         sample_posts_with_ids=sample_posts_with_ids,
+        commercial_context=game.commercial_context,
     )
 
     # Upsert
@@ -257,6 +258,7 @@ def generate_window_summary(
         sample_posts=sample_posts,
         distinctive_entities=distinctive,
         sample_posts_with_ids=sample_posts_with_ids,
+        commercial_context=game.commercial_context,
     )
 
     # Upsert: a concurrent request (e.g. React StrictMode double-mount, browser
@@ -810,6 +812,12 @@ def _call_claude_for_period(
     # protection pass both args; legacy callers can omit them and get the
     # previous behavior (prompt rule + proper-noun fact check only).
     sample_posts_with_ids: Optional[dict[str, list[dict]]] = None,
+    # CLAUDE.md §21 (Commercial Strategic Context, 2026-06-29): per-title
+    # positioning brief.  Tells the LLM what comparisons are commercial
+    # assets, what genre tailwinds to ride, what competitors to differentiate
+    # from, and what NOT to advise away from.  None / empty → the prompt
+    # falls back to a release-status-aware default.
+    commercial_context: Optional[str] = None,
 ) -> tuple[str, Optional[str], list[str], dict[str, dict]]:
     """
     Call Claude for (exec_summary, recommended_actions, bold_ideas).
@@ -887,6 +895,7 @@ def _call_claude_for_period(
         distinctive_entities=distinctive_entities,
         annotated_samples=annotated_samples,
         citation_map=citation_map,
+        commercial_context=commercial_context,
     )
     rec_actions   = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,
@@ -894,6 +903,7 @@ def _call_claude_for_period(
         distinctive_entities=distinctive_entities,
         annotated_samples=annotated_samples,
         citation_map=citation_map,
+        commercial_context=commercial_context,
     )
     bold_ideas    = _call_bold_ideas(
         client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
@@ -901,6 +911,7 @@ def _call_claude_for_period(
         distinctive_entities=distinctive_entities,
         annotated_samples=annotated_samples,
         citation_map=citation_map,
+        commercial_context=commercial_context,
     )
 
     return exec_summary, rec_actions, bold_ideas, citation_map
@@ -1575,6 +1586,73 @@ def _release_status_clause(status: str) -> str:
     )
 
 
+# CLAUDE.md §21 (Commercial Strategic Context, 2026-06-29).
+#
+# Failure mode that triggered this: the Hellraiser weekly recommendation
+# advised the team to "counter-position" the game away from Resident Evil
+# comparisons.  RE Requiem is the #1 commercial game of 2026 (7M+ units in
+# 2 months, Metacritic 90s, fastest-selling RE ever).  Being compared to
+# the year's biggest commercial horror release is a STRATEGIC ASSET, not a
+# liability.  The right play is lean-into-and-add ("yes-and"), not
+# counter-positioning.  The system had no way to see this because it
+# treated every community signal as a thing to react to, not as something
+# that might be commercially valuable on its own.
+#
+# Fix: every prompt gets two new clauses:
+#   1. _commercial_context_clause(brief)  — per-title positioning brief
+#      that names commercial benchmarks to amplify, tailwinds to ride, and
+#      threats to differentiate from.  Read from Game.commercial_context.
+#   2. _signal_classification_clause()    — forces the LLM to classify each
+#      community signal as ASSET / LIABILITY / NEUTRAL before recommending
+#      an action, and biases the verb list toward "amplify" for assets.
+
+_SIGNAL_CLASSIFICATION_CLAUSE = (
+    "COMMUNITY SIGNAL CLASSIFICATION (HARD RULE):\n"
+    "Before recommending any action on a community signal, classify it:\n"
+    "  - ASSET: a positive commercial comparison (\"reminds me of "
+    "[commercial hit X]\"), strong IP recognition, demand for specific "
+    "franchise touchstones, organic genre tailwind. → AMPLIFY, do NOT "
+    "counter-position.  Recommended verbs: Lean into, Amplify, Double down, "
+    "Anchor on, Spotlight, Embrace.\n"
+    "  - LIABILITY: legitimate quality concern, broken expectation, real "
+    "complaint. → ADDRESS, fix, or clarify. Verbs: Patch (released games "
+    "only), Clarify, Address, Document, Reframe.\n"
+    "  - NEUTRAL: noise, generic chatter, comparison-shopping without "
+    "emotional charge. → MONITOR (do not surface as a recommendation).\n"
+    "CRITICAL: a community comparison to a current commercial success in "
+    "the same genre is an ASSET, not a liability — even when the comment "
+    "sounds skeptical (e.g. \"this looks like another Resident Evil\").  "
+    "The market is telling you the comparison resonates.  Recommend "
+    "AMPLIFYING the comparison + ADDING what makes this title authentic, "
+    "NOT distancing from it.\n\n"
+)
+
+
+def _commercial_context_clause(brief: Optional[str]) -> str:
+    """Inject the per-title positioning brief if set, else fall back to a
+    short generic reminder that the LLM should think commercially."""
+    if brief and brief.strip():
+        return (
+            "COMMERCIAL STRATEGIC CONTEXT (per-title brief):\n"
+            f"{brief.strip()}\n\n"
+            "Read this brief BEFORE making any recommendation.  When the "
+            "community signal aligns with a tailwind named in the brief, "
+            "AMPLIFY — do not counter-position.  When it aligns with a named "
+            "threat to differentiate from, address it.\n\n"
+        )
+    # No brief set — emit a generic reminder.  Better than nothing.
+    return (
+        "COMMERCIAL STRATEGIC THINKING:\n"
+        "Before recommending an action on a community comparison, consider "
+        "whether the entity being compared to is a CURRENT commercial "
+        "success in the same genre.  If yes, the comparison is most likely "
+        "a tailwind to amplify, not a liability to deflect.  Do not advise "
+        "the team to distance from a comparison to a market-leading title "
+        "in the same genre — advise them to lean in and differentiate on "
+        "authenticity or IP-specific strengths.\n\n"
+    )
+
+
 def _anti_fabrication_clause(
     samples_block: str,
     entities_block: str,
@@ -1934,6 +2012,8 @@ def _call_exec(
     # CLAUDE.md §20 layers 3+4: citation grounding + self-criticism.
     annotated_samples: Optional[dict[str, list[dict]]] = None,
     citation_map: Optional[dict[str, dict]] = None,
+    # CLAUDE.md §21: per-title commercial strategic context.
+    commercial_context: Optional[str] = None,
 ) -> str:
     # Bug 2 fix: compute breakdown strings and negative percentage so the
     # prompt can REQUIRE Claude to reference actual counts numerically.
@@ -1991,11 +2071,15 @@ def _call_exec(
 
     release_status = _infer_release_status(samples_block)
     release_clause = _release_status_clause(release_status)
+    # CLAUDE.md §21: commercial strategic context + signal classification.
+    commercial_clause = _commercial_context_clause(commercial_context)
 
     prompt = (
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         f"Write a TIGHT 3-5 sentence executive summary of community sentiment covering {window_label}.\n\n"
+        + commercial_clause
+        + _SIGNAL_CLASSIFICATION_CLAUSE
         + release_clause
         + citation_clause
         + specificity_requirement +
@@ -2062,6 +2146,7 @@ def _call_actions(
     distinctive_entities: Optional[list[str]] = None,
     annotated_samples: Optional[dict[str, list[dict]]] = None,
     citation_map: Optional[dict[str, dict]] = None,
+    commercial_context: Optional[str] = None,
 ) -> str:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -2090,17 +2175,32 @@ def _call_actions(
 
     release_status = _infer_release_status(samples_block)
     release_clause = _release_status_clause(release_status)
+    # CLAUDE.md §21: commercial strategic context + signal classification.
+    commercial_clause = _commercial_context_clause(commercial_context)
 
     # The default verb suggestion list shifts based on whether the game is live.
+    # 2026-06-29: removed 'Counter-position' from the pre-release list — it
+    # was biasing the LLM to recommend distancing from positive commercial
+    # comparisons.  'Counter-position' is reserved for differentiating from a
+    # named THREAT, not for deflecting a positive comparison.
     if release_status == "pre-release":
-        verb_examples = "Clarify, Communicate, Reframe, Address, Document, Publish, Reveal, Showcase, Reassure, Counter-position"
+        verb_examples = (
+            "Lean into, Amplify, Double down on, Anchor on, Spotlight, Embrace, "
+            "Clarify, Communicate, Reframe, Address, Document, Publish, Reveal, "
+            "Showcase, Reassure"
+        )
     else:
-        verb_examples = "Ship, Patch, Audit, Launch, Amplify, Clarify, Document, Sunset"
+        verb_examples = (
+            "Lean into, Amplify, Double down on, Anchor on, Spotlight, "
+            "Ship, Patch, Audit, Launch, Clarify, Document, Sunset"
+        )
 
     prompt = (
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         anti_fab +
+        commercial_clause +
+        _SIGNAL_CLASSIFICATION_CLAUSE +
         release_clause +
         citation_clause +
         f"Write 4-6 sprint-board-ready recommendations covering the breadth of signal in the data. Each one MUST follow this format strictly:\n\n"
@@ -2177,6 +2277,7 @@ def _call_bold_ideas(
     distinctive_entities: Optional[list[str]] = None,
     annotated_samples: Optional[dict[str, list[dict]]] = None,
     citation_map: Optional[dict[str, dict]] = None,
+    commercial_context: Optional[str] = None,
 ) -> list[str]:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -2191,12 +2292,16 @@ def _call_bold_ideas(
 
     release_status = _infer_release_status(samples_block)
     release_clause = _release_status_clause(release_status)
+    # CLAUDE.md §21: commercial strategic context + signal classification.
+    commercial_clause = _commercial_context_clause(commercial_context)
 
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
         f"Looking at community signals from {window_label}, find opportunities a typical analyst would MISS.\n\n"
         + _OUTPUT_STYLE +
         anti_fab +
+        commercial_clause +
+        _SIGNAL_CLASSIFICATION_CLAUSE +
         release_clause +
         citation_clause +
         f"If — and only if — the data reveals something genuinely worth flagging as a bold move "

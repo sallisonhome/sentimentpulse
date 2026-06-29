@@ -63,6 +63,16 @@ class Game(Base):
     # game vs the broader IP, movie, or brand it shares a name with.
     # Used by §14 post-relevance filter (post_relevance.py).
     distinctive_keywords: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
+    # CLAUDE.md §21 (Commercial Strategic Context, 2026-06-29): a per-title
+    # positioning brief that tells the LLM what comparisons are commercial
+    # assets, what genre tailwinds to ride, what competitors to differentiate
+    # from, and what NOT to advise away from.  Without this, the LLM treats
+    # every community signal as a thing to 'address' or 'counter-position'
+    # — even when the signal is a commercial gift (e.g. Hellraiser community
+    # comparing the game to Resident Evil, the #1 commercial horror of 2026).
+    # The right play in that case is 'lean into the comparison + add what
+    # makes us authentically the IP', NOT 'distance from RE'.
+    commercial_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

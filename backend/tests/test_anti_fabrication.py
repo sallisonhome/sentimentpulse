@@ -659,3 +659,91 @@ class TestBoldIdeaAtomicCriticism:
         ideas = ["Doug Bradley returns [P-001]. Community is excited [P-001]."]
         out = pss._self_criticize_bold_ideas(client, ideas, citation_map)
         assert len(out) == 1
+
+
+# ── Commercial Strategic Context (CLAUDE.md §21, 2026-06-29) ────────────────
+# After the Hellraiser weekly digest recommended counter-positioning AWAY
+# from Resident Evil comparisons — when RE Requiem is the #1 commercial
+# horror release of 2026 (7M+ units in 2 months, fastest-selling RE ever) —
+# we added a per-title commercial-strategic context brief + a signal
+# classification clause that biases recommendations toward AMPLIFYING
+# positive comparisons rather than counter-positioning away from them.
+
+class TestCommercialContextClause:
+
+    def test_brief_set_includes_brief_text(self):
+        brief = (
+            "POSITIONING: single-player survival horror. "
+            "TAILWIND TO AMPLIFY: Resident Evil Requiem comparisons are an asset."
+        )
+        out = pss._commercial_context_clause(brief)
+        assert "COMMERCIAL STRATEGIC CONTEXT" in out
+        assert "Resident Evil Requiem" in out
+        assert "AMPLIFY" in out
+
+    def test_brief_unset_falls_back_to_generic_reminder(self):
+        out = pss._commercial_context_clause(None)
+        assert "COMMERCIAL STRATEGIC THINKING" in out
+        # Generic reminder explicitly warns against deflecting positive
+        # comparisons to a market leader.
+        assert "do not advise the team to distance" in out.lower()
+
+    def test_brief_empty_string_falls_back(self):
+        out = pss._commercial_context_clause("   ")
+        assert "COMMERCIAL STRATEGIC THINKING" in out
+
+    def test_signal_classification_clause_calls_out_assets(self):
+        out = pss._SIGNAL_CLASSIFICATION_CLAUSE
+        assert "ASSET" in out
+        assert "AMPLIFY" in out
+        assert "Lean into" in out
+        # CRITICAL line that calls out the failure mode explicitly:
+        assert "CRITICAL:" in out
+        assert "AMPLIFY" in out
+
+    def test_signal_classification_keeps_liability_handling(self):
+        out = pss._SIGNAL_CLASSIFICATION_CLAUSE
+        assert "LIABILITY" in out
+        assert "ADDRESS" in out
+
+
+class TestSeedCommercialContext:
+    """The 8 priority titles each get a sensible default brief that names
+    a real commercial benchmark."""
+
+    def test_seed_defaults_cover_all_8_priority_titles(self):
+        from seed_commercial_context import DEFAULTS
+        priority = {24, 25, 23, 21, 134, 131, 20, 130}
+        assert priority.issubset(DEFAULTS.keys()), (
+            f"Missing defaults for: {priority - DEFAULTS.keys()}"
+        )
+
+    def test_hellraiser_default_names_resident_evil(self):
+        from seed_commercial_context import DEFAULTS
+        brief = DEFAULTS[21]  # Hellraiser
+        # The failure mode that triggered this whole feature — make sure
+        # the default explicitly tells the LLM RE is a tailwind, not a
+        # threat to counter-position away from.
+        assert "Resident Evil" in brief
+        assert "AMPLIFY" in brief or "amplify" in brief
+        assert "do not" in brief.lower() and "counter-position" in brief.lower()
+
+    def test_hellraiser_default_names_halloween_as_threat(self):
+        from seed_commercial_context import DEFAULTS
+        brief = DEFAULTS[21]
+        # Halloween: The Game (Sept 8 2026) IS a real threat to
+        # differentiate from (asymmetrical multiplayer vs. our single-
+        # player survival horror).
+        assert "Halloween" in brief
+
+    def test_space_marine_2_default_treats_it_as_released(self):
+        from seed_commercial_context import DEFAULTS
+        brief = DEFAULTS[24]
+        # SM2 is a live game; the brief should mention live-game signals,
+        # not pre-release marketing.
+        assert "live" in brief.lower() or "Live" in brief
+
+    def test_all_defaults_warn_against_counter_positioning(self):
+        from seed_commercial_context import DEFAULTS
+        for game_id, brief in DEFAULTS.items():
+            assert "DO NOT" in brief, f"Game {game_id} brief should have a DO NOT clause"

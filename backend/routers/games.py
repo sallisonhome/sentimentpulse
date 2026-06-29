@@ -187,6 +187,7 @@ def update_game(
     Partially update a game's settings.
     - is_active: enable / disable ingestion for this game
     - subreddits: override the auto-detected subreddit list
+    - commercial_context: per-title positioning brief (CLAUDE.md §21)
     """
     game = db.query(Game).filter_by(id=game_id).first()
     if not game:
@@ -196,6 +197,9 @@ def update_game(
         game.is_active = data.is_active
     if data.subreddits is not None:
         game.subreddits = data.subreddits
+    if data.commercial_context is not None:
+        # Empty string → NULL so prompts fall back to heuristic default.
+        game.commercial_context = data.commercial_context.strip() or None
 
     try:
         db.commit()
@@ -205,3 +209,19 @@ def update_game(
         raise HTTPException(status_code=500, detail=f"Database error: {exc}")
 
     return game
+
+
+@router.post("/seed-commercial-context")
+def seed_commercial_context_endpoint(
+    overwrite: bool = False,
+    db: Session = Depends(get_db),
+):
+    """Apply CLAUDE.md §21 default per-title commercial-strategic context
+    briefs to any of the 8 priority titles missing one.  Idempotent: by
+    default skips titles that already have a brief (pass overwrite=true
+    to force replacement).
+    """
+    # Lazy import so the seed file's heredoc doesn't slow boot when unused.
+    from seed_commercial_context import seed_default_commercial_context
+    result = seed_default_commercial_context(db, overwrite=overwrite)
+    return {"result": result, "overwrite": overwrite}

@@ -36,7 +36,7 @@ export function useLatestGame() {
 
 export function useUpdateGameSettings(gameId: number) {
   return useMutation({
-    mutationFn: (data: { subreddits?: string[]; is_active?: boolean }) =>
+    mutationFn: (data: { subreddits?: string[]; is_active?: boolean; commercial_context?: string }) =>
       api.patch(`/games/${gameId}`, data).then(r => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['games'] })

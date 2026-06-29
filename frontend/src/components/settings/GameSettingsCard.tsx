@@ -16,6 +16,8 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
   const [isActive, setIsActive]       = useState(game.is_active)
   const [subreddits, setSubreddits]   = useState<string[]>(game.subreddits ?? [])
   const [subredditInput, setSubredditInput] = useState('')
+  const [commercialContext, setCommercialContext] = useState<string>(game.commercial_context ?? '')
+  const [showBrief, setShowBrief]     = useState(false)
   const [dirty, setDirty]             = useState(false)
 
   const { mutate: save, isPending, error } = useUpdateGameSettings(game.id)
@@ -40,7 +42,7 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
 
   function handleSave() {
     save(
-      { is_active: isActive, subreddits },
+      { is_active: isActive, subreddits, commercial_context: commercialContext },
       { onSuccess: () => setDirty(false) },
     )
   }
@@ -103,6 +105,36 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
             <Plus className="mr-1 h-3.5 w-3.5" />
             Add
           </Button>
+        </div>
+
+        {/* Commercial-strategic context brief (CLAUDE.md §21) */}
+        <div className="pt-1">
+          <button
+            type="button"
+            onClick={() => setShowBrief(s => !s)}
+            className="flex items-center justify-between w-full text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+          >
+            <span>Commercial Strategic Context</span>
+            <span className="text-[10px] normal-case font-normal">
+              {commercialContext ? `${commercialContext.length} chars` : 'not set — using default'} · {showBrief ? 'hide' : 'edit'}
+            </span>
+          </button>
+          {showBrief && (
+            <div className="mt-2">
+              <textarea
+                value={commercialContext}
+                onChange={e => { setCommercialContext(e.target.value); setDirty(true) }}
+                placeholder={
+                  "4-6 sentences telling the AI what comparisons are commercial assets (e.g. 'Resident Evil Requiem is the 2026 commercial benchmark; community comparisons to RE are an asset to amplify'), what tailwinds to ride, and what threats to differentiate from. Leave blank to use the default brief."
+                }
+                rows={6}
+                className="w-full px-3 py-2 text-sm rounded-md border border-input bg-background placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y min-h-[140px]"
+              />
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Read by the summary AI before generating recommendations.  Tells it to amplify positive commercial comparisons instead of counter-positioning away from them.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Save row */}

@@ -24,6 +24,8 @@ export interface Game {
   release_date: string | null
   is_active: boolean
   subreddits: string[] | null
+  /** CLAUDE.md §21 per-title commercial-strategic positioning brief. */
+  commercial_context?: string | null
   created_at: string
 }
 

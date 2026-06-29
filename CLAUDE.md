@@ -288,6 +288,29 @@ In operational terms:
 
 **Implementation expectation.** Every prompt-builder in the codebase must, before asking the LLM to surface anything, inject an anti-fabrication clause that (a) restricts valid entities to the data shown, (b) forbids background knowledge, (c) provides a fallback to NONE when data is thin. Regression tests must assert the clause is in the prompt — not just that the *current* outputs happen to be clean.
 
+### 21. Commercial Strategic Context — Amplify Positive Comparisons, Don't Counter-Position Away From Them (CRITICAL — always-on, every recommendation)
+
+**Hard requirement directed by the user 2026-06-29 after the Hellraiser "counter-position away from Resident Evil" recommendation.**
+
+The rule, in operational terms:
+
+1. **Community comparisons to current commercial successes in the same genre are ASSETS, not liabilities.** When community posts compare the focal title to a market-leading entity (e.g. "reminds me of Resident Evil" when RE Requiem is the #1 commercial horror of 2026 with 7M+ units in 2 months), the market is telling the publisher the comparison resonates. The right play is **lean-into-and-add ("yes-and")** — amplify the comparison + add what makes the focal title authentic to its own IP. The wrong play is to advise the team to **counter-position, deflect, distance from, or distinguish from** that comparison.
+
+2. **Every recommendation must be preceded by signal classification.** Before recommending an action on a community signal, the LLM must classify it as ASSET / LIABILITY / NEUTRAL. ASSETS get amplify-class verbs (Lean into, Amplify, Double down on, Anchor on, Spotlight, Embrace). LIABILITIES get address-class verbs (Patch — released games only, Clarify, Address, Document, Reframe). NEUTRAL signals don't get surfaced as recommendations.
+
+3. **The per-title `commercial_context` field is the canonical source for what's an asset vs. a threat for each game.** Stored on `Game.commercial_context`. Read by every prompt via `_commercial_context_clause()`. Edited per title in the Settings UI on the per-title card. When unset, the prompt falls back to a generic "think commercially before counter-positioning" reminder.
+
+4. **Defaults are bootstrapped for every active title** via `seed_commercial_context.py`. The user can override per title; the defaults are conservative and grounded in real 2026 commercial context (e.g. RE Requiem as horror benchmark, Halloween Sept 8 as asymmetrical threat for survival horror titles, live-service co-op as the format Space Marine 2 / Toxic Commando operate in).
+
+5. **Removed `Counter-position` from the default verb list.** It was biasing the LLM to recommend distancing from positive comparisons. `Counter-position` remains valid only when explicitly named in the commercial-context brief as a named threat to differentiate from.
+
+**Anti-pattern this prevents:**
+- **2026-06-29 Hellraiser / Resident Evil counter-positioning:** Live weekly digest recommended "Counter-position Clive Barker's Horror Vision — reframe Revival as distinct… not competing with asymmetrical multiplayer alternatives" and a bold idea about *"not letting 'Modern Resident Evil wrapper' comparisons dominate discourse."* This advised the team to distance from the year's best-selling commercial horror property — strategically backwards. Fix: `_SIGNAL_CLASSIFICATION_CLAUSE` + per-title `commercial_context` brief + amplify-class verbs in the default list.
+
+**Relationship to §20.** §20 is about *factual* grounding (every claim traceable to a post). §21 is about *strategic* grounding (every recommendation aligned with commercial reality). §20 stops you from inventing facts; §21 stops you from inventing strategy that contradicts commercial reality. They compose: a recommendation must be both factually grounded in posts (§20) AND strategically aligned with the title's commercial position (§21).
+
+**Implementation expectation.** Every recommendation-generating prompt must inject `_commercial_context_clause(game.commercial_context)` AND `_SIGNAL_CLASSIFICATION_CLAUSE`. The default verb list MUST NOT include `Counter-position` outside of explicitly-named-threat scenarios. Regression tests must assert both clauses are present and that the default verb list is amplify-biased.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation
