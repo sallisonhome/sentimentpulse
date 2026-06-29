@@ -65,6 +65,51 @@ _BODY_MAX_CHARS = 4000  # truncated body for LLM summarization input
 _PLAYWRIGHT_PAGE_TIMEOUT_MS = 15000  # max time per page load
 _PLAYWRIGHT_IDLE_MS = 800            # post-load settling time before extract
 _PLAYWRIGHT_MAX_BODY_CHARS = 8000    # cap extracted body before send to LLM
+_BODY_MIN_USABLE_CHARS = 400         # §24d: reject anything shorter as junk
+
+# §24d: phrases that indicate a captured "body" is actually a WAF, paywall,
+# cookie banner, or sign-in interstitial rather than real article text.
+# Any HIT marks the body unusable -> caller falls through to next path or
+# title-only.  Phrases are lowercased before matching.
+_BLOCKED_BODY_PHRASES = (
+    "security service to protect itself",
+    "this website is using a security service",
+    "action you just performed triggered",
+    "enable cookies and reload",
+    "please enable javascript",
+    "checking your browser before",
+    "verify you are human",
+    "are you a robot",
+    "subscribe to read",
+    "sign in to continue",
+    "sign up to read",
+    "this content is for subscribers",
+    "unlock this article",
+    "register to continue reading",
+    "create a free account to continue",
+    "we've sent an email to validate your registration",
+    "access denied",
+    "403 forbidden",
+    "page not found",
+    "cloudflare ray id",
+)
+
+
+def _is_blocked_body(body: Optional[str]) -> bool:
+    """§24d: return True when `body` looks like a WAF / paywall / cookie wall
+    rather than real article content.  Conservative: only flags when the
+    blocked phrase makes up a large fraction of the text (else a legit
+    article that mentions one of these phrases in passing would be lost).
+    """
+    if not body:
+        return True
+    if len(body) < _BODY_MIN_USABLE_CHARS:
+        return True
+    sample = body[:1500].lower()
+    for phrase in _BLOCKED_BODY_PHRASES:
+        if phrase in sample:
+            return True
+    return False
 # When True, the editorial fetcher uses Playwright as the primary path.
 # Set to False at module level to fall back to httpx + title-only mode
 # (used by tests and as a safety net when Playwright is unavailable).
@@ -544,8 +589,10 @@ def fetch_editorial_for_title(
             # URL is the Google News redirect (still clickable for the user).
             if not final_url:
                 final_url = cand["link"]
-            if not body or len(body) < 200:
-                body = ""  # title-only mode
+            # §24d: title-only fallback when body missing/short OR captured
+            # a WAF / paywall / cookie wall page.
+            if _is_blocked_body(body):
+                body = ""
             # Summarize.  When body is empty, the summarizer uses title + pub.
             summary = _summarize_article(
                 anthropic_client, cand["title"], cand.get("publication", ""),

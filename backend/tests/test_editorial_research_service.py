@@ -330,3 +330,118 @@ class TestPlaywrightBodyExtraction:
         """Helper must short-circuit when browser is None (e.g. Playwright not installed)."""
         from services import editorial_research_service as ers
         assert ers._extract_body_via_playwright(None, "https://x.com") == (None, None)
+
+
+class TestBlockedBodyDetection:
+    """§24d — _is_blocked_body must reject WAF / paywall / cookie-wall pages
+    that otherwise pass the raw-length threshold.  These are common edge
+    cases where the body text we captured is actually a security challenge
+    page, sign-in interstitial, or cookie banner."""
+
+    def test_rejects_empty(self):
+        from services.editorial_research_service import _is_blocked_body
+        assert _is_blocked_body("") is True
+        assert _is_blocked_body(None) is True
+
+    def test_rejects_short_body(self):
+        from services.editorial_research_service import _is_blocked_body
+        # Short bodies (< 400 chars) are always rejected.
+        assert _is_blocked_body("a" * 100) is True
+
+    def test_rejects_cloudflare_waf(self):
+        from services.editorial_research_service import _is_blocked_body
+        waf = (
+            "This website is using a security service to protect itself "
+            "from online attacks. The action you just performed triggered "
+            "the security solution. There are several actions that could "
+            "trigger this block including submitting a certain word or "
+            "phrase, a SQL command or malformed data."
+            + (" Filler text " * 30)
+        )
+        assert _is_blocked_body(waf) is True
+
+    def test_rejects_paywall_subscribe_prompt(self):
+        from services.editorial_research_service import _is_blocked_body
+        wall = ("Subscribe to read the full article. " * 40)
+        assert _is_blocked_body(wall) is True
+
+    def test_rejects_cookie_consent_banner(self):
+        from services.editorial_research_service import _is_blocked_body
+        banner = (
+            "We've sent an email to validate your registration. From "
+            "noreply@example.com. Please enable cookies and reload the "
+            "page to continue. " * 20
+        )
+        assert _is_blocked_body(banner) is True
+
+    def test_accepts_legitimate_long_body(self):
+        from services.editorial_research_service import _is_blocked_body
+        # A real article body that happens to NOT contain WAF/paywall phrases.
+        body = (
+            "Warhammer 40,000: Space Marine 2 continues to build momentum "
+            "as Focus Entertainment and Saber Interactive reveal new details "
+            "in the June Community Update. Patch 14 introduces fresh content "
+            "for both PvE and PvP modes, with a new class arriving in Year 3 "
+            "alongside expanded Chaos content. Players responded enthusiastically "
+            "to the announcement on community forums, with discussions focusing "
+            "on the new class abilities and how they will integrate with existing "
+            "squad compositions in cooperative play."
+        )
+        assert _is_blocked_body(body) is False
+
+
+class TestEditorialGroundingGate:
+    """§24c — when editorial is available, bold ideas MUST cite both P- and
+    E- references.  The gate drops post-only and editorial-only ideas."""
+
+    def test_no_op_when_editorial_not_available(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Spotlight **X** [P-001]", "Lean into **Y** [P-003]"]
+        out = _enforce_editorial_grounding(ideas, {"P-001": {}, "P-003": {}}, editorial_available=False)
+        assert out == ideas
+
+    def test_no_op_when_citation_map_has_no_e_entries(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Spotlight **X** [P-001]"]
+        out = _enforce_editorial_grounding(ideas, {"P-001": {}}, editorial_available=True)
+        assert out == ideas
+
+    def test_keeps_idea_with_both_p_and_e(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Lean into **RE comparison** — community frames it [P-007]; press profiles auteur vision [E-002]."]
+        out = _enforce_editorial_grounding(
+            ideas, {"P-007": {}, "E-002": {}}, editorial_available=True,
+        )
+        assert out == ideas
+
+    def test_drops_post_only_idea_when_editorial_present(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Spotlight **X** [P-001]"]
+        out = _enforce_editorial_grounding(
+            ideas, {"P-001": {}, "E-001": {}}, editorial_available=True,
+        )
+        assert out == []
+
+    def test_drops_editorial_only_idea(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Launch a retrospective inspired by IGN feature [E-001]."]
+        out = _enforce_editorial_grounding(
+            ideas, {"P-001": {}, "E-001": {}}, editorial_available=True,
+        )
+        assert out == []
+
+    def test_keeps_mixed_brackets(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Idea [P-007] supported by editorial [E-002]"]
+        out = _enforce_editorial_grounding(
+            ideas, {"P-007": {}, "E-002": {}}, editorial_available=True,
+        )
+        assert out == ideas
+
+    def test_keeps_compound_bracket(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Idea [P-007, E-002] both"]
+        out = _enforce_editorial_grounding(
+            ideas, {"P-007": {}, "E-002": {}}, editorial_available=True,
+        )
+        assert out == ideas

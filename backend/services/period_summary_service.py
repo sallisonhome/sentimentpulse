@@ -2734,6 +2734,53 @@ def _sanitize_recommendations_for_release_status(text: str, release_status: str)
     return "\n\n".join(out_lines)
 
 
+def _enforce_editorial_grounding(
+    ideas: list[str],
+    citation_map: dict[str, dict],
+    *,
+    editorial_available: bool,
+) -> list[str]:
+    """§24c gate: when editorial articles are available for this title,
+    every surviving bold idea MUST cite at least one [E-NNN] (editorial
+    context) AND at least one [P-NNN] (post anchor).
+
+    This enforces the "bridge" rule from the prompt: the bold idea uses
+    editorial signal to address a community theme.  Editorial-only or
+    post-only ideas are dropped here.
+
+    When editorial is NOT available (or the citation map has no E-NNN
+    entries), this is a no-op: legacy P-only behaviour applies.
+    """
+    if not ideas:
+        return ideas
+    if not editorial_available:
+        return ideas
+    # If for some reason the citation_map has zero editorial entries even
+    # though editorial_available is True, fall back to no-op rather than
+    # nuking every idea.
+    has_e_in_map = any(k.startswith("E-") for k in citation_map.keys())
+    if not has_e_in_map:
+        return ideas
+    surviving: list[str] = []
+    for idea in ideas:
+        cites = _extract_citations(idea)
+        has_p = any(c.startswith("P-") for c in cites)
+        has_e = any(c.startswith("E-") for c in cites)
+        if has_p and has_e:
+            surviving.append(idea)
+        else:
+            missing = []
+            if not has_p:
+                missing.append("[P-NNN]")
+            if not has_e:
+                missing.append("[E-NNN]")
+            logger.warning(
+                "§24c grounding gate dropping idea (missing %s): %s",
+                "+".join(missing), idea[:140],
+            )
+    return surviving
+
+
 def _sanitize_bold_ideas(
     ideas: list[str],
     game_name: str,
@@ -3410,19 +3457,36 @@ def _call_bold_ideas(
     )
     if editorial_articles:
         bold_ideas_anchor_clause += (
-            "§24 HYBRID CITATION (READ CAREFULLY):\n"
-            "Bold ideas may anchor on EITHER a community post citation\n"
-            "  [P-NNN] (in-window sample posts), OR\n"
-            "  [E-NNN] (recent editorial coverage from press/analyst sources).\n"
-            "Each idea MUST cite at least one of [P-NNN] or [E-NNN].  Pure "
-            "invention without any citation is forbidden.\n\n"
+            "§24c HYBRID + GROUNDED CITATION (READ CAREFULLY):\n"
+            "Each bold idea MUST satisfy BOTH of the following:\n"
+            "  (1) THEMATIC ANCHOR — it must connect to a SPECIFIC topic / "
+            "entity / sentiment pattern that appears in the in-window "
+            "community sample posts below (cite at least one [P-NNN]).\n"
+            "  (2) EDITORIAL CONTEXT — it must reference at least one "
+            "[E-NNN] editorial article that supplies the WIDER context "
+            "(industry comparable, launch playbook, IP positioning, "
+            "demographic dynamic) the community post alone does NOT show.\n\n"
+            "The bold idea is the BRIDGE: it uses the editorial signal to "
+            "propose an action that addresses what the community is already "
+            "talking about.  Editorial-only ideas with no post tie-in are "
+            "REJECTED.  Post-only ideas duplicate the recommended actions; "
+            "avoid them.  The whole point of §24 is to combine the two.\n\n"
+            "Format your citations as [P-NNN, E-NNN] (both in one bracket) "
+            "or as two separate brackets [P-NNN] [E-NNN] at the end of the "
+            "sentence.  Both styles parse identically.\n\n"
             "SPECULATIVE REASONING IS ALLOWED — e.g. 'reach the <40 cohort "
             "that knows Pinhead imagery but not the franchise' — as long as "
-            "the idea's underlying signal is supported by a cited post OR "
-            "editorial article.  The editorial article does NOT need to "
-            "literally propose the bold move; it must contain the signal "
-            "(awareness gap, demographic dynamic, comparable title launch "
-            "strategy, IP positioning) that the bold move addresses.\n\n"
+            "the speculation is anchored on at least one post AND at least "
+            "one editorial article whose body content supports it.\n\n"
+            "GOOD example (both citations + bridge):\n"
+            "  Lean into **Resident Evil 4** comparison — community framings "
+            "already place Hellraiser alongside RE [P-007]; recent press "
+            "coverage profiles the Barker auteur vision [E-002], a hook to "
+            "differentiate vs generic survival horror.\n\n"
+            "BAD example (editorial-only — REJECTED):\n"
+            "  Launch a Pinhead retrospective inspired by the recent IGN "
+            "feature [E-001]. (No post anchor — community may not actually "
+            "be discussing retrospectives.)\n\n"
         )
     else:
         bold_ideas_anchor_clause += (
@@ -3449,7 +3513,7 @@ def _call_bold_ideas(
         f"- Be surprising or non-obvious (community event, partnership angle, unexpected creative response).\n"
         f"- NO 'this is your X' framing. NO 'compounds loyalty' or 'lock in goodwill' filler.\n"
         + (
-            f"- Cite at least one [P-NNN] post OR [E-NNN] editorial article that supports the idea.\n\n"
+            f"- Cite at least one [P-NNN] post (thematic anchor) AND at least one [E-NNN] editorial article (wider context). Both required when editorial is available.\n\n"
             if editorial_articles else
             f"- Cite the [P-NNN] post that supports the idea.\n\n"
         )
@@ -3479,7 +3543,7 @@ def _call_bold_ideas(
     # §24: example shape changes when editorial is present — the citation
     # placeholder shows the hybrid choice.
     citation_placeholder = (
-        "[P-NNN or E-NNN]" if editorial_articles else "[P-NNN]"
+        "[P-NNN, E-NNN]" if editorial_articles else "[P-NNN]"
     )
     prompt += (
         f"OUTPUT FORMAT (MANDATORY — read carefully):\n"
@@ -3536,6 +3600,14 @@ def _call_bold_ideas(
         parsed = _strip_orphan_reference_ideas(parsed)
         trace["after_strip_orphan"] = len(parsed)
         trace["lost_to_strip_orphan"] = before - len(parsed)
+        # CLAUDE.md §24c layer 6: editorial grounding gate.
+        before = len(parsed)
+        parsed = _enforce_editorial_grounding(
+            parsed, citation_map,
+            editorial_available=bool(editorial_articles),
+        )
+        trace["after_grounding"] = len(parsed)
+        trace["lost_to_grounding"] = before - len(parsed)
         trace["final"] = len(parsed)
         _record_bold_trace(trace)
         return parsed
