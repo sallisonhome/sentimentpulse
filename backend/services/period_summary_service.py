@@ -3592,6 +3592,40 @@ def _validate_exec_output(
             dropped.append(sent)
             continue
 
+        # 6. §25h low-volume guard (added 2026-06-29 after Turok/Hellraiser regen):
+        #    Any sentence whose text substring-matches a low-volume topic label
+        #    gets dropped UNLESS its claim_type is shipped_regional_qualified AND
+        #    the matched label is on the shipped-regional exception list.
+        #    The lead-headline rule below handles the no-lead-on-monitor case;
+        #    this guard handles non-lead sentences that drift onto sub-threshold
+        #    topics (e.g. Turok 'Language Localization Support' is low-volume
+        #    because only 1 post mentions Turkish, and Sonar built sentence 4
+        #    around it).
+        low_volume_lower = [l.lower() for l in (low_volume_labels or [])]
+        if claim_type != "shipped_regional_qualified":
+            matched_low_volume = [l for l in low_volume_lower if l and l in text_lower]
+            # Exempt: shipped-regional tokens (Welsh on Bus Bound — the actual
+            # qualifier sentence has claim_type=shipped_regional_qualified and
+            # is allowed above).  This guard catches the Turok/Hellraiser case
+            # where the LLM put Turkish in a non-shipped_regional sentence.
+            if matched_low_volume:
+                shipped_tokens_lower = [
+                    str(t.get("label", "")).lower()
+                    for t in low_volume_shipped_topics
+                ]
+                exempt = any(
+                    any(s and (s in m or m in s) for s in shipped_tokens_lower)
+                    for m in matched_low_volume
+                )
+                if not exempt:
+                    failures.append(
+                        f"sentence {idx}: text references low-volume topic(s) "
+                        f"{matched_low_volume} which the §25h volume gate forbids "
+                        f"(claim_type={claim_type!r}, not shipped_regional_qualified)"
+                    )
+                    dropped.append(sent)
+                    continue
+
         kept.append(sent)
 
     # 6. Lead-headline rule: first KEPT sentence must be theme_summary or
