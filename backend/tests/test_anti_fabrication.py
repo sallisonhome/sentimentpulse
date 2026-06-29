@@ -770,14 +770,18 @@ class TestSignalClassificationBalance:
 
     def test_clause_explicitly_requires_mix(self):
         """The prompt must explicitly tell the LLM to mix asset + liability
-        actions, not skew to only amplify."""
+        actions, not skew to only amplify — BUT only on themes that clear
+        the critical-mass tier (don't recommend on single-poster topics)."""
         out = pss._SIGNAL_CLASSIFICATION_CLAUSE
         assert "BALANCE REQUIREMENT" in out
         assert "DO NOT SKEW" in out
-        assert "do NOT skip negative topics" in out
         # Explicit anti-white-wash language so a future agent reading this
         # cannot mistake the rule for "always frame everything positively".
-        assert "not white-washing" in out
+        assert "white-washing" in out
+        # And the critical-mass tier hook keeps it from over-correcting into
+        # "recommend on every negative topic regardless of volume".
+        assert "tier='theme'" in out
+        assert "tier='monitor-only'" in out
 
     def test_clause_scopes_comparison_rule_to_market_leaders(self):
         """The 'amplify positive comparisons' rule must NOT be read as
@@ -787,3 +791,69 @@ class TestSignalClassificationBalance:
         assert "applies ONLY to market-leader comparisons" in out
         assert "legitimate complaints" in out
         assert "remain LIABILITIES" in out
+
+
+class TestTopicCriticalMass:
+    """CLAUDE.md §21b: a topic must clear weight + day-appearance thresholds
+    before the LLM is allowed to write a recommendation about it.  Surfacing
+    the topic on the dashboard is OK at lower thresholds; only RECOMMENDATIONS
+    get the higher bar.
+
+    This prevents the failure mode where a lone Turkish post produced a
+    'Patch regional localization' recommendation."""
+
+    def test_single_day_low_weight_is_monitor_only(self):
+        """A topic that appeared once at rank 5 (weight=1, days=1) is
+        below recommendation threshold."""
+        # Direct unit test of the tier logic via constants.
+        weight, days = 1.0, 1
+        is_theme = (
+            weight >= pss._TOPIC_REC_MIN_WEIGHT and days >= pss._TOPIC_REC_MIN_DAYS
+        ) or weight >= pss._TOPIC_REC_SINGLE_DAY_WEIGHT
+        assert not is_theme
+
+    def test_two_day_appearance_with_weight_clears_threshold(self):
+        """A topic at rank 3 on two days (weight = 3+3 = 6, days=2) clears."""
+        weight, days = 6.0, 2
+        is_theme = (
+            weight >= pss._TOPIC_REC_MIN_WEIGHT and days >= pss._TOPIC_REC_MIN_DAYS
+        ) or weight >= pss._TOPIC_REC_SINGLE_DAY_WEIGHT
+        assert is_theme
+
+    def test_single_day_high_weight_clears_threshold(self):
+        """A topic at rank 1 + rank 2 on one day (weight=5+4=9, days=1) clears
+        via the single-day-spike branch."""
+        weight, days = 9.0, 1
+        is_theme = (
+            weight >= pss._TOPIC_REC_MIN_WEIGHT and days >= pss._TOPIC_REC_MIN_DAYS
+        ) or weight >= pss._TOPIC_REC_SINGLE_DAY_WEIGHT
+        assert is_theme
+
+    def test_format_block_lists_tiers(self):
+        table = {
+            "positive": [("Co-op Gameplay", 15.0, 3, "theme")],
+            "negative": [
+                ("Server Stability", 9.0, 2, "theme"),
+                ("Turkish Localization", 1.0, 1, "monitor-only"),
+            ],
+            "neutral": [],
+        }
+        out = pss._format_critical_mass_block(table)
+        assert "tier=theme" in out
+        assert "tier=monitor-only" in out
+        assert "Turkish Localization" in out
+        # Must explicitly forbid recommending on monitor-only topics.
+        assert "do NOT" in out
+
+    def test_format_block_empty_when_no_topics(self):
+        empty = {"positive": [], "negative": [], "neutral": []}
+        assert pss._format_critical_mass_block(empty) == ""
+
+    def test_classification_clause_references_critical_mass_table(self):
+        """The signal-classification clause must tell the LLM about the
+        tier system so it knows to consult the table."""
+        out = pss._SIGNAL_CLASSIFICATION_CLAUSE
+        assert "tier='theme'" in out
+        assert "tier='monitor-only'" in out
+        assert "thin" in out  # explicit phrasing about thin signals
+        assert "single poster" in out

@@ -100,6 +100,9 @@ def generate_monthly_summary(
     sample_posts = {k: [p["text"] for p in v] for k, v in sample_posts_with_ids.items()}
     distinctive = _distinctive_entities(sample_posts)
 
+    # CLAUDE.md §21b: critical-mass tiers for the monthly window.
+    cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
+
     # Call Claude (even if total==0; let the LLM handle sparse data gracefully)
     exec_summary, rec_actions, bold_ideas, citation_map = _call_claude_for_period(
         game_name=game.name,
@@ -114,6 +117,7 @@ def generate_monthly_summary(
         distinctive_entities=distinctive,
         sample_posts_with_ids=sample_posts_with_ids,
         commercial_context=game.commercial_context,
+        critical_mass_table=cm_table,
     )
 
     # Upsert
@@ -246,6 +250,12 @@ def generate_window_summary(
     sample_posts = {k: [p["text"] for p in v] for k, v in sample_posts_with_ids.items()}
     distinctive = _distinctive_entities(sample_posts)
 
+    # CLAUDE.md §21b: compute per-topic critical-mass tiers so the LLM can
+    # only recommend action on themes that survived multiple-day or
+    # high-weight evidence — not on single-poster topics that surfaced
+    # for display purposes only.
+    cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
+
     exec_summary, rec_actions, bold_ideas, citation_map = _call_claude_for_period(
         game_name=game.name,
         window_label=window_label,
@@ -259,6 +269,7 @@ def generate_window_summary(
         distinctive_entities=distinctive,
         sample_posts_with_ids=sample_posts_with_ids,
         commercial_context=game.commercial_context,
+        critical_mass_table=cm_table,
     )
 
     # Upsert: a concurrent request (e.g. React StrictMode double-mount, browser
@@ -409,10 +420,10 @@ def _aggregate_posts(
             for rank, topic in enumerate(topics[:5]):
                 # Rank weight: 5,4,3,2,1 — #1 gets 5 votes, #5 gets 1.
                 freq[topic] = freq.get(topic, 0.0) + (5 - rank)
-        # Surface up to 8 topics (was 5) so the LLM has more signal handles to
-        # anchor recommendations + bold ideas on, especially for high-volume
-        # titles where the daily top-5 churn means more distinct topics deserve
-        # to surface across the window.
+        # Surface up to 8 topics (was 5) so the LLM has more signal handles
+        # to anchor recommendations + bold ideas on.  Critical-mass for
+        # *recommendations* is enforced separately by
+        # _topic_critical_mass_table() at generation time.
         return [t for t, _ in sorted(freq.items(), key=lambda x: -x[1])[:8]]
 
     top_pos = _weighted_top("top_positive_topics")
@@ -454,6 +465,103 @@ def _aggregate_posts(
 # spirit of §15 (no topic surfaces from a single voice or a single post).
 _1DAY_MIN_POSTS   = 3   # same as §15 post threshold
 _1DAY_MIN_AUTHORS = 3   # same as §15 author threshold
+
+# Recommendation-class critical mass (CLAUDE.md §21b, 2026-06-29).
+# A topic can pass the §15 surface threshold (be visible in the top-N
+# negative topics chip list) without being a real theme worthy of a
+# strategic recommendation.  Single-poster topics surface for visibility
+# but must NOT trigger a recommendation — that's how a lone Turkish post
+# became a 'Patch regional localization' recommendation in production.
+#
+# A topic is RECOMMENDATION-WORTHY only when both:
+#   - weighted vote sum ≥ _TOPIC_REC_MIN_WEIGHT (default 5 = appeared as
+#     #1 on one day, or #2-#5 on multiple days), AND
+#   - it appeared on ≥ _TOPIC_REC_MIN_DAYS distinct DailySummary rows in
+#     the window (default 2), OR weight ≥ _TOPIC_REC_SINGLE_DAY_WEIGHT
+#     (default 8 = repeated #1-#2 ranking on a single day, indicating a
+#     real spike).
+#
+# Thresholds are deliberately conservative.  Better to under-recommend on
+# a thin signal than to push the team toward action on a single voice.
+_TOPIC_REC_MIN_WEIGHT       = 5
+_TOPIC_REC_MIN_DAYS         = 2
+_TOPIC_REC_SINGLE_DAY_WEIGHT = 8
+
+
+def _topic_critical_mass_table(
+    db: Session, game_id: int, window_start, window_end,
+) -> dict[str, list[tuple[str, float, int, str]]]:
+    """Return per-sentiment lists of (label, weight, day_appearances, tier).
+
+    `tier` is one of:
+      'theme'         — cleared the recommendation threshold; OK to recommend.
+      'monitor-only'  — visible signal but too thin for a recommendation.
+
+    Used by the actions + bold-ideas prompts: only 'theme' tier topics may
+    drive a LIABILITY recommendation.  Topics marked 'monitor-only' get
+    listed for context but the prompt forbids recommending action on them.
+    """
+    out: dict[str, list[tuple[str, float, int, str]]] = {
+        "positive": [], "negative": [], "neutral": [],
+    }
+    daily_rows = (
+        db.query(DailySummary)
+        .filter(
+            DailySummary.game_id == game_id,
+            DailySummary.summary_date >= window_start,
+            DailySummary.summary_date <= window_end,
+        )
+        .all()
+    )
+    for sentiment, attr in [
+        ("positive", "top_positive_topics"),
+        ("negative", "top_negative_topics"),
+        ("neutral",  "top_neutral_topics"),
+    ]:
+        freq: dict[str, float] = {}
+        days: dict[str, int]   = {}
+        for row in daily_rows:
+            topics = getattr(row, attr, None) or []
+            for rank, topic in enumerate(topics[:5]):
+                freq[topic] = freq.get(topic, 0.0) + (5 - rank)
+                days[topic] = days.get(topic, 0) + 1
+        items = [(t, freq[t], days[t]) for t in freq]
+        items.sort(key=lambda x: -x[1])
+        tiered: list[tuple[str, float, int, str]] = []
+        for label, weight, day_count in items[:8]:
+            theme = (
+                weight >= _TOPIC_REC_MIN_WEIGHT and day_count >= _TOPIC_REC_MIN_DAYS
+            ) or weight >= _TOPIC_REC_SINGLE_DAY_WEIGHT
+            tier = "theme" if theme else "monitor-only"
+            tiered.append((label, weight, day_count, tier))
+        out[sentiment] = tiered
+    return out
+
+
+def _format_critical_mass_block(
+    table: dict[str, list[tuple[str, float, int, str]]],
+) -> str:
+    """Render the table for the LLM prompt.  Empty if no rows."""
+    if not any(table.values()):
+        return ""
+    lines: list[str] = [
+        "TOPIC CRITICAL-MASS TABLE (for recommendation eligibility):",
+        "  Each topic listed with [weight, days_observed, tier].",
+        "  Only 'theme' tier topics may drive a LIABILITY recommendation.",
+        "  'monitor-only' topics are visible signal but too thin — do NOT",
+        "  recommend action on them, even if they appear in the top topics.",
+    ]
+    for sentiment in ("positive", "negative", "neutral"):
+        rows = table.get(sentiment) or []
+        if not rows:
+            continue
+        lines.append(f"  {sentiment.upper()}:")
+        for label, weight, day_count, tier in rows:
+            lines.append(
+                f"    - {label!r}  [weight={int(weight)}, days={day_count}, tier={tier}]"
+            )
+    lines.append("")
+    return "\n".join(lines)
 _1DAY_TOP_TOPICS  = 8   # max topics per sentiment bucket (raised from 5 → 8 to match window aggregation)
 
 
@@ -818,6 +926,10 @@ def _call_claude_for_period(
     # from, and what NOT to advise away from.  None / empty → the prompt
     # falls back to a release-status-aware default.
     commercial_context: Optional[str] = None,
+    # CLAUDE.md §21b (Recommendation-class critical mass, 2026-06-29):
+    # per-topic table of (label, weight, day_appearances, tier).  Only
+    # tier=='theme' topics may drive a LIABILITY recommendation.
+    critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
 ) -> tuple[str, Optional[str], list[str], dict[str, dict]]:
     """
     Call Claude for (exec_summary, recommended_actions, bold_ideas).
@@ -904,6 +1016,7 @@ def _call_claude_for_period(
         annotated_samples=annotated_samples,
         citation_map=citation_map,
         commercial_context=commercial_context,
+        critical_mass_table=critical_mass_table,
     )
     bold_ideas    = _call_bold_ideas(
         client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
@@ -912,6 +1025,7 @@ def _call_claude_for_period(
         annotated_samples=annotated_samples,
         citation_map=citation_map,
         commercial_context=commercial_context,
+        critical_mass_table=critical_mass_table,
     )
 
     return exec_summary, rec_actions, bold_ideas, citation_map
@@ -1622,14 +1736,21 @@ _SIGNAL_CLASSIFICATION_CLAUSE = (
     "  - NEUTRAL: noise, generic chatter, comparison-shopping without "
     "emotional charge. → MONITOR (do not surface as a recommendation).\n"
     "\n"
-    "BALANCE REQUIREMENT (DO NOT SKEW): produce a MIX.  If the data shows "
-    "real negative-sentiment topics (regional issues, localization, missing "
-    "content, etc.), at least one recommendation MUST be a LIABILITY-class "
-    "action that addresses them — do NOT skip negative topics just because "
-    "the prompt encourages amplifying assets.  The goal is honest reporting "
-    "with smart strategic framing, not white-washing.  If 4-6 recommendations "
-    "are warranted and 3 negative topics surfaced, expect roughly 2-3 of the "
-    "recommendations to be LIABILITY-class addressing those negative topics.\n"
+    "BALANCE REQUIREMENT (DO NOT SKEW): produce a MIX of asset-amplify and "
+    "liability-address recommendations.  Honest reporting > white-washing.  "
+    "BUT: only recommend action on a LIABILITY topic when that topic appears "
+    "in the critical-mass table below as tier='theme'.  Topics marked "
+    "tier='monitor-only' are real signals but too thin (single poster, one "
+    "day) to justify a strategic recommendation — list them in the exec "
+    "summary as context if helpful, but do NOT write a numbered recommendation "
+    "about them.  Goal: every recommendation is about a theme with real "
+    "recurrence or volume.\n"
+    "\n"
+    "If after applying the critical-mass filter no LIABILITY-class "
+    "recommendations remain, that is fine — it just means the negative signal "
+    "in this window was thin.  Better to ship 2-3 strong recommendations on "
+    "real themes than 4-5 recommendations that include responses to single-"
+    "poster issues.\n"
     "\n"
     "CRITICAL on COMPARISONS specifically: a community comparison to a "
     "current commercial success in the same genre is an ASSET, not a "
@@ -2161,6 +2282,8 @@ def _call_actions(
     annotated_samples: Optional[dict[str, list[dict]]] = None,
     citation_map: Optional[dict[str, dict]] = None,
     commercial_context: Optional[str] = None,
+    # CLAUDE.md §21b: per-topic critical-mass tiers.
+    critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
 ) -> str:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -2191,6 +2314,8 @@ def _call_actions(
     release_clause = _release_status_clause(release_status)
     # CLAUDE.md §21: commercial strategic context + signal classification.
     commercial_clause = _commercial_context_clause(commercial_context)
+    # CLAUDE.md §21b: recommendation-class critical mass.
+    cm_block = _format_critical_mass_block(critical_mass_table or {})
 
     # The default verb suggestion list shifts based on whether the game is live.
     # 2026-06-29: removed 'Counter-position' from the pre-release list — it
@@ -2215,6 +2340,7 @@ def _call_actions(
         anti_fab +
         commercial_clause +
         _SIGNAL_CLASSIFICATION_CLAUSE +
+        (cm_block + "\n" if cm_block else "") +
         release_clause +
         citation_clause +
         f"Write 4-6 sprint-board-ready recommendations covering the breadth of signal in the data. Each one MUST follow this format strictly:\n\n"
@@ -2292,6 +2418,8 @@ def _call_bold_ideas(
     annotated_samples: Optional[dict[str, list[dict]]] = None,
     citation_map: Optional[dict[str, dict]] = None,
     commercial_context: Optional[str] = None,
+    # CLAUDE.md §21b: per-topic critical-mass tiers.
+    critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
 ) -> list[str]:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -2308,6 +2436,8 @@ def _call_bold_ideas(
     release_clause = _release_status_clause(release_status)
     # CLAUDE.md §21: commercial strategic context + signal classification.
     commercial_clause = _commercial_context_clause(commercial_context)
+    # CLAUDE.md §21b: recommendation-class critical mass.
+    cm_block = _format_critical_mass_block(critical_mass_table or {})
 
     prompt = (
         f'You are a creative game marketing strategist for "{game_name}". '
@@ -2316,6 +2446,7 @@ def _call_bold_ideas(
         anti_fab +
         commercial_clause +
         _SIGNAL_CLASSIFICATION_CLAUSE +
+        (cm_block + "\n" if cm_block else "") +
         release_clause +
         citation_clause +
         f"If — and only if — the data reveals something genuinely worth flagging as a bold move "
