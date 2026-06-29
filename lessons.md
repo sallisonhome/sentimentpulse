@@ -392,4 +392,43 @@ Until every item on this list is verified against the actual digest preview outp
 
 ---
 
+## 2026-06-29 — Three layers were killing bold ideas, not one (§21g)
+
+**What happened.** After §21d/§21e/§21f the live digest still showed 0 bold ideas across all 5 substantive titles.  I'd shipped four prompt edits trying to fix it; each made things slightly worse.  I stopped guessing and built a diagnostic (§21g): an in-memory ring buffer in `_call_bold_ideas` recording the survivor count at every sanitizer layer, exposed via `GET /api/diagnostics/bold-ideas-trace`.
+
+**Root cause** (visible only with the trace):
+
+  Title       parsed -> uncited -> critic -> sanitize -> orphan -> final
+  Hellraiser  6      -> 3       -> 1      -> 0        -> 0      -> 0
+  Turok       4      -> 3       -> 1      -> 0        -> 0      -> 0
+  Bus Bound   6      -> 5       -> 4      -> 0        -> 0      -> 0
+  SM2         6      -> 6       -> 2      -> 0        -> 0      -> 0
+  Toxic       5      -> 5       -> 0      -> 0        -> 0      -> 0
+
+Three distinct layers were doing all the damage:
+
+1. **`_self_criticize_bold_ideas`** (Anthropic-call critic) used the same STRICT exec-summary fact-check standard for bold ideas.  Bold ideas are INTERPRETIVE strategic proposals ("Lean into X", "Amplify Y") — not factual claims.  The critic was rejecting 60-100% of valid ideas because topical proximity wasn't accepted as support.
+
+2. **`_parse_bold_ideas`** was picking up exec-summary preambles (`# EXECUTIVE SUMMARY ...\n**Key Signal:** ...`) as candidates, polluting downstream gates.  The LLM was leaking exec prose into the bold-ideas output and the parser had no guard.
+
+3. **`_sanitize_bold_ideas`** (proper-noun fabrication check) had three whitelist gaps: bolded-phrase leading verbs (`Amplify` inside `**Amplify Welsh VO**`), possessive forms (`Jeff's` when post had `Jeff`), and common business abbreviations (`PR`, `DLC`, `VO`, `FAQ`, etc.) were all flagged as fabricated proper nouns.
+
+**Fix.**
+
+1. `_self_criticize()` branches on `block_kind == "bold_ideas"` and uses a RELAXED standard: topical proximity IS support, the cited post need only mention or relate to the idea's entity/topic.  Strict mode is preserved for exec_summary and recommendations.
+
+2. `_parse_bold_ideas` now requires each candidate to either (a) open with an imperative verb after stripping markdown/numbering, OR (b) open with a bolded entity AND contain an imperative verb later in the first sentence (covers "**Black Templars** faction community... Spotlight this...").
+
+3. `_build_input_whitelist` + `_COMMON_CAPITALIZED` extended: imperative-verb vocabulary, bidirectional possessive matching (`Jeff` matches `Jeff's` and vice versa), business-abbreviation vocabulary.
+
+The bold-ideas prompt was also rewritten with explicit SHAPE A / SHAPE B framing and a HARD PROHIBITIONS list naming the exact preamble patterns the LLM had been leaking.
+
+**Generalizable principle.**
+
+*When a pipeline has multiple sanitizer layers, do NOT debug by tweaking the prompt or one layer at a time.  Instrument every layer's input/output count and look at production data.  The trace took 30 minutes to build and made the root cause trivial to see.  The four blind prompt edits before that diagnostic cost an hour each and made the digest worse.*
+
+**Pre-ship check to add.** When iterating on a multi-layer pipeline (parser → N sanitizers), always add per-layer count instrumentation BEFORE the second prompt edit.  Telemetry costs less than a guess.  Diagnostic infrastructure (the ring buffer + endpoint) is now permanent and stays in place for future pipeline tuning.
+
+---
+
 <!-- Add new lessons above this line, newest first. -->
