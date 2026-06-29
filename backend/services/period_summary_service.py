@@ -803,15 +803,28 @@ def _format_critical_mass_block(
     if not any(table.values()):
         return ""
     lines: list[str] = [
-        "TOPIC CRITICAL-MASS TABLE (for LIABILITY recommendation eligibility):",
-        "  Each topic listed with [weight, days_observed, tier].",
-        "  Only 'theme' tier topics may drive a LIABILITY recommendation ",
-        "  (i.e. a recommendation to fix/address/patch a community concern).",
-        "  'monitor-only' topics are visible signal but too thin — do NOT",
-        "  drive a LIABILITY recommendation on them.",
-        "  POSITIVE amplification recommendations (Lean into, Amplify, Double down on, ",
-        "  Spotlight, Embrace) anchored on real cited entities are ALWAYS allowed ",
-        "  regardless of this table.  The gate is for liabilities, not opportunities.",
+        "TOPIC VOLUME GATE (HARD — §25h):",
+        "  Each topic carries a tier based on post volume across the window:",
+        "    - 'theme'        : cleared volume threshold; OK to lead with, recommend on, ",
+        "                      and amplify.",
+        "    - 'monitor-only' : visible top-5 but sub-threshold; mention ONCE in a",
+        "                      supporting sentence at most, NEVER as the lead or as a",
+        "                      recommendation subject.",
+        "    - 'low-volume'   : top-5 only because absolute window volume is low;",
+        "                      do NOT mention at all in exec or recs. Single-poster",
+        "                      single-day topics live here. The fact that this label",
+        "                      appears in the 'Top topics' list does NOT make it a",
+        "                      theme — the volume gate overrides the topic list.",
+        "  EXCEPTION (§25h SHIPPED REGIONAL CONTENT): if a 'low-volume' topic names",
+        "  shipped regional content the publisher has deliberately invested in",
+        "  (e.g. Welsh VO on Bus Bound), it MAY surface in the exec with the",
+        "  mandatory low-volume qualifier framing: 'Low volume but among this week's",
+        "  top topics: ...'.  This is the ONLY exception to the volume gate.",
+        "  POSITIVE amplification recommendations (Lean into, Amplify, Spotlight,",
+        "  Embrace) anchored on real cited entities are allowed regardless of the",
+        "  recommendation-class gate, BUT they MUST still respect the tier rule",
+        "  above: do NOT amplify a low-volume topic just because it appears in",
+        "  the top-5 list.",
     ]
     for sentiment in ("positive", "negative", "neutral"):
         rows = table.get(sentiment) or []
