@@ -567,15 +567,27 @@ def _topic_critical_mass_table(
 def _format_critical_mass_block(
     table: dict[str, list[tuple[str, float, int, str]]],
 ) -> str:
-    """Render the table for the LLM prompt.  Empty if no rows."""
+    """Render the table for the LLM prompt.  Empty if no rows.
+
+    §21b/§21f scope (2026-06-29): the critical-mass gate applies to
+    LIABILITY recommendations only.  POSITIVE amplification recommendations
+    anchored on real cited entities are always allowed, even when no
+    negative topic reaches theme tier.  The wording below is explicit so
+    the LLM does not over-apply the gate and refuse to recommend
+    amplifications.
+    """
     if not any(table.values()):
         return ""
     lines: list[str] = [
-        "TOPIC CRITICAL-MASS TABLE (for recommendation eligibility):",
+        "TOPIC CRITICAL-MASS TABLE (for LIABILITY recommendation eligibility):",
         "  Each topic listed with [weight, days_observed, tier].",
-        "  Only 'theme' tier topics may drive a LIABILITY recommendation.",
+        "  Only 'theme' tier topics may drive a LIABILITY recommendation ",
+        "  (i.e. a recommendation to fix/address/patch a community concern).",
         "  'monitor-only' topics are visible signal but too thin — do NOT",
-        "  recommend action on them, even if they appear in the top topics.",
+        "  drive a LIABILITY recommendation on them.",
+        "  POSITIVE amplification recommendations (Lean into, Amplify, Double down on, ",
+        "  Spotlight, Embrace) anchored on real cited entities are ALWAYS allowed ",
+        "  regardless of this table.  The gate is for liabilities, not opportunities.",
     ]
     for sentiment in ("positive", "negative", "neutral"):
         rows = table.get(sentiment) or []
@@ -2895,8 +2907,16 @@ def _call_actions(
         f"  2. Amplify **Salamanders Chapter Pack** — free DLC drop driving most positive volume this week.\n\n"
         f"Bad example (too generic, no entity):\n"
         f"  1. Lean into **Combat Mechanics** momentum by shipping comparative feature breakdowns…\n\n"
-        f"If you genuinely cannot produce 3+ actionable recommendations from the available topics, "
-        f"respond with the SINGLE LINE: NONE — nothing else, no explanation.\n\n"
+        f"NONE policy (READ CAREFULLY):\n"
+        f"- If sample posts AND distinctive entities are BOTH present, you MUST produce at least 2 "
+        f"recommendations.  NONE is not a valid response in that case.\n"
+        f"- The §21b critical-mass gate applies to LIABILITY recommendations only.  POSITIVE "
+        f"amplifications anchored on real cited entities are ALWAYS allowed even when no negative "
+        f"topic reaches theme tier.  A pre-release title with rich positive signal (organic genre "
+        f"comparisons, talent involvement, press coverage, demand indicators) MUST get amplification "
+        f"recommendations even if no theme-tier liability exists.\n"
+        f"- Respond with the SINGLE LINE 'NONE' ONLY when sample posts are empty AND distinctive "
+        f"entities are empty.  Below that you have nothing to anchor to and silence is honest.\n\n"
         f"Data ({window_label}):\n"
         f"Negative topics: {neg_str}\n"
         f"Neutral topics: {neu_str}\n"
