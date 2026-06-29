@@ -567,7 +567,7 @@ class TestVerifyClaimsAgainstSources:
             "asymmetric multiplayer space are creating friction [P-014]."
         )
         client = _FakeAnthropicVerifier(
-            "UNSUPPORTED no source contains the competing-titles claim"
+            "[1] UNSUPPORTED no source contains the competing-titles claim"
         )
         out = _verify_claims_against_sources(
             client, text, self._cmap(), "exec_summary",
@@ -579,7 +579,7 @@ class TestVerifyClaimsAgainstSources:
         from services.period_summary_service import _verify_claims_against_sources
         text = "Community is asking for Turkish language support [P-004]."
         client = _FakeAnthropicVerifier(
-            'SUPPORTED [COMMUNITY] cite=[P-004] quote="Please add Turkish language support"'
+            '[1] SUPPORTED [COMMUNITY] cite=[P-004] quote="Please add Turkish language support"'
         )
         out = _verify_claims_against_sources(
             client, text, self._cmap(), "exec_summary",
@@ -592,7 +592,7 @@ class TestVerifyClaimsAgainstSources:
         from services.period_summary_service import _verify_claims_against_sources
         text = "Doug Bradley returns to voice Pinhead in the upcoming title [P-001]."
         client = _FakeAnthropicVerifier(
-            'SUPPORTED [HARD] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"'
+            '[1] SUPPORTED [HARD] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"'
         )
         out = _verify_claims_against_sources(
             client, text, self._cmap(), "exec_summary",
@@ -605,7 +605,7 @@ class TestVerifyClaimsAgainstSources:
         from services.period_summary_service import _verify_claims_against_sources
         text = "1. Amplify **Doug Bradley** vocal performance — community celebrates the return. [P-001]"
         client = _FakeAnthropicVerifier(
-            'SUPPORTED [PROPOSAL] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"'
+            '[1] SUPPORTED [PROPOSAL] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"'
         )
         out = _verify_claims_against_sources(
             client, text, self._cmap(), "recommendations",
@@ -620,8 +620,8 @@ class TestVerifyClaimsAgainstSources:
             "IP licensing fights over competing Hellraiser titles dominate [P-014]."
         )
         verdicts = (
-            'SUPPORTED [HARD] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"\n'
-            "UNSUPPORTED no source mentions competing Hellraiser titles"
+            '[1] SUPPORTED [HARD] cite=[P-001] quote="Doug Bradley returns to voice Pinhead"\n'
+            "[2] UNSUPPORTED no source mentions competing Hellraiser titles"
         )
         client = _FakeAnthropicVerifier(verdicts)
         out = _verify_claims_against_sources(
@@ -638,9 +638,9 @@ class TestVerifyClaimsAgainstSources:
             "Sentence two [P-004]. "
             "Sentence three [P-006]."
         )
-        # Only 1 verdict line for 3 sentences → malformed.
+        # Only 1 verdict for 3 sentences → malformed.
         client = _FakeAnthropicVerifier(
-            "SUPPORTED [HARD] cite=[P-001] quote=\"...\""
+            '[1] SUPPORTED [HARD] cite=[P-001] quote="..."'
         )
         out = _verify_claims_against_sources(
             client, text, self._cmap(), "exec_summary",

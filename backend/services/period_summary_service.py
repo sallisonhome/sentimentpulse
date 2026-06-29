@@ -2209,7 +2209,14 @@ def _verify_claims_against_sources(
         sources_lines.append(f"  [{cite}] {snippet}")
     sources_block = "\n".join(sources_lines)
 
-    # Split input into units (sentences for exec/bold; numbered items for recs).
+    # Split input into units:
+    #   recommendations — one unit per numbered item.
+    #   bold_ideas     — ONE UNIT per call (each idea is verified whole).
+    #                    Bold ideas are typically short interpretive prose;
+    #                    sentence-level splitting was treating bare citation
+    #                    markers as standalone sentences and producing
+    #                    spurious UNSUPPORTED verdicts.
+    #   exec_summary   — one unit per sentence.
     if block_kind == "recommendations":
         units: list[str] = []
         current: list[str] = []
@@ -2223,8 +2230,10 @@ def _verify_claims_against_sources(
                 current.append(line.strip())
         if current:
             units.append(" ".join(current).strip())
+    elif block_kind == "bold_ideas":
+        units = [text.strip()]
     else:
-        # Sentence-level for exec_summary and bold_ideas.
+        # exec_summary — sentence-level.
         units = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
 
     if not units:
@@ -2254,26 +2263,48 @@ def _verify_claims_against_sources(
         _record_verify_trace(trace)
         return text
 
-    # Parse one verdict per line.  Lines that don't match are tolerated.
-    verdicts = [line.strip() for line in raw.split("\n") if line.strip()]
-    if len(verdicts) < len(units):
+    # Parse verdicts by INDEX marker '[N]' — not by line — because
+    # verifier quote fields may contain newlines that fool line-splitting.
+    # Strategy: locate each '[N]' marker in `raw`, capture the text from
+    # that marker to the next '[N]' marker (or EOF), strip the leading
+    # '[N]', and use the first 200 chars as the verdict body.
+    verdict_marker = re.compile(r"\[(\d+)\]\s*", re.MULTILINE)
+    matches = list(verdict_marker.finditer(raw))
+    indexed_verdicts: dict[int, str] = {}
+    for i, m in enumerate(matches):
+        idx = int(m.group(1))
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+        body = raw[start:end].strip()
+        # Only keep the FIRST verdict for a given index (verifier may
+        # accidentally emit a duplicate row for the same unit; the first
+        # line is the authoritative verdict).
+        if idx not in indexed_verdicts:
+            indexed_verdicts[idx] = body
+    trace["parsed_verdict_count"] = len(indexed_verdicts)
+
+    # We need at least one verdict per unit (1-indexed in our prompt).
+    if len(indexed_verdicts) < len(units):
         logger.warning(
-            "§25 verifier returned %d verdicts for %d units; keeping original",
-            len(verdicts), len(units),
+            "§25 verifier returned %d indexed verdicts for %d units; keeping original",
+            len(indexed_verdicts), len(units),
         )
-        trace["verdict_count"] = len(verdicts)
         trace["action"] = "keep_original_malformed"
         _record_verify_trace(trace)
         return text
 
     per_unit: list[dict] = []
     keep: list[str] = []
-    for unit, verdict in zip(units, verdicts):
-        v_up = verdict.upper()
-        is_supported = v_up.startswith("SUPPORTED")
+    for i, unit in enumerate(units, start=1):
+        verdict = indexed_verdicts.get(i, "")
+        # Match SUPPORTED at the start of the verdict body, ignoring case
+        # and any leading bracket-tagged classification like 'SUPPORTED [HARD]'.
+        is_supported = bool(
+            re.match(r"^\s*SUPPORTED\b", verdict, re.IGNORECASE)
+        )
         per_unit.append({
             "unit": unit[:200],
-            "verdict": verdict[:300],
+            "verdict": verdict[:400],
             "kept": is_supported,
         })
         if is_supported:
