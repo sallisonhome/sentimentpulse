@@ -43,8 +43,12 @@ class Settings(BaseSettings):
     reddit_client_secret: str = ""
     reddit_user_agent: str = "SentimentPulse/1.0"
 
-    # Anthropic
+    # Anthropic (used as fallback when Perplexity Sonar is unavailable)
     anthropic_api_key: str = ""
+
+    # Perplexity Sonar — primary LLM for exec / recs / bold-ideas blocks.
+    # When unset, the pipeline falls back to Anthropic Claude.
+    perplexity_api_key: str = ""
 
     # Optional: pre-seed publisher name on first launch
     publisher_name: Optional[str] = None

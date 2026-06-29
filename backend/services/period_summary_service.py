@@ -47,6 +47,7 @@ CLAUDE.md §25f — neutral topics are FIRST-CLASS signal:
 
   Read CLAUDE.md §25 / §25d / §25e / §25f BEFORE editing these helpers.
 """
+import json
 import logging
 import re
 from calendar import monthrange
@@ -569,12 +570,17 @@ _1DAY_MIN_AUTHORS = 3   # same as §15 author threshold
 _TOPIC_REC_MIN_WEIGHT       = 5
 _TOPIC_REC_MIN_DAYS         = 2
 _TOPIC_REC_SINGLE_DAY_WEIGHT = 8
-# §25h (2026-06-29): topics with weight ≤ _LOW_VOLUME_WEIGHT_MAX are not
-# recommendation-worthy on their own.  They rank in the top-5 only because
-# absolute weekly volume is so low that even single-post topics surface.
-# Tagged `low-volume` and may surface in the exec ONLY via the §25h
-# SHIPPED REGIONAL CONTENT exception, with a mandatory low-volume qualifier.
+# §25h (2026-06-29): a topic is `low-volume` (not recommendation-worthy on
+# its own) if EITHER of these is true:
+#   - weight ≤ _LOW_VOLUME_WEIGHT_MAX (sub-threshold absolute volume)
+#   - days_observed ≤ _LOW_VOLUME_DAYS_MAX (single-day blip — one day of
+#     signal is one day, no matter how the LLM ranked it)
+# Single-day topics are inherently low-volume because the volume gate is
+# about HOW MUCH POSTING there has been about a thing, not where it ranked
+# in the daily top-5.  This is the rule that prevents one-post topics like
+# "Turkish language support" from becoming exec-eligible recs.
 _LOW_VOLUME_WEIGHT_MAX      = 2
+_LOW_VOLUME_DAYS_MAX        = 1
 
 
 def _topic_critical_mass_table(
@@ -632,7 +638,12 @@ def _topic_critical_mass_table(
             ) or weight >= _TOPIC_REC_SINGLE_DAY_WEIGHT
             if theme:
                 tier = "theme"
-            elif weight <= _LOW_VOLUME_WEIGHT_MAX:
+            elif (
+                weight <= _LOW_VOLUME_WEIGHT_MAX
+                or day_count <= _LOW_VOLUME_DAYS_MAX
+            ):
+                # §25h: single-day topics are low-volume by definition,
+                # regardless of rank.
                 tier = "low-volume"
             else:
                 tier = "monitor-only"
@@ -706,6 +717,75 @@ def _shipped_regional_low_volume_topics(
             if any(t in label_low for t in tokens_low):
                 out.append((sentiment, label, weight, days))
     return out
+
+
+# ── §26.2 Don't-cover list ────────────────────────────────────────────────────
+
+# Pre-release exclusion keywords: these are descriptive labels for the prompt.
+# The LLM enforces the don't-cover rule via the prompt; the validator enforces
+# it via substring match against sentence cites' topic labels.
+_PRERELEASE_DONT_COVER = [
+    "localization",
+    "language support",
+    "regional availability",
+    "collector's edition logistics",
+    "steelbook",
+    "physical edition",
+    "pre-order code",
+    "pre-order",
+    "single-platform SKU",
+    "platform exclusivity speculation",
+    "single-locale wishlist",
+]
+
+# Meta / community-management topics excluded for ALL release statuses.
+_META_DONT_COVER = [
+    "subreddit moderation",
+    "mod-team discussion",
+    "clan recruitment",
+    "brotherhood recruitment",
+    "guild recruitment",
+    "datamine-of-the-week",
+    "weekly stratagem datamine",
+    "weekly megathread",
+    "mod-pinned weekly",
+    "weekly recruitment",
+    "weekly faq",
+    "low-effort thread",
+]
+
+
+def _dont_cover_topics(
+    release_status: str,
+    monitor_only_labels: list[str],
+    low_volume_labels: list[str],
+    shipped_regional_tokens: Optional[list[str]] = None,
+) -> list[str]:
+    """§26.2: Return the explicit exclusion list shown to the LLM + used by
+    the programmatic validator.
+
+    Rules:
+      - For pre-release: pre-order/localization/physical-edition noise
+        (UNLESS the topic matches a SHIPPED REGIONAL CONTENT token — shipped
+        regional content is a valid marketing asset and escapes the exclude).
+      - For ALL statuses: meta / community-management topics.
+      - For live: no auto-exclude beyond meta.
+
+    Returns a flat list of lowercase exclusion strings.  The validator does a
+    case-insensitive substring match against sentence cites' topic labels.
+    """
+    exclusions: list[str] = list(_META_DONT_COVER)  # always
+
+    if release_status == "pre-release":
+        shipped_low = [t.lower() for t in (shipped_regional_tokens or [])]
+        for entry in _PRERELEASE_DONT_COVER:
+            # Override: if this label matches a SHIPPED REGIONAL CONTENT token,
+            # do NOT exclude it.
+            if any(tok in entry.lower() for tok in shipped_low):
+                continue
+            exclusions.append(entry)
+
+    return exclusions
 
 
 def _format_critical_mass_block(
@@ -3390,6 +3470,373 @@ def _strip_monitor_only_recs(
     return "\n\n".join(f"{i+1}. {item}" for i, item in enumerate(naked))
 
 
+# ── §26 Structured-output validators ───────────────────────────────────────────────────
+
+_EXEC_ALLOWED_CLAIM_TYPES = frozenset({
+    "community_observation",
+    "theme_summary",
+    "shipped_regional_qualified",
+    "editorial_context",
+    "volume_qualifier",
+})
+
+_RECS_ALLOWED_VERBS = frozenset({
+    "patch", "amplify", "spotlight", "clarify", "address",
+    "document", "communicate", "showcase", "lean into", "embrace",
+})
+
+_BOLD_ALLOWED_CLAIM_TYPES = frozenset({"post_grounded", "editorial_ladder"})
+
+
+def _validate_exec_output(
+    parsed_json: dict,
+    citation_map: dict,
+    theme_tier_topics: list[dict],
+    low_volume_shipped_topics: list,
+    monitor_only_labels: list[str],
+    low_volume_labels: list[str],
+    dont_cover: list[str],
+) -> tuple[list[dict], list[dict], list[str]]:
+    """§26.6: Pure-Python validator for exec structured output.
+
+    Returns (kept_sentences, dropped_sentences, validation_failures).
+    Validation failures that drop sentences include them in dropped_sentences.
+    Floor breaches are noted in validation_failures but do NOT drop sentences.
+    """
+    sentences = parsed_json.get("sentences", [])
+    if not isinstance(sentences, list):
+        return [], [], ["sentences is not a list"]
+
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    failures: list[str] = []
+
+    # Build a set of all cite keys that resolve in citation_map.
+    valid_cites = set(citation_map.keys())
+
+    # Build a set of monitor-only + low-volume labels (lowercase) for dont-cover check.
+    dont_cover_lower = [e.lower() for e in dont_cover]
+
+    for idx, sent in enumerate(sentences):
+        if not isinstance(sent, dict):
+            failures.append(f"sentence {idx}: not a dict")
+            dropped.append(sent)
+            continue
+
+        text = (sent.get("text") or "").strip()
+        cites = sent.get("cites") or []
+        claim_type = sent.get("claim_type") or ""
+
+        if not text:
+            failures.append(f"sentence {idx}: empty text")
+            dropped.append(sent)
+            continue
+
+        # 1. claim_type must be in allowed set.
+        if claim_type not in _EXEC_ALLOWED_CLAIM_TYPES:
+            failures.append(
+                f"sentence {idx}: invalid claim_type={claim_type!r} "
+                f"(allowed: {sorted(_EXEC_ALLOWED_CLAIM_TYPES)})"
+            )
+            dropped.append(sent)
+            continue
+
+        # 2. All cites must resolve (for non-volume_qualifier sentences).
+        if claim_type != "volume_qualifier":
+            bad_cites = [c for c in cites if c not in valid_cites]
+            if bad_cites:
+                failures.append(
+                    f"sentence {idx}: unresolved cites {bad_cites}"
+                )
+                dropped.append(sent)
+                continue
+
+            # 3. editorial_context requires ≥1 P-NNN cite.
+            if claim_type == "editorial_context":
+                p_cites = [c for c in cites if c.startswith("P-")]
+                if not p_cites:
+                    failures.append(
+                        f"sentence {idx}: editorial_context has no [P-NNN] cite (editorial-only)"
+                    )
+                    dropped.append(sent)
+                    continue
+
+            # 4. shipped_regional_qualified requires low_volume_shipped_topics is non-empty.
+            if claim_type == "shipped_regional_qualified" and not low_volume_shipped_topics:
+                failures.append(
+                    f"sentence {idx}: shipped_regional_qualified but no low_volume_shipped_topics"
+                )
+                dropped.append(sent)
+                continue
+
+        # 5. Don't-cover: sentence text must not match a dont_cover entry.
+        text_lower = text.lower()
+        matched_exclude = [e for e in dont_cover_lower if e in text_lower]
+        if matched_exclude:
+            failures.append(
+                f"sentence {idx}: text matches dont_cover entries {matched_exclude}"
+            )
+            dropped.append(sent)
+            continue
+
+        kept.append(sent)
+
+    # 6. Lead-headline rule: first KEPT sentence must be theme_summary or
+    #    community_observation anchored on a theme-tier topic, OR volume_qualifier.
+    theme_labels_lower = {t["label"].lower() for t in theme_tier_topics if "label" in t}
+    if kept:
+        lead = kept[0]
+        lead_type = lead.get("claim_type", "")
+        if lead_type in ("editorial_context", "shipped_regional_qualified"):
+            failures.append(
+                f"lead sentence claim_type={lead_type!r} is not allowed as lead "
+                f"(must be theme_summary, community_observation, or volume_qualifier)"
+            )
+        elif lead_type in ("theme_summary", "community_observation"):
+            # Check all cites are NOT exclusively monitor-only/low-volume labels.
+            lead_cites = lead.get("cites") or []
+            monitor_low_set = {l.lower() for l in (monitor_only_labels + low_volume_labels)}
+            if lead_cites and valid_cites:
+                # A soft check: if all cites are for posts whose topics are in
+                # monitor/low-volume list, flag it. We approximate by checking
+                # if the lead text substring-matches any monitor/low-volume label
+                # and no theme label.
+                lead_text_lower = lead.get("text", "").lower()
+                hits_theme = any(lbl in lead_text_lower for lbl in theme_labels_lower)
+                hits_monitor = any(lbl in lead_text_lower for lbl in monitor_low_set)
+                if hits_monitor and not hits_theme and theme_labels_lower:
+                    failures.append(
+                        "lead sentence cites only monitor-only/low-volume topics "
+                        "(not eligible to lead when theme topics exist)"
+                    )
+
+    # 7. Coverage rule: ≥3 distinct topic threads (relaxes to ≥2 when only 1 bucket has themes).
+    buckets_with_themes = sum(
+        1 for bucket in ("positive", "negative", "neutral")
+        if any(t.get("bucket") == bucket for t in theme_tier_topics)
+    )
+    # Count distinct topics referenced: approximate by distinct claim types across kept sentences.
+    kept_types = {s.get("claim_type") for s in kept}
+    # More precise: count distinct topic labels appearing in kept sentences' text.
+    topic_threads_covered = set()
+    all_topic_labels = [t["label"].lower() for t in theme_tier_topics if "label" in t]
+    for s in kept:
+        s_lower = (s.get("text") or "").lower()
+        for lbl in all_topic_labels:
+            if lbl in s_lower:
+                topic_threads_covered.add(lbl)
+    min_coverage = 2 if buckets_with_themes <= 1 else 3
+    if len(kept) > 0 and theme_tier_topics and len(topic_threads_covered) < min_coverage:
+        failures.append(
+            f"coverage floor: only {len(topic_threads_covered)} distinct topic threads "
+            f"referenced (need ≥{min_coverage})"
+        )
+
+    return kept, dropped, failures
+
+
+def _validate_recs_output(
+    parsed_json: dict,
+    citation_map: dict,
+    monitor_only_labels: list[str],
+    low_volume_labels: list[str],
+    dont_cover: list[str],
+    shipped_regional_tokens: list[str],
+    theme_tier_topics: list[dict],
+) -> tuple[list[dict], list[dict], list[str]]:
+    """§26.6: Pure-Python validator for recs structured output.
+
+    Returns (kept_recs, dropped_recs, validation_failures).
+    """
+    recs = parsed_json.get("recommendations", [])
+    if not isinstance(recs, list):
+        return [], [], ["recommendations is not a list"]
+
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    failures: list[str] = []
+    valid_cites = set(citation_map.keys())
+
+    # Build sets for eligibility checks (lowercase).
+    monitor_low_lower = {l.lower() for l in (monitor_only_labels + low_volume_labels)}
+    dont_cover_lower = [e.lower() for e in dont_cover]
+    shipped_low = [t.lower() for t in shipped_regional_tokens]
+
+    # Liability verbs require negative/neutral theme tier topics.
+    _liability_verbs = frozenset({"patch", "address", "clarify", "document", "communicate"})
+    _amplification_verbs = frozenset({"amplify", "spotlight", "showcase", "lean into", "embrace"})
+
+    neg_neu_themes = [
+        t for t in theme_tier_topics
+        if t.get("bucket") in ("negative", "neutral")
+    ]
+    pos_themes = [
+        t for t in theme_tier_topics
+        if t.get("bucket") == "positive"
+    ]
+    # shipped-regional topics can satisfy amplification even without pos theme tier.
+    has_pos_or_shipped = bool(pos_themes) or bool(shipped_regional_tokens)
+
+    for idx, rec in enumerate(recs):
+        if not isinstance(rec, dict):
+            failures.append(f"rec {idx}: not a dict")
+            dropped.append(rec)
+            continue
+
+        verb = (rec.get("action_verb") or "").strip()
+        subject = (rec.get("subject") or "").strip()
+        rationale = (rec.get("rationale") or "").strip()
+        cites = rec.get("cites") or []
+
+        if not verb or not subject:
+            failures.append(f"rec {idx}: missing verb or subject")
+            dropped.append(rec)
+            continue
+
+        # 1. Action verb must be in the allowed set.
+        if verb.lower() not in _RECS_ALLOWED_VERBS:
+            failures.append(
+                f"rec {idx}: action_verb={verb!r} not in allowed set"
+            )
+            dropped.append(rec)
+            continue
+
+        # 2. Subject must not match monitor-only/low-volume labels
+        #    UNLESS it matches a shipped-regional token.
+        subject_lower = subject.lower()
+        is_shipped = any(tok in subject_lower for tok in shipped_low)
+        if not is_shipped:
+            matched_ml = [l for l in monitor_low_lower if l in subject_lower]
+            if matched_ml:
+                failures.append(
+                    f"rec {idx}: subject {subject!r} matches monitor-only/low-volume labels {matched_ml}"
+                )
+                dropped.append(rec)
+                continue
+
+        # 3. Subject must not match dont_cover entries.
+        matched_dc = [e for e in dont_cover_lower if e in subject_lower]
+        if matched_dc:
+            failures.append(
+                f"rec {idx}: subject {subject!r} matches dont_cover {matched_dc}"
+            )
+            dropped.append(rec)
+            continue
+
+        # 4. Must have ≥1 cite resolving in citation_map.
+        valid_rec_cites = [c for c in cites if c in valid_cites]
+        if not valid_rec_cites:
+            failures.append(
+                f"rec {idx}: no valid cite (cites={cites})"
+            )
+            dropped.append(rec)
+            continue
+
+        # 5. At most one [E-NNN] cite and cannot be the only cite.
+        e_cites = [c for c in cites if c.startswith("E-")]
+        p_cites = [c for c in cites if c.startswith("P-")]
+        if e_cites and not p_cites:
+            failures.append(
+                f"rec {idx}: [E-NNN] is the only cite — must have ≥1 [P-NNN]"
+            )
+            dropped.append(rec)
+            continue
+        if len(e_cites) > 1:
+            failures.append(
+                f"rec {idx}: more than one [E-NNN] cite ({e_cites})"
+            )
+            dropped.append(rec)
+            continue
+
+        kept.append(rec)
+
+    return kept, dropped, failures
+
+
+def _validate_bold_ideas_output(
+    parsed_json: dict,
+    citation_map: dict,
+) -> tuple[list[dict], list[dict], list[str]]:
+    """§26.6: Pure-Python validator for bold-ideas structured output.
+
+    Returns (kept_ideas, dropped_ideas, validation_failures).
+    """
+    ideas = parsed_json.get("bold_ideas", [])
+    if not isinstance(ideas, list):
+        return [], [], ["bold_ideas is not a list"]
+
+    kept: list[dict] = []
+    dropped: list[dict] = []
+    failures: list[str] = []
+    valid_cites = set(citation_map.keys())
+
+    for idx, idea in enumerate(ideas):
+        if not isinstance(idea, dict):
+            failures.append(f"idea {idx}: not a dict")
+            dropped.append(idea)
+            continue
+
+        text = (idea.get("text") or "").strip()
+        cites = idea.get("cites") or []
+        claim_type = idea.get("claim_type") or ""
+
+        if not text:
+            failures.append(f"idea {idx}: empty text")
+            dropped.append(idea)
+            continue
+
+        # 1. claim_type must be in allowed set.
+        if claim_type not in _BOLD_ALLOWED_CLAIM_TYPES:
+            failures.append(
+                f"idea {idx}: invalid claim_type={claim_type!r}"
+            )
+            dropped.append(idea)
+            continue
+
+        # 2. All cites must resolve.
+        bad_cites = [c for c in cites if c not in valid_cites]
+        if bad_cites:
+            failures.append(
+                f"idea {idx}: unresolved cites {bad_cites}"
+            )
+            dropped.append(idea)
+            continue
+
+        # 3. editorial_ladder must have ≥1 [P-NNN] cite.
+        if claim_type == "editorial_ladder":
+            p_cites = [c for c in cites if c.startswith("P-")]
+            if not p_cites:
+                failures.append(
+                    f"idea {idx}: editorial_ladder has no [P-NNN] cite"
+                )
+                dropped.append(idea)
+                continue
+
+        # 4. post_grounded must have ≥1 [P-NNN] cite.
+        if claim_type == "post_grounded":
+            p_cites = [c for c in cites if c.startswith("P-")]
+            if not p_cites:
+                failures.append(
+                    f"idea {idx}: post_grounded has no [P-NNN] cite"
+                )
+                dropped.append(idea)
+                continue
+
+        kept.append(idea)
+
+    return kept, dropped, failures
+
+
+def _strip_json_fences(raw: str) -> str:
+    """Strip leading/trailing whitespace and markdown code fences from a JSON
+    string returned by the LLM."""
+    raw = raw.strip()
+    # Strip ```json ... ``` or ``` ... ``` fences.
+    raw = re.sub(r'^```(?:json)?\s*', '', raw)
+    raw = re.sub(r'\s*```$', '', raw)
+    return raw.strip()
+
+
 def _call_exec(
     client,
     game_name,
@@ -3415,302 +3862,289 @@ def _call_exec(
     # §24e (2026-06-29): editorial articles contribute to the fabrication
     # whitelist so the sanitizer doesn't strip legitimate editorial nouns.
     editorial_articles: Optional[list] = None,
+    # §26 new inputs.
+    monitor_only_labels: Optional[list[str]] = None,
+    low_volume_labels: Optional[list[str]] = None,
+    release_status: Optional[str] = None,
+    dont_cover: Optional[list[str]] = None,
+    theme_tier_topics: Optional[list[dict]] = None,
+    low_volume_shipped_topics: Optional[list] = None,
 ) -> str:
-    # Bug 2 fix: compute breakdown strings and negative percentage so the
-    # prompt can REQUIRE Claude to reference actual counts numerically.
-    neg_pct = (neg_count / total_posts * 100) if total_posts > 0 else 0.0
-    pos_pct = (pos_count / total_posts * 100) if total_posts > 0 else 0.0
-    neu_pct = (neu_count / total_posts * 100) if total_posts > 0 else 0.0
+    """§26.3: Single structured-output LLM call for the executive summary.
 
-    # Build the banned-phrase instruction only when negative is meaningful (>5%)
-    if neg_pct > 5.0:
-        banned_phrase_instruction = (
-            f"BANNED PHRASES (do NOT use ANY of these when negative_pct > 5%): "
-            f"\"no clear negative signals\", \"no friction points\", \"no negative signals\", "
-            f"\"stable player satisfaction\", \"absence of friction\". "
-            f"These are factually wrong given {neg_count} negative posts ({neg_pct:.1f}% of total).\n"
-        )
-    else:
-        banned_phrase_instruction = ""
-
+    Returns assembled prose after programmatic validation + one retry on floor
+    breach.  Placeholder fires ONLY on API exception or total parse failure.
+    """
+    # Normalise inputs.
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
     citation_map = citation_map or {}
-    # Prefer citation-annotated samples block when we have one so the LLM
-    # sees [P-NNN] tokens it can echo back; falls back to plain block.
+    monitor_only_labels = monitor_only_labels or []
+    low_volume_labels = low_volume_labels or []
+    dont_cover = dont_cover or []
+    theme_tier_topics = theme_tier_topics or []
+    low_volume_shipped_topics = low_volume_shipped_topics or []
+
+    # Prefer citation-annotated samples block.
     if annotated_samples and citation_map:
         samples_block = _format_sample_posts_block_with_citations(annotated_samples)
     else:
         samples_block = _format_sample_posts_block(sample_posts)
     entities_block = _format_entities_block(distinctive_entities)
-    citation_clause = _citation_requirement_clause(citation_map)
 
-    # Specifics-anchoring requirement: when we have either samples or entities,
-    # the summary MUST name something specific.  This is the core of the
-    # 2026-05-30 hardening pass — generic "sentiment is positive" prose is
-    # banned when concrete material is available.
-    has_specifics = bool(samples_block) or bool(entities_block)
-    if has_specifics:
-        specificity_requirement = (
-            "SPECIFICITY REQUIREMENT (hard rule):\n"
-            "- At least 2 of your 3-5 sentences MUST cite something specific from the SAMPLE POSTS "
-            "or DISTINCTIVE ENTITIES below — a named feature, level, weapon, character, mode, patch "
-            "number, update name, content drop, or event.\n"
-            "- Use the actual name as it appears (don't paraphrase \"Tyranid Warrior\" as \"a tough enemy\").\n"
-            "- Tie each specific to a sentiment direction supported by the data (e.g. \"Tyranid Warrior "
-            "boss fight is the loudest negative thread\", or \"praise for the free Salamanders Chapter "
-            "Pack drove most positive volume\").\n"
-            "- If multiple specifics compete for attention, lead with the one mentioned in the most posts.\n"
-            "- Do NOT invent specifics that aren't in the samples or entities list. Stick to what the data shows.\n\n"
-        )
-    else:
-        specificity_requirement = (
-            "NO SPECIFICS AVAILABLE: sample posts and distinctive entities are both empty.\n"
-            "Write a short, honest paragraph noting the period saw mostly general discussion "
-            "without a clear dominant event or topic. Keep it to 2-3 sentences.\n\n"
-        )
+    # Use the pre-computed release_status when provided; fall back to inference.
+    if release_status is None:
+        release_status = _infer_release_status(samples_block)
 
-    release_status = _infer_release_status(samples_block)
-    release_clause = _release_status_clause(release_status)
-    # CLAUDE.md §21: commercial strategic context + signal classification.
-    commercial_clause = _commercial_context_clause(commercial_context)
-    # CLAUDE.md §21b (2026-06-29): plumb critical-mass into the exec prompt so
-    # the summary cannot lead with a monitor-only single-post theme.
-    cm_block = _format_critical_mass_block(critical_mass_table or {})
-    # Hard guard: enumerate theme-tier topics that ARE eligible to lead and
-    # monitor-only topics that are NOT.  This is stronger than the table alone.
-    # §25h: compute the SHIPPED REGIONAL CONTENT low-volume exception set for
-    # this game.  Used to relax the volume gate for ONE supporting sentence
-    # about deliberately-shipped regional content, with a mandatory low-
-    # volume qualifier framing.
+    # Build topic strings for the data block.
+    neg_pct = (neg_count / total_posts * 100) if total_posts > 0 else 0.0
+    pos_pct = (pos_count / total_posts * 100) if total_posts > 0 else 0.0
+    neu_pct = (neu_count / total_posts * 100) if total_posts > 0 else 0.0
+
+    # Compute shipped-regional info if not provided.
     shipped_regional_tokens = _shipped_regional_allowlist(commercial_context)
-    low_volume_shipped = _shipped_regional_low_volume_topics(
-        critical_mass_table or {}, shipped_regional_tokens,
-    )
+    if not low_volume_shipped_topics:
+        low_volume_shipped_topics = _shipped_regional_low_volume_topics(
+            critical_mass_table or {}, shipped_regional_tokens,
+        )
 
-    theme_topics: list[str] = []
-    monitor_topics: list[str] = []   # §25h: combined monitor-only + low-volume
-    low_volume_topics: list[str] = []
+    # Build theme/monitor/low-vol topic label strings for the prompt.
+    theme_topics_strs: list[str] = []
+    monitor_topics_strs: list[str] = []
     for sentiment_bucket in ("positive", "negative", "neutral"):
         for label, _weight, _days, tier in (critical_mass_table or {}).get(sentiment_bucket, []):
             if tier == "theme":
-                theme_topics.append(f"{label!r} ({sentiment_bucket})")
-            elif tier == "low-volume":
-                low_volume_topics.append(f"{label!r} ({sentiment_bucket})")
-                monitor_topics.append(f"{label!r} ({sentiment_bucket})")
-            elif tier == "monitor-only":
-                monitor_topics.append(f"{label!r} ({sentiment_bucket})")
-    if theme_topics or monitor_topics:
-        exec_cm_clause = (
-            "EXEC LEADING-THEME GATE (HARD RULE, §21b + §25h):\n"
-            "- Your first/lead sentence MUST describe a topic from the THEME-TIER "
-            "list below (or note overall mixed/neutral sentiment if no theme "
-            "exists).\n"
-            "- You MAY NOT make a MONITOR-ONLY or LOW-VOLUME topic the lead, "
-            "the headline liability, or the dominant framing.  These topics are "
-            "sub-threshold signal — mentioning them as the primary theme is a "
-            "factual misrepresentation of the data.\n"
-            "- A monitor-only topic MAY be referenced ONCE in a supporting "
-            "sentence as 'worth watching' if relevant, but never as the "
-            "headline.\n"
-            "- Low-volume topics (rank top-5 but ≤2 weight) MUST NOT be "
-            "mentioned at all unless they are part of the §25h SHIPPED REGIONAL "
-            "CONTENT exception (see below), in which case they must be framed "
-            "with the explicit low-volume qualifier.\n"
-            f"  THEME-TIER (eligible to lead): {', '.join(theme_topics) if theme_topics else 'NONE — lead with overall mix instead'}\n"
-            f"  MONITOR-ONLY / LOW-VOLUME (NOT eligible to lead): {', '.join(monitor_topics) if monitor_topics else 'none'}\n\n"
+                theme_topics_strs.append(f"{label!r} ({sentiment_bucket})")
+            elif tier in ("low-volume", "monitor-only"):
+                monitor_topics_strs.append(f"{label!r} ({sentiment_bucket})")
+
+    # Claim-type catalog.
+    claim_type_catalog = (
+        "CLAIM-TYPE CATALOG (assign one per sentence):\n"
+        "  community_observation : 'posters celebrate X' / 'community asks Y' / 'complaints concentrate on Z'. "
+        "Requires ≥1 [P-NNN] cite.\n"
+        "  theme_summary         : aggregates a theme-tier topic's overall direction. "
+        "Must NAME a theme-tier topic AND cite ≥2 posts.\n"
+        "  shipped_regional_qualified : surfaces a §25h shipped-regional low-volume topic with "
+        "mandatory qualifier ('low volume but among this week\'s top topics: ...'). "
+        "Requires ≥1 [P-NNN] cite. Only allowed when shipped-regional exception topics are listed below.\n"
+        "  editorial_context     : supplementary framing from [E-NNN]. "
+        "MUST cite ≥1 [E-NNN] AND ≥1 [P-NNN] (editorial-only sentences FAIL).\n"
+        "  volume_qualifier      : explicit acknowledgment of low post volume "
+        "('Community signal this window is light — N posts across M days'). No citations required.\n\n"
+    )
+
+    # Lead-headline rule (positive constraint).
+    lead_rule = (
+        "LEAD-HEADLINE RULE (HARD):\n"
+        "  Sentence 1 MUST be claim_type=theme_summary or claim_type=community_observation "
+        "anchored on a THEME-TIER topic.\n"
+        "  OR claim_type=volume_qualifier when NO theme-tier topic exists.\n"
+        "  NEVER start with editorial_context or shipped_regional_qualified.\n"
+        "  NEVER let sentence 1 cites point exclusively to monitor-only or low-volume topics "
+        "when theme-tier topics exist.\n\n"
+    )
+
+    # Coverage rule.
+    coverage_rule = (
+        "COVERAGE RULE: The exec MUST reference ≥3 distinct topic threads across "
+        "positive/negative/neutral buckets. When only one bucket has theme-tier topics, "
+        "≥2 threads suffice. NEUTRAL theme-tier topics MUST appear at least once — "
+        "they are leading indicators (curiosity, anticipation, open questions).\n\n"
+    )
+
+    # Don't-cover rule.
+    if dont_cover:
+        dont_cover_rule = (
+            "DON'T-COVER LIST — do NOT build any sentence on these topics:\n"
+            + "\n".join(f"  - {e}" for e in dont_cover)
+            + "\n\n"
         )
     else:
-        exec_cm_clause = ""
+        dont_cover_rule = ""
 
-    prompt = (
-        f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
-        + _OUTPUT_STYLE +
-        f"Write a TIGHT 3-5 sentence executive summary of community sentiment covering {window_label}.\n\n"
-        + commercial_clause
-        + _SIGNAL_CLASSIFICATION_CLAUSE
-        + (cm_block + "\n" if cm_block else "")
-        + exec_cm_clause
-        + release_clause
-        + citation_clause
-        + specificity_requirement +
-        f"Concision rules:\n"
-        f"- 200 WORDS MAX. Aim for 140-170.\n"
-        f"- Lead with the dominant signal in 1 sentence, then 2-4 sentences of supporting detail.\n"
-        f"- Cite topic names and entity names exactly as provided.\n"
-        f"- NO parenthetical lists of examples. NO 'this suggests... which means... and therefore...' chains.\n"
-        f"- If post volume is low, say so plainly in 1 short sentence and keep the rest equally short.\n"
-        f"- Your first sentence MUST reference the actual positive AND negative counts numerically "
-        f"(e.g. '{pos_count} positive vs {neg_count} negative posts'). "
-        f"Do NOT say 'no clear negative signals' if the negative count is greater than 5% of total.\n"
-        + banned_phrase_instruction +
-        f"\nData ({window_label}):\n"
-        f"Positive: {pos_count} ({pos_pct:.1f}%)\n"
-        f"Negative: {neg_count} ({neg_pct:.1f}%)\n"
-        f"Neutral:  {neu_count} ({neu_pct:.1f}%)\n"
-        f"Total posts analyzed: {total_posts}\n"
-        f"Top positive topics: {pos_str}\n"
-        f"Top negative topics: {neg_str}\n"
-        f"Top neutral topics: {neu_str}\n\n"
+    # Confabulation rule.
+    confab_rule = (
+        "CONFABULATION RULE (HARD):\n"
+        "  COMMUNITY-OBSERVED claims ('posters say…', 'community celebrates…') are allowed. "
+        "HARD claims ('publisher confirmed X', 'competing title Y dominates') are FORBIDDEN "
+        "unless an [E-NNN] article explicitly states them. "
+        "When in doubt, frame as community-observed.\n\n"
     )
 
-    if entities_block:
-        prompt += f"DISTINCTIVE ENTITIES surfaced in this window (use as specific anchors):\n  {entities_block}\n\n"
-    if samples_block:
-        prompt += (
-            "REPRESENTATIVE SAMPLE POSTS (top-upvoted in each sentiment, truncated):\n"
-            f"{samples_block}\n\n"
-        )
-    # §25e + §25f (2026-06-29): theme-coverage + bias-toward-posts +
-    # neutral-as-leading-indicator clause.
-    prompt += (
-        "\n\n§25e+§25f COVERAGE RULES (MANDATORY):\n"
-        "  - Your summary MUST span at least 3 distinct topics drawn from "
-        "the positive / negative / neutral buckets shown above.  Do NOT "
-        "lead with a single topic or write a one-sided summary when both "
-        "positive AND negative theme topics exist.\n"
-        "  - NEUTRAL THEME-TIER TOPICS ARE LEADING INDICATORS — mention at "
-        "least one when present.  Neutral topics are emergent "
-        "conversations: community curiosity, anticipation of a release/"
-        "feature, comparisons being made, open questions about mechanics or "
-        "roadmap.  These haven't yet crystallized into approval or complaint "
-        "and are the highest-leverage surface for marketing decisions.  "
-        "Frame neutral themes as 'community is curious about X,' 'posters "
-        "are comparing the title to Y,' 'anticipation centers on Z.'\n"
-        "  - BIAS toward [P-NNN] community posts as your primary evidence: "
-        "cite them for what posters are saying, asking for, complaining "
-        "about, celebrating, comparing, or anticipating.  Editorial [E-NNN] "
-        "citations are SUPPLEMENTARY — use only when they add context the "
-        "posts alone don't show (release timing, comparable launches, "
-        "industry framing).  An exec built mostly on editorial citations "
-        "FAILS.\n"
-        "  - VOLUME-ONLY TOPIC GATE (§25h): a topic surfaces in the exec ONLY "
-        "if it appears in the THEME-TIER list above.  Topics tiered as "
-        "MONITOR-ONLY or LOW-VOLUME are sub-threshold and MUST NOT be the "
-        "lead, the headline, or the primary framing.  The rule is volume-"
-        "based and subject-matter-agnostic — a Combat-Mechanics topic with "
-        "weight 1 fails for the same reason a Turkish topic with weight 1 "
-        "fails: not enough posts.\n"
-        + ((
-            "  - SHIPPED REGIONAL CONTENT LOW-VOLUME EXCEPTION (§25h): the "
-            "following low-volume topic(s) name shipped regional content the "
-            "publisher has deliberately invested in, and community "
-            "celebration of that shipped content exists in this window even "
-            "at low volume:\n"
+    # Shipped-regional low-volume exception.
+    if low_volume_shipped_topics:
+        shipped_clause = (
+            "SHIPPED-REGIONAL CONTENT EXCEPTION (§25h):\n"
+            "The following low-volume topic(s) may surface as shipped_regional_qualified "
+            "with the mandatory qualifier 'Low volume but among this week\'s top topics: ...':\n"
             + "\n".join(
-                f"      - {label!r} ({sentiment}, weight={int(weight)}, days={days})"
-                for sentiment, label, weight, days in low_volume_shipped
+                f"  - {label!r} ({sentiment}, weight={int(weight)}, days={days})"
+                for sentiment, label, weight, days in low_volume_shipped_topics
             )
-            + (
-                "\n    You MAY include ONE supporting sentence about this in "
-                "the exec, but ONLY with an explicit low-volume qualifier of "
-                "the form: \"Low volume but among this week\u2019s top topics: "
-                "...\" or equivalent.  Surfacing this topic without the "
-                "explicit low-volume qualifier is FORBIDDEN.\n\n"
-            )
-        ) if low_volume_shipped else "")
-        + "  - Length: 3-5 sentences of analyst voice prose.  No bullet "
-        "points, no headings, no preamble.\n\n"
-        "Write ONLY the summary paragraph."
-    )
+            + "\n\n"
+        )
+    else:
+        shipped_clause = ""
 
-    exec_trace: dict = {"game_name": game_name, "total_posts": total_posts}
+    # Theme/monitor tier lists for orientation.
+    if theme_topics_strs or monitor_topics_strs:
+        tier_clause = (
+            "TOPIC TIERS:\n"
+            f"  THEME-TIER (eligible to lead/mention): "
+            f"{', '.join(theme_topics_strs) if theme_topics_strs else 'NONE'}\n"
+            f"  MONITOR-ONLY / LOW-VOLUME (NOT eligible to lead): "
+            f"{', '.join(monitor_topics_strs) if monitor_topics_strs else 'none'}\n\n"
+        )
+    else:
+        tier_clause = ""
+
+    # Commercial context.
+    commercial_clause = _commercial_context_clause(commercial_context)
+    release_clause = _release_status_clause(release_status)
+
+    def _build_exec_prompt(feedback: str = "") -> str:
+        p = (
+            f'You are a game industry analyst for "{game_name}". '
+            f"Return ONLY a JSON object — no prose before or after.\n\n"
+            + _OUTPUT_STYLE
+            + commercial_clause
+            + _SIGNAL_CLASSIFICATION_CLAUSE
+            + release_clause
+            + tier_clause
+            + claim_type_catalog
+            + lead_rule
+            + coverage_rule
+            + dont_cover_rule
+            + confab_rule
+            + shipped_clause
+        )
+        if feedback:
+            p += (
+                "RETRY FEEDBACK (previous response failed validation):\n"
+                f"{feedback}\n\n"
+                "Fix every issue listed above.\n\n"
+            )
+        p += (
+            f"Write 4–6 atomic sentences (180–260 words total) covering {window_label}. "
+            "Each sentence = exactly ONE claim. Do NOT chain multiple claims with 'and'.\n"
+            "Return JSON only:\n"
+            '{\n  "sentences": [\n'
+            '    {"text": "<one atomic claim>", "cites": ["P-001"], "claim_type": "community_observation"},\n'
+            '    ...\n'
+            '  ]\n}\n\n'
+            f"Data ({window_label}):\n"
+            f"Positive: {pos_count} ({pos_pct:.1f}%)\n"
+            f"Negative: {neg_count} ({neg_pct:.1f}%)\n"
+            f"Neutral:  {neu_count} ({neu_pct:.1f}%)\n"
+            f"Total posts analyzed: {total_posts}\n"
+            f"Top positive topics: {pos_str}\n"
+            f"Top negative topics: {neg_str}\n"
+            f"Top neutral topics: {neu_str}\n\n"
+        )
+        if entities_block:
+            p += f"DISTINCTIVE ENTITIES:\n  {entities_block}\n\n"
+        if samples_block:
+            p += (
+                "REPRESENTATIVE SAMPLE POSTS (with [P-NNN] citation tokens):\n"
+                f"{samples_block}\n\n"
+            )
+        return p
+
+    exec_trace: dict = {
+        "game_name": game_name,
+        "llm_raw_json": None,
+        "parse_ok": False,
+        "validation_failures": [],
+        "retry_fired": False,
+        "sentences_kept": 0,
+        "sentences_dropped": 0,
+        "placeholder_fired": False,
+        "final_text": "",
+    }
+
+    topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
+
+    def _attempt(prompt_text: str) -> tuple[bool, dict, list[dict], list[dict], list[str]]:
+        """One LLM attempt. Returns (parse_ok, parsed_json, kept, dropped, failures)."""
+        try:
+            message = _call_llm_for_user_block(
+                prompt=prompt_text,
+                anthropic_client=client,
+                anthropic_model=_MODEL,
+                anthropic_max_tokens=_MAX_TOKENS_SUMMARY,
+                sonar_max_tokens=_MAX_TOKENS_SUMMARY,
+                temperature=0.2,
+                block_label="exec",
+            )
+            raw_text = message.content[0].text
+            stripped = _strip_json_fences(raw_text)
+            parsed = json.loads(stripped)
+            kept, dropped, failures = _validate_exec_output(
+                parsed, citation_map,
+                theme_tier_topics, low_volume_shipped_topics,
+                monitor_only_labels, low_volume_labels, dont_cover,
+            )
+            return True, raw_text, kept, dropped, failures
+        except json.JSONDecodeError as je:
+            return False, {}, [], [], [f"JSON parse error: {je}"]
+
     try:
-        message = client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS_SUMMARY,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = message.content[0].text.strip()
-        exec_trace["raw_llm_len"] = len(raw)
-        exec_trace["raw_preview"] = raw[:500]
-        # CLAUDE.md §20 layer 3: drop sentences that lack a valid [P-NNN]
-        # citation when citation infra is active.
-        before = len(raw)
-        raw = _strip_uncited_sentences(raw, citation_map)
-        exec_trace["after_strip_uncited_len"] = len(raw)
-        exec_trace["lost_to_strip_uncited"] = before - len(raw)
-        # CLAUDE.md §20 layer 4: second-pass self-criticism.
-        # §25 (2026-06-29): the §25 verifier is now the canonical final gate
-        # on exec summaries (HARD vs COMMUNITY-OBSERVED classification + quoted
-        # source).  The older _self_criticize layer was redundant + harmful on
-        # exec: it killed entire summaries because it could not verify metric-
-        # style claims ("47 positive posts (30.7%)" — numbers that come from
-        # the system, not the posts).  Skip it here; let §25 do the work.
-        exec_trace["after_self_criticize_len"] = len(raw)
-        exec_trace["lost_to_self_criticize"] = 0
-        # CLAUDE.md §22 (2026-06-29): re-scrub orphan discourse markers
-        # AFTER all stripping passes — the critic can drop sentences too,
-        # producing a new orphan opener that the layer-3 scrub didn't see.
-        raw = _scrub_orphan_opener(raw)
-        # CLAUDE.md §20 layer 2: post-LLM proper-noun fact-check gate.
-        topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
-        before = len(raw)
-        result = _sanitize_executive_summary(
-            raw, game_name, sample_posts, distinctive_entities, topic_labels,
-            editorial_articles=editorial_articles,
-            commercial_context=commercial_context,
-        )
-        exec_trace["after_sanitize_len"] = len(result)
-        exec_trace["lost_to_sanitize"] = before - len(result)
-        # CLAUDE.md §21b (2026-06-29): post-LLM monitor-only lead detector.
-        before = len(result)
-        result = _strip_monitor_only_lead(result, monitor_topics)
-        exec_trace["after_strip_monitor_lead_len"] = len(result)
-        exec_trace["lost_to_strip_monitor_lead"] = before - len(result)
-        # Final scrub after sanitizer too — belt-and-suspenders.
-        result = _scrub_orphan_opener(result)
-        exec_trace["after_final_scrub_len"] = len(result)
-        # CLAUDE.md §21c/§22 (2026-06-29): if the post-strip result opens
-        # with a mid-sentence fragment ("109 negative), players...") OR is
-        # entirely empty, drop to the clean placeholder rather than ship
-        # nonsense.
-        is_frag = _looks_like_fragment_lead(result)
-        exec_trace["is_fragment_lead"] = is_frag
-        exec_trace["after_final_scrub_preview"] = result[:300]
-        # §25: FINAL verification gate.  Drop any sentence whose claim
-        # cannot be supported by a quoted passage from a cited source.
-        before = len(result)
-        result = _verify_claims_against_sources(
-            client, result, citation_map, "exec_summary",
-        )
-        exec_trace["after_verify_len"] = len(result or "")
-        exec_trace["lost_to_verify"] = before - len(result or "")
-        # Final scrub after verify pass (verify may have stripped a lead).
-        result = _scrub_orphan_opener(result or "")
-        is_frag_post_verify = _looks_like_fragment_lead(result)
-        # §25g follow-up (2026-06-29): re-run the monitor-only lead gate AFTER
-        # the verifier.  If the verifier drops the substantive lead sentences
-        # but leaves a monitor-only single-locale sentence, the survivor must
-        # NOT become the exec lead — strip it and fall through to placeholder.
-        # Without this, Turok's exec collapsed to a single Turkish sentence
-        # because every other sentence overpacked claims the verifier rejected.
-        before_post_verify_strip = len(result)
-        result = _strip_monitor_only_lead(result, monitor_topics)
-        exec_trace["post_verify_monitor_strip_lost"] = before_post_verify_strip - len(result)
-        # If, after all that, we're below the §25e coverage bar (too short to
-        # cover 3+ theme-tier topics), force the placeholder so the surface
-        # gets a deterministic, theme-tier-led summary instead of a one-liner.
-        # 280 chars is roughly two short sentences — below the floor for a
-        # multi-theme summary, above the floor for an honest single sentence.
-        too_short_for_coverage = (
-            len(result.strip()) < 280
-            and any(
-                bucket
-                for bucket in (critical_mass_table or {}).values()
-                if any(
-                    len(t) >= 4 and t[3] == "theme" for t in (bucket or [])
+        # ── First attempt ────────────────────────────────────────────────
+        prompt1 = _build_exec_prompt()
+        parse_ok, raw_text, kept, dropped, failures = _attempt(prompt1)
+        exec_trace["llm_raw_json"] = (raw_text if isinstance(raw_text, str) else "")[:800]
+        exec_trace["parse_ok"] = parse_ok
+
+        if not parse_ok:
+            # JSON parse failed — one retry.
+            feedback = "; ".join(failures)
+            parse_ok2, raw_text2, kept, dropped, failures = _attempt(
+                _build_exec_prompt(feedback=feedback)
+            )
+            exec_trace["retry_fired"] = True
+            exec_trace["parse_ok"] = parse_ok2
+            if not parse_ok2:
+                exec_trace["placeholder_fired"] = True
+                exec_trace["validation_failures"] = failures
+                _record_exec_trace(exec_trace)
+                return _placeholder_summary(
+                    game_name, window_label, total_posts,
+                    pos_str=pos_str, neg_str=neg_str,
+                    pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
+                    critical_mass_table=critical_mass_table,
                 )
+
+        exec_trace["validation_failures"] = failures
+        exec_trace["sentences_kept"] = len(kept)
+        exec_trace["sentences_dropped"] = len(dropped)
+
+        # ── Floor check: exec needs ≥4 sentences ─────────────────────────
+        _EXEC_FLOOR = 4
+        floor_breach = (len(kept) < _EXEC_FLOOR)
+        lead_failures = [
+            f for f in failures
+            if "lead sentence" in f or "coverage floor" in f
+        ]
+        floor_breach = floor_breach or bool(lead_failures)
+
+        if floor_breach and not exec_trace["retry_fired"]:
+            feedback_items = [
+                f"- {f}" for f in failures
+            ] if failures else ["- Fewer than 4 valid sentences survived validation."]
+            feedback_str = "\n".join(feedback_items)
+            exec_trace["retry_fired"] = True
+            _, raw_text2, kept2, dropped2, failures2 = _attempt(
+                _build_exec_prompt(feedback=feedback_str)
             )
-        )
-        exec_trace["final_preview"] = result[:300]
-        exec_trace["too_short_for_coverage"] = too_short_for_coverage
-        if not result.strip() or is_frag_post_verify or too_short_for_coverage:
-            logger.warning(
-                "Exec summary fragmentary/empty/too-short after §25 verify for '%s' "
-                "(len=%d frag=%s too_short=%s); falling back to placeholder",
-                game_name, len(result), is_frag_post_verify, too_short_for_coverage,
-            )
+            if len(kept2) >= len(kept):
+                kept, dropped, failures = kept2, dropped2, failures2
+            exec_trace["validation_failures"] = failures
+            exec_trace["sentences_kept"] = len(kept)
+            exec_trace["sentences_dropped"] = len(dropped)
+
+        # ── Assemble final prose ─────────────────────────────────────────
+        if not kept:
             exec_trace["placeholder_fired"] = True
             _record_exec_trace(exec_trace)
             return _placeholder_summary(
@@ -3719,9 +4153,20 @@ def _call_exec(
                 pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
                 critical_mass_table=critical_mass_table,
             )
+
+        prose = " ".join(s["text"] for s in kept)
+        # §26.7: run through proper-noun whitelist defense.
+        result = _sanitize_executive_summary(
+            prose, game_name, sample_posts, distinctive_entities, topic_labels,
+            editorial_articles=editorial_articles,
+            commercial_context=commercial_context,
+        )
+
         exec_trace["placeholder_fired"] = False
+        exec_trace["final_text"] = result[:300]
         _record_exec_trace(exec_trace)
         return result
+
     except Exception as exc:
         logger.error("Claude exec summary error for '%s': %s", game_name, exc)
         exec_trace["error"] = str(exc)
@@ -3904,7 +4349,14 @@ def _call_actions(
     retry_fix_list_hint: Optional[str] = None,
     # §24e (2026-06-29): editorial articles contribute to fab whitelist.
     editorial_articles: Optional[list] = None,
-) -> str:
+    # §26 new inputs.
+    monitor_only_labels: Optional[list[str]] = None,
+    low_volume_labels: Optional[list[str]] = None,
+    release_status: Optional[str] = None,
+    dont_cover: Optional[list[str]] = None,
+    theme_tier_topics: Optional[list[dict]] = None,
+    shipped_regional_tokens: Optional[list[str]] = None,
+) -> Optional[str]:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
     citation_map = citation_map or {}
@@ -4039,10 +4491,14 @@ def _call_actions(
         "is_retry": bool(retry_fix_list_hint),
     }
     try:
-        message = client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS_ACTIONS,
-            messages=[{"role": "user", "content": prompt}],
+        message = _call_llm_for_user_block(
+            prompt=prompt,
+            anthropic_client=client,
+            anthropic_model=_MODEL,
+            anthropic_max_tokens=_MAX_TOKENS_ACTIONS,
+            sonar_max_tokens=_MAX_TOKENS_ACTIONS,
+            temperature=0.2,
+            block_label="recs",
         )
         raw = message.content[0].text.strip()
         recs_trace["raw_llm_len"] = len(raw)
@@ -4305,10 +4761,14 @@ def _call_bold_ideas(
 
     trace: dict = {"game_name": game_name}
     try:
-        message = client.messages.create(
-            model=_MODEL,
-            max_tokens=_MAX_TOKENS_BOLD,
-            messages=[{"role": "user", "content": prompt}],
+        message = _call_llm_for_user_block(
+            prompt=prompt,
+            anthropic_client=client,
+            anthropic_model=_MODEL,
+            anthropic_max_tokens=_MAX_TOKENS_BOLD,
+            sonar_max_tokens=_MAX_TOKENS_BOLD,
+            temperature=0.2,
+            block_label="bold_ideas",
         )
         raw = message.content[0].text.strip()
         trace["raw_llm_len"] = len(raw)
@@ -4608,6 +5068,85 @@ def _parse_recommended_actions(raw: str) -> Optional[str]:
 
 
 # ── Claude client factory ─────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2026-06-29 user direction: route the three user-facing blocks (exec, recs,
+# bold-ideas) through Perplexity Sonar instead of Claude Haiku.  Sonar's
+# grounding discipline is materially stronger on sparse-context summarization,
+# which was the failure mode for Haiku across the §25-series iterations.
+# Anthropic remains the fallback (and is still used by internal helpers like
+# _self_criticize, _verify_claims_against_sources, and editorial fetch).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _LLMResponse:
+    """Mimics the surface of `anthropic_message.content[0].text` so the
+    three user-facing call sites work whether the call went to Sonar or
+    Anthropic without changing the caller code shape."""
+    def __init__(self, text: str, source: str):
+        self.text = text or ""
+        self.source = source
+        self.content = [self]  # so .content[0].text works
+
+
+def _call_llm_for_user_block(
+    *,
+    prompt: str,
+    anthropic_client,
+    anthropic_model: str = _MODEL,
+    anthropic_max_tokens: int = 1024,
+    sonar_model: str = "sonar-pro",
+    sonar_max_tokens: int = 1024,
+    temperature: float = 0.2,
+    block_label: str = "",
+) -> _LLMResponse:
+    """Route a user-facing block (exec / recs / bold-ideas) through Sonar
+    first, falling back to Anthropic on any Sonar failure.
+
+    Returns an object with `.content[0].text` for the caller.  Raises only
+    if BOTH Sonar and Anthropic fail — callers already wrap in try/except
+    and fall back to placeholders on exception.
+    """
+    # Try Sonar first when configured.
+    try:
+        from services.sonar_client import sonar_available, call_sonar  # local import to avoid cycles
+        if sonar_available():
+            try:
+                resp = call_sonar(
+                    prompt,
+                    model=sonar_model,
+                    max_tokens=sonar_max_tokens,
+                    temperature=temperature,
+                )
+                logger.info(
+                    "LLM[%s] via Sonar (model=%s, resp_chars=%d)",
+                    block_label or "?", sonar_model, len(resp.text),
+                )
+                return _LLMResponse(text=resp.text, source=f"sonar:{sonar_model}")
+            except Exception as sonar_exc:
+                logger.warning(
+                    "LLM[%s] Sonar failed (%s) — falling back to Anthropic %s",
+                    block_label or "?", sonar_exc, anthropic_model,
+                )
+    except ImportError as e:
+        logger.warning("sonar_client import failed (%s); using Anthropic only", e)
+
+    # Fallback: Anthropic.
+    if anthropic_client is None:
+        raise RuntimeError(
+            f"LLM[{block_label}] both Sonar (unavailable) and Anthropic (no client) are unusable"
+        )
+    message = anthropic_client.messages.create(
+        model=anthropic_model,
+        max_tokens=anthropic_max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = message.content[0].text if message.content else ""
+    logger.info(
+        "LLM[%s] via Anthropic (model=%s, resp_chars=%d)",
+        block_label or "?", anthropic_model, len(text),
+    )
+    return _LLMResponse(text=text, source=f"anthropic:{anthropic_model}")
+
 
 def _get_client():
     """Return an Anthropic client, or None if key is missing / package absent."""
