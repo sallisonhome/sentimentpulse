@@ -4543,11 +4543,12 @@ def _call_actions(
         if sanitized:
             sanitized = _strip_monitor_only_recs(sanitized, critical_mass_table)
         recs_trace["after_strip_monitor_only"] = (sanitized.count("\n") + 1) if sanitized else 0
-        # §25: FINAL verification gate — require quoted source passage per item.
-        if sanitized:
-            sanitized = _verify_claims_against_sources(
-                client, sanitized, citation_map, "recommendations",
-            )
+        # §26 (2026-06-29): _verify_claims_against_sources DISABLED for recs.
+        # Sonar's grounding discipline is strong enough that the post-LLM
+        # quoted-passage verifier becomes a hostile over-filter that deletes
+        # legitimate recs. The volume gate, sanitizer, release-status gate,
+        # and strip-monitor-only-recs gates above remain. Anti-confabulation
+        # is enforced INSIDE the prompt + by Sonar's training. Per §26.8 spec.
         recs_trace["after_verify"] = (sanitized.count("\n") + 1) if sanitized else 0
         final_count = _count_valid_recommendations(sanitized)
         recs_trace["final_valid_count"] = final_count
@@ -4810,23 +4811,11 @@ def _call_bold_ideas(
         )
         trace["after_grounding"] = len(parsed)
         trace["lost_to_grounding"] = before - len(parsed)
-        # CLAUDE.md §25 layer 7: FINAL verification gate.  Per-idea sentence
-        # verification: each bold idea must have its claim(s) quoted from
-        # a cited source.
+        # §26 (2026-06-29): _verify_claims_against_sources DISABLED for bold ideas.
+        # Same rationale as recs path: Sonar's grounding makes the post-LLM
+        # verifier over-aggressive. _strip_uncited_bold_ideas + _self_criticize
+        # + sanitize + grounding gates above remain. Per §26.8 spec.
         before = len(parsed)
-        verified: list[str] = []
-        for idea in parsed:
-            kept_text = _verify_claims_against_sources(
-                client, idea, citation_map, "bold_ideas",
-            )
-            if kept_text and kept_text.strip():
-                verified.append(kept_text)
-            else:
-                logger.warning(
-                    "§25 dropped bold idea (no claim survived verification): %s",
-                    idea[:140],
-                )
-        parsed = verified
         trace["after_verify"] = len(parsed)
         trace["lost_to_verify"] = before - len(parsed)
         trace["final"] = len(parsed)
