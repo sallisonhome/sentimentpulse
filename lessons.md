@@ -465,4 +465,26 @@ When the same class of defect (fabrication, confabulation, off-tier surfacing) r
 
 ---
 
+## 2026-06-29 — Neutral topics are leading indicators (§25f)
+
+**What happened.** During the §25 work I treated the neutral-bucket topic list as background context to the exec/recs, not as a first-class source of recommendations. User correction: neutral topics are emergent conversations — curiosities, comparisons, anticipation, open questions — and they are where marketing has the highest leverage because they haven't yet crystallized into approval or complaint. A digest that only covers loud positives and loud negatives misses the early signal.
+
+**The rule §25f makes operational.**
+
+1. Every weekly/monthly exec must mention at least one neutral theme-tier topic when one exists (release-timeline curiosity, comparison-to-other-games discussion, mechanic-detail question, etc.).
+2. Every weekly/monthly recommendation set must include at least one rec drawn from a neutral theme-tier topic when one exists. The rec frames either:
+   - **Nudge-positive:** Clarify / Communicate / Spotlight — turn curiosity into endorsement.
+   - **Guard-against-drift:** Document / Address / Reframe — close ambiguity before it becomes a complaint.
+3. Bold ideas may anchor on neutral themes with the hybrid-citation rules.
+4. The §25 verifier classification still applies: a claim about a neutral theme is COMMUNITY-OBSERVED ("community is curious about X," "posters are asking when Y") and needs a cited post containing the matching statement.
+5. Tier gates still apply: §21b/§21h/§25d demote narrow-audience and single-poster neutral topics to monitor-only, and those do NOT get recs.
+
+**Generalizable principle.** Sentiment buckets are not equal. Loud-positive and loud-negative are LAGGING signals — the community has already decided. Neutral is the LEADING signal — the community is still forming an opinion, which is when marketing decisions actually move the needle. A summary system that under-weights neutral is missing its highest-impact recommendation class.
+
+**Pre-ship check.** Before declaring a weekly/monthly digest clean, verify that for each substantive title (>=20 posts) with at least one neutral theme-tier topic, the exec mentions it and the recommended actions include at least one neutral-anchored item. If the verifier or any other gate drops the neutral coverage, retry with a fix-list hint that names the missed neutral theme. This is now part of the standard pre-ship audit alongside §22, §23, §25d, §25e.
+
+**Updated locations.** CLAUDE.md §25f (operational contract). PRINCIPLES.md (no change needed — §25f is project-specific operational detail, not a universal truth-and-accuracy rule). period_summary_service module docstring (when refactored next — add to the §25 anchor block).
+
+---
+
 <!-- Add new lessons above this line, newest first. -->

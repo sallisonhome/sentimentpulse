@@ -24,7 +24,28 @@ CLAUDE.md §25 — anti-confabulation contract (CRITICAL):
   HARD claims require a passage containing the factual substance.
   COMMUNITY-OBSERVED claims require a passage containing the matching
   community statement.  Sentences/items whose claims come back UNSUPPORTED
-  are dropped.  Read CLAUDE.md §25 BEFORE editing the verification gate.
+  are dropped.
+
+CLAUDE.md §25d — monitor-only topics must not lead the surface (CRITICAL):
+  Narrow-audience / single-locale topics (Turkish/Spanish/Welsh/Regional/
+  etc.) are demoted to monitor-only tier and MUST NOT appear in the leading
+  position of pos_str/neg_str/neu_str or as the headline of the §24e
+  grounded placeholder.
+
+CLAUDE.md §25e — exec must cover ≥3 theme-tier topics, biased toward posts:
+  Exec summary spans 3+ distinct theme-tier topics across positive/negative/
+  neutral buckets, biased toward [P-NNN] community-post evidence.  Editorial
+  [E-NNN] is supplementary context only.
+
+CLAUDE.md §25f — neutral topics are FIRST-CLASS signal:
+  Neutral theme-tier topics are leading indicators (curiosities, comparisons,
+  anticipation, open questions).  Every exec must mention one when present.
+  Every recommended-action set must include at least one neutral-anchored rec
+  (nudge-positive: Clarify/Communicate/Spotlight; OR guard-against-drift:
+  Document/Address/Reframe).  This is the highest-leverage rec class because
+  the community is still forming an opinion — marketing can move the needle.
+
+  Read CLAUDE.md §25 / §25d / §25e / §25f BEFORE editing these helpers.
 """
 import logging
 import re
@@ -3496,19 +3517,29 @@ def _call_exec(
             "REPRESENTATIVE SAMPLE POSTS (top-upvoted in each sentiment, truncated):\n"
             f"{samples_block}\n\n"
         )
-    # §25e (2026-06-29): explicit theme-coverage + bias-toward-posts clause.
+    # §25e + §25f (2026-06-29): theme-coverage + bias-toward-posts +
+    # neutral-as-leading-indicator clause.
     prompt += (
-        "\n\n§25e COVERAGE RULES (MANDATORY):\n"
+        "\n\n§25e+§25f COVERAGE RULES (MANDATORY):\n"
         "  - Your summary MUST span at least 3 distinct topics drawn from "
-        "the positive/negative/neutral buckets shown above.  Do NOT lead "
-        "with a single topic or write a one-sided summary when both "
+        "the positive / negative / neutral buckets shown above.  Do NOT "
+        "lead with a single topic or write a one-sided summary when both "
         "positive AND negative theme topics exist.\n"
+        "  - NEUTRAL THEME-TIER TOPICS ARE LEADING INDICATORS — mention at "
+        "least one when present.  Neutral topics are emergent "
+        "conversations: community curiosity, anticipation of a release/"
+        "feature, comparisons being made, open questions about mechanics or "
+        "roadmap.  These haven't yet crystallized into approval or complaint "
+        "and are the highest-leverage surface for marketing decisions.  "
+        "Frame neutral themes as 'community is curious about X,' 'posters "
+        "are comparing the title to Y,' 'anticipation centers on Z.'\n"
         "  - BIAS toward [P-NNN] community posts as your primary evidence: "
         "cite them for what posters are saying, asking for, complaining "
-        "about, celebrating, or comparing.  Editorial [E-NNN] citations "
-        "are SUPPLEMENTARY — use only when they add context the posts "
-        "alone don't show (release timing, comparable launches, industry "
-        "framing).  An exec built mostly on editorial citations FAILS.\n"
+        "about, celebrating, comparing, or anticipating.  Editorial [E-NNN] "
+        "citations are SUPPLEMENTARY — use only when they add context the "
+        "posts alone don't show (release timing, comparable launches, "
+        "industry framing).  An exec built mostly on editorial citations "
+        "FAILS.\n"
         "  - Do NOT lead with regional / localization / single-locale "
         "topics (Turkish, Spanish, Welsh, Regional, etc.).  These are "
         "narrow-audience signals; they may be mentioned briefly in the "
@@ -3884,7 +3915,30 @@ def _call_actions(
         prompt += f"DISTINCTIVE ENTITIES surfaced in this window:\n  {entities_block}\n\n"
     if samples_block:
         prompt += f"REPRESENTATIVE SAMPLE POSTS:\n{samples_block}\n\n"
-    prompt += "Output: numbered list (1. ... 2. ... 3. ...). Plain prose, no markdown headings."
+    # §25f (2026-06-29): neutral-bucket framing for recs.  Append BEFORE
+    # the format reminder so the LLM internalizes neutral-as-leading
+    # before writing.
+    prompt += (
+        "\n§25f NEUTRAL-TOPIC RULE (when neutral theme-tier topics exist):\n"
+        "  - Include at least one recommendation drawn from the neutral "
+        "bucket.  Neutral topics are EMERGENT signal: community curiosity, "
+        "anticipation, comparisons-in-progress, open questions.  These "
+        "haven't crystallized into approval or complaint yet.\n"
+        "  - Frame neutral-anchored recs as either:\n"
+        "     NUDGE-POSITIVE — Clarify / Communicate / Spotlight content "
+        "that converts curiosity into endorsement (e.g. publish a "
+        "roadmap; share dev-commentary on the mechanic posters are asking "
+        "about; spotlight the comparable the community is referencing).\n"
+        "     GUARD-AGAINST-DRIFT — Address / Document / Reframe ambiguity "
+        "that, left unanswered, will likely become a complaint (e.g. "
+        "document what multiplayer modes will ship; clarify pricing/"
+        "editions; pre-empt expectation mismatches).\n"
+        "  - This is the highest-leverage rec class: the community is "
+        "still forming an opinion, so a clarification now moves the "
+        "sentiment trajectory.\n\n"
+        "Output: numbered list (1. ... 2. ... 3. ...). Plain prose, "
+        "no markdown headings."
+    )
 
     recs_trace: dict = {
         "game_name": game_name,

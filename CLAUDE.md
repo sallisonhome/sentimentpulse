@@ -483,6 +483,32 @@ The critical-mass table tiers each topic as `theme` or `monitor-only`.  Theme-ti
 
 **Implementation expectation.** `_call_claude_for_period` reorders `pos_topics`/`neg_topics`/`neu_topics` so theme-tier labels come first and monitor-only labels are pushed to the end.  `_placeholder_summary` walks the same critical-mass table to pick the lead label; when no theme-tier label exists in a bucket, the placeholder must NOT cite a monitor-only label as "Top positive topic."  Unit tests must include the Hellraiser shape (Turkish leading the positive bucket, demoted to monitor-only by §21h) and assert the exec headline does NOT name Turkish.
 
+### 25f. Neutral topics are first-class signal — nudge them positive or guard against drift (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29: "neutral topics have weight in your consideration from posts — this is where you can call out a trend on user posts (or same is true on editorial content) and suggest recommended actions to turn an emerging neutral topic into more positive or keep it from turning negative — make that part of your process."**
+
+**The rule.** Neutral-bucket topics are not noise. They are emergent conversations — curiosities, questions, comparisons, anticipation, factual discussions that haven't yet crystallized into clear approval or complaint. They are leading indicators. Every weekly and monthly summary path must treat neutral theme-tier topics as recommendation-worthy in their own right:
+
+1. **Exec summary** must mention at least one prominent neutral theme when one exists, framing it as community curiosity, an open question, a comparison being made, or an anticipated milestone (release timeline, roadmap, feature reveal). Neutral is not a leftover bucket — it's the early-warning surface.
+
+2. **Recommended actions** must include at least one rec drawn from a neutral theme-tier topic when one exists in the cycle. The rec should propose either:
+   - **Nudge positive:** Clarify / Communicate / Spotlight content that converts curiosity into endorsement (e.g. "Publish a roadmap addressing community curiosity about post-launch DLC," "Communicate the platform-support timeline.")
+   - **Guard against negative drift:** Address / Document / Reframe ambiguity that, left unanswered, will likely become a complaint (e.g. "Document multiplayer-mode expectations to head off post-launch frustration when expectations don't match design.")
+
+3. **Bold ideas** may anchor on neutral themes too — a curiosity cluster, an anticipation thread, or an editorial discussion of an upcoming feature is fair game for a creative positioning move.
+
+4. **The verifier classification stays correct.** A claim about a neutral theme is still COMMUNITY-OBSERVED ("community is curious about X," "posters are asking when Y," "community is comparing the game to Z") and is supported when the cited post contains the matching curiosity / question / comparison statement.
+
+5. **Tier still gates the surface.** §21b/§21h/§25d still apply: a neutral topic that is monitor-only (single poster, narrow audience) does NOT get a rec. The rule is for neutral THEME-TIER topics — those with weight ≥ 5 across ≥2 days OR weight ≥ 8 single-day, AND not narrow-audience.
+
+**Implementation expectation.**
+* Exec prompt instructs the LLM to weave at least one neutral theme into the summary when one exists at theme tier.
+* Recommendations prompt enumerates neutral-bucket as a valid source for amplification/clarification recs in addition to negative liabilities and positive amplifications. The current 4-source enumeration (negative liabilities / positive amplifications / neutral clarifications / distinctive entities) is preserved and the neutral category gets explicit framing on nudge-positive vs guard-against-negative-drift.
+* Bold-ideas prompt allows neutral-theme anchoring with the same hybrid-citation rules.
+* `_validate_summary_output()` may add a soft check that warns when an exec / recommendation set ignores an available neutral theme-tier topic. Soft because there are cycles where the neutral bucket is genuinely noise.
+
+**Why this matters.** A digest that only covers loud positives + loud negatives misses the emerging questions. Those questions are where marketing can act earliest — turning curiosity into endorsement before it drifts to disappointment. This is the highest-leverage class of recommendation the system can generate.
+
 ### 25e. Exec summary must cover high-level themes across post buckets, biased toward user posts (CRITICAL — always-on)
 
 **Hard requirement directed by the user 2026-06-29: "EXEC SUMMARIES MUST contain a summary of the topic high level topics and context across user posts and editorial but bias toward user posts."**
