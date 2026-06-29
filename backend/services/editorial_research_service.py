@@ -363,21 +363,43 @@ def fetch_editorial_for_title(
             break
 
     # Step 4: fetch + summarize until we have target_count successful articles.
+    # 2026-06-29 follow-up: Google News uses JS-rendered redirects, so the
+    # Google News article URL does NOT resolve to the publisher's article
+    # via HTTP redirects.  When body fetch fails (which is the COMMON case
+    # for Google News URLs), fall back to TITLE-ONLY mode: summarize from
+    # the article headline + publication alone.  This is less rich than
+    # full-text but still gives the LLM real editorial signal to reason on.
     saved: list[EditorialArticle] = []
     cite_counter = 1
     for cand in candidates:
         if len(saved) >= target_count:
             break
         final_url, body = _fetch_article(cand["link"])
-        if not final_url or not body or len(body) < 200:
-            continue
+        # Title-only fallback: use the headline as evidence.  Real article
+        # URL is the Google News redirect (still clickable for the user).
+        if not final_url:
+            final_url = cand["link"]
+        if not body or len(body) < 200:
+            body = ""  # title-only mode
+        # Summarize.  When body is empty, the summarizer uses title + pub.
         summary = _summarize_article(
-            anthropic_client, cand["title"], cand.get("publication", ""), body,
+            anthropic_client, cand["title"], cand.get("publication", ""),
+            body or cand["title"],  # fallback: re-use title as body input
         )
         if not summary:
-            continue
-        # Derive final publication domain from the resolved URL.
-        final_publication = urlparse(final_url).netloc.lower() or cand.get("publication", "")
+            # Title-only fallback summary: a one-line evidence note.
+            pub = cand.get("publication", "unknown publication")
+            summary = (
+                f"Editorial: {pub} published an article titled "
+                f"'{cand['title']}'.  Treat the headline as the evidence "
+                f"signal; the article likely covers the entity or theme "
+                f"named in the title."
+            )
+        # Derive final publication: prefer parsed URL netloc, fall back to
+        # the RSS source field (e.g. 'Polygon.com').
+        derived_pub = urlparse(final_url).netloc.lower()
+        if not derived_pub or "news.google.com" in derived_pub:
+            derived_pub = (cand.get("publication", "") or "").lower()
         row = EditorialArticle(
             game_id=game_id,
             scope=scope,
@@ -385,9 +407,9 @@ def fetch_editorial_for_title(
             cycle_end=cycle_end,
             url=final_url,
             title=cand["title"][:1000] if cand.get("title") else None,
-            publication=final_publication[:255] if final_publication else None,
+            publication=derived_pub[:255] if derived_pub else None,
             published_at=cand.get("published_at"),
-            body=body,
+            body=body or None,
             summary=summary,
             cite=f"E-{cite_counter:03d}",
         )
