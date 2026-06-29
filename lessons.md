@@ -341,4 +341,25 @@ Until every item on this list is verified against the actual digest preview outp
 
 ---
 
+## 2026-06-29 — Hellraiser exec led with single-post Turkish localization signal (§21c)
+
+**What happened.** User opened the weekly digest and the Hellraiser exec summary read: "Regional localization gaps, particularly Turkish Community Posts and broader localization friction, surface as the primary liability theme, with posts citing language support as a key decision factor [3, 20]." One paragraph, no other content, opaque phrasing, headline driven by a single Turkish post the user had already flagged as too small to act on.
+
+**Root cause.** I built `_topic_critical_mass_table()` in §21b and plumbed it into `_call_actions` and `_call_bold_ideas` so monitor-only topics would not drive recommendations. I missed `_call_exec`. The exec prompt therefore had no critical-mass awareness at all — it received the topic strings only, not the tier classification — so the LLM led with whatever looked dominant in the top-topic strings even when the underlying signal was a single post.
+
+**Why I didn't catch it earlier.** I shipped §21b, audited the recommendations, saw the monitor-only topics correctly suppressed, and declared the work done. I never re-read the exec summary on the same titles. This is exactly the §23 failure pattern: auditing the surface the bug was reported on, not all surfaces the fix should have covered.
+
+**Fix.**
+
+1. Pass `critical_mass_table` to `_call_exec`.
+2. Inject an EXEC LEADING-THEME GATE clause into the exec prompt that enumerates theme-tier topics (eligible to lead) and monitor-only topics (NOT eligible to lead).
+3. Add post-LLM `_strip_monitor_only_lead(text, monitor_topics)` belt-and-suspenders that drops the lead sentence if it is dominated by a monitor-only label (label appears in lead AND label/lead ratio > 8%).
+4. Add 7 unit tests covering passthrough, strip, incidental-mention preservation, double-quote handling, only-sentence-stripped-returns-empty.
+
+**Generalizable principle.** When you add a quality gate to one prompt in a multi-prompt pipeline, audit every prompt in that pipeline for the same gate. The cost of plumbing the gate once is far less than the cost of finding out one quarter later that the leakiest surface (the exec, which is what the user reads first) had no gate.
+
+**Pre-ship check to add.** Before declaring any §15/§21/§21b/§22 fix done, grep for every `_call_*` entry point in `period_summary_service.py` and confirm each one receives `critical_mass_table` if it produces text the user will read. Document this in §23 audit-the-deliverable checklist.
+
+---
+
 <!-- Add new lessons above this line, newest first. -->

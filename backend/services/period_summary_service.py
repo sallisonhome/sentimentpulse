@@ -934,14 +934,43 @@ _REC_COUNT_MIN = 3
 _REC_COUNT_MAX = 5
 
 # Imperative verbs that a recommendation MUST start with after the
-# numbered prefix.  Anything else (e.g. "Note that...", "It appears...")
-# is an observation, not a recommendation — drop it.
+# numbered prefix.  Items starting with non-imperative phrasing like
+# "Note that...", "It appears...", "The community...", "This shows..."
+# are observations not recommendations — drop them.
+#
+# 2026-06-29 expansion: the previous narrow list was dropping perfectly
+# good PM imperatives the LLM actually uses (Optimize, Tune, Surface,
+# Improve, Investigate, etc.).  This list captures the common imperative-
+# verb vocabulary for product/community management: action verbs,
+# investigation verbs, communication verbs, optimization verbs, content
+# verbs, monetization verbs.  When in doubt, ADD a verb here — it's far
+# worse to drop a good recommendation than to admit a borderline one.
 _RECOMMENDATION_VERB_RE = re.compile(
     r"^\s*\d+\.\s*\*?\*?"
-    r"(?:lean\s+into|amplify|double\s+down|anchor\s+on|spotlight|embrace|"
-    r"ship|patch|audit|launch|clarify|document|sunset|resolve|communicate|"
-    r"address|reframe|publish|reveal|showcase|reassure|counter-position|"
-    r"prioritize|elevate|invest)",
+    r"(?:"
+    # Amplify-class (§21 positive comparisons)
+    r"lean\s+into|amplify|double\s+down|anchor\s+on|spotlight|embrace|"
+    r"capitalize|leverage|harness|elevate|champion|highlight|emphasize|"
+    # Fix-class (§21 liabilities, live-game)
+    r"ship|patch|hotfix|rebalance|nerf|buff|fix|repair|resolve|"
+    r"address|reframe|tune|optimize|improve|stabilize|polish|refine|"
+    # Communicate-class
+    r"clarify|communicate|document|publish|reveal|showcase|reassure|"
+    r"announce|share|update|explain|confirm|acknowledge|respond|"
+    # Investigation-class
+    r"audit|investigate|review|analyze|measure|benchmark|track|monitor|"
+    r"surface|expose|probe|examine|profile|diagnose|"
+    # Strategy-class
+    r"prioritize|invest|expand|sunset|launch|deploy|release|roll\s*out|"
+    r"pivot|reposition|counter-position|test|experiment|pilot|"
+    # Content / engagement
+    r"feature|promote|distribute|seed|host|run|organize|coordinate|"
+    r"partner|collaborate|engage|cultivate|grow|recruit|"
+    # Monetization / business
+    r"price|bundle|tier|gate|monetize|upsell|cross-sell|reduce|extend|"
+    # Safety / hygiene
+    r"escalate|mitigate|deprecate|remove|disable|enforce|protect|harden"
+    r")",
     re.IGNORECASE,
 )
 
@@ -1222,6 +1251,10 @@ def _call_claude_for_period(
         annotated_samples=annotated_samples,
         citation_map=citation_map,
         commercial_context=commercial_context,
+        # §21b 2026-06-29 fix: exec was being allowed to lead with
+        # monitor-only topics (e.g. one Turkish localization post) because
+        # the critical-mass table was never passed to _call_exec.
+        critical_mass_table=critical_mass_table,
     )
     rec_actions   = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,
@@ -1861,22 +1894,33 @@ def _self_criticize_bold_ideas(
 ) -> list[str]:
     """Apply self-criticism to each bold idea.
 
-    Atomic-unit rule (CLAUDE.md §20 hardening 2026-06-28): a bold idea is
-    treated as ONE atomic unit, not split sentence-by-sentence.  Earlier,
-    splitting on `[.!?]` and dropping individual sentences produced orphan-
-    pronoun artifacts like "Community explicitly rejected this analog…"
-    where the previous sentence that named the analog was stripped.
+    Atomic-unit rule WITH SALVAGE (CLAUDE.md §20+§22+§23 hardening 2026-06-29):
+    Previously this dropped the entire idea if the critic rejected ANY
+    sentence.  Combined with the tightened §20 critic prompt (specific-entity
+    grounding, date grounding, pre-release verb rejection), that produced
+    0 bold ideas across all 8 titles in the live digest — the failure the
+    user just flagged.
 
-    A 2-sentence idea where the second sentence depends on the first cannot
-    survive partial stripping.  If ANY sentence in the idea is UNSUPPORTED,
-    we drop the whole idea.
+    New behaviour: if the critic survived something with substantive content
+    AND retains at least one citation marker, keep what survived.  The risk
+    of orphan-pronoun artifacts ("Community explicitly rejected this
+    analog…") is mitigated by:
+      • _sanitize_bold_ideas (layer 2) runs AFTER this and drops ideas that
+        are too short, missing citations, or read like a stub.
+      • _strip_uncited_bold_ideas (layer 3) runs BEFORE this.
+    Together those layers catch the dangling-reference cases while letting
+    legitimate 2-sentence ideas survive when the critic finds one part
+    unsupported but the other still stands on its own.
+
+    Substantive content threshold: ≥80 chars AND ≥10 words AND contains at
+    least one [P-###]-style citation marker.  Below that, drop the whole
+    idea (the salvage isn't worth keeping).
     """
     if not ideas or not citation_map:
         return ideas
     survived: list[str] = []
+    _citation_re = re.compile(r"\[[A-Za-z]-\d+\]")
     for idea in ideas:
-        # Split into sentences just to count.  If any sentence would be
-        # dropped, the whole idea is dropped.
         original_sents = [
             s.strip() for s in re.split(r"(?<=[.!?])\s+", idea) if s.strip()
         ]
@@ -1884,17 +1928,34 @@ def _self_criticize_bold_ideas(
         critiqued_sents = [
             s.strip() for s in re.split(r"(?<=[.!?])\s+", critiqued) if s.strip()
         ]
-        # Drop the idea outright if the critic removed any sentence — partial
-        # survival creates dangling references.
-        if len(critiqued_sents) < len(original_sents):
+        # Critic returned nothing — every sentence rejected.  Drop the idea.
+        if not critiqued.strip():
             logger.info(
-                "Bold-idea critic stripped %d/%d sentences; dropping whole idea: %s",
-                len(original_sents) - len(critiqued_sents), len(original_sents),
+                "Bold-idea critic rejected all sentences; dropping: %s",
                 idea[:120],
             )
             continue
-        if critiqued:
-            survived.append(critiqued)
+        # Partial survival: only keep if what's left is substantive AND cited.
+        if len(critiqued_sents) < len(original_sents):
+            has_citation = bool(_citation_re.search(critiqued))
+            word_count = len(critiqued.split())
+            if not has_citation or word_count < 10 or len(critiqued) < 80:
+                logger.info(
+                    "Bold-idea critic stripped %d/%d sentences; surviving "
+                    "text too thin to keep (chars=%d words=%d cited=%s): %s",
+                    len(original_sents) - len(critiqued_sents),
+                    len(original_sents), len(critiqued), word_count,
+                    has_citation, idea[:120],
+                )
+                continue
+            logger.info(
+                "Bold-idea critic stripped %d/%d sentences; salvaging "
+                "remaining substantive text (chars=%d words=%d): %s",
+                len(original_sents) - len(critiqued_sents),
+                len(original_sents), len(critiqued), word_count,
+                critiqued[:120],
+            )
+        survived.append(critiqued)
     return survived
 
 
@@ -2439,6 +2500,49 @@ def _sanitize_executive_summary(
     return " ".join(keep)
 
 
+def _strip_monitor_only_lead(text: str, monitor_topic_labels: list[str]) -> str:
+    """If the lead sentence is dominated by a monitor-only topic label, drop it.
+
+    CLAUDE.md §21b (2026-06-29): a monitor-only topic must not be the
+    headline of the exec summary.  When the leading sentence is mostly
+    about a monitor-only label (case-insensitive substring match on the
+    bare label, stripped of quotes/sentiment-bucket annotations), we drop
+    that sentence.  If the result has no sentences left, return empty
+    string so the placeholder path fires.
+    """
+    if not text or not monitor_topic_labels:
+        return text
+    # The monitor_topic_labels entries are formatted like "'Foo' (negative)";
+    # strip to just the bare label text for matching.
+    bare_labels: list[str] = []
+    for entry in monitor_topic_labels:
+        # Pull the part inside the leading single quotes if present.
+        m = re.match(r"^['\"](.*?)['\"]", entry)
+        if m:
+            bare_labels.append(m.group(1).lower())
+        else:
+            bare_labels.append(entry.lower())
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if not sentences:
+        return text
+    lead = sentences[0].lower()
+    for label in bare_labels:
+        if not label:
+            continue
+        # Two-condition match: label appears in the lead sentence AND the
+        # lead sentence is short enough that the label is dominant (label
+        # length / sentence length > 8%), to avoid stripping a long lead
+        # that just incidentally mentions the label.
+        if label in lead and (len(label) / max(len(lead), 1)) > 0.08:
+            logger.warning(
+                "Exec lead sentence dominated by monitor-only topic %r; dropping. lead=%s",
+                label, sentences[0][:200],
+            )
+            remaining = sentences[1:]
+            return " ".join(remaining)
+    return text
+
+
 def _call_exec(
     client,
     game_name,
@@ -2457,6 +2561,10 @@ def _call_exec(
     citation_map: Optional[dict[str, dict]] = None,
     # CLAUDE.md §21: per-title commercial strategic context.
     commercial_context: Optional[str] = None,
+    # CLAUDE.md §21b (2026-06-29 fix): the exec summary must respect the
+    # same critical-mass gate as recommended actions — a single-post
+    # "monitor-only" topic must NOT become the primary exec theme.
+    critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
 ) -> str:
     # Bug 2 fix: compute breakdown strings and negative percentage so the
     # prompt can REQUIRE Claude to reference actual counts numerically.
@@ -2516,6 +2624,37 @@ def _call_exec(
     release_clause = _release_status_clause(release_status)
     # CLAUDE.md §21: commercial strategic context + signal classification.
     commercial_clause = _commercial_context_clause(commercial_context)
+    # CLAUDE.md §21b (2026-06-29): plumb critical-mass into the exec prompt so
+    # the summary cannot lead with a monitor-only single-post theme.
+    cm_block = _format_critical_mass_block(critical_mass_table or {})
+    # Hard guard: enumerate theme-tier topics that ARE eligible to lead and
+    # monitor-only topics that are NOT.  This is stronger than the table alone.
+    theme_topics: list[str] = []
+    monitor_topics: list[str] = []
+    for sentiment_bucket in ("positive", "negative", "neutral"):
+        for label, _weight, _days, tier in (critical_mass_table or {}).get(sentiment_bucket, []):
+            if tier == "theme":
+                theme_topics.append(f"{label!r} ({sentiment_bucket})")
+            elif tier == "monitor-only":
+                monitor_topics.append(f"{label!r} ({sentiment_bucket})")
+    if theme_topics or monitor_topics:
+        exec_cm_clause = (
+            "EXEC LEADING-THEME GATE (HARD RULE, §21b):\n"
+            "- Your first/lead sentence MUST describe a topic from the THEME-TIER "
+            "list below (or note overall mixed/neutral sentiment if no theme "
+            "exists).\n"
+            "- You MAY NOT make a MONITOR-ONLY topic the lead, the headline "
+            "liability, or the dominant framing.  Monitor-only topics are "
+            "single-post or sub-threshold signal — mentioning them as the "
+            "primary theme is a factual misrepresentation of the data.\n"
+            "- A monitor-only topic MAY be referenced ONCE in a supporting "
+            "sentence as 'worth watching' if relevant, but never as the "
+            "headline.\n"
+            f"  THEME-TIER (eligible to lead): {', '.join(theme_topics) if theme_topics else 'NONE — lead with overall mix instead'}\n"
+            f"  MONITOR-ONLY (NOT eligible to lead): {', '.join(monitor_topics) if monitor_topics else 'none'}\n\n"
+        )
+    else:
+        exec_cm_clause = ""
 
     prompt = (
         f'You are a game industry analyst writing for the leadership team about "{game_name}".\n\n'
@@ -2523,6 +2662,8 @@ def _call_exec(
         f"Write a TIGHT 3-5 sentence executive summary of community sentiment covering {window_label}.\n\n"
         + commercial_clause
         + _SIGNAL_CLASSIFICATION_CLAUSE
+        + (cm_block + "\n" if cm_block else "")
+        + exec_cm_clause
         + release_clause
         + citation_clause
         + specificity_requirement +
@@ -2577,6 +2718,11 @@ def _call_exec(
         result = _sanitize_executive_summary(
             raw, game_name, sample_posts, distinctive_entities, topic_labels,
         )
+        # CLAUDE.md §21b (2026-06-29): post-LLM monitor-only lead detector.
+        # If the model's lead sentence is dominated by a known monitor-only
+        # topic label, strip that sentence — the gate clause should have
+        # prevented this but the LLM does not always obey.
+        result = _strip_monitor_only_lead(result, monitor_topics)
         # Final scrub after sanitizer too — belt-and-suspenders.
         return _scrub_orphan_opener(result)
     except Exception as exc:

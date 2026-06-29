@@ -311,6 +311,22 @@ The rule, in operational terms:
 
 **Implementation expectation.** Every recommendation-generating prompt must inject `_commercial_context_clause(game.commercial_context)` AND `_SIGNAL_CLASSIFICATION_CLAUSE`. The default verb list MUST NOT include `Counter-position` outside of explicitly-named-threat scenarios. Regression tests must assert both clauses are present and that the default verb list is amplify-biased.
 
+### 21c. The Critical-Mass Gate Applies to the Exec Summary, Not Just Recommendations (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29 after the Hellraiser weekly digest exec led with "Regional localization gaps, particularly Turkish Community Posts" — a single-post monitor-only topic that §21b had already correctly suppressed from the recommendations.**
+
+**Root cause:** `_call_actions` and `_call_bold_ideas` received `critical_mass_table` and the gate clause; `_call_exec` did not. The exec LLM was therefore free to lead with whatever topic looked salient even when §21b had classified that topic as too thin to act on. This is a worse failure than the one §21b was originally built to prevent, because the exec is what the user reads first.
+
+**The rule.** Any prompt that produces user-facing analysis of community signal — exec summary, recommended actions, bold ideas, monthly digests, briefings — MUST be passed the `critical_mass_table` and MUST contain the leading-theme gate clause:
+
+- The lead/headline sentence MUST describe a `theme`-tier topic, OR an overall mix observation when no theme exists.
+- A `monitor-only` topic MUST NOT be the headline, dominant framing, or primary liability.
+- Monitor-only topics MAY appear once in a supporting sentence as "worth watching" only.
+
+**Implementation expectation.** A post-LLM `_strip_monitor_only_lead(text, monitor_topics)` validator runs after the prompt-level gate as belt-and-suspenders. Unit tests must cover: empty-input passthrough, no-monitor-topics passthrough, lead-dominated-by-monitor strip, incidental-mention preservation, only-sentence-was-lead-returns-empty.
+
+**The principle.** A gate that lives only on the recommendations is a leaky gate. Anywhere the model writes about "what's happening in the community," the same critical-mass rules apply.
+
 ### 22. Pre-Flight QA on Summary Outputs Before Asking The User To Approve (CRITICAL — always-on, every summary, every digest)
 
 **Hard requirement directed by the user 2026-06-29 after the Toxic Commando / Turok / Bus Bound output had mechanically-detectable surface defects (orphan "However," opener, `1. [P-007]` empty-stub recommendations, sub-3 recommendation counts).**
