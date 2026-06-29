@@ -311,6 +311,18 @@ The rule, in operational terms:
 
 **Implementation expectation.** Every recommendation-generating prompt must inject `_commercial_context_clause(game.commercial_context)` AND `_SIGNAL_CLASSIFICATION_CLAUSE`. The default verb list MUST NOT include `Counter-position` outside of explicitly-named-threat scenarios. Regression tests must assert both clauses are present and that the default verb list is amplify-biased.
 
+### 22. Pre-Flight QA on Summary Outputs Before Asking The User To Approve (CRITICAL — always-on, every summary, every digest)
+
+**Hard requirement directed by the user 2026-06-29 after the Toxic Commando / Turok / Bus Bound output had mechanically-detectable surface defects (orphan "However," opener, `1. [P-007]` empty-stub recommendations, sub-3 recommendation counts).**
+
+**Rule.** Before persisting any summary row or sending any digest, run the pre-flight checklist in `lessons.md` (entry dated 2026-06-29 "Pre-flight QA checks"). If any check fails: attempt ONE regen with corrections injected into the prompt as an explicit fix-list, then re-validate. If still failing, drop the offending field rather than ship broken text. Never surface output with a mechanically-detectable defect; never ask the user "does this look right?" with an obvious surface bug present.
+
+**The 12 checks:** orphan discourse-marker opener, empty exec above the §15 threshold, no surviving citations, empty-stub `1. [P-NNN]` recommendations, minimum 3 recommendations when data warrants, maximum 5, imperative-verb opener, bolded entity, no orphan pronouns in bold ideas, citation-plus-prose required on every idea, exec consistent with sentiment counts, no recommendations on monitor-only tier topics. Each check has a regression test.
+
+**Implementation expectation.** Add `_validate_summary_output(row, critical_mass_table) -> list[ValidationFailure]`. Call from `generate_window_summary` and `generate_monthly_summary` after the LLM returns. Log every failure with its specific check name and the offending text. Tests must cover each of the 12 checks with a synthetic failure example.
+
+**The principle.** Output quality bugs that are mechanically detectable should never reach the user. Asking the user to approve an output with an obvious surface defect is wasteful and erodes confidence.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation

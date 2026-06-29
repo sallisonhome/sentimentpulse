@@ -857,3 +857,184 @@ class TestTopicCriticalMass:
         assert "tier='monitor-only'" in out
         assert "thin" in out  # explicit phrasing about thin signals
         assert "single poster" in out
+
+
+# ── CLAUDE.md §22 Pre-flight QA (2026-06-29) ────────────────────────────────
+# Bugs caught in production on 2026-06-29:
+#   - Toxic Commando exec opened with "However, ..." (orphan discourse marker)
+#   - Toxic Commando + Turok produced "1. [P-007]" empty-stub recommendations
+#   - Multiple titles had <3 recommendations despite having theme-tier topics
+
+class TestOrphanDiscourseMarker:
+
+    def test_scrubs_however(self):
+        out = pss._scrub_orphan_opener("However, black screens block players [P-001].")
+        assert not out.lower().startswith("however")
+        assert out.startswith("B"), f"should capitalize after strip: {out!r}"
+
+    def test_scrubs_moreover(self):
+        assert "moreover" not in pss._scrub_orphan_opener("Moreover, this happened.").lower()
+
+    def test_scrubs_additionally(self):
+        assert "additionally" not in pss._scrub_orphan_opener("Additionally, X is broken.").lower()
+
+    def test_leaves_clean_opener_alone(self):
+        clean = "Community sentiment was mixed during this window."
+        assert pss._scrub_orphan_opener(clean) == clean
+
+    def test_strip_uncited_sentences_scrubs_after_strip(self):
+        """Integration: when strip removes the leading sentence, the surviving
+        sentence's discourse marker also gets scrubbed."""
+        text = (
+            "Co-op players love the game. "  # no citation — strip drops
+            "However, black screens are blocking players [P-001]."
+        )
+        cm = {"P-001": {"id": 1, "url": "x", "sentiment": "negative"}}
+        out = pss._strip_uncited_sentences(text, cm)
+        assert "However" not in out and "however" not in out
+        assert "Black screens" in out or "black screens" in out
+
+
+class TestEmptyStubRecommendation:
+
+    def test_detects_citation_only_item(self):
+        assert not pss._item_has_substantive_content("1. [P-007]")
+        assert not pss._item_has_substantive_content("2.  [P-005, P-013]")
+        assert not pss._item_has_substantive_content("3. [P-001] [P-002]")
+
+    def test_keeps_substantive_item(self):
+        assert pss._item_has_substantive_content(
+            "1. Patch **Server Stability** — fix matchmaking [P-001]"
+        )
+        assert pss._item_has_substantive_content(
+            "2. Audit **Sniper Balance** — DPS underperforms [P-005, P-013]"
+        )
+
+    def test_strip_uncited_items_drops_empty_stubs(self):
+        text = (
+            "1. [P-007]\n\n"
+            "2. Audit **Sniper Balance** — DPS underperforms M110 [P-005, P-013]"
+        )
+        cm = {
+            "P-005": {"id": 5, "url": "x", "sentiment": "negative"},
+            "P-007": {"id": 7, "url": "x", "sentiment": "negative"},
+            "P-013": {"id": 13, "url": "x", "sentiment": "negative"},
+        }
+        out = pss._strip_uncited_items(text, cm)
+        # The empty stub is gone; the substantive item is renumbered to 1.
+        assert "[P-007]" not in out or "Audit" in out
+        assert out.startswith("1. Audit")
+        assert "\n\n2." not in out
+
+
+class TestValidateSummaryOutput:
+
+    CMAP = {
+        "P-001": {"id": 1, "url": "x", "sentiment": "negative"},
+        "P-002": {"id": 2, "url": "x", "sentiment": "positive"},
+    }
+
+    def test_clean_output_returns_no_failures(self):
+        failures = pss._validate_summary_output(
+            exec_summary="Community sentiment leans positive [P-002].",
+            recommended_actions=(
+                "1. Lean into **Doug Bradley** voice reveal [P-002]\n\n"
+                "2. Address **Server Stability** issues [P-001]\n\n"
+                "3. Document **Roadmap** for community [P-002]"
+            ),
+            bold_ideas=["Lean into **Doug Bradley** reveal as marketing centerpiece [P-002]."],
+            citation_map=self.CMAP,
+            total_posts=50,
+        )
+        assert failures == [], f"unexpected failures: {failures}"
+
+    def test_flags_orphan_however_opener(self):
+        failures = pss._validate_summary_output(
+            exec_summary="However, X happened [P-001].",
+            recommended_actions=None,
+            bold_ideas=[],
+            citation_map=self.CMAP,
+            total_posts=50,
+        )
+        assert any("orphan discourse marker" in f for f in failures)
+
+    def test_flags_empty_stub_recommendation(self):
+        failures = pss._validate_summary_output(
+            exec_summary="Community sentiment leans positive [P-002].",
+            recommended_actions="1. [P-001]\n\n2. Address **X** [P-001]",
+            bold_ideas=[],
+            citation_map=self.CMAP,
+            total_posts=50,
+        )
+        assert any("empty stub" in f for f in failures)
+
+    def test_flags_below_minimum_recommendations(self):
+        cm_table = {
+            "negative": [("Server Stability", 9.0, 2, "theme")],
+            "positive": [], "neutral": [],
+        }
+        failures = pss._validate_summary_output(
+            exec_summary="Community sentiment is mixed [P-001].",
+            recommended_actions="1. Patch **Server Stability** [P-001]",
+            bold_ideas=[],
+            citation_map=self.CMAP,
+            total_posts=50,
+            critical_mass_table=cm_table,
+        )
+        assert any("only 1 recommendations" in f for f in failures)
+
+    def test_flags_exceeds_max_recommendations(self):
+        items = "\n\n".join(
+            f"{n}. Patch **Topic{n}** — fix [P-001]"
+            for n in range(1, 7)  # 6 items
+        )
+        failures = pss._validate_summary_output(
+            exec_summary="Community sentiment [P-001].",
+            recommended_actions=items,
+            bold_ideas=[],
+            citation_map=self.CMAP,
+            total_posts=50,
+        )
+        assert any("exceeds maximum" in f for f in failures)
+
+    def test_flags_non_imperative_verb(self):
+        failures = pss._validate_summary_output(
+            exec_summary="Community sentiment [P-001].",
+            recommended_actions=(
+                "1. Note that **Topic** is broken [P-001]\n\n"
+                "2. Address **Other** problem [P-001]\n\n"
+                "3. Document **Roadmap** [P-002]"
+            ),
+            bold_ideas=[],
+            citation_map=self.CMAP,
+            total_posts=50,
+        )
+        assert any("does not start with an imperative verb" in f for f in failures)
+
+    def test_flags_missing_bolded_entity(self):
+        failures = pss._validate_summary_output(
+            exec_summary="Community sentiment [P-001].",
+            recommended_actions=(
+                "1. Address the server issue [P-001]\n\n"
+                "2. Audit **Sniper Balance** [P-001]\n\n"
+                "3. Document **Roadmap** [P-002]"
+            ),
+            bold_ideas=[],
+            citation_map=self.CMAP,
+            total_posts=50,
+        )
+        assert any("missing bolded entity" in f for f in failures)
+
+
+class TestTruncateToMaxRecommendations:
+
+    def test_under_max_unchanged(self):
+        text = "1. A [P-001]\n\n2. B [P-001]\n\n3. C [P-001]"
+        assert pss._truncate_to_max_recommendations(text) == text
+
+    def test_over_max_truncated_and_renumbered(self):
+        text = "\n\n".join(f"{n}. Item{n} [P-001]" for n in range(1, 8))
+        out = pss._truncate_to_max_recommendations(text)
+        items = [l for l in out.split("\n") if l.strip().startswith(tuple("0123456789"))]
+        assert len(items) == 5
+        assert items[-1].startswith("5.")

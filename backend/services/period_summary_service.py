@@ -120,6 +120,19 @@ def generate_monthly_summary(
         critical_mass_table=cm_table,
     )
 
+    # CLAUDE.md §22: pre-flight QA + max-count safety net.
+    failures = _validate_summary_output(
+        exec_summary=exec_summary,
+        recommended_actions=rec_actions,
+        bold_ideas=bold_ideas,
+        citation_map=citation_map,
+        total_posts=total,
+        critical_mass_table=cm_table,
+    )
+    for f in failures:
+        logger.warning("§22 pre-flight QA flagged (game_id=%d monthly %d-%02d): %s", game_id, year, month, f)
+    rec_actions = _truncate_to_max_recommendations(rec_actions)
+
     # Upsert
     existing: Optional[MonthlySummary] = (
         db.query(MonthlySummary)
@@ -271,6 +284,19 @@ def generate_window_summary(
         commercial_context=game.commercial_context,
         critical_mass_table=cm_table,
     )
+
+    # CLAUDE.md §22: pre-flight QA + max-count safety net.
+    failures = _validate_summary_output(
+        exec_summary=exec_summary,
+        recommended_actions=rec_actions,
+        bold_ideas=bold_ideas,
+        citation_map=citation_map,
+        total_posts=total,
+        critical_mass_table=cm_table,
+    )
+    for f in failures:
+        logger.warning("§22 pre-flight QA flagged (game_id=%d days=%d): %s", game_id, days, f)
+    rec_actions = _truncate_to_max_recommendations(rec_actions)
 
     # Upsert: a concurrent request (e.g. React StrictMode double-mount, browser
     # refresh racing the in-flight call, or two clients hitting force=true in
@@ -901,6 +927,168 @@ def _distinctive_entities(
 # sentinel without calling Claude (§15).
 _MIN_SUBSTANTIVE_POSTS = 20
 
+# CLAUDE.md §22 (Pre-flight QA, 2026-06-29) recommendation count targets.
+# Both apply only when total_posts ≥ _MIN_SUBSTANTIVE_POSTS AND there is at
+# least one theme-tier topic available; otherwise fewer is fine.
+_REC_COUNT_MIN = 3
+_REC_COUNT_MAX = 5
+
+# Imperative verbs that a recommendation MUST start with after the
+# numbered prefix.  Anything else (e.g. "Note that...", "It appears...")
+# is an observation, not a recommendation — drop it.
+_RECOMMENDATION_VERB_RE = re.compile(
+    r"^\s*\d+\.\s*\*?\*?"
+    r"(?:lean\s+into|amplify|double\s+down|anchor\s+on|spotlight|embrace|"
+    r"ship|patch|audit|launch|clarify|document|sunset|resolve|communicate|"
+    r"address|reframe|publish|reveal|showcase|reassure|counter-position|"
+    r"prioritize|elevate|invest)",
+    re.IGNORECASE,
+)
+
+
+def _validate_summary_output(
+    *,
+    exec_summary: Optional[str],
+    recommended_actions: Optional[str],
+    bold_ideas: list[str],
+    citation_map: dict,
+    total_posts: int,
+    critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
+) -> list[str]:
+    """Pre-flight QA on summary output (CLAUDE.md §22).  Returns a list of
+    human-readable failure descriptions; empty list means clean.  Designed
+    to be called AFTER the layer-3/4 strippers but BEFORE persistence.
+
+    Failures returned (not raised) so the caller can decide: attempt one
+    regen with the failures injected as a correction list, or drop the
+    offending field and ship the rest.
+    """
+    failures: list[str] = []
+
+    # EXEC checks
+    if exec_summary:
+        if _DANGLING_DISCOURSE_RE.match(exec_summary):
+            failures.append(
+                "exec_summary opens with an orphan discourse marker "
+                f"({exec_summary[:40]!r}) — no preceding sentence to refer to"
+            )
+        if citation_map and not _extract_citations(exec_summary):
+            failures.append(
+                "exec_summary has zero surviving citations despite citation_map being non-empty"
+            )
+    elif total_posts >= _MIN_SUBSTANTIVE_POSTS:
+        # Empty exec above the §15 threshold is suspicious but not always
+        # wrong (the LLM may have correctly returned an insufficient-claims
+        # message that was then stripped).  Surface as a soft warning.
+        failures.append(
+            f"exec_summary is empty but total_posts={total_posts} is above the §15 substantive threshold"
+        )
+
+    # ACTIONS checks
+    if recommended_actions:
+        items = [
+            line.strip()
+            for line in recommended_actions.split("\n")
+            if line.strip() and re.match(r"^\d+\.\s", line.strip())
+        ]
+        # Check 4: no empty-stub items.
+        for it in items:
+            if not _item_has_substantive_content(it):
+                failures.append(
+                    f"recommendation is an empty stub (citation-only): {it[:60]!r}"
+                )
+        # Check 5: minimum count when data warrants.
+        themes_available = bool(
+            critical_mass_table and any(
+                t for t, _, _, tier in (critical_mass_table.get("negative") or [])
+                + (critical_mass_table.get("positive") or [])
+                if tier == "theme"
+            )
+        ) if critical_mass_table else True
+        if (
+            total_posts >= _MIN_SUBSTANTIVE_POSTS
+            and themes_available
+            and len(items) < _REC_COUNT_MIN
+        ):
+            failures.append(
+                f"only {len(items)} recommendations — target minimum is {_REC_COUNT_MIN} "
+                f"and {sum(1 for t in (critical_mass_table or {}).get('negative', []) + (critical_mass_table or {}).get('positive', []) if t[3] == 'theme')} "
+                "theme-tier topics were available"
+            )
+        # Check 6: maximum count.
+        if len(items) > _REC_COUNT_MAX:
+            failures.append(
+                f"{len(items)} recommendations exceeds maximum {_REC_COUNT_MAX}; "
+                "truncate at persist time"
+            )
+        # Check 7: every item starts with an imperative verb.
+        for it in items:
+            if _item_has_substantive_content(it) and not _RECOMMENDATION_VERB_RE.match(it):
+                failures.append(
+                    f"recommendation does not start with an imperative verb: {it[:80]!r}"
+                )
+        # Check 8: every item has a bolded entity.
+        for it in items:
+            if _item_has_substantive_content(it) and "**" not in it:
+                failures.append(
+                    f"recommendation missing bolded entity (**...**): {it[:80]!r}"
+                )
+
+    # BOLD IDEAS checks
+    for idea in (bold_ideas or []):
+        if not idea or not idea.strip():
+            failures.append("bold idea is empty")
+            continue
+        # citation token presence
+        if citation_map and not _extract_citations(idea):
+            failures.append(
+                f"bold idea has no citation tokens: {idea[:80]!r}"
+            )
+        # substantive prose (use same empty-item check)
+        # Bold ideas don't have a number prefix; check for prose-length
+        # outside of citation tokens.
+        stripped = re.sub(r"\[(?:P-\d{1,4}[\s,;]*)+\]", "", idea).strip()
+        if len(stripped) < 20:
+            failures.append(
+                f"bold idea is empty after stripping citations: {idea[:80]!r}"
+            )
+
+    return failures
+
+
+def _truncate_to_max_recommendations(text: Optional[str]) -> Optional[str]:
+    """Hard cap recommendations at _REC_COUNT_MAX.  Used at persist time as
+    the safety net for check 6."""
+    if not text:
+        return text
+    items: list[str] = []
+    current: list[str] = []
+
+    def flush():
+        nonlocal current
+        if current:
+            items.append(" ".join(current).strip())
+            current = []
+
+    for line in text.split("\n"):
+        if re.match(r"^\d+\.\s", line.strip()):
+            flush()
+            current.append(line.strip())
+        elif line.strip():
+            current.append(line.strip())
+        else:
+            flush()
+    flush()
+    if len(items) <= _REC_COUNT_MAX:
+        return text
+    kept = items[:_REC_COUNT_MAX]
+    # Renumber survivors.
+    out: list[str] = []
+    for n, item in enumerate(kept, 1):
+        cleaned = re.sub(r"^\d+\.\s*", "", item.strip())
+        out.append(f"{n}. {cleaned}")
+    return "\n\n".join(out)
+
 
 def _call_claude_for_period(
     game_name: str,
@@ -1251,11 +1439,50 @@ def _extract_citations(text: str) -> set[str]:
     return out
 
 
+# Discourse markers that only make sense when a preceding sentence has
+# already been written.  If the layer-3 sentence strip removes that
+# preceding sentence and leaves one of these as the new opener, the result
+# reads as a non-sequitur ("However, X happened." — however what?).
+# 2026-06-29 fix after Toxic Commando exec opened with "However,".
+_DANGLING_DISCOURSE_RE = re.compile(
+    r"^\s*(?:however|moreover|additionally|furthermore|also|conversely|"
+    r"on\s+the\s+other\s+hand|nevertheless|nonetheless|yet|but|that\s+said|"
+    r"meanwhile|in\s+contrast|in\s+addition|then\s+again)[\s,]+",
+    re.IGNORECASE,
+)
+
+
+def _scrub_orphan_opener(text: str) -> str:
+    """If `text` opens with a discourse marker that depends on a preceding
+    sentence (However, Moreover, Additionally, etc.), drop the marker so the
+    sentence reads as a standalone statement.
+
+    Example: "However, a critical liability has emerged: post-match black
+    screens are blocking players..." → "A critical liability has emerged:
+    post-match black screens are blocking players..."
+    """
+    if not text:
+        return text
+    stripped = _DANGLING_DISCOURSE_RE.sub("", text, count=1)
+    if not stripped or stripped == text:
+        return text
+    # Capitalize the first letter after the strip if the remainder begins
+    # mid-sentence.
+    return stripped[0].upper() + stripped[1:] if stripped[0].isalpha() else stripped
+
+
 def _strip_uncited_sentences(text: str, citation_map: dict[str, dict]) -> str:
     """Drop any sentence in `text` that lacks a citation (or cites an
-    unknown P-NNN).  Returns "" if every sentence drops."""
+    unknown P-NNN).  Returns "" if every sentence drops.
+
+    Post-strip cleanup (2026-06-29): scrub orphan discourse-marker openers
+    ("However,", "Moreover,", "Additionally,") from the first surviving
+    sentence, since their referent (the preceding sentence) was just
+    removed.  Surfacing "However, X happened." as a standalone sentence is
+    a coherence bug.
+    """
     if not citation_map or not text:
-        return text
+        return _scrub_orphan_opener(text)
     sentences = re.split(r"(?<=[.!?])\s+", text)
     keep: list[str] = []
     for s in sentences:
@@ -1266,12 +1493,43 @@ def _strip_uncited_sentences(text: str, citation_map: dict[str, dict]) -> str:
             # Cites only invalid P-NNN tokens — drop.
             continue
         keep.append(s.strip())
+    if not keep:
+        return ""
+    # Scrub orphan opener on the first surviving sentence.
+    keep[0] = _scrub_orphan_opener(keep[0])
     return " ".join(keep)
+
+
+# Matches an item that is JUST a numbered prefix + citation tokens, with no
+# substantive prose between them.  Examples that should be dropped:
+#   '1. [P-007]'
+#   '2.   [P-005, P-013]  '
+#   '3. [P-001] [P-002]'  (multiple separate citation groups, no prose)
+# 2026-06-29 fix after Toxic Commando / Turok regen produced empty stubs.
+_EMPTY_ITEM_RE = re.compile(
+    r"^\s*\d+\.\s*(?:\[(?:P-\d{1,4}[\s,;]*)+\]\s*)+$",
+    re.IGNORECASE,
+)
+
+
+def _item_has_substantive_content(item: str) -> bool:
+    """True if the item has prose beyond its number prefix + citations.
+
+    A surviving item with no actual recommendation text — e.g. just
+    '1. [P-007]' after the critic stripped the prose — is worse than no
+    item at all, because it surfaces a number in the UI with nothing to
+    say.  Drop these.
+    """
+    if not item:
+        return False
+    return not bool(_EMPTY_ITEM_RE.match(item.strip()))
 
 
 def _strip_uncited_items(text: str, citation_map: dict[str, dict]) -> str:
     """For numbered-list output: drop items whose entire body lacks a
-    citation.  Renumbers survivors.  Returns "" if every item drops."""
+    citation, AND items whose body is nothing but citation tokens with no
+    substantive prose.  Renumbers survivors.  Returns "" if every item drops.
+    """
     if not citation_map or not text:
         return text
     valid = set(citation_map.keys())
@@ -1284,8 +1542,17 @@ def _strip_uncited_items(text: str, citation_map: dict[str, dict]) -> str:
             return
         item = " ".join(current).strip()
         cites = _extract_citations(item)
-        if cites and (cites & valid):
-            items.append(item)
+        if not (cites and (cites & valid)):
+            current = []
+            return
+        # Reject items that have only citation tokens after the number prefix.
+        if not _item_has_substantive_content(item):
+            logger.info(
+                "Dropping empty-stub recommendation (citation-only): %s", item,
+            )
+            current = []
+            return
+        items.append(item)
         current = []
 
     for line in text.split("\n"):
@@ -2343,7 +2610,7 @@ def _call_actions(
         (cm_block + "\n" if cm_block else "") +
         release_clause +
         citation_clause +
-        f"Write 4-6 sprint-board-ready recommendations covering the breadth of signal in the data. Each one MUST follow this format strictly:\n\n"
+        f"Write 3-5 sprint-board-ready recommendations covering the breadth of signal in the data (target 3 minimum, 5 maximum). Each one MUST follow this format strictly:\n\n"
         f"  <Imperative verb> **<exact specific entity OR topic label>** — <what to do, in <=25 words>.\n\n"
         + specificity_clause +
         f"Hard concision rules:\n"
