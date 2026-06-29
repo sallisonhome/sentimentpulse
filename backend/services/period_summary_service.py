@@ -296,6 +296,7 @@ def generate_window_summary(
     )
     for f in failures:
         logger.warning("§22 pre-flight QA flagged (game_id=%d days=%d): %s", game_id, days, f)
+
     rec_actions = _truncate_to_max_recommendations(rec_actions)
 
     # Upsert: a concurrent request (e.g. React StrictMode double-mount, browser
@@ -558,10 +559,81 @@ def _topic_critical_mass_table(
             theme = (
                 weight >= _TOPIC_REC_MIN_WEIGHT and day_count >= _TOPIC_REC_MIN_DAYS
             ) or weight >= _TOPIC_REC_SINGLE_DAY_WEIGHT
-            tier = "theme" if theme else "monitor-only"
+            # §21h (2026-06-29): force-demote NEGATIVE / NEUTRAL narrow-
+            # audience topics even if they cross the weight/day threshold.
+            # A single-locale negative concern ("Turkish Language Support"
+            # as a negative-bucket complaint, "Regional Content Issues") is
+            # not a broad-base liability; it's a single audience-of-interest
+            # cluster.  Treating it as a theme led to two live execs leading
+            # with "Regional Content Issues..." as the headline.
+            #
+            # POSITIVE narrow-audience topics are NOT demoted: a studio's
+            # deliberate localization play ("Welsh Voice Acting", "Brazilian
+            # Portuguese support") generating community celebration IS a
+            # real marketing asset and a legitimate theme to amplify.
+            if (
+                theme
+                and sentiment in ("negative", "neutral")
+                and _topic_is_narrow_audience(label)
+            ):
+                logger.info(
+                    "§21h: demoting narrow-audience %s topic %r from theme to monitor-only "
+                    "(weight=%d days=%d)", sentiment, label, weight, day_count,
+                )
+                tier = "monitor-only"
+            else:
+                tier = "theme" if theme else "monitor-only"
             tiered.append((label, weight, day_count, tier))
         out[sentiment] = tiered
     return out
+
+
+# §21h (2026-06-29): narrow-audience topic markers — labels that name a
+# specific locale, language, country, platform, storefront, or regional
+# content scope.  These are not BROAD-BASE community themes even when they
+# cross the weight/day threshold; they reflect a single audience-of-
+# interest cluster.  When a topic label matches any of these markers, the
+# topic is force-demoted to monitor-only.
+#
+# The list is intentionally specific.  Adding a marker requires evidence
+# that this scope is consistently narrow-audience (i.e. not a broad genre/
+# mechanic discussion).  Generic gaming nouns (e.g. "co-op", "campaign",
+# "matchmaking") MUST NOT be added here.
+_NARROW_AUDIENCE_MARKERS = (
+    # Languages / locales
+    r"\bturkish\b", r"\bspanish\b", r"\bfrench\b", r"\bgerman\b",
+    r"\bitalian\b", r"\bportuguese\b", r"\bbrazilian\b", r"\brussian\b",
+    r"\bchinese\b", r"\bjapanese\b", r"\bkorean\b", r"\barabic\b",
+    r"\bpolish\b", r"\bcze[ck]h\b", r"\bdutch\b", r"\bswedish\b",
+    r"\bnorwegian\b", r"\bdanish\b", r"\bfinnish\b", r"\bgreek\b",
+    r"\bhebrew\b", r"\bukrainian\b", r"\bvietnamese\b", r"\bthai\b",
+    r"\bindonesian\b", r"\bmalay\b", r"\bfilipino\b", r"\btagalog\b",
+    r"\bhindi\b", r"\bbengali\b", r"\bpersian\b", r"\bfarsi\b",
+    r"\bromanian\b", r"\bhungarian\b", r"\bbulgarian\b", r"\bserbian\b",
+    r"\bcroatian\b", r"\bcatalan\b", r"\bwelsh\b",
+    # Countries / regions in scope-narrowing context
+    r"\bin\s+turkey\b", r"\bin\s+brazil\b", r"\bin\s+spain\b",
+    r"\bin\s+china\b", r"\bin\s+japan\b", r"\bin\s+russia\b",
+    r"\bin\s+korea\b", r"\bin\s+india\b",
+    # Generic regional / localization labels
+    r"\bregional\b", r"\blocaliz(?:e|ed|ation|ing)\b",
+    r"\blanguage\s+support\b", r"\blanguage\s+request\b",
+    # Single-platform pre-order / SKU questions
+    r"\bcollector'?s\s+edition\b", r"\bsteelbook\b", r"\bpre-?order\s+code\b",
+    r"\bplatform-specific\b", r"\bphysical\s+edition\b",
+)
+_NARROW_AUDIENCE_RE = re.compile(
+    "|".join(_NARROW_AUDIENCE_MARKERS), re.IGNORECASE,
+)
+
+
+def _topic_is_narrow_audience(label: str) -> bool:
+    """True if `label` names a single locale / platform / SKU / regional
+    scope rather than a broad-base community theme.  §21h.
+    """
+    if not label:
+        return False
+    return bool(_NARROW_AUDIENCE_RE.search(label))
 
 
 def _format_critical_mass_block(
@@ -1286,6 +1358,26 @@ def _call_claude_for_period(
     )
     rec_actions   = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,
+        sample_posts=sample_posts,
+        distinctive_entities=distinctive_entities,
+        annotated_samples=annotated_samples,
+        citation_map=citation_map,
+        commercial_context=commercial_context,
+        critical_mass_table=critical_mass_table,
+    )
+    # §22b (2026-06-29): low-rec-count retry.  Count valid items in the
+    # current rec_actions; if below _REC_COUNT_MIN on a substantive title
+    # with theme-tier topics available, do ONE retry with a fix-list hint
+    # injected at the top of the prompt.
+    rec_actions = _retry_actions_if_below_min(
+        client=client,
+        rec_actions=rec_actions,
+        total_posts=total_posts,
+        game_name=game_name,
+        window_label=window_label,
+        pos_str=pos_str,
+        neg_str=neg_str,
+        neu_str=neu_str,
         sample_posts=sample_posts,
         distinctive_entities=distinctive_entities,
         annotated_samples=annotated_samples,
@@ -2910,6 +3002,98 @@ def _call_exec(
         return _placeholder_summary(game_name, window_label, total_posts)
 
 
+def _count_valid_recommendations(rec_actions: Optional[str]) -> int:
+    """Count numbered items in rec_actions that pass the format contract.
+    Returns 0 if rec_actions is None / empty / NONE-shaped.
+    """
+    if not rec_actions:
+        return 0
+    items = re.findall(r"^\s*\d+\.\s+.+$", rec_actions, re.MULTILINE)
+    valid = 0
+    for it in items:
+        if not _item_has_substantive_content(it):
+            continue
+        if not _RECOMMENDATION_VERB_RE.match(it):
+            continue
+        if "**" not in it:
+            continue
+        valid += 1
+    return valid
+
+
+def _retry_actions_if_below_min(
+    *,
+    client,
+    rec_actions: Optional[str],
+    total_posts: int,
+    game_name: str,
+    window_label: str,
+    pos_str: str,
+    neg_str: str,
+    neu_str: str,
+    sample_posts: Optional[dict[str, list[str]]] = None,
+    distinctive_entities: Optional[list[str]] = None,
+    annotated_samples: Optional[dict[str, list[dict]]] = None,
+    citation_map: Optional[dict[str, dict]] = None,
+    commercial_context: Optional[str] = None,
+    critical_mass_table: Optional[dict] = None,
+) -> Optional[str]:
+    """§22b: if `rec_actions` has fewer than _REC_COUNT_MIN valid items on a
+    substantive title with at least one theme-tier topic, do ONE retry
+    pass with an explicit fix-list hint injected at the top of the prompt.
+    Otherwise return `rec_actions` unchanged.
+
+    Bounded to a single retry to avoid runaway LLM call counts.
+    """
+    count = _count_valid_recommendations(rec_actions)
+    if count >= _REC_COUNT_MIN:
+        return rec_actions
+    if total_posts < _MIN_SUBSTANTIVE_POSTS:
+        return rec_actions
+    # Confirm at least one theme-tier topic exists; otherwise the LLM is
+    # honest in producing few recs.
+    cm = critical_mass_table or {}
+    has_theme = any(
+        t for bucket in cm.values() for t in (bucket or [])
+        if len(t) >= 4 and t[3] == "theme"
+    )
+    if not has_theme:
+        return rec_actions
+    logger.warning(
+        "§22b: rec_actions has only %d valid items on substantive title '%s' "
+        "(total_posts=%d, themes_available=True); running ONE retry pass",
+        count, game_name, total_posts,
+    )
+    hint = (
+        f"Your previous response produced {count} valid recommendation(s) for "
+        f"a title with {total_posts} substantive community posts and "
+        f"theme-tier topics available.  The minimum target is "
+        f"{_REC_COUNT_MIN}-{_REC_COUNT_MAX}."
+    )
+    retried = _call_actions(
+        client, game_name, window_label, pos_str, neg_str, neu_str,
+        sample_posts=sample_posts,
+        distinctive_entities=distinctive_entities,
+        annotated_samples=annotated_samples,
+        citation_map=citation_map,
+        commercial_context=commercial_context,
+        critical_mass_table=critical_mass_table,
+        retry_fix_list_hint=hint,
+    )
+    retried_count = _count_valid_recommendations(retried)
+    if retried_count >= count:
+        logger.warning(
+            "§22b: retry succeeded for '%s' (was %d, now %d)",
+            game_name, count, retried_count,
+        )
+        return retried
+    logger.warning(
+        "§22b: retry produced FEWER items for '%s' (was %d, retry %d); "
+        "keeping original output", game_name, count, retried_count,
+    )
+    return rec_actions
+
+
 def _call_actions(
     client,
     game_name,
@@ -2924,6 +3108,12 @@ def _call_actions(
     commercial_context: Optional[str] = None,
     # CLAUDE.md §21b: per-topic critical-mass tiers.
     critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
+    # CLAUDE.md §22b (2026-06-29): low-rec-count retry support.  When this
+    # helper is being called as a retry pass because the first attempt
+    # produced fewer than _REC_COUNT_MIN valid items, pass a fix-list
+    # hint that explicitly tells the LLM how many were produced and how
+    # many are required.  Empty / None on the first call.
+    retry_fix_list_hint: Optional[str] = None,
 ) -> str:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -2974,7 +3164,24 @@ def _call_actions(
             "Ship, Patch, Audit, Launch, Clarify, Document, Sunset"
         )
 
+    # §22b: a retry pass injects an explicit fix-list at the very top of
+    # the prompt naming the specific defect.  Empty on first-pass calls.
+    retry_clause = ""
+    if retry_fix_list_hint:
+        retry_clause = (
+            "!!! THIS IS A RETRY PASS — PREVIOUS OUTPUT WAS INSUFFICIENT !!!\n"
+            f"{retry_fix_list_hint}\n\n"
+            "Your previous response did not meet the minimum recommendation "
+            "count for a title with this much signal.  Carefully re-read "
+            "the sample posts and distinctive entities below, then produce "
+            f"{_REC_COUNT_MIN}-{_REC_COUNT_MAX} grounded recommendations.  "
+            "AMPLIFICATION recommendations anchored on real positive signals "
+            "(named talent, organic comparisons, press coverage, community "
+            "events) are ALWAYS valid even when no negative topic reaches "
+            "theme tier — do not refuse on critical-mass grounds.\n\n"
+        )
     prompt = (
+        retry_clause +
         f'You are a game community manager and product strategist for "{game_name}".\n\n'
         + _OUTPUT_STYLE +
         anti_fab +
