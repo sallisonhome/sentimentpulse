@@ -521,54 +521,9 @@ This is the ONLY exception to the volume gate, and it exists for a single narrow
 * `test_welsh_low_volume_without_shipped_context_does_not_surface` — same shape but without the SHIPPED REGIONAL CONTENT declaration: must not surface.
 * `test_theme_tier_topic_surfaces_regardless_of_subject_matter` — a Turkish topic with weight ≥5 and days ≥2 surfaces as a normal theme; the gate is volume-only, not pattern-based.
 
-### 25g. (DEPRECATED) Shipped regional content vs unfulfilled localization wish
+### 25g. (DEPRECATED — see §25h) Shipped regional content vs unfulfilled localization wish
 
-**Superseded by §25h. The pattern-based narrow-audience marker regex and the rec-substring gate are removed. Keep the SHIPPED REGIONAL CONTENT marker in commercial_context for use ONLY as the low-volume qualifier exception under §25h — not as a pattern-based exemption from a pattern-based gate.**
-
-Original text retained below for context only:
-
-**Hard requirement directed by the user 2026-06-29 to make the Bus Bound Welsh vs Hellraiser Turkish distinction operational.**
-
-The Bus Bound Welsh VO bug and the Hellraiser Turkish hallucination look superficially similar (both are minority-language posts) but are categorically different signals and must be handled differently.
-
-**Welsh on Bus Bound — SHIPPED regional content.** The publisher actually shipped Welsh voice-over with named cast (Jeff in Emberville). Posts are from the cast celebrating their own work AND from community celebrating the shipped product. This is real evidence of:
-  1. A positive community response to a deliberate publisher investment.
-  2. A signal that other regional VO/localization investments could find traction — community affinity for shipped Welsh content suggests room to evaluate similar plays (Scots Gaelic, Quebecois, Maori, etc.) on future cycles.
-  3. A marketing asset to amplify — the cast names, the cultural angle, the indie-with-production-polish framing.
-
-**Turkish on Hellraiser — UNFULFILLED localization wish.** No Turkish version of Hellraiser exists. Posts are from a tiny Turkish-speaking pool wishing for one. This is:
-  1. A real-but-narrow desire signal that does not equal community-wide endorsement.
-  2. NOT evidence of broader regional opportunity — single-locale wishes for unshipped products are noise, not market signal.
-  3. A monitor-only topic by definition; promoting it to a recommendation or exec headline is the bug.
-
-**The rule.**
-
-1. **Whether a regional topic is SHIPPED-CONTENT or WISH determines how it flows through every gate.** SHIPPED-CONTENT stays theme-tier and is amplifiable; WISH stays monitor-only and is suppressible.
-
-2. **The classification is per-game, not per-language.** Welsh on Bus Bound = SHIPPED-CONTENT. Welsh on any other title where no Welsh VO exists = WISH. Same word, different signal.
-
-3. **The signal is in the post text, not the topic label.** Posts celebrating named cast / specific shipped lines / launch coverage of a regional product = SHIPPED-CONTENT evidence. Posts asking for / wishing for / requesting a language that doesn't ship = WISH evidence.
-
-4. **When SHIPPED-CONTENT is identified, the exec may legitimately note the community-affinity ladder:** "Community celebration of Welsh VO suggests room to evaluate similar regional content investments on future cycles." This is COMMUNITY-OBSERVED claim (the community is celebrating + asking) PLUS a forward-looking publisher-strategy observation that ladders FROM the observed community signal. The forward-looking part is allowed when grounded on this community signal.
-
-5. **The exec may NOT make HARD claims about unshipped localization plans** even when SHIPPED-CONTENT exists in another locale. "Welsh succeeded so a Quebecois version is coming" is a HARD claim about a future commercial event — requires editorial confirmation, otherwise drop. "Welsh succeeded so the publisher should evaluate similar regional plays" is an advisory framing — valid as a community-grounded inference.
-
-6. **WISH signals never get this ladder treatment.** Hellraiser Turkish wishes do NOT support "the community is asking for regional content; evaluate broader localization." One Turkish post is not a community-wide localization demand.
-
-**Implementation expectation.**
-
-* The per-game `narrow_audience_allowlist` (already wired via `_topic_critical_mass_table`) is the mechanism for marking SHIPPED-CONTENT exemptions. Bus Bound's `commercial_context` should name Welsh as a SHIPPED-CONTENT regional play; Turkish on Hellraiser should NOT be listed (it remains in the narrow-audience marker list).
-
-* The exec prompt's §25e+f COVERAGE clause is extended to allow ladder framings ("community celebration of X suggests room for similar Y") when the cited posts contain the celebration AND the framing is advisory not predictive.
-
-* The §25 verifier treats ladder framings as COMMUNITY-OBSERVED (community is celebrating X) + COMMUNITY-OBSERVED (community signals could support evaluating Y).
-
-**Test contract.**
-
-* `test_welsh_shipped_content_survives` — Bus Bound recs/exec on Welsh VO with named cast survives the verifier and the monitor-only gate.
-* `test_turkish_wish_dropped` — Hellraiser recs/exec on Turkish localization wish gets dropped at monitor-only or verifier layer.
-* `test_ladder_inference_allowed_with_grounded_signal` — "Welsh celebration suggests room to evaluate similar regional VO" with Welsh-celebration cited post survives.
-* `test_ladder_inference_dropped_without_grounded_signal` — same ladder claim on a title with no SHIPPED-CONTENT signal gets dropped.
+**This section is superseded by §25h. The pattern-based narrow-audience marker regex and the rec-substring gate have been removed. The SHIPPED REGIONAL CONTENT marker in commercial_context remains, but now serves only as the low-volume qualifier exception under §25h. See §25h above for the active rule.**
 
 ### 25f. Neutral topics are first-class signal — nudge them positive or guard against drift (CRITICAL — always-on)
 
