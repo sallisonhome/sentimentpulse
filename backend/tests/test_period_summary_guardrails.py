@@ -156,23 +156,16 @@ class TestCallActionsPrompt:
         assert "OUTPUT STYLE" in client.prompts[0]
 
     def test_actions_prompt_offers_none_escape(self):
-        """NONE policy hardened 2026-06-29 (§21f).  The escape valve is now
-        scoped: NONE is allowed ONLY when sample posts AND distinctive
-        entities are BOTH empty.  Otherwise the LLM MUST produce ≥2
-        recommendations.  The prompt must document both the sentinel and
-        the new constraint.
-        """
         client = _CapturingClient(response="NONE")
         pss._call_actions(client, "Test Game", "April 2026",
                           "General positive sentiment",
                           "No clear negative signals",
                           "General neutral discussion")
         prompt = client.prompts[0]
-        # The NONE sentinel must still be the documented escape valve.
+        # The new NONE sentinel must be the documented escape valve
         assert "NONE" in prompt
-        # New scoping must be present — NONE is only when no anchors exist.
-        assert "sample posts" in prompt.lower()
-        assert "distinctive entities" in prompt.lower()
+        # NONE sentinel must be documented as the escape valve with NO meta-message
+        assert "nothing else, no explanation" in prompt.lower()
 
     def test_actions_returns_none_when_claude_says_none(self):
         client = _CapturingClient(response="NONE")
