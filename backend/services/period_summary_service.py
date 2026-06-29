@@ -1570,6 +1570,54 @@ def _call_claude_for_period(
     # §25h: SHIPPED REGIONAL CONTENT low-volume exec exception is computed
     # inside _call_exec from commercial_context + critical_mass_table.
 
+    # §26 (2026-06-29): compute the volume-tier label lists + don't-cover list
+    # ONCE per call so all three blocks (exec, recs, bold-ideas) and any retry
+    # see the same gates.  These are derived from the volume-gated critical_mass
+    # table.
+    _cm = critical_mass_table or {}
+    _theme_tier_topics: list[dict] = []
+    _monitor_only_labels: list[str] = []
+    _low_volume_labels: list[str] = []
+    for _sent, _rows in _cm.items():
+        for _row in (_rows or []):
+            if not _row or len(_row) < 4:
+                continue
+            _label, _w, _d, _tier = _row
+            if _tier == "theme":
+                _theme_tier_topics.append({
+                    "label": _label, "sentiment": _sent,
+                    "weight": int(_w), "days": int(_d),
+                })
+            elif _tier == "monitor-only":
+                _monitor_only_labels.append(_label)
+            elif _tier == "low-volume":
+                _low_volume_labels.append(_label)
+
+    # §26 release status + don't-cover list (release-status × topic-class +
+    # meta-topic exclusions).  Derived helpers — release_status comes from
+    # the sample posts' release-status inference.
+    try:
+        _release_status = _infer_release_status(
+            _format_sample_posts_block(sample_posts) if sample_posts else ""
+        )
+    except Exception:
+        _release_status = "unknown"
+    try:
+        _dont_cover = _dont_cover_topics(
+            _release_status, _monitor_only_labels, _low_volume_labels,
+            shipped_regional_tokens=_shipped_regional_allowlist(commercial_context),
+        )
+    except Exception:
+        _dont_cover = []
+
+    try:
+        _low_volume_shipped = _shipped_regional_low_volume_topics(
+            _cm,
+            _shipped_regional_allowlist(commercial_context),
+        )
+    except Exception:
+        _low_volume_shipped = []
+
     exec_summary  = _call_exec(
         client, game_name, window_label, pos_str, neg_str, neu_str,
         total_posts, pos_count, neg_count, neu_count,
@@ -1580,6 +1628,12 @@ def _call_claude_for_period(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
+        monitor_only_labels=_monitor_only_labels,
+        low_volume_labels=_low_volume_labels,
+        release_status=_release_status,
+        dont_cover=_dont_cover,
+        theme_tier_topics=_theme_tier_topics,
+        low_volume_shipped_topics=_low_volume_shipped,
     )
     rec_actions   = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,
