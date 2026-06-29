@@ -755,6 +755,54 @@ _META_DONT_COVER = [
 ]
 
 
+def _strip_dont_cover_recs(
+    rec_text: Optional[str], dont_cover: list[str],
+) -> Optional[str]:
+    """§26 (2026-06-29): post-LLM strip on the assembled rec text.
+
+    Drop any numbered rec item whose text substring-matches any entry in the
+    dont_cover list (case-insensitive). Survivors are renumbered.
+
+    This catches pre-release localization / collector's-edition / single-locale
+    paraphrases that the topic-label-based _strip_monitor_only_recs misses,
+    because the rec subject phrasing can differ from the topic label.
+    """
+    if not rec_text or not dont_cover:
+        return rec_text
+    dont_cover_lower = [e.lower() for e in dont_cover if e]
+    if not dont_cover_lower:
+        return rec_text
+    items: list[str] = []
+    current: list[str] = []
+    for line in rec_text.split("\n"):
+        if re.match(r"^\s*\d+\.\s", line):
+            if current:
+                items.append(" ".join(current).strip())
+                current = []
+            current.append(line.strip())
+        elif line.strip():
+            current.append(line.strip())
+    if current:
+        items.append(" ".join(current).strip())
+    if not items:
+        return rec_text
+    kept: list[str] = []
+    for item in items:
+        item_lower = item.lower()
+        matched = [e for e in dont_cover_lower if e in item_lower]
+        if matched:
+            logger.warning(
+                "§26 stripping rec on dont-cover entries %r: %s",
+                matched, item[:140],
+            )
+            continue
+        kept.append(item)
+    if not kept:
+        return ""
+    naked = [re.sub(r"^\s*\d+[\.\)]\s*", "", it) for it in kept]
+    return "\n\n".join(f"{i+1}. {it}" for i, it in enumerate(naked))
+
+
 def _dont_cover_topics(
     release_status: str,
     monitor_only_labels: list[str],
@@ -1644,7 +1692,19 @@ def _call_claude_for_period(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
+        monitor_only_labels=_monitor_only_labels,
+        low_volume_labels=_low_volume_labels,
+        release_status=_release_status,
+        dont_cover=_dont_cover,
+        theme_tier_topics=_theme_tier_topics,
+        shipped_regional_tokens=_shipped_regional_allowlist(commercial_context),
     )
+    # §26 (2026-06-29): post-LLM dont-cover strip on the assembled rec text.
+    # Catches the case where the rec subject paraphrases past the topic-label
+    # substring (e.g. "Clarify Turkish Language Support" survives the volume
+    # gate because the topic label genuinely hit `theme` from repeated single-
+    # poster appearances, but pre-release localization is on the dont_cover list).
+    rec_actions = _strip_dont_cover_recs(rec_actions, _dont_cover)
     # §22b + §24e: low-rec-count retry on every substantive title (no theme gate).
     rec_actions = _retry_actions_if_below_min(
         client=client,
@@ -1663,6 +1723,8 @@ def _call_claude_for_period(
         critical_mass_table=critical_mass_table,
         editorial_articles=editorial_articles,
     )
+    # Strip again after retry in case the retry re-introduced a dont-cover rec.
+    rec_actions = _strip_dont_cover_recs(rec_actions, _dont_cover)
     bold_ideas    = _call_bold_ideas(
         client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
         sample_posts=sample_posts,
