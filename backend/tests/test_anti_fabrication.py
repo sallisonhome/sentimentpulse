@@ -697,9 +697,9 @@ class TestCommercialContextClause:
         assert "ASSET" in out
         assert "AMPLIFY" in out
         assert "Lean into" in out
-        # CRITICAL line that calls out the failure mode explicitly:
-        assert "CRITICAL:" in out
-        assert "AMPLIFY" in out
+        # The market-leader comparison rule must be called out as CRITICAL.
+        assert "CRITICAL on COMPARISONS" in out
+        assert "AMPLIFYING the comparison" in out
 
     def test_signal_classification_keeps_liability_handling(self):
         out = pss._SIGNAL_CLASSIFICATION_CLAUSE
@@ -747,3 +747,43 @@ class TestSeedCommercialContext:
         from seed_commercial_context import DEFAULTS
         for game_id, brief in DEFAULTS.items():
             assert "DO NOT" in brief, f"Game {game_id} brief should have a DO NOT clause"
+
+
+class TestSignalClassificationBalance:
+    """The signal classification clause must surface LIABILITIES, not just
+    amplify ASSETS.  Added 2026-06-29 after the user noticed the §21 fix
+    might over-correct: after rewording, Hellraiser produced 2 amplify
+    actions and skipped surfacing real negative topics like Regional
+    Localization Issues that should have been LIABILITY recommendations."""
+
+    def test_clause_lists_liability_triggers_broadly(self):
+        out = pss._SIGNAL_CLASSIFICATION_CLAUSE
+        for trigger in (
+            "legitimate quality concern",
+            "regional content gap",
+            "localization issue",
+            "missing feature",
+            "performance problem",
+            "communication gap",
+        ):
+            assert trigger in out, f"LIABILITY trigger should be listed: {trigger}"
+
+    def test_clause_explicitly_requires_mix(self):
+        """The prompt must explicitly tell the LLM to mix asset + liability
+        actions, not skew to only amplify."""
+        out = pss._SIGNAL_CLASSIFICATION_CLAUSE
+        assert "BALANCE REQUIREMENT" in out
+        assert "DO NOT SKEW" in out
+        assert "do NOT skip negative topics" in out
+        # Explicit anti-white-wash language so a future agent reading this
+        # cannot mistake the rule for "always frame everything positively".
+        assert "not white-washing" in out
+
+    def test_clause_scopes_comparison_rule_to_market_leaders(self):
+        """The 'amplify positive comparisons' rule must NOT be read as
+        'amplify all negative signals' — it applies only to market-leader
+        comparisons.  Legitimate complaints stay as LIABILITIES."""
+        out = pss._SIGNAL_CLASSIFICATION_CLAUSE
+        assert "applies ONLY to market-leader comparisons" in out
+        assert "legitimate complaints" in out
+        assert "remain LIABILITIES" in out
