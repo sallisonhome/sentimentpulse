@@ -4084,7 +4084,14 @@ def _call_actions(
         raw = _strip_uncited_items(raw, citation_map)
         recs_trace["after_strip_uncited_lines"] = raw.count("\n")
         # §20 layer 4: self-criticism on items.
-        raw = _self_criticize_items(client, raw, citation_map, "recommendations")
+        # §25g follow-up (2026-06-29): _self_criticize_items disabled — same
+        # reasoning as the exec drop in 5168ecf.  The §25 verifier (with
+        # HARD/COMMUNITY-OBSERVED classification + required quoted passage)
+        # is the canonical anti-confabulation gate for recommendations; the
+        # critic was double-dipping and collapsing legitimate recs to zero on
+        # Toxic Commando (8→0 lines) without surfacing useful signal.  Keep
+        # the function for tests; just skip the call here.
+        # raw = _self_criticize_items(client, raw, citation_map, "recommendations")
         recs_trace["after_self_criticize_lines"] = raw.count("\n")
         parsed = _parse_recommended_actions(raw)
         if parsed is None:
