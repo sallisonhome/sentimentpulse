@@ -323,6 +323,30 @@ The rule, in operational terms:
 
 **The principle.** Output quality bugs that are mechanically detectable should never reach the user. Asking the user to approve an output with an obvious surface defect is wasteful and erodes confidence.
 
+### 23. Audit the deliverable, not the intermediate artifact (CRITICAL behavior rule)
+
+**Hard requirement directed by the user 2026-06-29 after I shipped "§22 fix complete" twice and the user opened the email and found defects both times.**
+
+**The failure pattern:** I was treating "the regen response JSON looks OK" as equivalent to "the user-facing deliverable looks OK." They are not the same. Today's session has three documented examples — §21 RE counter-positioning, §22 pre-flight QA, §22 format-contract — where I declared the fix complete based on intermediate audit, and the user found defects in the live deliverable.
+
+**The rule:**
+
+1. **Never declare a fix done by auditing intermediate artifacts.** The audit must consume what the user will see — digest preview HTML for digest changes, rendered React page for UI changes, the actual API JSON the frontend consumes for endpoint changes. Not the regen response JSON. Not the LLM output. Not anything upstream of the final render.
+
+2. **Audit ALL titles and ALL surfaces touched by the fix, not just the one that triggered the report.** If the bug was on Hellraiser, the audit covers all 8. If exec + actions + bold + topics flow through the same code path, all four get checked. Today's bold-ideas regression — 0 across 8 titles — went undetected for two consecutive ship cycles because I never audited bold ideas at all.
+
+3. **Write the acceptance criteria for the specific request BEFORE starting work.** Re-read the user's message; extract the exact requirements; write them as a checklist. Then audit each one explicitly. Implicit completeness assumptions are how silent regressions slip through.
+
+4. **Audit the live deliverable AFTER deploy AND BEFORE telling the user.** Sequence: code → tests pass → push → deploy → re-fetch user-facing deliverable from production → audit against the written acceptance criteria → only then declare done.
+
+5. **Any audit flag is a hard stop.** Do not minimize, do not explain it away, do not proceed to "send the digest" anyway. Fix, re-deploy, re-audit, repeat until truly clean.
+
+6. **Never use "all clean," "complete," "shipped," or "fixed" until the user-facing deliverable is verified clean.** The cost of false claims is much higher than the cost of an extra audit pass.
+
+7. **In the audit narrative, be specific about what was checked AND what was NOT.** "I audited X across all 8 titles and confirmed Y; I have NOT yet checked Z" is honest and useful. "All 8 clean ✓" without naming the surface is a lie waiting to be discovered.
+
+**This rule supersedes any expedience consideration.** When in doubt, audit more. When the user has already caught one defect in this work item, audit far more before next ship.
+
 ## Task Management
 1. **Plan First**: Write plan to `tasks/todo.md` with checkable items
 2. **Verify Plan**: Check in before starting implementation

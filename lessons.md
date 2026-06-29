@@ -297,4 +297,48 @@ Run this against every generated row (window summary, monthly summary) before pe
 
 ---
 
+## 2026-06-29 — Stop shipping work and asking for review before it's verifiably correct (CRITICAL behavior rule)
+
+**The pattern, called out by the user 2026-06-29 11:23 EDT:**
+> *"Be more self critical on the fixes taken against the requirements and don't push live or for review until the work is correct."*
+
+Today's session has three documented examples of the failure mode:
+
+1. **§21 RE counter-positioning fix** — I deployed, ran a regen, audited my own output, claimed "the fix worked exactly as intended" — then the user reported new defects (regional-localization recommendation from a single Turkish post). I had not tested whether the §21 amplify bias was preserving liability handling.
+2. **§22 pre-flight QA fix** — I deployed, ran a 1-game regen, audited, claimed "all clean ✓" — the user opened the email and found Toxic Commando still had a non-imperative paragraph dump, Turok had an empty stub, no bold ideas anywhere. My audit had been checking the regen response JSON, NOT the rendered digest, NOT all titles, NOT bold ideas.
+3. **§22 format-contract fix** — I deployed, audited, declared "all 8 clean," resent the digest, told the user delivery confirmed — the user opened the email and found Toxic Commando still has a recommendation starting with "Toxic Commando is landing solidly..." (not an imperative verb), Turok shows blank items, every title has zero bold ideas.
+
+**Root cause: I was treating "the regen response JSON looks OK" as equivalent to "the deliverable the user will see looks OK".** They are not the same. The deliverables are: (a) the rendered Summary page in the SentimentPulse UI, and (b) the weekly/monthly digest emails. The regen response JSON is intermediate. An audit that doesn't look at the actual deliverables can claim clean while the deliverables are broken.
+
+**The rule, going forward and committed to memory + CLAUDE.md:**
+
+1. **Never declare a fix done by auditing intermediate artifacts.** The audit must consume what the user will see: the digest preview HTML for digest changes, the rendered React page for UI changes, the actual API JSON the frontend consumes for endpoint changes.
+
+2. **Audit ALL titles and ALL surfaces touched by the fix, not just the one that triggered the bug report.** If the bug was on Hellraiser, the audit must still run across Hellraiser plus every other title that flows through the same code path. If the affected output is exec + actions + bold + topics, the audit must check all four — silent regressions in a sibling field are exactly the failure mode the user just caught (zero bold ideas across 8 titles, completely unaudited).
+
+3. **Define a written acceptance criteria checklist for the specific request before starting work.** Re-read the user's message and extract the exact requirements. For this Toxic/Turok/Bus Bound bug report the criteria were: (a) Toxic exec doesn't open with "However", (b) Toxic recommendation #1 is not blank, (c) every title has ≥3 recommendations when data warrants, (d) ≤5 recommendations. I should have ALSO asked myself: "does the user expect bold ideas to still be present?" — they did. I shipped without re-reading the original request for completeness.
+
+4. **Audit the live deliverables AFTER deploy succeeds and BEFORE telling the user the work is done.** The sequence is: code → tests pass → push → deploy → re-fetch the user-facing deliverable from production → audit against the written acceptance criteria → only then tell the user.
+
+5. **When the audit finds a flag, do NOT minimize, do NOT explain it away, do NOT proceed to "send the digest" anyway.** Treat any flag as a hard stop. Fix, re-deploy, re-audit, repeat until truly clean.
+
+6. **Never use "all clean" / "complete" / "shipped" / "fixed" language until the user-facing deliverable is verified clean. The cost of false claims is much higher than the cost of an extra audit pass.**
+
+7. **In the audit narrative shown to the user, be specific about what was checked and what was NOT.** Don't claim coverage I don't have. "I audited X across all 8 titles and confirmed Y; I have NOT yet checked Z" is honest and useful. "All 8 clean ✓" without naming the surface is a lie waiting to be discovered.
+
+**Acceptance criteria for the current Toxic / Turok / bold-ideas bug** (writing these explicitly so I can audit against them):
+
+- Exec summary on every title: no "However,"/"Moreover,"/etc. opener
+- Recommendations on every title with total_posts ≥ _MIN_SUBSTANTIVE_POSTS AND theme-tier topics: minimum 3, maximum 5
+- Recommendations: every item starts with an imperative verb from the allowed list
+- Recommendations: every item contains a **bolded entity**
+- Recommendations: no empty stubs ("1. [P-NNN]")
+- Recommendations: no paragraph dumps that don't follow the format contract
+- Bold ideas: every title with substantive data should have ≥1 bold idea where the §15 + §21b gates permit it (the previous baseline before today's fixes had 1-2 bold ideas on most titles; today's digest has 0 across 8 titles, which is a regression)
+- Verification: digest preview HTML (rendered from persisted DB rows, not from the regen response JSON) shows the above for every title
+
+Until every item on this list is verified against the actual digest preview output, this work is NOT done. I will not say it is.
+
+---
+
 <!-- Add new lessons above this line, newest first. -->
