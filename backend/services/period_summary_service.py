@@ -3565,12 +3565,15 @@ def _call_exec(
         raw = _strip_uncited_sentences(raw, citation_map)
         exec_trace["after_strip_uncited_len"] = len(raw)
         exec_trace["lost_to_strip_uncited"] = before - len(raw)
-        # CLAUDE.md §20 layer 4: second-pass self-criticism.  Skipped when
-        # citation_map is empty (legacy callers).
-        before = len(raw)
-        raw = _self_criticize(client, raw, citation_map, "exec_summary")
+        # CLAUDE.md §20 layer 4: second-pass self-criticism.
+        # §25 (2026-06-29): the §25 verifier is now the canonical final gate
+        # on exec summaries (HARD vs COMMUNITY-OBSERVED classification + quoted
+        # source).  The older _self_criticize layer was redundant + harmful on
+        # exec: it killed entire summaries because it could not verify metric-
+        # style claims ("47 positive posts (30.7%)" — numbers that come from
+        # the system, not the posts).  Skip it here; let §25 do the work.
         exec_trace["after_self_criticize_len"] = len(raw)
-        exec_trace["lost_to_self_criticize"] = before - len(raw)
+        exec_trace["lost_to_self_criticize"] = 0
         # CLAUDE.md §22 (2026-06-29): re-scrub orphan discourse markers
         # AFTER all stripping passes — the critic can drop sentences too,
         # producing a new orphan opener that the layer-3 scrub didn't see.
