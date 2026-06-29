@@ -1745,7 +1745,22 @@ def _self_criticize_items(
     surviving_items = [s.strip().rstrip(".") for s in survived.split(_SELF_CRIT_SENTENCE_DELIM) if s.strip()]
     if not surviving_items:
         return ""
-    return "\n\n".join(f"{n}. {item}" for n, item in enumerate(surviving_items, 1))
+    # CLAUDE.md §22 (2026-06-29): the critic may have stripped the prose
+    # from an item while leaving its citation tokens.  Re-check each
+    # survivor and drop items that are now nothing but citations.
+    cleaned: list[str] = []
+    for n, item in enumerate(surviving_items, 1):
+        candidate = f"{n}. {item}"
+        if _item_has_substantive_content(candidate):
+            cleaned.append(item)
+        else:
+            logger.info(
+                "§22 dropping post-critic empty-stub item (%s): %s",
+                block_kind, candidate,
+            )
+    if not cleaned:
+        return ""
+    return "\n\n".join(f"{n}. {item}" for n, item in enumerate(cleaned, 1))
 
 
 # Orphan-pronoun / dangling-reference detection (2026-06-28 hardening).
