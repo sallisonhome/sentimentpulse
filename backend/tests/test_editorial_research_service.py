@@ -414,19 +414,40 @@ class TestEditorialGroundingGate:
         )
         assert out == ideas
 
-    def test_drops_post_only_idea_when_editorial_present(self):
+    def test_keeps_post_only_idea_when_editorial_present(self):
+        # §24e relax (2026-06-29): post-only bold ideas are fine even when
+        # editorial articles are available.  The earlier strict 'must cite
+        # BOTH P and E' rule was rejecting genuinely-grounded community-only
+        # ideas, which is the opposite of what we want.
         from services.period_summary_service import _enforce_editorial_grounding
         ideas = ["Spotlight **X** [P-001]"]
         out = _enforce_editorial_grounding(
             ideas, {"P-001": {}, "E-001": {}}, editorial_available=True,
         )
-        assert out == []
+        assert out == ideas
 
     def test_drops_editorial_only_idea(self):
+        # Editorial-only ideas (no [P-NNN] post anchor) are still dropped.
         from services.period_summary_service import _enforce_editorial_grounding
         ideas = ["Launch a retrospective inspired by IGN feature [E-001]."]
         out = _enforce_editorial_grounding(
             ideas, {"P-001": {}, "E-001": {}}, editorial_available=True,
+        )
+        assert out == []
+
+    def test_drops_idea_with_no_citations(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Just a bare claim with no citations at all"]
+        out = _enforce_editorial_grounding(
+            ideas, {"P-001": {}}, editorial_available=False,
+        )
+        assert out == []
+
+    def test_drops_idea_with_unknown_citation_index(self):
+        from services.period_summary_service import _enforce_editorial_grounding
+        ideas = ["Spotlight **X** [P-099]"]  # P-099 not in map
+        out = _enforce_editorial_grounding(
+            ideas, {"P-001": {}}, editorial_available=False,
         )
         assert out == []
 
