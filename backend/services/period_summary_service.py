@@ -2558,6 +2558,8 @@ def _build_input_whitelist(
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
     editorial_articles: Optional[list] = None,
+    commercial_context: Optional[str] = None,
+    demographic_context: Optional[str] = None,
 ) -> set[str]:
     """Lowercase-word whitelist drawn from every input the LLM saw.
 
@@ -2566,10 +2568,13 @@ def _build_input_whitelist(
     candidate.
 
     §24e (2026-06-29): editorial article titles, publications, summaries,
-    AND body text contribute to the whitelist.  Bold ideas now reason on
-    editorial content (e.g. 'Doom 2016', 'Tek Bow', 'Codex variants'),
-    so those nouns appear in editorial bodies and MUST be whitelisted to
-    avoid being flagged as fabrications.
+    AND body text contribute to the whitelist.  Per-title commercial_context
+    + demographic_context briefs are also whitelisted — these are the
+    canonical franchise / IP / comparable-title facts the LLM is allowed
+    to draw on.  Without this, legit Warhammer chapter names (Salamanders,
+    Black Templars, Angels of Penance), known studio names (Gunship), and
+    iconic franchise lore (Doom 2016, Tek Bow, Codex) get flagged as
+    fabrications when they don't appear verbatim in this window's posts.
     """
     whitelist: set[str] = set(_COMMON_CAPITALIZED)
     sources: list[str] = []
@@ -2585,6 +2590,14 @@ def _build_input_whitelist(
             val = getattr(art, field, None)
             if val:
                 sources.append(val)
+    # §24e: per-title context briefs (commercial + demographic) name the
+    # canonical franchise / comparable-title facts the LLM is permitted
+    # to use.  Whitelist their token contents so the sanitizer doesn't
+    # strip ideas that reference those known facts.
+    if commercial_context:
+        sources.append(commercial_context)
+    if demographic_context:
+        sources.append(demographic_context)
     for src in sources:
         for tok in _WORD_TOKEN_RE.findall(src):
             # 2026-06-29 (§21g): add both the bare form and the possessive
@@ -2639,6 +2652,8 @@ def _fact_check_for_fabrications(
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
     editorial_articles: Optional[list] = None,
+    commercial_context: Optional[str] = None,
+    demographic_context: Optional[str] = None,
 ) -> list[str]:
     """Return the list of fabricated proper nouns found in `text`.
 
@@ -2652,6 +2667,8 @@ def _fact_check_for_fabrications(
     whitelist = _build_input_whitelist(
         game_name, sample_posts, distinctive_entities, topic_labels,
         editorial_articles=editorial_articles,
+        commercial_context=commercial_context,
+        demographic_context=demographic_context,
     )
     candidates = _extract_proper_noun_candidates(text)
     return [c for c in candidates if c.lower() not in whitelist]
@@ -2664,6 +2681,8 @@ def _sanitize_recommendations(
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
     editorial_articles: Optional[list] = None,
+    commercial_context: Optional[str] = None,
+    demographic_context: Optional[str] = None,
 ) -> str:
     """Drop any numbered recommendation line containing a fabricated name.
 
@@ -2674,6 +2693,8 @@ def _sanitize_recommendations(
     fabs = _fact_check_for_fabrications(
         text, game_name, sample_posts, distinctive_entities, topic_labels,
         editorial_articles=editorial_articles,
+        commercial_context=commercial_context,
+        demographic_context=demographic_context,
     )
     if not fabs:
         return text
@@ -2828,6 +2849,8 @@ def _sanitize_bold_ideas(
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
     editorial_articles: Optional[list] = None,
+    commercial_context: Optional[str] = None,
+    demographic_context: Optional[str] = None,
 ) -> list[str]:
     """Drop any bold idea that contains a fabricated proper noun."""
     if not ideas:
@@ -2837,6 +2860,8 @@ def _sanitize_bold_ideas(
         fabs = _fact_check_for_fabrications(
             idea, game_name, sample_posts, distinctive_entities, topic_labels,
             editorial_articles=editorial_articles,
+            commercial_context=commercial_context,
+            demographic_context=demographic_context,
         )
         if fabs:
             logger.warning(
@@ -2855,6 +2880,8 @@ def _sanitize_executive_summary(
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
     editorial_articles: Optional[list] = None,
+    commercial_context: Optional[str] = None,
+    demographic_context: Optional[str] = None,
 ) -> str:
     """Drop any sentence in the executive summary that contains a fabricated
     proper noun.  Unlike recommendations, the exec summary is free prose, so
@@ -2865,6 +2892,8 @@ def _sanitize_executive_summary(
     fabs = _fact_check_for_fabrications(
         text, game_name, sample_posts, distinctive_entities, topic_labels,
         editorial_articles=editorial_articles,
+        commercial_context=commercial_context,
+        demographic_context=demographic_context,
     )
     if not fabs:
         return text
@@ -3120,6 +3149,7 @@ def _call_exec(
         result = _sanitize_executive_summary(
             raw, game_name, sample_posts, distinctive_entities, topic_labels,
             editorial_articles=editorial_articles,
+            commercial_context=commercial_context,
         )
         exec_trace["after_sanitize_len"] = len(result)
         exec_trace["lost_to_sanitize"] = before - len(result)
@@ -3454,6 +3484,7 @@ def _call_actions(
         sanitized = _sanitize_recommendations(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
             editorial_articles=editorial_articles,
+            commercial_context=commercial_context,
         )
         recs_trace["after_sanitize"] = sanitized.count("\n") + 1 if sanitized else 0
         # §20 layer 2b: release-status gate.
@@ -3700,6 +3731,8 @@ def _call_bold_ideas(
         parsed = _sanitize_bold_ideas(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
             editorial_articles=editorial_articles,
+            commercial_context=commercial_context,
+            demographic_context=demographic_context,
         )
         trace["after_sanitize"] = len(parsed)
         trace["lost_to_sanitize"] = before - len(parsed)
