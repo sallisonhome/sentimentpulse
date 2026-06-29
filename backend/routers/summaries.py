@@ -71,9 +71,14 @@ def clear_editorial_cache(
 
 @_diag_router.get("/editorial-cache-summary")
 def editorial_cache_summary(db: Session = Depends(get_db)):
-    """§24 admin endpoint: count editorial articles per (game_id, scope, cycle_start)."""
+    """§24 admin endpoint: count editorial articles per (game_id, scope, cycle_start).
+
+    §24b extension: also reports body_populated_count and avg_body_chars so
+    we can verify the Playwright fetch path actually captured body text
+    (vs the title-only fallback).
+    """
     from models import EditorialArticle, Game
-    from sqlalchemy import func as _f
+    from sqlalchemy import func as _f, case as _case
     rows = (
         db.query(
             EditorialArticle.game_id,
@@ -81,6 +86,11 @@ def editorial_cache_summary(db: Session = Depends(get_db)):
             EditorialArticle.scope,
             EditorialArticle.cycle_start,
             _f.count(EditorialArticle.id).label("article_count"),
+            _f.sum(
+                _case((_f.length(EditorialArticle.body) > 200, 1), else_=0)
+            ).label("body_populated_count"),
+            _f.avg(_f.length(EditorialArticle.body)).label("avg_body_chars"),
+            _f.max(_f.length(EditorialArticle.body)).label("max_body_chars"),
         )
         .join(Game, Game.id == EditorialArticle.game_id)
         .group_by(
@@ -98,10 +108,50 @@ def editorial_cache_summary(db: Session = Depends(get_db)):
                 "scope": r.scope,
                 "cycle_start": r.cycle_start.isoformat() if r.cycle_start else None,
                 "article_count": r.article_count,
+                "body_populated_count": int(r.body_populated_count or 0),
+                "avg_body_chars": int(r.avg_body_chars or 0),
+                "max_body_chars": int(r.max_body_chars or 0),
             }
             for r in rows
         ],
         "total_batches": len(rows),
+    }
+
+
+@_diag_router.get("/editorial-articles")
+def editorial_articles_list(
+    game_id: int,
+    scope: str = "weekly",
+    db: Session = Depends(get_db),
+):
+    """§24b admin endpoint: list editorial article rows for a single batch with
+    per-article body length + URL + publication so we can verify the Playwright
+    body fetch is hitting real publisher pages (not Google News interstitials).
+    """
+    from models import EditorialArticle
+    rows = (
+        db.query(EditorialArticle)
+        .filter_by(game_id=game_id, scope=scope)
+        .order_by(EditorialArticle.cycle_start.desc(), EditorialArticle.cite)
+        .limit(50)
+        .all()
+    )
+    return {
+        "game_id": game_id,
+        "scope": scope,
+        "articles": [
+            {
+                "cite": a.cite,
+                "cycle_start": a.cycle_start.isoformat() if a.cycle_start else None,
+                "url": a.url,
+                "publication": a.publication,
+                "title": a.title,
+                "body_chars": len(a.body) if a.body else 0,
+                "body_excerpt": (a.body[:300] if a.body else ""),
+                "summary_chars": len(a.summary) if a.summary else 0,
+            }
+            for a in rows
+        ],
     }
 
 
