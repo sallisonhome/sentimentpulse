@@ -327,6 +327,35 @@ The rule, in operational terms:
 
 **The principle.** A gate that lives only on the recommendations is a leaky gate. Anywhere the model writes about "what's happening in the community," the same critical-mass rules apply.
 
+### 21d. Fragment-Lead Detector + Honest Placeholder Fallback (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29 after the Space Marine 2 weekly exec opened with "109 negative), players consistently praise the tactile, visceral Space Marine fantasy...".**
+
+**Root cause:** the `_strip_uncited_sentences` pass split the LLM output on sentence boundaries and dropped any sentence without a `[P-NNN]` citation. The LLM had written something like "Across 968 posts (233 positive vs 109 negative), players consistently praise..." — the first piece had no citation so it was dropped, exposing the second piece as the new lead with the matching `(` already sliced off.
+
+**The rule.** Every prompt that runs through citation-stripping or sentence-level surgery MUST be followed by `_looks_like_fragment_lead(text)`. If the result opens like a mid-sentence fragment OR is entirely empty, drop to a clean analyst-voice placeholder via `_placeholder_summary()`. Never ship a sentence-fragment lead.
+
+**Fragment signals** (any triggers fallback):
+1. First alpha character is lowercase (mid-sentence continuation).
+2. Lead matches an explicit fragment-opener regex (`and|but|or|so|because|which|while|though|whereas` + closing-paren/bracket/comma starts).
+3. First sentence contains more closing parens/brackets than opening ones (the SM2 failure mode — matching `(` was sliced off).
+
+**Honest placeholder requirement.** `_placeholder_summary(name, window, total_posts)` MUST produce analyst-voice prose, NEVER a config-error message. Two variants: "Insufficient signal for confident reporting (only N substantive posts in this window)." when below §15 threshold, OR "Community sentiment across N posts during {window} was mixed without a single dominant theme reaching critical mass. See topic breakdowns below for grounded detail by sentiment bucket." when above threshold. The previous `[AI summary unavailable — configure ANTHROPIC_API_KEY]` wording was leaking config-error language into production digests when sanitizers (not the API) failed.
+
+### 21e. Orphan-Reference Filter Must Be Narrow (CRITICAL — always-on)
+
+**Hard requirement directed by the user 2026-06-29 after the live digest showed 0 bold ideas across all 8 titles — a regression from the prior baseline of 1–2 bold ideas per substantive title.**
+
+**Root cause:** `_ORPHAN_REFERENCE_PATTERNS` was too broad. It flagged any of: `this/that/the` + `analog|analogy|comparison|reference|approach|signal|entity|trend|pattern|issue|complaint|concern|topic|criticism|sentiment|demand|interest|reception|theme|narrative|argument`. Almost every community-marketing bold idea uses one of those nouns naturally (e.g. "capitalize on the demand for...", "address the issue of...", "lean into this trend"), and the filter was dropping every one as an "orphan reference."
+
+**The rule.** Orphan-reference detection MUST be narrow. Only catch the tight anaphors that match the original L20 failure mode:
+
+- `this/that` + `analog | analogy | comparison | reference` ONLY.
+- Apply clause-boundary logic: an introducing verb (`rejected|preferred|compared|cited|named|mentioned|...`) must appear in a STRICTLY EARLIER clause to clear the orphan; same-clause is not enough.
+- Routine noun phrases (`the demand`, `the trend`, `the issue`, `the complaint`, `the sentiment`) are NORMAL ENGLISH and must NOT be flagged.
+
+**Implementation expectation.** Unit tests must include both positive cases (orphan `this analog` with no introducer = drop) and explicit negative cases (`Address the complaint` = keep, `lean into this trend` = keep, etc.).
+
 ### 22. Pre-Flight QA on Summary Outputs Before Asking The User To Approve (CRITICAL — always-on, every summary, every digest)
 
 **Hard requirement directed by the user 2026-06-29 after the Toxic Commando / Turok / Bus Bound output had mechanically-detectable surface defects (orphan "However," opener, `1. [P-007]` empty-stub recommendations, sub-3 recommendation counts).**

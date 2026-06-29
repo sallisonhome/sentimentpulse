@@ -1510,6 +1510,60 @@ _DANGLING_DISCOURSE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 2026-06-29 (§21c+§22 hardening): the sentence-split sanitizer can leave a
+# mid-sentence fragment as the new lead.  Concrete failure on Space Marine 2:
+# the LLM wrote "Across 968 posts (233 positive vs 109 negative), players..."
+# and the uncited-sentence stripper chopped the (citationless) first piece,
+# exposing "109 negative), players consistently praise..." as the new lead.
+# Detect any of:
+#  • lead starts with an unmatched closing paren / bracket
+#  • lead starts with a digit followed by closing paren ("109)")
+#  • lead starts with a lowercase letter (mid-sentence continuation)
+#  • lead starts with a conjunction-only piece (", and...", "and they...")
+_FRAGMENT_OPENER_RE = re.compile(
+    r"^\s*(?:\d+\s*[\)\]]|[\)\]\,]|and\s+|but\s+|or\s+|so\s+|because\s+|"
+    r"which\s+|while\s+|though\s+|whereas\s+)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_fragment_lead(text: str) -> bool:
+    """True if `text` opens like a mid-sentence fragment rather than a
+    clean sentence start.  Catches the SM2 "109 negative), players..."
+    failure mode and similar.
+
+    Three signals:
+      1. The first alpha char (after optional opening quote) is lowercase
+         — mid-sentence continuations almost always start lowercase.
+      2. The text matches _FRAGMENT_OPENER_RE — explicit conjunction/
+         punctuation starts.
+      3. The first sentence contains an unmatched closing paren / bracket
+         before any opening one — the SM2 "109 negative), players..."
+         failure mode where the matching '(' was sliced off.
+    """
+    if not text:
+        return False
+    stripped = text.lstrip()
+    if not stripped:
+        return False
+    # Lowercase first letter (after optional opening quote) almost always
+    # indicates a mid-sentence continuation.
+    first_char = stripped[0]
+    if first_char in ("\"", "'", "“", "‘"):
+        first_char = stripped[1] if len(stripped) > 1 else first_char
+    if first_char.isalpha() and first_char.islower():
+        return True
+    if _FRAGMENT_OPENER_RE.match(stripped):
+        return True
+    # Unmatched closing paren/bracket in the first sentence — the SM2
+    # "... vs 109 negative), players..." case after the front was chopped.
+    first_sentence = re.split(r"(?<=[.!?])\s+", stripped, maxsplit=1)[0]
+    opens = first_sentence.count("(") + first_sentence.count("[")
+    closes = first_sentence.count(")") + first_sentence.count("]")
+    if closes > opens:
+        return True
+    return False
+
 
 def _scrub_orphan_opener(text: str) -> str:
     """If `text` opens with a discourse marker that depends on a preceding
@@ -1827,15 +1881,26 @@ def _self_criticize_items(
 # is incoherent to the reader because we cannot see what "X" was supposed
 # to refer to.  We drop such ideas outright — surfacing a confusing
 # sentence is worse than surfacing nothing.
+# 2026-06-29 NARROWING (§21c+§22 follow-up):
+# The prior list (analog, analogy, comparison, reference, approach, signal,
+# entity, trend, pattern, issue, complaint, concern, topic, criticism,
+# sentiment, demand, interest, reception, theme, narrative, argument) was
+# far too broad — it dropped EVERY bold idea across SM2, Hellraiser, and
+# Bus Bound because almost any community-marketing prose naturally uses
+# phrases like "this trend", "the demand", "the reception", or "this
+# issue" as natural English without those being orphan references.
+#
+# The ACTUAL failure mode this guard was built for (per L20 2026-06-28):
+# the critic stripped the introducing sentence of a 2-sentence idea
+# leaving an orphan "this analog" / "this comparison" lead in the second
+# sentence.  We only need to catch those specific tight-meaning anaphors,
+# AND only when they appear NEAR THE START of the idea (within the first
+# 80 characters) — a "this trend" appearing later in a 30-word idea is
+# almost always backref-able to earlier prose.
 _ORPHAN_REFERENCE_PATTERNS = (
-    # "this analog", "this comparison", "this approach", "this signal", etc.
-    # Require the noun is generic (analog, comparison, etc.) AND no prior
-    # clause in the same item introduces it.
     re.compile(
-        r"\b(?:this|that|the)\s+"
-        r"(?:analog|analogy|comparison|reference|approach|signal|entity|"
-        r"trend|pattern|issue|complaint|concern|topic|criticism|"
-        r"sentiment|demand|interest|reception|theme|narrative|argument)\b",
+        r"\b(?:this|that)\s+"
+        r"(?:analog|analogy|comparison|reference)\b",
         re.I,
     ),
 )
@@ -1848,23 +1913,23 @@ _INTRODUCING_VERB_RE = re.compile(
 
 
 def _has_orphan_reference(idea: str) -> bool:
-    """True if `idea` contains a 'this X' / 'the X' reference with no
-    earlier clause in the same idea that introduces X.
+    """True if `idea` contains a tight orphan anaphor with no introducing
+    EARLIER CLAUSE.
 
-    Heuristic: split on commas / clauses; for each clause that matches an
-    orphan pattern, look at all clauses STRICTLY BEFORE it.  If none of
-    those earlier clauses contain an introducing verb ("rejected", "named",
-    "compared", etc.), the reference is orphan.
+    NARROWED 2026-06-29: only fires for very-specific anaphors
+    ("this analog", "that comparison", "this reference", "this analogy")
+    — the previous broad list dropped every bold idea by flagging
+    routine phrasing like "this trend", "the demand", "the reception".
 
-    This is intentionally conservative: a bold idea that has the full chain
-    "Community **rejected** the Bioshock comparison, signaling that this
-    analog…" will NOT be flagged because "rejected" appears earlier in the
-    same idea.
+    The clause-boundary logic is preserved from the original L20 fix:
+    we look at clauses STRICTLY BEFORE the orphan match for an
+    introducing verb (rejected/named/compared/etc.). If the introducing
+    verb appears in the SAME clause as the orphan ("rejected this
+    analog"), that doesn't help — "rejected" is acting ON the orphan,
+    not introducing it.
     """
     if not idea:
         return False
-    # Split on clause boundaries (commas, semicolons, periods).  We use a
-    # weak split that keeps order — we only need before/after relationships.
     clauses = [c.strip() for c in re.split(r"[,;.]\s*", idea) if c.strip()]
     for i, clause in enumerate(clauses):
         for pat in _ORPHAN_REFERENCE_PATTERNS:
@@ -2724,7 +2789,20 @@ def _call_exec(
         # prevented this but the LLM does not always obey.
         result = _strip_monitor_only_lead(result, monitor_topics)
         # Final scrub after sanitizer too — belt-and-suspenders.
-        return _scrub_orphan_opener(result)
+        result = _scrub_orphan_opener(result)
+        # CLAUDE.md §21c/§22 (2026-06-29): if the post-strip result opens
+        # with a mid-sentence fragment ("109 negative), players...") OR is
+        # entirely empty, drop to the clean placeholder rather than ship
+        # nonsense.  The fragment case happens when the uncited-sentence
+        # stripper chops a citationless lead and exposes a continuation
+        # clause as the new lead.
+        if not result.strip() or _looks_like_fragment_lead(result):
+            logger.warning(
+                "Exec summary produced fragmentary/empty result for '%s' (raw=%s); falling back to placeholder",
+                game_name, result[:200],
+            )
+            return _placeholder_summary(game_name, window_label, total_posts)
+        return result
     except Exception as exc:
         logger.error("Claude exec summary error for '%s': %s", game_name, exc)
         return _placeholder_summary(game_name, window_label, total_posts)
@@ -3177,9 +3255,27 @@ def _resolve_api_key() -> str:
 # ── Placeholder fallbacks ─────────────────────────────────────────────────────
 
 def _placeholder_summary(game_name: str, window_label: str, total_posts: int) -> str:
+    """Honest low-signal fallback when the LLM result was discarded or empty.
+
+    Used when:
+      • Anthropic call raised
+      • sanitizers stripped the output to a fragmentary opener
+      • sanitizers stripped every sentence and left empty string
+
+    The message MUST read as a real analyst observation, not a system error.
+    The previous "[AI summary unavailable]" wording was a config-error message
+    that appeared in production digests when sanitizers (not the API) failed,
+    confusing the reader.
+    """
+    if total_posts < _MIN_SUBSTANTIVE_POSTS:
+        return (
+            f"Insufficient signal for confident reporting "
+            f"(only {total_posts} substantive posts in this window)."
+        )
     return (
-        f"[AI summary unavailable — configure ANTHROPIC_API_KEY to enable.] "
-        f"{total_posts} community posts were analysed for {game_name} during {window_label}."
+        f"Community sentiment across {total_posts} posts during {window_label} "
+        f"was mixed without a single dominant theme reaching critical mass. "
+        f"See topic breakdowns below for grounded detail by sentiment bucket."
     )
 
 

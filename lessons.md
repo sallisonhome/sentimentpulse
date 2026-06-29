@@ -362,4 +362,34 @@ Until every item on this list is verified against the actual digest preview outp
 
 ---
 
+## 2026-06-29 — Orphan-reference filter was nuking every bold idea (§21e)
+
+**What happened.** Live digest showed 0 bold ideas across all 8 titles. Prior baseline was 1–2 per substantive title. I shipped a "salvage" fix to `_self_criticize_bold_ideas` and a verb-regex expansion, but bold-ideas count stayed at 0 across SM2, Hellraiser, Bus Bound, Toxic Commando. Only Toxic Commando happened to survive in the next regen.
+
+**Root cause.** `_ORPHAN_REFERENCE_PATTERNS` had grown to flag `this|that|the` + `analog|analogy|comparison|reference|approach|signal|entity|trend|pattern|issue|complaint|concern|topic|criticism|sentiment|demand|interest|reception|theme|narrative|argument`. Almost every community-marketing bold idea contains one of those nouns in completely natural English ("capitalize on the demand for...", "address the issue of...", "lean into this trend"). The filter was indistinguishable from a 99%-drop-rate gate.
+
+**Lesson.** A filter that is supposed to catch a specific rare failure mode (L20 critic-stripped-the-introducing-sentence orphans) must NOT be widened to catch routine phrasing that resembles the failure mode in syntax. "the demand" is not an orphan reference; "this analog" with no antecedent IS. Anaphoric reference detection is a tight problem; treating it as a broad keyword filter destroys output volume.
+
+**Fix.** Narrowed `_ORPHAN_REFERENCE_PATTERNS` to ONLY `this|that` + `analog|analogy|comparison|reference`. Preserved the original clause-boundary logic (introducing verb must appear in a STRICTLY EARLIER clause). Updated `test_detects_orphan_the_complaint` to `test_does_not_flag_generic_the_complaint`, asserting that routine phrasing is NOT flagged. Full sweep 607 passed.
+
+**Generalizable principle.** Whenever a regression test catches a specific failure mode with a specific anaphor, write the filter ONLY for that anaphor. Do NOT generalize to a noun list "that looks similar" unless every noun on the list has its own concrete failure-mode example. Generalization without evidence is how filters become silent destroyers of legitimate output.
+
+---
+
+## 2026-06-29 — Space Marine 2 exec shipped a mid-sentence fragment lead (§21d)
+
+**What happened.** Live digest opened the SM2 weekly exec with: "109 negative), players consistently praise the tactile, visceral Space Marine fantasy—...". The matching `(` was already gone. The user reported the Hellraiser nonsense lead, I fixed that, audited 8 titles per §23, and found this NEW defect introduced in the audit — not by me, but exposed by it.
+
+**Root cause.** `_strip_uncited_sentences` splits on sentence boundaries (`(?<=[.!?])\s+`) and drops any sentence without a `[P-NNN]` citation. The LLM had written "Across 968 posts (233 positive vs 109 negative), players consistently praise [P-006]...". The split treated the colon-less first clause as a citationless sentence and dropped it, exposing the second clause with the matching `(` already cut off.
+
+**Why it survived the existing checks.** `_scrub_orphan_opener` only catches discourse markers (However/Moreover/etc.), not punctuation/digit/lowercase fragment leads. `_validate_summary_output` logs but does not actively replace fragmentary leads.
+
+**Fix.** Added `_looks_like_fragment_lead(text)` with three signals: lowercase first alpha, explicit fragment-opener regex match, more closing than opening parens/brackets in the first sentence. Wired into `_call_exec` after all sanitizers — if the result is fragmentary OR empty, fall through to `_placeholder_summary()`. Also rewrote `_placeholder_summary` itself: the old wording was `[AI summary unavailable — configure ANTHROPIC_API_KEY to enable.]`, a config-error message that was leaking into production digests when SANITIZERS (not the API) failed. New wording is analyst-voice prose with a low-signal variant for sub-threshold windows and a mixed-signal variant for above-threshold windows.
+
+**Generalizable principle.** Any pipeline that does sentence-level surgery on LLM output MUST have a post-surgery sanity check on what's left. "Did anything survive?" is not enough; "Does what survived read like a real sentence?" is the right question. Add a fragment detector after any stripping pass.
+
+**Pre-ship check to add.** Before declaring any sentence-stripping fix done, write a test that pipes a known-bad-but-citationless first sentence through the strip and asserts the result either reads cleanly OR falls to the placeholder. Never silently emit a fragment.
+
+---
+
 <!-- Add new lessons above this line, newest first. -->

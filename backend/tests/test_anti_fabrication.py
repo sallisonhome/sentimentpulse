@@ -589,9 +589,20 @@ class TestOrphanReferenceDetection:
         idea = "The community pushed back on this comparison [P-001], suggesting they want a fresh identity."
         assert pss._has_orphan_reference(idea) is True
 
-    def test_detects_orphan_the_complaint(self):
+    def test_does_not_flag_generic_the_complaint(self):
+        """2026-06-29 narrowing: the orphan-reference filter previously
+        dropped any bold idea containing 'the complaint', 'the trend',
+        'the demand', 'the issue', etc.  That over-broad list was zeroing
+        out every bold idea across substantive titles in the live digest.
+
+        "the complaint" alone is NOT an orphan reference — it is a
+        perfectly normal English noun phrase that does not require an
+        antecedent.  Only the tight anaphors "this/that analog | analogy |
+        comparison | reference" are now flagged, since those were the
+        actual L20 failure-mode patterns.
+        """
         idea = "Address the complaint [P-001] by shipping a roadmap update."
-        assert pss._has_orphan_reference(idea) is True
+        assert pss._has_orphan_reference(idea) is False
 
     def test_allows_introduced_reference(self):
         """When an earlier clause introduces the antecedent via an
