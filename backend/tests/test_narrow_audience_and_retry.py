@@ -14,6 +14,7 @@ from services.period_summary_service import (
     _count_valid_recommendations,
     _retry_actions_if_below_min,
     _REC_COUNT_MIN,
+    _shipped_regional_allowlist,
 )
 
 
@@ -46,6 +47,94 @@ class TestNarrowAudienceDetection:
     def test_empty_label_is_not_narrow(self):
         assert _topic_is_narrow_audience("") is False
         assert _topic_is_narrow_audience(None) is False
+
+    # §25g: per-game allowlist for shipped regional content.
+    def test_welsh_exempted_when_in_allowlist(self):
+        # When the game's commercial_context names Welsh as SHIPPED REGIONAL
+        # CONTENT, the label must NOT be flagged as narrow-audience for that
+        # game's critical-mass table.  This is the Welsh-on-Bus-Bound shape.
+        assert _topic_is_narrow_audience(
+            "Welsh Voice Acting",
+            narrow_audience_allowlist=["welsh"],
+        ) is False
+
+    def test_turkish_NOT_exempted_when_not_in_allowlist(self):
+        # Same shape, different game: Hellraiser has no Turkish version
+        # shipped, so commercial_context has no Turkish allowlist entry,
+        # so the Turkish topic stays narrow-audience (monitor-only).
+        assert _topic_is_narrow_audience(
+            "Turkish Language Support",
+            narrow_audience_allowlist=["welsh"],   # different language allowed
+        ) is True
+
+    def test_allowlist_token_match_is_substring(self):
+        # The allowlist token matches as a substring of the label so that
+        # "Welsh VO Cast" / "Welsh-Language Voice Acting" / "Celebrate
+        # Welsh Voice Acting" all match the single "welsh" token.
+        for label in (
+            "Welsh VO Cast",
+            "Welsh-Language Voice Acting",
+            "Community Celebrates Welsh Voice Acting",
+        ):
+            assert _topic_is_narrow_audience(
+                label, narrow_audience_allowlist=["welsh"],
+            ) is False, f"expected {label!r} to be exempted"
+
+    def test_empty_allowlist_is_noop(self):
+        # An empty list behaves the same as no list — the topic is still
+        # narrow-audience.
+        assert _topic_is_narrow_audience(
+            "Welsh Voice Acting", narrow_audience_allowlist=[],
+        ) is True
+
+
+class TestShippedRegionalAllowlistParser:
+    """§25g: parse SHIPPED REGIONAL CONTENT marker from commercial_context."""
+
+    def test_returns_empty_for_none_or_empty(self):
+        assert _shipped_regional_allowlist(None) == []
+        assert _shipped_regional_allowlist("") == []
+
+    def test_returns_empty_when_no_marker_line(self):
+        ctx = (
+            "POSITIONING: Indie sim/strategy title.\n"
+            "COMMERCIAL CONTEXT: Niche genre with loyal long-tail audience.\n"
+        )
+        assert _shipped_regional_allowlist(ctx) == []
+
+    def test_parses_single_token(self):
+        ctx = (
+            "POSITIONING: Indie sim/strategy.\n"
+            "SHIPPED REGIONAL CONTENT: Welsh\n"
+            "DO NOT: AAA-marketing actions.\n"
+        )
+        assert _shipped_regional_allowlist(ctx) == ["welsh"]
+
+    def test_parses_multiple_tokens(self):
+        ctx = "SHIPPED REGIONAL CONTENT: Welsh, Scots Gaelic, Brazilian Portuguese"
+        assert _shipped_regional_allowlist(ctx) == [
+            "welsh", "scots gaelic", "brazilian portuguese",
+        ]
+
+    def test_parses_underscore_variant(self):
+        ctx = "SHIPPED_REGIONAL_CONTENT: welsh"
+        assert _shipped_regional_allowlist(ctx) == ["welsh"]
+
+    def test_parses_localization_variant(self):
+        ctx = "SHIPPED LOCALIZATION: Welsh"
+        assert _shipped_regional_allowlist(ctx) == ["welsh"]
+
+    def test_case_insensitive_marker(self):
+        for line in (
+            "shipped regional content: welsh",
+            "Shipped Regional Content: Welsh",
+            "SHIPPED REGIONAL CONTENT: Welsh",
+        ):
+            assert _shipped_regional_allowlist(line) == ["welsh"], line
+
+    def test_deduplicates_tokens(self):
+        ctx = "SHIPPED REGIONAL CONTENT: Welsh, welsh, WELSH"
+        assert _shipped_regional_allowlist(ctx) == ["welsh"]
 
 
 class TestCountValidRecommendations:

@@ -131,7 +131,13 @@ def generate_monthly_summary(
     distinctive = _distinctive_entities(sample_posts)
 
     # CLAUDE.md §21b: critical-mass tiers for the monthly window.
-    cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
+    # §25g: pass the per-game SHIPPED REGIONAL CONTENT allowlist parsed from
+    # the commercial_context brief, so deliberate localization plays remain
+    # theme-tier and don't get demoted by the §21h narrow-audience rule.
+    cm_table = _topic_critical_mass_table(
+        db, game_id, window_start, window_end,
+        narrow_audience_allowlist=_shipped_regional_allowlist(game.commercial_context),
+    )
 
     # CLAUDE.md §24: fetch (or reuse cached) editorial articles for this
     # monthly cycle.  Safe to run with total<MIN_SUBSTANTIVE_POSTS — the
@@ -309,7 +315,13 @@ def generate_window_summary(
     # only recommend action on themes that survived multiple-day or
     # high-weight evidence — not on single-poster topics that surfaced
     # for display purposes only.
-    cm_table = _topic_critical_mass_table(db, game_id, window_start, window_end)
+    # §25g: pass the per-game SHIPPED REGIONAL CONTENT allowlist parsed from
+    # the commercial_context brief, so deliberate localization plays remain
+    # theme-tier and don't get demoted by the §21h narrow-audience rule.
+    cm_table = _topic_critical_mass_table(
+        db, game_id, window_start, window_end,
+        narrow_audience_allowlist=_shipped_regional_allowlist(game.commercial_context),
+    )
 
     # CLAUDE.md §24: weekly editorial cache.  Separate from monthly (§24
     # uses scope='weekly' here vs 'monthly' in generate_monthly_summary,
@@ -683,6 +695,45 @@ _NARROW_AUDIENCE_MARKERS = (
 _NARROW_AUDIENCE_RE = re.compile(
     "|".join(_NARROW_AUDIENCE_MARKERS), re.IGNORECASE,
 )
+
+
+# §25g (2026-06-29): parse the per-game commercial_context for an explicit
+# SHIPPED REGIONAL CONTENT marker line, and return the lowercase tokens that
+# should be exempted from the narrow-audience demotion for THIS game.
+#
+# Recognized line forms (case-insensitive, anywhere in commercial_context):
+#   SHIPPED REGIONAL CONTENT: welsh, scots gaelic
+#   SHIPPED_REGIONAL_CONTENT: welsh
+#   SHIPPED LOCALIZATION: welsh, brazilian portuguese
+#
+# The right-hand side is split on commas; each token is lowercased and
+# stripped.  Multi-word tokens ("brazilian portuguese") are preserved as-is —
+# _topic_is_narrow_audience does a substring match against the topic label.
+#
+# This is the mechanism for the §25g Welsh-on-Bus-Bound vs Turkish-on-
+# Hellraiser distinction:  Welsh is SHIPPED CONTENT on Bus Bound (named cast,
+# real product) → exempted from demotion; Turkish on Hellraiser is a WISH
+# (no Turkish version exists) → no exemption, stays demoted.
+_SHIPPED_REGIONAL_RE = re.compile(
+    r"^[ \t]*SHIPPED[_ ](?:REGIONAL[_ ]CONTENT|LOCALIZATION)[ \t]*:[ \t]*(.+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _shipped_regional_allowlist(commercial_context: Optional[str]) -> list[str]:
+    """Extract the SHIPPED REGIONAL CONTENT allowlist tokens from a game's
+    commercial_context brief.  Returns [] when the brief is empty or has no
+    marker line.  §25g.
+    """
+    if not commercial_context:
+        return []
+    tokens: list[str] = []
+    for m in _SHIPPED_REGIONAL_RE.finditer(commercial_context):
+        for raw in m.group(1).split(","):
+            t = raw.strip().lower()
+            if t and t not in tokens:
+                tokens.append(t)
+    return tokens
 
 
 def _topic_is_narrow_audience(
