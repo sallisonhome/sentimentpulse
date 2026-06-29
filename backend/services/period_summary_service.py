@@ -1044,15 +1044,35 @@ _REC_COUNT_MIN = 3
 # after_self_criticize, after_sanitize, after_strip_orphan, final.
 from collections import deque
 _BOLD_TRACE_BUFFER: deque = deque(maxlen=20)
+_EXEC_TRACE_BUFFER: deque = deque(maxlen=20)
+_RECS_TRACE_BUFFER: deque = deque(maxlen=20)
 
 
 def _record_bold_trace(entry: dict) -> None:
     _BOLD_TRACE_BUFFER.append(entry)
 
 
+def _record_exec_trace(entry: dict) -> None:
+    _EXEC_TRACE_BUFFER.append(entry)
+
+
+def _record_recs_trace(entry: dict) -> None:
+    _RECS_TRACE_BUFFER.append(entry)
+
+
 def get_bold_trace_buffer() -> list[dict]:
     """Returns a snapshot of the bold-ideas trace ring buffer."""
     return list(_BOLD_TRACE_BUFFER)
+
+
+def get_exec_trace_buffer() -> list[dict]:
+    """§24e: returns a snapshot of the executive-summary trace ring buffer."""
+    return list(_EXEC_TRACE_BUFFER)
+
+
+def get_recs_trace_buffer() -> list[dict]:
+    """§24e: returns a snapshot of the recommended-actions trace ring buffer."""
+    return list(_RECS_TRACE_BUFFER)
 _REC_COUNT_MAX = 5
 
 # Imperative verbs that a recommendation MUST start with after the
@@ -1339,7 +1359,12 @@ def _call_claude_for_period(
     client = _get_client()
     if client is None:
         return (
-            _placeholder_summary(game_name, window_label, total_posts),
+            _placeholder_summary(
+                game_name, window_label, total_posts,
+                pos_str=", ".join(pos_topics) if pos_topics else "",
+                neg_str=", ".join(neg_topics) if neg_topics else "",
+                pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
+            ),
             _placeholder_actions(),
             [],
             {},
@@ -1381,10 +1406,8 @@ def _call_claude_for_period(
         annotated_samples=annotated_samples,
         citation_map=citation_map,
         commercial_context=commercial_context,
-        # §21b 2026-06-29 fix: exec was being allowed to lead with
-        # monitor-only topics (e.g. one Turkish localization post) because
-        # the critical-mass table was never passed to _call_exec.
         critical_mass_table=critical_mass_table,
+        editorial_articles=editorial_articles,
     )
     rec_actions   = _call_actions(
         client, game_name, window_label, pos_str, neg_str, neu_str,
@@ -1394,11 +1417,9 @@ def _call_claude_for_period(
         citation_map=citation_map,
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
+        editorial_articles=editorial_articles,
     )
-    # §22b (2026-06-29): low-rec-count retry.  Count valid items in the
-    # current rec_actions; if below _REC_COUNT_MIN on a substantive title
-    # with theme-tier topics available, do ONE retry with a fix-list hint
-    # injected at the top of the prompt.
+    # §22b + §24e: low-rec-count retry on every substantive title (no theme gate).
     rec_actions = _retry_actions_if_below_min(
         client=client,
         rec_actions=rec_actions,
@@ -1414,6 +1435,7 @@ def _call_claude_for_period(
         citation_map=citation_map,
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
+        editorial_articles=editorial_articles,
     )
     bold_ideas    = _call_bold_ideas(
         client, game_name, window_label, pos_str, neg_str, neu_str, total_posts,
@@ -2535,12 +2557,19 @@ def _build_input_whitelist(
     sample_posts: dict[str, list[str]],
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
+    editorial_articles: Optional[list] = None,
 ) -> set[str]:
     """Lowercase-word whitelist drawn from every input the LLM saw.
 
     Anything in the LLM's output that appears here (case-insensitive) is
     considered grounded in the data.  Anything not here is a fabrication
     candidate.
+
+    §24e (2026-06-29): editorial article titles, publications, summaries,
+    AND body text contribute to the whitelist.  Bold ideas now reason on
+    editorial content (e.g. 'Doom 2016', 'Tek Bow', 'Codex variants'),
+    so those nouns appear in editorial bodies and MUST be whitelisted to
+    avoid being flagged as fabrications.
     """
     whitelist: set[str] = set(_COMMON_CAPITALIZED)
     sources: list[str] = []
@@ -2549,6 +2578,13 @@ def _build_input_whitelist(
         sources.extend(bucket)
     sources.extend(distinctive_entities or [])
     sources.extend(topic_labels or [])
+    # §24e: editorial articles contribute every token in their titles,
+    # publications, summaries, and bodies.
+    for art in editorial_articles or []:
+        for field in ("title", "publication", "summary", "body"):
+            val = getattr(art, field, None)
+            if val:
+                sources.append(val)
     for src in sources:
         for tok in _WORD_TOKEN_RE.findall(src):
             # 2026-06-29 (§21g): add both the bare form and the possessive
@@ -2602,6 +2638,7 @@ def _fact_check_for_fabrications(
     sample_posts: dict[str, list[str]],
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
+    editorial_articles: Optional[list] = None,
 ) -> list[str]:
     """Return the list of fabricated proper nouns found in `text`.
 
@@ -2614,6 +2651,7 @@ def _fact_check_for_fabrications(
         return []
     whitelist = _build_input_whitelist(
         game_name, sample_posts, distinctive_entities, topic_labels,
+        editorial_articles=editorial_articles,
     )
     candidates = _extract_proper_noun_candidates(text)
     return [c for c in candidates if c.lower() not in whitelist]
@@ -2625,6 +2663,7 @@ def _sanitize_recommendations(
     sample_posts: dict[str, list[str]],
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
+    editorial_articles: Optional[list] = None,
 ) -> str:
     """Drop any numbered recommendation line containing a fabricated name.
 
@@ -2634,6 +2673,7 @@ def _sanitize_recommendations(
     """
     fabs = _fact_check_for_fabrications(
         text, game_name, sample_posts, distinctive_entities, topic_labels,
+        editorial_articles=editorial_articles,
     )
     if not fabs:
         return text
@@ -2787,6 +2827,7 @@ def _sanitize_bold_ideas(
     sample_posts: dict[str, list[str]],
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
+    editorial_articles: Optional[list] = None,
 ) -> list[str]:
     """Drop any bold idea that contains a fabricated proper noun."""
     if not ideas:
@@ -2795,6 +2836,7 @@ def _sanitize_bold_ideas(
     for idea in ideas:
         fabs = _fact_check_for_fabrications(
             idea, game_name, sample_posts, distinctive_entities, topic_labels,
+            editorial_articles=editorial_articles,
         )
         if fabs:
             logger.warning(
@@ -2812,6 +2854,7 @@ def _sanitize_executive_summary(
     sample_posts: dict[str, list[str]],
     distinctive_entities: list[str],
     topic_labels: Optional[list[str]] = None,
+    editorial_articles: Optional[list] = None,
 ) -> str:
     """Drop any sentence in the executive summary that contains a fabricated
     proper noun.  Unlike recommendations, the exec summary is free prose, so
@@ -2821,6 +2864,7 @@ def _sanitize_executive_summary(
     """
     fabs = _fact_check_for_fabrications(
         text, game_name, sample_posts, distinctive_entities, topic_labels,
+        editorial_articles=editorial_articles,
     )
     if not fabs:
         return text
@@ -2910,6 +2954,9 @@ def _call_exec(
     # same critical-mass gate as recommended actions — a single-post
     # "monitor-only" topic must NOT become the primary exec theme.
     critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
+    # §24e (2026-06-29): editorial articles contribute to the fabrication
+    # whitelist so the sanitizer doesn't strip legitimate editorial nouns.
+    editorial_articles: Optional[list] = None,
 ) -> str:
     # Bug 2 fix: compute breakdown strings and negative percentage so the
     # prompt can REQUIRE Claude to reference actual counts numerically.
@@ -3041,6 +3088,7 @@ def _call_exec(
         )
     prompt += "Write ONLY the summary paragraph. No bullet points, no headings, no preamble."
 
+    exec_trace: dict = {"game_name": game_name, "total_posts": total_posts}
     try:
         message = client.messages.create(
             model=_MODEL,
@@ -3048,44 +3096,73 @@ def _call_exec(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
+        exec_trace["raw_llm_len"] = len(raw)
+        exec_trace["raw_preview"] = raw[:500]
         # CLAUDE.md §20 layer 3: drop sentences that lack a valid [P-NNN]
         # citation when citation infra is active.
+        before = len(raw)
         raw = _strip_uncited_sentences(raw, citation_map)
+        exec_trace["after_strip_uncited_len"] = len(raw)
+        exec_trace["lost_to_strip_uncited"] = before - len(raw)
         # CLAUDE.md §20 layer 4: second-pass self-criticism.  Skipped when
         # citation_map is empty (legacy callers).
+        before = len(raw)
         raw = _self_criticize(client, raw, citation_map, "exec_summary")
+        exec_trace["after_self_criticize_len"] = len(raw)
+        exec_trace["lost_to_self_criticize"] = before - len(raw)
         # CLAUDE.md §22 (2026-06-29): re-scrub orphan discourse markers
         # AFTER all stripping passes — the critic can drop sentences too,
         # producing a new orphan opener that the layer-3 scrub didn't see.
         raw = _scrub_orphan_opener(raw)
         # CLAUDE.md §20 layer 2: post-LLM proper-noun fact-check gate.
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
+        before = len(raw)
         result = _sanitize_executive_summary(
             raw, game_name, sample_posts, distinctive_entities, topic_labels,
+            editorial_articles=editorial_articles,
         )
+        exec_trace["after_sanitize_len"] = len(result)
+        exec_trace["lost_to_sanitize"] = before - len(result)
         # CLAUDE.md §21b (2026-06-29): post-LLM monitor-only lead detector.
-        # If the model's lead sentence is dominated by a known monitor-only
-        # topic label, strip that sentence — the gate clause should have
-        # prevented this but the LLM does not always obey.
+        before = len(result)
         result = _strip_monitor_only_lead(result, monitor_topics)
+        exec_trace["after_strip_monitor_lead_len"] = len(result)
+        exec_trace["lost_to_strip_monitor_lead"] = before - len(result)
         # Final scrub after sanitizer too — belt-and-suspenders.
         result = _scrub_orphan_opener(result)
+        exec_trace["after_final_scrub_len"] = len(result)
         # CLAUDE.md §21c/§22 (2026-06-29): if the post-strip result opens
         # with a mid-sentence fragment ("109 negative), players...") OR is
         # entirely empty, drop to the clean placeholder rather than ship
-        # nonsense.  The fragment case happens when the uncited-sentence
-        # stripper chops a citationless lead and exposes a continuation
-        # clause as the new lead.
-        if not result.strip() or _looks_like_fragment_lead(result):
+        # nonsense.
+        is_frag = _looks_like_fragment_lead(result)
+        exec_trace["is_fragment_lead"] = is_frag
+        exec_trace["final_preview"] = result[:300]
+        if not result.strip() or is_frag:
             logger.warning(
                 "Exec summary produced fragmentary/empty result for '%s' (raw=%s); falling back to placeholder",
                 game_name, result[:200],
             )
-            return _placeholder_summary(game_name, window_label, total_posts)
+            exec_trace["placeholder_fired"] = True
+            _record_exec_trace(exec_trace)
+            return _placeholder_summary(
+                game_name, window_label, total_posts,
+                pos_str=pos_str, neg_str=neg_str,
+                pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
+            )
+        exec_trace["placeholder_fired"] = False
+        _record_exec_trace(exec_trace)
         return result
     except Exception as exc:
         logger.error("Claude exec summary error for '%s': %s", game_name, exc)
-        return _placeholder_summary(game_name, window_label, total_posts)
+        exec_trace["error"] = str(exc)
+        exec_trace["placeholder_fired"] = True
+        _record_exec_trace(exec_trace)
+        return _placeholder_summary(
+            game_name, window_label, total_posts,
+            pos_str=pos_str, neg_str=neg_str,
+            pos_count=pos_count, neg_count=neg_count, neu_count=neu_count,
+        )
 
 
 def _safe_fetch_editorial(
@@ -3157,6 +3234,7 @@ def _retry_actions_if_below_min(
     citation_map: Optional[dict[str, dict]] = None,
     commercial_context: Optional[str] = None,
     critical_mass_table: Optional[dict] = None,
+    editorial_articles: Optional[list] = None,
 ) -> Optional[str]:
     """§22b: if `rec_actions` has fewer than _REC_COUNT_MIN valid items on a
     substantive title with at least one theme-tier topic, do ONE retry
@@ -3170,19 +3248,24 @@ def _retry_actions_if_below_min(
         return rec_actions
     if total_posts < _MIN_SUBSTANTIVE_POSTS:
         return rec_actions
-    # Confirm at least one theme-tier topic exists; otherwise the LLM is
-    # honest in producing few recs.
+    # §24e (2026-06-29): the prior version of this gate also required at
+    # least one 'theme'-tier topic in the critical-mass table.  That gate
+    # was too strict — high-volume titles whose discussion is spread thinly
+    # across many narrow topics (Space Marine 2 with 968 posts and the
+    # top topic only appearing on 1-2 days) never hit theme tier and so
+    # never got the retry, leaving them with 1 rec.
+    # POSITIVE amplifications anchored on real entities are valid even
+    # with no negative theme — the retry-pass prompt makes that explicit.
+    # We now retry on EVERY substantive title that fails the min count.
     cm = critical_mass_table or {}
     has_theme = any(
         t for bucket in cm.values() for t in (bucket or [])
         if len(t) >= 4 and t[3] == "theme"
     )
-    if not has_theme:
-        return rec_actions
     logger.warning(
-        "§22b: rec_actions has only %d valid items on substantive title '%s' "
-        "(total_posts=%d, themes_available=True); running ONE retry pass",
-        count, game_name, total_posts,
+        "§22b/§24e: rec_actions has only %d valid items on substantive title '%s' "
+        "(total_posts=%d, themes_available=%s); running ONE retry pass",
+        count, game_name, total_posts, has_theme,
     )
     hint = (
         f"Your previous response produced {count} valid recommendation(s) for "
@@ -3199,6 +3282,7 @@ def _retry_actions_if_below_min(
         commercial_context=commercial_context,
         critical_mass_table=critical_mass_table,
         retry_fix_list_hint=hint,
+        editorial_articles=editorial_articles,
     )
     retried_count = _count_valid_recommendations(retried)
     if retried_count >= count:
@@ -3228,12 +3312,10 @@ def _call_actions(
     commercial_context: Optional[str] = None,
     # CLAUDE.md §21b: per-topic critical-mass tiers.
     critical_mass_table: Optional[dict[str, list[tuple[str, float, int, str]]]] = None,
-    # CLAUDE.md §22b (2026-06-29): low-rec-count retry support.  When this
-    # helper is being called as a retry pass because the first attempt
-    # produced fewer than _REC_COUNT_MIN valid items, pass a fix-list
-    # hint that explicitly tells the LLM how many were produced and how
-    # many are required.  Empty / None on the first call.
+    # CLAUDE.md §22b (2026-06-29): low-rec-count retry support.
     retry_fix_list_hint: Optional[str] = None,
+    # §24e (2026-06-29): editorial articles contribute to fab whitelist.
+    editorial_articles: Optional[list] = None,
 ) -> str:
     sample_posts = sample_posts or {}
     distinctive_entities = distinctive_entities or []
@@ -3341,6 +3423,10 @@ def _call_actions(
         prompt += f"REPRESENTATIVE SAMPLE POSTS:\n{samples_block}\n\n"
     prompt += "Output: numbered list (1. ... 2. ... 3. ...). Plain prose, no markdown headings."
 
+    recs_trace: dict = {
+        "game_name": game_name,
+        "is_retry": bool(retry_fix_list_hint),
+    }
     try:
         message = client.messages.create(
             model=_MODEL,
@@ -3348,27 +3434,38 @@ def _call_actions(
             messages=[{"role": "user", "content": prompt}],
         )
         raw = message.content[0].text.strip()
-        # CLAUDE.md §20 layer 3: drop uncited items BEFORE structural parsing
-        # so we keep numbering consistent.
+        recs_trace["raw_llm_len"] = len(raw)
+        recs_trace["raw_preview"] = raw[:500]
+        # §20 layer 3: drop uncited items BEFORE structural parsing
+        before = raw.count("\n")
         raw = _strip_uncited_items(raw, citation_map)
-        # CLAUDE.md §20 layer 4: self-criticism on items.
+        recs_trace["after_strip_uncited_lines"] = raw.count("\n")
+        # §20 layer 4: self-criticism on items.
         raw = _self_criticize_items(client, raw, citation_map, "recommendations")
+        recs_trace["after_self_criticize_lines"] = raw.count("\n")
         parsed = _parse_recommended_actions(raw)
         if parsed is None:
+            recs_trace["after_parse"] = None
+            _record_recs_trace(recs_trace)
             return parsed
-        # CLAUDE.md §20 layer 2: proper-noun fact-check.
+        recs_trace["after_parse"] = parsed.count("\n") + 1 if parsed else 0
+        # §20 layer 2: proper-noun fact-check.
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
         sanitized = _sanitize_recommendations(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
+            editorial_articles=editorial_articles,
         )
-        # CLAUDE.md §20 layer 2b (2026-06-28): release-status gate.  Drop any
-        # surviving recommendation that prescribes a post-launch action when
-        # the data shows the game is pre-release.  This is the canonical
-        # "Patch Difficulty Settings" violation we're closing.
+        recs_trace["after_sanitize"] = sanitized.count("\n") + 1 if sanitized else 0
+        # §20 layer 2b: release-status gate.
         if sanitized:
             sanitized = _sanitize_recommendations_for_release_status(
                 sanitized, release_status,
             )
+        recs_trace["after_release_gate"] = sanitized.count("\n") + 1 if sanitized else 0
+        final_count = _count_valid_recommendations(sanitized)
+        recs_trace["final_valid_count"] = final_count
+        recs_trace["final_preview"] = (sanitized or "")[:500]
+        _record_recs_trace(recs_trace)
         return sanitized or None
     except Exception as exc:
         logger.error("Claude actions error for '%s': %s", game_name, exc)
@@ -3452,8 +3549,18 @@ def _call_bold_ideas(
     # opens up to speculative cohort-reach reasoning; when editorial is
     # absent, the prompt falls back to the strict §20 anchor-in-posts rule.
     bold_ideas_anchor_clause = (
-        f"Propose 1 or 2 bold ideas that go BEYOND the obvious fixes already in the recommended actions. "
+        f"Propose 2 bold ideas that go BEYOND the obvious fixes already in the recommended actions. "
         f"The bold move should reference a SPECIFIC entity from the data below — not a generic bucket.\n\n"
+        f"BOLD IDEAS ARE STRATEGIC OR CREATIVE MOVES — NOT BUG FIXES OR LIABILITY RESPONSES.\n"
+        f"  WRONG: 'Patch the black-screen post-match bug' (that's a recommended action).\n"
+        f"  WRONG: 'Address weapon balance complaints' (that's a recommended action).\n"
+        f"  RIGHT: 'Spotlight Gunship's analog glitch aesthetic as the synth differentiator' (creative positioning).\n"
+        f"  RIGHT: 'Launch a Doug Bradley interview circuit targeting the under-35 horror discovery cohort' (audience reach).\n"
+        f"  RIGHT: 'Lean into the Resident Evil comparison as validation of single-player survival horror' (positioning vs comp).\n"
+        f"Bold ideas should propose: amplifying named talent, partnership angles, community events, "
+        f"unexpected creative content (videos, retrospectives, devlogs), cohort-reach plays, positioning "
+        f"vs comparable titles, IP-deepening moves.\n\n"
+
     )
     if editorial_articles:
         bold_ideas_anchor_clause += (
@@ -3548,7 +3655,7 @@ def _call_bold_ideas(
     prompt += (
         f"OUTPUT FORMAT (MANDATORY — read carefully):\n"
         f"Your response MUST be ONE of these two shapes, and NOTHING ELSE:\n\n"
-        f"  SHAPE A (1-2 bold ideas):\n"
+        f"  SHAPE A (2 bold ideas — produce 2 whenever data supports it):\n"
         f"  1. <Imperative-verb opener> **specific entity** — <rationale, 25-40 words>. {citation_placeholder}\n"
         f"  2. <Optional second, same shape>\n\n"
         f"  SHAPE B (no actionable bold idea found):\n"
@@ -3592,6 +3699,7 @@ def _call_bold_ideas(
         topic_labels = [pos_str or "", neg_str or "", neu_str or ""]
         parsed = _sanitize_bold_ideas(
             parsed, game_name, sample_posts, distinctive_entities, topic_labels,
+            editorial_articles=editorial_articles,
         )
         trace["after_sanitize"] = len(parsed)
         trace["lost_to_sanitize"] = before - len(parsed)
@@ -3896,24 +4004,58 @@ def _resolve_api_key() -> str:
 
 # ── Placeholder fallbacks ─────────────────────────────────────────────────────
 
-def _placeholder_summary(game_name: str, window_label: str, total_posts: int) -> str:
+def _placeholder_summary(
+    game_name: str,
+    window_label: str,
+    total_posts: int,
+    pos_str: str = "",
+    neg_str: str = "",
+    pos_count: int = 0,
+    neg_count: int = 0,
+    neu_count: int = 0,
+) -> str:
     """Honest low-signal fallback when the LLM result was discarded or empty.
 
-    Used when:
-      • Anthropic call raised
-      • sanitizers stripped the output to a fragmentary opener
-      • sanitizers stripped every sentence and left empty string
-
-    The message MUST read as a real analyst observation, not a system error.
-    The previous "[AI summary unavailable]" wording was a config-error message
-    that appeared in production digests when sanitizers (not the API) failed,
-    confusing the reader.
+    §24e (2026-06-29): when the sanitizer cuts a real LLM exec to a
+    fragment, the placeholder used to render as 'community sentiment ...
+    was mixed without a single dominant theme reaching critical mass'.
+    That is misleading on high-volume titles where there ARE dominant
+    topics; the LLM just produced an output the gates rejected.  When
+    pos_str / neg_str are provided, the placeholder now grounds itself
+    on the top topics + counts so the analyst still sees specifics.
     """
     if total_posts < _MIN_SUBSTANTIVE_POSTS:
         return (
             f"Insufficient signal for confident reporting "
             f"(only {total_posts} substantive posts in this window)."
         )
+    # §24e: build a grounded fallback when we have topic data.
+    if pos_str or neg_str:
+        pos_lead = pos_str.split(",")[0].strip() if pos_str else ""
+        neg_lead = neg_str.split(",")[0].strip() if neg_str else ""
+        parts: list[str] = []
+        parts.append(
+            f"Community discussion across {total_posts} posts during "
+            f"{window_label} produced {pos_count} positive, {neg_count} "
+            f"negative, and {neu_count} neutral signals."
+        )
+        if pos_lead and neg_lead:
+            parts.append(
+                f"Top positive topic: {pos_lead}.  Top negative concern: "
+                f"{neg_lead}.  Review the topic breakdowns and recommended "
+                f"actions below for grounded detail."
+            )
+        elif pos_lead:
+            parts.append(
+                f"Top positive topic: {pos_lead}.  Review the topic "
+                f"breakdowns and recommended actions below for detail."
+            )
+        elif neg_lead:
+            parts.append(
+                f"Top negative concern: {neg_lead}.  Review the topic "
+                f"breakdowns and recommended actions below for detail."
+            )
+        return " ".join(parts)
     return (
         f"Community sentiment across {total_posts} posts during {window_label} "
         f"was mixed without a single dominant theme reaching critical mass. "

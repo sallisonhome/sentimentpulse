@@ -43,6 +43,21 @@ def get_bold_ideas_trace():
     return {"trace": _pss.get_bold_trace_buffer()}
 
 
+@_diag_router.get("/exec-trace")
+def get_exec_trace():
+    """§24e: return the last N _call_exec trace entries.
+    Each records raw LLM length, layer-by-layer survivor lengths,
+    and whether the placeholder fallback fired."""
+    return {"trace": _pss.get_exec_trace_buffer()}
+
+
+@_diag_router.get("/recs-trace")
+def get_recs_trace():
+    """§24e: return the last N _call_actions trace entries (including any
+    §22b retry passes).  Each records the final valid-rec count."""
+    return {"trace": _pss.get_recs_trace_buffer()}
+
+
 @_diag_router.post("/editorial-cache-clear")
 def clear_editorial_cache(
     game_id: Optional[int] = None,
