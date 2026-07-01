@@ -6,6 +6,49 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-07-01 — Monthly digest cron fired before the monthly summaries were generated
+
+**What happened.** On 2026-07-01 at 07:00 ET the monthly digest job fired and delivered an email whose Portfolio Brief read "No qualifying monthly summaries available for June 2026. Verify the monthly summary job ran and source health was OK across the period."  All 8 title blocks rendered "0 posts, no signal."
+
+**Root cause.** Scheduler cron ordering:
+- Daily ingestion cron runs at **10:45 local time** (America/New_York).
+- Its Step 9 (`_step9_generate_monthly_summaries` in `services/ingestor.py`) is the ONLY code path that creates `MonthlySummary` rows for the just-ended month.
+- Monthly digest cron was scheduled for **07:00 ET on the 1st**.
+- 07:00 < 10:45 — so when the digest fired, no `MonthlySummary` rows existed yet for June 2026.  `build_monthly_block` correctly returned `has_data=False` for every title and the digest correctly said "no qualifying summaries."
+- At 10:45 the ingestion ran, Step 9 created all the June summaries with full content, but the email had already gone out.
+
+**Fix (Option B, per user direction).** Move the monthly digest cron from `hour=7` to `hour=12` on the 1st in `backend/scheduler.py`.  12:00 ET gives Step 9 a ~1h 15m buffer after the 10:45 ingestion completes.
+
+**Manual recovery.** After the fact I re-triggered `POST /api/digest/send/monthly` with the summaries now populated — the corrected June 2026 digest went out at 08:21 ET with real content.
+
+**Generalizable rule for future cron scheduling in this project.** When adding a scheduled job that consumes derived data (weekly summaries, monthly summaries, editorial cache, etc.), verify the upstream generation cron completes BEFORE the consumer cron fires.  Don't rely on "they'll usually be done by then."  If ingestion moves earlier (05:00 for faster morning digests), the monthly digest can move earlier too — but the ORDERING invariant is the load-bearing one.
+
+**Pre-ship check for future scheduler changes.** For every scheduled digest / email / report job:
+1. Identify the derived-data prerequisite (which upstream cron populates the tables the job reads).
+2. Confirm the prerequisite cron's max expected runtime + its trigger time is strictly BEFORE the consumer cron trigger.
+3. Add a comment in `scheduler.py` at the consumer cron declaration stating the prerequisite and the safety margin.
+4. If the buffer is under 15 minutes, either widen it or add a defensive check inside the consumer that regenerates the missing derived data before rendering the output.
+
+**Updated locations.** `backend/scheduler.py` (cron trigger + explanatory comment). This lessons.md entry. No CLAUDE.md rule needed — this is operational deployment configuration, not a principle.
+
+---
+
+## 2026-06-29 — When a class of LLM outputs requires layered post-LLM filters, the model is wrong for the job
+
+**What happened.** Across 3+ hours of iteration (§25 → §25d → §25e → §25f → §25g → §25h) I stacked six post-LLM filter passes on top of the exec/recs/bold-ideas output because Claude Haiku kept producing confabulations (invented competing titles, invented partnerships, single-poster topics promoted to leads).  Each filter was individually correct.  The cumulative architecture was hostile to good output: the verifier deleted whole legitimate sentences for over-claim, the monitor-only-lead-strip ran both before AND after the verifier, and the min-length fallback replaced partially-verified analyst prose with a sterile placeholder.  The user's exact frustration: "we keep repeating the same errors in different ways" and later "this insanely myopic grind you're on regarding putting together an executive summary that is robust and accurate free of hallucinations… it's not getting better it's getting worse."
+
+**Root cause.** Haiku is the wrong model class for grounded summarization with strict citation discipline.  Under sparse-context inputs it confabulates because that's what small-parameter models do when asked to sound authoritative.  No amount of downstream filtering can turn a confabulation-prone model into a citation-strict model — you can only delete its bad output, and if too much output is bad, deletion leaves you with nothing.
+
+**Fix.** Swap the model.  A side-by-side test on Hellraiser (the torture case: sparse posts, dominant single-locale cluster, real editorial context, historical confabulation pattern) showed Perplexity Sonar Pro producing atomic, cited, post-anchored sentences on the first try.  Zero filter stack needed.  Wired Sonar as the primary LLM for all three user-facing blocks (exec, recs, bold-ideas) with Haiku as fallback; disabled the §25-series post-LLM filters on the recs + bold-ideas paths (§26.8).
+
+**Generalizable rule.** When you find yourself writing the 4th or 5th post-LLM filter pass to compensate for a model's habitual failure mode on a specific class of output, stop.  A filter can enforce structural rules (schema, citation existence, coverage counts).  A filter CANNOT change what class of content the model is willing to produce.  If the model produces confabulations, you can delete them, but you can't turn deletion into good content.  Test a different model class before shipping the fourth filter.
+
+**Practical decision rule.** After the second post-LLM filter for the same failure mode, run a head-to-head test between the current model and one from a different model family.  Cost of a head-to-head is trivial (one prompt, three API calls) vs the cost of shipping a fragile filter stack that gets more layers every week.
+
+**Updated locations.** CLAUDE.md §26 (structured-output contract that assumes a competent LLM instead of layered filters).  This lessons.md entry.
+
+---
+
 ## 2026-06-24 — Confirm-or-Omit Directive (permanent, project-wide)
 
 **User directive, recorded verbatim:**

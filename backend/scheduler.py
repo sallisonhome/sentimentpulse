@@ -86,9 +86,22 @@ def create_scheduler() -> BackgroundScheduler:
         name="Weekly executive digest email",
         replace_existing=True,
     )
+    # Monthly digest fires at 12:00 ET on the 1st of each month.
+    #
+    # Why 12:00 and not 07:00: the daily ingestion cron runs at 10:45 local
+    # time (America/New_York), and its Step 9 generates monthly summaries
+    # for the just-ended month.  If the digest fires before Step 9 completes,
+    # the MonthlySummary rows don't exist yet and the digest renders "No
+    # qualifying monthly summaries."  This is exactly the failure mode that
+    # bit the June 2026 monthly digest send on 2026-07-01 at 07:00 ET.
+    #
+    # 12:00 ET gives Step 9 a comfortable window to finish (ingestion of a
+    # full day of posts across 8 titles + monthly summary generation runs
+    # in ~30-60 minutes on a normal day).  If ingestion ever runs longer
+    # than ~1h 15m, this window will need to grow.
     _scheduler.add_job(
         _monthly_digest_job,
-        trigger=CronTrigger(day=1, hour=7, minute=0, timezone=et_zone),
+        trigger=CronTrigger(day=1, hour=12, minute=0, timezone=et_zone),
         id=_MONTHLY_DIGEST_JOB_ID,
         name="Monthly executive digest email",
         replace_existing=True,
@@ -97,7 +110,7 @@ def create_scheduler() -> BackgroundScheduler:
     logger.info(
         f"Scheduler created — daily ingestion at {ingest_hour:02d}:{ingest_minute:02d}, "
         f"weekly smoke test Sun 03:00 local, weekly digest Mon 07:00 ET, "
-        f"monthly digest 1st 07:00 ET."
+        f"monthly digest 1st 12:00 ET (after Step 9 monthly-summary generation)."
     )
     return _scheduler
 
@@ -168,7 +181,9 @@ def _weekly_digest_job() -> None:
 
 
 def _monthly_digest_job() -> None:
-    """APScheduler entry-point for the 1st-of-month 07:00 ET monthly digest."""
+    """APScheduler entry-point for the 1st-of-month 12:00 ET monthly digest.
+    Runs after the 10:45 local ingestion cron completes so Step 9 has already
+    generated the current MonthlySummary rows.  See scheduler comment above."""
     from database import SessionLocal  # noqa: PLC0415
     from services.digest_service import send_monthly_digest  # noqa: PLC0415
 
