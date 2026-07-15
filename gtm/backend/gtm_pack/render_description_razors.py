@@ -206,9 +206,11 @@ def render_dark(args, counts, out_path):
     # 20-word razor -- secondary payoff, medium size, centered. Word count
     # is a small centered caption below the line (not a floating pill) so
     # it never competes with the centered text for horizontal space.
+    # Auto-shrink from 22pt down to 16pt to keep on ONE line.
     r20_y = div_y + 0.62
+    r20_pt = fit_hero_pt(args.razor_20, cw, base_pt=22, min_pt=16)
     add_text(slide, cx, r20_y, cw, 0.75, args.razor_20,
-             font="Trebuchet MS", size=22, bold=True, color=INK, align=PP_ALIGN.CENTER)
+             font="Trebuchet MS", size=r20_pt, bold=True, color=INK, align=PP_ALIGN.CENTER)
     add_text(slide, cx, r20_y + 0.62, cw, 0.22, f"{wc_r20} words \u00b7 tagline",
              font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
 
@@ -278,10 +280,12 @@ def render_light(args, counts, out_path):
     add_text(slide, cx, div_y + 0.16, cw, 0.28, "THE RAZORS",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3, align=PP_ALIGN.CENTER)
 
-    # 20-word razor -- secondary payoff, medium size, centered
+    # 20-word razor -- secondary payoff, medium size, centered. Auto-shrink
+    # to fit on one line, mirroring the light-theme logic.
     r20_y = div_y + 0.62
+    r20_pt = fit_hero_pt(args.razor_20, cw, base_pt=22, min_pt=16)
     add_text(slide, cx, r20_y, cw, 0.75, args.razor_20,
-             font="Trebuchet MS", size=22, bold=True, color=INK, align=PP_ALIGN.CENTER)
+             font="Trebuchet MS", size=r20_pt, bold=True, color=INK, align=PP_ALIGN.CENTER)
     add_text(slide, cx, r20_y + 0.62, cw, 0.22, f"{wc_r20} words \u00b7 tagline",
              font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
 
