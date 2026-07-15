@@ -18,10 +18,10 @@ No state library — React `useState` + URL query params hold app state. `localS
 | ---------------------- | --------------------------------------------------------------------------------- |
 | `/`                    | Home — 3 cards (library / new / example) + admin link                             |
 | `/library`             | Deck library — grid + search/theme/date filters; PPTX / PDF / clone buttons       |
-| `/new`                 | 7-step wizard (Theme → Game → Cohorts·USPs·Reach → Release → Commercial potential → Risks → Description & razors); step in `?step=` |
-| `/preview/:sessionId`  | 12 PNG slides + edit chips + theme toggle + Generate Final Deck                   |
+| `/new`                 | 6-step wizard (Theme → Game → Cohorts·USPs·Reach → Commercial potential → Risks → Description & razors); step in `?step=` |
+| `/preview/:sessionId`  | 6 PNG slides + edit chips + theme toggle + Generate Final Deck                    |
 | `/decks/:deckId`       | Download — two large buttons for PPTX and PDF                                     |
-| `/example`             | Example viewer — 12-slide click-through + caption rail                            |
+| `/example`             | Example viewer — 6-slide click-through + caption rail                             |
 | `/admin`               | Stub login (real auth lands in Phase 6)                                           |
 
 ## API contract

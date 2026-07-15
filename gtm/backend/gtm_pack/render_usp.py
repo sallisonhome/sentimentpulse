@@ -198,7 +198,10 @@ def render_dark(args, usps, out_path):
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
     # ---- Left manifesto ----
-    add_text(slide, 0.6, 2.5, 5.4, 0.3, "THE WEDGE",
+    # Narrower wedge column (was 5.4in) so the right-hand list gets more
+    # breathing room at 5 USPs, the tightest case.
+    wedge_w = 4.7
+    add_text(slide, 0.6, 2.5, wedge_w, 0.3, "THE WEDGE",
              font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
     # If user provided a custom wedge statement, use it; else default template
     wedge_lines = (args.wedge.split("|") if args.wedge else [
@@ -207,45 +210,65 @@ def render_dark(args, usps, out_path):
         "through execution \u2014",
         "not novelty.",
     ])
-    add_text(slide, 0.6, 2.85, 5.4, 3.5,
+    add_text(slide, 0.6, 2.85, wedge_w, 3.5,
              [ln.strip() for ln in wedge_lines],
-             font="Trebuchet MS", size=28, bold=True, color=INK)
-    add_text(slide, 0.6, 5.6, 5.4, 0.8,
+             font="Trebuchet MS", size=26, bold=True, color=INK)
+    add_text(slide, 0.6, 5.6, wedge_w, 0.8,
              args.wedge_support or
              "Each pillar is independently defensible and supported by measurable proof.",
              font="Calibri", size=body_pt(L, 12), color=MUTED)
 
     # ---- Right list ----
-    rx, ry = 6.6, 2.4
-    rw = 6.2
+    # Number sits inline with the title on one baseline (not a separate
+    # column that competes with hairlines), and each row gets generous,
+    # evenly divided height so description/proof/strategy never crowd the
+    # next row's number+title -- this was the main density complaint at
+    # n=5 (description text nearly touching the next pillar's number).
+    rx, ry = 5.75, 2.35
+    rw = 7.05
     n = len(usps)
-    # Available list height: footer at 7.1, leave 0.25" breathing room
-    list_h = 7.1 - ry - 0.25
+    list_h = 7.1 - ry - 0.2
     rh = list_h / n
-    # Adjust internal spacing for tighter rows as count grows (extra strategy line)
-    title_size = 12 if n == 5 else (13 if n == 4 else 14)
-    desc_size  = body_pt(L, 9 if n == 5 else 10)
-    proof_size = body_pt(L, 8 if n == 5 else 9)
-    strategy_size = body_pt(L, 8 if n == 5 else 9)
+    num_col_w = 0.55
+    text_x = rx + num_col_w
+    text_w = rw - num_col_w
+    title_size = body_pt(L, 15 if n <= 3 else (14 if n == 4 else 12.5))
+    desc_size  = body_pt(L, 10.5 if n <= 3 else (10 if n == 4 else 9))
+    proof_size = body_pt(L, 10 if n <= 3 else (9.5 if n == 4 else 8.5))
+    strategy_size = body_pt(L, 9.5 if n <= 3 else 8.5)
+    # Vertical rhythm within a row: proportional fractions of rh so rows
+    # never collide regardless of count. Description gets a 2-line
+    # allowance (it can wrap), proof and strategy get single lines.
     title_y = 0.0
-    desc_y  = 0.30 if n == 5 else (0.40 if n == 4 else 0.45)
-    proof_y = 0.52 if n == 5 else (0.68 if n == 4 else 0.78)
-    strategy_y = 0.70 if n == 5 else (0.94 if n == 4 else 1.06)
+    desc_y  = 0.30 if n <= 3 else (0.28 if n == 4 else 0.24)
+    # For n=5 the description may still wrap to 2 lines at 9pt; give proof
+    # and strategy their own fixed offsets from the BOTTOM of the row
+    # instead of stacking from the top, so a long description never
+    # crowds them out.
+    if n == 5:
+        proof_y = rh - 0.36
+        strategy_y = rh - 0.18
+    elif n == 4:
+        proof_y = rh - 0.42
+        strategy_y = rh - 0.21
+    else:
+        proof_y = rh - 0.50
+        strategy_y = rh - 0.24
     for i, ((title, desc, proof, strategy), c) in enumerate(zip(usps, accents)):
         y = ry + i * rh
-        add_text(slide, rx, y + title_y, 0.5, 0.4, f"0{i+1}",
-                 font="Trebuchet MS", size=18, bold=True, color=c)
-        add_text(slide, rx + 0.7, y + title_y, rw - 1.2, 0.4, title,
+        add_text(slide, rx, y + title_y, num_col_w, 0.4, f"0{i+1}",
+                 font="Trebuchet MS", size=16, bold=True, color=c)
+        add_text(slide, text_x, y + title_y, text_w, 0.4, title,
                  font="Trebuchet MS", size=title_size, bold=True, color=INK)
-        add_text(slide, rx + 0.7, y + desc_y, rw - 1.2, 0.4, desc,
+        add_text(slide, text_x, y + desc_y, text_w, proof_y - desc_y - 0.02, desc,
                  font="Calibri", size=desc_size, color=MUTED)
-        add_text(slide, rx + 0.7, y + proof_y, rw - 1.2, 0.25, f"\u2192 {proof}",
+        add_text(slide, text_x, y + proof_y, text_w, 0.2, f"\u2192 {proof}",
                  font="Calibri", size=proof_size, bold=True, color=c)
         if strategy:
-            add_text(slide, rx + 0.7, y + strategy_y, rw - 1.2, 0.25, f"\u00bb {strategy}",
+            add_text(slide, text_x, y + strategy_y, text_w, 0.2, f"\u00bb {strategy}",
                      font="Calibri", size=strategy_size, color=INK)
         if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.04, rw, 0.008, BORDER)
+            add_rect(slide, rx, y + rh - 0.06, rw, 0.008, BORDER)
 
     # Footer (locked dark pattern)
     add_text(slide, 0.6, 7.1, 12, 0.25,
@@ -287,7 +310,8 @@ def render_light(args, usps, out_path):
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
     # ---- Left manifesto ----
-    add_text(slide, 0.7, 2.6, 5.4, 0.3, "THE WEDGE",
+    wedge_w = 4.8
+    add_text(slide, 0.7, 2.6, wedge_w, 0.3, "THE WEDGE",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     wedge_lines = (args.wedge.split("|") if args.wedge else [
         f"{args.title} earns its slot",
@@ -295,43 +319,53 @@ def render_light(args, usps, out_path):
         "through execution \u2014",
         "not novelty.",
     ])
-    add_text(slide, 0.7, 2.95, 5.4, 3.5,
+    add_text(slide, 0.7, 2.95, wedge_w, 3.5,
              [ln.strip() for ln in wedge_lines],
-             font="Trebuchet MS", size=28, bold=True, color=INK)
-    add_text(slide, 0.7, 5.7, 5.4, 0.8,
+             font="Trebuchet MS", size=26, bold=True, color=INK)
+    add_text(slide, 0.7, 5.7, wedge_w, 0.8,
              args.wedge_support or
              "Each pillar is independently defensible and supported by measurable proof.",
              font="Calibri", size=body_pt(L, 12), color=MUTED)
 
     # ---- Right list ----
-    rx, ry = 6.7, 2.5
-    rw = 6.0
+    rx, ry = 5.85, 2.45
+    rw = 6.85
     n = len(usps)
-    list_h = 7.1 - ry - 0.25
+    list_h = 7.1 - ry - 0.2
     rh = list_h / n
-    title_size = 12 if n == 5 else (13 if n == 4 else 14)
-    desc_size  = body_pt(L, 9 if n == 5 else 10)
-    proof_size = body_pt(L, 9)
-    strategy_size = body_pt(L, 8 if n == 5 else 9)
+    num_col_w = 0.55
+    text_x = rx + num_col_w
+    text_w = rw - num_col_w
+    title_size = body_pt(L, 15 if n <= 3 else (14 if n == 4 else 12.5))
+    desc_size  = body_pt(L, 10.5 if n <= 3 else (10 if n == 4 else 9))
+    proof_size = body_pt(L, 10 if n <= 3 else (9.5 if n == 4 else 8.5))
+    strategy_size = body_pt(L, 9.5 if n <= 3 else 8.5)
     title_y = 0.0
-    desc_y  = 0.30 if n == 5 else (0.40 if n == 4 else 0.45)
-    proof_y = 0.52 if n == 5 else (0.68 if n == 4 else 0.78)
-    strategy_y = 0.70 if n == 5 else (0.94 if n == 4 else 1.06)
+    desc_y  = 0.30 if n <= 3 else (0.28 if n == 4 else 0.24)
+    if n == 5:
+        proof_y = rh - 0.36
+        strategy_y = rh - 0.18
+    elif n == 4:
+        proof_y = rh - 0.42
+        strategy_y = rh - 0.21
+    else:
+        proof_y = rh - 0.50
+        strategy_y = rh - 0.24
     for i, ((title, desc, proof, strategy), c) in enumerate(zip(usps, accents)):
         y = ry + i * rh
-        add_text(slide, rx, y + title_y, 0.5, 0.4, f"0{i+1}",
-                 font="Trebuchet MS", size=18, bold=True, color=c)
-        add_text(slide, rx + 0.7, y + title_y, rw - 1.2, 0.4, title,
+        add_text(slide, rx, y + title_y, num_col_w, 0.4, f"0{i+1}",
+                 font="Trebuchet MS", size=16, bold=True, color=c)
+        add_text(slide, text_x, y + title_y, text_w, 0.4, title,
                  font="Trebuchet MS", size=title_size, bold=True, color=INK)
-        add_text(slide, rx + 0.7, y + desc_y, rw - 1.2, 0.4, desc,
+        add_text(slide, text_x, y + desc_y, text_w, proof_y - desc_y - 0.02, desc,
                  font="Calibri", size=desc_size, color=MUTED)
-        add_text(slide, rx + 0.7, y + proof_y, rw - 1.2, 0.25, f"\u2192 {proof}",
+        add_text(slide, text_x, y + proof_y, text_w, 0.2, f"\u2192 {proof}",
                  font="Calibri", size=proof_size, bold=True, color=c)
         if strategy:
-            add_text(slide, rx + 0.7, y + strategy_y, rw - 1.2, 0.25, f"\u00bb {strategy}",
+            add_text(slide, text_x, y + strategy_y, text_w, 0.2, f"\u00bb {strategy}",
                      font="Calibri", size=strategy_size, color=INK)
         if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.04, rw, 0.008, HAIR)
+            add_rect(slide, rx, y + rh - 0.06, rw, 0.008, HAIR)
 
     # Footer (locked light pattern)
     add_text(slide, 0.7, 7.1, 12, 0.25,

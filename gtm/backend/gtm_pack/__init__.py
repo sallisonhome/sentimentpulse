@@ -1,6 +1,6 @@
 """GTM Slide Pack rendering engine.
 
-Lifted from the `gtm-slide-pack-kickoff` user skill (v5.0, currency-corrected
+Lifted from the `gtm-slide-pack-kickoff` user skill (v6.0, currency-corrected
 revision — see gtm_revisions_summary.md for full history).
 Exposes callable wrapper functions over the original argparse-driven renderers.
 
@@ -9,14 +9,17 @@ This module wraps each one with a function that accepts a dict of inputs,
 constructs a Namespace, and invokes the underlying renderer functions directly
 (bypassing argparse and sys.exit).
 
-Full 12-slide pack order (output position, NOT internal step numbers):
-  1. Sizing Circle           (render_sizing_circle)
-  2. Median Commercial Potential (render_commercial_potential) -- NEW
-  3. USP / Pillars           (render_usp)
-  4. How We Reach            (render_reach)
-  5-10. Roadmap 4.1-4.6      (render_roadmap)
-  11. Commercial Risks       (render_commercial_risks) -- NEW
-  12. Description & Razors   (render_description_razors) -- NEW
+Full 6-slide pack order (v6.0, output position, NOT internal step numbers):
+  1. Sizing Circle              (render_sizing_circle)
+  2. Median Commercial Potential (render_commercial_potential)
+  3. USP / Pillars              (render_usp)
+  4. Commercial Risks           (render_commercial_risks)
+  5. Description & Razors       (render_description_razors)
+  6. How We Reach               (render_reach)
+
+DROPPED in v6.0 (2026-07-15): Roadmap 4.1-4.6 (render_roadmap). The renderer
+still exists and can be invoked directly for standalone roadmap decks; it is
+no longer part of the assembled pack.
 
 Currency units (do not confuse these -- see gtm_revisions_summary.md):
   - median_revenue_usd_millions: float, MILLIONS of dollars (e.g. 4.7 == $4.7M)
@@ -283,7 +286,7 @@ def render_commercial_potential(inputs: dict[str, Any], theme: str, out_dir: Pat
                                   language: str = "en") -> Path:
     """Render Median Commercial Potential slide. Returns PPTX path.
 
-    Output position 2 in the 12-slide pack (internal skill Step 5).
+    Output position 2 in the 6-slide pack (internal skill Step 5).
 
     Currency units (see gtm_revisions_summary.md for the correction history):
       - inputs["median_revenue_usd_millions"]: float, MILLIONS of dollars.
@@ -331,7 +334,7 @@ def render_commercial_risks(inputs: dict[str, Any], theme: str, out_dir: Path,
                              language: str = "en") -> Path:
     """Render Commercial Risks slide. Returns PPTX path.
 
-    Output position 11 in the 12-slide pack (internal skill Step 6).
+    Output position 4 in the 6-slide pack (internal skill Step 6).
     inputs["risks"]: list of 1-5 {threat_level, proof, mitigation} dicts.
     """
     out_dir = Path(out_dir)
@@ -371,7 +374,7 @@ def render_description_razors(inputs: dict[str, Any], theme: str, out_dir: Path,
                                language: str = "en") -> Path:
     """Render Game Description & Razors slide. Returns PPTX path.
 
-    Output position 12 (last slide) in the 12-slide pack (internal skill Step 7).
+    Output position 5 in the 6-slide pack (internal skill Step 7).
     inputs: accepts EITHER "description_100" (canonical key -- matches
     FormInputs/sample_inputs.py) OR "description" (renderer-script CLI arg
     name / legacy callers) for the ~100-word description. "description_100"
@@ -455,17 +458,16 @@ def render_full_pack(
     phases_override: dict | None = None,
     language: str = "en",
 ) -> Path:
-    """Render the complete 12-slide GTM pack.
+    """Render the complete 6-slide GTM pack (v6.0, roadmap dropped 2026-07-15).
 
-    Returns the path to the merged PPTX containing all 12 slides, in OUTPUT
+    Returns the path to the merged PPTX containing all 6 slides, in OUTPUT
     order (internal skill step numbers differ -- see module docstring):
-      1:     Sizing Circle
-      2:     Median Commercial Potential   (NEW)
-      3:     USP / Pillars
-      4:     How We Reach
-      5-10:  Roadmap (4.1 through 4.6)
-      11:    Commercial Risks               (NEW)
-      12:    Description & Razors           (NEW)
+      1: Sizing Circle
+      2: Median Commercial Potential
+      3: USP / Pillars
+      4: Commercial Risks
+      5: Description & Razors
+      6: How We Reach
 
     inputs must include the fields required by every sub-renderer, notably:
       - median_revenue_usd_millions (float, MILLIONS of dollars)
@@ -483,17 +485,18 @@ def render_full_pack(
     out_dir.mkdir(parents=True, exist_ok=True)
     slug = _slugify(inputs["title"])
 
-    # Resolve release date
-    if release_date is None:
-        rd = inputs.get("release_date")
-        if rd is None:
-            raise ValueError("release_date is required (in inputs or as kwarg)")
-        release_date = dt.date.fromisoformat(rd) if isinstance(rd, str) else rd
+    # release_date is no longer required for the assembled v6.0 pack because
+    # the roadmap (only slide that needed it) was dropped. It's still accepted
+    # (and passed through) so callers that render a standalone roadmap deck
+    # keep working. release_date + phases_override are unused in v6.0.
+    if release_date is not None and isinstance(release_date, str):
+        release_date = dt.date.fromisoformat(release_date)
+    _ = release_date, phases_override  # kept for API stability; unused in v6.0
 
-    # Render the seven sub-decks in parallel (CPU-light, IO-heavy)
+    # Render the six sub-decks in parallel (CPU-light, IO-heavy)
     tmp = Path(tempfile.mkdtemp(prefix="gtm_pack_"))
     try:
-        with ThreadPoolExecutor(max_workers=7) as ex:
+        with ThreadPoolExecutor(max_workers=6) as ex:
             futures = {
                 "sizing":              ex.submit(render_sizing_circle, inputs, theme, tmp,
                                                  language),
@@ -501,8 +504,6 @@ def render_full_pack(
                                                    tmp, language),
                 "usp":                 ex.submit(render_usp, inputs, theme, tmp, language),
                 "reach":               ex.submit(render_reach, inputs, theme, tmp, language),
-                "roadmap":             ex.submit(render_roadmap, inputs, theme, release_date,
-                                                 tmp, phases_override, language),
                 "commercial_risks":    ex.submit(render_commercial_risks, inputs, theme, tmp,
                                                   language),
                 "description_razors":  ex.submit(render_description_razors, inputs, theme,
@@ -510,25 +511,28 @@ def render_full_pack(
             }
             results = {k: f.result() for k, f in futures.items()}
 
-        # Merge in FINAL OUTPUT order (locked, per user direction 2026-07-15):
+        # Merge in FINAL OUTPUT order (v6.0 pack, locked 2026-07-15):
         #   1. sizing
         #   2. commercial_potential
         #   3. usp
-        #   4. commercial_risks       (moved up from position 11 on 2026-07-15)
-        #   5. description_razors     (moved up from position 12 on 2026-07-15)
+        #   4. commercial_risks
+        #   5. description_razors
         #   6. reach
-        #   7-12. roadmap (6 sub-slides)
-        # Rationale for the reorder: put the strategic-positioning slides
-        # (USPs → Risks → Razors) as a contiguous block so the deck reads
-        # "who we are + what could go wrong + how we say it" before the
-        # tactical execution slides (reach + roadmap).
+        # Roadmap (Step 4, 4.1-4.6) was DROPPED from the assembled pack on
+        # 2026-07-15 per user direction. The renderer still exists and can
+        # be invoked directly for one-off roadmap decks, but is no longer
+        # part of the shipped pack. Reasoning: 12 slides was too many for
+        # the audience; a tight 6-slide strategic-positioning pack lands
+        # harder. If we ship the roadmap again later, add "roadmap" back
+        # to this tuple and update the assertion in
+        # tests/test_library_slides.py + the copy in Home.tsx/README.md.
         merged = Presentation()
         merged.slide_width = Inches(13.333)
         merged.slide_height = Inches(7.5)
         # Remove default slide that gets added with blank layout
         for order_key in ("sizing", "commercial_potential", "usp",
                           "commercial_risks", "description_razors",
-                          "reach", "roadmap"):
+                          "reach"):
             src = Presentation(str(results[order_key]))
             for i in range(len(src.slides)):
                 _copy_slide_from(merged, src, i)

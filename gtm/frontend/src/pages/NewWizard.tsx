@@ -6,16 +6,19 @@ import { api } from "../lib/api";
 import { useDeckTheme } from "../lib/theme";
 import type { FormInputs, GameType, InnerRing, Platform, ThreatLevel, Theme } from "../lib/types";
 
+// v6.0 pack (2026-07-15): 6-slide pack. Release date step dropped along
+// with the roadmap slide. release_date is still sent in FormInputs so the
+// backend Pydantic schema stays stable and older library decks re-open;
+// we just default it to a stub value the backend ignores.
 const STEPS = [
   { id: 1, label: "Theme" },
   { id: 2, label: "Game" },
   { id: 3, label: "Cohorts · USPs · Reach" },
-  { id: 4, label: "Release date" },
-  { id: 5, label: "Commercial potential" },
-  { id: 6, label: "Commercial risks" },
-  { id: 7, label: "Description & razors" },
+  { id: 4, label: "Commercial potential" },
+  { id: 5, label: "Commercial risks" },
+  { id: 6, label: "Description & razors" },
 ];
-const LAST_STEP = STEPS.length; // 7
+const LAST_STEP = STEPS.length; // 6
 
 const ALL_PLATFORMS: Platform[] = ["PC", "PS5", "XSX", "SWITCH2"];
 const THREAT_LEVELS: ThreatLevel[] = ["critical", "high", "medium", "low"];
@@ -28,7 +31,10 @@ function emptyInputs(): FormInputs {
     genre: "",
     game_type: "sequel",
     inner: "prev",
-    release_date: "",
+    // v6.0: release_date is unused by the assembled pack (roadmap slide was
+    // dropped) but still lives in FormInputs for backend Pydantic compat.
+    // Stub value keeps validation happy; backend ignores it.
+    release_date: "2099-01-01",
     cohorts: [
       { name: "", size: 0 },
       { name: "", size: 0 },
@@ -151,8 +157,8 @@ export function NewWizard() {
     <div>
       <PageHeader
         eyebrow="New slide pack"
-        title="Build a GTM pack in four steps"
-        subtitle="Each step shapes one section of the 12-slide deck. You can navigate back at any time — your progress is held in the URL."
+        title="Build a GTM pack in six steps"
+        subtitle="Each step shapes one section of the 6-slide deck. You can navigate back at any time — your progress is held in the URL."
         actions={
           <>
             <button className="btn-ghost" onClick={loadDraft} data-testid="button-load-draft">
@@ -168,13 +174,15 @@ export function NewWizard() {
       <Stepper step={step} onJump={goStep} />
 
       <div className="card p-6 md:p-8">
+        {/* v6.0: StepDate removed (used to be step 4). Steps 5-7 renumbered
+            down by one to fill the gap; the internal StepDate component
+            still exists in this file but is no longer wired in. */}
         {step === 1 && <StepTheme inputs={inputs} update={update} />}
         {step === 2 && <StepGame inputs={inputs} update={update} />}
         {step === 3 && <StepCohorts inputs={inputs} update={update} setInputs={setInputs} />}
-        {step === 4 && <StepDate inputs={inputs} update={update} />}
-        {step === 5 && <StepCommercialPotential inputs={inputs} update={update} setInputs={setInputs} />}
-        {step === 6 && <StepCommercialRisks inputs={inputs} update={update} setInputs={setInputs} />}
-        {step === 7 && <StepDescriptionRazors inputs={inputs} update={update} />}
+        {step === 4 && <StepCommercialPotential inputs={inputs} update={update} setInputs={setInputs} />}
+        {step === 5 && <StepCommercialRisks inputs={inputs} update={update} setInputs={setInputs} />}
+        {step === 6 && <StepDescriptionRazors inputs={inputs} update={update} />}
 
         {err && (
           <div className="mt-6">
@@ -1252,8 +1260,9 @@ function isStepValid(step: number, inputs: FormInputs): boolean {
     if (!inputs.reach.every((r) => r.channel.trim() && r.message.trim())) return false;
     return true;
   }
-  if (step === 4) return Boolean(inputs.release_date);
-  if (step === 5) {
+  // v6.0: step 4 = Commercial potential, step 5 = Risks, step 6 = Description & Razors.
+  // Release-date step was dropped along with the roadmap slide.
+  if (step === 4) {
     if (inputs.median_revenue_usd_millions <= 0) return false;
     if (inputs.median_units_sold <= 0) return false;
     if (inputs.avg_price_usd <= 0) return false;
@@ -1261,12 +1270,12 @@ function isStepValid(step: number, inputs: FormInputs): boolean {
     if (!inputs.platforms || inputs.platforms.length < 1) return false;
     return true;
   }
-  if (step === 6) {
+  if (step === 5) {
     if (inputs.risks.length < 1 || inputs.risks.length > 5) return false;
     if (!inputs.risks.every((r) => r.proof.trim() && r.mitigation.trim())) return false;
     return true;
   }
-  if (step === 7) {
+  if (step === 6) {
     return Boolean(
       inputs.description_100.trim() && inputs.razor_20.trim() && inputs.razor_10.trim()
     );

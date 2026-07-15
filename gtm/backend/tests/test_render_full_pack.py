@@ -1,7 +1,8 @@
-"""Acceptance test: render_full_pack produces a 12-slide PPTX in both themes.
+"""Acceptance test: render_full_pack produces a 6-slide PPTX in both themes (v6.0).
 
 Updated for the GTM Studio revisions (Median Commercial Potential, Commercial
-Risks, Description & Razors added -- pack grew from 9 to 12 slides).
+Risks, Description & Razors added). v6.0 (2026-07-15) dropped the roadmap so
+the pack is now 6 slides.
 """
 
 from __future__ import annotations
@@ -25,11 +26,11 @@ def out_dir(tmp_path_factory):
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
-def test_render_full_pack_produces_12_slides(theme, out_dir):
+def test_render_full_pack_produces_6_slides(theme, out_dir):
     pptx = render_full_pack(SAMPLE_INPUTS, theme, out_dir)
     assert pptx.exists()
     prs = Presentation(str(pptx))
-    assert len(prs.slides) == 12, f"Expected 12 slides for {theme}, got {len(prs.slides)}"
+    assert len(prs.slides) == 6, f"Expected 6 slides for {theme}, got {len(prs.slides)}"
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
@@ -45,11 +46,11 @@ def test_no_residual_steam_refs(theme, out_dir):
 
 
 def test_render_pack_with_artifacts_produces_pdf_and_pngs(out_dir):
-    """Full integration: PPTX + PDF + 12 PNGs."""
+    """Full integration: PPTX + PDF + 6 PNGs (v6.0, roadmap dropped)."""
     result = render_pack_with_artifacts(SAMPLE_INPUTS, "dark", out_dir)
     assert result["pptx"].exists()
     assert result["pdf"].exists()
-    assert len(result["pngs"]) == 12
+    assert len(result["pngs"]) == 6
     for png in result["pngs"]:
         assert png.exists()
         assert png.stat().st_size > 10_000  # at least 10KB each

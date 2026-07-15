@@ -134,7 +134,7 @@ export type SlidesResponse = {
   deck_id: string;
   title: string;
   theme: Theme;
-  slide_count: number; // 12 slides per theme (locked 2026-07-15)
+  slide_count: number; // 6 slides per theme (v6.0, locked 2026-07-15)
   pngs: string[];
   // Phase 4: language of THIS deck, plus cross-links in both directions --
   // translated_from_deck_id (RU deck -> its EN source, null for EN decks)

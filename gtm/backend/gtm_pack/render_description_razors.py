@@ -53,6 +53,25 @@ def word_count(text: str) -> int:
     return len(text.split())
 
 
+def fit_hero_pt(text: str, width_in: float, base_pt: int = 36, min_pt: int = 22) -> int:
+    """Return a Trebuchet MS Bold font size (pt) that keeps `text` on ONE line
+    within `width_in` inches. Trebuchet Bold at N pt averages ~0.036*N inches
+    per character (calibrated empirically against python-pptx output). We shrink
+    down toward min_pt in 2pt steps until it fits; if even min_pt overflows we
+    return min_pt (caller accepts the wrap).
+    """
+    if not text:
+        return base_pt
+    n_chars = len(text)
+    pt = base_pt
+    while pt >= min_pt:
+        est_width = n_chars * 0.036 * pt
+        if est_width <= width_in * 0.94:  # 6% safety margin for kerning
+            return pt
+        pt -= 2
+    return min_pt
+
+
 # ---------- shape primitives ----------
 def add_rect(slide, x, y, w, h, fill, line=None):
     s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
@@ -168,35 +187,43 @@ def render_dark(args, counts, out_path):
 
     cx, cw = 0.6, 12.13
 
-    # Card 1 -- 100-word description
-    y1, h1 = 2.15, 1.85
-    add_rect(slide, cx, y1, cw, h1, SURFACE)
-    add_rect(slide, cx, y1, 0.06, h1, ACCENT)
-    add_text(slide, cx + 0.35, y1 + 0.2, cw - 2, 0.3, "100-WORD DESCRIPTION",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
-    add_pill(slide, cx + cw - 0.3, y1 + 0.18, f"{wc_desc} words", fill=BORDER, text_color=INK)
-    add_text(slide, cx + 0.35, y1 + 0.55, cw - 0.7, h1 - 0.75, args.description,
-             font="Calibri", size=body_pt(L, 11), color=INK)
+    # Context block -- the 100-word description is de-emphasized (smaller
+    # type, no card/border, tightly capped height) since the razors below
+    # are the payoff. This is context, not the headline.
+    ctx_y = 2.05
+    add_text(slide, cx, ctx_y, cw, 0.3, "CONTEXT \u00b7 100-WORD DESCRIPTION",
+             font="Calibri", size=body_pt(L, 9), bold=True, color=MUTED)
+    add_text(slide, cx, ctx_y + 0.32, cw - 1.1, 0.85, args.description,
+             font="Calibri", size=body_pt(L, 10.5), color=MUTED)
+    add_pill(slide, cx + cw, ctx_y, f"{wc_desc} words", fill=SURFACE, text_color=MUTED)
 
-    # Card 2 -- 20-word razor / tagline
-    y2, h2 = y1 + h1 + 0.25, 1.15
-    add_rect(slide, cx, y2, cw, h2, SURFACE)
-    add_rect(slide, cx, y2, 0.06, h2, ACCENT)
-    add_text(slide, cx + 0.35, y2 + 0.16, cw - 2, 0.3, "20-WORD RAZOR / TAGLINE",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
-    add_pill(slide, cx + cw - 0.3, y2 + 0.14, f"{wc_r20} words", fill=BORDER, text_color=INK)
-    add_text(slide, cx + 0.35, y2 + 0.48, cw - 0.7, 0.6, args.razor_20,
-             font="Trebuchet MS", size=16, bold=True, color=INK)
+    # Divider between context and the razor payoff
+    div_y = ctx_y + 1.28
+    add_rect(slide, cx, div_y, cw, 0.012, BORDER)
+    add_text(slide, cx, div_y + 0.16, cw, 0.28, "THE RAZORS",
+             font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
 
-    # Card 3 -- 10-word razor -- hero line
-    y3, h3 = y2 + h2 + 0.25, 1.15
-    add_rect(slide, cx, y3, cw, h3, SURFACE)
-    add_rect(slide, cx, y3, 0.06, h3, ACCENT)
-    add_text(slide, cx + 0.35, y3 + 0.16, cw - 2, 0.3, "10-WORD RAZOR / SHORT TAGLINE",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
-    add_pill(slide, cx + cw - 0.3, y3 + 0.14, f"{wc_r10} words", fill=BORDER, text_color=INK)
-    add_text(slide, cx + 0.35, y3 + 0.42, cw - 0.7, 0.65, args.razor_10,
-             font="Trebuchet MS", size=22, bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
+    # 20-word razor -- secondary payoff, medium size, centered. Word count
+    # is a small centered caption below the line (not a floating pill) so
+    # it never competes with the centered text for horizontal space.
+    r20_y = div_y + 0.62
+    add_text(slide, cx, r20_y, cw, 0.75, args.razor_20,
+             font="Trebuchet MS", size=22, bold=True, color=INK, align=PP_ALIGN.CENTER)
+    add_text(slide, cx, r20_y + 0.62, cw, 0.22, f"{wc_r20} words \u00b7 tagline",
+             font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
+
+    # 10-word razor -- the hero line, largest and most dominant element.
+    # Auto-shrink to keep it on ONE line -- a wrapped hero line breaks the
+    # visual hierarchy that makes this slide work.
+    r10_y = r20_y + 1.05
+    # Start at 44pt so that even after shrinking to fit a long 10-word razor,
+    # the hero remains visibly larger than the 22pt 20-word tagline. Min 26pt
+    # (4pt above the 20-word) so hierarchy is preserved even in worst case.
+    r10_pt = fit_hero_pt(args.razor_10, cw, base_pt=44, min_pt=26)
+    add_text(slide, cx, r10_y, cw, 1.1, args.razor_10,
+             font="Trebuchet MS", size=r10_pt, bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
+    add_text(slide, cx, r10_y + 1.12, cw, 0.22, f"{wc_r10} words \u00b7 hero tagline",
+             font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
 
     add_text(slide, 0.6, 7.1, 12, 0.25,
              "GTM SLIDE PACK \u00b7 STEP 07",
@@ -237,32 +264,35 @@ def render_light(args, counts, out_path):
 
     cx, cw = 0.7, 12.0
 
-    # Card 1 -- 100-word description
-    y1, h1 = 2.2, 1.85
-    add_rect(slide, cx, y1, cw, h1, BG, line=HAIR)
-    add_text(slide, cx + 0.3, y1 + 0.2, cw - 2, 0.3, "100-WORD DESCRIPTION",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
-    add_pill(slide, cx + cw - 0.25, y1 + 0.18, f"{wc_desc} words", fill=PILLBG, text_color=INK)
-    add_text(slide, cx + 0.3, y1 + 0.55, cw - 0.6, h1 - 0.75, args.description,
-             font="Calibri", size=body_pt(L, 11), color=INK)
+    # Context block -- de-emphasized 100-word description
+    ctx_y = 2.1
+    add_text(slide, cx, ctx_y, cw, 0.3, "CONTEXT \u00b7 100-WORD DESCRIPTION",
+             font="Calibri", size=body_pt(L, 9), bold=True, color=MUTED)
+    add_text(slide, cx, ctx_y + 0.32, cw - 1.1, 0.85, args.description,
+             font="Calibri", size=body_pt(L, 10.5), color=MUTED)
+    add_pill(slide, cx + cw, ctx_y, f"{wc_desc} words", fill=PILLBG, text_color=INK)
 
-    # Card 2 -- 20-word razor / tagline
-    y2, h2 = y1 + h1 + 0.25, 1.15
-    add_rect(slide, cx, y2, cw, h2, BG, line=HAIR)
-    add_text(slide, cx + 0.3, y2 + 0.16, cw - 2, 0.3, "20-WORD RAZOR / TAGLINE",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
-    add_pill(slide, cx + cw - 0.25, y2 + 0.14, f"{wc_r20} words", fill=PILLBG, text_color=INK)
-    add_text(slide, cx + 0.3, y2 + 0.48, cw - 0.6, 0.6, args.razor_20,
-             font="Trebuchet MS", size=16, bold=True, color=INK)
+    # Divider between context and the razor payoff
+    div_y = ctx_y + 1.28
+    add_rect(slide, cx, div_y, cw, 0.012, HAIR)
+    add_text(slide, cx, div_y + 0.16, cw, 0.28, "THE RAZORS",
+             font="Calibri", size=body_pt(L, 10), bold=True, color=C3, align=PP_ALIGN.CENTER)
 
-    # Card 3 -- 10-word razor -- hero line
-    y3, h3 = y2 + h2 + 0.25, 1.15
-    add_rect(slide, cx, y3, cw, h3, BG, line=HAIR)
-    add_text(slide, cx + 0.3, y3 + 0.16, cw - 2, 0.3, "10-WORD RAZOR / SHORT TAGLINE",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
-    add_pill(slide, cx + cw - 0.25, y3 + 0.14, f"{wc_r10} words", fill=PILLBG, text_color=INK)
-    add_text(slide, cx + 0.3, y3 + 0.42, cw - 0.6, 0.65, args.razor_10,
-             font="Trebuchet MS", size=22, bold=True, color=C3, align=PP_ALIGN.CENTER)
+    # 20-word razor -- secondary payoff, medium size, centered
+    r20_y = div_y + 0.62
+    add_text(slide, cx, r20_y, cw, 0.75, args.razor_20,
+             font="Trebuchet MS", size=22, bold=True, color=INK, align=PP_ALIGN.CENTER)
+    add_text(slide, cx, r20_y + 0.62, cw, 0.22, f"{wc_r20} words \u00b7 tagline",
+             font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
+
+    # 10-word razor -- the hero line. See render_dark() for the rationale on
+    # auto-shrinking; same logic here for the LIGHT theme.
+    r10_y = r20_y + 1.05
+    r10_pt = fit_hero_pt(args.razor_10, cw, base_pt=44, min_pt=26)
+    add_text(slide, cx, r10_y, cw, 1.1, args.razor_10,
+             font="Trebuchet MS", size=r10_pt, bold=True, color=C3, align=PP_ALIGN.CENTER)
+    add_text(slide, cx, r10_y + 1.12, cw, 0.22, f"{wc_r10} words \u00b7 hero tagline",
+             font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
 
     add_text(slide, 0.7, 7.1, 12, 0.25,
              "GTM Slide Pack \u00b7 Step 07",

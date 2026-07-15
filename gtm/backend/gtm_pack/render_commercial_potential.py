@@ -184,74 +184,76 @@ def render_dark(args, out_path):
              f"Genre benchmark \u00b7 {args.genre} \u00b7 comp set: {args.comp_set_name}",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
-    # ---- Left column: KPI cards ----
-    # subcopy is only set for the revenue card ("in millions"); other cards
-    # leave it as None (no third line rendered).
-    kpis = [
-        ("MEDIAN REVENUE (COMP SET)", fmt_dollars_2dp(args.median_revenue_usd_millions), A4, "in millions"),
-        ("MEDIAN UNITS SOLD (COMP SET)", fmt_units(args.median_units_sold), A3, None),
-        ("AVG PRICE (COMP SET)", fmt_price(args.avg_price_usd), A4, None),
-        ("AVG HOURS PLAYED (COMP SET)", f"{args.avg_hours_played:.1f} hrs", A3, None),
+    # ---- Hero: median revenue is the headline number, set in plain
+    # typographic hierarchy (no card/border) so it reads as THE answer to
+    # "what can this game make", with the other three KPIs demoted to a
+    # calmer supporting row underneath, separated only by hairlines.
+    hero_x, hero_y = 0.6, 2.35
+    add_text(slide, hero_x, hero_y, 6.0, 0.3, "MEDIAN REVENUE \u00b7 COMP SET",
+             font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
+    add_text(slide, hero_x, hero_y + 0.32, 6.0, 0.95, fmt_dollars_2dp(args.median_revenue_usd_millions),
+             font="Trebuchet MS", size=54, bold=True, color=A4)
+    add_text(slide, hero_x, hero_y + 1.28, 6.0, 0.3, "in millions of USD",
+             font="Calibri", size=body_pt(L, 10), color=MUTED)
+
+    # Supporting KPI row: three simple stat columns, hairline above only
+    sup_y = hero_y + 1.72
+    add_rect(slide, hero_x, sup_y, 5.9, 0.008, BORDER)
+    sup_kpis = [
+        ("MEDIAN UNITS SOLD", fmt_units(args.median_units_sold)),
+        ("AVG PRICE", fmt_price(args.avg_price_usd)),
+        ("AVG HOURS PLAYED", f"{args.avg_hours_played:.1f} hrs"),
     ]
-    lx, ly = 0.6, 2.3
-    lw = 5.7
-    lh = 0.95
-    gap = 0.12
-    for i, (label, val, accent, subcopy) in enumerate(kpis):
-        y = ly + i * (lh + gap)
-        add_rect(slide, lx, y, lw, lh, SURFACE)
-        add_rect(slide, lx, y, 0.06, lh, accent)
-        add_text(slide, lx + 0.3, y + 0.13, lw - 0.5, 0.3, label,
+    sup_col_w = 1.97
+    for i, (label, val) in enumerate(sup_kpis):
+        x = hero_x + i * sup_col_w
+        add_text(slide, x, sup_y + 0.2, sup_col_w - 0.2, 0.55, label,
                  font="Calibri", size=body_pt(L, 9), bold=True, color=MUTED)
-        add_text(slide, lx + 0.3, y + 0.42, lw - 0.5, 0.45, val,
-                 font="Trebuchet MS", size=20, bold=True, color=INK)
-        if subcopy:
-            add_text(slide, lx + 0.3, y + 0.72, lw - 0.5, 0.2, subcopy,
-                     font="Calibri", size=body_pt(L, 9), color=MUTED)
+        add_text(slide, x, sup_y + 0.52, sup_col_w - 0.2, 0.45, val,
+                 font="Trebuchet MS", size=19, bold=True, color=INK)
 
     # ---- Right column: platform projection table ----
-    rx, ry = 6.7, 2.3
-    rw = 6.0
-    header_h = 0.35
-    add_rect(slide, rx, ry, rw, header_h, SURFACE)
-    headers = ["PLATFORM", "SHARE", "PROJECTED REVENUE", "PROJECTED UNITS"]
-    col_x = [rx + 0.15, rx + 1.6, rx + 2.55, rx + 4.35]
-    col_w = [1.4, 0.9, 1.75, 1.6]
+    # Hairline-row table, no header box, no alternating shading -- reads
+    # calmer and lets the revenue column (right-aligned) breathe.
+    rx, ry = 7.05, 2.35
+    rw = 5.65
+    add_text(slide, rx, ry, 2.4, 0.3, "PROJECTED BY PLATFORM",
+             font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
+    header_h = 0.5
+    headers = ["PLATFORM", "SHARE", "REVENUE", "UNITS"]
+    col_x = [rx, rx + 1.55, rx + 2.75, rx + 4.15]
+    col_w = [1.45, 1.1, 1.3, 1.5]
+    hy = ry + 0.4
     for h_text, cx, cw in zip(headers, col_x, col_w):
-        add_text(slide, cx, ry + 0.07, cw, 0.25, h_text,
-                 font="Calibri", size=body_pt(L, 8), bold=True, color=ACCENT)
+        add_text(slide, cx, hy, cw, 0.25, h_text,
+                 font="Calibri", size=body_pt(L, 8), bold=True, color=ACCENT,
+                 align=(PP_ALIGN.LEFT if h_text == "PLATFORM" else PP_ALIGN.RIGHT))
+    add_rect(slide, rx, hy + 0.3, rw, 0.012, BORDER)
 
-    row_h = 0.55
+    row_h = 0.62
+    table_top = hy + 0.42
     for i, (plat, share) in enumerate(shares):
-        y = ry + header_h + i * row_h
-        if i % 2 == 0:
-            add_rect(slide, rx, y, rw, row_h, SURFACE)
+        y = table_top + i * row_h
         rev_millions = args.median_revenue_usd_millions * (share / 100.0)
         units = int(round(args.median_units_sold * (share / 100.0)))
-        add_text(slide, col_x[0], y + 0.14, col_w[0], 0.3, plat,
-                 font="Trebuchet MS", size=13, bold=True, color=INK)
+        add_text(slide, col_x[0], y + 0.1, col_w[0], 0.35, plat,
+                 font="Trebuchet MS", size=15, bold=True, color=INK)
         add_text(slide, col_x[1], y + 0.14, col_w[1], 0.3, f"{share:.1f}%",
-                 font="Calibri", size=body_pt(L, 12), color=MUTED)
-        add_text(slide, col_x[2], y + 0.14, col_w[2], 0.3, fmt_dollars_2dp(rev_millions),
-                 font="Trebuchet MS", size=13, bold=True, color=A4)
+                 font="Calibri", size=body_pt(L, 11), color=MUTED, align=PP_ALIGN.RIGHT)
+        add_text(slide, col_x[2], y + 0.1, col_w[2], 0.35, fmt_dollars_2dp(rev_millions),
+                 font="Trebuchet MS", size=15, bold=True, color=A4, align=PP_ALIGN.RIGHT)
         add_text(slide, col_x[3], y + 0.14, col_w[3], 0.3, fmt_units(units),
-                 font="Calibri", size=body_pt(L, 12), color=MUTED)
-        add_rect(slide, rx, y + row_h - 0.005, rw, 0.006, BORDER)
+                 font="Calibri", size=body_pt(L, 11), color=MUTED, align=PP_ALIGN.RIGHT)
+        if i < len(shares) - 1:
+            add_rect(slide, rx, y + row_h - 0.06, rw, 0.008, BORDER)
 
-    table_bottom = ry + header_h + len(shares) * row_h
+    table_bottom = table_top + len(shares) * row_h
 
-    # Unit-clarity subcopy for the Projected Revenue column (values in the
-    # table are bare "$X.XX" -- this line communicates the millions-of-USD
-    # unit without cluttering every row).
-    add_text(slide, rx, table_bottom + 0.06, rw, 0.2,
-             "Projected revenue shown in millions of USD",
-             font="Calibri", size=body_pt(L, 8), italic=True, color=MUTED)
-
-    # Footer strip (attribution) below the tables
-    n_titles = args.comp_set_name
-    add_text(slide, rx, table_bottom + 0.28, rw, 0.6,
-             (f"Projections anchored by Genre Pulse comp-set medians ({args.comp_set_titles} titles). "
-              f"PC-only projections cap at 100% of PC-only revenue potential."),
+    # Unit-clarity + attribution, combined into one calmer line
+    add_text(slide, rx, table_bottom + 0.12, rw, 0.5,
+             (f"Revenue in millions of USD. Anchored by Genre Pulse comp-set "
+              f"medians ({args.comp_set_titles} titles); PC-only caps at 100% "
+              f"of PC-only potential."),
              font="Calibri", size=body_pt(L, 8), italic=True, color=MUTED)
 
     # Standard footer
@@ -294,66 +296,69 @@ def render_light(args, out_path):
              f"Genre benchmark \u00b7 {args.genre} \u00b7 comp set: {args.comp_set_name}",
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
-    # ---- Left column: KPI cards ----
-    kpis = [
-        ("MEDIAN REVENUE (COMP SET)", fmt_dollars_2dp(args.median_revenue_usd_millions), C4, "in millions"),
-        ("MEDIAN UNITS SOLD (COMP SET)", fmt_units(args.median_units_sold), C3, None),
-        ("AVG PRICE (COMP SET)", fmt_price(args.avg_price_usd), C4, None),
-        ("AVG HOURS PLAYED (COMP SET)", f"{args.avg_hours_played:.1f} hrs", C3, None),
+    # ---- Hero: median revenue is the headline number ----
+    hero_x, hero_y = 0.7, 2.45
+    add_text(slide, hero_x, hero_y, 6.0, 0.3, "MEDIAN REVENUE \u00b7 COMP SET",
+             font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
+    add_text(slide, hero_x, hero_y + 0.32, 6.0, 0.95, fmt_dollars_2dp(args.median_revenue_usd_millions),
+             font="Trebuchet MS", size=54, bold=True, color=C2)
+    add_text(slide, hero_x, hero_y + 1.28, 6.0, 0.3, "in millions of USD",
+             font="Calibri", size=body_pt(L, 10), color=MUTED)
+
+    # Supporting KPI row: three simple stat columns, hairline above only
+    sup_y = hero_y + 1.72
+    add_rect(slide, hero_x, sup_y, 5.8, 0.008, HAIR)
+    sup_kpis = [
+        ("MEDIAN UNITS SOLD", fmt_units(args.median_units_sold)),
+        ("AVG PRICE", fmt_price(args.avg_price_usd)),
+        ("AVG HOURS PLAYED", f"{args.avg_hours_played:.1f} hrs"),
     ]
-    lx, ly = 0.7, 2.4
-    lw = 5.6
-    lh = 0.95
-    gap = 0.12
-    for i, (label, val, accent, subcopy) in enumerate(kpis):
-        y = ly + i * (lh + gap)
-        add_rect(slide, lx, y, lw, lh, BG, line=HAIR)
-        add_rect(slide, lx, y, 0.08, lh, accent)
-        add_text(slide, lx + 0.3, y + 0.13, lw - 0.5, 0.3, label,
+    sup_col_w = 1.93
+    for i, (label, val) in enumerate(sup_kpis):
+        x = hero_x + i * sup_col_w
+        add_text(slide, x, sup_y + 0.2, sup_col_w - 0.2, 0.55, label,
                  font="Calibri", size=body_pt(L, 9), bold=True, color=MUTED)
-        add_text(slide, lx + 0.3, y + 0.42, lw - 0.5, 0.45, val,
-                 font="Trebuchet MS", size=20, bold=True, color=INK)
-        if subcopy:
-            add_text(slide, lx + 0.3, y + 0.72, lw - 0.5, 0.2, subcopy,
-                     font="Calibri", size=body_pt(L, 9), color=MUTED)
+        add_text(slide, x, sup_y + 0.52, sup_col_w - 0.2, 0.45, val,
+                 font="Trebuchet MS", size=19, bold=True, color=INK)
 
     # ---- Right column: platform projection table ----
-    rx, ry = 6.8, 2.4
-    rw = 5.8
-    header_h = 0.35
-    add_rect(slide, rx, ry, rw, header_h, BG, line=HAIR)
-    headers = ["PLATFORM", "SHARE", "PROJECTED REVENUE", "PROJECTED UNITS"]
-    col_x = [rx + 0.15, rx + 1.55, rx + 2.5, rx + 4.25]
-    col_w = [1.35, 0.9, 1.7, 1.5]
+    rx, ry = 7.1, 2.45
+    rw = 5.5
+    add_text(slide, rx, ry, 2.4, 0.3, "PROJECTED BY PLATFORM",
+             font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
+    headers = ["PLATFORM", "SHARE", "REVENUE", "UNITS"]
+    col_x = [rx, rx + 1.5, rx + 2.65, rx + 4.0]
+    col_w = [1.4, 1.05, 1.25, 1.5]
+    hy = ry + 0.4
     for h_text, cx, cw in zip(headers, col_x, col_w):
-        add_text(slide, cx, ry + 0.07, cw, 0.25, h_text,
-                 font="Calibri", size=body_pt(L, 8), bold=True, color=C3)
+        add_text(slide, cx, hy, cw, 0.25, h_text,
+                 font="Calibri", size=body_pt(L, 8), bold=True, color=C3,
+                 align=(PP_ALIGN.LEFT if h_text == "PLATFORM" else PP_ALIGN.RIGHT))
+    add_rect(slide, rx, hy + 0.3, rw, 0.012, HAIR)
 
-    row_h = 0.55
+    row_h = 0.62
+    table_top = hy + 0.42
     for i, (plat, share) in enumerate(shares):
-        y = ry + header_h + i * row_h
+        y = table_top + i * row_h
         rev_millions = args.median_revenue_usd_millions * (share / 100.0)
         units = int(round(args.median_units_sold * (share / 100.0)))
-        add_text(slide, col_x[0], y + 0.14, col_w[0], 0.3, plat,
-                 font="Trebuchet MS", size=13, bold=True, color=INK)
+        add_text(slide, col_x[0], y + 0.1, col_w[0], 0.35, plat,
+                 font="Trebuchet MS", size=15, bold=True, color=INK)
         add_text(slide, col_x[1], y + 0.14, col_w[1], 0.3, f"{share:.1f}%",
-                 font="Calibri", size=body_pt(L, 12), color=MUTED)
-        add_text(slide, col_x[2], y + 0.14, col_w[2], 0.3, fmt_dollars_2dp(rev_millions),
-                 font="Trebuchet MS", size=13, bold=True, color=C2)
+                 font="Calibri", size=body_pt(L, 11), color=MUTED, align=PP_ALIGN.RIGHT)
+        add_text(slide, col_x[2], y + 0.1, col_w[2], 0.35, fmt_dollars_2dp(rev_millions),
+                 font="Trebuchet MS", size=15, bold=True, color=C2, align=PP_ALIGN.RIGHT)
         add_text(slide, col_x[3], y + 0.14, col_w[3], 0.3, fmt_units(units),
-                 font="Calibri", size=body_pt(L, 12), color=MUTED)
-        add_rect(slide, rx, y + row_h - 0.005, rw, 0.006, HAIR)
+                 font="Calibri", size=body_pt(L, 11), color=MUTED, align=PP_ALIGN.RIGHT)
+        if i < len(shares) - 1:
+            add_rect(slide, rx, y + row_h - 0.06, rw, 0.008, HAIR)
 
-    table_bottom = ry + header_h + len(shares) * row_h
+    table_bottom = table_top + len(shares) * row_h
 
-    # Unit-clarity subcopy for the Projected Revenue column.
-    add_text(slide, rx, table_bottom + 0.06, rw, 0.2,
-             "Projected revenue shown in millions of USD",
-             font="Calibri", size=body_pt(L, 8), italic=True, color=MUTED)
-
-    add_text(slide, rx, table_bottom + 0.28, rw, 0.6,
-             (f"Projections anchored by Genre Pulse comp-set medians ({args.comp_set_titles} titles). "
-              f"PC-only projections cap at 100% of PC-only revenue potential."),
+    add_text(slide, rx, table_bottom + 0.12, rw, 0.5,
+             (f"Revenue in millions of USD. Anchored by Genre Pulse comp-set "
+              f"medians ({args.comp_set_titles} titles); PC-only caps at 100% "
+              f"of PC-only potential."),
              font="Calibri", size=body_pt(L, 8), italic=True, color=MUTED)
 
     add_text(slide, 0.7, 7.1, 12, 0.25,

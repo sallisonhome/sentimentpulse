@@ -174,56 +174,72 @@ def render_dark(args, risks, out_path):
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
     # ---- Left wedge ----
-    add_text(slide, 0.6, 2.5, 5.4, 0.3, "THE WEDGE",
+    # Narrower wedge column (was 5.4in) frees up room for the risk list at
+    # 5 items, which is the tightest case. The wedge is a manifesto anchor,
+    # not a full column -- it reads fine narrower since it's short lines.
+    wedge_w = 4.7
+    add_text(slide, 0.6, 2.5, wedge_w, 0.3, "THE WEDGE",
              font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
     wedge_lines = (args.wedge.split("|") if args.wedge else [
         "Every launch has drag.",
         "We name it so we can plan",
         "around it.",
     ])
-    add_text(slide, 0.6, 2.85, 5.4, 3.5,
+    add_text(slide, 0.6, 2.85, wedge_w, 3.5,
              [ln.strip() for ln in wedge_lines],
-             font="Trebuchet MS", size=28, bold=True, color=INK)
-    add_text(slide, 0.6, 5.6, 5.4, 0.8,
+             font="Trebuchet MS", size=26, bold=True, color=INK)
+    add_text(slide, 0.6, 5.6, wedge_w, 0.8,
              args.wedge_support or
              "Each risk below is tracked with a named owner and a concrete mitigation.",
              font="Calibri", size=body_pt(L, 12), color=MUTED)
 
     # ---- Right list ----
-    rx, ry = 6.6, 2.4
-    rw = 6.2
+    # Pill now sits INLINE to the left of the proof line (same row) instead
+    # of stacked above it -- this is what was causing the proof/mitigation
+    # text of one row to collide with the next row's pill at n=5. Each row
+    # now gets generous, evenly divided height with a hairline between.
+    rx, ry = 5.75, 2.35
+    rw = 7.05
     n = len(risks)
-    list_h = 7.1 - ry - 0.25
+    list_h = 7.1 - ry - 0.2
     rh = list_h / n
-    proof_size = body_pt(L, 8 if n == 5 else 9)
-    mitigation_size = body_pt(L, 8 if n == 5 else 9)
-    pill_y = 0.0
-    proof_y = 0.42 if n == 5 else (0.50 if n == 4 else 0.55)
-    mitigation_y = 0.66 if n == 5 else (0.80 if n == 4 else 0.90)
+    pill_col_w = 1.05
+    text_x = rx + pill_col_w
+    text_w = rw - pill_col_w
+    proof_size = body_pt(L, 11 if n <= 3 else (10 if n == 4 else 9.5))
+    mitigation_size = body_pt(L, 10 if n <= 3 else (9.5 if n == 4 else 9))
+    row_pad_top = 0.16
+    proof_y = row_pad_top
+    # Give proof 2 lines of room before mitigation starts
+    gap_between = 0.62 if n <= 3 else (0.52 if n == 4 else 0.44)
+    mitigation_y = proof_y + gap_between
     for i, (level, proof, mitigation) in enumerate(risks):
         y = ry + i * rh
         c = level_color(level, "dark")
-        # Threat-level pill
-        pill_w = 0.18 + 0.10 * len(level)
-        pill = add_rect(slide, rx, y + pill_y, pill_w, 0.28, c)
+        # Threat-level pill, vertically centered against the proof line's
+        # first line of text, sitting in its own column to the left.
+        pill_w = 0.9
+        pill_h = 0.30
+        pill = add_rect(slide, rx, y + proof_y - 0.02, pill_w, pill_h, c)
         tf = pill.text_frame
-        tf.margin_left = tf.margin_right = Emu(45720)
-        tf.margin_top = tf.margin_bottom = Emu(9144)
+        tf.margin_left = tf.margin_right = Emu(0)
+        tf.margin_top = tf.margin_bottom = Emu(0)
         tf.word_wrap = False
         p = tf.paragraphs[0]
         p.alignment = PP_ALIGN.CENTER
         r = p.add_run()
         r.text = level
         r.font.name = "Trebuchet MS"
-        r.font.size = Pt(10)
+        r.font.size = Pt(9.5)
         r.font.bold = True
         r.font.color.rgb = BG
-        add_text(slide, rx + 0.7, y + proof_y, rw - 1.2, 0.25, f"\u2192 {proof}",
+        add_text(slide, text_x, y + proof_y, text_w, gap_between - 0.06, f"\u2192 {proof}",
                  font="Calibri", size=proof_size, bold=True, color=c)
-        add_text(slide, rx + 0.7, y + mitigation_y, rw - 1.2, 0.25, f"\u00bb {mitigation}",
+        add_text(slide, text_x, y + mitigation_y, text_w, rh - mitigation_y - 0.12,
+                 f"\u00bb {mitigation}",
                  font="Calibri", size=mitigation_size, color=INK)
         if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.04, rw, 0.008, BORDER)
+            add_rect(slide, rx, y + rh - 0.06, rw, 0.008, BORDER)
 
     # Footer (locked dark pattern)
     add_text(slide, 0.6, 7.1, 12, 0.25,
@@ -263,55 +279,62 @@ def render_light(args, risks, out_path):
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
     # ---- Left wedge ----
-    add_text(slide, 0.7, 2.6, 5.4, 0.3, "THE WEDGE",
+    wedge_w = 4.8
+    add_text(slide, 0.7, 2.6, wedge_w, 0.3, "THE WEDGE",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     wedge_lines = (args.wedge.split("|") if args.wedge else [
         "Every launch has drag.",
         "We name it so we can plan",
         "around it.",
     ])
-    add_text(slide, 0.7, 2.95, 5.4, 3.5,
+    add_text(slide, 0.7, 2.95, wedge_w, 3.5,
              [ln.strip() for ln in wedge_lines],
-             font="Trebuchet MS", size=28, bold=True, color=INK)
-    add_text(slide, 0.7, 5.7, 5.4, 0.8,
+             font="Trebuchet MS", size=26, bold=True, color=INK)
+    add_text(slide, 0.7, 5.7, wedge_w, 0.8,
              args.wedge_support or
              "Each risk below is tracked with a named owner and a concrete mitigation.",
              font="Calibri", size=body_pt(L, 12), color=MUTED)
 
     # ---- Right list ----
-    rx, ry = 6.7, 2.5
-    rw = 6.0
+    rx, ry = 5.85, 2.45
+    rw = 6.85
     n = len(risks)
-    list_h = 7.1 - ry - 0.25
+    list_h = 7.1 - ry - 0.2
     rh = list_h / n
-    proof_size = body_pt(L, 8 if n == 5 else 9)
-    mitigation_size = body_pt(L, 8 if n == 5 else 9)
-    pill_y = 0.0
-    proof_y = 0.42 if n == 5 else (0.50 if n == 4 else 0.55)
-    mitigation_y = 0.66 if n == 5 else (0.80 if n == 4 else 0.90)
+    pill_col_w = 1.05
+    text_x = rx + pill_col_w
+    text_w = rw - pill_col_w
+    proof_size = body_pt(L, 11 if n <= 3 else (10 if n == 4 else 9.5))
+    mitigation_size = body_pt(L, 10 if n <= 3 else (9.5 if n == 4 else 9))
+    row_pad_top = 0.16
+    proof_y = row_pad_top
+    gap_between = 0.62 if n <= 3 else (0.52 if n == 4 else 0.44)
+    mitigation_y = proof_y + gap_between
     for i, (level, proof, mitigation) in enumerate(risks):
         y = ry + i * rh
         c = level_color(level, "light")
-        pill_w = 0.18 + 0.10 * len(level)
-        pill = add_rect(slide, rx, y + pill_y, pill_w, 0.28, c)
+        pill_w = 0.9
+        pill_h = 0.30
+        pill = add_rect(slide, rx, y + proof_y - 0.02, pill_w, pill_h, c)
         tf = pill.text_frame
-        tf.margin_left = tf.margin_right = Emu(45720)
-        tf.margin_top = tf.margin_bottom = Emu(9144)
+        tf.margin_left = tf.margin_right = Emu(0)
+        tf.margin_top = tf.margin_bottom = Emu(0)
         tf.word_wrap = False
         p = tf.paragraphs[0]
         p.alignment = PP_ALIGN.CENTER
         r = p.add_run()
         r.text = level
         r.font.name = "Trebuchet MS"
-        r.font.size = Pt(10)
+        r.font.size = Pt(9.5)
         r.font.bold = True
         r.font.color.rgb = BG
-        add_text(slide, rx + 0.7, y + proof_y, rw - 1.2, 0.25, f"\u2192 {proof}",
+        add_text(slide, text_x, y + proof_y, text_w, gap_between - 0.06, f"\u2192 {proof}",
                  font="Calibri", size=proof_size, bold=True, color=c)
-        add_text(slide, rx + 0.7, y + mitigation_y, rw - 1.2, 0.25, f"\u00bb {mitigation}",
+        add_text(slide, text_x, y + mitigation_y, text_w, rh - mitigation_y - 0.12,
+                 f"\u00bb {mitigation}",
                  font="Calibri", size=mitigation_size, color=INK)
         if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.04, rw, 0.008, HAIR)
+            add_rect(slide, rx, y + rh - 0.06, rw, 0.008, HAIR)
 
     # Footer (locked light pattern)
     add_text(slide, 0.7, 7.1, 12, 0.25,

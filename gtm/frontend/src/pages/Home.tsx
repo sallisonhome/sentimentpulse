@@ -53,7 +53,7 @@ export function Home() {
       <PageHeader
         eyebrow="GTM Studio"
         title="Generate Go-to-Market slide pack foundations in less than 5 minutes that you can edit to final quickly"
-        subtitle="Answer a seven-step questionnaire about your game, audiences, commercial context, USPs, risks, and release date. GTM Studio renders a 12-slide pack — audience tiers, commercial potential, USPs, risks, description & razors, reach plan, and a 12-month work-back roadmap — ready to download as PPTX or PDF, with a one-click Russian translation option."
+        subtitle="Answer a six-step questionnaire about your game, audiences, commercial context, USPs, and risks. GTM Studio renders a 6-slide strategic-positioning pack — audience tiers, commercial potential, USPs, risks, description & razors, and reach plan — ready to download as PPTX or PDF, with a one-click Russian translation option."
       />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -75,7 +75,7 @@ export function Home() {
           href="/new"
           eyebrow="Create"
           title="+ New slide pack"
-          body="Walk a seven-step wizard — theme, game, audiences & USPs & reach, release date, commercial potential, risks, description & razors — then generate a 12-slide preview."
+          body="Walk a six-step wizard — theme, game, audiences & USPs & reach, commercial potential, risks, description & razors — then generate a 6-slide preview."
           cta="Start wizard"
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -87,7 +87,7 @@ export function Home() {
           href="/example"
           eyebrow="Preview"
           title="Show me an example first"
-          body="A 12-slide walkthrough of a finished pack with captions explaining each slide."
+          body="A 6-slide walkthrough of a finished pack with captions explaining each slide."
           cta="View example"
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -119,7 +119,7 @@ export function Home() {
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">•</span>
-                <span><span className="text-ink font-medium">3–5 USPs</span> — short title, supporting sentence, and proof point each.</span>
+                <span><span className="text-ink font-medium">1–5 USPs</span> — short title, description, proof point, and a strategy line each.</span>
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">•</span>
@@ -127,7 +127,15 @@ export function Home() {
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">•</span>
-                <span><span className="text-ink font-medium">Release date</span> — anchors the 12-month work-back schedule.</span>
+                <span><span className="text-ink font-medium">Commercial context</span> — comp-set medians (revenue, units, price, hours) and platforms.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">•</span>
+                <span><span className="text-ink font-medium">1–5 risks</span> — threat level, proof, and mitigation for each launch risk.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">•</span>
+                <span><span className="text-ink font-medium">Description &amp; razors</span> — a 100-word description plus 20-word and 10-word taglines.</span>
               </li>
             </ul>
           </div>
@@ -145,23 +153,27 @@ export function Home() {
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">·</span>
-                <span><span className="text-ink font-medium">Slide 2 — USP manifesto.</span> Vertical stack of your selling points with proofs.</span>
+                <span><span className="text-ink font-medium">Slide 2 — Median commercial potential.</span> Genre comp-set benchmark with per-platform revenue projection.</span>
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">·</span>
-                <span><span className="text-ink font-medium">Slide 3 — How we reach.</span> Per-cohort channel matrix with mini audience map.</span>
+                <span><span className="text-ink font-medium">Slide 3 — USP manifesto.</span> Up to 5 selling points with proof and strategy lines.</span>
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">·</span>
-                <span><span className="text-ink font-medium">Slides 4.1–4.5 — GTM roadmap.</span> Phased work-back from T-12 months through T+365 days, with calendar dates computed from your release date.</span>
+                <span><span className="text-ink font-medium">Slide 4 — Commercial risks.</span> Up to 5 launch risks with threat level, proof, and mitigation.</span>
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">·</span>
-                <span><span className="text-ink font-medium">Slide 4.6 — Key dates.</span> At-a-glance summary of every calendar-anchored milestone.</span>
+                <span><span className="text-ink font-medium">Slide 5 — Description &amp; razors.</span> 100-word description plus 20-word and 10-word taglines.</span>
+              </li>
+              <li className="flex gap-2.5">
+                <span className="text-accent mt-[2px]">·</span>
+                <span><span className="text-ink font-medium">Slide 6 — How we reach.</span> Per-cohort channel matrix with mini audience map.</span>
               </li>
               <li className="flex gap-2.5 pt-1 mt-2 border-t border-border">
                 <span className="text-accent mt-[2px]">→</span>
-                <span className="text-ink font-medium">Download as PPTX or PDF. Editable, ready to share.</span>
+                <span className="text-ink font-medium">Download as PPTX or PDF. One-click Russian translation. Editable, ready to share.</span>
               </li>
             </ul>
           </div>

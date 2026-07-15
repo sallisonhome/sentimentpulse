@@ -19,10 +19,9 @@ const CHIPS = [
   { step: 3, label: "Cohorts" },
   { step: 3, label: "USPs" },
   { step: 3, label: "Reach" },
-  { step: 4, label: "Release date" },
-  { step: 5, label: "Commercial potential" },
-  { step: 6, label: "Commercial risks" },
-  { step: 7, label: "Description & razors" },
+  { step: 4, label: "Commercial potential" },
+  { step: 5, label: "Commercial risks" },
+  { step: 6, label: "Description & razors" },
 ];
 
 export function Preview() {
@@ -42,18 +41,17 @@ export function Preview() {
     // We don't have a GET-session endpoint, so attempt to re-derive from the
     // PNG URL pattern. For initial load, the user has just been routed here
     // from a successful POST /preview, so the session's PNGs exist on disk.
-    // We optimistically synthesize the URL list (1..12).
+    // We optimistically synthesize the URL list (1..6).
     setLoading(true);
     setErr(null);
-    // 12 slides per theme (final order locked 2026-07-15):
+    // v6.0 (2026-07-15): 6-slide pack. Roadmap 4.1-4.6 was dropped.
     // 1  Sizing
     // 2  Median Commercial Potential
     // 3  USPs/Pillars
     // 4  Commercial Risks
     // 5  Description & Razors
     // 6  How We Reach
-    // 7-12 Roadmap 4.1-4.6
-    const pngs = Array.from({ length: 12 }, (_, i) =>
+    const pngs = Array.from({ length: 6 }, (_, i) =>
       `${api["resolvePng"] ? "" : ""}/gtm/api/preview/${sessionId}/png/slide_${i + 1}.png`
     );
     // No JSON metadata to fetch — just show the slides. If a slide 404s,
@@ -62,7 +60,7 @@ export function Preview() {
       session_id: sessionId,
       theme: deckTheme,
       pngs,
-      slide_count: 12,
+      slide_count: 6,
     });
     setLoading(false);
   }, [sessionId]);
@@ -103,7 +101,7 @@ export function Preview() {
         title="Slide preview"
         subtitle={
           <>
-            Session <span className="text-ink font-mono">{sessionId.slice(0, 8)}</span> · 12 slides rendered at {deckTheme === "dark" ? "dark" : "light"} theme.
+            Session <span className="text-ink font-mono">{sessionId.slice(0, 8)}</span> · 6 slides rendered at {deckTheme === "dark" ? "dark" : "light"} theme.
           </>
         }
         actions={

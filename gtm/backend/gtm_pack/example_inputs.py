@@ -2,7 +2,7 @@
 
 THIS IS FICTIONAL DUMMY DATA. "Blackwood Hollow" is not a real game; all
 numbers, quotes, and cohort sizes below are illustrative only, chosen to
-demonstrate every field in the 12-slide pack (including the 5th
+demonstrate every field in the 6-slide pack (including the 5th
 disabled-USP toggle and a duplicate "High" risk level).
 
 Distinct from `sample_inputs.py` (SAMPLE_INPUTS), which backs the pytest

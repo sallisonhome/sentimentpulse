@@ -472,10 +472,10 @@ def translate_deck(deck_id: str, req: TranslateRequest):
       3. Translate FormInputs via Sonar (gtm_pack.translate.translate_form_inputs).
          Any TranslationError (e.g. Sonar unavailable) surfaces as a 502 --
          this must fail loudly, never silently create a mislabeled deck.
-      4. Re-render all 12 slides in the target language, using the
-         pre-translated static roadmap phases asset as `phases_override`
-         (the roadmap slide copy is fixed checklist content, not per-deck
-         user input -- see gtm_pack/translate.py module docstring).
+      4. Re-render all 6 slides in the target language.
+         (Note: `phases_override` is still passed through for API stability
+         but has no effect since v6.0 dropped the roadmap slide from the
+         assembled pack.)
       5. Insert a new gtm_decks row with language=<target_lang> and
          translated_from_deck_id=<source id>, copying is_private from the
          source deck.

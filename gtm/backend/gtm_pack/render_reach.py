@@ -226,11 +226,11 @@ def render_dark(args, reach, out_path):
              "highest conversion; outer tiers carry the breakout.",
              font="Calibri", size=body_pt(L, 10), color=MUTED)
 
-    # ---- Right: cohort cards stacked ----
-    rx, ry = 5.6, 2.4
+    # ---- Right: cohort rows, calm typographic stack (no cards, hairlines only) ----
+    rx, ry = 5.6, 2.35
     rw = 7.2
     n = 4
-    rh = 4.4 / n
+    rh = 4.5 / n
     for i in range(n):
         c = tier_colors[i]
         name = labels[i]
@@ -238,23 +238,24 @@ def render_dark(args, reach, out_path):
         message  = reach[i]["message"]
         kpi      = reach[i]["kpi"]
         y = ry + i * rh
-        # Cohort dot + name
-        add_oval(slide, rx, y + 0.12, 0.18, 0.18, c)
-        add_text(slide, rx + 0.32, y + 0.02, 4.0, 0.35, name,
+        # Row 1: cohort dot + name (left)
+        add_oval(slide, rx, y + 0.06, 0.16, 0.16, c)
+        add_text(slide, rx + 0.30, y - 0.02, 4.6, 0.32, name,
                  font="Trebuchet MS", size=14, bold=True, color=INK)
-        # KPI right-aligned, color-coded
-        add_text(slide, rx + 4.4, y + 0.05, rw - 4.4, 0.35,
-                 kpi, font="Calibri", size=body_pt(L, 10), bold=True, color=c,
-                 align=PP_ALIGN.RIGHT)
-        # Channels inline (middot-separated)
+        # Row 2: channels, own line below the cohort name (not inline)
         ch_str = "  \u00b7  ".join(channels)
-        add_text(slide, rx + 0.32, y + 0.4, rw - 0.4, 0.3, ch_str,
-                 font="Calibri", size=body_pt(L, 9), color=INK)
-        # Message
-        add_text(slide, rx + 0.32, y + 0.7, rw - 0.4, 0.4, message,
-                 font="Calibri", size=body_pt(L, 10), color=MUTED)
+        add_text(slide, rx + 0.30, y + 0.34, rw - 0.30, 0.28, ch_str,
+                 font="Calibri", size=body_pt(L, 9.5), color=MUTED)
+        # Row 3: message (left) and KPI (right-aligned, own line, room to wrap)
+        msg_w = rw * 0.56
+        kpi_w = rw - msg_w - 0.25
+        add_text(slide, rx + 0.30, y + 0.66, msg_w, 0.42, message,
+                 font="Calibri", size=body_pt(L, 10), color=INK)
+        add_text(slide, rx + 0.30 + msg_w + 0.25, y + 0.66, kpi_w, 0.42,
+                 kpi, font="Calibri", size=body_pt(L, 9.5), bold=True, color=c,
+                 align=PP_ALIGN.RIGHT)
         if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.05, rw, 0.008, BORDER)
+            add_rect(slide, rx, y + rh - 0.07, rw, 0.008, BORDER)
 
     # Footer (locked dark pattern)
     add_text(slide, 0.6, 7.1, 12, 0.25,
@@ -320,11 +321,11 @@ def render_light(args, reach, out_path):
              "highest conversion; outer tiers carry the breakout.",
              font="Calibri", size=body_pt(L, 10), color=MUTED)
 
-    # ---- Right: cohort cards stacked ----
-    rx, ry = 5.7, 2.5
+    # ---- Right: cohort rows, calm typographic stack (no cards, hairlines only) ----
+    rx, ry = 5.7, 2.45
     rw = 7.0
     n = 4
-    rh = 4.4 / n
+    rh = 4.5 / n
     for i in range(n):
         c = tier_colors[i]
         name = labels[i]
@@ -332,19 +333,21 @@ def render_light(args, reach, out_path):
         message  = reach[i]["message"]
         kpi      = reach[i]["kpi"]
         y = ry + i * rh
-        add_oval(slide, rx, y + 0.12, 0.18, 0.18, c)
-        add_text(slide, rx + 0.32, y + 0.02, 4.0, 0.35, name,
+        add_oval(slide, rx, y + 0.06, 0.16, 0.16, c)
+        add_text(slide, rx + 0.30, y - 0.02, 4.6, 0.32, name,
                  font="Trebuchet MS", size=14, bold=True, color=INK)
-        add_text(slide, rx + 4.4, y + 0.05, rw - 4.4, 0.35,
-                 kpi, font="Calibri", size=body_pt(L, 10), bold=True, color=c,
-                 align=PP_ALIGN.RIGHT)
         ch_str = "  \u00b7  ".join(channels)
-        add_text(slide, rx + 0.32, y + 0.4, rw - 0.4, 0.3, ch_str,
-                 font="Calibri", size=body_pt(L, 9), color=INK)
-        add_text(slide, rx + 0.32, y + 0.7, rw - 0.4, 0.4, message,
-                 font="Calibri", size=body_pt(L, 10), color=MUTED)
+        add_text(slide, rx + 0.30, y + 0.34, rw - 0.30, 0.28, ch_str,
+                 font="Calibri", size=body_pt(L, 9.5), color=MUTED)
+        msg_w = rw * 0.56
+        kpi_w = rw - msg_w - 0.25
+        add_text(slide, rx + 0.30, y + 0.66, msg_w, 0.42, message,
+                 font="Calibri", size=body_pt(L, 10), color=INK)
+        add_text(slide, rx + 0.30 + msg_w + 0.25, y + 0.66, kpi_w, 0.42,
+                 kpi, font="Calibri", size=body_pt(L, 9.5), bold=True, color=c,
+                 align=PP_ALIGN.RIGHT)
         if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.05, rw, 0.008, HAIR)
+            add_rect(slide, rx, y + rh - 0.07, rw, 0.008, HAIR)
 
     # Footer (locked light pattern)
     add_text(slide, 0.7, 7.1, 12, 0.25,

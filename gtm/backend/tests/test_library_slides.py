@@ -60,8 +60,9 @@ client = TestClient(app)
 # ── Sample inputs ─────────────────────────────────────────────────────────────
 from gtm_pack.sample_inputs import SAMPLE_INPUTS  # noqa: E402
 
-# 12 fake PNGs — matches the current 12-slide pack (name kept for git-blame history)
-NINE_FAKE_PNGS = [f"slide-{i+1:02d}.png" for i in range(12)]
+# 6 fake PNGs — matches the v6.0 pack (roadmap dropped 2026-07-15).
+# Constant name kept as NINE_FAKE_PNGS for git-blame history.
+NINE_FAKE_PNGS = [f"slide-{i+1:02d}.png" for i in range(6)]
 
 
 # ── autouse fixture: pin LIBRARY_DIR and DB to our test paths ──────────────────
@@ -88,7 +89,7 @@ def _isolate_storage():
 
 
 def _make_fake_render_to(out_dir_capture: list | None = None):
-    """Return a mock _render_to that writes 12 fake PNGs to the given out_dir."""
+    """Return a mock _render_to that writes 6 fake PNGs to the given out_dir."""
 
     def fake_render_to(out_dir: Path, inputs, theme: str):
         if out_dir_capture is not None:
@@ -178,8 +179,8 @@ def test_slides_renders_on_first_call():
     assert r.status_code == 200
     data = r.json()
     assert data["deck_id"] == deck_id
-    assert data["slide_count"] == 12
-    assert len(data["pngs"]) == 12
+    assert data["slide_count"] == 6
+    assert len(data["pngs"]) == 6
     # URLs should point at the new slides endpoint
     for url in data["pngs"]:
         assert url.startswith(f"/gtm/api/library/{deck_id}/slides/")
@@ -245,8 +246,8 @@ def test_slides_cache_survives_with_extra_png():
         mock_render.assert_not_called()
 
     assert r.status_code == 200
-    # 12 originals + 1 bonus
-    assert r.json()["slide_count"] == 13
+    # 6 originals + 1 bonus
+    assert r.json()["slide_count"] == 7
 
 
 def test_slides_render_failure_returns_500_and_cleans_up():
