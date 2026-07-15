@@ -170,6 +170,22 @@ jobs:
             fi
 
             echo ""
+            echo "## GTM Studio: re-seed example pack (idempotent) ##"
+            # Re-render the 12-slide 'Blackwood Hollow' example pack from
+            # source. Cheap (~10s) and guarantees /example on the live site
+            # matches the current slide order + renderer code. Runs on every
+            # deploy; the previous PNGs are overwritten atomically.
+            if [ -f gtm/backend/scripts/seed_example_pack.py ] && [ -d gtm/backend/.venv ]; then
+              cd gtm/backend
+              source .venv/bin/activate
+              python scripts/seed_example_pack.py || echo "WARN: seed_example_pack.py failed (non-fatal)"
+              deactivate
+              cd ../..
+            else
+              echo "seed_example_pack.py or gtm/backend/.venv missing, skipping example re-seed"
+            fi
+
+            echo ""
             echo "## GTM Studio frontend build ##"
             if [ -d gtm/frontend ] && [ -f gtm/frontend/package.json ]; then
               cd gtm/frontend
