@@ -37,14 +37,126 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-try:
-    from backend.services.sonar_client import call_sonar, sonar_available
-except ImportError:  # pragma: no cover - path layout fallback
-    import sys as _sys
+# 2026-07-15: previously imported call_sonar / sonar_available from the
+# SentimentPulse backend's services.sonar_client module.  That crossed venv
+# boundaries — the GTM Studio venv doesn't have `pydantic_settings` (used
+# transitively by the SentimentPulse `config` module), which caused an
+# `ImportError: No module named 'pydantic_settings'` on startup and left
+# `gtmstudio.service` in an auto-restart loop.  Fix: keep translate.py
+# self-contained with a minimal urllib-based Sonar client that only reads
+# PERPLEXITY_API_KEY from the environment.  No cross-package coupling, no
+# new deps beyond the stdlib.
+import json as _json
+import os as _os
+import time as _time
+import urllib.error as _urllib_error
+import urllib.request as _urllib_request
 
-    _repo_root = Path(__file__).resolve().parents[3]  # .../sentimentpulse
-    _sys.path.insert(0, str(_repo_root / "backend"))
-    from services.sonar_client import call_sonar, sonar_available  # type: ignore
+_SONAR_URL = "https://api.perplexity.ai/chat/completions"
+_DEFAULT_MODEL = "sonar-pro"
+_DEFAULT_TIMEOUT = 180  # seconds
+
+_DEFAULT_SYSTEM = (
+    "You are a professional translator. You translate every value in the "
+    "user's provided JSON to the target language while preserving JSON "
+    "structure exactly. You never translate numbers, dates, boolean values, "
+    "or enum strings. You return ONLY valid JSON — no commentary."
+)
+
+
+def sonar_available() -> bool:
+    """True iff PERPLEXITY_API_KEY is set in the process environment."""
+    return bool(_os.environ.get("PERPLEXITY_API_KEY"))
+
+
+class _SonarResponse:
+    """Minimal shape mimicking the object callers use — `.text` is enough."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text or ""
+
+
+def call_sonar(
+    prompt: str,
+    *,
+    model: str = _DEFAULT_MODEL,
+    system: str | None = None,
+    max_tokens: int = 4000,
+    temperature: float = 0.2,
+    timeout: int = _DEFAULT_TIMEOUT,
+    search_context_size: str = "low",
+) -> _SonarResponse:
+    """POST a single user prompt to Sonar and return the response text.
+
+    Raises RuntimeError on any failure (no key, HTTP error, parse error).
+    Callers wrap in try/except and surface a clean TranslationError.
+    """
+    api_key = _os.environ.get("PERPLEXITY_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Perplexity API key not configured (PERPLEXITY_API_KEY empty).")
+
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system or _DEFAULT_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "web_search_options": {"search_context_size": search_context_size},
+    }
+    body_bytes = _json.dumps(body).encode("utf-8")
+
+    req = _urllib_request.Request(
+        _SONAR_URL,
+        data=body_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    started = _time.monotonic()
+    try:
+        with _urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw_bytes = resp.read()
+    except _urllib_error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Sonar HTTP {e.code}: {e.reason} | body={err_body!r}"
+        ) from e
+    except _urllib_error.URLError as e:
+        raise RuntimeError(f"Sonar URLError: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"Sonar unexpected error: {e}") from e
+
+    elapsed = _time.monotonic() - started
+
+    try:
+        parsed = _json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(
+            f"Sonar response not JSON ({len(raw_bytes)} bytes): {e}"
+        ) from e
+
+    try:
+        text = parsed["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise RuntimeError(
+            f"Sonar response missing choices[0].message.content: {parsed!r}"
+        ) from e
+
+    logger.info(
+        "gtm_pack.translate Sonar call OK model=%s prompt_chars=%d resp_chars=%d elapsed=%.2fs",
+        model, len(prompt), len(text or ""), elapsed,
+    )
+    return _SonarResponse(text=text or "")
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
