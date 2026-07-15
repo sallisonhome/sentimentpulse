@@ -885,7 +885,14 @@ def get_example():
             m = _re.match(r"(\d+)", p.stem)
             return (int(m.group(1)) if m else 10_000, p.name)
         pngs = sorted(theme_dir.glob("*.png"), key=_numeric_key)
-        payload["themes"][theme] = [f"/gtm/api/example/{theme}/{p.name}" for p in pngs]
+        # Append the file mtime as a cache-busting query string so browsers
+        # pick up newly-seeded PNGs immediately after a deploy re-render,
+        # even without a Cache-Control header override. The URL path itself
+        # stays stable so nginx / CDN caching on the path is still effective.
+        payload["themes"][theme] = [
+            f"/gtm/api/example/{theme}/{p.name}?v={int(p.stat().st_mtime)}"
+            for p in pngs
+        ]
     return payload
 
 
@@ -898,7 +905,15 @@ def example_png(theme: str, name: str):
     p = Path(__file__).resolve().parent / "static_example" / theme / name
     if not p.exists():
         raise HTTPException(404, "Example PNG not found")
-    return FileResponse(p, media_type="image/png")
+    # Force revalidation so stale example PNGs don't linger in browser cache
+    # after a re-seed. The ?v=<mtime> query string on the /example JSON URLs
+    # is the primary cache-buster; this header is defense-in-depth for any
+    # client that hits the PNG endpoint directly without the query string.
+    return FileResponse(
+        p,
+        media_type="image/png",
+        headers={"Cache-Control": "no-cache, must-revalidate"},
+    )
 
 
 # ── Admin endpoints ──────────────────────────────────────────────────────────
