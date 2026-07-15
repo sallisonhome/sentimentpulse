@@ -517,6 +517,34 @@ def translate_deck(deck_id: str, req: TranslateRequest):
 
     source_inputs_dict = json.loads(source_row["inputs_json"])
 
+    # 2026-07-15 pre-flight: reject decks missing the new Description &
+    # Razors fields (added in the July revisions) BEFORE we burn a Sonar
+    # call.  Legacy decks created before the revisions have empty or
+    # missing description_100 / razor_20 / razor_10, and the downstream
+    # render_description_razors would blow up with a ValueError.  Fail
+    # loudly here with a 400 pointing the user at the fix.
+    missing_required: list[str] = []
+    for key, label in (
+        ("description_100", "100-word description"),
+        ("razor_20", "20-word razor"),
+        ("razor_10", "10-word razor"),
+    ):
+        val = source_inputs_dict.get(key)
+        if not val or not str(val).strip():
+            missing_required.append(f"{label} ({key!r})")
+    if missing_required:
+        raise HTTPException(
+            400,
+            detail={
+                "message": (
+                    "Source deck is missing required fields added in the "
+                    "July 2026 revisions. Edit the deck and fill these in "
+                    "before translating."
+                ),
+                "missing": missing_required,
+            },
+        )
+
     try:
         translated_inputs_dict = translate_form_inputs(source_inputs_dict, req.target_lang)
     except TranslationError as e:

@@ -112,10 +112,15 @@ def add_pill(slide, x, y, text, *, fill, text_color, font="Calibri", size=9):
 
 # ---------- validation ----------
 def validate_inputs(args):
+    # 2026-07-15: SystemExit is a BaseException, not an Exception, and it's
+    # fatal to any FastAPI request that reaches it (the request thread dies
+    # before FastAPI's exception handler can wrap it in an HTTPException).
+    # Use ValueError so callers can catch cleanly.  CLI usage still surfaces
+    # a clear message via argparse's default handling of ValueError below.
     for field, label in (("description", "--description"), ("razor_20", "--razor-20"), ("razor_10", "--razor-10")):
         val = getattr(args, field)
         if not val or not val.strip():
-            raise SystemExit(f"{label} is required and cannot be empty")
+            raise ValueError(f"{label} is required and cannot be empty")
 
     wc_desc = word_count(args.description)
     wc_r20 = word_count(args.razor_20)
