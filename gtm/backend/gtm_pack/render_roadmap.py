@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Render the GTM Slide Pack Step 4 'Target Activities & Timing' slide series.
 
-GTM Checklist for PC. Generates 5 slides covering all 9 phases (T-12mo+ -> T+365):
+GTM Checklist for PC. Generates 6 slides covering the full launch window
+(T-12mo+ -> T+365 days):
   4.1 Foundations & Identity        (T-12+ -> T-9 mo)
-  4.2 Store Page & Audience Build   (T-9  -> T-3 mo)
-  4.3 Demo Fest & Pre-Launch Push   (T-3  -> T-1 mo)
-  4.4 Launch Week & Launch Day      (T-7d -> T+0)
-  4.5 Post-Launch Growth            (T+30 -> T+365 days)
+  4.2 Store Page & Audience Build   (T-9   -> T-3 mo)
+  4.3 Demo Fest & Pre-Launch Push   (T-3   -> T-1 mo)
+  4.4 Launch Week & Launch Day      (T-7d  -> T+0)
+  4.5 Post-Launch Growth            (T+30  -> T+365 days)
+  4.6 Key Dates & Events            (Summary calendar across all phases)
 
 Each slide displays:
   - Step header (locked V2/V4 design system)
-  - Horizontal phase ribbon at top showing all 5 stages, current stage highlighted,
+  - Horizontal phase ribbon at top showing all 6 stages, current stage highlighted,
     with calendar-date anchors computed from --release-date.
   - Two stacked phase-section cards (each with a T-X label, a calendar window,
     and 4-7 checklist items).
@@ -201,7 +203,7 @@ RIBBON_STAGES = [
 
 
 def draw_ribbon_dark(slide, current_index, anchors, INK, MUTED, BORDER, ACCENT, SURFACE, L="en"):
-    """Horizontal ribbon at top showing all 5 stages. Current stage highlighted."""
+    """Horizontal ribbon at top showing all 6 stages. Current stage highlighted."""
     rx, ry, rw, rh = 0.6, 2.05, 12.1, 0.55
     add_rect(slide, rx, ry, rw, rh, SURFACE, line=BORDER)
     n = len(RIBBON_STAGES)

@@ -53,7 +53,7 @@ export function Home() {
       <PageHeader
         eyebrow="GTM Studio"
         title="Generate Go-to-Market slide pack foundations in less than 5 minutes that you can edit to final quickly"
-        subtitle="Answer a four-step questionnaire about your game and release date. GTM Studio renders a 9-slide pack — audience tiers, USP manifesto, reach plan, and a 12-month work-back roadmap — ready to download as PPTX or PDF."
+        subtitle="Answer a seven-step questionnaire about your game, audiences, commercial context, USPs, risks, and release date. GTM Studio renders a 12-slide pack — audience tiers, commercial potential, USPs, risks, description & razors, reach plan, and a 12-month work-back roadmap — ready to download as PPTX or PDF, with a one-click Russian translation option."
       />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -75,7 +75,7 @@ export function Home() {
           href="/new"
           eyebrow="Create"
           title="+ New slide pack"
-          body="Walk a four-step wizard — theme, game, audiences & USPs, release date — then generate a 9-slide preview."
+          body="Walk a seven-step wizard — theme, game, audiences & USPs & reach, release date, commercial potential, risks, description & razors — then generate a 12-slide preview."
           cta="Start wizard"
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -87,7 +87,7 @@ export function Home() {
           href="/example"
           eyebrow="Preview"
           title="Show me an example first"
-          body="A 9-slide walkthrough of a finished pack with captions explaining each slide."
+          body="A 12-slide walkthrough of a finished pack with captions explaining each slide."
           cta="View example"
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

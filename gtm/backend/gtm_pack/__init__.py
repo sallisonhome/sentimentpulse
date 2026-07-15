@@ -510,14 +510,25 @@ def render_full_pack(
             }
             results = {k: f.result() for k, f in futures.items()}
 
-        # Merge in FINAL OUTPUT order (locked, per revision spec):
-        # sizing → commercial_potential → usp → reach → roadmap → risks → description
+        # Merge in FINAL OUTPUT order (locked, per user direction 2026-07-15):
+        #   1. sizing
+        #   2. commercial_potential
+        #   3. usp
+        #   4. commercial_risks       (moved up from position 11 on 2026-07-15)
+        #   5. description_razors     (moved up from position 12 on 2026-07-15)
+        #   6. reach
+        #   7-12. roadmap (6 sub-slides)
+        # Rationale for the reorder: put the strategic-positioning slides
+        # (USPs → Risks → Razors) as a contiguous block so the deck reads
+        # "who we are + what could go wrong + how we say it" before the
+        # tactical execution slides (reach + roadmap).
         merged = Presentation()
         merged.slide_width = Inches(13.333)
         merged.slide_height = Inches(7.5)
         # Remove default slide that gets added with blank layout
-        for order_key in ("sizing", "commercial_potential", "usp", "reach",
-                          "roadmap", "commercial_risks", "description_razors"):
+        for order_key in ("sizing", "commercial_potential", "usp",
+                          "commercial_risks", "description_razors",
+                          "reach", "roadmap"):
             src = Presentation(str(results[order_key]))
             for i in range(len(src.slides)):
                 _copy_slide_from(merged, src, i)

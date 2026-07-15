@@ -42,12 +42,17 @@ export function Preview() {
     // We don't have a GET-session endpoint, so attempt to re-derive from the
     // PNG URL pattern. For initial load, the user has just been routed here
     // from a successful POST /preview, so the session's PNGs exist on disk.
-    // We optimistically synthesize the URL list (1..9).
+    // We optimistically synthesize the URL list (1..12).
     setLoading(true);
     setErr(null);
-    // 12 slides per theme post-revision (was 9): Sizing, Median Commercial
-    // Potential, USPs/Pillars, How We Reach, Roadmap 4.1-4.6, Commercial
-    // Risks, Description & Razors.
+    // 12 slides per theme (final order locked 2026-07-15):
+    // 1  Sizing
+    // 2  Median Commercial Potential
+    // 3  USPs/Pillars
+    // 4  Commercial Risks
+    // 5  Description & Razors
+    // 6  How We Reach
+    // 7-12 Roadmap 4.1-4.6
     const pngs = Array.from({ length: 12 }, (_, i) =>
       `${api["resolvePng"] ? "" : ""}/gtm/api/preview/${sessionId}/png/slide_${i + 1}.png`
     );
