@@ -47,8 +47,38 @@ export function Viewer() {
     return () => window.removeEventListener("keydown", onKey);
   }, [total]);
 
+  // Phase 4: EN<->RU cross-link chip. RU decks link back to their EN
+  // source (translated_from_deck_id); EN decks link forward to their RU
+  // translation if one has been generated (translated_to_deck_id). A deck
+  // with neither shows just the language badge with no link.
+  const crossLinkId = slides
+    ? slides.language === "ru"
+      ? slides.translated_from_deck_id
+      : slides.translated_to_deck_id
+    : null;
+  const crossLinkLabel = slides?.language === "ru" ? "View EN version" : "View RU version";
+
   const headerActions = slides ? (
     <>
+      <span
+        className={`chip shrink-0 ${
+          slides.language === "ru"
+            ? "border-accent/40 text-accent"
+            : "border-ink/15 text-muted"
+        }`}
+        data-testid="badge-viewer-language"
+      >
+        {slides.language === "ru" ? "RU" : "EN"}
+      </span>
+      {crossLinkId && (
+        <Link
+          href={`/library/${crossLinkId}/view`}
+          className="btn-ghost shrink-0"
+          data-testid="link-cross-language"
+        >
+          {crossLinkLabel}
+        </Link>
+      )}
       <span className="chip border-ink/20 text-ink shrink-0">{slides.theme}</span>
       <a
         className="btn-secondary"

@@ -6,42 +6,57 @@ import { Spinner, ErrorBox } from "../components/EmptyState";
 import { api } from "../lib/api";
 import { useDeckTheme } from "../lib/theme";
 
+// Output order matches the 12-slide pack (see gtm_revisions_summary.md):
+// Sizing -> Commercial Potential -> USPs -> Reach -> Roadmap 4.1-4.6 -> Risks -> Description & Razors.
+// Example deck as of Phase 3 is "Blackwood Hollow" (fictional psychological horror dummy data).
 const CAPTIONS = [
   {
     title: "Slide 1 — Target Audiences & Sizing",
     body: "Nested circles map audience tiers from innermost (highest intent) outward.",
   },
   {
-    title: "Slide 2 — USP Manifesto",
-    body: "Three to four unique selling points stacked as a vertical manifesto.",
+    title: "Slide 2 — Median Commercial Potential",
+    body: "Genre Pulse comp-set medians benchmark revenue, units, price, and hours — then project per-platform.",
   },
   {
-    title: "Slide 3 — How We Reach",
+    title: "Slide 3 — USP Manifesto",
+    body: "Up to five unique selling points stacked as a vertical manifesto, each with proof and a GTM strategy line.",
+  },
+  {
+    title: "Slide 4 — How We Reach",
     body: "Per-cohort channel matrix.",
   },
   {
-    title: "Slide 4.1 — Foundations & Identity",
+    title: "Slide 5 — Roadmap 4.1: Foundations & Identity",
     body: "T-12+ → T-9 months.",
   },
   {
-    title: "Slide 4.2 — Store Page & Audience Building",
+    title: "Slide 6 — Roadmap 4.2: Store Page & Audience Building",
     body: "T-9 → T-3 months.",
   },
   {
-    title: "Slide 4.3 — Demo Fest & Pre-Launch Push",
+    title: "Slide 7 — Roadmap 4.3: Demo Fest & Pre-Launch Push",
     body: "T-3 → T-1 months.",
   },
   {
-    title: "Slide 4.4 — Launch Week & Launch Day",
+    title: "Slide 8 — Roadmap 4.4: Launch Week & Launch Day",
     body: "T-7 days → T+0.",
   },
   {
-    title: "Slide 4.5 — Post-Launch Growth",
+    title: "Slide 9 — Roadmap 4.5: Post-Launch Growth",
     body: "T+30 → T+365 days.",
   },
   {
-    title: "Slide 4.6 — Key Dates & Events",
+    title: "Slide 10 — Roadmap 4.6: Key Dates & Events",
     body: "Stitching the calendar together — beats, festivals, marketing milestones.",
+  },
+  {
+    title: "Slide 11 — Commercial Risks",
+    body: "Up to five launch risks by threat level, each with proof and a concrete mitigation.",
+  },
+  {
+    title: "Slide 12 — Game Description & Razors",
+    body: "A 100-word product description plus 20-word and 10-word taglines.",
   },
 ];
 
@@ -100,7 +115,7 @@ export function Example() {
       <PageHeader
         eyebrow="Example"
         title="Walk through a finished pack"
-        subtitle="Nine slides — three planning views (audiences, USPs, reach) followed by a six-stage roadmap."
+        subtitle="Twelve slides — audience sizing, commercial potential, USPs, reach, a six-stage roadmap, commercial risks, and description & razors."
         actions={
           <>
             <ThemeToggle />

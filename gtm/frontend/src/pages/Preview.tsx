@@ -7,6 +7,12 @@ import { api } from "../lib/api";
 import { useDeckTheme } from "../lib/theme";
 import type { PreviewResponse } from "../lib/types";
 
+// Jump-to chips mirror the NewWizard step numbers. Steps 5-7 (Commercial
+// Potential, Commercial Risks, Description & Razors) were added by the
+// GTM Studio revisions -- they render in the final pack between/after the
+// original Steps 1-4 (see gtm_pack output-order docs), but in the intake
+// wizard they're additional steps appended after Reach for a natural
+// top-to-bottom fill-in flow.
 const CHIPS = [
   { step: 1, label: "Theme" },
   { step: 2, label: "Game" },
@@ -14,6 +20,9 @@ const CHIPS = [
   { step: 3, label: "USPs" },
   { step: 3, label: "Reach" },
   { step: 4, label: "Release date" },
+  { step: 5, label: "Commercial potential" },
+  { step: 6, label: "Commercial risks" },
+  { step: 7, label: "Description & razors" },
 ];
 
 export function Preview() {
@@ -36,7 +45,10 @@ export function Preview() {
     // We optimistically synthesize the URL list (1..9).
     setLoading(true);
     setErr(null);
-    const pngs = Array.from({ length: 9 }, (_, i) =>
+    // 12 slides per theme post-revision (was 9): Sizing, Median Commercial
+    // Potential, USPs/Pillars, How We Reach, Roadmap 4.1-4.6, Commercial
+    // Risks, Description & Razors.
+    const pngs = Array.from({ length: 12 }, (_, i) =>
       `${api["resolvePng"] ? "" : ""}/gtm/api/preview/${sessionId}/png/slide_${i + 1}.png`
     );
     // No JSON metadata to fetch — just show the slides. If a slide 404s,
@@ -45,7 +57,7 @@ export function Preview() {
       session_id: sessionId,
       theme: deckTheme,
       pngs,
-      slide_count: 9,
+      slide_count: 12,
     });
     setLoading(false);
   }, [sessionId]);
@@ -86,7 +98,7 @@ export function Preview() {
         title="Slide preview"
         subtitle={
           <>
-            Session <span className="text-ink font-mono">{sessionId.slice(0, 8)}</span> · 9 slides rendered at {deckTheme === "dark" ? "dark" : "light"} theme.
+            Session <span className="text-ink font-mono">{sessionId.slice(0, 8)}</span> · 12 slides rendered at {deckTheme === "dark" ? "dark" : "light"} theme.
           </>
         }
         actions={

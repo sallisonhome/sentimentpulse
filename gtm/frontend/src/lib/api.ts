@@ -3,6 +3,21 @@
 
 export const API_BASE = "/gtm/api";
 
+// ApiError preserves the HTTP status code and (when present) the parsed
+// JSON `detail` body, so callers like Library.tsx's "Translate → RU" button
+// can distinguish a 409 (translation already exists -- link to it) from any
+// other failure (show a generic error toast). Falls back to a stripped-HTML
+// string message when the body isn't JSON.
+export class ApiError extends Error {
+  status: number;
+  detail: unknown;
+  constructor(status: number, message: string, detail?: unknown) {
+    super(message);
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -15,14 +30,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     // Backend may not be reachable in some environments. Keep the error
     // message short and human — strip any HTML the upstream returned.
-    let detail = "";
+    let detail: unknown = undefined;
+    let message = "";
     try {
       const raw = await res.text();
-      const stripped = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-      detail = stripped.slice(0, 160);
+      try {
+        const parsed = JSON.parse(raw);
+        detail = parsed.detail ?? parsed;
+        message =
+          typeof detail === "string"
+            ? detail
+            : (detail as any)?.message || JSON.stringify(detail);
+      } catch {
+        message = raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160);
+      }
     } catch {}
     const label = res.status === 404 ? "Not available" : `${res.status} ${res.statusText}`;
-    throw new Error(detail ? `${label} — ${detail}` : label);
+    throw new ApiError(res.status, message ? `${label} — ${message}` : label, detail);
   }
   // Some endpoints stream files; assume JSON otherwise.
   const ct = res.headers.get("content-type") || "";
@@ -34,6 +58,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<{ ok: boolean }>("/health"),
   roadmapPhases: () => request<any>("/defaults/roadmap_phases"),
+  // Genre-benchmark defaults for Step 5 (Median Commercial Potential).
+  // Response is already unit-converted server-side: median_revenue_usd_millions
+  // (millions of dollars) and avg_price_usd (plain dollars) -- do not scale
+  // these further in the UI, just populate the form fields directly.
+  genrePulseComps: (genre: string) =>
+    request<import("./types").GenrePulseComps>(
+      `/defaults/genre_pulse_comps?genre=${encodeURIComponent(genre)}`
+    ),
   library: (params: Record<string, string | number | undefined> = {}) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {
@@ -79,6 +111,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ is_private: isPrivate }),
     }),
+  // Phase 4: translate an EN library deck to Russian. Throws ApiError with
+  // status 409 and detail={message, existing_deck_id} if a translation
+  // already exists; status 502 if Sonar is unavailable or translation fails;
+  // status 404 if the source deck doesn't exist.
+  translate: (deckId: string, targetLang: import("./types").Language = "ru") =>
+    request<import("./types").TranslateResponse>(
+      `/library/${deckId}/translate`,
+      {
+        method: "POST",
+        body: JSON.stringify({ target_lang: targetLang }),
+      }
+    ),
   example: () =>
     request<{ themes: { dark: string[]; light: string[] } }>(`/example`),
   // The preview PNG paths come back as absolute URLs (likely /gtm/api/preview/.../png/...).

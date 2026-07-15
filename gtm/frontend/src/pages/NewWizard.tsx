@@ -4,14 +4,21 @@ import { PageHeader } from "../components/PageHeader";
 import { Spinner, ErrorBox } from "../components/EmptyState";
 import { api } from "../lib/api";
 import { useDeckTheme } from "../lib/theme";
-import type { FormInputs, GameType, InnerRing, Theme } from "../lib/types";
+import type { FormInputs, GameType, InnerRing, Platform, ThreatLevel, Theme } from "../lib/types";
 
 const STEPS = [
   { id: 1, label: "Theme" },
   { id: 2, label: "Game" },
   { id: 3, label: "Cohorts · USPs · Reach" },
   { id: 4, label: "Release date" },
+  { id: 5, label: "Commercial potential" },
+  { id: 6, label: "Commercial risks" },
+  { id: 7, label: "Description & razors" },
 ];
+const LAST_STEP = STEPS.length; // 7
+
+const ALL_PLATFORMS: Platform[] = ["PC", "PS5", "XSX", "SWITCH2"];
+const THREAT_LEVELS: ThreatLevel[] = ["critical", "high", "medium", "low"];
 
 const DRAFT_KEY = "gtm:new:draft:v1";
 
@@ -28,10 +35,22 @@ function emptyInputs(): FormInputs {
       { name: "", size: 0 },
       { name: "", size: 0 },
     ],
+
+    // --- Step 5: Median Commercial Potential ---
+    // median_revenue_usd_millions is MILLIONS of dollars (e.g. 4.7 = $4.7M).
+    // avg_price_usd is PLAIN dollars. median_units_sold is a raw integer
+    // count. Never scale these in the UI -- send exactly what's entered.
+    comp_set_name: "",
+    median_revenue_usd_millions: 0,
+    avg_price_usd: 0,
+    median_units_sold: 0,
+    avg_hours_played: 0,
+    platforms: ["PC", "PS5", "XSX", "SWITCH2"],
+
     usps: [
-      { title: "", description: "", proof: "" },
-      { title: "", description: "", proof: "" },
-      { title: "", description: "", proof: "" },
+      { title: "", description: "", proof: "", strategy: "", enabled: true },
+      { title: "", description: "", proof: "", strategy: "", enabled: true },
+      { title: "", description: "", proof: "", strategy: "", enabled: true },
     ],
     reach: [
       { cohort: "", channel: "", message: "", kpi: "" },
@@ -39,6 +58,18 @@ function emptyInputs(): FormInputs {
       { cohort: "", channel: "", message: "", kpi: "" },
       { cohort: "", channel: "", message: "", kpi: "" },
     ],
+
+    // --- Step 6: Commercial Risks ---
+    risks: [
+      { threat_level: "high", proof: "", mitigation: "" },
+    ],
+    risks_wedge: "",
+    risks_wedge_support: "",
+
+    // --- Step 7: Description & Razors ---
+    description_100: "",
+    razor_20: "",
+    razor_10: "",
   };
 }
 
@@ -49,7 +80,7 @@ export function NewWizard() {
   const [step, setStep] = useState<number>(() => {
     const sp = new URLSearchParams(window.location.hash.split("?")[1] || "");
     const s = parseInt(sp.get("step") || "1", 10);
-    return Math.min(Math.max(s, 1), 4);
+    return Math.min(Math.max(s, 1), LAST_STEP);
   });
   const [inputs, setInputs] = useState<FormInputs>(emptyInputs);
   const [submitting, setSubmitting] = useState(false);
@@ -74,7 +105,7 @@ export function NewWizard() {
   }
 
   function goStep(n: number) {
-    const next = Math.min(Math.max(n, 1), 4);
+    const next = Math.min(Math.max(n, 1), LAST_STEP);
     setStep(next);
     const hash = window.location.hash.split("?")[0] || "#/new";
     window.history.replaceState(null, "", `${hash}?step=${next}`);
@@ -121,7 +152,7 @@ export function NewWizard() {
       <PageHeader
         eyebrow="New slide pack"
         title="Build a GTM pack in four steps"
-        subtitle="Each step shapes one section of the 9-slide deck. You can navigate back at any time — your progress is held in the URL."
+        subtitle="Each step shapes one section of the 12-slide deck. You can navigate back at any time — your progress is held in the URL."
         actions={
           <>
             <button className="btn-ghost" onClick={loadDraft} data-testid="button-load-draft">
@@ -141,6 +172,9 @@ export function NewWizard() {
         {step === 2 && <StepGame inputs={inputs} update={update} />}
         {step === 3 && <StepCohorts inputs={inputs} update={update} setInputs={setInputs} />}
         {step === 4 && <StepDate inputs={inputs} update={update} />}
+        {step === 5 && <StepCommercialPotential inputs={inputs} update={update} setInputs={setInputs} />}
+        {step === 6 && <StepCommercialRisks inputs={inputs} update={update} setInputs={setInputs} />}
+        {step === 7 && <StepDescriptionRazors inputs={inputs} update={update} />}
 
         {err && (
           <div className="mt-6">
@@ -158,10 +192,10 @@ export function NewWizard() {
             ← Back
           </button>
           <div className="text-xs text-dim">
-            Step {step} of 4
+            Step {step} of {LAST_STEP}
             {!stepValid && <span className="text-red-300"> · please complete required fields</span>}
           </div>
-          {step < 4 ? (
+          {step < LAST_STEP ? (
             <button
               className="btn-primary"
               onClick={() => goStep(step + 1)}
@@ -453,7 +487,10 @@ function StepCohorts({
       return { ...prev, cohorts: next };
     });
   }
-  function setUsp(i: number, patch: Partial<{ title: string; description: string; proof: string }>) {
+  function setUsp(
+    i: number,
+    patch: Partial<{ title: string; description: string; proof: string; strategy: string; enabled: boolean }>
+  ) {
     setInputs((prev) => {
       const next = [...prev.usps];
       next[i] = { ...next[i], ...patch };
@@ -469,10 +506,13 @@ function StepCohorts({
   }
   function addUsp() {
     if (inputs.usps.length >= 5) return;
-    setInputs((p) => ({ ...p, usps: [...p.usps, { title: "", description: "", proof: "" }] }));
+    setInputs((p) => ({
+      ...p,
+      usps: [...p.usps, { title: "", description: "", proof: "", strategy: "", enabled: true }],
+    }));
   }
   function removeUsp(i: number) {
-    if (inputs.usps.length <= 3) return;
+    if (inputs.usps.length <= 1) return;
     setInputs((p) => ({ ...p, usps: p.usps.filter((_, idx) => idx !== i) }));
   }
 
@@ -545,7 +585,7 @@ function StepCohorts({
         <SectionHeading
           n="02"
           title="Unique selling points"
-          hint="Three to five. Each gets a title, supporting description, and one proof point."
+          hint="One to five (at least one must be enabled). Each gets a title, description, proof point, and an optional strategy note."
           right={
             <button
               type="button"
@@ -559,10 +599,22 @@ function StepCohorts({
         />
         <div className="space-y-3">
           {inputs.usps.map((u, i) => (
-            <div key={i} className="card p-4">
+            <div key={i} className={`card p-4 ${u.enabled === false ? "opacity-50" : ""}`}>
               <div className="flex items-center justify-between mb-2">
-                <div className="eyebrow">USP {i + 1}</div>
-                {inputs.usps.length > 3 && (
+                <div className="flex items-center gap-3">
+                  <div className="eyebrow">USP {i + 1}</div>
+                  <label className="flex items-center gap-1.5 text-xs text-muted cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={u.enabled !== false}
+                      onChange={(e) => setUsp(i, { enabled: e.target.checked })}
+                      className="accent-accent"
+                      data-testid={`usp-enabled-${i}`}
+                    />
+                    Enabled
+                  </label>
+                </div>
+                {inputs.usps.length > 1 && (
                   <button
                     type="button"
                     className="text-xs text-muted hover:text-red-300"
@@ -587,11 +639,18 @@ function StepCohorts({
                 data-testid={`usp-desc-${i}`}
               />
               <input
-                className="input"
+                className="input mb-2"
                 placeholder="Proof point (review, sales data, expert quote…)"
                 value={u.proof}
                 onChange={(e) => setUsp(i, { proof: e.target.value })}
                 data-testid={`usp-proof-${i}`}
+              />
+              <input
+                className="input"
+                placeholder="Strategy to leverage (optional)"
+                value={u.strategy || ""}
+                onChange={(e) => setUsp(i, { strategy: e.target.value })}
+                data-testid={`usp-strategy-${i}`}
               />
             </div>
           ))}
@@ -796,6 +855,386 @@ function StepDate({
   );
 }
 
+/* ----- Step 5: Median Commercial Potential ----- */
+function StepCommercialPotential({
+  inputs,
+  update,
+  setInputs,
+}: {
+  inputs: FormInputs;
+  update: <K extends keyof FormInputs>(k: K, v: FormInputs[K]) => void;
+  setInputs: (fn: (prev: FormInputs) => FormInputs) => void;
+}) {
+  const [loadingDefaults, setLoadingDefaults] = useState(false);
+  const [defaultsErr, setDefaultsErr] = useState<string | null>(null);
+
+  function togglePlatform(p: Platform) {
+    setInputs((prev) => {
+      const has = prev.platforms.includes(p);
+      const next = has
+        ? prev.platforms.filter((x) => x !== p)
+        : [...prev.platforms, p];
+      return { ...prev, platforms: next.length ? next : prev.platforms };
+    });
+  }
+
+  async function fetchGenreDefaults() {
+    if (!inputs.genre.trim()) {
+      setDefaultsErr("Enter a genre on Step 1 first.");
+      return;
+    }
+    setLoadingDefaults(true);
+    setDefaultsErr(null);
+    try {
+      const comps = await api.genrePulseComps(inputs.genre.trim());
+      setInputs((prev) => ({
+        ...prev,
+        comp_set_name: comps.comp_set_name,
+        median_revenue_usd_millions: comps.median_revenue_usd_millions,
+        avg_price_usd: comps.avg_price_usd,
+        median_units_sold: comps.median_units_sold,
+        avg_hours_played: comps.avg_hours_played,
+      }));
+    } catch (e: any) {
+      setDefaultsErr(String(e.message || e));
+    } finally {
+      setLoadingDefaults(false);
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-1">Median commercial potential</h2>
+      <p className="text-sm text-muted mb-6">
+        Genre-benchmark KPIs and a per-platform revenue/units projection. Renders as Step 5 in
+        the pack (output position 2, right after the sizing chart).
+      </p>
+
+      <div className="mb-6">
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={fetchGenreDefaults}
+          disabled={loadingDefaults}
+          data-testid="button-fetch-genre-defaults"
+        >
+          {loadingDefaults ? "Fetching…" : "Pull defaults from Genre Pulse"}
+        </button>
+        <p className="hint">
+          Looks up genre-benchmark medians from howmanyareplaying.com and pre-fills the fields
+          below. You can still edit any value afterward.
+        </p>
+        {defaultsErr && <ErrorBox message={defaultsErr} />}
+      </div>
+
+      <div className="mb-4">
+        <label className="label">Comp set name</label>
+        <input
+          className="input"
+          placeholder="e.g. Horror — 19 titles"
+          value={inputs.comp_set_name || ""}
+          onChange={(e) => update("comp_set_name", e.target.value)}
+          data-testid="input-comp-set-name"
+        />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div>
+          <label className="label">Median revenue (comp set)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-dim text-sm">$</span>
+            <input
+              className="input pl-6"
+              type="number"
+              step="0.1"
+              min={0}
+              placeholder="4.7"
+              value={inputs.median_revenue_usd_millions || ""}
+              onChange={(e) =>
+                update("median_revenue_usd_millions", parseFloat(e.target.value || "0"))
+              }
+              data-testid="input-median-revenue"
+            />
+          </div>
+          <p className="hint">
+            In millions of dollars — e.g. "4.7" means $4,700,000. Renders on the slide as
+            "$4.70" with a small "in millions" label. Do not enter a raw dollar amount here.
+          </p>
+        </div>
+        <div>
+          <label className="label">Median units sold (comp set)</label>
+          <input
+            className="input"
+            type="number"
+            min={0}
+            placeholder="1782675"
+            value={inputs.median_units_sold || ""}
+            onChange={(e) => update("median_units_sold", parseInt(e.target.value || "0", 10))}
+            data-testid="input-median-units"
+          />
+          <p className="hint">Raw unit count — not in millions.</p>
+        </div>
+        <div>
+          <label className="label">Avg price (comp set)</label>
+          <div className="relative">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-dim text-sm">$</span>
+            <input
+              className="input pl-6"
+              type="number"
+              step="0.01"
+              min={0}
+              placeholder="39.99"
+              value={inputs.avg_price_usd || ""}
+              onChange={(e) => update("avg_price_usd", parseFloat(e.target.value || "0"))}
+              data-testid="input-avg-price"
+            />
+          </div>
+          <p className="hint">Plain dollars — not in millions.</p>
+        </div>
+        <div>
+          <label className="label">Avg hours played (comp set)</label>
+          <input
+            className="input"
+            type="number"
+            step="0.1"
+            min={0}
+            placeholder="18.7"
+            value={inputs.avg_hours_played || ""}
+            onChange={(e) => update("avg_hours_played", parseFloat(e.target.value || "0"))}
+            data-testid="input-avg-hours"
+          />
+        </div>
+      </div>
+
+      <label className="label">Platforms</label>
+      <p className="hint mb-2">
+        Select 1-4. The projection table splits median revenue/units across your selection using
+        locked platform-share weights (PC &gt; PS5 &gt; XSX &gt; SWITCH2).
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {ALL_PLATFORMS.map((p) => {
+          const active = inputs.platforms.includes(p);
+          return (
+            <button
+              key={p}
+              type="button"
+              onClick={() => togglePlatform(p)}
+              className={`px-3 py-2 rounded-md text-sm font-medium border transition-colors ${
+                active
+                  ? "border-accent/60 bg-accent-glow text-accent"
+                  : "border-border bg-surface text-muted hover:border-border-strong"
+              }`}
+              data-testid={`platform-${p.toLowerCase()}`}
+            >
+              {p}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ----- Step 6: Commercial Risks ----- */
+function StepCommercialRisks({
+  inputs,
+  update,
+  setInputs,
+}: {
+  inputs: FormInputs;
+  update: <K extends keyof FormInputs>(k: K, v: FormInputs[K]) => void;
+  setInputs: (fn: (prev: FormInputs) => FormInputs) => void;
+}) {
+  function setRisk(
+    i: number,
+    patch: Partial<{ threat_level: ThreatLevel; proof: string; mitigation: string }>
+  ) {
+    setInputs((prev) => {
+      const next = [...prev.risks];
+      next[i] = { ...next[i], ...patch };
+      return { ...prev, risks: next };
+    });
+  }
+  function addRisk() {
+    if (inputs.risks.length >= 5) return;
+    setInputs((p) => ({
+      ...p,
+      risks: [...p.risks, { threat_level: "medium", proof: "", mitigation: "" }],
+    }));
+  }
+  function removeRisk(i: number) {
+    if (inputs.risks.length <= 1) return;
+    setInputs((p) => ({ ...p, risks: p.risks.filter((_, idx) => idx !== i) }));
+  }
+
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-1">Commercial risks</h2>
+      <p className="text-sm text-muted mb-6">
+        One to five risks, each with a threat level, supporting proof, and a mitigation plan.
+        Renders as Step 6 in the pack (output position 11).
+      </p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        <div>
+          <label className="label">Risks wedge headline (optional)</label>
+          <input
+            className="input"
+            placeholder="e.g. The biggest threats to this launch — and how we handle them."
+            value={inputs.risks_wedge || ""}
+            onChange={(e) => update("risks_wedge", e.target.value)}
+            data-testid="input-risks-wedge"
+          />
+          <p className="hint">Falls back to the shared wedge headline from Step 4 if left blank.</p>
+        </div>
+        <div>
+          <label className="label">Risks wedge support (optional)</label>
+          <input
+            className="input"
+            placeholder="One sentence reinforcing the risks wedge headline."
+            value={inputs.risks_wedge_support || ""}
+            onChange={(e) => update("risks_wedge_support", e.target.value)}
+            data-testid="input-risks-wedge-support"
+          />
+        </div>
+      </div>
+
+      <SectionHeading
+        n="06"
+        title="Risks"
+        hint="One to five. Threat level drives the badge color on the slide."
+        right={
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={addRisk}
+            disabled={inputs.risks.length >= 5}
+          >
+            + Add risk
+          </button>
+        }
+      />
+      <div className="space-y-3">
+        {inputs.risks.map((r, i) => (
+          <div key={i} className="card p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="eyebrow">Risk {i + 1}</div>
+              {inputs.risks.length > 1 && (
+                <button
+                  type="button"
+                  className="text-xs text-muted hover:text-red-300"
+                  onClick={() => removeRisk(i)}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            <label className="label">Threat level</label>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {THREAT_LEVELS.map((lvl) => {
+                const active = r.threat_level === lvl;
+                return (
+                  <button
+                    key={lvl}
+                    type="button"
+                    onClick={() => setRisk(i, { threat_level: lvl })}
+                    className={`px-3 py-1.5 rounded-md text-xs font-bold uppercase tracking-wide border transition-colors ${
+                      active
+                        ? "border-accent/60 bg-accent-glow text-accent"
+                        : "border-border bg-surface text-muted hover:border-border-strong"
+                    }`}
+                    data-testid={`risk-level-${i}-${lvl}`}
+                  >
+                    {lvl}
+                  </button>
+                );
+              })}
+            </div>
+            <textarea
+              className="input mb-2 min-h-[60px]"
+              placeholder="Proof (data point, precedent, market signal…)"
+              value={r.proof}
+              onChange={(e) => setRisk(i, { proof: e.target.value })}
+              data-testid={`risk-proof-${i}`}
+            />
+            <textarea
+              className="input min-h-[60px]"
+              placeholder="Mitigation plan"
+              value={r.mitigation}
+              onChange={(e) => setRisk(i, { mitigation: e.target.value })}
+              data-testid={`risk-mitigation-${i}`}
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ----- Step 7: Description & Razors ----- */
+function StepDescriptionRazors({
+  inputs,
+  update,
+}: {
+  inputs: FormInputs;
+  update: <K extends keyof FormInputs>(k: K, v: FormInputs[K]) => void;
+}) {
+  const wc = (s: string) => (s.trim() ? s.trim().split(/\s+/).length : 0);
+  return (
+    <div>
+      <h2 className="text-lg font-semibold mb-1">Game description & razors</h2>
+      <p className="text-sm text-muted mb-6">
+        A ~100-word description plus a 20-word and a 10-word tagline ("razor"). Renders as Step 7
+        in the pack (output position 12, the final slide). Word-count limits are nominal —
+        going over just shows a warning, it won't block generation.
+      </p>
+
+      <div className="mb-6">
+        <label className="label">Description (~100 words)</label>
+        <textarea
+          className="input min-h-[140px]"
+          placeholder="A short, evocative description of the game for press and platform listings…"
+          value={inputs.description_100}
+          onChange={(e) => update("description_100", e.target.value)}
+          data-testid="input-description-100"
+        />
+        <p className={`hint ${wc(inputs.description_100) > 100 ? "text-amber-400" : ""}`}>
+          {wc(inputs.description_100)} / 100 words
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <label className="label">Razor (~20 words)</label>
+          <textarea
+            className="input min-h-[80px]"
+            placeholder="A tight one-sentence hook."
+            value={inputs.razor_20}
+            onChange={(e) => update("razor_20", e.target.value)}
+            data-testid="input-razor-20"
+          />
+          <p className={`hint ${wc(inputs.razor_20) > 20 ? "text-amber-400" : ""}`}>
+            {wc(inputs.razor_20)} / 20 words
+          </p>
+        </div>
+        <div>
+          <label className="label">Razor (~10 words)</label>
+          <textarea
+            className="input min-h-[80px]"
+            placeholder="An even tighter hook."
+            value={inputs.razor_10}
+            onChange={(e) => update("razor_10", e.target.value)}
+            data-testid="input-razor-10"
+          />
+          <p className={`hint ${wc(inputs.razor_10) > 10 ? "text-amber-400" : ""}`}>
+            {wc(inputs.razor_10)} / 10 words
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ----- Validation ----- */
 function isStepValid(step: number, inputs: FormInputs): boolean {
   if (step === 1) return Boolean(inputs.title.trim() && inputs.genre.trim());
@@ -806,12 +1245,31 @@ function isStepValid(step: number, inputs: FormInputs): boolean {
   if (step === 3) {
     if (inputs.cohorts.length !== 4) return false;
     if (!inputs.cohorts.every((c) => c.name.trim() && c.size >= 0)) return false;
-    if (inputs.usps.length < 3 || inputs.usps.length > 5) return false;
+    if (inputs.usps.length < 1 || inputs.usps.length > 5) return false;
     if (!inputs.usps.every((u) => u.title.trim() && u.description.trim())) return false;
+    if (!inputs.usps.some((u) => u.enabled !== false)) return false; // at least 1 enabled
     if (inputs.reach.length !== 4) return false;
     if (!inputs.reach.every((r) => r.channel.trim() && r.message.trim())) return false;
     return true;
   }
   if (step === 4) return Boolean(inputs.release_date);
+  if (step === 5) {
+    if (inputs.median_revenue_usd_millions <= 0) return false;
+    if (inputs.median_units_sold <= 0) return false;
+    if (inputs.avg_price_usd <= 0) return false;
+    if (inputs.avg_hours_played <= 0) return false;
+    if (!inputs.platforms || inputs.platforms.length < 1) return false;
+    return true;
+  }
+  if (step === 6) {
+    if (inputs.risks.length < 1 || inputs.risks.length > 5) return false;
+    if (!inputs.risks.every((r) => r.proof.trim() && r.mitigation.trim())) return false;
+    return true;
+  }
+  if (step === 7) {
+    return Boolean(
+      inputs.description_100.trim() && inputs.razor_20.trim() && inputs.razor_10.trim()
+    );
+  }
   return true;
 }

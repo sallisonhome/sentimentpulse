@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { PageHeader } from "../components/PageHeader";
 import { EmptyState, Spinner, ErrorBox } from "../components/EmptyState";
-import { api } from "../lib/api";
-import type { DeckSummary, LibraryResponse } from "../lib/types";
+import { api, ApiError } from "../lib/api";
+import type { DeckSummary, LibraryResponse, TranslateConflictDetail } from "../lib/types";
 
 export function Library() {
   const [, setLoc] = useLocation();
@@ -15,6 +15,10 @@ export function Library() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [cloning, setCloning] = useState<string | null>(null);
+  // Phase 4: tracks the source deck id currently being translated (for the
+  // per-card spinner) and any translate-specific error to show inline.
+  const [translating, setTranslating] = useState<string | null>(null);
+  const [translateErr, setTranslateErr] = useState<string | null>(null);
 
   function load() {
     setLoading(true);
@@ -47,6 +51,35 @@ export function Library() {
     } catch (e: any) {
       setErr(String(e.message || e));
       setCloning(null);
+    }
+  }
+
+  // Phase 4: kick off EN -> RU translation for a deck. On success, redirect
+  // straight to the new RU deck's viewer. On 409 (already translated), route
+  // to the existing RU deck instead of erroring -- the backend returns
+  // existing_deck_id specifically so we can do this. Any other failure
+  // (e.g. 502 because Sonar has no API key configured) surfaces as an
+  // inline error banner rather than a silent no-op.
+  async function translateToRu(id: string) {
+    setTranslating(id);
+    setTranslateErr(null);
+    try {
+      const res = await api.translate(id, "ru");
+      setLoc(`/library/${res.deck_id}/view`);
+    } catch (e: any) {
+      if (e instanceof ApiError && e.status === 409) {
+        const detail = e.detail as TranslateConflictDetail | undefined;
+        if (detail?.existing_deck_id) {
+          setLoc(`/library/${detail.existing_deck_id}/view`);
+          return;
+        }
+      }
+      setTranslateErr(
+        e instanceof ApiError
+          ? e.message
+          : `Translation failed: ${String(e.message || e)}`
+      );
+      setTranslating(null);
     }
   }
 
@@ -133,6 +166,7 @@ export function Library() {
         </div>
       )}
       {err && <ErrorBox message={err} />}
+      {translateErr && <ErrorBox message={translateErr} />}
       {!loading && !err && data && data.decks.length === 0 && (
         <EmptyState
           title="No decks yet"
@@ -156,6 +190,8 @@ export function Library() {
                 d={d}
                 onClone={cloneAndEdit}
                 isCloning={cloning === d.id}
+                onTranslate={translateToRu}
+                isTranslating={translating === d.id}
               />
             ))}
           </div>
@@ -169,12 +205,19 @@ function DeckCard({
   d,
   onClone,
   isCloning,
+  onTranslate,
+  isTranslating,
 }: {
   d: DeckSummary;
   onClone: (id: string) => void;
   isCloning: boolean;
+  onTranslate: (id: string) => void;
+  isTranslating: boolean;
 }) {
   const dateStr = formatDate(d.release_date);
+  // Phase 4: `language` defaults to "en" for any pre-Phase-4 row (backend
+  // schema default), so this is always defined even for old decks.
+  const isRu = d.language === "ru";
   return (
     <div className="card-hover p-5 flex flex-col" data-testid={`card-deck-${d.id}`}>
       <div className="flex items-start justify-between gap-2 mb-3">
@@ -182,15 +225,30 @@ function DeckCard({
           <div className="text-base font-semibold text-ink truncate">{d.title}</div>
           <div className="text-xs text-muted truncate mt-0.5">{d.genre}</div>
         </div>
-        <span
-          className={`shrink-0 chip ${
-            d.theme === "dark"
-              ? "border-ink/20 text-ink"
-              : "border-accent/30 text-accent"
-          }`}
-        >
-          {d.theme}
-        </span>
+        <div className="shrink-0 flex flex-col items-end gap-1">
+          <span
+            className={`chip ${
+              d.theme === "dark"
+                ? "border-ink/20 text-ink"
+                : "border-accent/30 text-accent"
+            }`}
+          >
+            {d.theme}
+          </span>
+          <span
+            className={`chip ${
+              isRu ? "border-accent/40 text-accent" : "border-ink/15 text-muted"
+            }`}
+            data-testid={`badge-language-${d.id}`}
+            title={
+              isRu && d.translated_from_deck_id
+                ? `Translated from deck ${d.translated_from_deck_id}`
+                : undefined
+            }
+          >
+            {isRu ? "RU" : "EN"}
+          </span>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2 text-[11px] text-muted mb-5">
@@ -230,6 +288,20 @@ function DeckCard({
         >
           PDF
         </a>
+        {/* Only offer translation from an EN source deck -- translating an
+            RU deck (or chaining RU->RU) is out of scope for v1, and the
+            backend rejects it with a 400 anyway. */}
+        {!isRu && (
+          <button
+            className="btn-ghost"
+            onClick={() => onTranslate(d.id)}
+            disabled={isTranslating}
+            data-testid={`button-translate-ru-${d.id}`}
+            title="Translate this deck to Russian"
+          >
+            {isTranslating ? "Translating…" : "Translate → RU"}
+          </button>
+        )}
         <button
           className="btn-ghost ml-auto"
           onClick={() => onClone(d.id)}
