@@ -10,12 +10,14 @@ import datetime as dt
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
 
+import httpx
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -31,6 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from db import DB_PATH, get_conn, init_db  # noqa: E402
 from gtm_pack import render_pack_with_artifacts  # noqa: E402
 from gtm_pack import ASSETS_DIR as GTM_ASSETS_DIR  # noqa: E402
+from gtm_pack.translate import (  # noqa: E402
+    TranslationError,
+    load_ru_roadmap_phases,
+    translate_form_inputs,
+)
 from admin_auth import (  # noqa: E402
     clear_session_cookie,
     make_session_token,
@@ -65,6 +72,8 @@ class USP(BaseModel):
     title: str
     description: str
     proof: str = ""
+    strategy: str = ""
+    enabled: bool = True
 
 
 class ReachRow(BaseModel):
@@ -74,6 +83,19 @@ class ReachRow(BaseModel):
     kpi: str
 
 
+class CommercialRisk(BaseModel):
+    threat_level: str       # critical | high | medium | low (case-insensitive)
+    proof: str
+    mitigation: str
+
+    @field_validator("threat_level")
+    @classmethod
+    def _validate_level(cls, v: str) -> str:
+        if v.strip().lower() not in ("critical", "high", "medium", "low"):
+            raise ValueError("threat_level must be one of: critical, high, medium, low")
+        return v
+
+
 class FormInputs(BaseModel):
     title: str
     genre: str
@@ -81,12 +103,51 @@ class FormInputs(BaseModel):
     inner: str = "prev"                # prev | dev | other
     release_date: str                  # YYYY-MM-DD
     cohorts: list[Cohort] = Field(min_length=4, max_length=4)
-    usps: list[USP] = Field(min_length=3, max_length=5)
+
+    # Median Commercial Potential (Revision 1). CURRENCY UNITS -- do not
+    # confuse these three fields (see gtm_revisions_summary.md for the
+    # cents -> dollars -> millions-of-dollars correction history):
+    #   - median_revenue_usd_millions: MILLIONS of dollars (e.g. 4.7 == $4.7M)
+    #   - avg_price_usd: PLAIN dollars (e.g. 39.99)
+    #   - median_units_sold: raw integer unit count (e.g. 1782675)
+    comp_set_name: str = "Genre Pulse comp set"
+    median_revenue_usd_millions: float = 0.0
+    avg_price_usd: float = 0.0
+    median_units_sold: int = 0
+    avg_hours_played: float = 0.0
+    platforms: list[str] = Field(default_factory=lambda: ["PC", "PS5", "XSX", "SWITCH2"])
+
+    usps: list[USP] = Field(min_length=1, max_length=5)
     reach: list[ReachRow] = Field(min_length=4, max_length=4)
+
+    # Commercial Risks (Revision 3)
+    # NOTE on backward compatibility: default_factory supplies one placeholder
+    # risk so that pre-revision deck rows in the DB (whose inputs_json blob
+    # predates this field entirely) can still be read back via GET
+    # /library/{id}, clone, and /library/{id}/slides without a validation
+    # error. New submissions from the wizard always send this field
+    # explicitly with real user-authored content -- the placeholder default
+    # is a read-compatibility safety net only, not an intended empty state
+    # for new decks.
+    risks: list[CommercialRisk] = Field(
+        default_factory=lambda: [
+            CommercialRisk(threat_level="medium", proof="", mitigation="")
+        ],
+        min_length=1,
+        max_length=5,
+    )
+
+    # Description & Razors (Revision 4)
+    description_100: str = ""
+    razor_20: str = ""
+    razor_10: str = ""
+
     inner_definition: str | None = None
     ring2_definition: str | None = None
     wedge: str | None = None
     wedge_support: str | None = None
+    risks_wedge: str | None = None
+    risks_wedge_support: str | None = None
     phases_override: dict | None = None
 
     @field_validator("release_date")
@@ -96,6 +157,16 @@ class FormInputs(BaseModel):
             dt.date.fromisoformat(v)
         except ValueError:
             raise ValueError(f"release_date must be YYYY-MM-DD, got {v}")
+        return v
+
+    @field_validator("usps")
+    @classmethod
+    def _validate_enabled_usp_count(cls, v: list[USP]) -> list[USP]:
+        enabled_count = sum(1 for u in v if u.enabled)
+        if not (1 <= enabled_count <= 5):
+            raise ValueError(
+                f"Enabled USP count must be 1-5 (got {enabled_count} enabled of {len(v)} total)"
+            )
         return v
 
 
@@ -117,6 +188,17 @@ class RegenerateRequest(PreviewRequest):
 
 class CommitRequest(BaseModel):
     is_private: bool = False
+
+
+class TranslateRequest(BaseModel):
+    target_lang: str = "ru"
+
+    @field_validator("target_lang")
+    @classmethod
+    def _validate_target_lang(cls, v: str) -> str:
+        if v != "ru":
+            raise ValueError("target_lang must be 'ru' (only supported target currently)")
+        return v
 
 
 # ── App init ─────────────────────────────────────────────────────────────────
@@ -141,11 +223,33 @@ app.add_middleware(
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
+def _form_inputs_to_render_dict(inputs: FormInputs) -> dict[str, Any]:
+    """Map FormInputs -> the flat dict shape the gtm_pack renderers expect.
+
+    Most fields pass through as-is via model_dump(); a couple of names differ
+    between the Pydantic form schema and the renderer wrapper contract:
+      - description_100 (form field name) -> description (renderer key)
+      - risks_wedge / risks_wedge_support -> wedge / wedge_support are shared
+        between the USP slide and the Commercial Risks slide in the skill's
+        CLI, so we pass the risks-specific wedge through under the same
+        `wedge`/`wedge_support` keys ONLY when rendering commercial_risks;
+        render_full_pack's per-renderer wrappers read wedge/wedge_support
+        from the same inputs dict for both USP and Risks, so if the caller
+        wants DIFFERENT wedge text on each slide they must render those two
+        slides separately rather than via render_full_pack. render_full_pack
+        uses `wedge`/`wedge_support` for USP and falls back to
+        `risks_wedge`/`risks_wedge_support` (if set) for Commercial Risks.
+    """
+    d = inputs.model_dump()
+    d["description"] = d.pop("description_100", "") or d.get("description", "")
+    return d
+
+
 def _render_to(out_dir: Path, inputs: FormInputs, theme: str) -> dict[str, Any]:
     """Acquire render semaphore, render, return artifact dict."""
     with RENDER_SEMAPHORE:
         return render_pack_with_artifacts(
-            inputs.model_dump(),
+            _form_inputs_to_render_dict(inputs),
             theme,
             out_dir,
             phases_override=inputs.phases_override,
@@ -178,6 +282,79 @@ def get_roadmap_phases_defaults():
     """Return the bundled roadmap_phases.json for the form's advanced editor."""
     with open(GTM_ASSETS_DIR / "roadmap_phases.json") as f:
         return json.load(f)
+
+
+# Genre Pulse upstream (howmanyareplaying.com) exposes comp-set aggregates in
+# CENTS. This endpoint converts them to the units the GTM Studio form and
+# renderers use (see FormInputs / gtm_pack docstrings for the full currency
+# history): revenue -> MILLIONS of dollars, price -> PLAIN dollars, units ->
+# unchanged raw count.
+GENRE_PULSE_BASE_URL = os.getenv("GENRE_PULSE_BASE_URL", "https://www.howmanyareplaying.com")
+_GENRE_PULSE_TIMEOUT_S = 8.0
+
+
+@app.get("/defaults/genre_pulse_comps")
+def get_genre_pulse_comps(genre: str = Query(..., description="Genre slug, e.g. 'horror'")):
+    """Fetch Genre Pulse (howmanyareplaying.com) comp-set averages for a genre
+    and convert them into the units the Commercial Potential form/renderer use.
+
+    Upstream shape (cents-based), from GET /api/genres/{genre}:
+      averages.avg_msrp_usd_cents            -> avg_price_usd  (/100)
+      averages.avg_hours_median              -> avg_hours_played (unchanged)
+      averages.median_estimated_owners       -> median_units_sold (unchanged)
+      averages.median_estimated_gross_sales_usd_cents
+                                              -> median_revenue_usd_millions
+                                                 (/100/1_000_000, rounded to 2dp)
+
+    Response shape:
+      {
+        "median_revenue_usd_millions": 4.7,
+        "avg_price_usd": 39.99,
+        "median_units_sold": 1782675,
+        "avg_hours_played": 18.7,
+        "comp_set_name": "<Genre> — <N> titles",
+        "source": "howmanyareplaying.com"
+      }
+    """
+    url = f"{GENRE_PULSE_BASE_URL}/api/genres/{genre}"
+    try:
+        resp = httpx.get(url, timeout=_GENRE_PULSE_TIMEOUT_S)
+        resp.raise_for_status()
+        payload = resp.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Genre Pulse upstream request failed: {e}")
+    except ValueError as e:
+        raise HTTPException(502, f"Genre Pulse upstream returned invalid JSON: {e}")
+
+    averages = payload.get("averages") or {}
+    titles = payload.get("titles") or payload.get("games") or []
+    n_titles = len(titles) if isinstance(titles, list) else payload.get("title_count")
+
+    try:
+        avg_price_cents = averages["avg_msrp_usd_cents"]
+        avg_hours = averages["avg_hours_median"]
+        median_owners = averages["median_estimated_owners"]
+        median_gross_cents = averages["median_estimated_gross_sales_usd_cents"]
+    except KeyError as e:
+        raise HTTPException(
+            502, f"Genre Pulse upstream response missing expected field: {e}"
+        )
+
+    median_revenue_usd_millions = round(median_gross_cents / 100 / 1_000_000, 2)
+    avg_price_usd = round(avg_price_cents / 100, 2)
+
+    comp_set_name = f"{genre.title()}"
+    if n_titles:
+        comp_set_name += f" — {n_titles} titles"
+
+    return {
+        "median_revenue_usd_millions": median_revenue_usd_millions,
+        "avg_price_usd": avg_price_usd,
+        "median_units_sold": int(median_owners),
+        "avg_hours_played": float(avg_hours),
+        "comp_set_name": comp_set_name,
+        "source": "howmanyareplaying.com",
+    }
 
 
 @app.get("/library")
@@ -214,7 +391,8 @@ def list_library(
             f"SELECT COUNT(*) FROM gtm_decks WHERE {where_clause}", params
         ).fetchone()[0]
         rows = conn.execute(
-            f"""SELECT id, title, genre, theme, release_date, is_private, created_at, status
+            f"""SELECT id, title, genre, theme, release_date, is_private, created_at, status,
+                       language, translated_from_deck_id
                 FROM gtm_decks
                 WHERE {where_clause}
                 ORDER BY created_at DESC
@@ -278,17 +456,194 @@ def clone_deck(deck_id: str):
     return {"theme": row["theme"], "inputs": json.loads(row["inputs_json"])}
 
 
+@app.post("/library/{deck_id}/translate")
+def translate_deck(deck_id: str, req: TranslateRequest):
+    """Translate an existing EN library deck into `req.target_lang` (Phase 4).
+
+    Flow:
+      1. 404 if the source deck doesn't exist (active, non-private, and --
+         intentionally -- must currently be an EN-language deck; translating
+         an already-translated deck is out of scope for v1 and rejected).
+      2. 409 if a translation to that language already exists for this deck
+         (enforced by the DB's UNIQUE index on
+         (translated_from_deck_id, language) -- we also pre-check via SELECT
+         so we can return the existing deck_id in the 409 body for the
+         frontend to link to directly, per the Library.tsx UX spec).
+      3. Translate FormInputs via Sonar (gtm_pack.translate.translate_form_inputs).
+         Any TranslationError (e.g. Sonar unavailable) surfaces as a 502 --
+         this must fail loudly, never silently create a mislabeled deck.
+      4. Re-render all 12 slides in the target language, using the
+         pre-translated static roadmap phases asset as `phases_override`
+         (the roadmap slide copy is fixed checklist content, not per-deck
+         user input -- see gtm_pack/translate.py module docstring).
+      5. Insert a new gtm_decks row with language=<target_lang> and
+         translated_from_deck_id=<source id>, copying is_private from the
+         source deck.
+      6. Return the new deck_id so the frontend can redirect to its viewer.
+    """
+    with get_conn() as conn:
+        source_row = conn.execute(
+            "SELECT * FROM gtm_decks WHERE id = ? AND deleted_at IS NULL AND is_private = 0",
+            [deck_id],
+        ).fetchone()
+    if not source_row:
+        raise HTTPException(404, "Deck not found")
+
+    source_language = source_row["language"] if "language" in source_row.keys() else "en"
+    if source_language != "en":
+        raise HTTPException(
+            400,
+            f"Deck {deck_id} is already language={source_language!r}; "
+            f"only EN decks can be translated in this version.",
+        )
+
+    # Pre-check for an existing translation so we can return its deck_id in
+    # the 409 body (nicer UX than a bare constraint-violation error; the
+    # UNIQUE index below is still the source of truth / race-condition guard).
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM gtm_decks WHERE translated_from_deck_id = ? AND language = ?"
+            " AND deleted_at IS NULL",
+            [deck_id, req.target_lang],
+        ).fetchone()
+    if existing:
+        raise HTTPException(
+            409,
+            detail={
+                "message": f"A {req.target_lang} translation of this deck already exists.",
+                "existing_deck_id": existing["id"],
+            },
+        )
+
+    source_inputs_dict = json.loads(source_row["inputs_json"])
+
+    try:
+        translated_inputs_dict = translate_form_inputs(source_inputs_dict, req.target_lang)
+    except TranslationError as e:
+        raise HTTPException(502, f"Translation failed: {e}")
+
+    # Re-validate through FormInputs to catch any structural corruption from
+    # the translation merge before we render or persist anything.
+    try:
+        translated_inputs = FormInputs(**translated_inputs_dict)
+    except Exception as e:
+        raise HTTPException(
+            502, f"Translated inputs failed validation (translation service bug): {e}"
+        )
+
+    theme = source_row["theme"]
+    phases_override = None
+    if req.target_lang == "ru":
+        phases_override = load_ru_roadmap_phases()
+
+    new_deck_id = uuid.uuid4().hex
+    deck_dir = LIBRARY_DIR / new_deck_id
+    deck_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with RENDER_SEMAPHORE:
+            result = render_pack_with_artifacts(
+                _form_inputs_to_render_dict(translated_inputs),
+                theme,
+                deck_dir,
+                phases_override=phases_override,
+                language=req.target_lang,
+            )
+    except Exception as e:
+        shutil.rmtree(deck_dir, ignore_errors=True)
+        raise HTTPException(500, f"Translated render failed: {e}")
+
+    pptx_files = list(deck_dir.glob("*.pptx"))
+    pdf_files = list(deck_dir.glob("*.pdf"))
+    if not pptx_files:
+        shutil.rmtree(deck_dir, ignore_errors=True)
+        raise HTTPException(500, "PPTX missing from translated render")
+
+    pptx_dst = deck_dir / "deck.pptx"
+    if pptx_files[0] != pptx_dst:
+        shutil.move(str(pptx_files[0]), str(pptx_dst))
+    pdf_dst = None
+    if pdf_files:
+        pdf_dst = deck_dir / "deck.pdf"
+        if pdf_files[0] != pdf_dst:
+            shutil.move(str(pdf_files[0]), str(pdf_dst))
+
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                """INSERT INTO gtm_decks
+                   (id, title, genre, theme, release_date, inputs_json, is_private,
+                    pptx_path, pdf_path, pptx_size_bytes, status, language,
+                    translated_from_deck_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)""",
+                [
+                    new_deck_id,
+                    translated_inputs.title,
+                    translated_inputs.genre,
+                    theme,
+                    translated_inputs.release_date,
+                    json.dumps(translated_inputs.model_dump()),
+                    source_row["is_private"],
+                    str(pptx_dst),
+                    str(pdf_dst) if pdf_dst else None,
+                    pptx_dst.stat().st_size,
+                    req.target_lang,
+                    deck_id,
+                ],
+            )
+    except sqlite3.IntegrityError as e:
+        # Race: another request created the same translation between our
+        # pre-check and this INSERT. The UNIQUE index is the real guard.
+        shutil.rmtree(deck_dir, ignore_errors=True)
+        with get_conn() as conn:
+            existing2 = conn.execute(
+                "SELECT id FROM gtm_decks WHERE translated_from_deck_id = ? AND language = ?"
+                " AND deleted_at IS NULL",
+                [deck_id, req.target_lang],
+            ).fetchone()
+        raise HTTPException(
+            409,
+            detail={
+                "message": f"A {req.target_lang} translation of this deck already exists.",
+                "existing_deck_id": existing2["id"] if existing2 else None,
+            },
+        )
+
+    return {
+        "deck_id": new_deck_id,
+        "language": req.target_lang,
+        "translated_from_deck_id": deck_id,
+    }
+
+
+
 @app.get("/library/{deck_id}/slides")
 def library_slides(deck_id: str):
     """Return (or lazily generate) per-slide PNG URLs for a library deck."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, title, theme, inputs_json FROM gtm_decks"
+            "SELECT id, title, theme, inputs_json, language, translated_from_deck_id"
+            " FROM gtm_decks"
             " WHERE id = ? AND deleted_at IS NULL AND is_private = 0",
             [deck_id],
         ).fetchone()
     if not row:
         raise HTTPException(404, "Deck not found")
+
+    # Phase 4: surface language + translated_from_deck_id so the Viewer can
+    # show an EN<->RU cross-link chip. `translated_to_deck_id` (the reverse
+    # direction, from an EN source to its RU translation if one exists) is
+    # resolved separately below since it isn't a column on this row.
+    translated_to_deck_id = None
+    if row["language"] == "en":
+        with get_conn() as conn:
+            ru_row = conn.execute(
+                "SELECT id FROM gtm_decks WHERE translated_from_deck_id = ?"
+                " AND language = 'ru' AND deleted_at IS NULL",
+                [deck_id],
+            ).fetchone()
+        if ru_row:
+            translated_to_deck_id = ru_row["id"]
 
     cache_dir = LIBRARY_DIR / deck_id / "slides"
 
@@ -301,6 +656,9 @@ def library_slides(deck_id: str):
                 "title": row["title"],
                 "theme": row["theme"],
                 "slide_count": len(cached_pngs),
+                "language": row["language"],
+                "translated_from_deck_id": row["translated_from_deck_id"],
+                "translated_to_deck_id": translated_to_deck_id,
                 "pngs": [
                     f"/gtm/api/library/{deck_id}/slides/{p.name}"
                     for p in cached_pngs
@@ -327,6 +685,9 @@ def library_slides(deck_id: str):
         "title": row["title"],
         "theme": row["theme"],
         "slide_count": len(pngs),
+        "language": row["language"],
+        "translated_from_deck_id": row["translated_from_deck_id"],
+        "translated_to_deck_id": translated_to_deck_id,
         "pngs": [
             f"/gtm/api/library/{deck_id}/slides/{p.name}"
             for p in pngs
@@ -361,7 +722,7 @@ def library_slide_png(deck_id: str, name: str):
 
 @app.post("/preview")
 def create_preview(req: PreviewRequest):
-    """Render a fresh preview. Returns session_id + 9 PNG urls."""
+    """Render a fresh preview. Returns session_id + 12 PNG urls."""
     session_id = uuid.uuid4().hex
     session_dir = PREVIEW_DIR / session_id
     session_dir.mkdir(parents=True, exist_ok=True)

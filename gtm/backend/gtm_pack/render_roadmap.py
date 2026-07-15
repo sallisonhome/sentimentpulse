@@ -43,6 +43,11 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 
+try:
+    from .i18n import body_pt
+except ImportError:  # pragma: no cover
+    from i18n import body_pt
+
 
 # ============================================================
 # helpers
@@ -195,7 +200,7 @@ RIBBON_STAGES = [
 ]
 
 
-def draw_ribbon_dark(slide, current_index, anchors, INK, MUTED, BORDER, ACCENT, SURFACE):
+def draw_ribbon_dark(slide, current_index, anchors, INK, MUTED, BORDER, ACCENT, SURFACE, L="en"):
     """Horizontal ribbon at top showing all 5 stages. Current stage highlighted."""
     rx, ry, rw, rh = 0.6, 2.05, 12.1, 0.55
     add_rect(slide, rx, ry, rw, rh, SURFACE, line=BORDER)
@@ -218,7 +223,7 @@ def draw_ribbon_dark(slide, current_index, anchors, INK, MUTED, BORDER, ACCENT, 
                  font="Trebuchet MS", size=11, bold=True, color=txt_color,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         add_text(slide, x, ry + 0.30, seg_w, 0.22, txlbl,
-                 font="Calibri", size=8, color=sub_color,
+                 font="Calibri", size=body_pt(L, 8), color=sub_color,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         # divider between segments
         if i < n - 1:
@@ -230,10 +235,10 @@ def draw_ribbon_dark(slide, current_index, anchors, INK, MUTED, BORDER, ACCENT, 
         tx = rx + keypos * rw - 0.5
         d = anchors[akey].strftime("%b %Y") if "mo" in akey or "+0" in akey else anchors[akey].strftime("%b %Y")
         add_text(slide, tx, tick_y, 1.0, 0.2, d,
-                 font="Calibri", size=8, color=MUTED, align=PP_ALIGN.CENTER)
+                 font="Calibri", size=body_pt(L, 8), color=MUTED, align=PP_ALIGN.CENTER)
 
 
-def draw_ribbon_light(slide, current_index, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT):
+def draw_ribbon_light(slide, current_index, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT, L="en"):
     rx, ry, rw, rh = 0.7, 2.15, 12.0, 0.55
     add_rect(slide, rx, ry, rw, rh, SURFACE_LIGHT, line=HAIR)
     n = len(RIBBON_STAGES)
@@ -253,7 +258,7 @@ def draw_ribbon_light(slide, current_index, anchors, INK, MUTED, HAIR, ACCENT, S
                  font="Trebuchet MS", size=11, bold=True, color=txt_color,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         add_text(slide, x, ry + 0.30, seg_w, 0.22, txlbl,
-                 font="Calibri", size=8, color=sub_color,
+                 font="Calibri", size=body_pt(L, 8), color=sub_color,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         if i < n - 1:
             add_rect(slide, x + seg_w - 0.005, ry + 0.08, 0.01, rh - 0.16, HAIR)
@@ -263,13 +268,13 @@ def draw_ribbon_light(slide, current_index, anchors, INK, MUTED, HAIR, ACCENT, S
         tx = rx + keypos * rw - 0.5
         d = anchors[akey].strftime("%b %Y")
         add_text(slide, tx, tick_y, 1.0, 0.2, d,
-                 font="Calibri", size=8, color=MUTED, align=PP_ALIGN.CENTER)
+                 font="Calibri", size=body_pt(L, 8), color=MUTED, align=PP_ALIGN.CENTER)
 
 
 # ============================================================
 # Slide body: two stacked phase-section cards
 # ============================================================
-def draw_section_cards_dark(slide, slide_data, anchors, INK, MUTED, BORDER, SURFACE, ACCENT):
+def draw_section_cards_dark(slide, slide_data, anchors, INK, MUTED, BORDER, SURFACE, ACCENT, L="en"):
     """Two phase-section cards, side by side."""
     sections = slide_data["sections"]
     n = len(sections)
@@ -290,10 +295,10 @@ def draw_section_cards_dark(slide, slide_data, anchors, INK, MUTED, BORDER, SURF
         cal = section_date_window(sec["tx_label"], anchors)
         add_text(slide, x + 0.3, body_y + 0.6, card_w - 0.6, 0.25,
                  sec["tx_label"],
-                 font="Calibri", size=10, bold=True, color=ACCENT)
+                 font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
         if cal:
             add_text(slide, x + 0.3, body_y + 0.85, card_w - 0.6, 0.22,
-                     cal, font="Calibri", size=9, color=MUTED)
+                     cal, font="Calibri", size=body_pt(L, 9), color=MUTED)
         # Divider
         add_rect(slide, x + 0.3, body_y + 1.13, card_w - 0.6, 0.008, BORDER)
         # Items
@@ -305,10 +310,10 @@ def draw_section_cards_dark(slide, slide_data, anchors, INK, MUTED, BORDER, SURF
             # bullet dot
             add_oval(slide, x + 0.35, iy + 0.13, 0.07, 0.07, ACCENT)
             add_text(slide, x + 0.5, iy, card_w - 0.7, item_gap - 0.05,
-                     item, font="Calibri", size=10, color=INK)
+                     item, font="Calibri", size=body_pt(L, 10), color=INK)
 
 
-def draw_section_cards_light(slide, slide_data, anchors, INK, MUTED, HAIR, ACCENT):
+def draw_section_cards_light(slide, slide_data, anchors, INK, MUTED, HAIR, ACCENT, L="en"):
     sections = slide_data["sections"]
     n = len(sections)
     body_y = 3.25
@@ -327,10 +332,10 @@ def draw_section_cards_light(slide, slide_data, anchors, INK, MUTED, HAIR, ACCEN
         cal = section_date_window(sec["tx_label"], anchors)
         add_text(slide, x + 0.3, body_y + 0.6, card_w - 0.6, 0.25,
                  sec["tx_label"],
-                 font="Calibri", size=10, bold=True, color=ACCENT)
+                 font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
         if cal:
             add_text(slide, x + 0.3, body_y + 0.85, card_w - 0.6, 0.22,
-                     cal, font="Calibri", size=9, color=MUTED)
+                     cal, font="Calibri", size=body_pt(L, 9), color=MUTED)
         add_rect(slide, x + 0.3, body_y + 1.13, card_w - 0.6, 0.008, HAIR)
         items = sec["items"]
         item_y0 = body_y + 1.25
@@ -339,7 +344,7 @@ def draw_section_cards_light(slide, slide_data, anchors, INK, MUTED, HAIR, ACCEN
             iy = item_y0 + j * item_gap
             add_oval(slide, x + 0.35, iy + 0.13, 0.07, 0.07, ACCENT)
             add_text(slide, x + 0.5, iy, card_w - 0.7, item_gap - 0.05,
-                     item, font="Calibri", size=10, color=INK)
+                     item, font="Calibri", size=body_pt(L, 10), color=INK)
 
 
 # ============================================================
@@ -374,6 +379,7 @@ def fmt_event_date(d: dt.date, anchor_key: str) -> str:
 
 
 def draw_summary_dark(slide, events, anchors, args, INK, MUTED, BORDER, SURFACE, ACCENT):
+    L = getattr(args, "language", "en")
     """Two-column timeline of date-anchored events. No commentary."""
     # Layout: two columns, events split roughly in half
     body_y = 3.05
@@ -409,16 +415,17 @@ def draw_summary_dark(slide, events, anchors, args, INK, MUTED, BORDER, SURFACE,
             date_str = fmt_event_date(d, ev["date_anchor"])
             # Date pill (left)
             add_text(slide, x + 0.3, ry, date_col_w, row_gap - 0.02,
-                     date_str, font="Calibri", size=10, bold=True, color=ACCENT,
+                     date_str, font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT,
                      anchor=MSO_ANCHOR.MIDDLE)
             # Event label (right)
             add_text(slide, x + 0.3 + date_col_w + 0.1, ry,
                      card_w - 0.6 - date_col_w - 0.1, row_gap - 0.02,
-                     ev["event"], font="Calibri", size=10, color=INK,
+                     ev["event"], font="Calibri", size=body_pt(L, 10), color=INK,
                      anchor=MSO_ANCHOR.MIDDLE)
 
 
 def draw_summary_light(slide, events, anchors, args, INK, MUTED, HAIR, ACCENT):
+    L = getattr(args, "language", "en")
     body_y = 3.15
     body_h = 3.9
     margin_x = 0.7
@@ -446,15 +453,15 @@ def draw_summary_light(slide, events, anchors, args, INK, MUTED, HAIR, ACCENT):
             d = resolve_event_date(ev["date_anchor"], args.release_date, anchors)
             date_str = fmt_event_date(d, ev["date_anchor"])
             add_text(slide, x + 0.3, ry, date_col_w, row_gap - 0.02,
-                     date_str, font="Calibri", size=10, bold=True, color=ACCENT,
+                     date_str, font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT,
                      anchor=MSO_ANCHOR.MIDDLE)
             add_text(slide, x + 0.3 + date_col_w + 0.1, ry,
                      card_w - 0.6 - date_col_w - 0.1, row_gap - 0.02,
-                     ev["event"], font="Calibri", size=10, color=INK,
+                     ev["event"], font="Calibri", size=body_pt(L, 10), color=INK,
                      anchor=MSO_ANCHOR.MIDDLE)
 
 
-def draw_summary_ribbon_dark(slide, anchors, INK, MUTED, BORDER, ACCENT, SURFACE):
+def draw_summary_ribbon_dark(slide, anchors, INK, MUTED, BORDER, ACCENT, SURFACE, L="en"):
     """Same ribbon as content slides, but no single phase highlighted (overview)."""
     rx, ry, rw, rh = 0.6, 2.05, 12.1, 0.55
     add_rect(slide, rx, ry, rw, rh, SURFACE, line=BORDER)
@@ -469,7 +476,7 @@ def draw_summary_ribbon_dark(slide, anchors, INK, MUTED, BORDER, ACCENT, SURFACE
                  font="Trebuchet MS", size=11, bold=True, color=INK,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         add_text(slide, x, ry + 0.30, seg_w, 0.22, txlbl,
-                 font="Calibri", size=8, color=MUTED,
+                 font="Calibri", size=body_pt(L, 8), color=MUTED,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         if i < n - 1:
             add_rect(slide, x + seg_w - 0.005, ry + 0.08, 0.01, rh - 0.16, BORDER)
@@ -479,10 +486,10 @@ def draw_summary_ribbon_dark(slide, anchors, INK, MUTED, BORDER, ACCENT, SURFACE
         tx = rx + keypos * rw - 0.5
         d = anchors[akey].strftime("%b %Y")
         add_text(slide, tx, tick_y, 1.0, 0.2, d,
-                 font="Calibri", size=8, color=MUTED, align=PP_ALIGN.CENTER)
+                 font="Calibri", size=body_pt(L, 8), color=MUTED, align=PP_ALIGN.CENTER)
 
 
-def draw_summary_ribbon_light(slide, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT):
+def draw_summary_ribbon_light(slide, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT, L="en"):
     rx, ry, rw, rh = 0.7, 2.15, 12.0, 0.55
     add_rect(slide, rx, ry, rw, rh, SURFACE_LIGHT, line=HAIR)
     n = len(RIBBON_STAGES)
@@ -495,7 +502,7 @@ def draw_summary_ribbon_light(slide, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_
                  font="Trebuchet MS", size=11, bold=True, color=INK,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         add_text(slide, x, ry + 0.30, seg_w, 0.22, txlbl,
-                 font="Calibri", size=8, color=MUTED,
+                 font="Calibri", size=body_pt(L, 8), color=MUTED,
                  align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
         if i < n - 1:
             add_rect(slide, x + seg_w - 0.005, ry + 0.08, 0.01, rh - 0.16, HAIR)
@@ -505,10 +512,11 @@ def draw_summary_ribbon_light(slide, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_
         tx = rx + keypos * rw - 0.5
         d = anchors[akey].strftime("%b %Y")
         add_text(slide, tx, tick_y, 1.0, 0.2, d,
-                 font="Calibri", size=8, color=MUTED, align=PP_ALIGN.CENTER)
+                 font="Calibri", size=body_pt(L, 8), color=MUTED, align=PP_ALIGN.CENTER)
 
 
 def render_summary_dark(prs, events, slide_num, total, anchors, args):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#0E1116")
     SURFACE  = hex_rgb("#161A21")
     BORDER   = hex_rgb("#1F2530")
@@ -527,22 +535,23 @@ def render_summary_dark(prs, events, slide_num, total, anchors, args):
              font="Trebuchet MS", size=28, bold=True, color=INK)
     add_text(slide, 0.6, 1.35, 12, 0.4,
              f"{args.genre}  \u00b7  Work-back summary. Calendar-anchored milestones only.",
-             font="Calibri", size=12, color=MUTED)
+             font="Calibri", size=body_pt(L, 12), color=MUTED)
     rel_str = "Release: " + args.release_date.strftime("%b %Y")
     add_rect(slide, 10.4, 0.4, 2.3, 0.32, SURFACE, line=BORDER)
     add_text(slide, 10.4, 0.4, 2.3, 0.32, rel_str,
-             font="Calibri", size=9, bold=True, color=ACCENT,
+             font="Calibri", size=body_pt(L, 9), bold=True, color=ACCENT,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
 
-    draw_summary_ribbon_dark(slide, anchors, INK, MUTED, BORDER, ACCENT, SURFACE)
+    draw_summary_ribbon_dark(slide, anchors, INK, MUTED, BORDER, ACCENT, SURFACE, L)
     draw_summary_dark(slide, events, anchors, args, INK, MUTED, BORDER, SURFACE, ACCENT)
 
     add_text(slide, 0.6, 7.15, 12, 0.25,
              f"GTM CHECKLIST FOR PC  \u00b7  STEP 04.{slide_num}  \u00b7  WORK-BACK FROM {args.release_date.strftime('%b %d, %Y').upper()}",
-             font="Calibri", size=8, bold=True, color=MUTED)
+             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
 
 
 def render_summary_light(prs, events, slide_num, total, anchors, args):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#FFFFFF")
     SURFACE_LIGHT = hex_rgb("#FAFAF7")
     INK      = hex_rgb("#1A1A1A")
@@ -556,30 +565,31 @@ def render_summary_light(prs, events, slide_num, total, anchors, args):
 
     add_text(slide, 0.7, 0.5, 12, 0.3,
              f"STEP 04 \u00b7 TARGET ACTIVITIES & TIMING  \u00b7  {slide_num}/{total}",
-             font="Calibri", size=10, bold=True, color=ACCENT)
+             font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
     add_text(slide, 0.7, 0.85, 12, 0.6, f"Key Dates & Events \u2014 {args.title}",
              font="Trebuchet MS", size=28, bold=True, color=INK)
     add_text(slide, 0.7, 1.45, 12, 0.4,
              f"{args.genre} \u00b7 Work-back summary. Calendar-anchored milestones only.",
-             font="Calibri", size=12, color=MUTED)
+             font="Calibri", size=body_pt(L, 12), color=MUTED)
     rel_str = "Release: " + args.release_date.strftime("%b %Y")
     add_rect(slide, 10.4, 0.5, 2.3, 0.32, SURFACE_LIGHT, line=HAIR)
     add_text(slide, 10.4, 0.5, 2.3, 0.32, rel_str,
-             font="Calibri", size=9, bold=True, color=ACCENT,
+             font="Calibri", size=body_pt(L, 9), bold=True, color=ACCENT,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
 
-    draw_summary_ribbon_light(slide, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT)
+    draw_summary_ribbon_light(slide, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT, L)
     draw_summary_light(slide, events, anchors, args, INK, MUTED, HAIR, ACCENT)
 
     add_text(slide, 0.7, 7.15, 12, 0.25,
              f"GTM CHECKLIST FOR PC  \u00b7  STEP 04.{slide_num}  \u00b7  WORK-BACK FROM {args.release_date.strftime('%b %d, %Y').upper()}",
-             font="Calibri", size=8, bold=True, color=MUTED)
+             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
 
 
 # ============================================================
 # Render one slide (dark)
 # ============================================================
 def render_one_dark(prs, slide_data, slide_num, total, anchors, args):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#0E1116")
     SURFACE  = hex_rgb("#161A21")
     BORDER   = hex_rgb("#1F2530")
@@ -601,30 +611,31 @@ def render_one_dark(prs, slide_data, slide_num, total, anchors, args):
              font="Trebuchet MS", size=28, bold=True, color=INK)
     add_text(slide, 0.6, 1.35, 12, 0.4,
              f"{args.genre}  \u00b7  {slide_data['subtitle']}",
-             font="Calibri", size=12, color=MUTED)
+             font="Calibri", size=body_pt(L, 12), color=MUTED)
     # Release date pill (top-right)
     rel_str = "Release: " + args.release_date.strftime("%b %Y")
     add_rect(slide, 10.4, 0.4, 2.3, 0.32, SURFACE, line=BORDER)
     add_text(slide, 10.4, 0.4, 2.3, 0.32, rel_str,
-             font="Calibri", size=9, bold=True, color=ACCENT,
+             font="Calibri", size=body_pt(L, 9), bold=True, color=ACCENT,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
 
     # Phase ribbon
-    draw_ribbon_dark(slide, slide_num - 1, anchors, INK, MUTED, BORDER, ACCENT, SURFACE)
+    draw_ribbon_dark(slide, slide_num - 1, anchors, INK, MUTED, BORDER, ACCENT, SURFACE, L)
 
     # Body cards
-    draw_section_cards_dark(slide, slide_data, anchors, INK, MUTED, BORDER, SURFACE, ACCENT)
+    draw_section_cards_dark(slide, slide_data, anchors, INK, MUTED, BORDER, SURFACE, ACCENT, L)
 
     # Footer
     add_text(slide, 0.6, 7.15, 12, 0.25,
              f"GTM CHECKLIST FOR PC  \u00b7  STEP 04.{slide_num}  \u00b7  WORK-BACK FROM {args.release_date.strftime('%b %d, %Y').upper()}",
-             font="Calibri", size=8, bold=True, color=MUTED)
+             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
 
 
 # ============================================================
 # Render one slide (light)
 # ============================================================
 def render_one_light(prs, slide_data, slide_num, total, anchors, args):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#FFFFFF")
     SURFACE_LIGHT = hex_rgb("#FAFAF7")
     INK      = hex_rgb("#1A1A1A")
@@ -641,25 +652,25 @@ def render_one_light(prs, slide_data, slide_num, total, anchors, args):
     # Header
     add_text(slide, 0.7, 0.5, 12, 0.3,
              f"STEP 04 \u00b7 TARGET ACTIVITIES & TIMING  \u00b7  {slide_num}/{total}",
-             font="Calibri", size=10, bold=True, color=ACCENT)
+             font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
     add_text(slide, 0.7, 0.85, 12, 0.6, f"{slide_data['title']} \u2014 {args.title}",
              font="Trebuchet MS", size=28, bold=True, color=INK)
     add_text(slide, 0.7, 1.45, 12, 0.4,
              f"{args.genre} \u00b7 {slide_data['subtitle']}",
-             font="Calibri", size=12, color=MUTED)
+             font="Calibri", size=body_pt(L, 12), color=MUTED)
     # Release pill (top-right)
     rel_str = "Release: " + args.release_date.strftime("%b %Y")
     add_rect(slide, 10.4, 0.5, 2.3, 0.32, SURFACE_LIGHT, line=HAIR)
     add_text(slide, 10.4, 0.5, 2.3, 0.32, rel_str,
-             font="Calibri", size=9, bold=True, color=ACCENT,
+             font="Calibri", size=body_pt(L, 9), bold=True, color=ACCENT,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
 
-    draw_ribbon_light(slide, slide_num - 1, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT)
-    draw_section_cards_light(slide, slide_data, anchors, INK, MUTED, HAIR, ACCENT)
+    draw_ribbon_light(slide, slide_num - 1, anchors, INK, MUTED, HAIR, ACCENT, SURFACE_LIGHT, L)
+    draw_section_cards_light(slide, slide_data, anchors, INK, MUTED, HAIR, ACCENT, L)
 
     add_text(slide, 0.7, 7.15, 12, 0.25,
              f"GTM CHECKLIST FOR PC  \u00b7  STEP 04.{slide_num}  \u00b7  WORK-BACK FROM {args.release_date.strftime('%b %d, %Y').upper()}",
-             font="Calibri", size=8, bold=True, color=MUTED)
+             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
 
 
 # ============================================================

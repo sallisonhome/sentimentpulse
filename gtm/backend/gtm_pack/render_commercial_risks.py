@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
-"""Render the GTM Slide Pack Step 2 'USP / Pillars' slide (V2 Manifesto layout).
+"""Render the GTM Slide Pack Step 6 'Commercial Risks' slide (V2 Manifesto layout).
 
-Two themes, parity with Step 1:
-  - dark   (V2 Modern Mono)  : dark slide, teal ramp + warm gold accent on last pillar
-  - light  (V4 Bold Brand)   : light slide, mint/teal/rose/gold tier ramp, left teal stripe
+Two themes, parity with Step 2 (USP slide):
+  - dark   (V2 Modern Mono)  : dark slide, warm gold top bar
+  - light  (V4 Bold Brand)   : light slide, left teal stripe
 
 Layout (Manifesto):
   - Left half: bold multi-line wedge statement + supporting line
-  - Right half: vertical list of USPs (number, title, one-line desc,
-    color-coded '→ proof' line, ink-colored '» strategy' line)
+    (default: "Every launch has drag.|We name it so we can plan around it.")
+  - Right half: vertical stack of 1-5 risk cards, each with:
+      - a threat-level pill (left, color-coded by severity)
+      - a "→ proof" line (accent color, same treatment as USP proof)
+      - a "» mitigation" line (ink color, same treatment as USP strategy)
 
-Supports 1-5 USPs (auto-spaces vertically). Disabled USPs (enabled=false)
-are skipped entirely. Backward compatible with the original 3-field JSON
-shape (title/description/proof only) -- `strategy` and `enabled` are optional.
+Threat levels: critical | high | medium | low (case-insensitive input,
+rendered UPPERCASE). Color coding:
+  Critical = red    (#D63A57 light / #E5615A dark)
+  High     = orange (#E5A700 light / #FFB454 dark)
+  Medium   = gold   (#FFC94D both themes)
+  Low      = teal   (#1F9B8E light / #2FA9BD dark)
 
 Outputs both a PPTX and a PNG to --out-dir.
 """
@@ -23,7 +29,6 @@ import json
 import os
 import re
 import subprocess
-import sys
 import tempfile
 
 from pptx import Presentation
@@ -87,97 +92,68 @@ def add_text(slide, x, y, w, h, text, *, font="Calibri", size=12, bold=False,
     return box
 
 
-# ---------- USP data shape ----------
-# Each USP is a 4-tuple: (title, description, proof, strategy).
-# `strategy` defaults to "" when absent (old 3-field JSON) so downstream
-# rendering can simply skip the strategy line when it's empty.
-def load_usps(args) -> list[tuple[str, str, str, str]]:
-    """Return list of (title, description, proof, strategy). Length 1-5.
+# ---------- risk data shape ----------
+VALID_LEVELS = ("critical", "high", "medium", "low")
 
-    Backward compatible: entries without `enabled` are treated as enabled;
-    entries without `strategy` get an empty strategy string (no strategy
-    line rendered). Entries with enabled=false are dropped entirely before
-    the 1-5 count check.
-    """
-    if args.usps_json:
-        with open(args.usps_json, "r") as f:
+
+def load_risks(args) -> list[tuple[str, str, str]]:
+    """Return list of (threat_level_upper, proof, mitigation). Length 1-5."""
+    if args.risks_json:
+        with open(args.risks_json, "r") as f:
             raw = json.load(f)
     else:
-        raw = json.loads(args.usps)
+        raw = json.loads(args.risks)
     if not isinstance(raw, list):
-        raise SystemExit("--usps / --usps-json must be a JSON list")
-
-    enabled_items = []
+        raise SystemExit("--risks / --risks-json must be a JSON list")
+    if not (1 <= len(raw) <= 5):
+        raise SystemExit(f"Risk count must be 1-5; got {len(raw)}")
+    out = []
     for i, item in enumerate(raw):
         if not isinstance(item, dict):
-            raise SystemExit(f"USP #{i+1} must be a JSON object")
-        if not item.get("enabled", True):
-            continue  # skip disabled rows entirely
+            raise SystemExit(f"Risk #{i+1} must be a JSON object")
         try:
-            t = item["title"].strip()
-            d = item["description"].strip()
-            p = item["proof"].strip()
+            level = item["threat_level"].strip().lower()
+            proof = item["proof"].strip()
+            mitigation = item["mitigation"].strip()
         except (KeyError, AttributeError, TypeError):
-            raise SystemExit(f"USP #{i+1} missing one of: title, description, proof")
-        s = (item.get("strategy") or "").strip()
-        enabled_items.append((t, d, p, s))
-
-    if not (1 <= len(enabled_items) <= 5):
-        raise SystemExit(f"Enabled USP count must be 1-5; got {len(enabled_items)}")
-    return enabled_items
-
-
-# ---------- accent ramps (4 entries; we slice for 3 or 5) ----------
-def dark_accents() -> list[RGBColor]:
-    # inner→outer-ish, ending on warm gold for the breakout pillar
-    A2 = hex_rgb("#155966")
-    A3 = hex_rgb("#2FA9BD")
-    A4 = hex_rgb("#7FD8E3")
-    GOLD = hex_rgb("#FFB454")
-    return [A4, A3, A2, GOLD]
+            raise SystemExit(f"Risk #{i+1} missing one of: threat_level, proof, mitigation")
+        if level not in VALID_LEVELS:
+            raise SystemExit(
+                f"Risk #{i+1} threat_level must be one of {VALID_LEVELS}; got '{level}'"
+            )
+        out.append((level.upper(), proof, mitigation))
+    return out
 
 
-def light_accents() -> list[RGBColor]:
-    C4 = hex_rgb("#7DD4C9")  # mint
-    C3 = hex_rgb("#1F9B8E")  # teal
-    C2 = hex_rgb("#D63A57")  # rose
-    C1 = hex_rgb("#E5A700")  # gold
-    return [C4, C3, C2, C1]
-
-
-def expand_accents(base: list[RGBColor], n: int) -> list[RGBColor]:
-    """Expand/contract the 4-color ramp to exactly n colors (1-5 supported)."""
-    if n == 1:
-        return [base[0]]
-    if n == 2:
-        return [base[0], base[3]]
-    if n == 3:
-        return [base[0], base[1], base[3]]  # skip the middle dark teal/rose
-    if n == 4:
-        return list(base)
-    if n == 5:
-        # insert an intermediate between [1] and [2]
-        mid = RGBColor(
-            (base[1][0] + base[2][0]) // 2,
-            (base[1][1] + base[2][1]) // 2,
-            (base[1][2] + base[2][2]) // 2,
-        )
-        return [base[0], base[1], mid, base[2], base[3]]
-    raise SystemExit(f"Unsupported USP count: {n}")
+def level_color(level_upper: str, theme: str) -> RGBColor:
+    level = level_upper.lower()
+    if theme == "dark":
+        table = {
+            "critical": hex_rgb("#E5615A"),
+            "high":     hex_rgb("#FFB454"),
+            "medium":   hex_rgb("#FFC94D"),
+            "low":      hex_rgb("#2FA9BD"),
+        }
+    else:
+        table = {
+            "critical": hex_rgb("#D63A57"),
+            "high":     hex_rgb("#E5A700"),
+            "medium":   hex_rgb("#FFC94D"),
+            "low":      hex_rgb("#1F9B8E"),
+        }
+    return table[level]
 
 
 # ============================================================
 # THEME: DARK  (V2 Modern Mono)
 # ============================================================
-def render_dark(args, usps, out_path):
+def render_dark(args, risks, out_path):
     L = getattr(args, "language", "en")
     BG       = hex_rgb("#0E1116")
     BORDER   = hex_rgb("#1F2530")
     INK      = hex_rgb("#E8E6E1")
     MUTED    = hex_rgb("#8A8F99")
     ACCENT   = hex_rgb("#FFB454")  # warm gold (eyebrow + top bar)
-
-    accents = expand_accents(dark_accents(), len(usps))
 
     prs = Presentation()
     prs.slide_width = Inches(13.333)
@@ -189,67 +165,69 @@ def render_dark(args, usps, out_path):
     add_rect(slide, 0, 0, 13.333, 0.08, ACCENT)
 
     # Title block (locked)
-    add_text(slide, 0.6, 0.4, 8, 0.3, "STEP 02 \u00b7 PILLARS",
+    add_text(slide, 0.6, 0.4, 8, 0.3, "STEP 06 \u00b7 COMMERCIAL RISKS",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
-    add_text(slide, 0.6, 0.75, 12, 0.85, f"What sets {args.title} apart",
+    add_text(slide, 0.6, 0.75, 12, 0.85, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
     add_text(slide, 0.6, 1.55, 12, 0.4,
-             f"{args.genre}  \u00b7  The pillars carrying the launch",
+             f"Risks to address \u00b7 {args.genre}",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
-    # ---- Left manifesto ----
+    # ---- Left wedge ----
     add_text(slide, 0.6, 2.5, 5.4, 0.3, "THE WEDGE",
              font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
-    # If user provided a custom wedge statement, use it; else default template
     wedge_lines = (args.wedge.split("|") if args.wedge else [
-        f"{args.title} earns its slot",
-        "in a crowded genre",
-        "through execution \u2014",
-        "not novelty.",
+        "Every launch has drag.",
+        "We name it so we can plan",
+        "around it.",
     ])
     add_text(slide, 0.6, 2.85, 5.4, 3.5,
              [ln.strip() for ln in wedge_lines],
              font="Trebuchet MS", size=28, bold=True, color=INK)
     add_text(slide, 0.6, 5.6, 5.4, 0.8,
              args.wedge_support or
-             "Each pillar is independently defensible and supported by measurable proof.",
+             "Each risk below is tracked with a named owner and a concrete mitigation.",
              font="Calibri", size=body_pt(L, 12), color=MUTED)
 
     # ---- Right list ----
     rx, ry = 6.6, 2.4
     rw = 6.2
-    n = len(usps)
-    # Available list height: footer at 7.1, leave 0.25" breathing room
+    n = len(risks)
     list_h = 7.1 - ry - 0.25
     rh = list_h / n
-    # Adjust internal spacing for tighter rows as count grows (extra strategy line)
-    title_size = 12 if n == 5 else (13 if n == 4 else 14)
-    desc_size  = body_pt(L, 9 if n == 5 else 10)
     proof_size = body_pt(L, 8 if n == 5 else 9)
-    strategy_size = body_pt(L, 8 if n == 5 else 9)
-    title_y = 0.0
-    desc_y  = 0.30 if n == 5 else (0.40 if n == 4 else 0.45)
-    proof_y = 0.52 if n == 5 else (0.68 if n == 4 else 0.78)
-    strategy_y = 0.70 if n == 5 else (0.94 if n == 4 else 1.06)
-    for i, ((title, desc, proof, strategy), c) in enumerate(zip(usps, accents)):
+    mitigation_size = body_pt(L, 8 if n == 5 else 9)
+    pill_y = 0.0
+    proof_y = 0.42 if n == 5 else (0.50 if n == 4 else 0.55)
+    mitigation_y = 0.66 if n == 5 else (0.80 if n == 4 else 0.90)
+    for i, (level, proof, mitigation) in enumerate(risks):
         y = ry + i * rh
-        add_text(slide, rx, y + title_y, 0.5, 0.4, f"0{i+1}",
-                 font="Trebuchet MS", size=18, bold=True, color=c)
-        add_text(slide, rx + 0.7, y + title_y, rw - 1.2, 0.4, title,
-                 font="Trebuchet MS", size=title_size, bold=True, color=INK)
-        add_text(slide, rx + 0.7, y + desc_y, rw - 1.2, 0.4, desc,
-                 font="Calibri", size=desc_size, color=MUTED)
+        c = level_color(level, "dark")
+        # Threat-level pill
+        pill_w = 0.18 + 0.10 * len(level)
+        pill = add_rect(slide, rx, y + pill_y, pill_w, 0.28, c)
+        tf = pill.text_frame
+        tf.margin_left = tf.margin_right = Emu(45720)
+        tf.margin_top = tf.margin_bottom = Emu(9144)
+        tf.word_wrap = False
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        r = p.add_run()
+        r.text = level
+        r.font.name = "Trebuchet MS"
+        r.font.size = Pt(10)
+        r.font.bold = True
+        r.font.color.rgb = BG
         add_text(slide, rx + 0.7, y + proof_y, rw - 1.2, 0.25, f"\u2192 {proof}",
                  font="Calibri", size=proof_size, bold=True, color=c)
-        if strategy:
-            add_text(slide, rx + 0.7, y + strategy_y, rw - 1.2, 0.25, f"\u00bb {strategy}",
-                     font="Calibri", size=strategy_size, color=INK)
+        add_text(slide, rx + 0.7, y + mitigation_y, rw - 1.2, 0.25, f"\u00bb {mitigation}",
+                 font="Calibri", size=mitigation_size, color=INK)
         if i < n - 1:
             add_rect(slide, rx, y + rh - 0.04, rw, 0.008, BORDER)
 
     # Footer (locked dark pattern)
     add_text(slide, 0.6, 7.1, 12, 0.25,
-             "GTM SLIDE PACK \u00b7 STEP 02 OF N",
+             "GTM SLIDE PACK \u00b7 STEP 06",
              font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
 
     prs.save(out_path)
@@ -258,15 +236,13 @@ def render_dark(args, usps, out_path):
 # ============================================================
 # THEME: LIGHT (V4 Bold Brand)
 # ============================================================
-def render_light(args, usps, out_path):
+def render_light(args, risks, out_path):
     L = getattr(args, "language", "en")
     BG       = hex_rgb("#FFFFFF")
     INK      = hex_rgb("#1A1A1A")
     MUTED    = hex_rgb("#5C5C5C")
     HAIR     = hex_rgb("#E8E8E8")
     C3       = hex_rgb("#1F9B8E")  # structural teal (eyebrow + stripe)
-
-    accents = expand_accents(light_accents(), len(usps))
 
     prs = Presentation()
     prs.slide_width = Inches(13.333)
@@ -278,64 +254,68 @@ def render_light(args, usps, out_path):
     add_rect(slide, 0, 0, 0.25, 7.5, C3)
 
     # Title block (locked)
-    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 02 \u00b7 PILLARS",
+    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 06 \u00b7 COMMERCIAL RISKS",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
-    add_text(slide, 0.7, 0.85, 12, 0.85, f"What sets {args.title} apart",
+    add_text(slide, 0.7, 0.85, 12, 0.85, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
     add_text(slide, 0.7, 1.65, 12, 0.4,
-             f"{args.genre} \u00b7 The pillars carrying the launch",
+             f"Risks to address \u00b7 {args.genre}",
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
-    # ---- Left manifesto ----
+    # ---- Left wedge ----
     add_text(slide, 0.7, 2.6, 5.4, 0.3, "THE WEDGE",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     wedge_lines = (args.wedge.split("|") if args.wedge else [
-        f"{args.title} earns its slot",
-        "in a crowded genre",
-        "through execution \u2014",
-        "not novelty.",
+        "Every launch has drag.",
+        "We name it so we can plan",
+        "around it.",
     ])
     add_text(slide, 0.7, 2.95, 5.4, 3.5,
              [ln.strip() for ln in wedge_lines],
              font="Trebuchet MS", size=28, bold=True, color=INK)
     add_text(slide, 0.7, 5.7, 5.4, 0.8,
              args.wedge_support or
-             "Each pillar is independently defensible and supported by measurable proof.",
+             "Each risk below is tracked with a named owner and a concrete mitigation.",
              font="Calibri", size=body_pt(L, 12), color=MUTED)
 
     # ---- Right list ----
     rx, ry = 6.7, 2.5
     rw = 6.0
-    n = len(usps)
+    n = len(risks)
     list_h = 7.1 - ry - 0.25
     rh = list_h / n
-    title_size = 12 if n == 5 else (13 if n == 4 else 14)
-    desc_size  = body_pt(L, 9 if n == 5 else 10)
-    proof_size = body_pt(L, 9)
-    strategy_size = body_pt(L, 8 if n == 5 else 9)
-    title_y = 0.0
-    desc_y  = 0.30 if n == 5 else (0.40 if n == 4 else 0.45)
-    proof_y = 0.52 if n == 5 else (0.68 if n == 4 else 0.78)
-    strategy_y = 0.70 if n == 5 else (0.94 if n == 4 else 1.06)
-    for i, ((title, desc, proof, strategy), c) in enumerate(zip(usps, accents)):
+    proof_size = body_pt(L, 8 if n == 5 else 9)
+    mitigation_size = body_pt(L, 8 if n == 5 else 9)
+    pill_y = 0.0
+    proof_y = 0.42 if n == 5 else (0.50 if n == 4 else 0.55)
+    mitigation_y = 0.66 if n == 5 else (0.80 if n == 4 else 0.90)
+    for i, (level, proof, mitigation) in enumerate(risks):
         y = ry + i * rh
-        add_text(slide, rx, y + title_y, 0.5, 0.4, f"0{i+1}",
-                 font="Trebuchet MS", size=18, bold=True, color=c)
-        add_text(slide, rx + 0.7, y + title_y, rw - 1.2, 0.4, title,
-                 font="Trebuchet MS", size=title_size, bold=True, color=INK)
-        add_text(slide, rx + 0.7, y + desc_y, rw - 1.2, 0.4, desc,
-                 font="Calibri", size=desc_size, color=MUTED)
+        c = level_color(level, "light")
+        pill_w = 0.18 + 0.10 * len(level)
+        pill = add_rect(slide, rx, y + pill_y, pill_w, 0.28, c)
+        tf = pill.text_frame
+        tf.margin_left = tf.margin_right = Emu(45720)
+        tf.margin_top = tf.margin_bottom = Emu(9144)
+        tf.word_wrap = False
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        r = p.add_run()
+        r.text = level
+        r.font.name = "Trebuchet MS"
+        r.font.size = Pt(10)
+        r.font.bold = True
+        r.font.color.rgb = BG
         add_text(slide, rx + 0.7, y + proof_y, rw - 1.2, 0.25, f"\u2192 {proof}",
                  font="Calibri", size=proof_size, bold=True, color=c)
-        if strategy:
-            add_text(slide, rx + 0.7, y + strategy_y, rw - 1.2, 0.25, f"\u00bb {strategy}",
-                     font="Calibri", size=strategy_size, color=INK)
+        add_text(slide, rx + 0.7, y + mitigation_y, rw - 1.2, 0.25, f"\u00bb {mitigation}",
+                 font="Calibri", size=mitigation_size, color=INK)
         if i < n - 1:
             add_rect(slide, rx, y + rh - 0.04, rw, 0.008, HAIR)
 
     # Footer (locked light pattern)
     add_text(slide, 0.7, 7.1, 12, 0.25,
-             "GTM Slide Pack \u00b7 Step 02 of N",
+             "GTM Slide Pack \u00b7 Step 06",
              font="Calibri", size=body_pt(L, 9), color=MUTED)
 
     prs.save(out_path)
@@ -376,8 +356,8 @@ def parse_args():
     p.add_argument("--genre", required=True)
     p.add_argument("--theme", required=True, choices=["dark", "light"])
     grp = p.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--usps", help="Inline JSON list of {title, description, proof, strategy, enabled} objects (1-5 enabled)")
-    grp.add_argument("--usps-json", help="Path to a JSON file containing the USP list")
+    grp.add_argument("--risks", help="Inline JSON list of {threat_level, proof, mitigation} objects (1-5)")
+    grp.add_argument("--risks-json", help="Path to a JSON file containing the risk list")
     p.add_argument("--wedge", default=None,
                    help="Optional manifesto statement, pipe-separated lines (e.g. 'A|B|C').")
     p.add_argument("--wedge-support", default=None,
@@ -388,16 +368,16 @@ def parse_args():
 
 def main():
     args = parse_args()
-    usps = load_usps(args)
+    risks = load_risks(args)
     slug = slugify(args.title)
     out_dir = os.path.abspath(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
-    pptx_path = os.path.join(out_dir, f"{slug}_usp_{args.theme}.pptx")
-    png_path  = os.path.join(out_dir, f"{slug}_usp_{args.theme}.png")
+    pptx_path = os.path.join(out_dir, f"{slug}_commercial_risks_{args.theme}.pptx")
+    png_path  = os.path.join(out_dir, f"{slug}_commercial_risks_{args.theme}.png")
     if args.theme == "dark":
-        render_dark(args, usps, pptx_path)
+        render_dark(args, risks, pptx_path)
     else:
-        render_light(args, usps, pptx_path)
+        render_light(args, risks, pptx_path)
     convert_to_png(pptx_path, png_path)
     print(f"PPTX: {pptx_path}")
     print(f"PNG:  {png_path}")

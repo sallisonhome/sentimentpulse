@@ -4,9 +4,17 @@
 Run once at deploy time. The example viewer page (frontend) loads these
 without ever touching the renderer or the database.
 
+As of Phase 3 (GTM Phase 3+4), the example pack is a fully-populated
+12-slide deck for a fictional game, "Blackwood Hollow" (psychological
+horror). Data lives in gtm_pack/example_inputs.py (EXAMPLE_INPUTS) --
+see that module's docstring for the "this is dummy data" disclaimer.
+The pack was previously 9 slides (pre-Revisions 1/3/4) using
+gtm_pack/sample_inputs.py; that module is now used only by pytest
+(tests/test_render_full_pack.py) and is left untouched.
+
 Output:
-  backend/static_example/dark/1.png  ...  9.png
-  backend/static_example/light/1.png  ... 9.png
+  backend/static_example/dark/1.png  ...  12.png
+  backend/static_example/light/1.png  ... 12.png
 """
 
 from __future__ import annotations
@@ -19,7 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from gtm_pack import render_pack_with_artifacts  # noqa: E402
-from gtm_pack.sample_inputs import SAMPLE_INPUTS  # noqa: E402
+from gtm_pack.example_inputs import EXAMPLE_INPUTS  # noqa: E402
 
 
 def main():
@@ -35,8 +43,8 @@ def main():
         tmp_out = backend_dir / f"_seed_tmp_{theme}"
         tmp_out.mkdir(exist_ok=True)
         try:
-            result = render_pack_with_artifacts(SAMPLE_INPUTS, theme, tmp_out)
-            assert len(result["pngs"]) == 9, f"Expected 9 PNGs, got {len(result['pngs'])}"
+            result = render_pack_with_artifacts(EXAMPLE_INPUTS, theme, tmp_out)
+            assert len(result["pngs"]) == 12, f"Expected 12 PNGs, got {len(result['pngs'])}"
 
             # Clear old PNGs in destination
             for old in theme_out.glob("*.png"):

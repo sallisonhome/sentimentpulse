@@ -21,6 +21,11 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 
+try:
+    from .i18n import body_pt  # package-relative (used via gtm_pack/__init__.py wrapper)
+except ImportError:  # pragma: no cover - direct-script invocation fallback
+    from i18n import body_pt
+
 
 # ---------- helpers ----------
 def hex_rgb(h: str) -> RGBColor:
@@ -156,6 +161,7 @@ def ring2_legend_desc(args) -> str:
 # THEME: DARK  (V2 Modern Mono)
 # ============================================================
 def render_dark(args, out_path):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#0E1116")
     SURFACE  = hex_rgb("#161A21")
     BORDER   = hex_rgb("#1F2530")
@@ -185,7 +191,7 @@ def render_dark(args, out_path):
                   "custom": "Original IP"}[args.type]
     add_text(slide, 0.6, 1.55, 11, 0.4,
              f"{args.genre}  ·  {type_label}  ·  Four-tier audience model",
-             font="Calibri", size=13, color=MUTED)
+             font="Calibri", size=body_pt(L, 13), color=MUTED)
 
     # ---- Circles (left half) ----
     cx, cy = 3.7, 4.7
@@ -200,7 +206,7 @@ def render_dark(args, out_path):
              font="Trebuchet MS", size=22, bold=True, color=BG,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
     add_text(slide, cx - 0.85, cy + 0.05, 1.7, 0.3, inner_chart.upper(),
-             font="Calibri", size=8, bold=True, color=BG,
+             font="Calibri", size=body_pt(L, 8), bold=True, color=BG,
              align=PP_ALIGN.CENTER)
 
     # ---- KPI cards (right half) ----
@@ -226,16 +232,16 @@ def render_dark(args, out_path):
         # Tier accent strip — left side, indicates which ring this row maps to
         add_rect(slide, rx, y, 0.06, ch, accent)
         add_text(slide, rx + 0.3, y + 0.13, cw - 0.5, 0.3, label,
-                 font="Calibri", size=9, bold=True, color=MUTED)
+                 font="Calibri", size=body_pt(L, 9), bold=True, color=MUTED)
         add_text(slide, rx + 0.3, y + 0.4, cw - 0.5, 0.5, num,
                  font="Trebuchet MS", size=22, bold=True, color=INK)
         add_text(slide, rx + 0.3, y + 0.78, cw - 0.5, 0.25, desc,
-                 font="Calibri", size=10, color=MUTED)
+                 font="Calibri", size=body_pt(L, 10), color=MUTED)
 
     # Footer
     add_text(slide, 0.6, 7.1, 12, 0.25,
              "GTM SLIDE PACK · STEP 01 OF N",
-             font="Calibri", size=8, bold=True, color=MUTED)
+             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
 
     prs.save(out_path)
 
@@ -244,6 +250,7 @@ def render_dark(args, out_path):
 # THEME: LIGHT (V4 Bold Brand)
 # ============================================================
 def render_light(args, out_path):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#FFFFFF")
     INK      = hex_rgb("#1A1A1A")
     MUTED    = hex_rgb("#5C5C5C")
@@ -266,7 +273,7 @@ def render_light(args, out_path):
 
     # Title block
     add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 01 · TARGET AUDIENCES",
-             font="Calibri", size=10, bold=True, color=C3)
+             font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 11, 0.8, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
     type_label = {"sequel": "Sequel", "new_ip_with_fans": "IP-based",
@@ -288,12 +295,12 @@ def render_light(args, out_path):
              font="Trebuchet MS", size=20, bold=True, color=INK,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
     add_text(slide, cx - 0.8, cy + 0.05, 1.6, 0.3, inner_chart,
-             font="Calibri", size=9, color=INK, align=PP_ALIGN.CENTER)
+             font="Calibri", size=body_pt(L, 9), color=INK, align=PP_ALIGN.CENTER)
 
     # ---- Legend (right half) ----
     rx = 7.7
     add_text(slide, rx, 2.4, 5, 0.3, "AUDIENCE TIERS",
-             font="Calibri", size=10, bold=True, color=C3)
+             font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_rect(slide, rx, 2.7, 5.0, 0.012, HAIR)
 
     _, inner_legend = innermost_label(args)
@@ -318,7 +325,7 @@ def render_light(args, out_path):
                  font="Trebuchet MS", size=14, bold=True, color=INK)
         # Description
         add_text(slide, rx + 0.4, y + 0.42, 3.5, 0.3, desc,
-                 font="Calibri", size=10, color=MUTED)
+                 font="Calibri", size=body_pt(L, 10), color=MUTED)
         # Number
         add_text(slide, rx + 3.6, y + 0.12, 1.4, 0.5, num,
                  font="Trebuchet MS", size=18, bold=True, color=INK,
@@ -329,7 +336,7 @@ def render_light(args, out_path):
     # Footer
     add_text(slide, 0.7, 7.1, 12, 0.25,
              "GTM Slide Pack · Step 01 of N",
-             font="Calibri", size=9, color=MUTED)
+             font="Calibri", size=body_pt(L, 9), color=MUTED)
 
     prs.save(out_path)
 

@@ -30,6 +30,11 @@ from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 
+try:
+    from .i18n import body_pt
+except ImportError:  # pragma: no cover
+    from i18n import body_pt
+
 
 # ---------- helpers ----------
 def hex_rgb(h: str) -> RGBColor:
@@ -167,6 +172,7 @@ def load_reach(path_or_inline: str, is_path: bool) -> list[dict]:
 # THEME: DARK  (V2 Modern Mono)
 # ============================================================
 def render_dark(args, reach, out_path):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#0E1116")
     BORDER   = hex_rgb("#1F2530")
     INK      = hex_rgb("#E8E6E1")
@@ -197,11 +203,11 @@ def render_dark(args, reach, out_path):
              font="Trebuchet MS", size=34, bold=True, color=INK)
     add_text(slide, 0.6, 1.55, 12, 0.4,
              f"{args.genre}  \u00b7  Channels and message tied to each tier",
-             font="Calibri", size=13, color=MUTED)
+             font="Calibri", size=body_pt(L, 13), color=MUTED)
 
     # ---- Left: mini circle chart as visual key ----
     add_text(slide, 0.6, 2.4, 4.5, 0.3, "FROM THE AUDIENCE MAP",
-             font="Calibri", size=9, bold=True, color=ACCENT)
+             font="Calibri", size=body_pt(L, 9), bold=True, color=ACCENT)
     cx, cy = 2.7, 4.7
     add_circle(slide, cx, cy, 3.4, A1, line=BORDER)
     add_circle(slide, cx, cy, 2.6, A2, line=BORDER)
@@ -212,13 +218,13 @@ def render_dark(args, reach, out_path):
                   "DEV"  if args.inner == "dev"  else \
                   (args.inner_name or "Cohort")[:8].upper()
     add_text(slide, cx - 0.45, cy - 0.15, 0.9, 0.3, inner_short,
-             font="Calibri", size=8, bold=True, color=BG,
+             font="Calibri", size=body_pt(L, 8), bold=True, color=BG,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
     # Caption
     add_text(slide, 0.6, 6.55, 4.5, 0.5,
              "Each cohort is reached on its own surfaces. Inner tiers carry "
              "highest conversion; outer tiers carry the breakout.",
-             font="Calibri", size=10, color=MUTED)
+             font="Calibri", size=body_pt(L, 10), color=MUTED)
 
     # ---- Right: cohort cards stacked ----
     rx, ry = 5.6, 2.4
@@ -238,22 +244,22 @@ def render_dark(args, reach, out_path):
                  font="Trebuchet MS", size=14, bold=True, color=INK)
         # KPI right-aligned, color-coded
         add_text(slide, rx + 4.4, y + 0.05, rw - 4.4, 0.35,
-                 kpi, font="Calibri", size=10, bold=True, color=c,
+                 kpi, font="Calibri", size=body_pt(L, 10), bold=True, color=c,
                  align=PP_ALIGN.RIGHT)
         # Channels inline (middot-separated)
         ch_str = "  \u00b7  ".join(channels)
         add_text(slide, rx + 0.32, y + 0.4, rw - 0.4, 0.3, ch_str,
-                 font="Calibri", size=9, color=INK)
+                 font="Calibri", size=body_pt(L, 9), color=INK)
         # Message
         add_text(slide, rx + 0.32, y + 0.7, rw - 0.4, 0.4, message,
-                 font="Calibri", size=10, color=MUTED)
+                 font="Calibri", size=body_pt(L, 10), color=MUTED)
         if i < n - 1:
             add_rect(slide, rx, y + rh - 0.05, rw, 0.008, BORDER)
 
     # Footer (locked dark pattern)
     add_text(slide, 0.6, 7.1, 12, 0.25,
              "GTM SLIDE PACK \u00b7 STEP 03 OF N",
-             font="Calibri", size=8, bold=True, color=MUTED)
+             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
 
     prs.save(out_path)
 
@@ -262,6 +268,7 @@ def render_dark(args, reach, out_path):
 # THEME: LIGHT (V4 Bold Brand)
 # ============================================================
 def render_light(args, reach, out_path):
+    L = getattr(args, "language", "en")
     BG       = hex_rgb("#FFFFFF")
     INK      = hex_rgb("#1A1A1A")
     MUTED    = hex_rgb("#5C5C5C")
@@ -286,16 +293,16 @@ def render_light(args, reach, out_path):
 
     # Header (locked light pattern)
     add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 03 \u00b7 HOW WE REACH",
-             font="Calibri", size=10, bold=True, color=C3)
+             font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 12, 0.85, f"Reaching the audience for {args.title}",
              font="Trebuchet MS", size=34, bold=True, color=INK)
     add_text(slide, 0.7, 1.65, 12, 0.4,
              f"{args.genre} \u00b7 Channels and message tied to each tier",
-             font="Calibri", size=14, color=MUTED)
+             font="Calibri", size=body_pt(L, 14), color=MUTED)
 
     # ---- Left: mini circle chart ----
     add_text(slide, 0.7, 2.55, 4.5, 0.3, "FROM THE AUDIENCE MAP",
-             font="Calibri", size=9, bold=True, color=C3)
+             font="Calibri", size=body_pt(L, 9), bold=True, color=C3)
     cx, cy = 2.8, 4.85
     # Outer -> inner so inner sits on top; thin white separators
     add_circle(slide, cx, cy, 3.4, C1, line=BG, line_w_pt=2)
@@ -306,12 +313,12 @@ def render_light(args, reach, out_path):
                   "DEV"  if args.inner == "dev"  else \
                   (args.inner_name or "Cohort")[:8].upper()
     add_text(slide, cx - 0.45, cy - 0.15, 0.9, 0.3, inner_short,
-             font="Calibri", size=8, bold=True, color=INK,
+             font="Calibri", size=body_pt(L, 8), bold=True, color=INK,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
     add_text(slide, 0.7, 6.6, 4.5, 0.45,
              "Each cohort is reached on its own surfaces. Inner tiers carry "
              "highest conversion; outer tiers carry the breakout.",
-             font="Calibri", size=10, color=MUTED)
+             font="Calibri", size=body_pt(L, 10), color=MUTED)
 
     # ---- Right: cohort cards stacked ----
     rx, ry = 5.7, 2.5
@@ -329,20 +336,20 @@ def render_light(args, reach, out_path):
         add_text(slide, rx + 0.32, y + 0.02, 4.0, 0.35, name,
                  font="Trebuchet MS", size=14, bold=True, color=INK)
         add_text(slide, rx + 4.4, y + 0.05, rw - 4.4, 0.35,
-                 kpi, font="Calibri", size=10, bold=True, color=c,
+                 kpi, font="Calibri", size=body_pt(L, 10), bold=True, color=c,
                  align=PP_ALIGN.RIGHT)
         ch_str = "  \u00b7  ".join(channels)
         add_text(slide, rx + 0.32, y + 0.4, rw - 0.4, 0.3, ch_str,
-                 font="Calibri", size=9, color=INK)
+                 font="Calibri", size=body_pt(L, 9), color=INK)
         add_text(slide, rx + 0.32, y + 0.7, rw - 0.4, 0.4, message,
-                 font="Calibri", size=10, color=MUTED)
+                 font="Calibri", size=body_pt(L, 10), color=MUTED)
         if i < n - 1:
             add_rect(slide, rx, y + rh - 0.05, rw, 0.008, HAIR)
 
     # Footer (locked light pattern)
     add_text(slide, 0.7, 7.1, 12, 0.25,
              "GTM Slide Pack \u00b7 Step 03 of N",
-             font="Calibri", size=9, color=MUTED)
+             font="Calibri", size=body_pt(L, 9), color=MUTED)
 
     prs.save(out_path)
 

@@ -15,25 +15,45 @@ def _db_path() -> Path:
 # Module-level for legacy callers that reference db.DB_PATH directly.
 DB_PATH = _db_path()
 
+# NOTE on `language` / `translated_from_deck_id` (Phase 4 -- Russian
+# localization, see gtm_revisions_summary.md "Phase 4" section):
+# These two columns + the UNIQUE index below are declared here so that a
+# brand-new DB (fresh `init_db()` call, e.g. in tests) gets them for free.
+# Any EXISTING on-disk DB predating this change needs
+# scripts/migrate_add_language_columns.py run once against it, since
+# `CREATE TABLE IF NOT EXISTS` does not retroactively add columns to an
+# already-existing table. The migration script is idempotent and safe to
+# run against a DB that already has these columns (e.g. one created fresh
+# via this SCHEMA after this change shipped).
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS gtm_decks (
-    id              TEXT PRIMARY KEY,
-    title           TEXT NOT NULL,
-    genre           TEXT NOT NULL,
-    theme           TEXT NOT NULL CHECK (theme IN ('dark','light')),
-    release_date    TEXT NOT NULL,
-    inputs_json     TEXT NOT NULL,
-    is_private      INTEGER NOT NULL DEFAULT 0,
-    created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    pptx_path       TEXT NOT NULL,
-    pdf_path        TEXT,
-    pptx_size_bytes INTEGER,
-    status          TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('rendering','ready','failed')),
-    deleted_at      TIMESTAMP
+    id                      TEXT PRIMARY KEY,
+    title                   TEXT NOT NULL,
+    genre                   TEXT NOT NULL,
+    theme                   TEXT NOT NULL CHECK (theme IN ('dark','light')),
+    release_date            TEXT NOT NULL,
+    inputs_json             TEXT NOT NULL,
+    is_private              INTEGER NOT NULL DEFAULT 0,
+    created_at              TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    pptx_path               TEXT NOT NULL,
+    pdf_path                TEXT,
+    pptx_size_bytes         INTEGER,
+    status                  TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('rendering','ready','failed')),
+    deleted_at              TIMESTAMP,
+    language                TEXT NOT NULL DEFAULT 'en',
+    translated_from_deck_id TEXT REFERENCES gtm_decks(id)
 );
 CREATE INDEX IF NOT EXISTS idx_decks_active ON gtm_decks(deleted_at, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_decks_title  ON gtm_decks(title);
 CREATE INDEX IF NOT EXISTS idx_decks_theme  ON gtm_decks(theme);
+CREATE INDEX IF NOT EXISTS idx_decks_language ON gtm_decks(language);
+-- One translation per (source deck, target language). SQLite treats NULL
+-- as distinct from any other NULL for UNIQUE-index purposes, so this does
+-- NOT collapse all untranslated (translated_from_deck_id IS NULL) rows
+-- into a single slot -- it only enforces uniqueness among actual
+-- translation rows.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_decks_translation_unique
+    ON gtm_decks(translated_from_deck_id, language);
 
 CREATE TABLE IF NOT EXISTS gtm_admin_actions (
     id              TEXT PRIMARY KEY,

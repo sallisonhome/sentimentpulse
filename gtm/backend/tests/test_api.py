@@ -53,8 +53,8 @@ def session_id():
     r = client.post("/preview", json={"inputs": SAMPLE_INPUTS, "theme": "dark"})
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["slide_count"] == 9
-    assert len(data["pngs"]) == 9
+    assert data["slide_count"] == 12  # was 9 pre-revision (GTM Studio revisions added 3 slides)
+    assert len(data["pngs"]) == 12  # was 9 pre-revision
     return data["session_id"]
 
 
