@@ -849,7 +849,14 @@ def get_example():
         if not theme_dir.exists():
             payload["themes"][theme] = []
             continue
-        pngs = sorted(theme_dir.glob("*.png"))
+        # Numeric-aware sort so 10.png / 11.png / 12.png come after 9.png,
+        # not between 1.png and 2.png.  Falls back to lexicographic order
+        # for any filename that doesn't have a numeric stem.
+        import re as _re
+        def _numeric_key(p: Path) -> tuple[int, str]:
+            m = _re.match(r"(\d+)", p.stem)
+            return (int(m.group(1)) if m else 10_000, p.name)
+        pngs = sorted(theme_dir.glob("*.png"), key=_numeric_key)
         payload["themes"][theme] = [f"/gtm/api/example/{theme}/{p.name}" for p in pngs]
     return payload
 
