@@ -289,7 +289,11 @@ def get_roadmap_phases_defaults():
 # renderers use (see FormInputs / gtm_pack docstrings for the full currency
 # history): revenue -> MILLIONS of dollars, price -> PLAIN dollars, units ->
 # unchanged raw count.
-GENRE_PULSE_BASE_URL = os.getenv("GENRE_PULSE_BASE_URL", "https://www.howmanyareplaying.com")
+# Default to the apex domain -- howmanyareplaying.com started returning
+# 301 redirects from the www subdomain on 2026-07-18. httpx.get doesn't
+# follow redirects by default, so pointing at the apex directly is both
+# the correct fix and one fewer network hop per request.
+GENRE_PULSE_BASE_URL = os.getenv("GENRE_PULSE_BASE_URL", "https://howmanyareplaying.com")
 _GENRE_PULSE_TIMEOUT_S = 8.0
 
 
@@ -316,9 +320,16 @@ def get_genre_pulse_comps(genre: str = Query(..., description="Genre slug, e.g. 
         "source": "howmanyareplaying.com"
       }
     """
-    url = f"{GENRE_PULSE_BASE_URL}/api/genres/{genre}"
+    # Genre Pulse expects lowercase slugs (e.g. 'horror', not 'Horror').
+    # Frontend sends the user-facing display casing, so normalize here.
+    # Also collapse spaces to hyphens for multi-word slugs like
+    # 'Survival Craft' -> 'survival-craft'.
+    slug = genre.strip().lower().replace(" ", "-").replace("/", "-")
+    url = f"{GENRE_PULSE_BASE_URL}/api/genres/{slug}"
     try:
-        resp = httpx.get(url, timeout=_GENRE_PULSE_TIMEOUT_S)
+        # follow_redirects=True is defense-in-depth in case the apex URL
+        # ever starts redirecting elsewhere (e.g. to a CDN subdomain).
+        resp = httpx.get(url, timeout=_GENRE_PULSE_TIMEOUT_S, follow_redirects=True)
         resp.raise_for_status()
         payload = resp.json()
     except httpx.HTTPError as e:
@@ -343,7 +354,10 @@ def get_genre_pulse_comps(genre: str = Query(..., description="Genre slug, e.g. 
     median_revenue_usd_millions = round(median_gross_cents / 100 / 1_000_000, 2)
     avg_price_usd = round(avg_price_cents / 100, 2)
 
-    comp_set_name = f"{genre.title()}"
+    # Prefer the upstream's display name (e.g. 'Social Co-Op / Friend Slop'
+    # for the 'social-coop' slug) over a naive title-case of the user input.
+    display_name = payload.get("name") or genre.title()
+    comp_set_name = display_name
     if n_titles:
         comp_set_name += f" — {n_titles} titles"
 
