@@ -171,6 +171,20 @@ export function NewWizard() {
 
   async function generatePreview() {
     setErr(null);
+    // Pre-flight: validate every step BEFORE hitting the backend so we don't
+    // paper over the fact that the user reached Step 6 via the stepper tabs
+    // while an earlier step is invalid (e.g. no platforms picked on Step 4,
+    // which crashes the renderer with a ValueError -> 400 downstream).
+    for (let s = 1; s <= LAST_STEP; s++) {
+      if (!isStepValid(s, inputs)) {
+        goStep(s);
+        setErr(
+          `Step ${s} (${STEPS[s - 1]?.label ?? ""}) has missing or invalid fields. ` +
+          `Fill it in, then come back to generate the preview.`
+        );
+        return;
+      }
+    }
     setSubmitting(true);
     try {
       const r = await api.preview({ inputs, theme: deckTheme });
@@ -1268,7 +1282,7 @@ function StepDescriptionRazors({
       <h2 className="text-lg font-semibold mb-1">Game description & razors</h2>
       <p className="text-sm text-muted mb-6">
         A ~100-word description plus a 20-word and a 10-word tagline ("razor"). Renders as Step 7
-        in the pack (output position 12, the final slide). Word-count limits are nominal —
+        in the pack (output position 5). Word-count limits are nominal —
         going over just shows a warning, it won't block generation.
       </p>
 

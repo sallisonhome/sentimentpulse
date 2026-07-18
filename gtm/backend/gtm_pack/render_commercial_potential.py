@@ -94,7 +94,9 @@ def compute_platform_shares(selected: list[str]) -> list[tuple[str, float]]:
     for platforms in `selected` only."""
     sel = [p for p in PLATFORM_ORDER if p in selected]
     if not sel:
-        raise SystemExit("At least one platform must be selected")
+        # ValueError (not SystemExit) so the FastAPI endpoint can catch
+        # it as a data-validation error and return 400 instead of 500.
+        raise ValueError("At least one platform must be selected")
     total_selected = sum(BASE_WEIGHTS[p] for p in sel)
     return [(p, BASE_WEIGHTS[p] / total_selected * 100.0) for p in sel]
 
@@ -144,9 +146,9 @@ def parse_platforms(raw: str) -> list[str]:
     valid = set(PLATFORM_ORDER)
     bad = [p for p in parts if p not in valid]
     if bad:
-        raise SystemExit(f"Unknown platform(s): {bad}. Valid: {PLATFORM_ORDER}")
+        raise ValueError(f"Unknown platform(s): {bad}. Valid: {PLATFORM_ORDER}")
     if not parts:
-        raise SystemExit("--platforms must include at least one platform")
+        raise ValueError("platforms must include at least one platform")
     # De-dup while preserving canonical order
     return [p for p in PLATFORM_ORDER if p in set(parts)]
 

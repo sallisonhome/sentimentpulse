@@ -814,9 +814,25 @@ def create_preview(req: PreviewRequest):
 
     try:
         result = _render_to(session_dir, req.inputs, req.theme)
-    except Exception as e:
+    except ValueError as e:
+        # ValueError == data-validation error from a renderer (e.g. empty
+        # platforms list). Surface as 400 so the frontend shows the real
+        # message and the user knows what to fix. See renderer files for
+        # the SystemExit -> ValueError conversion.
         shutil.rmtree(session_dir, ignore_errors=True)
-        raise HTTPException(500, f"Render failed: {e}")
+        raise HTTPException(400, f"Invalid inputs: {e}")
+    except Exception as e:
+        # Log the full traceback server-side so the operator can debug;
+        # bubble a compact message to the client. Nginx will still convert
+        # this to its own 500 body downstream unless proxy_intercept_errors
+        # is off, but at least the response body carries the message.
+        import logging, traceback
+        logging.getLogger("gtm.preview").error(
+            "Render crashed for session=%s theme=%s\n%s",
+            session_id, req.theme, traceback.format_exc(),
+        )
+        shutil.rmtree(session_dir, ignore_errors=True)
+        raise HTTPException(500, f"Render failed: {type(e).__name__}: {e}")
 
     # Save inputs.json for regenerate/commit
     (session_dir / "inputs.json").write_text(req.model_dump_json())
