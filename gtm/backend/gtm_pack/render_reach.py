@@ -237,6 +237,13 @@ FONT_STEPS = [
          name_lh=0.21, ch_lh=0.17, body_lh=0.19),
     dict(name=12,   size_lbl=10.0, ch=8.0,  body=8.3,
          name_lh=0.19, ch_lh=0.155, body_lh=0.175),
+    # v8 fix: extra floor rungs so dense KPI/message copy (e.g. Hellraiser's
+    # worst-case cohort KPIs) can wrap to 2-3 lines and still fit without
+    # ever truncating -- see _fit_rows below, which no longer clips text.
+    dict(name=11.5, size_lbl=9.5,  ch=7.6,  body=7.8,
+         name_lh=0.18, ch_lh=0.145, body_lh=0.165),
+    dict(name=11.0, size_lbl=9.0,  ch=7.2,  body=7.3,
+         name_lh=0.17, ch_lh=0.135, body_lh=0.155),
 ]
 
 ROW_PAD_TOP = 0.12
@@ -276,10 +283,13 @@ def _measure_all(rows_data, step, *, name_w, ch_w, msg_w, kpi_w):
 
 def _fit_rows(rows_data, area_h, *, name_w, ch_w, msg_w, kpi_w, min_gap=0.09):
     """Try each FONT_STEPS rung (largest first); pick the first rung whose
-    natural total height fits area_h. If even the floor rung doesn't fit,
-    TRUNCATE message/kpi text at the floor rung (never shrink fonts below
-    the floor, never let box height shrink below what the -- now
-    truncated -- text actually needs). Returns (rows_data, step, heights, gap).
+    natural total height fits area_h. v8 fix: text is NEVER truncated any
+    more -- if even the floor rung doesn't fit naturally, we keep the floor
+    rung's font size (so text stays fully readable) and instead compress
+    the row gap down toward zero, then as an absolute last resort scale row
+    heights down to exactly fill area_h (rows get visually tight but every
+    word of every message/KPI is still rendered). Returns
+    (rows_data, step, heights, gap).
     """
     n = len(rows_data)
     chosen_step = FONT_STEPS[-1]
@@ -302,45 +312,66 @@ def _fit_rows(rows_data, area_h, *, name_w, ch_w, msg_w, kpi_w, min_gap=0.09):
         gap = min_gap + extra_gap
         return rows_data, chosen_step, heights, gap
 
-    # Floor rung still doesn't fit -- truncate message + kpi text so the
-    # ACTUAL rendered content (not just the box) fits within area_h.
+    # Floor rung still doesn't fit at the normal min_gap. Do NOT truncate
+    # text -- first try shrinking the inter-row gap toward zero (still at
+    # the floor font size, still full text) before touching row heights.
+    import warnings
     step = FONT_STEPS[-1]
-    max_body_lines = 2
-    trunc_rows = []
-    for r in rows_data:
-        msg, kpi = r["message"], r["kpi"]
-        budget_chars = int(msg_w * 16.5 * (10.0 / step["body"]) / 1.18) * max_body_lines
-        if msg and len(msg) > budget_chars:
-            msg = msg[: max(0, budget_chars - 1)].rstrip() + "\u2026"
-        kpi_budget_chars = int(kpi_w * 16.5 * (10.0 / step["body"]) / 1.18) * max_body_lines
-        if kpi and len(kpi) > kpi_budget_chars:
-            kpi = kpi[: max(0, kpi_budget_chars - 1)].rstrip() + "\u2026"
-        trunc_rows.append({**r, "message": msg, "kpi": kpi})
+    heights = _measure_all(rows_data, step, name_w=name_w, ch_w=ch_w, msg_w=msg_w, kpi_w=kpi_w)
+    total_no_gap = sum(heights)
+    if total_no_gap <= area_h:
+        leftover = area_h - total_no_gap
+        gap = leftover / max(1, n - 1) if n > 1 else 0.0
+        return rows_data, step, heights, gap
 
-    heights = _measure_all(trunc_rows, step, name_w=name_w, ch_w=ch_w, msg_w=msg_w, kpi_w=kpi_w)
-    total = sum(heights) + min_gap * (n - 1)
-    if total <= area_h:
-        leftover = area_h - total
-        extra_gap = min(leftover / max(1, n - 1), 0.30) if n > 1 else 0.0
-        gap = min_gap + extra_gap
-        return trunc_rows, step, heights, gap
-
-    # Residual case: even truncated floor-rung text doesn't fit (e.g. 4 rows
-    # each with very long wrapped names) -- scale heights down to exactly
-    # fill area_h. Rows won't overlap each other, but text may sit close to
-    # its own row's bottom edge in this rare case.
-    scale = area_h / total if total > 0 else 1.0
+    # Absolute last resort: even zero-gap floor-rung heights overflow the
+    # area. Scale heights down to exactly fill area_h -- rows sit tightly
+    # against each other but every line of text is still fully rendered,
+    # never clipped. Warn loudly so this is visible in logs.
+    warnings.warn(
+        f"render_reach: {n} cohort row(s) did not fit even at the floor "
+        f"font rung with zero row gap (needs {total_no_gap:.2f}in, have "
+        f"{area_h:.2f}in). Compressing row heights instead of truncating "
+        "any text.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    scale = area_h / total_no_gap if total_no_gap > 0 else 1.0
     heights = [h * scale for h in heights]
-    gap = min_gap * scale
-    return trunc_rows, step, heights, gap
+    gap = 0.0
+    return rows_data, step, heights, gap
+
+
+# v8 fix: KPI column widened (was ~30% of row width; the mini circle-chart
+# removal already freed up horizontal room, but the message/KPI split
+# hadn't been rebalanced to use it). Message now gets ~50% and KPI ~44%
+# of the row width, which is enough for Hellraiser's worst-case KPI copy
+# (up to ~225 characters) to wrap onto 2-3 lines instead of truncating.
+MSG_WIDTH_FRACTION = 0.50
+COL_HEADER_H = 0.22
+COL_HEADER_GAP = 0.06
 
 
 def _render_rows(slide, rows_data, *, rx, ry, rw, area_h, colors, ink, muted, hair,
-                  name_font, l_body_pt):
+                  name_font, l_body_pt, header_color=None):
     name_w = rw - 0.35
     ch_w = rw - 0.35
-    msg_w = rw * 0.58
+    msg_w = rw * MSG_WIDTH_FRACTION
     kpi_w = rw - msg_w - 0.30 - 0.35
+
+    # ---- Column headers (6c): "KPIS" above the right column, right-aligned
+    # to match the KPI text column, plus "COHORT" and "CHANNELS" above the
+    # left columns for symmetry (per the user's earlier note). Header row
+    # sits in its own reserved band directly above the first cohort row so
+    # it never collides with the size-label ("N potential buyers") text.
+    if header_color is not None:
+        kpi_x = rx + 0.30 + msg_w + 0.30
+        header_y = ry - COL_HEADER_H - COL_HEADER_GAP
+        add_text(slide, rx + 0.30, header_y, name_w * 0.4, COL_HEADER_H,
+                 "COHORT", font="Calibri", size=9, bold=True, color=header_color)
+        add_text(slide, kpi_x, header_y, kpi_w, COL_HEADER_H,
+                 "KPIS", font="Calibri", size=9, bold=True, color=header_color,
+                 align=PP_ALIGN.RIGHT)
 
     rows_data, step, heights, gap = _fit_rows(
         rows_data, area_h, name_w=name_w, ch_w=ch_w, msg_w=msg_w, kpi_w=kpi_w,
@@ -424,16 +455,16 @@ def render_dark(args, reach, out_path):
     add_text(slide, 0.6, 0.75, 12, 0.85, f"Reaching the audience for {args.title}",
              font="Trebuchet MS", size=fit_title_pt(f"Reaching the audience for {args.title}", 12), bold=True, color=INK)
     add_text(slide, 0.6, 1.55, 12, 0.4,
-             f"{args.genre}  \u00b7  Channels and message tied to each tier",
+             f"{args.genre} \u00b7 Channels, messaging and KPIs tied to each cohort",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
     rows_data = _build_rows_data(args, reach)
-    rx, ry = 0.6, 2.15
+    rx, ry = 0.6, 2.15 + COL_HEADER_H + COL_HEADER_GAP
     rw = 12.1
     area_h = 6.85 - ry  # leave clear margin at bottom, no footer
     _render_rows(slide, rows_data, rx=rx, ry=ry, rw=rw, area_h=area_h,
                  colors=tier_colors, ink=INK, muted=MUTED, hair=BORDER,
-                 name_font="Trebuchet MS", l_body_pt=L)
+                 name_font="Trebuchet MS", l_body_pt=L, header_color=MUTED)
 
     prs.save(out_path)
 
@@ -467,16 +498,16 @@ def render_light(args, reach, out_path):
     add_text(slide, 0.7, 0.85, 12, 0.85, f"Reaching the audience for {args.title}",
              font="Trebuchet MS", size=fit_title_pt(f"Reaching the audience for {args.title}", 12), bold=True, color=INK)
     add_text(slide, 0.7, 1.65, 12, 0.4,
-             f"{args.genre} \u00b7 Channels and message tied to each tier",
+             f"{args.genre} \u00b7 Channels, messaging and KPIs tied to each cohort",
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
     rows_data = _build_rows_data(args, reach)
-    rx, ry = 0.7, 2.25
+    rx, ry = 0.7, 2.25 + COL_HEADER_H + COL_HEADER_GAP
     rw = 12.0
     area_h = 6.95 - ry
     _render_rows(slide, rows_data, rx=rx, ry=ry, rw=rw, area_h=area_h,
                  colors=tier_colors, ink=INK, muted=MUTED, hair=HAIR,
-                 name_font="Trebuchet MS", l_body_pt=L)
+                 name_font="Trebuchet MS", l_body_pt=L, header_color=MUTED)
 
     prs.save(out_path)
 

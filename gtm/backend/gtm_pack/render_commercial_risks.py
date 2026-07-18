@@ -2,15 +2,20 @@
 """Render the GTM Slide Pack Step 6 'GTM Challenges' slide (Manifesto-derived
 full-width risk list).
 
-v7 polish pass (2026-07-18) rewrite: the single fixed-height full-width row
-layout that caused text-on-text overlap for longer proof/mitigation copy is
-replaced with a MULTI-SLIDE split (same locked rule as the USP slide): 1-3
-risks render on one slide; 4-5 risks render across TWO slides (items 1-3,
-then the remainder), each page carrying a "(N OF M)" eyebrow suffix. Row
-heights are computed per-row from an estimated wrapped-line count for the
-proof + mitigation text (same approach validated in render_usp.py), with a
-font-size shrink ladder and a final truncation safety net for extreme text
-density. Footer removed (global v7 rule).
+v8 polish pass (2026-07-18): text truncation is no longer acceptable on this
+slide -- every mitigation/description word must be readable (these are
+strategic decisions). The page-count rule is now DENSITY-AWARE instead of
+purely count-based: we first try to fit all risks for a page at progressively
+smaller font sizes (down to a 7pt floor for proof/mitigation, 10pt for the
+threat pill/title-ish elements), and only if the floor rung still doesn't fit
+do we split that page into more pages (re-chunking, never truncating). A
+page's eyebrow gets a "(N OF M)" suffix whenever the deck ends up with more
+than one page, exactly like the USP slide. Footer stays removed (global v7
+rule).
+
+Fallback order (locked): shrink fonts first -> then add pages -> only
+truncate as an absolute last resort (single risk still doesn't fit at the
+floor on its own page), and a RuntimeWarning is raised if that ever happens.
 
 Threat levels: critical | high | medium | low (case-insensitive input,
 rendered UPPERCASE). Color coding:
@@ -20,7 +25,7 @@ rendered UPPERCASE). Color coding:
   Low      = teal   (#1F9B8E light / #2FA9BD dark)
 
 Outputs both a PPTX and a PNG to --out-dir. `render_dark()`/`render_light()`
-add ONE OR TWO slides to the given Presentation and return it.
+add ONE OR MORE slides to the given Presentation and return it.
 """
 from __future__ import annotations
 
@@ -74,11 +79,47 @@ def est_wrapped_lines(text: str, width_in: float, pt_size: float,
 
 
 def chunk_items(items: list, chunk_size: int = 3) -> list[list]:
-    """Locked split rule (same as USP slide): <=3 items = 1 page;
-    4-5 items = [items[:3], items[3:]] (2 pages)."""
+    """Legacy count-based split rule, kept ONLY as the starting point for
+    the density-aware re-chunker below (`paginate_risks`). Do not call this
+    directly for final page counts any more -- see module docstring."""
     if len(items) <= chunk_size:
         return [items]
     return [items[:chunk_size], items[chunk_size:]]
+
+
+def _page_fits(risks_page, area_h: float, *, text_w: float, min_gap: float = 0.10) -> bool:
+    """True if `risks_page` fits within area_h at the floor font rung
+    WITHOUT any truncation."""
+    step = FONT_STEPS[-1]
+    n = len(risks_page)
+    heights = _measure_all(risks_page, step, text_w=text_w)
+    total = sum(heights) + min_gap * (n - 1)
+    return total <= area_h
+
+
+def paginate_risks(risks: list, area_h: float, *, text_w: float,
+                    max_per_page: int = 3) -> list[list]:
+    """Density-aware pagination (v8 fix): start from the count-based split
+    (<=3 per page) and, for any resulting page that would NOT fit even at
+    the floor font rung, split that page further (greedily peeling items
+    off the front) until every page fits without truncation. This is the
+    "page more instead of truncating" behavior the design brief calls for:
+    3 risks with dense mitigation copy on one slide is unrealistic, so we
+    honestly split to 2 pages (or more) rather than clipping text.
+    """
+    coarse_pages = chunk_items(risks, chunk_size=max_per_page)
+    final_pages: list[list] = []
+    for page in coarse_pages:
+        remaining = list(page)
+        while remaining:
+            # Try the largest prefix of `remaining` that fits at the floor
+            # font rung; shrink the prefix size until it fits (min size 1).
+            fit_size = len(remaining)
+            while fit_size > 1 and not _page_fits(remaining[:fit_size], area_h, text_w=text_w):
+                fit_size -= 1
+            final_pages.append(remaining[:fit_size])
+            remaining = remaining[fit_size:]
+    return final_pages
 
 
 # ---------- shape primitives ----------
@@ -176,11 +217,19 @@ def level_color(level_upper: str, theme: str) -> RGBColor:
 
 
 # ---------- Row height measurement (font-shrink ladder, mirrors render_usp.py) ----------
+# v8 fix: extended down to a genuine 7pt floor for proof/mitigation (title
+# pill text stays fixed at 9.5pt regardless of rung -- it's a short fixed
+# label, not flowing body copy). Reaching this floor happens ONLY on a
+# single-risk page with extremely dense copy; the density-aware pagination
+# in `paginate_risks` is what normally keeps pages off the floor rungs.
 FONT_STEPS = [
-    dict(proof=13,   mitigation=11.5, proof_lh=0.24, mit_lh=0.205),
+    dict(proof=13,   mitigation=11.5, proof_lh=0.24,  mit_lh=0.205),
     dict(proof=12,   mitigation=10.7, proof_lh=0.225, mit_lh=0.19),
     dict(proof=11,   mitigation=10.0, proof_lh=0.205, mit_lh=0.175),
     dict(proof=10.2, mitigation=9.3,  proof_lh=0.19,  mit_lh=0.16),
+    dict(proof=9.0,  mitigation=8.2,  proof_lh=0.165, mit_lh=0.145),
+    dict(proof=8.0,  mitigation=7.5,  proof_lh=0.145, mit_lh=0.135),
+    dict(proof=7.5,  mitigation=7.0,  proof_lh=0.135, mit_lh=0.125),
 ]
 
 ROW_PAD_TOP = 0.16
@@ -204,8 +253,16 @@ def _measure_all(risks_page, step, *, text_w) -> list[float]:
 
 
 def _fit_rows(risks_page, area_h: float, *, text_w: float, min_gap: float = 0.10):
-    """Same shrink-ladder + truncation-fallback pattern as render_usp.py /
-    render_reach.py. Returns (risks_page, step, heights, gap)."""
+    """Shrink-ladder fit -- NEVER truncates text under normal operation.
+    Because `paginate_risks` already guarantees every page fits at the
+    floor font rung before this function is ever called, the loop below
+    almost always returns on an early (larger-font) rung. The only way to
+    reach the post-loop fallback is a single-risk page whose copy is so
+    dense it doesn't fit even at the 7pt floor -- an absolute edge case.
+    In that case we scale row heights down to exactly fill the area (rows
+    get tight but text is still fully rendered, just tightly spaced) and
+    raise a RuntimeWarning so it's visible in logs; we do NOT clip text.
+    Returns (risks_page, step, heights, gap)."""
     n = len(risks_page)
     for step in FONT_STEPS:
         heights = _measure_all(risks_page, step, text_w=text_w)
@@ -219,33 +276,28 @@ def _fit_rows(risks_page, area_h: float, *, text_w: float, min_gap: float = 0.10
             gap = min_gap + extra_gap
             return risks_page, step, heights, gap
 
-    # Floor rung still doesn't fit -- truncate mitigation (and proof if
-    # needed) text so actual rendered content fits within area_h.
+    # Floor rung still doesn't fit. Per the locked fallback order (shrink
+    # -> page -> truncate LAST), this should be unreachable in practice
+    # because paginate_risks already split pages down to a size that fits
+    # at the floor. If it's ever hit anyway, do NOT clip text -- instead
+    # compress the vertical rhythm (row gap + padding) as far as possible
+    # while keeping every line of text rendered, and warn loudly.
+    import warnings
     step = FONT_STEPS[-1]
-    max_lines_each = 2
-    trunc_page = []
-    for (level, proof, mitigation) in risks_page:
-        proof_budget = int(text_w * 16.5 * (10.0 / step["proof"]) / 1.18) * max_lines_each
-        mit_budget = int(text_w * 16.5 * (10.0 / step["mitigation"]) / 1.18) * max_lines_each
-        if proof and len(proof) > proof_budget:
-            proof = proof[: max(0, proof_budget - 1)].rstrip() + "\u2026"
-        if mitigation and len(mitigation) > mit_budget:
-            mitigation = mitigation[: max(0, mit_budget - 1)].rstrip() + "\u2026"
-        trunc_page.append((level, proof, mitigation))
-
-    heights = _measure_all(trunc_page, step, text_w=text_w)
+    heights = _measure_all(risks_page, step, text_w=text_w)
     total = sum(heights) + min_gap * (n - 1)
-    if total <= area_h:
-        leftover = area_h - total
-        extra_gap = min(leftover / max(1, n - 1), 0.35) if n > 1 else 0.0
-        gap = min_gap + extra_gap
-        return trunc_page, step, heights, gap
-
-    # Residual case: scale down to exactly fill area_h.
+    warnings.warn(
+        f"render_commercial_risks: page with {n} risk(s) did not fit even "
+        f"at the 7pt floor rung (needs {total:.2f}in, have {area_h:.2f}in). "
+        "paginate_risks should have split this page further -- rendering "
+        "with compressed spacing instead of truncating any text.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     scale = area_h / total if total > 0 else 1.0
     heights = [h * scale for h in heights]
     gap = min_gap * scale
-    return trunc_page, step, heights, gap
+    return risks_page, step, heights, gap
 
 
 def _render_page(slide, args, risks_page, page_num, total_pages, *, theme, colors, l_lang):
@@ -335,7 +387,10 @@ def render_dark(args, risks, out_path_or_prs):
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
 
-    pages = chunk_items(risks, chunk_size=3)
+    ry, rw, pill_col_w = 2.35, 12.13, 1.05
+    area_h = 7.05 - ry
+    text_w = rw - pill_col_w
+    pages = paginate_risks(risks, area_h, text_w=text_w)
     total_pages = len(pages)
     for page_num, risks_page in enumerate(pages, start=1):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
@@ -361,7 +416,10 @@ def render_light(args, risks, out_path_or_prs):
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
 
-    pages = chunk_items(risks, chunk_size=3)
+    ry, rw, pill_col_w = 2.45, 12.0, 1.05
+    area_h = 7.05 - ry
+    text_w = rw - pill_col_w
+    pages = paginate_risks(risks, area_h, text_w=text_w)
     total_pages = len(pages)
     for page_num, risks_page in enumerate(pages, start=1):
         slide = prs.slides.add_slide(prs.slide_layouts[6])

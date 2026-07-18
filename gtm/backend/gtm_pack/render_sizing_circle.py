@@ -238,20 +238,24 @@ def render_ring_label(slide, cx, cy, r_outer, r_inner, label_text,
 
 
 def render_center_label(slide, cx, cy, diameter_in, label_text, *, fg_color,
-                         font="Calibri", base_pt=20, min_pt=10):
+                         font="Calibri", base_pt=12, min_pt=5):
     """Render ONLY the cohort-name label inside the center circle --
-    bigger and vertically centered now that there's no number to share
-    room with. Auto-shrinks and wraps to at most 2 lines so it can never
-    break outside the circle's bounds, however long the user's cohort
-    name is.
+    vertically centered, using REAL per-glyph metrics (see _arc_text.py)
+    so the fit calculation reflects actual rendered widths rather than
+    an average. Auto-shrinks font size first, then wraps to up to 3
+    lines only if a smaller font still doesn't fit on fewer lines, so
+    the label can NEVER break outside the circle's bounds -- short
+    labels ('DEV FANS') stay big and bold on one line, while very long
+    ones ('Fanatical Prior Owners of the Franchise') shrink and wrap to
+    fit within diameter d4 with the required top/bottom edge padding.
     """
     text_upper = label_text.upper()
     label_pt, label_lines = fit_inner_circle_pt(text_upper, diameter_in,
                                                  base_pt=base_pt, min_pt=min_pt,
-                                                 max_lines=2)
+                                                 max_lines=3, font=font, bold=True)
     if not label_lines:
         return label_pt
-    lbl_h = (label_pt / 72.0) * 1.35 * len(label_lines) + 0.06
+    lbl_h = (label_pt / 72.0) * 1.25 * len(label_lines) + 0.06
     add_text(slide, cx - diameter_in * 0.46, cy - lbl_h / 2, diameter_in * 0.92, lbl_h,
              label_lines,
              font=font, size=label_pt, bold=True, color=fg_color,
@@ -294,7 +298,7 @@ def render_dark(args, out_path):
     type_label = {"sequel": "Sequel", "new_ip_with_fans": "IP-based",
                   "custom": "Original IP"}[args.type]
     add_text(slide, 0.6, 1.55, 11.5, 0.4,
-             f"Potential buyer audience by tier · {args.genre}  ·  {type_label}",
+             "Cohorts & Audience Sizing",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
     # ---- Circles (left half) — filled, labeled tiers ----
@@ -413,7 +417,7 @@ def render_light(args, out_path):
     type_label = {"sequel": "Sequel", "new_ip_with_fans": "IP-based",
                   "custom": "Original IP"}[args.type]
     add_text(slide, 0.7, 1.65, 11.3, 0.4,
-             f"Potential buyer audience by tier · {args.genre} · {type_label}",
+             "Cohorts & Audience Sizing",
              font="Calibri", size=14, color=MUTED)
 
     # ---- Circles (left half) — filled, labeled tiers ----
