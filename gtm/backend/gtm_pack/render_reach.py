@@ -141,7 +141,7 @@ def cohort_labels(args) -> list[str]:
 # ---------- Reach data ----------
 def load_reach(path_or_inline: str, is_path: bool) -> list[dict]:
     """Load the per-cohort reach data. Must be a JSON list of 4 objects with keys:
-      - channels: list[str]  (1-4 entries)
+      - channels: list[str]  (1-7 entries; extras beyond 7 are silently dropped)
       - message:  str
       - kpi:      str
     Order MUST match cohort tier order: inner -> outer (Prev, IP/Custom, Genre, Breakout).
@@ -181,10 +181,12 @@ def load_reach(path_or_inline: str, is_path: bool) -> list[dict]:
             raise ValueError(f"Cohort #{i+1} missing one of: channels/channel, message, kpi ({e})")
         if not isinstance(ch_raw, list) or len(ch_raw) < 1:
             raise ValueError(f"Cohort #{i+1} must have at least one channel")
-        # Cap at 4 channels for the slide layout; extras are dropped with a
-        # comment in the persisted output. (Frontend also caps at 4 in the
-        # wizard hint text.)
-        ch = [str(c).strip() for c in ch_raw if str(c).strip()][:4]
+        # Cap at 7 channels for the slide layout (bumped from 4 on 2026-07-18
+        # to accommodate users listing more channel types per cohort). Extras
+        # beyond 7 are silently dropped -- the row can visually accommodate
+        # ~6-7 middot-separated names at 9pt; beyond that the line wraps or
+        # overflows.
+        ch = [str(c).strip() for c in ch_raw if str(c).strip()][:7]
         if not ch:
             raise ValueError(f"Cohort #{i+1} 'channels' resolved to empty after trimming")
         out.append({"channels": ch, "message": ms, "kpi": kp})
@@ -265,10 +267,14 @@ def render_dark(args, reach, out_path):
         add_oval(slide, rx, y + 0.06, 0.16, 0.16, c)
         add_text(slide, rx + 0.30, y - 0.02, 4.6, 0.32, name,
                  font="Trebuchet MS", size=14, bold=True, color=INK)
-        # Row 2: channels, own line below the cohort name (not inline)
+        # Row 2: channels, own line below the cohort name (not inline).
+        # Font size scales down as channel count grows so 5-7 channels stay on
+        # ONE line at the ~7in row width. Keeping channels single-line lets
+        # message/KPI stay at their original y offset so nothing collides.
         ch_str = "  \u00b7  ".join(channels)
+        ch_pt = 9.5 if len(channels) <= 4 else (8.5 if len(channels) <= 6 else 7.5)
         add_text(slide, rx + 0.30, y + 0.34, rw - 0.30, 0.28, ch_str,
-                 font="Calibri", size=body_pt(L, 9.5), color=MUTED)
+                 font="Calibri", size=body_pt(L, ch_pt), color=MUTED)
         # Row 3: message (left) and KPI (right-aligned, own line, room to wrap)
         msg_w = rw * 0.56
         kpi_w = rw - msg_w - 0.25
@@ -359,9 +365,11 @@ def render_light(args, reach, out_path):
         add_oval(slide, rx, y + 0.06, 0.16, 0.16, c)
         add_text(slide, rx + 0.30, y - 0.02, 4.6, 0.32, name,
                  font="Trebuchet MS", size=14, bold=True, color=INK)
+        # Row 2: channels with dynamic sizing (see render_dark comment).
         ch_str = "  \u00b7  ".join(channels)
+        ch_pt = 9.5 if len(channels) <= 4 else (8.5 if len(channels) <= 6 else 7.5)
         add_text(slide, rx + 0.30, y + 0.34, rw - 0.30, 0.28, ch_str,
-                 font="Calibri", size=body_pt(L, 9.5), color=MUTED)
+                 font="Calibri", size=body_pt(L, ch_pt), color=MUTED)
         msg_w = rw * 0.56
         kpi_w = rw - msg_w - 0.25
         add_text(slide, rx + 0.30, y + 0.66, msg_w, 0.42, message,

@@ -755,7 +755,7 @@ function StepCohorts({
 
       {/* Reach */}
       <section className="mb-8">
-        <SectionHeading n="03" title="Reach plan" hint="One row per cohort." />
+        <SectionHeading n="03" title="Reach plan" hint="One row per cohort. Channels can be a comma-separated list (up to 7 will render)." />
         <div className="overflow-x-auto -mx-2 px-2">
           <table className="w-full text-sm border-collapse min-w-[680px]">
             <thead>
@@ -781,7 +781,7 @@ function StepCohorts({
                   <td className="py-2 pr-2">
                     <input
                       className="input"
-                      placeholder="Twitch, IG, Steam…"
+                      placeholder="Twitch, IG, Steam… (up to 7, comma-separated)"
                       value={r.channel}
                       onChange={(e) => setReach(i, { channel: e.target.value })}
                       data-testid={`reach-channel-${i}`}
