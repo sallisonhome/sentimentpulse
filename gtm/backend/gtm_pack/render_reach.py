@@ -152,19 +152,42 @@ def load_reach(path_or_inline: str, is_path: bool) -> list[dict]:
     else:
         raw = json.loads(path_or_inline)
     if not isinstance(raw, list) or len(raw) != 4:
-        raise SystemExit("--reach / --reach-json must be a JSON list of exactly 4 objects "
+        raise ValueError("reach must be a list of exactly 4 objects "
                          "(one per cohort tier, inner -> outer)")
     out = []
     for i, item in enumerate(raw):
         try:
-            ch = item["channels"]
+            # Accept both shapes for backwards compatibility:
+            #   1. 'channels': list[str]  -- the original CLI/JSON contract
+            #   2. 'channel': str          -- what the wizard sends today; a
+            #      free-text field that may contain a single channel OR a
+            #      comma-separated list. We split on comma so multi-channel
+            #      entries render as a proper middot-separated list on the
+            #      slide.
+            if "channels" in item:
+                ch_raw = item["channels"]
+            elif "channel" in item:
+                s = item["channel"]
+                if not isinstance(s, str):
+                    raise ValueError(f"Cohort #{i+1} 'channel' must be a string")
+                # Split on commas OR our own middot separator (in case a
+                # persisted draft round-trips through the display formatter).
+                ch_raw = [p.strip() for p in s.replace("\u00b7", ",").split(",") if p.strip()]
+            else:
+                raise ValueError(f"Cohort #{i+1} missing 'channels' (list) or 'channel' (string)")
             ms = item["message"].strip()
             kp = item["kpi"].strip()
-        except (KeyError, AttributeError, TypeError):
-            raise SystemExit(f"Cohort #{i+1} missing one of: channels (list), message, kpi")
-        if not isinstance(ch, list) or not (1 <= len(ch) <= 4):
-            raise SystemExit(f"Cohort #{i+1} 'channels' must be a list of 1-4 strings")
-        out.append({"channels": [c.strip() for c in ch], "message": ms, "kpi": kp})
+        except (KeyError, AttributeError, TypeError) as e:
+            raise ValueError(f"Cohort #{i+1} missing one of: channels/channel, message, kpi ({e})")
+        if not isinstance(ch_raw, list) or len(ch_raw) < 1:
+            raise ValueError(f"Cohort #{i+1} must have at least one channel")
+        # Cap at 4 channels for the slide layout; extras are dropped with a
+        # comment in the persisted output. (Frontend also caps at 4 in the
+        # wizard hint text.)
+        ch = [str(c).strip() for c in ch_raw if str(c).strip()][:4]
+        if not ch:
+            raise ValueError(f"Cohort #{i+1} 'channels' resolved to empty after trimming")
+        out.append({"channels": ch, "message": ms, "kpi": kp})
     return out
 
 
