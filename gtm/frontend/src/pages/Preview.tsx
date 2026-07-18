@@ -20,7 +20,7 @@ const CHIPS = [
   { step: 3, label: "USPs" },
   { step: 3, label: "Reach" },
   { step: 4, label: "Commercial potential" },
-  { step: 5, label: "Commercial risks" },
+  { step: 5, label: "GTM Challenges" },
   { step: 6, label: "Description & razors" },
 ];
 

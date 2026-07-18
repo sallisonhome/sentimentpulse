@@ -6,8 +6,8 @@ Two themes, parity with Step 2 (USP slide):
   - light  (V4 Bold Brand)   : light slide, left teal stripe
 
 Layout (Manifesto):
-  - Left half: bold multi-line wedge statement + supporting line
-    (default: "Every launch has drag.|We name it so we can plan around it.")
+  - Full-width risk list. Wedge column removed 2026-07-18 -- slide now
+    reads "GTM Challenges" with the risk list spanning the full width.
   - Right half: vertical stack of 1-5 risk cards, each with:
       - a threat-level pill (left, color-coded by severity)
       - a "→ proof" line (accent color, same treatment as USP proof)
@@ -164,50 +164,32 @@ def render_dark(args, risks, out_path):
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 13.333, 0.08, ACCENT)
 
-    # Title block (locked)
-    add_text(slide, 0.6, 0.4, 8, 0.3, "STEP 06 \u00b7 COMMERCIAL RISKS",
+    # Title block (locked). Renamed 2026-07-18: was "COMMERCIAL RISKS" +
+    # "Risks to address" wedge -- dropped to "GTM CHALLENGES" so the risk
+    # list can span the full slide width.
+    add_text(slide, 0.6, 0.4, 8, 0.3, "STEP 06 \u00b7 GTM CHALLENGES",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
-    add_text(slide, 0.6, 0.75, 12, 0.85, args.title,
+    add_text(slide, 0.6, 0.75, 12, 0.85, f"GTM Challenges \u2014 {args.title}",
              font="Trebuchet MS", size=34, bold=True, color=INK)
     add_text(slide, 0.6, 1.55, 12, 0.4,
-             f"Risks to address \u00b7 {args.genre}",
+             f"{args.genre} \u00b7 Each challenge below is tracked with a named owner and a concrete mitigation.",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
-    # ---- Left wedge ----
-    # Narrower wedge column (was 5.4in) frees up room for the risk list at
-    # 5 items, which is the tightest case. The wedge is a manifesto anchor,
-    # not a full column -- it reads fine narrower since it's short lines.
-    wedge_w = 4.7
-    add_text(slide, 0.6, 2.5, wedge_w, 0.3, "THE WEDGE",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT)
-    wedge_lines = (args.wedge.split("|") if args.wedge else [
-        "Every launch has drag.",
-        "We name it so we can plan",
-        "around it.",
-    ])
-    add_text(slide, 0.6, 2.85, wedge_w, 3.5,
-             [ln.strip() for ln in wedge_lines],
-             font="Trebuchet MS", size=26, bold=True, color=INK)
-    add_text(slide, 0.6, 5.6, wedge_w, 0.8,
-             args.wedge_support or
-             "Each risk below is tracked with a named owner and a concrete mitigation.",
-             font="Calibri", size=body_pt(L, 12), color=MUTED)
-
-    # ---- Right list ----
-    # Pill now sits INLINE to the left of the proof line (same row) instead
-    # of stacked above it -- this is what was causing the proof/mitigation
-    # text of one row to collide with the next row's pill at n=5. Each row
-    # now gets generous, evenly divided height with a hairline between.
-    rx, ry = 5.75, 2.35
-    rw = 7.05
+    # ---- Full-width risk list ----
+    # Wedge column removed 2026-07-18. The risk list now spans the full slide
+    # width, giving proof + mitigation lines room to breathe at n=5. Row
+    # heights and typography sized to fill the vertical canvas.
+    rx, ry = 0.6, 2.35
+    rw = 12.13
     n = len(risks)
     list_h = 7.1 - ry - 0.2
     rh = list_h / n
     pill_col_w = 1.05
     text_x = rx + pill_col_w
     text_w = rw - pill_col_w
-    proof_size = body_pt(L, 11 if n <= 3 else (10 if n == 4 else 9.5))
-    mitigation_size = body_pt(L, 10 if n <= 3 else (9.5 if n == 4 else 9))
+    # Slightly larger type since we now have full width -- text won't wrap.
+    proof_size = body_pt(L, 13 if n <= 3 else (12 if n == 4 else 11))
+    mitigation_size = body_pt(L, 11.5 if n <= 3 else (11 if n == 4 else 10.5))
     row_pad_top = 0.16
     proof_y = row_pad_top
     # Give proof 2 lines of room before mitigation starts
@@ -269,43 +251,27 @@ def render_light(args, risks, out_path):
     # Left accent stripe (locked)
     add_rect(slide, 0, 0, 0.25, 7.5, C3)
 
-    # Title block (locked)
-    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 06 \u00b7 COMMERCIAL RISKS",
+    # Title block. Renamed 2026-07-18: was "COMMERCIAL RISKS" + wedge column
+    # -- dropped to "GTM CHALLENGES" so the risk list can span full width.
+    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 06 \u00b7 GTM CHALLENGES",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
-    add_text(slide, 0.7, 0.85, 12, 0.85, args.title,
+    add_text(slide, 0.7, 0.85, 12, 0.85, f"GTM Challenges \u2014 {args.title}",
              font="Trebuchet MS", size=34, bold=True, color=INK)
     add_text(slide, 0.7, 1.65, 12, 0.4,
-             f"Risks to address \u00b7 {args.genre}",
+             f"{args.genre} \u00b7 Each challenge below is tracked with a named owner and a concrete mitigation.",
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
-    # ---- Left wedge ----
-    wedge_w = 4.8
-    add_text(slide, 0.7, 2.6, wedge_w, 0.3, "THE WEDGE",
-             font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
-    wedge_lines = (args.wedge.split("|") if args.wedge else [
-        "Every launch has drag.",
-        "We name it so we can plan",
-        "around it.",
-    ])
-    add_text(slide, 0.7, 2.95, wedge_w, 3.5,
-             [ln.strip() for ln in wedge_lines],
-             font="Trebuchet MS", size=26, bold=True, color=INK)
-    add_text(slide, 0.7, 5.7, wedge_w, 0.8,
-             args.wedge_support or
-             "Each risk below is tracked with a named owner and a concrete mitigation.",
-             font="Calibri", size=body_pt(L, 12), color=MUTED)
-
-    # ---- Right list ----
-    rx, ry = 5.85, 2.45
-    rw = 6.85
+    # ---- Full-width risk list ---- (wedge column removed 2026-07-18)
+    rx, ry = 0.7, 2.45
+    rw = 12.0
     n = len(risks)
     list_h = 7.1 - ry - 0.2
     rh = list_h / n
     pill_col_w = 1.05
     text_x = rx + pill_col_w
     text_w = rw - pill_col_w
-    proof_size = body_pt(L, 11 if n <= 3 else (10 if n == 4 else 9.5))
-    mitigation_size = body_pt(L, 10 if n <= 3 else (9.5 if n == 4 else 9))
+    proof_size = body_pt(L, 13 if n <= 3 else (12 if n == 4 else 11))
+    mitigation_size = body_pt(L, 11.5 if n <= 3 else (11 if n == 4 else 10.5))
     row_pad_top = 0.16
     proof_y = row_pad_top
     gap_between = 0.62 if n <= 3 else (0.52 if n == 4 else 0.44)

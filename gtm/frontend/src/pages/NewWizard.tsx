@@ -15,7 +15,7 @@ const STEPS = [
   { id: 2, label: "Game" },
   { id: 3, label: "Cohorts · USPs · Reach" },
   { id: 4, label: "Commercial potential" },
-  { id: 5, label: "Commercial risks" },
+  { id: 5, label: "GTM Challenges" },
   { id: 6, label: "Description & razors" },
 ];
 const LAST_STEP = STEPS.length; // 6
@@ -1077,7 +1077,7 @@ function StepCommercialRisks({
 
   return (
     <div>
-      <h2 className="text-lg font-semibold mb-1">Commercial risks</h2>
+      <h2 className="text-lg font-semibold mb-1">GTM Challenges</h2>
       <p className="text-sm text-muted mb-6">
         One to five risks, each with a threat level, supporting proof, and a mitigation plan.
         Renders as Step 6 in the pack (output position 11).

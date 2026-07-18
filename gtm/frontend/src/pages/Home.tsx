@@ -53,7 +53,7 @@ export function Home() {
       <PageHeader
         eyebrow="GTM Studio"
         title="Generate Go-to-Market slide pack foundations in less than 5 minutes that you can edit to final quickly"
-        subtitle="Answer a six-step questionnaire about your game, audiences, commercial context, USPs, and risks. GTM Studio renders a 6-slide strategic-positioning pack — audience tiers, commercial potential, USPs, risks, description & razors, and reach plan — ready to download as PPTX or PDF, with a one-click Russian translation option."
+        subtitle="Answer a six-step questionnaire about your game, audiences, commercial context, USPs, and GTM challenges. GTM Studio renders a 6-slide strategic-positioning pack — audience tiers, commercial potential, USPs, GTM challenges, description & razors, and reach plan — ready to download as PPTX or PDF, with a one-click Russian translation option."
       />
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -75,7 +75,7 @@ export function Home() {
           href="/new"
           eyebrow="Create"
           title="+ New slide pack"
-          body="Walk a six-step wizard — theme, game, audiences & USPs & reach, commercial potential, risks, description & razors — then generate a 6-slide preview."
+          body="Walk a six-step wizard — theme, game, audiences & USPs & reach, commercial potential, GTM challenges, description & razors — then generate a 6-slide preview."
           cta="Start wizard"
           icon={
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
@@ -131,7 +131,7 @@ export function Home() {
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">•</span>
-                <span><span className="text-ink font-medium">1–5 risks</span> — threat level, proof, and mitigation for each launch risk.</span>
+                <span><span className="text-ink font-medium">1–5 GTM challenges</span> — threat level, proof, and mitigation for each launch challenge.</span>
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">•</span>
@@ -161,7 +161,7 @@ export function Home() {
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">·</span>
-                <span><span className="text-ink font-medium">Slide 4 — Commercial risks.</span> Up to 5 launch risks with threat level, proof, and mitigation.</span>
+                <span><span className="text-ink font-medium">Slide 4 — GTM Challenges.</span> Up to 5 launch challenges with threat level, proof, and mitigation.</span>
               </li>
               <li className="flex gap-2.5">
                 <span className="text-accent mt-[2px]">·</span>

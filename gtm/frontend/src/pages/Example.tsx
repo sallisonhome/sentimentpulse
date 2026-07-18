@@ -28,8 +28,8 @@ const CAPTIONS = [
     body: "Up to five unique selling points stacked as a vertical manifesto, each with proof and a GTM strategy line.",
   },
   {
-    title: "Slide 4 — Commercial Risks",
-    body: "Up to five launch risks by threat level, each with proof and a concrete mitigation.",
+    title: "Slide 4 — GTM Challenges",
+    body: "Up to five launch challenges by threat level, each with proof and a concrete mitigation.",
   },
   {
     title: "Slide 5 — Game Description & Razors",
@@ -96,7 +96,7 @@ export function Example() {
       <PageHeader
         eyebrow="Example"
         title="Walk through a finished pack"
-        subtitle="Six slides — audience sizing, commercial potential, USPs, commercial risks, description & razors, and reach plan."
+        subtitle="Six slides — audience sizing, commercial potential, USPs, GTM challenges, description & razors, and reach plan."
         actions={
           <>
             <ThemeToggle />
