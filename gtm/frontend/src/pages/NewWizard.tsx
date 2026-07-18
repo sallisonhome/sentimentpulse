@@ -233,7 +233,14 @@ export function NewWizard() {
         )}
         {step === 2 && <StepGame inputs={inputs} update={update} />}
         {step === 3 && <StepCohorts inputs={inputs} update={update} setInputs={setInputs} />}
-        {step === 4 && <StepCommercialPotential inputs={inputs} update={update} setInputs={setInputs} />}
+        {step === 4 && (
+          <StepCommercialPotential
+            inputs={inputs}
+            update={update}
+            setInputs={setInputs}
+            isCustomGenre={genreCustom}
+          />
+        )}
         {step === 5 && <StepCommercialRisks inputs={inputs} update={update} setInputs={setInputs} />}
         {step === 6 && <StepDescriptionRazors inputs={inputs} update={update} />}
 
@@ -978,10 +985,16 @@ function StepCommercialPotential({
   inputs,
   update,
   setInputs,
+  isCustomGenre,
 }: {
   inputs: FormInputs;
   update: <K extends keyof FormInputs>(k: K, v: FormInputs[K]) => void;
   setInputs: (fn: (prev: FormInputs) => FormInputs) => void;
+  // True when the user picked 'Custom (enter manually)' on Step 1 genre
+  // dropdown. When true, the 'Pull defaults from Genre Pulse' button is
+  // disabled and the hint tells the user to enter values manually because
+  // Genre Pulse won't have comp-set metrics for a custom genre.
+  isCustomGenre: boolean;
 }) {
   const [loadingDefaults, setLoadingDefaults] = useState(false);
   const [defaultsErr, setDefaultsErr] = useState<string | null>(null);
