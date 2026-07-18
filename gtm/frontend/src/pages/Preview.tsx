@@ -38,29 +38,44 @@ export function Preview() {
 
   useEffect(() => {
     if (!sessionId) return;
-    // We don't have a GET-session endpoint, so attempt to re-derive from the
-    // PNG URL pattern. For initial load, the user has just been routed here
-    // from a successful POST /preview, so the session's PNGs exist on disk.
-    // We optimistically synthesize the URL list (1..6).
     setLoading(true);
     setErr(null);
-    // v6.0 (2026-07-15): 6-slide pack. Roadmap 4.1-4.6 was dropped.
-    // 1  Sizing
-    // 2  Median Commercial Potential
-    // 3  USPs/Pillars
-    // 4  Commercial Risks
-    // 5  Description & Razors
-    // 6  How We Reach
-    const pngs = Array.from({ length: 6 }, (_, i) =>
-      `${api["resolvePng"] ? "" : ""}/gtm/api/preview/${sessionId}/png/slide_${i + 1}.png`
-    );
-    // No JSON metadata to fetch — just show the slides. If a slide 404s,
-    // the img onError will hide it.
+    // Read the PNG URL list that NewWizard stashed in sessionStorage after
+    // POST /preview succeeded. This gives us the REAL backend filenames
+    // (per-deck slugs, not generic 'slide_N.png'). Fallback to synthesized
+    // URLs only if sessionStorage is missing the entry -- e.g. user opened
+    // the preview link in a new tab or bookmarked it.
+    //
+    // v6.0 (2026-07-15): 6-slide pack.
+    //   1 Sizing / 2 Commercial Potential / 3 USPs / 4 Risks /
+    //   5 Description & Razors / 6 How We Reach
+    let pngs: string[];
+    let theme = deckTheme;
+    let slide_count = 6;
+    try {
+      const stashed = sessionStorage.getItem(`gtm:preview:${sessionId}`);
+      if (stashed) {
+        const parsed = JSON.parse(stashed);
+        pngs = Array.isArray(parsed.pngs) ? parsed.pngs : [];
+        theme = parsed.theme || deckTheme;
+        slide_count = parsed.slide_count || pngs.length || 6;
+      } else {
+        // Fallback: legacy URL pattern. These will 404 on modern backends
+        // that use per-deck slug filenames -- but at least the page renders
+        // and the user sees clear 'Slide N unavailable' messages instead
+        // of a hang. In that case, redirect the user back to the wizard.
+        pngs = Array.from({ length: 6 }, (_, i) =>
+          `/gtm/api/preview/${sessionId}/png/slide_${i + 1}.png`
+        );
+      }
+    } catch {
+      pngs = [];
+    }
     setData({
       session_id: sessionId,
-      theme: deckTheme,
+      theme,
       pngs,
-      slide_count: 6,
+      slide_count,
     });
     setLoading(false);
   }, [sessionId]);

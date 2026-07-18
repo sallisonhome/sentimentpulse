@@ -188,6 +188,18 @@ export function NewWizard() {
     setSubmitting(true);
     try {
       const r = await api.preview({ inputs, theme: deckTheme });
+      // Stash the response in sessionStorage so the Preview page can pick
+      // up the REAL PNG filenames returned by the backend. Previously the
+      // Preview page synthesized its own URLs like 'slide_1.png' -- those
+      // 404 because the backend uses per-deck filenames like
+      // '<slug>_gtm_pack_<theme>-1.png'. Keyed by session_id so multiple
+      // preview sessions in one browser can coexist.
+      try {
+        sessionStorage.setItem(
+          `gtm:preview:${r.session_id}`,
+          JSON.stringify({ pngs: r.pngs, theme: r.theme, slide_count: r.slide_count })
+        );
+      } catch {}
       setLoc(`/preview/${r.session_id}`);
     } catch (e: any) {
       setErr(String(e.message || e));
