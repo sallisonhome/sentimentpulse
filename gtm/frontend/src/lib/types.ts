@@ -156,3 +156,12 @@ export type GenrePulseComps = {
   comp_set_name: string;
   source: string;
 };
+
+// Response shape for GET /defaults/genre_list -- powers the Step 2 wizard
+// dropdown so users pick canonical genre names (avoids typos that would 404
+// the /defaults/genre_pulse_comps lookup on Step 4).
+export type GenreListEntry = {
+  slug: string;      // e.g. "horror" or "survival-craft"
+  name: string;      // display name, e.g. "Horror" or "Survival Craft"
+  game_count: number;
+};

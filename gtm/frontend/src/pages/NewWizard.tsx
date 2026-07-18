@@ -4,7 +4,7 @@ import { PageHeader } from "../components/PageHeader";
 import { Spinner, ErrorBox } from "../components/EmptyState";
 import { api } from "../lib/api";
 import { useDeckTheme } from "../lib/theme";
-import type { FormInputs, GameType, InnerRing, Platform, ThreatLevel, Theme } from "../lib/types";
+import type { FormInputs, GameType, GenreListEntry, InnerRing, Platform, ThreatLevel, Theme } from "../lib/types";
 
 // v6.0 pack (2026-07-15): 6-slide pack. Release date step dropped along
 // with the roadmap slide. release_date is still sent in FormInputs so the
@@ -92,6 +92,36 @@ export function NewWizard() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  // Genre Pulse canonical genre list. Loaded once on mount and used by the
+  // Step 2 dropdown so users pick a valid slug (avoiding 404s at Step 4's
+  // 'Pull defaults from Genre Pulse' button). If loading fails we silently
+  // fall back to the free-text field -- the user can still ship the deck
+  // with any genre string; they just won't be able to import metrics.
+  const [genreList, setGenreList] = useState<GenreListEntry[] | null>(null);
+  const [genreListLoading, setGenreListLoading] = useState(false);
+  // "custom" means the user picked the free-text option; the current
+  // genre value is treated as user-authored rather than a canonical import.
+  const [genreCustom, setGenreCustom] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setGenreListLoading(true);
+    api.genreList()
+      .then((list) => { if (!cancelled) setGenreList(list); })
+      .catch(() => { if (!cancelled) setGenreList([]); })  // fall back to free-text
+      .finally(() => { if (!cancelled) setGenreListLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  // If the user is editing a clone/draft whose genre isn't in the canonical
+  // list, auto-switch them to Custom mode so the value is preserved.
+  useEffect(() => {
+    if (!genreList || genreList.length === 0) return;
+    if (!inputs.genre) return;
+    const isCanonical = genreList.some((g) => g.name === inputs.genre);
+    if (!isCanonical) setGenreCustom(true);
+    // Intentionally only run when genreList first loads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [genreList]);
 
   // Handle ?clone=… from Library
   useEffect(() => {
@@ -303,13 +333,57 @@ function StepTheme({
         </div>
         <div>
           <label className="label">Genre</label>
-          <input
+          {/*
+            Genre input has two modes (2026-07-18):
+            - Dropdown of canonical Genre Pulse names (default). Picking a
+              genre here means Step 4's 'Pull defaults from Genre Pulse'
+              button will succeed without a 404.
+            - 'Custom (enter manually)' reveals a free-text field for users
+              whose genre isn't in the Genre Pulse comp-set. Metrics import
+              won't work for a custom genre (backend will 404 the lookup)
+              but the deck itself renders fine with any string.
+          */}
+          <select
             className="input"
-            placeholder="Co-op horror shooter"
-            value={inputs.genre}
-            onChange={(e) => update("genre", e.target.value)}
-            data-testid="input-genre"
-          />
+            value={genreCustom ? "__custom__" : inputs.genre}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "__custom__") {
+                setGenreCustom(true);
+                update("genre", "");
+              } else {
+                setGenreCustom(false);
+                update("genre", v);
+              }
+            }}
+            data-testid="select-genre"
+            disabled={genreListLoading}
+          >
+            <option value="" disabled>
+              {genreListLoading ? "Loading genres…" : "Select a genre…"}
+            </option>
+            {(genreList ?? []).map((g) => (
+              <option key={g.slug} value={g.name}>
+                {g.name}
+              </option>
+            ))}
+            <option value="__custom__">Custom (enter manually)</option>
+          </select>
+          {genreCustom && (
+            <input
+              className="input mt-2"
+              placeholder="e.g. Co-op horror shooter"
+              value={inputs.genre}
+              onChange={(e) => update("genre", e.target.value)}
+              data-testid="input-genre-custom"
+              autoFocus
+            />
+          )}
+          <p className="hint">
+            {genreCustom
+              ? "Custom genre — importing metrics from Genre Pulse on Step 4 won't work; enter revenue/units/etc. manually."
+              : "Pick a canonical genre so Step 4 can pull comp-set metrics from Genre Pulse."}
+          </p>
         </div>
       </div>
 
@@ -923,14 +997,15 @@ function StepCommercialPotential({
           type="button"
           className="btn-secondary"
           onClick={fetchGenreDefaults}
-          disabled={loadingDefaults}
+          disabled={loadingDefaults || isCustomGenre}
           data-testid="button-fetch-genre-defaults"
         >
           {loadingDefaults ? "Fetching…" : "Pull defaults from Genre Pulse"}
         </button>
         <p className="hint">
-          Looks up genre-benchmark medians from howmanyareplaying.com and pre-fills the fields
-          below. You can still edit any value afterward.
+          {isCustomGenre
+            ? "You picked 'Custom (enter manually)' for genre on Step 2, so Genre Pulse doesn't have comp-set metrics to import. Fill the fields below by hand \u2014 or go back to Step 2 and pick a canonical genre."
+            : "Looks up genre-benchmark medians from howmanyareplaying.com and pre-fills the fields below. You can still edit any value afterward."}
         </p>
         {defaultsErr && <ErrorBox message={defaultsErr} />}
       </div>

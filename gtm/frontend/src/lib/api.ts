@@ -66,6 +66,11 @@ export const api = {
     request<import("./types").GenrePulseComps>(
       `/defaults/genre_pulse_comps?genre=${encodeURIComponent(genre)}`
     ),
+  // Canonical genre list for the Step 2 wizard dropdown. Sorted alphabetically
+  // by display name server-side. Users can also enter a free-text genre if
+  // theirs isn't in the list -- see the 'Custom' option in Step 2.
+  genreList: () =>
+    request<import("./types").GenreListEntry[]>("/defaults/genre_list"),
   library: (params: Record<string, string | number | undefined> = {}) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) {

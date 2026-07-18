@@ -297,6 +297,49 @@ GENRE_PULSE_BASE_URL = os.getenv("GENRE_PULSE_BASE_URL", "https://howmanyareplay
 _GENRE_PULSE_TIMEOUT_S = 8.0
 
 
+@app.get("/defaults/genre_list")
+def get_genre_pulse_list():
+    """Return the list of Genre Pulse genres available for import.
+
+    Powers the wizard's Step 2 genre dropdown so users pick a canonical
+    genre name (avoiding capitalization / hyphenation typos that would
+    otherwise 404 the /defaults/genre_pulse_comps endpoint downstream).
+    Users who don't want to import metrics can still type free text --
+    the dropdown offers a 'Custom' option that reveals a text field.
+
+    Response shape (list, sorted alphabetically by display name):
+      [{"slug": "horror", "name": "Horror", "game_count": 19}, ...]
+
+    Upstream shape (from https://howmanyareplaying.com/api/genres) is a
+    list of {slug, name, game_count, last_refresh, saber_only, kind}.
+    We drop the fields the wizard doesn't need to keep the payload tight.
+    """
+    url = f"{GENRE_PULSE_BASE_URL}/api/genres"
+    try:
+        resp = httpx.get(url, timeout=_GENRE_PULSE_TIMEOUT_S, follow_redirects=True)
+        resp.raise_for_status()
+        upstream = resp.json()
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Genre Pulse upstream request failed: {e}")
+    except ValueError as e:
+        raise HTTPException(502, f"Genre Pulse upstream returned invalid JSON: {e}")
+
+    if not isinstance(upstream, list):
+        raise HTTPException(502, "Genre Pulse /api/genres returned unexpected shape")
+
+    trimmed = [
+        {
+            "slug": g.get("slug", ""),
+            "name": g.get("name", g.get("slug", "")),
+            "game_count": g.get("game_count", 0),
+        }
+        for g in upstream
+        if g.get("slug") and g.get("name")
+    ]
+    trimmed.sort(key=lambda g: g["name"].lower())
+    return trimmed
+
+
 @app.get("/defaults/genre_pulse_comps")
 def get_genre_pulse_comps(genre: str = Query(..., description="Genre slug, e.g. 'horror'")):
     """Fetch Genre Pulse (howmanyareplaying.com) comp-set averages for a genre
