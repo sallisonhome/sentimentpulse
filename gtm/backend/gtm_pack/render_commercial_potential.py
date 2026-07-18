@@ -24,6 +24,7 @@ import subprocess
 import tempfile
 
 from pptx import Presentation
+from ._title_fit import fit_title_pt
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -181,7 +182,7 @@ def render_dark(args, out_path):
     add_text(slide, 0.6, 0.4, 10, 0.3, "MEDIAN COMMERCIAL POTENTIAL",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
     add_text(slide, 0.6, 0.75, 12, 0.85, args.title,
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(args.title, 12), bold=True, color=INK)
     add_text(slide, 0.6, 1.55, 12, 0.4,
              f"Genre benchmark \u00b7 {args.genre} \u00b7 comp set: {args.comp_set_name}",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
@@ -208,12 +209,13 @@ def render_dark(args, out_path):
     # Supporting KPI row: three simple stat columns, hairline above only
     sup_y = hero_y + 1.5
     add_rect(slide, hero_x, sup_y, 5.9, 0.008, BORDER)
+    # v7.1: dropped AVG PRICE (redundant with the hero revenue + units).
+    # Two-column layout now: units + hours played. Wider columns look calmer.
     sup_kpis = [
         ("MEDIAN UNITS SOLD", fmt_units(args.median_units_sold)),
-        ("AVG PRICE", fmt_price(args.avg_price_usd)),
         ("AVG HOURS PLAYED", f"{args.avg_hours_played:.1f} hrs"),
     ]
-    sup_col_w = 1.97
+    sup_col_w = 2.95
     for i, (label, val) in enumerate(sup_kpis):
         x = hero_x + i * sup_col_w
         add_text(slide, x, sup_y + 0.2, sup_col_w - 0.2, 0.55, label,
@@ -226,7 +228,10 @@ def render_dark(args, out_path):
     # calmer and lets the revenue column (right-aligned) breathe.
     rx, ry = 7.05, 2.35
     rw = 5.65
-    add_text(slide, rx, ry, 2.4, 0.3, "PROJECTED BY PLATFORM",
+    # v7.1: renamed 'PROJECTED BY PLATFORM' -> 'MEDIAN CROSS-PLATFORM KPIs'
+    # to match user's naming convention (median comp-set metrics, not
+    # projections for THIS title specifically).
+    add_text(slide, rx, ry, 4.5, 0.3, "MEDIAN CROSS-PLATFORM KPIs",
              font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
     header_h = 0.5
     headers = ["PLATFORM", "SHARE", "REVENUE", "UNITS"]
@@ -237,10 +242,14 @@ def render_dark(args, out_path):
         add_text(slide, cx, hy, cw, 0.25, h_text,
                  font="Calibri", size=body_pt(L, 8), bold=True, color=ACCENT,
                  align=(PP_ALIGN.LEFT if h_text == "PLATFORM" else PP_ALIGN.RIGHT))
-    add_rect(slide, rx, hy + 0.3, rw, 0.012, BORDER)
+    # v7.1: subheader under REVENUE column clarifying units. Positioned just
+    # below the header row, above the hairline divider.
+    add_text(slide, col_x[2], hy + 0.20, col_w[2], 0.22, "(in millions)",
+             font="Calibri", size=body_pt(L, 7), color=MUTED, align=PP_ALIGN.RIGHT)
+    add_rect(slide, rx, hy + 0.45, rw, 0.012, BORDER)
 
     row_h = 0.62
-    table_top = hy + 0.42
+    table_top = hy + 0.57  # v7.1: shifted down to clear the (in millions) subheader
     for i, (plat, share) in enumerate(shares):
         y = table_top + i * row_h
         rev_millions = args.median_revenue_usd_millions * (share / 100.0)
@@ -295,7 +304,7 @@ def render_light(args, out_path):
     add_text(slide, 0.7, 0.5, 11, 0.3, "MEDIAN COMMERCIAL POTENTIAL",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 12, 0.85, args.title,
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(args.title, 12), bold=True, color=INK)
     add_text(slide, 0.7, 1.65, 12, 0.4,
              f"Genre benchmark \u00b7 {args.genre} \u00b7 comp set: {args.comp_set_name}",
              font="Calibri", size=body_pt(L, 14), color=MUTED)
@@ -317,12 +326,12 @@ def render_light(args, out_path):
     # Supporting KPI row: three simple stat columns, hairline above only
     sup_y = hero_y + 1.5
     add_rect(slide, hero_x, sup_y, 5.8, 0.008, HAIR)
+    # v7.1: dropped AVG PRICE stat (see dark theme for rationale).
     sup_kpis = [
         ("MEDIAN UNITS SOLD", fmt_units(args.median_units_sold)),
-        ("AVG PRICE", fmt_price(args.avg_price_usd)),
         ("AVG HOURS PLAYED", f"{args.avg_hours_played:.1f} hrs"),
     ]
-    sup_col_w = 1.93
+    sup_col_w = 2.9
     for i, (label, val) in enumerate(sup_kpis):
         x = hero_x + i * sup_col_w
         add_text(slide, x, sup_y + 0.2, sup_col_w - 0.2, 0.55, label,
@@ -333,7 +342,8 @@ def render_light(args, out_path):
     # ---- Right column: platform projection table ----
     rx, ry = 7.1, 2.45
     rw = 5.5
-    add_text(slide, rx, ry, 2.4, 0.3, "PROJECTED BY PLATFORM",
+    # v7.1: renamed to 'MEDIAN CROSS-PLATFORM KPIs' (see dark theme).
+    add_text(slide, rx, ry, 4.5, 0.3, "MEDIAN CROSS-PLATFORM KPIs",
              font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
     headers = ["PLATFORM", "SHARE", "REVENUE", "UNITS"]
     col_x = [rx, rx + 1.5, rx + 2.65, rx + 4.0]
@@ -343,10 +353,13 @@ def render_light(args, out_path):
         add_text(slide, cx, hy, cw, 0.25, h_text,
                  font="Calibri", size=body_pt(L, 8), bold=True, color=C3,
                  align=(PP_ALIGN.LEFT if h_text == "PLATFORM" else PP_ALIGN.RIGHT))
-    add_rect(slide, rx, hy + 0.3, rw, 0.012, HAIR)
+    # v7.1: '(in millions)' under REVENUE column.
+    add_text(slide, col_x[2], hy + 0.20, col_w[2], 0.22, "(in millions)",
+             font="Calibri", size=body_pt(L, 7), color=MUTED, align=PP_ALIGN.RIGHT)
+    add_rect(slide, rx, hy + 0.45, rw, 0.012, HAIR)
 
     row_h = 0.62
-    table_top = hy + 0.42
+    table_top = hy + 0.57  # v7.1: shifted down to clear the (in millions) subheader
     for i, (plat, share) in enumerate(shares):
         y = table_top + i * row_h
         rev_millions = args.median_revenue_usd_millions * (share / 100.0)

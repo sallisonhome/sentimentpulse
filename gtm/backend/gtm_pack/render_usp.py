@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 
 from pptx import Presentation
+from ._title_fit import fit_title_pt
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -274,7 +275,7 @@ def _render_page(slide, args, usps_page, accents_page, page_num, total_pages,
         eyebrow_color = STRIPE
 
     suffix = f" ({page_num} OF {total_pages})" if total_pages > 1 else ""
-    eyebrow = f"PILLARS{suffix}"
+    eyebrow = f"USPs{suffix}"
     add_text(slide, margin_x, 0.4 if theme == "dark" else 0.5,
              10, 0.3, eyebrow,
              font=("Trebuchet MS" if theme == "dark" else "Calibri"),
@@ -282,7 +283,7 @@ def _render_page(slide, args, usps_page, accents_page, page_num, total_pages,
              bold=True, color=eyebrow_color)
     add_text(slide, margin_x, 0.75 if theme == "dark" else 0.85,
              12, 0.85, f"What sets {args.title} apart",
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(f"What sets {args.title} apart", 12), bold=True, color=INK)
     add_text(slide, margin_x, 1.55 if theme == "dark" else 1.65,
              12, 0.4,
              f"{args.genre} \u00b7 The pillars carrying the launch \u00b7 Each pillar is independently defensible.",

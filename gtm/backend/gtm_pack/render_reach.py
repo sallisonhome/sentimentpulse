@@ -33,6 +33,7 @@ import subprocess
 import tempfile
 
 from pptx import Presentation
+from ._title_fit import fit_title_pt
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -421,7 +422,7 @@ def render_dark(args, reach, out_path):
     add_text(slide, 0.6, 0.4, 10, 0.3, "HOW WE REACH",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
     add_text(slide, 0.6, 0.75, 12, 0.85, f"Reaching the audience for {args.title}",
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(f"Reaching the audience for {args.title}", 12), bold=True, color=INK)
     add_text(slide, 0.6, 1.55, 12, 0.4,
              f"{args.genre}  \u00b7  Channels and message tied to each tier",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
@@ -464,7 +465,7 @@ def render_light(args, reach, out_path):
     add_text(slide, 0.7, 0.5, 11, 0.3, "HOW WE REACH",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 12, 0.85, f"Reaching the audience for {args.title}",
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(f"Reaching the audience for {args.title}", 12), bold=True, color=INK)
     add_text(slide, 0.7, 1.65, 12, 0.4,
              f"{args.genre} \u00b7 Channels and message tied to each tier",
              font="Calibri", size=body_pt(L, 14), color=MUTED)

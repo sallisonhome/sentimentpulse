@@ -25,6 +25,7 @@ add ONE OR TWO slides to the given Presentation and return it.
 from __future__ import annotations
 
 import argparse
+from ._title_fit import fit_title_pt
 import json
 import math
 import os
@@ -270,7 +271,7 @@ def _render_page(slide, args, risks_page, page_num, total_pages, *, theme, color
              size=10 if theme == "dark" else body_pt(l_lang, 10),
              bold=True, color=eyebrow_color)
     add_text(slide, title_x, title_y_t, 12, 0.85, f"GTM Challenges \u2014 {args.title}",
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(f"GTM Challenges \u2014 {args.title}", 12), bold=True, color=INK)
     add_text(slide, title_x, title_y_s, 12, 0.4,
              f"{args.genre} \u00b7 Each challenge below is tracked with a named owner and a concrete mitigation.",
              font="Calibri", size=body_pt(l_lang, 13 if theme == "dark" else 14), color=MUTED)

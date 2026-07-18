@@ -23,6 +23,8 @@ import subprocess
 import tempfile
 
 from pptx import Presentation
+from ._title_fit import fit_title_pt, wrap_label
+from ._arc_text import add_arc_text, add_arc_text_split, arc_span_deg, fit_arc_text_pt, fit_inner_circle_pt
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -181,6 +183,83 @@ def cohort4_desc(args) -> str:
 
 
 # ============================================================
+# Shared ring arc-label renderer (used by BOTH themes)
+# ============================================================
+def render_ring_label(slide, cx, cy, r_outer, r_inner, label_text,
+                       *, fg_color, base_pt=11, min_pt=7,
+                       label_font="Calibri", dot_color=None):
+    """Render one ring's badge-stamp arc label -- poster/coin style.
+
+    Per the locked design decision, the ring graphic carries ONLY the
+    curved cohort-name label; the numeric counts live exclusively in the
+    side card ("POTENTIAL BUYERS BY TIER"), so there is no number to make
+    room for here. That frees up the full ring band for a bigger, bolder
+    arc label than earlier iterations.
+
+    - The arc label curves along the TOP of the ring band, following the
+      classic circular-stamp reference: baseline tangent to the arc,
+      letters upright at 12 o'clock, rotated progressively toward the
+      sides.
+    - If the label is too long to fit on a single top arc even at
+      ``min_pt``, it automatically splits into a TOP arc + BOTTOM arc
+      with dot separators at 9 and 3 o'clock (still stamp-style) -- the
+      label wraps fully around the ring rather than truncating.
+
+    Returns the font size used for the label.
+    """
+    band_width = r_outer - r_inner
+    # Label radius sits at the visual center of the band (not hugging the
+    # rim) now that the band doesn't have to also host a number -- this
+    # lets the label read as a bigger, bolder badge inscription.
+    label_radius = r_outer - band_width * 0.42
+    # Max span before we consider this ring "full" -- leaves a small gap
+    # at the very sides of the ring (badge labels never wrap fully to 360).
+    max_span_deg = 214.0
+
+    text_upper = label_text.upper()
+    single_pt = fit_arc_text_pt(text_upper, label_radius, max_span_deg,
+                                 base_pt=base_pt, min_pt=min_pt)
+    single_span = arc_span_deg(text_upper, label_radius, single_pt)
+
+    if single_span <= max_span_deg:
+        used_pt = add_arc_text(slide, cx, cy, label_radius, text_upper,
+                                theta_mid_deg=0.0, font=label_font,
+                                size=base_pt, bold=True, color=fg_color,
+                                max_span_deg=max_span_deg, min_pt=min_pt)
+    else:
+        # Split top/bottom -- the label wraps the FULL ring (top + bottom
+        # arcs with dot separators at 9 and 3 o'clock).
+        used_pt = add_arc_text_split(slide, cx, cy, label_radius, text_upper,
+                                      font=label_font, size=base_pt, bold=True,
+                                      color=fg_color, max_span_deg=max_span_deg,
+                                      min_pt=min_pt,
+                                      dot_color=dot_color or fg_color)
+    return used_pt
+
+
+def render_center_label(slide, cx, cy, diameter_in, label_text, *, fg_color,
+                         font="Calibri", base_pt=20, min_pt=10):
+    """Render ONLY the cohort-name label inside the center circle --
+    bigger and vertically centered now that there's no number to share
+    room with. Auto-shrinks and wraps to at most 2 lines so it can never
+    break outside the circle's bounds, however long the user's cohort
+    name is.
+    """
+    text_upper = label_text.upper()
+    label_pt, label_lines = fit_inner_circle_pt(text_upper, diameter_in,
+                                                 base_pt=base_pt, min_pt=min_pt,
+                                                 max_lines=2)
+    if not label_lines:
+        return label_pt
+    lbl_h = (label_pt / 72.0) * 1.35 * len(label_lines) + 0.06
+    add_text(slide, cx - diameter_in * 0.46, cy - lbl_h / 2, diameter_in * 0.92, lbl_h,
+             label_lines,
+             font=font, size=label_pt, bold=True, color=fg_color,
+             align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    return label_pt
+
+
+# ============================================================
 # THEME: DARK  (V2 Modern Mono)
 # ============================================================
 def render_dark(args, out_path):
@@ -211,7 +290,7 @@ def render_dark(args, out_path):
     add_text(slide, 0.6, 0.4, 8, 0.3, "TARGET AUDIENCES & SIZING",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
     add_text(slide, 0.6, 0.75, 11, 0.85, args.title,
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(args.title, 11), bold=True, color=INK)
     type_label = {"sequel": "Sequel", "new_ip_with_fans": "IP-based",
                   "custom": "Original IP"}[args.type]
     add_text(slide, 0.6, 1.55, 11.5, 0.4,
@@ -234,50 +313,36 @@ def render_dark(args, out_path):
     fg3 = fg_for_bg(A3_HEX, "#E8E6E1", "#0E1116")
     fg4 = fg_for_bg(A4_HEX, "#E8E6E1", "#0E1116")
 
-    # Ring band radii (top edge to next ring's top edge) used to position each
-    # ring's label vertically within its own visible band, offset upward from
-    # circle center so text sits inside the band rather than centered on the
-    # whole nested stack.
+    # Ring radii, outer -> inner.
     r1, r2, r3, r4 = d1 / 2, d2 / 2, d3 / 2, d4 / 2
-    band1_y = cy - (r1 + r2) / 2   # ring 1 (outer) band midpoint, above ring2
-    band2_y = cy - (r2 + r3) / 2   # ring 2 band midpoint
-    band3_y = cy - (r3 + r4) / 2   # ring 3 band midpoint
 
-    # Outer ring (cohort 4 / breakout ceiling) — label above the top of ring
-    # 2, inside ring 1's band. Uses the user-typed cohort name verbatim
-    # (truncated only if it doesn't fit the band width).
+    # v9 pass: numeric counts live ONLY in the side card now (removed from
+    # the ring graphic per locked design decision) -- each of the three
+    # outer rings gets ONLY a curved arc-text label (classic circular-
+    # stamp treatment, see render_ring_label / _arc_text.py), sized bigger
+    # now that the full band is available for the label alone. Long labels
+    # that don't fit a single top arc automatically split into top+bottom
+    # arcs with dot separators, so nothing ever truncates.
+
+    # ---- Ring 1 (outermost, breakout) ----
     c4_label = cohort4_name(args)
-    add_text(slide, cx - 1.7, band1_y - 0.28, 3.4, 0.3, c4_label.upper()[:26],
-             font="Calibri", size=body_pt(L, 9), bold=True, color=fg1,
-             align=PP_ALIGN.CENTER)
-    add_text(slide, cx - 1.7, band1_y + 0.0, 3.4, 0.4, fmt_short(args.breakout),
-             font="Trebuchet MS", size=20, bold=True, color=fg1,
-             align=PP_ALIGN.CENTER)
+    render_ring_label(slide, cx, cy, r1, r2, c4_label,
+                       fg_color=fg1, base_pt=15, min_pt=9)
 
-    # Ring 2 (cohort 3 / "genre fans" slot) band — user-typed name verbatim.
+    # ---- Ring 2 (cohort 3 / "genre fans" slot) ----
     c3_label = cohort3_name(args)
-    add_text(slide, cx - 1.3, band2_y - 0.26, 2.6, 0.28, c3_label.upper()[:20],
-             font="Calibri", size=body_pt(L, 8), bold=True, color=fg2,
-             align=PP_ALIGN.CENTER)
-    add_text(slide, cx - 1.3, band2_y + 0.0, 2.6, 0.36, fmt_short(args.genre_fans),
-             font="Trebuchet MS", size=18, bold=True, color=fg2,
-             align=PP_ALIGN.CENTER)
+    render_ring_label(slide, cx, cy, r2, r3, c3_label,
+                       fg_color=fg2, base_pt=13, min_pt=8)
 
-    # Ring 3 (ip fans / custom ring2) band
-    add_text(slide, cx - 1.0, band3_y - 0.24, 2.0, 0.26, inner_chart.upper()[:18],
-             font="Calibri", size=body_pt(L, 7.5), bold=True, color=fg3,
-             align=PP_ALIGN.CENTER)
-    add_text(slide, cx - 1.0, band3_y + 0.0, 2.0, 0.32, fmt_short(args.ip_fans),
-             font="Trebuchet MS", size=15, bold=True, color=fg3,
-             align=PP_ALIGN.CENTER)
+    # ---- Ring 3 (cohort 2 / ip fans / custom ring2) ----
+    render_ring_label(slide, cx, cy, r3, r4, inner_chart,
+                       fg_color=fg3, base_pt=11.5, min_pt=7)
 
-    # Innermost — short number + label, centered in the small inner circle
-    add_text(slide, cx - 0.62, cy - 0.30, 1.24, 0.36, fmt_short(args.prev),
-             font="Trebuchet MS", size=15, bold=True, color=fg4,
-             align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    add_text(slide, cx - 0.62, cy + 0.06, 1.24, 0.26, prev_chart.upper()[:14],
-             font="Calibri", size=body_pt(L, 6.5), bold=True, color=fg4,
-             align=PP_ALIGN.CENTER)
+    # ---- Inner circle (cohort 1) ----
+    # v9: number removed (lives only in the side card now) -- the center
+    # circle shows ONLY the cohort-name label, bigger and centered, still
+    # auto-shrinking/wrapping so it NEVER breaks outside the circle bounds.
+    render_center_label(slide, cx, cy, d4, prev_chart, fg_color=fg4)
 
     # ---- KPI cards (right half) — kept, per user's "keep side card" pick ----
     _, inner_legend = innermost_label(args)
@@ -344,7 +409,7 @@ def render_light(args, out_path):
     add_text(slide, 0.7, 0.5, 11, 0.3, "TARGET AUDIENCES",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 11, 0.8, args.title,
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(args.title, 11), bold=True, color=INK)
     type_label = {"sequel": "Sequel", "new_ip_with_fans": "IP-based",
                   "custom": "Original IP"}[args.type]
     add_text(slide, 0.7, 1.65, 11.3, 0.4,
@@ -368,39 +433,26 @@ def render_light(args, out_path):
     fg4 = fg_for_bg(C4_HEX, "#FFFFFF", "#1A1A1A")
 
     r1, r2, r3, r4 = d1 / 2, d2 / 2, d3 / 2, d4 / 2
-    band1_y = cy - (r1 + r2) / 2
-    band2_y = cy - (r2 + r3) / 2
-    band3_y = cy - (r3 + r4) / 2
 
+    # v9 pass: same arc-text-only treatment as the dark theme (see
+    # render_ring_label) so both themes are agency-caliber and consistent.
+    # Numeric counts live only in the side legend now.
     c4_label = cohort4_name(args)
-    add_text(slide, cx - 1.75, band1_y - 0.28, 3.5, 0.3, c4_label.upper()[:26],
-             font="Calibri", size=body_pt(L, 9), bold=True, color=fg1,
-             align=PP_ALIGN.CENTER)
-    add_text(slide, cx - 1.75, band1_y + 0.0, 3.5, 0.4, fmt_short(args.breakout),
-             font="Trebuchet MS", size=20, bold=True, color=fg1,
-             align=PP_ALIGN.CENTER)
+    render_ring_label(slide, cx, cy, r1, r2, c4_label,
+                       fg_color=fg1, base_pt=15, min_pt=9)
 
     c3_label = cohort3_name(args)
-    add_text(slide, cx - 1.35, band2_y - 0.26, 2.7, 0.28, c3_label.upper()[:20],
-             font="Calibri", size=body_pt(L, 8), bold=True, color=fg2,
-             align=PP_ALIGN.CENTER)
-    add_text(slide, cx - 1.35, band2_y + 0.0, 2.7, 0.36, fmt_short(args.genre_fans),
-             font="Trebuchet MS", size=18, bold=True, color=fg2,
-             align=PP_ALIGN.CENTER)
+    render_ring_label(slide, cx, cy, r2, r3, c3_label,
+                       fg_color=fg2, base_pt=13, min_pt=8)
 
-    add_text(slide, cx - 1.05, band3_y - 0.24, 2.1, 0.26, inner_chart.upper()[:18],
-             font="Calibri", size=body_pt(L, 7.5), bold=True, color=fg3,
-             align=PP_ALIGN.CENTER)
-    add_text(slide, cx - 1.05, band3_y + 0.0, 2.1, 0.32, fmt_short(args.ip_fans),
-             font="Trebuchet MS", size=15, bold=True, color=fg3,
-             align=PP_ALIGN.CENTER)
+    render_ring_label(slide, cx, cy, r3, r4, inner_chart,
+                       fg_color=fg3, base_pt=11.5, min_pt=7)
 
-    add_text(slide, cx - 0.7, cy - 0.30, 1.4, 0.36, fmt_short(args.prev),
-             font="Trebuchet MS", size=15, bold=True, color=fg4,
-             align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    add_text(slide, cx - 0.7, cy + 0.06, 1.4, 0.26, prev_chart.upper()[:14],
-             font="Calibri", size=body_pt(L, 6.5), bold=True, color=fg4,
-             align=PP_ALIGN.CENTER)
+    # ---- Inner circle (cohort 1) ----
+    # v9: number removed (lives only in the side legend now) -- center
+    # circle shows ONLY the cohort-name label, auto-shrunk/wrapped so it
+    # NEVER breaks outside the circle bounds.
+    render_center_label(slide, cx, cy, d4, prev_chart, fg_color=fg4)
 
     # ---- Legend (right half) — kept, per user's "keep side card" pick ----
     rx = 7.7

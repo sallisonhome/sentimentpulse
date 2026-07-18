@@ -27,6 +27,7 @@ import sys
 import tempfile
 
 from pptx import Presentation
+from ._title_fit import fit_title_pt
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE
@@ -177,10 +178,10 @@ def render_dark(args, counts, out_path):
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 13.333, 0.08, ACCENT)
 
-    add_text(slide, 0.6, 0.4, 10, 0.3, "GAME DESCRIPTION & RAZORS",
+    add_text(slide, 0.6, 0.4, 10, 0.3, "GAME DESCRIPTION & TAGLINES",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
     add_text(slide, 0.6, 0.75, 12, 0.85, args.title,
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(args.title, 12), bold=True, color=INK)
     add_text(slide, 0.6, 1.55, 12, 0.4,
              "For product pages, creative briefs, and headlines",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
@@ -200,7 +201,7 @@ def render_dark(args, counts, out_path):
     # Divider between context and the razor payoff
     div_y = ctx_y + 1.28
     add_rect(slide, cx, div_y, cw, 0.012, BORDER)
-    add_text(slide, cx, div_y + 0.16, cw, 0.28, "THE RAZORS",
+    add_text(slide, cx, div_y + 0.16, cw, 0.28, "20 & 10 WORD TAGLINES",
              font="Calibri", size=body_pt(L, 10), bold=True, color=ACCENT, align=PP_ALIGN.CENTER)
 
     # 20-word razor -- secondary payoff, medium size, centered. Word count
@@ -252,10 +253,10 @@ def render_light(args, counts, out_path):
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 0.25, 7.5, C3)
 
-    add_text(slide, 0.7, 0.5, 11, 0.3, "GAME DESCRIPTION & RAZORS",
+    add_text(slide, 0.7, 0.5, 11, 0.3, "GAME DESCRIPTION & TAGLINES",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 12, 0.85, args.title,
-             font="Trebuchet MS", size=34, bold=True, color=INK)
+             font="Trebuchet MS", size=fit_title_pt(args.title, 12), bold=True, color=INK)
     add_text(slide, 0.7, 1.65, 12, 0.4,
              "For product pages, creative briefs, and headlines",
              font="Calibri", size=body_pt(L, 14), color=MUTED)
@@ -273,7 +274,7 @@ def render_light(args, counts, out_path):
     # Divider between context and the razor payoff
     div_y = ctx_y + 1.28
     add_rect(slide, cx, div_y, cw, 0.012, HAIR)
-    add_text(slide, cx, div_y + 0.16, cw, 0.28, "THE RAZORS",
+    add_text(slide, cx, div_y + 0.16, cw, 0.28, "20 & 10 WORD TAGLINES",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3, align=PP_ALIGN.CENTER)
 
     # 20-word razor -- secondary payoff, medium size, centered. Auto-shrink
