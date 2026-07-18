@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Render the GTM Slide Pack Step 3 'How We Reach' slide (V2 Mini-Map + Stack).
+"""Render the GTM Slide Pack Step 3 'How We Reach' slide.
 
-Layout:
-  - Left half: small circle chart (mirror of Step 1) as a visual key, with caption
-  - Right half: 4 stacked cohort cards (cohort name, KPI right-aligned,
-    channels inline as middot-separated list, message)
-
-Cohort labels MUST match the labels used in Step 1's Sizing Circle. Pass them via
-the --inner / --ring2 / --type flags so the labels resolve identically.
+v7 polish pass (2026-07-18) rewrite:
+  - The mini circle-chart visual key is REMOVED entirely. All the freed
+    width goes to the cohort rows, which now span the FULL slide width.
+  - Each row shows, in order: cohort name + audience size (top line),
+    then channels (middot-separated) on their own line, then message
+    (left) / KPI (right) on a final line. Row height is computed per-row
+    from an estimated wrapped-line count (same approach validated in
+    render_usp.py) so nothing overlaps regardless of name/message length.
+  - Cohort names and audience sizes are ALWAYS the user's verbatim
+    wizard Step-3 values (name/size), never a hardcoded default like
+    "Genre Fans" or "Breakout Ceiling". The renderer accepts an optional
+    per-cohort `size` in the reach payload; if absent, the size line is
+    simply omitted for that cohort (still no generic label is invented).
+  - No footer (global v7 rule).
 
 Two themes, parity with Steps 1 & 2:
   - dark   (V2 Modern Mono)
@@ -19,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -47,8 +55,33 @@ def slugify(value: str) -> str:
     return s or "untitled"
 
 
+def fmt_num(n) -> str:
+    try:
+        return f"{int(n):,}"
+    except (TypeError, ValueError):
+        return str(n)
+
+
+def est_wrapped_lines(text: str, width_in: float, pt_size: float,
+                       chars_per_inch_at_10pt: float = 16.5,
+                       safety_margin: float = 1.18) -> int:
+    """Estimate how many lines `text` will wrap to inside a box of
+    `width_in` inches at font size `pt_size`. Same calibration as
+    render_usp.py's estimator -- deliberately over-counts lines so rows
+    get slightly more height rather than risk overlap."""
+    if not text:
+        return 1
+    chars_per_inch = chars_per_inch_at_10pt * (10.0 / pt_size) / safety_margin
+    chars_per_line = max(8, int(width_in * chars_per_inch))
+    total = 0
+    for segment in text.split("\n"):
+        n_chars = len(segment)
+        total += max(1, math.ceil(n_chars / chars_per_line))
+    return max(1, total)
+
+
 # ---------- shape primitives ----------
-def add_rect(slide, x, y, w, h, fill, line=None):
+def add_rect(slide, x, y, w, h, fill, line=None, line_w_pt=1.0):
     s = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(x), Inches(y), Inches(w), Inches(h))
     s.fill.solid()
     s.fill.fore_color.rgb = fill
@@ -56,6 +89,7 @@ def add_rect(slide, x, y, w, h, fill, line=None):
         s.line.fill.background()
     else:
         s.line.color.rgb = line
+        s.line.width = Pt(line_w_pt)
     s.shadow.inherit = False
     s.text_frame.text = ""
     return s
@@ -74,24 +108,9 @@ def add_oval(slide, x, y, w, h, fill, line=None):
     return s
 
 
-def add_circle(slide, cx, cy, d, fill, line=None, line_w_pt=0.5):
-    s = slide.shapes.add_shape(
-        MSO_SHAPE.OVAL, Inches(cx - d / 2), Inches(cy - d / 2), Inches(d), Inches(d)
-    )
-    s.fill.solid()
-    s.fill.fore_color.rgb = fill
-    if line is None:
-        s.line.fill.background()
-    else:
-        s.line.color.rgb = line
-        s.line.width = Pt(line_w_pt)
-    s.shadow.inherit = False
-    s.text_frame.text = ""
-    return s
-
-
 def add_text(slide, x, y, w, h, text, *, font="Calibri", size=12, bold=False,
-             color=None, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP):
+             color=None, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP,
+             line_spacing=None):
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     tf = box.text_frame
     tf.margin_left = tf.margin_right = Emu(0)
@@ -103,6 +122,8 @@ def add_text(slide, x, y, w, h, text, *, font="Calibri", size=12, bold=False,
     for i, line in enumerate(text):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.alignment = align
+        if line_spacing is not None:
+            p.line_spacing = line_spacing
         r = p.add_run()
         r.text = line
         r.font.name = font
@@ -113,7 +134,12 @@ def add_text(slide, x, y, w, h, text, *, font="Calibri", size=12, bold=False,
     return box
 
 
-# ---------- Cohort label resolution (same logic as Step 1) ----------
+# ---------- Cohort label resolution ----------
+# NOTE (v7 naming-fix): cohort NAME and SIZE must always come from the
+# wizard's Step 3 `cohorts` list verbatim -- never substitute a generic
+# default like "Genre Fans" / "Breakout Ceiling". `cohort_names(args)`
+# only falls back to a generic label in the (should-be-rare) case where
+# the caller genuinely didn't supply a name for that slot.
 def innermost_label(args) -> str:
     if args.inner == "prev":
         return "Prev Game Owners"
@@ -128,13 +154,28 @@ def ring2_label(args) -> str:
     return "IP Fans (no prior)"
 
 
-def cohort_labels(args) -> list[str]:
-    """Inner -> outer, matching circle chart tier order."""
+def cohort_names(args) -> list[str]:
+    """Inner -> outer, matching circle chart tier order. Cohorts 3/4 use
+    the user-typed args.cohort3_name / args.cohort4_name when present
+    (threaded from inputs["cohorts"][2/3]["name"] by the __init__.py
+    wrapper) and only fall back to the legacy generic label if absent."""
     return [
         innermost_label(args),
         ring2_label(args),
-        "Genre Fans",
-        "Breakout Ceiling",
+        getattr(args, "cohort3_name", None) or "Genre Fans",
+        getattr(args, "cohort4_name", None) or "Breakout Ceiling",
+    ]
+
+
+def cohort_sizes(args) -> list[int | None]:
+    """Inner -> outer audience sizes, verbatim from the wizard. None if
+    not supplied for that slot (row simply omits the size, never invents
+    one)."""
+    return [
+        getattr(args, "cohort1_size", None),
+        getattr(args, "cohort2_size", None),
+        getattr(args, "cohort3_size", None),
+        getattr(args, "cohort4_size", None),
     ]
 
 
@@ -157,21 +198,12 @@ def load_reach(path_or_inline: str, is_path: bool) -> list[dict]:
     out = []
     for i, item in enumerate(raw):
         try:
-            # Accept both shapes for backwards compatibility:
-            #   1. 'channels': list[str]  -- the original CLI/JSON contract
-            #   2. 'channel': str          -- what the wizard sends today; a
-            #      free-text field that may contain a single channel OR a
-            #      comma-separated list. We split on comma so multi-channel
-            #      entries render as a proper middot-separated list on the
-            #      slide.
             if "channels" in item:
                 ch_raw = item["channels"]
             elif "channel" in item:
                 s = item["channel"]
                 if not isinstance(s, str):
                     raise ValueError(f"Cohort #{i+1} 'channel' must be a string")
-                # Split on commas OR our own middot separator (in case a
-                # persisted draft round-trips through the display formatter).
                 ch_raw = [p.strip() for p in s.replace("\u00b7", ",").split(",") if p.strip()]
             else:
                 raise ValueError(f"Cohort #{i+1} missing 'channels' (list) or 'channel' (string)")
@@ -181,16 +213,184 @@ def load_reach(path_or_inline: str, is_path: bool) -> list[dict]:
             raise ValueError(f"Cohort #{i+1} missing one of: channels/channel, message, kpi ({e})")
         if not isinstance(ch_raw, list) or len(ch_raw) < 1:
             raise ValueError(f"Cohort #{i+1} must have at least one channel")
-        # Cap at 7 channels for the slide layout (bumped from 4 on 2026-07-18
-        # to accommodate users listing more channel types per cohort). Extras
-        # beyond 7 are silently dropped -- the row can visually accommodate
-        # ~6-7 middot-separated names at 9pt; beyond that the line wraps or
-        # overflows.
         ch = [str(c).strip() for c in ch_raw if str(c).strip()][:7]
         if not ch:
             raise ValueError(f"Cohort #{i+1} 'channels' resolved to empty after trimming")
         out.append({"channels": ch, "message": ms, "kpi": kp})
     return out
+
+
+# ---------- Row height measurement (font-shrink ladder, mirrors render_usp.py) ----------
+# Each rung shrinks name/channel/body font sizes together so hierarchy is
+# preserved. A naive proportional box-height shrink (without shrinking the
+# actual rendered font) was tried first and rejected: it left text at full
+# size while giving it a smaller box, which caused real visual overlap
+# between rows under dense worst-case copy. This ladder shrinks the fonts
+# themselves before falling back to truncation, exactly like render_usp.py.
+FONT_STEPS = [
+    dict(name=15,   size_lbl=11.5, ch=10.0, body=10.5,
+         name_lh=0.24, ch_lh=0.20, body_lh=0.22),
+    dict(name=14,   size_lbl=11.0, ch=9.3,  body=9.7,
+         name_lh=0.22, ch_lh=0.185, body_lh=0.205),
+    dict(name=13,   size_lbl=10.5, ch=8.7,  body=9.0,
+         name_lh=0.21, ch_lh=0.17, body_lh=0.19),
+    dict(name=12,   size_lbl=10.0, ch=8.0,  body=8.3,
+         name_lh=0.19, ch_lh=0.155, body_lh=0.175),
+]
+
+ROW_PAD_TOP = 0.12
+ROW_PAD_BOTTOM = 0.13
+GAP_AFTER_NAME = 0.06
+GAP_AFTER_CH = 0.07
+
+
+def _measure_row(name, channels, message, kpi, step, *, name_w, ch_w, msg_w, kpi_w):
+    """Return (row_height_in, name_lines, ch_lines, msg_lines, kpi_lines) at
+    the given font-size rung `step`."""
+    name_lines = est_wrapped_lines(name, name_w, step["name"])
+    ch_str = "   \u00b7   ".join(channels)
+    ch_lines = est_wrapped_lines(ch_str, ch_w, step["ch"])
+    msg_lines = est_wrapped_lines(message, msg_w, step["body"])
+    kpi_lines = est_wrapped_lines(kpi, kpi_w, step["body"])
+    body_lines = max(msg_lines, kpi_lines)
+
+    h = (ROW_PAD_TOP
+         + name_lines * step["name_lh"]
+         + GAP_AFTER_NAME
+         + ch_lines * step["ch_lh"]
+         + GAP_AFTER_CH
+         + body_lines * step["body_lh"]
+         + ROW_PAD_BOTTOM)
+    return h, name_lines, ch_lines, msg_lines, kpi_lines
+
+
+def _measure_all(rows_data, step, *, name_w, ch_w, msg_w, kpi_w):
+    heights = []
+    for r in rows_data:
+        h, *_ = _measure_row(r["name"], r["channels"], r["message"], r["kpi"], step,
+                              name_w=name_w, ch_w=ch_w, msg_w=msg_w, kpi_w=kpi_w)
+        heights.append(h)
+    return heights
+
+
+def _fit_rows(rows_data, area_h, *, name_w, ch_w, msg_w, kpi_w, min_gap=0.09):
+    """Try each FONT_STEPS rung (largest first); pick the first rung whose
+    natural total height fits area_h. If even the floor rung doesn't fit,
+    TRUNCATE message/kpi text at the floor rung (never shrink fonts below
+    the floor, never let box height shrink below what the -- now
+    truncated -- text actually needs). Returns (rows_data, step, heights, gap).
+    """
+    n = len(rows_data)
+    chosen_step = FONT_STEPS[-1]
+    chosen_heights = None
+    for step in FONT_STEPS:
+        heights = _measure_all(rows_data, step, name_w=name_w, ch_w=ch_w, msg_w=msg_w, kpi_w=kpi_w)
+        total = sum(heights) + min_gap * (n - 1)
+        if total <= area_h:
+            chosen_step = step
+            chosen_heights = heights
+            break
+
+    if chosen_heights is not None:
+        total = sum(chosen_heights) + min_gap * (n - 1)
+        leftover = area_h - total
+        extra_gap = min(leftover / max(1, n - 1), 0.30) if n > 1 else 0.0
+        remaining = leftover - extra_gap * (n - 1)
+        heights = [h + (remaining * (h / total_h) if (total_h := sum(chosen_heights)) > 0 else 0)
+                   for h in chosen_heights]
+        gap = min_gap + extra_gap
+        return rows_data, chosen_step, heights, gap
+
+    # Floor rung still doesn't fit -- truncate message + kpi text so the
+    # ACTUAL rendered content (not just the box) fits within area_h.
+    step = FONT_STEPS[-1]
+    max_body_lines = 2
+    trunc_rows = []
+    for r in rows_data:
+        msg, kpi = r["message"], r["kpi"]
+        budget_chars = int(msg_w * 16.5 * (10.0 / step["body"]) / 1.18) * max_body_lines
+        if msg and len(msg) > budget_chars:
+            msg = msg[: max(0, budget_chars - 1)].rstrip() + "\u2026"
+        kpi_budget_chars = int(kpi_w * 16.5 * (10.0 / step["body"]) / 1.18) * max_body_lines
+        if kpi and len(kpi) > kpi_budget_chars:
+            kpi = kpi[: max(0, kpi_budget_chars - 1)].rstrip() + "\u2026"
+        trunc_rows.append({**r, "message": msg, "kpi": kpi})
+
+    heights = _measure_all(trunc_rows, step, name_w=name_w, ch_w=ch_w, msg_w=msg_w, kpi_w=kpi_w)
+    total = sum(heights) + min_gap * (n - 1)
+    if total <= area_h:
+        leftover = area_h - total
+        extra_gap = min(leftover / max(1, n - 1), 0.30) if n > 1 else 0.0
+        gap = min_gap + extra_gap
+        return trunc_rows, step, heights, gap
+
+    # Residual case: even truncated floor-rung text doesn't fit (e.g. 4 rows
+    # each with very long wrapped names) -- scale heights down to exactly
+    # fill area_h. Rows won't overlap each other, but text may sit close to
+    # its own row's bottom edge in this rare case.
+    scale = area_h / total if total > 0 else 1.0
+    heights = [h * scale for h in heights]
+    gap = min_gap * scale
+    return trunc_rows, step, heights, gap
+
+
+def _render_rows(slide, rows_data, *, rx, ry, rw, area_h, colors, ink, muted, hair,
+                  name_font, l_body_pt):
+    name_w = rw - 0.35
+    ch_w = rw - 0.35
+    msg_w = rw * 0.58
+    kpi_w = rw - msg_w - 0.30 - 0.35
+
+    rows_data, step, heights, gap = _fit_rows(
+        rows_data, area_h, name_w=name_w, ch_w=ch_w, msg_w=msg_w, kpi_w=kpi_w,
+    )
+
+    y = ry
+    for i, r in enumerate(rows_data):
+        h = heights[i]
+        c = colors[i]
+        add_oval(slide, rx, y + 0.06, 0.16, 0.16, c)
+        name_box_w = name_w - (1.9 if r["size_label"] else 0)
+        add_text(slide, rx + 0.30, y, name_box_w, 0.6, r["name"],
+                 font=name_font, size=step["name"], bold=True, color=ink,
+                 line_spacing=1.0)
+        if r["size_label"]:
+            add_text(slide, rx + 0.30 + name_box_w + 0.1, y, 1.8, 0.3, r["size_label"],
+                     font=name_font, size=step["size_lbl"], bold=True, color=c,
+                     align=PP_ALIGN.RIGHT)
+        name_lines = est_wrapped_lines(r["name"], name_box_w, step["name"])
+        y_ch = y + name_lines * step["name_lh"] + GAP_AFTER_NAME
+        ch_str = "   \u00b7   ".join(r["channels"])
+        add_text(slide, rx + 0.30, y_ch, ch_w, 0.6, ch_str,
+                 font="Calibri", size=body_pt(l_body_pt, step["ch"]), color=muted,
+                 line_spacing=1.0)
+        ch_lines = est_wrapped_lines(ch_str, ch_w, step["ch"])
+        y_body = y_ch + ch_lines * step["ch_lh"] + GAP_AFTER_CH
+        add_text(slide, rx + 0.30, y_body, msg_w, 0.6, r["message"],
+                 font="Calibri", size=body_pt(l_body_pt, step["body"]), color=ink,
+                 line_spacing=1.05)
+        add_text(slide, rx + 0.30 + msg_w + 0.30, y_body, kpi_w, 0.6, r["kpi"],
+                 font="Calibri", size=body_pt(l_body_pt, step["body"] - 0.5), bold=True,
+                 color=c, align=PP_ALIGN.RIGHT, line_spacing=1.05)
+        if i < len(rows_data) - 1:
+            add_rect(slide, rx, y + h - gap * 0.45, rw, 0.008, hair)
+        y += h + gap
+
+
+def _build_rows_data(args, reach) -> list[dict]:
+    names = cohort_names(args)
+    sizes = cohort_sizes(args)
+    rows = []
+    for i in range(4):
+        size_label = f"{fmt_num(sizes[i])} potential buyers" if sizes[i] is not None else ""
+        rows.append({
+            "name": names[i],
+            "size_label": size_label,
+            "channels": reach[i]["channels"],
+            "message": reach[i]["message"],
+            "kpi": reach[i]["kpi"],
+        })
+    return rows
 
 
 # ============================================================
@@ -208,21 +408,17 @@ def render_dark(args, reach, out_path):
     A4       = hex_rgb("#7FD8E3")  # inner
     ACCENT   = hex_rgb("#FFB454")  # warm gold (breakout + eyebrow)
 
-    # Tier colors inner -> outer; final tier uses ACCENT to match Step 1
     tier_colors = [A4, A3, A2, ACCENT]
-    labels = cohort_labels(args)
 
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
-    # Background + top accent bar (locked)
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 13.333, 0.08, ACCENT)
 
-    # Header (locked)
-    add_text(slide, 0.6, 0.4, 10, 0.3, "STEP 03 \u00b7 HOW WE REACH",
+    add_text(slide, 0.6, 0.4, 10, 0.3, "HOW WE REACH",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
     add_text(slide, 0.6, 0.75, 12, 0.85, f"Reaching the audience for {args.title}",
              font="Trebuchet MS", size=34, bold=True, color=INK)
@@ -230,66 +426,13 @@ def render_dark(args, reach, out_path):
              f"{args.genre}  \u00b7  Channels and message tied to each tier",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
-    # ---- Left: mini circle chart as visual key ----
-    add_text(slide, 0.6, 2.4, 4.5, 0.3, "FROM THE AUDIENCE MAP",
-             font="Calibri", size=body_pt(L, 9), bold=True, color=ACCENT)
-    cx, cy = 2.7, 4.7
-    add_circle(slide, cx, cy, 3.4, A1, line=BORDER)
-    add_circle(slide, cx, cy, 2.6, A2, line=BORDER)
-    add_circle(slide, cx, cy, 1.8, A3, line=BORDER)
-    add_circle(slide, cx, cy, 1.0, A4, line=BORDER)
-    # Innermost label (short) sits inside the inner circle
-    inner_short = "PREV" if args.inner == "prev" else \
-                  "DEV"  if args.inner == "dev"  else \
-                  (args.inner_name or "Cohort")[:8].upper()
-    add_text(slide, cx - 0.45, cy - 0.15, 0.9, 0.3, inner_short,
-             font="Calibri", size=body_pt(L, 8), bold=True, color=BG,
-             align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    # Caption
-    add_text(slide, 0.6, 6.55, 4.5, 0.5,
-             "Each cohort is reached on its own surfaces. Inner tiers carry "
-             "highest conversion; outer tiers carry the breakout.",
-             font="Calibri", size=body_pt(L, 10), color=MUTED)
-
-    # ---- Right: cohort rows, calm typographic stack (no cards, hairlines only) ----
-    rx, ry = 5.6, 2.35
-    rw = 7.2
-    n = 4
-    rh = 4.5 / n
-    for i in range(n):
-        c = tier_colors[i]
-        name = labels[i]
-        channels = reach[i]["channels"]
-        message  = reach[i]["message"]
-        kpi      = reach[i]["kpi"]
-        y = ry + i * rh
-        # Row 1: cohort dot + name (left)
-        add_oval(slide, rx, y + 0.06, 0.16, 0.16, c)
-        add_text(slide, rx + 0.30, y - 0.02, 4.6, 0.32, name,
-                 font="Trebuchet MS", size=14, bold=True, color=INK)
-        # Row 2: channels, own line below the cohort name (not inline).
-        # Font size scales down as channel count grows so 5-7 channels stay on
-        # ONE line at the ~7in row width. Keeping channels single-line lets
-        # message/KPI stay at their original y offset so nothing collides.
-        ch_str = "  \u00b7  ".join(channels)
-        ch_pt = 9.5 if len(channels) <= 4 else (8.5 if len(channels) <= 6 else 7.5)
-        add_text(slide, rx + 0.30, y + 0.34, rw - 0.30, 0.28, ch_str,
-                 font="Calibri", size=body_pt(L, ch_pt), color=MUTED)
-        # Row 3: message (left) and KPI (right-aligned, own line, room to wrap)
-        msg_w = rw * 0.56
-        kpi_w = rw - msg_w - 0.25
-        add_text(slide, rx + 0.30, y + 0.66, msg_w, 0.42, message,
-                 font="Calibri", size=body_pt(L, 10), color=INK)
-        add_text(slide, rx + 0.30 + msg_w + 0.25, y + 0.66, kpi_w, 0.42,
-                 kpi, font="Calibri", size=body_pt(L, 9.5), bold=True, color=c,
-                 align=PP_ALIGN.RIGHT)
-        if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.07, rw, 0.008, BORDER)
-
-    # Footer (locked dark pattern)
-    add_text(slide, 0.6, 7.1, 12, 0.25,
-             "GTM SLIDE PACK \u00b7 STEP 03 OF N",
-             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
+    rows_data = _build_rows_data(args, reach)
+    rx, ry = 0.6, 2.15
+    rw = 12.1
+    area_h = 6.85 - ry  # leave clear margin at bottom, no footer
+    _render_rows(slide, rows_data, rx=rx, ry=ry, rw=rw, area_h=area_h,
+                 colors=tier_colors, ink=INK, muted=MUTED, hair=BORDER,
+                 name_font="Trebuchet MS", l_body_pt=L)
 
     prs.save(out_path)
 
@@ -303,14 +446,12 @@ def render_light(args, reach, out_path):
     INK      = hex_rgb("#1A1A1A")
     MUTED    = hex_rgb("#5C5C5C")
     HAIR     = hex_rgb("#E8E8E8")
-    # Light tier ramp inner -> outer (matches Step 1 light)
     C4       = hex_rgb("#7DD4C9")  # mint (inner)
     C3       = hex_rgb("#1F9B8E")  # teal
     C2       = hex_rgb("#D63A57")  # rose
     C1       = hex_rgb("#E5A700")  # gold (outer / breakout)
 
     tier_colors = [C4, C3, C2, C1]
-    labels = cohort_labels(args)
 
     prs = Presentation()
     prs.slide_width = Inches(13.333)
@@ -318,11 +459,9 @@ def render_light(args, reach, out_path):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
-    # Left accent stripe (locked light motif)
     add_rect(slide, 0, 0, 0.25, 7.5, C3)
 
-    # Header (locked light pattern)
-    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 03 \u00b7 HOW WE REACH",
+    add_text(slide, 0.7, 0.5, 11, 0.3, "HOW WE REACH",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 12, 0.85, f"Reaching the audience for {args.title}",
              font="Trebuchet MS", size=34, bold=True, color=INK)
@@ -330,60 +469,13 @@ def render_light(args, reach, out_path):
              f"{args.genre} \u00b7 Channels and message tied to each tier",
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
-    # ---- Left: mini circle chart ----
-    add_text(slide, 0.7, 2.55, 4.5, 0.3, "FROM THE AUDIENCE MAP",
-             font="Calibri", size=body_pt(L, 9), bold=True, color=C3)
-    cx, cy = 2.8, 4.85
-    # Outer -> inner so inner sits on top; thin white separators
-    add_circle(slide, cx, cy, 3.4, C1, line=BG, line_w_pt=2)
-    add_circle(slide, cx, cy, 2.6, C2, line=BG, line_w_pt=2)
-    add_circle(slide, cx, cy, 1.8, C3, line=BG, line_w_pt=2)
-    add_circle(slide, cx, cy, 1.0, C4, line=BG, line_w_pt=2)
-    inner_short = "PREV" if args.inner == "prev" else \
-                  "DEV"  if args.inner == "dev"  else \
-                  (args.inner_name or "Cohort")[:8].upper()
-    add_text(slide, cx - 0.45, cy - 0.15, 0.9, 0.3, inner_short,
-             font="Calibri", size=body_pt(L, 8), bold=True, color=INK,
-             align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    add_text(slide, 0.7, 6.6, 4.5, 0.45,
-             "Each cohort is reached on its own surfaces. Inner tiers carry "
-             "highest conversion; outer tiers carry the breakout.",
-             font="Calibri", size=body_pt(L, 10), color=MUTED)
-
-    # ---- Right: cohort rows, calm typographic stack (no cards, hairlines only) ----
-    rx, ry = 5.7, 2.45
-    rw = 7.0
-    n = 4
-    rh = 4.5 / n
-    for i in range(n):
-        c = tier_colors[i]
-        name = labels[i]
-        channels = reach[i]["channels"]
-        message  = reach[i]["message"]
-        kpi      = reach[i]["kpi"]
-        y = ry + i * rh
-        add_oval(slide, rx, y + 0.06, 0.16, 0.16, c)
-        add_text(slide, rx + 0.30, y - 0.02, 4.6, 0.32, name,
-                 font="Trebuchet MS", size=14, bold=True, color=INK)
-        # Row 2: channels with dynamic sizing (see render_dark comment).
-        ch_str = "  \u00b7  ".join(channels)
-        ch_pt = 9.5 if len(channels) <= 4 else (8.5 if len(channels) <= 6 else 7.5)
-        add_text(slide, rx + 0.30, y + 0.34, rw - 0.30, 0.28, ch_str,
-                 font="Calibri", size=body_pt(L, ch_pt), color=MUTED)
-        msg_w = rw * 0.56
-        kpi_w = rw - msg_w - 0.25
-        add_text(slide, rx + 0.30, y + 0.66, msg_w, 0.42, message,
-                 font="Calibri", size=body_pt(L, 10), color=INK)
-        add_text(slide, rx + 0.30 + msg_w + 0.25, y + 0.66, kpi_w, 0.42,
-                 kpi, font="Calibri", size=body_pt(L, 9.5), bold=True, color=c,
-                 align=PP_ALIGN.RIGHT)
-        if i < n - 1:
-            add_rect(slide, rx, y + rh - 0.07, rw, 0.008, HAIR)
-
-    # Footer (locked light pattern)
-    add_text(slide, 0.7, 7.1, 12, 0.25,
-             "GTM Slide Pack \u00b7 Step 03 of N",
-             font="Calibri", size=body_pt(L, 9), color=MUTED)
+    rows_data = _build_rows_data(args, reach)
+    rx, ry = 0.7, 2.25
+    rw = 12.0
+    area_h = 6.95 - ry
+    _render_rows(slide, rows_data, rx=rx, ry=ry, rw=rw, area_h=area_h,
+                 colors=tier_colors, ink=INK, muted=MUTED, hair=HAIR,
+                 name_font="Trebuchet MS", l_body_pt=L)
 
     prs.save(out_path)
 
@@ -434,6 +526,14 @@ def parse_args():
                    help="Custom innermost label (required when --inner other)")
     p.add_argument("--ring2-name", default=None,
                    help="Custom ring 2 label (required when --type custom)")
+    p.add_argument("--cohort3-name", default=None,
+                   help="User-typed name for cohort 3 (falls back to 'Genre Fans' if omitted)")
+    p.add_argument("--cohort4-name", default=None,
+                   help="User-typed name for cohort 4 (falls back to 'Breakout Ceiling' if omitted)")
+    p.add_argument("--cohort1-size", type=int, default=None)
+    p.add_argument("--cohort2-size", type=int, default=None)
+    p.add_argument("--cohort3-size", type=int, default=None)
+    p.add_argument("--cohort4-size", type=int, default=None)
 
     grp = p.add_mutually_exclusive_group(required=True)
     grp.add_argument("--reach", help="Inline JSON list of 4 cohort objects "

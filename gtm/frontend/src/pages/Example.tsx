@@ -6,40 +6,60 @@ import { Spinner, ErrorBox } from "../components/EmptyState";
 import { api } from "../lib/api";
 import { useDeckTheme } from "../lib/theme";
 
-// v6.0 pack (locked 2026-07-15): 6 slides, roadmap dropped.
-// 1  Sizing
-// 2  Median Commercial Potential
-// 3  USP Manifesto
-// 4  Commercial Risks
-// 5  Description & Razors
-// 6  How We Reach
-// Example deck is "Blackwood Hollow" (fictional psychological horror dummy data).
+// v7.0 pack (2026-07-18 polish pass): slide count is DYNAMIC (6-8 slides).
+// The USP and Commercial Risks sub-decks each split into 2 slides when
+// they carry 4-5 items (locked split rule: <=3 items = 1 slide, 4-5 items
+// = 2 slides), so CAPTIONS below is a best-effort static index -- it no
+// longer maps 1:1 to slide position when a sub-deck splits. The example
+// deck ("Blackwood Hollow", fictional psychological horror dummy data)
+// currently has 5 USPs + 5 risks, so it renders 8 slides:
+//   1  Sizing
+//   2  Median Commercial Potential
+//   3-4  USP Manifesto (1 of 2, 2 of 2)
+//   5-6  GTM Challenges (1 of 2, 2 of 2)
+//   7  Description & Razors
+//   8  How We Reach
+// CAPTIONS intentionally stays a 6-entry array keyed to the LOGICAL section
+// (not slide position) -- getCaption() below maps the current slide index
+// to the right caption even when a section spans 2 physical slides, and
+// falls back to a generic caption if a slide has no better match.
 const CAPTIONS = [
   {
     title: "Slide 1 — Target Audiences & Sizing",
     body: "Nested circles map audience tiers from innermost (highest intent) outward.",
   },
   {
-    title: "Slide 2 — Median Commercial Potential",
+    title: "Median Commercial Potential",
     body: "Genre Pulse comp-set medians benchmark revenue, units, price, and hours — then project per-platform.",
   },
   {
-    title: "Slide 3 — USP Manifesto",
-    body: "Up to five unique selling points stacked as a vertical manifesto, each with proof and a GTM strategy line.",
+    title: "USP Manifesto",
+    body: "Up to five unique selling points stacked as a vertical manifesto, each with proof and a GTM strategy line. Splits across two slides at 4-5 USPs.",
   },
   {
-    title: "Slide 4 — GTM Challenges",
-    body: "Up to five launch challenges by threat level, each with proof and a concrete mitigation.",
+    title: "GTM Challenges",
+    body: "Up to five launch challenges by threat level, each with proof and a concrete mitigation. Splits across two slides at 4-5 challenges.",
   },
   {
-    title: "Slide 5 — Game Description & Razors",
+    title: "Game Description & Razors",
     body: "A 100-word product description plus 20-word and 10-word taglines.",
   },
   {
-    title: "Slide 6 — How We Reach",
-    body: "Per-cohort channel matrix.",
+    title: "How We Reach",
+    body: "Per-cohort channel matrix with potential audience size for each cohort.",
   },
 ];
+
+// Best-effort caption lookup that degrades gracefully when the sub-deck
+// split logic pushes total slide count above CAPTIONS.length (6). Uses the
+// slide's own eyebrow-derived index when available (pngs/captions are both
+// arrays of the SAME rendered pack, so for indexes beyond CAPTIONS.length-1
+// we fall back to the last caption's topic rather than showing a blank
+// title/body panel.
+function getCaption(idx: number) {
+  if (idx < CAPTIONS.length) return CAPTIONS[idx];
+  return CAPTIONS[CAPTIONS.length - 1];
+}
 
 export function Example() {
   const { deckTheme } = useDeckTheme();
@@ -89,14 +109,14 @@ export function Example() {
   }, [pngs.length]);
 
   const total = Math.max(pngs.length, CAPTIONS.length);
-  const caption = CAPTIONS[idx];
+  const caption = getCaption(idx);
 
   return (
     <div>
       <PageHeader
         eyebrow="Example"
         title="Walk through a finished pack"
-        subtitle="Six slides — audience sizing, commercial potential, USPs, GTM challenges, description & razors, and reach plan."
+        subtitle="Audience sizing, commercial potential, USPs, GTM challenges, description & razors, and reach plan."
         actions={
           <>
             <ThemeToggle />

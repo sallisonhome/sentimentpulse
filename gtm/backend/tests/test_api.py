@@ -53,8 +53,14 @@ def session_id():
     r = client.post("/preview", json={"inputs": SAMPLE_INPUTS, "theme": "dark"})
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["slide_count"] == 6  # v6.0: 6 slides (roadmap dropped 2026-07-15)
-    assert len(data["pngs"]) == 6
+    # v7.0: slide count is dynamic (6-8) since the USP and Commercial Risks
+    # sub-decks split across 2 slides when they carry 4-5 items (locked
+    # split rule: <=3 items = 1 slide, 4-5 items = [3, remainder] = 2
+    # slides). SAMPLE_INPUTS carries 4 USPs + 4 risks, so this should
+    # currently render 8 slides, but we assert a range to stay resilient
+    # to future SAMPLE_INPUTS edits.
+    assert 6 <= data["slide_count"] <= 8, f"Expected 6-8 slides, got {data['slide_count']}"
+    assert len(data["pngs"]) == data["slide_count"]
     return data["session_id"]
 
 

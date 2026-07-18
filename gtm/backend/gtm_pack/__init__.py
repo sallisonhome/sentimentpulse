@@ -127,6 +127,14 @@ def render_sizing_circle(inputs: dict[str, Any], theme: str, out_dir: Path,
         breakout=int(cohort_sizes[3]["size"]),
         ring2_name=inputs["cohorts"][1]["name"] if game_type == "custom" else None,
         ring2_definition=inputs.get("ring2_definition"),
+        # Cohorts 3 and 4 (the 'genre fans' / 'breakout ceiling' ring slots)
+        # always carry a user-typed name from the wizard's Step 3 -- thread
+        # them through unconditionally (not gated on game_type) so the
+        # renderer never silently substitutes its legacy default labels.
+        cohort3_name=inputs["cohorts"][2].get("name"),
+        cohort3_definition=inputs["cohorts"][2].get("definition"),
+        cohort4_name=inputs["cohorts"][3].get("name"),
+        cohort4_definition=inputs["cohorts"][3].get("definition"),
         theme=theme,
         out_dir=str(out_dir),
         language=language,
@@ -206,6 +214,8 @@ def render_reach(inputs: dict[str, Any], theme: str, out_dir: Path,
             "kpi": r["kpi"],
         })
 
+    cohorts = inputs["cohorts"]  # list of 4 dicts with name/size, inner -> outer
+
     args = Namespace(
         title=inputs["title"],
         genre=inputs["genre"],
@@ -213,6 +223,19 @@ def render_reach(inputs: dict[str, Any], theme: str, out_dir: Path,
         inner=inner_choice,
         inner_name=inputs["cohorts"][0]["name"] if inner_choice == "other" else None,
         ring2_name=inputs["cohorts"][1]["name"] if game_type == "custom" else None,
+        # Cohorts 3 and 4 (the 'genre fans' / 'breakout ceiling' ring slots)
+        # always carry a user-typed name from the wizard's Step 3 -- thread
+        # them through unconditionally (same fix as render_sizing_circle's
+        # wrapper) so Slide 6 never falls back to a generic default label
+        # when the user has typed their own cohort names.
+        cohort3_name=cohorts[2].get("name"),
+        cohort4_name=cohorts[3].get("name"),
+        # Audience sizes, verbatim, for the "N potential buyers" sub-label
+        # on each cohort row.
+        cohort1_size=int(cohorts[0]["size"]) if cohorts[0].get("size") is not None else None,
+        cohort2_size=int(cohorts[1]["size"]) if cohorts[1].get("size") is not None else None,
+        cohort3_size=int(cohorts[2]["size"]) if cohorts[2].get("size") is not None else None,
+        cohort4_size=int(cohorts[3]["size"]) if cohorts[3].get("size") is not None else None,
         theme=theme,
         reach=json.dumps(reach_payload),
         reach_json=None,
@@ -458,16 +481,20 @@ def render_full_pack(
     phases_override: dict | None = None,
     language: str = "en",
 ) -> Path:
-    """Render the complete 6-slide GTM pack (v6.0, roadmap dropped 2026-07-15).
+    """Render the complete GTM pack (v7.0, roadmap dropped 2026-07-15).
 
-    Returns the path to the merged PPTX containing all 6 slides, in OUTPUT
-    order (internal skill step numbers differ -- see module docstring):
-      1: Sizing Circle
-      2: Median Commercial Potential
-      3: USP / Pillars
-      4: Commercial Risks
-      5: Description & Razors
-      6: How We Reach
+    Returns the path to the merged PPTX containing 6-8 slides (slide count is
+    now dynamic: v7 polish pass added a locked split rule for the USP and
+    Commercial Risks sub-decks -- 1-3 items render as one slide, 4-5 items
+    split across two slides "(1 OF 2)"/"(2 OF 2)"). Sub-decks render in
+    OUTPUT order (internal skill step numbers differ -- see module
+    docstring):
+      1: Sizing Circle (1 slide)
+      2: Median Commercial Potential (1 slide)
+      3: USP / Pillars (1-2 slides)
+      4: Commercial Risks (1-2 slides)
+      5: Description & Razors (1 slide)
+      6: How We Reach (1 slide)
 
     inputs must include the fields required by every sub-renderer, notably:
       - median_revenue_usd_millions (float, MILLIONS of dollars)

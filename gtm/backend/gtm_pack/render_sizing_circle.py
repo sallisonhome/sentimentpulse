@@ -5,6 +5,13 @@ Two themes baked in:
   - dark   (V2 Modern Mono)  : dark slide, teal ramp + warm gold accent on breakout tier, KPI cards
   - light  (V4 Bold Brand)   : light slide, refined original palette, color-swatch legend rows
 
+v7 polish pass (2026-07-18): every ring is now filled with its tier color and
+carries its own name + formatted count directly inside (or, for the outer
+ring where the band is too thin, just outside the ring on a matching-color
+chip) with a contrast-aware foreground color. The side KPI/legend card is
+KEPT next to the chart. Subtitle now explicitly calls out "Potential Buyers"
+so the numbers are self-explanatory. Footer removed (global v7 rule).
+
 Outputs both a PPTX and a PNG to --out-dir.
 """
 from __future__ import annotations
@@ -33,6 +40,18 @@ def hex_rgb(h: str) -> RGBColor:
     return RGBColor(int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
 
 
+def relative_luminance(h: str) -> float:
+    """Approximate relative luminance (0=black, 1=white) for contrast picks."""
+    h = h.lstrip("#")
+    r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def fg_for_bg(hex_bg: str, light_fg: str, dark_fg: str) -> RGBColor:
+    """Pick light_fg or dark_fg (hex strings) based on background luminance."""
+    return hex_rgb(light_fg) if relative_luminance(hex_bg) < 0.55 else hex_rgb(dark_fg)
+
+
 def slugify(value: str) -> str:
     s = re.sub(r"[^A-Za-z0-9]+", "_", value.strip().lower()).strip("_")
     return s or "untitled"
@@ -43,7 +62,7 @@ def fmt_num(n: int) -> str:
 
 
 def fmt_short(n: int) -> str:
-    """Format a number compactly for the inner circle (1.2M, 850K, 12.3M)."""
+    """Format a number compactly for in-circle labels (1.2M, 850K, 12.3M)."""
     if n >= 1_000_000:
         v = n / 1_000_000
         return f"{v:.1f}M" if v < 10 else f"{int(round(v))}M"
@@ -84,7 +103,8 @@ def add_circle(slide, cx, cy, d, fill, line=None, line_w_pt=2.0):
 
 
 def add_text(slide, x, y, w, h, text, *, font="Calibri", size=12, bold=False,
-             color=None, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP, italic=False):
+             color=None, align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP, italic=False,
+             line_spacing=None):
     box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     tf = box.text_frame
     tf.margin_left = tf.margin_right = Emu(0)
@@ -96,6 +116,8 @@ def add_text(slide, x, y, w, h, text, *, font="Calibri", size=12, bold=False,
     for i, line in enumerate(text):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.alignment = align
+        if line_spacing is not None:
+            p.line_spacing = line_spacing
         r = p.add_run()
         r.text = line
         r.font.name = font
@@ -104,26 +126,6 @@ def add_text(slide, x, y, w, h, text, *, font="Calibri", size=12, bold=False,
         r.font.italic = italic
         if color is not None:
             r.font.color.rgb = color
-    return box
-
-
-def add_text_with_hyperlink(slide, x, y, w, h, runs, *, size=9, color=None, align=PP_ALIGN.LEFT):
-    """runs: list of (text, url_or_None)."""
-    box = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
-    tf = box.text_frame
-    tf.margin_left = tf.margin_right = Emu(0)
-    tf.margin_top = tf.margin_bottom = Emu(0)
-    p = tf.paragraphs[0]
-    p.alignment = align
-    for text, url in runs:
-        r = p.add_run()
-        r.text = text
-        r.font.name = "Calibri"
-        r.font.size = Pt(size)
-        if color is not None:
-            r.font.color.rgb = color
-        if url:
-            r.hyperlink.address = url
     return box
 
 
@@ -142,7 +144,7 @@ def innermost_label(args) -> tuple[str, str]:
 def ring2_chart_label(args) -> str:
     if args.type == "custom":
         return args.ring2_name or "Custom cohort"
-    return "IP Fans (no prior)"
+    return "IP Fans"
 
 
 def ring2_legend_name(args) -> str:
@@ -155,6 +157,27 @@ def ring2_legend_desc(args) -> str:
     if args.type == "custom":
         return args.ring2_definition or ""
     return "Followers of the IP who didn't own previous"
+
+
+def cohort3_name(args) -> str:
+    """User-typed name for ring 3 (was hardcoded 'Genre Fans'). Falls back
+    to the 'Genre Fans' default ONLY when no user-typed name was supplied --
+    the wizard's Step 3 always collects a name for this cohort, so this
+    fallback should rarely trigger in practice."""
+    return getattr(args, "cohort3_name", None) or "Genre Fans"
+
+
+def cohort3_desc(args) -> str:
+    return getattr(args, "cohort3_definition", None) or f"Top 5 avg in {args.genre}"
+
+
+def cohort4_name(args) -> str:
+    """User-typed name for the outer ring (was hardcoded 'Breakout Ceiling')."""
+    return getattr(args, "cohort4_name", None) or "Breakout Ceiling"
+
+
+def cohort4_desc(args) -> str:
+    return getattr(args, "cohort4_definition", None) or f"Top 2 ever in {args.genre}+"
 
 
 # ============================================================
@@ -173,6 +196,8 @@ def render_dark(args, out_path):
     A4       = hex_rgb("#7FD8E3")  # inner
     ACCENT   = hex_rgb("#FFB454")  # warm gold — used on breakout
 
+    A1_HEX, A2_HEX, A3_HEX, A4_HEX = "#0A2A30", "#155966", "#2FA9BD", "#7FD8E3"
+
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
@@ -189,27 +214,72 @@ def render_dark(args, out_path):
              font="Trebuchet MS", size=34, bold=True, color=INK)
     type_label = {"sequel": "Sequel", "new_ip_with_fans": "IP-based",
                   "custom": "Original IP"}[args.type]
-    add_text(slide, 0.6, 1.55, 11, 0.4,
-             f"{args.genre}  ·  {type_label}  ·  Four-tier audience model",
+    add_text(slide, 0.6, 1.55, 11.5, 0.4,
+             f"Potential buyer audience by tier · {args.genre}  ·  {type_label}",
              font="Calibri", size=body_pt(L, 13), color=MUTED)
 
-    # ---- Circles (left half) ----
-    cx, cy = 3.7, 4.7
-    add_circle(slide, cx, cy, 5.0, A1, line=BORDER, line_w_pt=0.5)
-    add_circle(slide, cx, cy, 3.8, A2, line=BORDER, line_w_pt=0.5)
-    add_circle(slide, cx, cy, 2.6, A3, line=BORDER, line_w_pt=0.5)
-    add_circle(slide, cx, cy, 1.4, A4, line=BORDER, line_w_pt=0.5)
+    # ---- Circles (left half) — filled, labeled tiers ----
+    cx, cy = 3.55, 4.75
+    d1, d2, d3, d4 = 5.2, 3.95, 2.65, 1.35  # outer -> inner diameters
+    add_circle(slide, cx, cy, d1, A1, line=BORDER, line_w_pt=0.75)
+    add_circle(slide, cx, cy, d2, A2, line=BORDER, line_w_pt=0.75)
+    add_circle(slide, cx, cy, d3, A3, line=BORDER, line_w_pt=0.75)
+    add_circle(slide, cx, cy, d4, A4, line=BORDER, line_w_pt=0.75)
 
-    # Inner — short number + label, dark text on light teal
-    inner_chart, _ = innermost_label(args)
-    add_text(slide, cx - 0.7, cy - 0.32, 1.4, 0.5, fmt_short(args.prev),
-             font="Trebuchet MS", size=22, bold=True, color=BG,
-             align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    add_text(slide, cx - 0.85, cy + 0.05, 1.7, 0.3, inner_chart.upper(),
-             font="Calibri", size=body_pt(L, 8), bold=True, color=BG,
+    inner_chart = ring2_chart_label(args)
+    prev_chart, _ = innermost_label(args)
+
+    fg1 = fg_for_bg(A1_HEX, "#E8E6E1", "#0E1116")
+    fg2 = fg_for_bg(A2_HEX, "#E8E6E1", "#0E1116")
+    fg3 = fg_for_bg(A3_HEX, "#E8E6E1", "#0E1116")
+    fg4 = fg_for_bg(A4_HEX, "#E8E6E1", "#0E1116")
+
+    # Ring band radii (top edge to next ring's top edge) used to position each
+    # ring's label vertically within its own visible band, offset upward from
+    # circle center so text sits inside the band rather than centered on the
+    # whole nested stack.
+    r1, r2, r3, r4 = d1 / 2, d2 / 2, d3 / 2, d4 / 2
+    band1_y = cy - (r1 + r2) / 2   # ring 1 (outer) band midpoint, above ring2
+    band2_y = cy - (r2 + r3) / 2   # ring 2 band midpoint
+    band3_y = cy - (r3 + r4) / 2   # ring 3 band midpoint
+
+    # Outer ring (cohort 4 / breakout ceiling) — label above the top of ring
+    # 2, inside ring 1's band. Uses the user-typed cohort name verbatim
+    # (truncated only if it doesn't fit the band width).
+    c4_label = cohort4_name(args)
+    add_text(slide, cx - 1.7, band1_y - 0.28, 3.4, 0.3, c4_label.upper()[:26],
+             font="Calibri", size=body_pt(L, 9), bold=True, color=fg1,
+             align=PP_ALIGN.CENTER)
+    add_text(slide, cx - 1.7, band1_y + 0.0, 3.4, 0.4, fmt_short(args.breakout),
+             font="Trebuchet MS", size=20, bold=True, color=fg1,
              align=PP_ALIGN.CENTER)
 
-    # ---- KPI cards (right half) ----
+    # Ring 2 (cohort 3 / "genre fans" slot) band — user-typed name verbatim.
+    c3_label = cohort3_name(args)
+    add_text(slide, cx - 1.3, band2_y - 0.26, 2.6, 0.28, c3_label.upper()[:20],
+             font="Calibri", size=body_pt(L, 8), bold=True, color=fg2,
+             align=PP_ALIGN.CENTER)
+    add_text(slide, cx - 1.3, band2_y + 0.0, 2.6, 0.36, fmt_short(args.genre_fans),
+             font="Trebuchet MS", size=18, bold=True, color=fg2,
+             align=PP_ALIGN.CENTER)
+
+    # Ring 3 (ip fans / custom ring2) band
+    add_text(slide, cx - 1.0, band3_y - 0.24, 2.0, 0.26, inner_chart.upper()[:18],
+             font="Calibri", size=body_pt(L, 7.5), bold=True, color=fg3,
+             align=PP_ALIGN.CENTER)
+    add_text(slide, cx - 1.0, band3_y + 0.0, 2.0, 0.32, fmt_short(args.ip_fans),
+             font="Trebuchet MS", size=15, bold=True, color=fg3,
+             align=PP_ALIGN.CENTER)
+
+    # Innermost — short number + label, centered in the small inner circle
+    add_text(slide, cx - 0.62, cy - 0.30, 1.24, 0.36, fmt_short(args.prev),
+             font="Trebuchet MS", size=15, bold=True, color=fg4,
+             align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
+    add_text(slide, cx - 0.62, cy + 0.06, 1.24, 0.26, prev_chart.upper()[:14],
+             font="Calibri", size=body_pt(L, 6.5), bold=True, color=fg4,
+             align=PP_ALIGN.CENTER)
+
+    # ---- KPI cards (right half) — kept, per user's "keep side card" pick ----
     _, inner_legend = innermost_label(args)
     inner_desc = "Players of the prior title" if args.inner == "prev" else \
                  "Direct followers of the developer" if args.inner == "dev" else \
@@ -218,30 +288,27 @@ def render_dark(args, out_path):
     cards = [
         (inner_legend.upper(),               fmt_num(args.prev),       inner_desc,                              A4),
         (ring2_legend_name(args).upper(),    fmt_num(args.ip_fans),    ring2_legend_desc(args),                 A3),
-        ("GENRE FANS",                        fmt_num(args.genre_fans), f"Top 5 avg in {args.genre}",            A2),
-        ("BREAKOUT CEILING",                  fmt_num(args.breakout),   f"Top 2 ever in {args.genre}+",          ACCENT),
+        (cohort3_name(args).upper(),          fmt_num(args.genre_fans), cohort3_desc(args),                      A2),
+        (cohort4_name(args).upper(),          fmt_num(args.breakout),   cohort4_desc(args),                      ACCENT),
     ]
     rx = 7.5
-    ry = 2.3
-    cw = 5.3
-    ch = 1.05
-    gap = 0.12
+    ry = 2.15
+    cw = 5.25
+    ch = 1.08
+    gap = 0.14
+    add_text(slide, rx, ry - 0.32, cw, 0.28, "POTENTIAL BUYERS BY TIER",
+             font="Calibri", size=body_pt(L, 9), bold=True, color=MUTED)
     for i, (label, num, desc, accent) in enumerate(cards):
         y = ry + i * (ch + gap)
         add_rect(slide, rx, y, cw, ch, SURFACE)
         # Tier accent strip — left side, indicates which ring this row maps to
         add_rect(slide, rx, y, 0.06, ch, accent)
-        add_text(slide, rx + 0.3, y + 0.13, cw - 0.5, 0.3, label,
+        add_text(slide, rx + 0.3, y + 0.11, cw - 0.5, 0.28, label,
                  font="Calibri", size=body_pt(L, 9), bold=True, color=MUTED)
-        add_text(slide, rx + 0.3, y + 0.4, cw - 0.5, 0.5, num,
-                 font="Trebuchet MS", size=22, bold=True, color=INK)
+        add_text(slide, rx + 0.3, y + 0.38, cw - 0.5, 0.42, num,
+                 font="Trebuchet MS", size=20, bold=True, color=INK)
         add_text(slide, rx + 0.3, y + 0.78, cw - 0.5, 0.25, desc,
-                 font="Calibri", size=body_pt(L, 10), color=MUTED)
-
-    # Footer
-    add_text(slide, 0.6, 7.1, 12, 0.25,
-             "GTM SLIDE PACK · STEP 01 OF N",
-             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
+                 font="Calibri", size=body_pt(L, 9.5), color=MUTED)
 
     prs.save(out_path)
 
@@ -261,6 +328,8 @@ def render_light(args, out_path):
     C3       = hex_rgb("#1F9B8E")  # teal
     C4       = hex_rgb("#7DD4C9")  # mint (inner)
 
+    C1_HEX, C2_HEX, C3_HEX, C4_HEX = "#E5A700", "#D63A57", "#1F9B8E", "#7DD4C9"
+
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
@@ -272,36 +341,72 @@ def render_light(args, out_path):
     add_rect(slide, 0, 0, 0.25, 7.5, C3)
 
     # Title block
-    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 01 · TARGET AUDIENCES",
+    add_text(slide, 0.7, 0.5, 11, 0.3, "TARGET AUDIENCES",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 11, 0.8, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
     type_label = {"sequel": "Sequel", "new_ip_with_fans": "IP-based",
                   "custom": "Original IP"}[args.type]
-    add_text(slide, 0.7, 1.65, 11, 0.4,
-             f"{args.genre} · {type_label} · sized as concentric reachable cohorts",
+    add_text(slide, 0.7, 1.65, 11.3, 0.4,
+             f"Potential buyer audience by tier · {args.genre} · {type_label}",
              font="Calibri", size=14, color=MUTED)
 
-    # ---- Circles (left half) ----
-    cx, cy = 3.9, 4.8
-    add_circle(slide, cx, cy, 5.2, C1, line=BG, line_w_pt=2)
-    add_circle(slide, cx, cy, 4.0, C2, line=BG, line_w_pt=2)
-    add_circle(slide, cx, cy, 2.8, C3, line=BG, line_w_pt=2)
-    add_circle(slide, cx, cy, 1.6, C4, line=BG, line_w_pt=2)
+    # ---- Circles (left half) — filled, labeled tiers ----
+    cx, cy = 3.75, 4.85
+    d1, d2, d3, d4 = 5.3, 4.05, 2.75, 1.5
+    add_circle(slide, cx, cy, d1, C1, line=BG, line_w_pt=2.5)
+    add_circle(slide, cx, cy, d2, C2, line=BG, line_w_pt=2.5)
+    add_circle(slide, cx, cy, d3, C3, line=BG, line_w_pt=2.5)
+    add_circle(slide, cx, cy, d4, C4, line=BG, line_w_pt=2.5)
 
-    # Inner — short number + label
-    inner_chart, _ = innermost_label(args)
-    add_text(slide, cx - 0.8, cy - 0.3, 1.6, 0.4, fmt_short(args.prev),
-             font="Trebuchet MS", size=20, bold=True, color=INK,
+    inner_chart = ring2_chart_label(args)
+    prev_chart, _ = innermost_label(args)
+
+    fg1 = fg_for_bg(C1_HEX, "#FFFFFF", "#1A1A1A")
+    fg2 = fg_for_bg(C2_HEX, "#FFFFFF", "#1A1A1A")
+    fg3 = fg_for_bg(C3_HEX, "#FFFFFF", "#1A1A1A")
+    fg4 = fg_for_bg(C4_HEX, "#FFFFFF", "#1A1A1A")
+
+    r1, r2, r3, r4 = d1 / 2, d2 / 2, d3 / 2, d4 / 2
+    band1_y = cy - (r1 + r2) / 2
+    band2_y = cy - (r2 + r3) / 2
+    band3_y = cy - (r3 + r4) / 2
+
+    c4_label = cohort4_name(args)
+    add_text(slide, cx - 1.75, band1_y - 0.28, 3.5, 0.3, c4_label.upper()[:26],
+             font="Calibri", size=body_pt(L, 9), bold=True, color=fg1,
+             align=PP_ALIGN.CENTER)
+    add_text(slide, cx - 1.75, band1_y + 0.0, 3.5, 0.4, fmt_short(args.breakout),
+             font="Trebuchet MS", size=20, bold=True, color=fg1,
+             align=PP_ALIGN.CENTER)
+
+    c3_label = cohort3_name(args)
+    add_text(slide, cx - 1.35, band2_y - 0.26, 2.7, 0.28, c3_label.upper()[:20],
+             font="Calibri", size=body_pt(L, 8), bold=True, color=fg2,
+             align=PP_ALIGN.CENTER)
+    add_text(slide, cx - 1.35, band2_y + 0.0, 2.7, 0.36, fmt_short(args.genre_fans),
+             font="Trebuchet MS", size=18, bold=True, color=fg2,
+             align=PP_ALIGN.CENTER)
+
+    add_text(slide, cx - 1.05, band3_y - 0.24, 2.1, 0.26, inner_chart.upper()[:18],
+             font="Calibri", size=body_pt(L, 7.5), bold=True, color=fg3,
+             align=PP_ALIGN.CENTER)
+    add_text(slide, cx - 1.05, band3_y + 0.0, 2.1, 0.32, fmt_short(args.ip_fans),
+             font="Trebuchet MS", size=15, bold=True, color=fg3,
+             align=PP_ALIGN.CENTER)
+
+    add_text(slide, cx - 0.7, cy - 0.30, 1.4, 0.36, fmt_short(args.prev),
+             font="Trebuchet MS", size=15, bold=True, color=fg4,
              align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE)
-    add_text(slide, cx - 0.8, cy + 0.05, 1.6, 0.3, inner_chart,
-             font="Calibri", size=body_pt(L, 9), color=INK, align=PP_ALIGN.CENTER)
+    add_text(slide, cx - 0.7, cy + 0.06, 1.4, 0.26, prev_chart.upper()[:14],
+             font="Calibri", size=body_pt(L, 6.5), bold=True, color=fg4,
+             align=PP_ALIGN.CENTER)
 
-    # ---- Legend (right half) ----
+    # ---- Legend (right half) — kept, per user's "keep side card" pick ----
     rx = 7.7
-    add_text(slide, rx, 2.4, 5, 0.3, "AUDIENCE TIERS",
+    add_text(slide, rx, 2.25, 5, 0.3, "POTENTIAL BUYERS BY TIER",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
-    add_rect(slide, rx, 2.7, 5.0, 0.012, HAIR)
+    add_rect(slide, rx, 2.55, 5.0, 0.012, HAIR)
 
     _, inner_legend = innermost_label(args)
     inner_desc = "Players of the prior title" if args.inner == "prev" else \
@@ -311,32 +416,39 @@ def render_light(args, out_path):
     rows = [
         (C4, inner_legend,                inner_desc,                              fmt_num(args.prev)),
         (C3, ring2_legend_name(args),     ring2_legend_desc(args),                 fmt_num(args.ip_fans)),
-        (C2, "Genre Fans",                f"Avg Top 5 in {args.genre}",            fmt_num(args.genre_fans)),
-        (C1, "Breakout Ceiling",          f"Avg Top 2 ever in {args.genre}+",      fmt_num(args.breakout)),
+        (C2, cohort3_name(args),          cohort3_desc(args),                      fmt_num(args.genre_fans)),
+        (C1, cohort4_name(args),          cohort4_desc(args),                      fmt_num(args.breakout)),
     ]
-    y0 = 2.9
-    rh = 0.95
+    # Row heights are computed per-row (not a fixed rh=1.03) because
+    # user-typed cohort names can be long enough to wrap to 2 lines --
+    # a fixed single-line name box caused the name to visually collide
+    # with the description text directly below it.
+    name_w = 2.6  # width available before the right-aligned number column
+    def _name_line_count(nm: str) -> int:
+        return 2 if len(nm) > 22 else 1
+
+    y = 2.75
     for i, (c, name, desc, num) in enumerate(rows):
-        y = y0 + i * rh
-        # Color swatch
-        add_rect(slide, rx, y + 0.1, 0.2, 0.55, c)
-        # Name
-        add_text(slide, rx + 0.4, y + 0.05, 3.2, 0.35, name,
+        n_lines = _name_line_count(name)
+        name_h = 0.32 if n_lines == 1 else 0.62
+        desc_y_off = 0.36 if n_lines == 1 else 0.66
+        row_h = desc_y_off + 0.38
+        # Color swatch spans the full row height
+        add_rect(slide, rx, y + 0.1, 0.2, row_h - 0.2, c)
+        # Name (word_wrap on, so long names wrap onto a 2nd line automatically)
+        add_text(slide, rx + 0.4, y + 0.02, name_w, name_h, name,
                  font="Trebuchet MS", size=14, bold=True, color=INK)
-        # Description
-        add_text(slide, rx + 0.4, y + 0.42, 3.5, 0.3, desc,
-                 font="Calibri", size=body_pt(L, 10), color=MUTED)
-        # Number
-        add_text(slide, rx + 3.6, y + 0.12, 1.4, 0.5, num,
-                 font="Trebuchet MS", size=18, bold=True, color=INK,
+        # Description -- offset down when the name wrapped to 2 lines
+        add_text(slide, rx + 0.4, y + desc_y_off, 3.5, 0.4, desc,
+                 font="Calibri", size=body_pt(L, 9.5), color=MUTED)
+        # Number -- widened box + slightly smaller font so large formatted
+        # numbers (e.g. "10,000,000") don't wrap awkwardly.
+        add_text(slide, rx + 3.1, y + 0.12, 1.9, 0.5, num,
+                 font="Trebuchet MS", size=16, bold=True, color=INK,
                  align=PP_ALIGN.RIGHT)
         if i < 3:
-            add_rect(slide, rx, y + rh - 0.05, 5.0, 0.008, HAIR)
-
-    # Footer
-    add_text(slide, 0.7, 7.1, 12, 0.25,
-             "GTM Slide Pack · Step 01 of N",
-             font="Calibri", size=body_pt(L, 9), color=MUTED)
+            add_rect(slide, rx, y + row_h - 0.06, 5.0, 0.008, HAIR)
+        y += row_h
 
     prs.save(out_path)
 
@@ -403,6 +515,17 @@ def parse_args():
                    help="Custom cohort name for ring 2 (required when --type custom)")
     p.add_argument("--ring2-definition", default=None,
                    help="One-line definition shown in legend for ring 2 (required when --type custom)")
+
+    p.add_argument("--cohort3-name", default=None,
+                   help="User-typed name for cohort 3 (ring 2 from outside / 'genre fans' slot). "
+                        "Falls back to 'Genre Fans' only if omitted -- the wizard always supplies this.")
+    p.add_argument("--cohort3-definition", default=None,
+                   help="Optional one-line definition for cohort 3 shown in the side legend.")
+    p.add_argument("--cohort4-name", default=None,
+                   help="User-typed name for cohort 4 (outer ring / 'breakout ceiling' slot). "
+                        "Falls back to 'Breakout Ceiling' only if omitted -- the wizard always supplies this.")
+    p.add_argument("--cohort4-definition", default=None,
+                   help="Optional one-line definition for cohort 4 shown in the side legend.")
 
     p.add_argument("--out-dir", required=True)
     args = p.parse_args()

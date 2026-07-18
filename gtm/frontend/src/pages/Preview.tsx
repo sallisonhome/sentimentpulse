@@ -46,25 +46,34 @@ export function Preview() {
     // URLs only if sessionStorage is missing the entry -- e.g. user opened
     // the preview link in a new tab or bookmarked it.
     //
-    // v6.0 (2026-07-15): 6-slide pack.
-    //   1 Sizing / 2 Commercial Potential / 3 USPs / 4 Risks /
-    //   5 Description & Razors / 6 How We Reach
+    // v7.0 (2026-07-18 polish pass): slide count is now DYNAMIC (6-8).
+    //   1 Sizing / 2 Commercial Potential / 3(-4) USPs / 4(-5) Risks /
+    //   Description & Razors / How We Reach
+    // The USP and Commercial Risks sub-decks each split into 2 slides when
+    // they carry 4-5 items (locked split rule), so the pack can be 6, 7,
+    // or 8 slides depending on how many USPs/risks the user entered.
+    // FALLBACK_SLIDE_COUNT is only used if sessionStorage is missing the
+    // stashed preview payload entirely (e.g. bookmark/new-tab open) -- it's
+    // a legacy-URL best-effort guess, not an assumption enforced elsewhere.
+    const FALLBACK_SLIDE_COUNT = 6;
     let pngs: string[];
     let theme = deckTheme;
-    let slide_count = 6;
+    let slide_count = FALLBACK_SLIDE_COUNT;
     try {
       const stashed = sessionStorage.getItem(`gtm:preview:${sessionId}`);
       if (stashed) {
         const parsed = JSON.parse(stashed);
         pngs = Array.isArray(parsed.pngs) ? parsed.pngs : [];
         theme = parsed.theme || deckTheme;
-        slide_count = parsed.slide_count || pngs.length || 6;
+        slide_count = parsed.slide_count || pngs.length || FALLBACK_SLIDE_COUNT;
       } else {
         // Fallback: legacy URL pattern. These will 404 on modern backends
         // that use per-deck slug filenames -- but at least the page renders
         // and the user sees clear 'Slide N unavailable' messages instead
         // of a hang. In that case, redirect the user back to the wizard.
-        pngs = Array.from({ length: 6 }, (_, i) =>
+        // Uses the minimum guaranteed slide count (6) since we have no
+        // actual slide_count to go on in this fallback path.
+        pngs = Array.from({ length: FALLBACK_SLIDE_COUNT }, (_, i) =>
           `/gtm/api/preview/${sessionId}/png/slide_${i + 1}.png`
         );
       }
@@ -116,7 +125,7 @@ export function Preview() {
         title="Slide preview"
         subtitle={
           <>
-            Session <span className="text-ink font-mono">{sessionId.slice(0, 8)}</span> · 6 slides rendered at {deckTheme === "dark" ? "dark" : "light"} theme.
+            Session <span className="text-ink font-mono">{sessionId.slice(0, 8)}</span> · {data?.pngs.length ?? data?.slide_count ?? ""} slides rendered at {deckTheme === "dark" ? "dark" : "light"} theme.
           </>
         }
         actions={

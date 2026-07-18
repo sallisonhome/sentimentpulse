@@ -177,7 +177,7 @@ def render_dark(args, counts, out_path):
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 13.333, 0.08, ACCENT)
 
-    add_text(slide, 0.6, 0.4, 10, 0.3, "STEP 07 \u00b7 GAME DESCRIPTION & RAZORS",
+    add_text(slide, 0.6, 0.4, 10, 0.3, "GAME DESCRIPTION & RAZORS",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
     add_text(slide, 0.6, 0.75, 12, 0.85, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
@@ -227,10 +227,6 @@ def render_dark(args, counts, out_path):
     add_text(slide, cx, r10_y + 1.12, cw, 0.22, f"{wc_r10} words \u00b7 hero tagline",
              font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
 
-    add_text(slide, 0.6, 7.1, 12, 0.25,
-             "GTM SLIDE PACK \u00b7 STEP 07",
-             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
-
     prs.save(out_path)
 
 
@@ -256,7 +252,7 @@ def render_light(args, counts, out_path):
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 0.25, 7.5, C3)
 
-    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 07 \u00b7 GAME DESCRIPTION & RAZORS",
+    add_text(slide, 0.7, 0.5, 11, 0.3, "GAME DESCRIPTION & RAZORS",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 12, 0.85, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
@@ -297,10 +293,6 @@ def render_light(args, counts, out_path):
              font="Trebuchet MS", size=r10_pt, bold=True, color=C3, align=PP_ALIGN.CENTER)
     add_text(slide, cx, r10_y + 1.12, cw, 0.22, f"{wc_r10} words \u00b7 hero tagline",
              font="Calibri", size=body_pt(L, 8.5), color=MUTED, align=PP_ALIGN.CENTER)
-
-    add_text(slide, 0.7, 7.1, 12, 0.25,
-             "GTM Slide Pack \u00b7 Step 07",
-             font="Calibri", size=body_pt(L, 9), color=MUTED)
 
     prs.save(out_path)
 

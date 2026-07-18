@@ -178,7 +178,7 @@ def render_dark(args, out_path):
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 13.333, 0.08, ACCENT)
 
-    add_text(slide, 0.6, 0.4, 10, 0.3, "STEP 05 \u00b7 MEDIAN COMMERCIAL POTENTIAL",
+    add_text(slide, 0.6, 0.4, 10, 0.3, "MEDIAN COMMERCIAL POTENTIAL",
              font="Trebuchet MS", size=10, bold=True, color=ACCENT)
     add_text(slide, 0.6, 0.75, 12, 0.85, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
@@ -190,16 +190,23 @@ def render_dark(args, out_path):
     # typographic hierarchy (no card/border) so it reads as THE answer to
     # "what can this game make", with the other three KPIs demoted to a
     # calmer supporting row underneath, separated only by hairlines.
+    # v7 polish: "in millions USD" now sits INLINE to the right of the hero
+    # number (not stacked below it), in a lighter/muted tone so the unit
+    # reads as a caption rather than competing with the number.
     hero_x, hero_y = 0.6, 2.35
     add_text(slide, hero_x, hero_y, 6.0, 0.3, "MEDIAN REVENUE \u00b7 COMP SET",
              font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
-    add_text(slide, hero_x, hero_y + 0.32, 6.0, 0.95, fmt_dollars_2dp(args.median_revenue_usd_millions),
-             font="Trebuchet MS", size=54, bold=True, color=A4)
-    add_text(slide, hero_x, hero_y + 1.28, 6.0, 0.3, "in millions of USD",
-             font="Calibri", size=body_pt(L, 10), color=MUTED)
+    hero_str = fmt_dollars_2dp(args.median_revenue_usd_millions)
+    hero_num_w = 0.62 * len(hero_str) + 0.3  # rough width budget for the caption's x offset
+    add_text(slide, hero_x, hero_y + 0.32, hero_num_w, 1.05, hero_str,
+             font="Trebuchet MS", size=64, bold=True, color=A4,
+             anchor=MSO_ANCHOR.BOTTOM)
+    add_text(slide, hero_x + hero_num_w, hero_y + 0.32, 3.4, 1.05, "in millions USD",
+             font="Calibri", size=body_pt(L, 13), color=MUTED,
+             anchor=MSO_ANCHOR.BOTTOM)
 
     # Supporting KPI row: three simple stat columns, hairline above only
-    sup_y = hero_y + 1.72
+    sup_y = hero_y + 1.5
     add_rect(slide, hero_x, sup_y, 5.9, 0.008, BORDER)
     sup_kpis = [
         ("MEDIAN UNITS SOLD", fmt_units(args.median_units_sold)),
@@ -258,11 +265,6 @@ def render_dark(args, out_path):
               f"of PC-only potential."),
              font="Calibri", size=body_pt(L, 8), italic=True, color=MUTED)
 
-    # Standard footer
-    add_text(slide, 0.6, 7.1, 12, 0.25,
-             "GTM SLIDE PACK \u00b7 STEP 05",
-             font="Calibri", size=body_pt(L, 8), bold=True, color=MUTED)
-
     prs.save(out_path)
 
 
@@ -290,7 +292,7 @@ def render_light(args, out_path):
     add_rect(slide, 0, 0, 13.333, 7.5, BG)
     add_rect(slide, 0, 0, 0.25, 7.5, C3)
 
-    add_text(slide, 0.7, 0.5, 11, 0.3, "STEP 05 \u00b7 MEDIAN COMMERCIAL POTENTIAL",
+    add_text(slide, 0.7, 0.5, 11, 0.3, "MEDIAN COMMERCIAL POTENTIAL",
              font="Calibri", size=body_pt(L, 10), bold=True, color=C3)
     add_text(slide, 0.7, 0.85, 12, 0.85, args.title,
              font="Trebuchet MS", size=34, bold=True, color=INK)
@@ -299,16 +301,21 @@ def render_light(args, out_path):
              font="Calibri", size=body_pt(L, 14), color=MUTED)
 
     # ---- Hero: median revenue is the headline number ----
+    # v7 polish: "in millions USD" inline to the right, lighter tone.
     hero_x, hero_y = 0.7, 2.45
     add_text(slide, hero_x, hero_y, 6.0, 0.3, "MEDIAN REVENUE \u00b7 COMP SET",
              font="Calibri", size=body_pt(L, 10), bold=True, color=MUTED)
-    add_text(slide, hero_x, hero_y + 0.32, 6.0, 0.95, fmt_dollars_2dp(args.median_revenue_usd_millions),
-             font="Trebuchet MS", size=54, bold=True, color=C2)
-    add_text(slide, hero_x, hero_y + 1.28, 6.0, 0.3, "in millions of USD",
-             font="Calibri", size=body_pt(L, 10), color=MUTED)
+    hero_str = fmt_dollars_2dp(args.median_revenue_usd_millions)
+    hero_num_w = 0.62 * len(hero_str) + 0.3
+    add_text(slide, hero_x, hero_y + 0.32, hero_num_w, 1.05, hero_str,
+             font="Trebuchet MS", size=64, bold=True, color=C2,
+             anchor=MSO_ANCHOR.BOTTOM)
+    add_text(slide, hero_x + hero_num_w, hero_y + 0.32, 3.4, 1.05, "in millions USD",
+             font="Calibri", size=body_pt(L, 13), color=MUTED,
+             anchor=MSO_ANCHOR.BOTTOM)
 
     # Supporting KPI row: three simple stat columns, hairline above only
-    sup_y = hero_y + 1.72
+    sup_y = hero_y + 1.5
     add_rect(slide, hero_x, sup_y, 5.8, 0.008, HAIR)
     sup_kpis = [
         ("MEDIAN UNITS SOLD", fmt_units(args.median_units_sold)),
@@ -362,10 +369,6 @@ def render_light(args, out_path):
               f"medians ({args.comp_set_titles} titles); PC-only caps at 100% "
               f"of PC-only potential."),
              font="Calibri", size=body_pt(L, 8), italic=True, color=MUTED)
-
-    add_text(slide, 0.7, 7.1, 12, 0.25,
-             "GTM Slide Pack \u00b7 Step 05",
-             font="Calibri", size=body_pt(L, 9), color=MUTED)
 
     prs.save(out_path)
 
