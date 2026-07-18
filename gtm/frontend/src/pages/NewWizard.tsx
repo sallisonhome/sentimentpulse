@@ -221,7 +221,16 @@ export function NewWizard() {
         {/* v6.0: StepDate removed (used to be step 4). Steps 5-7 renumbered
             down by one to fill the gap; the internal StepDate component
             still exists in this file but is no longer wired in. */}
-        {step === 1 && <StepTheme inputs={inputs} update={update} />}
+        {step === 1 && (
+          <StepTheme
+            inputs={inputs}
+            update={update}
+            genreList={genreList}
+            genreListLoading={genreListLoading}
+            genreCustom={genreCustom}
+            setGenreCustom={setGenreCustom}
+          />
+        )}
         {step === 2 && <StepGame inputs={inputs} update={update} />}
         {step === 3 && <StepCohorts inputs={inputs} update={update} setInputs={setInputs} />}
         {step === 4 && <StepCommercialPotential inputs={inputs} update={update} setInputs={setInputs} />}
@@ -320,9 +329,22 @@ function Stepper({ step, onJump }: { step: number; onJump: (n: number) => void }
 function StepTheme({
   inputs,
   update,
+  genreList,
+  genreListLoading,
+  genreCustom,
+  setGenreCustom,
 }: {
   inputs: FormInputs;
   update: <K extends keyof FormInputs>(k: K, v: FormInputs[K]) => void;
+  // Genre dropdown state (2026-07-18): the canonical list of Genre Pulse
+  // genres + whether the user has opted into 'Custom (enter manually)' mode.
+  // These live in the parent NewWizard so they persist across step changes,
+  // and are threaded through here as props (child components can't reach
+  // parent-scoped React state directly).
+  genreList: GenreListEntry[] | null;
+  genreListLoading: boolean;
+  genreCustom: boolean;
+  setGenreCustom: (v: boolean) => void;
 }) {
   const { deckTheme, setDeckTheme } = useDeckTheme();
   return (
