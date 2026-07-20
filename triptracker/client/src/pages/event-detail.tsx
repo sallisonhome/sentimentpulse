@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useParams, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import type { EventWithStats, MeetingWithDetails, EventExecutiveSummary } from "@shared/schema";
+import type { EventWithStats, MeetingWithDetails, EventExecutiveSummary, SourceDocument } from "@shared/schema";
 import { API_BASE } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,9 +10,11 @@ import { Separator } from "@/components/ui/separator";
 import { SentimentBadge, SentimentBar } from "@/components/sentiment-badge";
 import { SourceDocumentsPanel } from "@/components/source-documents-panel";
 import { IngestModal } from "@/components/ingest-modal";
+import { useToast } from "@/hooks/use-toast";
 import {
   ArrowLeft, MapPin, Calendar, Users, FileText, Plus,
-  Sparkles, AlertTriangle, TrendingUp, Zap, ChevronRight, Clock, Building2
+  Sparkles, AlertTriangle, TrendingUp, Zap, ChevronRight, Clock, Building2,
+  Download, Loader2
 } from "lucide-react";
 import { format } from "date-fns";
 
@@ -105,6 +107,9 @@ function renderWithCitations(text: string | null | undefined, citationMap: ExecC
 }
 
 function ExecSummaryPanel({ eventId }: { eventId: number }) {
+  const { toast } = useToast();
+  const [downloading, setDownloading] = useState(false);
+
   const { data: summary } = useQuery<EventExecutiveSummary>({
     queryKey: ["/api/events", eventId, "executive-summary"],
     queryFn: async () => {
@@ -116,7 +121,60 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
     refetchInterval: 7000,
     refetchIntervalInBackground: false,
   });
+
+  // Gate the download button on at least one ingested source document.
+  const { data: sourceDocuments } = useQuery<SourceDocument[]>({
+    queryKey: ["/api/events", eventId, "source-documents"],
+    queryFn: async () => {
+      const r = await fetch(`${API_BASE}/api/events/${eventId}/source-documents`);
+      if (!r.ok) return [];
+      return r.json();
+    },
+  });
+
   const citationMap = summary?.citationMap as ExecCitationMap;
+
+  const canDownload = !!summary && (sourceDocuments?.length ?? 0) >= 1;
+
+  async function handleDownloadPdf() {
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/events/${eventId}/executive-pdf`);
+      if (!res.ok) {
+        let message = "Could not generate the report.";
+        try {
+          const body = await res.json();
+          if (body?.message) message = body.message;
+        } catch {
+          /* non-JSON error body */
+        }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      // Prefer the server-provided filename from Content-Disposition.
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename="?([^"]+)"?/);
+      const filename = match?.[1] || "trip-report.pdf";
+
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      toast({
+        title: "Download failed",
+        description: err?.message ?? "Could not generate the report.",
+        variant: "destructive",
+      });
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   if (!summary) {
     return (
@@ -139,6 +197,23 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
           <Badge variant="secondary" className="text-xs ml-auto">
             {format(new Date(summary.lastRefreshedAt!), "MMM d")}
           </Badge>
+          {canDownload && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1.5 text-xs"
+              onClick={handleDownloadPdf}
+              disabled={downloading}
+              data-testid="button-download-trip-report"
+            >
+              {downloading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              Download Trip Report PDF
+            </Button>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 pb-4">

@@ -5,6 +5,7 @@ import mammoth from "mammoth";
 import pdfParse from "pdf-parse";
 import { storage } from "./storage";
 import { parseAndIngest, generateExecSummary, type ParseResult } from "./parser";
+import { generateEventExecPdf, execReportFilename } from "./pdf";
 import { log } from "./log";
 import {
   insertEventSchema, insertMeetingSchema, insertCompanySchema,
@@ -269,6 +270,51 @@ export function registerRoutes(httpServer: Server, app: Express): Server {
     const summary = await storage.getExecSummaryByEvent(eventId);
     if (!summary) return res.status(404).json({ message: "No executive summary found" });
     res.json(summary);
+  });
+
+  // Executive Trip Report PDF export.
+  //   404 → no executive summary for the event
+  //   409 → no source documents ingested yet (nothing to report on)
+  app.get("/api/events/:eventId/executive-pdf", async (req, res) => {
+    const eventId = parseInt(req.params.eventId);
+    if (Number.isNaN(eventId)) {
+      return res.status(400).json({ message: "Invalid event id" });
+    }
+
+    const event = await storage.getEventById(eventId);
+    if (!event) {
+      return res.status(404).json({ message: "Event not found" });
+    }
+
+    // Gate on ingest: require at least one source document (trip report).
+    const docs = await storage.getSourceDocumentsByEvent(eventId);
+    if (docs.length === 0) {
+      return res
+        .status(409)
+        .json({ message: "No trip report ingested for this event yet" });
+    }
+
+    // Require an executive summary to render.
+    const summary = await storage.getExecSummaryByEvent(eventId);
+    if (!summary) {
+      return res.status(404).json({ message: "No executive summary found" });
+    }
+
+    try {
+      const pdf = await generateEventExecPdf(eventId);
+      const filename = execReportFilename(event);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`,
+      );
+      res.setHeader("Content-Length", pdf.length);
+      res.send(pdf);
+    } catch (err: any) {
+      const status = err?.statusCode ?? 500;
+      log(`[pdf] event=${eventId} error: ${err?.message}`, "pdf");
+      res.status(status).json({ message: err?.message ?? "Failed to generate PDF" });
+    }
   });
 
   app.put("/api/events/:eventId/executive-summary", async (req, res) => {
