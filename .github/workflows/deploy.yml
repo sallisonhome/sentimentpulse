@@ -197,6 +197,23 @@ jobs:
             fi
 
             echo ""
+            echo "## Trip Tracker build (client + server bundle) ##"
+            # Added 2026-07-20: the auto-deploy workflow previously only
+            # handled SentimentPulse and GTM Studio. Trip Tracker was
+            # provisioned once by deploy.sh but never re-built on subsequent
+            # pushes, so new routes (e.g. /api/events/:id/executive-pdf) never
+            # went live until a manual restart. Now built + restarted on
+            # every push, matching the other two apps.
+            if [ -d triptracker ] && [ -f triptracker/package.json ]; then
+              cd triptracker
+              npm install --no-audit --no-fund
+              npm run build
+              cd ..
+            else
+              echo "triptracker/ missing, skipping"
+            fi
+
+            echo ""
             echo "## Update Bluesky credentials in .env (idempotent) ##"
             ENV_FILE=/opt/sentimentpulse/.env
             if [ -n "${BSKY_HANDLE:-}" ] && [ -n "${BSKY_PW:-}" ]; then
@@ -234,7 +251,7 @@ jobs:
             # Escape the literal '.' in the regex so '^name.service' doesn't false-positive,
             # AND use awk to test field 1 exactly (more reliable than grep on the full row).
             installed_units=$(systemctl list-unit-files --type=service --no-legend | awk '{print $1}')
-            for svc in sentimentpulse gtmstudio; do
+            for svc in sentimentpulse gtmstudio triptracker; do
               if echo "$installed_units" | grep -qx "${svc}.service"; then
                 systemctl restart "$svc"
                 sleep 2
