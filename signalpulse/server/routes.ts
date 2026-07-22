@@ -5,6 +5,7 @@ import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForec
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
+import { runIngestion } from "./ingestion";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -797,12 +798,60 @@ export async function registerRoutes(
 
   // ─── Ingestion ──────────────────────────────────────────────────────────────
 
-  app.post("/api/ingestion/run", (_req, res) => {
-    res.json({ message: "Ingestion triggered (not yet implemented — Phase 2)" });
+  // v1.1 (2026-07-22): wired to the real runIngestion() pipeline. Was a
+  // Phase-2 stub returning 'not yet implemented' since April; runIngestion()
+  // itself already persists ingestion_last_run + ingestion_last_result to
+  // the settings table, so /status just reads them back.
+  let ingestionInFlight = false;
+
+  app.post("/api/ingestion/run", async (_req, res) => {
+    if (ingestionInFlight) {
+      return res.status(409).json({
+        error: "Ingestion already in progress",
+        message: "Another ingestion run is currently executing. Retry in a moment.",
+      });
+    }
+    ingestionInFlight = true;
+    try {
+      const result = await runIngestion();
+      res.json({
+        message: "Ingestion completed",
+        startedAt: result.startedAt,
+        completedAt: result.completedAt,
+        totalProductsProcessed: result.totalProductsProcessed,
+        totalDataPointsAdded: result.totalDataPointsAdded,
+        results: result.results,
+      });
+    } catch (err: any) {
+      const errMsg = err?.message || String(err);
+      res.status(500).json({ error: errMsg });
+    } finally {
+      ingestionInFlight = false;
+    }
   });
 
   app.get("/api/ingestion/status", (_req, res) => {
-    res.json({ lastRun: null, status: "not_configured" });
+    const lastRunSetting = storage.getSetting("ingestion_last_run")?.value;
+    const lastResultSetting = storage.getSetting("ingestion_last_result")?.value;
+    if (!lastRunSetting) {
+      return res.json({
+        lastRun: null,
+        inFlight: ingestionInFlight,
+        status: ingestionInFlight ? "running" : "never_run",
+      });
+    }
+    let lastResult: unknown = null;
+    try {
+      lastResult = lastResultSetting ? JSON.parse(lastResultSetting) : null;
+    } catch {
+      lastResult = null;
+    }
+    res.json({
+      lastRun: lastRunSetting,
+      lastResult,
+      inFlight: ingestionInFlight,
+      status: ingestionInFlight ? "running" : "success",
+    });
   });
 
   return httpServer;
