@@ -197,6 +197,21 @@ jobs:
             fi
 
             echo ""
+            echo "## SignalPulse build (client + server bundle) ##"
+            # Added 2026-07-22: like triptracker, signalpulse was provisioned
+            # once by deploy.sh but never re-built on subsequent pushes, so
+            # client fixes (e.g. improved settings-save error messaging) never
+            # went live automatically.
+            if [ -d signalpulse ] && [ -f signalpulse/package.json ]; then
+              cd signalpulse
+              npm install --no-audit --no-fund
+              npm run build
+              cd ..
+            else
+              echo "signalpulse/ missing, skipping"
+            fi
+
+            echo ""
             echo "## Trip Tracker build (client + server bundle) ##"
             # Added 2026-07-20: the auto-deploy workflow previously only
             # handled SentimentPulse and GTM Studio. Trip Tracker was
@@ -251,7 +266,7 @@ jobs:
             # Escape the literal '.' in the regex so '^name.service' doesn't false-positive,
             # AND use awk to test field 1 exactly (more reliable than grep on the full row).
             installed_units=$(systemctl list-unit-files --type=service --no-legend | awk '{print $1}')
-            for svc in sentimentpulse gtmstudio triptracker; do
+            for svc in sentimentpulse gtmstudio triptracker signalpulse; do
               if echo "$installed_units" | grep -qx "${svc}.service"; then
                 systemctl restart "$svc"
                 sleep 2

@@ -62,13 +62,40 @@ function SettingField({ setting, onSaved }: { setting: SettingRow; onSaved: () =
 
   const mutation = useMutation({
     mutationFn: async (newValue: string) => {
-      const res = await fetch(`/api/settings/${setting.key}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value: newValue }),
-      });
-      if (!res.ok) throw new Error("Failed to save");
-      return res.json();
+      // v1.1 (2026-07-22): surface the real backend error instead of a
+      // generic 'Failed to save' toast. Previously any non-2xx and any
+      // network/parse failure collapsed into 'Failed to save setting.'
+      // which made it impossible to diagnose live user reports.
+      let res: Response;
+      try {
+        res = await fetch(`/api/settings/${setting.key}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ value: newValue }),
+        });
+      } catch (netErr: any) {
+        throw new Error(`Network error: ${netErr?.message || "could not reach server"}`);
+      }
+      if (!res.ok) {
+        // Try to pull { error: '...' } out of the response body for context.
+        let detail = "";
+        try {
+          const body = await res.clone().json();
+          if (body?.error) detail = ` — ${body.error}`;
+          else if (typeof body === "string") detail = ` — ${body}`;
+        } catch {
+          try {
+            const txt = await res.text();
+            if (txt) detail = ` — ${txt.slice(0, 200)}`;
+          } catch {}
+        }
+        throw new Error(`HTTP ${res.status}${detail}`);
+      }
+      try {
+        return await res.json();
+      } catch (parseErr: any) {
+        throw new Error(`Server returned invalid JSON: ${parseErr?.message || "parse failed"}`);
+      }
     },
     onSuccess: () => {
       toast({ title: "Saved", description: `${setting.label} updated successfully.` });
@@ -78,8 +105,14 @@ function SettingField({ setting, onSaved }: { setting: SettingRow; onSaved: () =
       setTimeout(() => setSaved(false), 2000);
       onSaved();
     },
-    onError: () => {
-      toast({ title: "Error", description: "Failed to save setting.", variant: "destructive" });
+    onError: (err: any) => {
+      const description = err?.message
+        ? `Failed to save ${setting.label}: ${err.message}`
+        : `Failed to save ${setting.label}.`;
+      toast({ title: "Save failed", description, variant: "destructive" });
+      // Also log to console for engineering diagnosis.
+      // eslint-disable-next-line no-console
+      console.error(`[settings save] ${setting.key} failed:`, err);
     },
   });
 
