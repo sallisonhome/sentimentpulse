@@ -774,6 +774,21 @@ export class DatabaseStorage implements IStorage {
   createForecastRevision(productId: number, forecasts: { platform: string; forecastUnits: number }[], revisionDate: string, revisionLabel: string): ForecastRevision[] {
     const now = this.now();
     const results: ForecastRevision[] = [];
+    // v1.1 (2026-07-22): DELETE existing rows for the same (productId,
+    // revisionDate) before inserting so re-saving today's revision replaces
+    // rather than appends. Without this, every 'Save Revision' click added
+    // a NEW set of platform rows on the same date, all of which
+    // getLatestRevisionTotal() summed together -- the dashboard showed a
+    // multi-fold inflated total (26.6M instead of the 6.2M actually
+    // entered in the widget). The detail-page revisions endpoint groups
+    // by (date, platform) with last-write-wins so it always displayed
+    // the correct set, masking the bug on that surface.
+    db.delete(forecastRevisions)
+      .where(and(
+        eq(forecastRevisions.productId, productId),
+        eq(forecastRevisions.revisionDate, revisionDate),
+      ))
+      .run();
     for (const f of forecasts) {
       const result = db.insert(forecastRevisions).values({
         productId,
