@@ -49,17 +49,22 @@ export default function Dashboard() {
             const price = product.targetRetailPriceUsd ?? 0;
             const hasPrice = price > 0;
 
-            // Unit totals
-            const bizUnits = product.latestRevisionTotal != null
-              ? product.latestRevisionTotal
-              : product.compsForecastTotal;
+            // v1.1 (2026-07-22): show ORIGINAL and REVISED as distinct columns
+            // when a revision exists (was collapsed into one 'bizLabel' col).
+            // Delta moved to far right and now compares Dyn LT vs Revised
+            // (falls back to Dyn LT vs Original when no revision exists).
+            const originalUnits = product.compsForecastTotal;
+            const hasRevision = product.latestRevisionTotal != null;
+            const revisedUnits = hasRevision ? product.latestRevisionTotal : null;
             const dynFirstUnits = product.dynamicFirstMonthTotal;
             const dynYearUnits = product.dynamicFirstYearTotal;
             const dynLtUnits = product.dynamicLtTotal;
 
             // Financial: GMV = units × price × 0.66, Net = GMV × 0.70
-            const bizGmv = Math.round(bizUnits * price * 0.66);
-            const bizNet = Math.round(bizGmv * 0.70);
+            const originalGmv = Math.round(originalUnits * price * 0.66);
+            const originalNet = Math.round(originalGmv * 0.70);
+            const revisedGmv = revisedUnits != null ? Math.round(revisedUnits * price * 0.66) : null;
+            const revisedNet = revisedGmv != null ? Math.round(revisedGmv * 0.70) : null;
             const dynFirstGmv = Math.round(dynFirstUnits * price * 0.66);
             const dynFirstNet = Math.round(dynFirstGmv * 0.70);
             const dynYearGmv = Math.round(dynYearUnits * price * 0.66);
@@ -67,21 +72,21 @@ export default function Dashboard() {
             const dynLtGmv = Math.round(dynLtUnits * price * 0.66);
             const dynLtNet = Math.round(dynLtGmv * 0.70);
 
-            // +/-% delta: Dynamic LT vs Original Biz Forecast
-            const origBizUnits = product.compsForecastTotal;
+            // Delta: Dyn LT vs Revised (if revised exists) else vs Original
+            const compareUnits = revisedUnits != null ? revisedUnits : originalUnits;
             let deltaStr = '—';
             let deltaColor = 'text-muted-foreground';
-            if (origBizUnits > 0) {
-              const pct = ((dynLtUnits - origBizUnits) / origBizUnits) * 100;
+            if (compareUnits > 0) {
+              const pct = ((dynLtUnits - compareUnits) / compareUnits) * 100;
               deltaStr = `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
               deltaColor = pct > 0 ? 'text-emerald-600 dark:text-emerald-400'
                 : pct < 0 ? 'text-red-500 dark:text-red-400'
                 : 'text-muted-foreground';
             }
-
-            const bizLabel = product.latestRevisionTotal != null
-              ? `Biz Forecast - Amended (${format(new Date(product.latestRevisionDate + "T00:00:00"), "MMM d, yyyy")})`
-              : "Current LT Biz Forecast";
+            const deltaSub = hasRevision ? "Dyn LT vs Revised" : "Dyn LT vs Original";
+            const revisedLabel = hasRevision
+              ? `Revised (${format(new Date(product.latestRevisionDate + "T00:00:00"), "MMM d, yyyy")})`
+              : null;
 
             // Flag seeded dummy products by their known titles
             const DUMMY_TITLES = ['Warhammer 40,000: Space Marine 2', 'Expeditions: A New Earth'];
@@ -160,8 +165,10 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Forecast data grid — 5 columns */}
-                  <div className="grid grid-cols-5 gap-x-2 pt-3 mt-2 border-t">
+                  {/* v1.1: Forecast data grid — 6 columns when a revision
+                      exists (Original + Revised as separate cols), else 5 cols
+                      (Original only). */}
+                  <div className={`grid ${hasRevision ? "grid-cols-6" : "grid-cols-5"} gap-x-2 pt-3 mt-2 border-t`}>
                     {/* Dynamic First Month */}
                     <div>
                       <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Dyn. 1st Mo</div>
@@ -213,33 +220,54 @@ export default function Dashboard() {
                         </div>
                       )}
                     </div>
-                    {/* Original LT Biz Forecast */}
+                    {/* Original LT Biz Forecast (always shown) */}
                     <div>
                       <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">
-                        {bizLabel}
+                        Original LT Biz Forecast
                       </div>
-                      <div className="text-sm font-semibold tabular-nums mt-0.5 flex items-center gap-1" data-testid={`text-forecast-${product.id}`}>
-                        <TrendingUp className="h-3 w-3 text-primary" />
-                        {formatNumber(bizUnits)}
+                      <div className="text-sm font-semibold tabular-nums mt-0.5">
+                        {formatNumber(originalUnits)}
                       </div>
                       {hasPrice && (
                         <div className="mt-1 space-y-0">
                           <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                            {formatCurrency(bizGmv)} <span className="text-muted-foreground font-normal">g</span>
+                            {formatCurrency(originalGmv)} <span className="text-muted-foreground font-normal">g</span>
                           </div>
                           <div className="text-[10px] tabular-nums text-emerald-600/80 dark:text-emerald-500 font-medium">
-                            {formatCurrency(bizNet)} <span className="text-muted-foreground font-normal">n</span>
+                            {formatCurrency(originalNet)} <span className="text-muted-foreground font-normal">n</span>
                           </div>
                         </div>
                       )}
                     </div>
-                    {/* +/-% Delta */}
+                    {/* Revised LT Biz Forecast (only when a revision exists) */}
+                    {hasRevision && (
+                      <div>
+                        <div className="text-[10px] text-primary uppercase tracking-wide leading-tight font-semibold">
+                          {revisedLabel}
+                        </div>
+                        <div className="text-sm font-semibold tabular-nums mt-0.5 flex items-center gap-1 text-primary" data-testid={`text-forecast-${product.id}`}>
+                          <TrendingUp className="h-3 w-3" />
+                          {formatNumber(revisedUnits!)}
+                        </div>
+                        {hasPrice && (
+                          <div className="mt-1 space-y-0">
+                            <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
+                              {formatCurrency(revisedGmv!)} <span className="text-muted-foreground font-normal">g</span>
+                            </div>
+                            <div className="text-[10px] tabular-nums text-emerald-600/80 dark:text-emerald-500 font-medium">
+                              {formatCurrency(revisedNet!)} <span className="text-muted-foreground font-normal">n</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {/* +/-% Delta (far right) */}
                     <div>
                       <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Trend +/- %</div>
                       <div className={`text-sm font-bold tabular-nums mt-0.5 ${deltaColor}`}>
                         {deltaStr}
                       </div>
-                      <div className="text-[10px] text-muted-foreground mt-1">Dyn LT vs Biz</div>
+                      <div className="text-[10px] text-muted-foreground mt-1">{deltaSub}</div>
                     </div>
                   </div>
                 </Card>

@@ -654,8 +654,7 @@ function ForecastTable({
               <th className={`text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px] ${hasRevisions ? stickyDynFirstCol : ""}`}>Dynamic First Month</th>
               <th className={`text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px] ${hasRevisions ? stickyDyn1YearCol : ""}`}>Dynamic 1 Year</th>
               <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[150px]">Dynamic LT Biz Forecast</th>
-              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[150px]">Current LT Biz Forecast</th>
-              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[80px]">Trend +/- %</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[150px]">Original LT Biz Forecast</th>
               {revisions.map((rev, idx) => (
                 <th
                   key={rev.date}
@@ -668,6 +667,14 @@ function ForecastTable({
                   {rev.label}
                 </th>
               ))}
+              {/* v1.1 (2026-07-22): delta moved to FAR RIGHT and now compares
+                  DYNAMIC LT vs REVISED (latest revision) rather than Dynamic
+                  vs Original. When no revision exists, we fall back to
+                  comparing Dynamic vs Original so the column still shows
+                  something useful. */}
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[90px]">
+                {hasRevisions ? "Dyn LT vs Revised" : "Dyn LT vs Original"}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -682,7 +689,6 @@ function ForecastTable({
                 <td className={`text-right py-2 tabular-nums font-medium ${hasRevisions ? stickyDyn1YearCol : ""}`}>{formatNumber(dynamic1YearMap[p] ?? 0)}</td>
                 <td className="text-right py-2 tabular-nums font-semibold text-blue-600 dark:text-blue-400">{formatNumber(dynamicLtMap[p] ?? 0)}</td>
                 <td className="text-right py-2 tabular-nums font-medium">{formatNumber(compsMap[p] ?? 0)}</td>
-                <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtMap[p] ?? 0, compsMap[p] ?? 0)}`}>{pctDelta(dynamicLtMap[p] ?? 0, compsMap[p] ?? 0)}</td>
                 {revisions.map((rev, idx) => (
                   <td
                     key={rev.date}
@@ -693,6 +699,19 @@ function ForecastTable({
                     {formatNumber(rev.forecasts[p] ?? 0)}
                   </td>
                 ))}
+                {/* v1.1: delta cell (far right). Compares Dynamic LT to
+                    latest revision when one exists, else to Original. */}
+                {(() => {
+                  const dynLt = dynamicLtMap[p] ?? 0;
+                  const compareTo = hasRevisions
+                    ? (revisions[revisions.length - 1].forecasts[p] ?? 0)
+                    : (compsMap[p] ?? 0);
+                  return (
+                    <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynLt, compareTo)}`}>
+                      {pctDelta(dynLt, compareTo)}
+                    </td>
+                  );
+                })()}
               </tr>
             ))}
             {/* ── Unit Totals Row ── */}
@@ -702,7 +721,6 @@ function ForecastTable({
               <td className={`text-right py-2 tabular-nums ${hasRevisions ? stickyDyn1YearCol : ""}`}>{formatNumber(dynamic1YearTotal)}</td>
               <td className="text-right py-2 tabular-nums font-semibold text-blue-600 dark:text-blue-400">{formatNumber(dynamicLtTotal)}</td>
               <td className="text-right py-2 tabular-nums">{formatNumber(compsTotal)}</td>
-              <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtTotal, compsTotal)}`}>{pctDelta(dynamicLtTotal, compsTotal)}</td>
               {revisions.map((rev, idx) => {
                 const total = Object.values(rev.forecasts).reduce((a, b) => a + b, 0);
                 return (
@@ -716,6 +734,17 @@ function ForecastTable({
                   </td>
                 );
               })}
+              {/* v1.1: total-row delta (far right). Dynamic LT vs Revised total, else vs Original. */}
+              {(() => {
+                const compareTo = hasRevisions
+                  ? Object.values(revisions[revisions.length - 1].forecasts).reduce((a: number, b: any) => a + (b as number), 0)
+                  : compsTotal;
+                return (
+                  <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtTotal, compareTo)}`}>
+                    {pctDelta(dynamicLtTotal, compareTo)}
+                  </td>
+                );
+              })()}
             </tr>
 
             {/* ── Financial Forecast Rows ── */}
@@ -728,7 +757,6 @@ function ForecastTable({
                   <td className={`text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400 ${hasRevisions ? stickyDyn1YearCol + " bg-emerald-50/50 dark:bg-emerald-950/10" : ""}`}>{formatCurrency(dynamic1YearGmv)}</td>
                   <td className="text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrency(dynamicLtGmv)}</td>
                   <td className="text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrency(compsGmv)}</td>
-                  <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtGmv, compsGmv)}`}>{pctDelta(dynamicLtGmv, compsGmv)}</td>
                   {revisionGmvs.map((gmv, idx) => (
                     <td
                       key={revisions[idx].date}
@@ -739,6 +767,15 @@ function ForecastTable({
                       {formatCurrency(gmv)}
                     </td>
                   ))}
+                  {/* v1.1: GMV delta (far right). */}
+                  {(() => {
+                    const compareTo = hasRevisions ? revisionGmvs[revisionGmvs.length - 1] : compsGmv;
+                    return (
+                      <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtGmv, compareTo)}`}>
+                        {pctDelta(dynamicLtGmv, compareTo)}
+                      </td>
+                    );
+                  })()}
                 </tr>
                 {/* Net Revenue */}
                 <tr className="bg-emerald-50/30 dark:bg-emerald-950/5 border-b">
@@ -747,7 +784,6 @@ function ForecastTable({
                   <td className={`text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500 ${hasRevisions ? stickyDyn1YearCol + " bg-emerald-50/30 dark:bg-emerald-950/5" : ""}`}>{formatCurrency(dynamic1YearNet)}</td>
                   <td className="text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500">{formatCurrency(dynamicLtNet)}</td>
                   <td className="text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500">{formatCurrency(compsNet)}</td>
-                  <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtNet, compsNet)}`}>{pctDelta(dynamicLtNet, compsNet)}</td>
                   {revisionNets.map((net, idx) => (
                     <td
                       key={revisions[idx].date}
@@ -758,6 +794,15 @@ function ForecastTable({
                       {formatCurrency(net)}
                     </td>
                   ))}
+                  {/* v1.1: Net delta (far right). */}
+                  {(() => {
+                    const compareTo = hasRevisions ? revisionNets[revisionNets.length - 1] : compsNet;
+                    return (
+                      <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtNet, compareTo)}`}>
+                        {pctDelta(dynamicLtNet, compareTo)}
+                      </td>
+                    );
+                  })()}
                 </tr>
               </>
             )}
