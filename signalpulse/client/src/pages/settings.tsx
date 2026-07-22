@@ -68,7 +68,11 @@ function SettingField({ setting, onSaved }: { setting: SettingRow; onSaved: () =
       // which made it impossible to diagnose live user reports.
       let res: Response;
       try {
-        res = await fetch(`/api/settings/${setting.key}`, {
+        // v1.1 (2026-07-22): use relative path so the fetch respects
+        // the /signal/ base path in production. Absolute '/api/...'
+        // went to http://host/api/... which nginx 404s (the API is
+        // mounted at /signal/api/... behind nginx).
+        res = await fetch(`./api/settings/${setting.key}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ value: newValue }),
@@ -277,7 +281,8 @@ function ManageProducts() {
   const deleteMutation = useMutation({
     mutationFn: async ({ productId, password }: { productId: number; password: string }) => {
       // Verify password first
-      const authRes = await fetch("/api/auth/verify", {
+      // v1.1 (2026-07-22): relative path (see settings save comment).
+      const authRes = await fetch("./api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),

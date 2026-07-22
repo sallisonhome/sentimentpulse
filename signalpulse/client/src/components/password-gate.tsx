@@ -18,7 +18,9 @@ export function PasswordGate({ onAuthenticated }: PasswordGateProps) {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/auth/verify", {
+      // v1.1 (2026-07-22): relative path so fetch honors the /signal/
+      // base path in production. Absolute '/api/...' 404s at nginx.
+      const res = await fetch("./api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
