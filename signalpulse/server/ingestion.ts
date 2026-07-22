@@ -42,15 +42,27 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
 
   const today = new Date().toISOString().split("T")[0];
   let dataPoints = 0;
+  // v1.2 (2026-07-22): surface Steam API failures per product so users
+  // can diagnose 'ingestion ran but 0 data points added' -- e.g. wrong
+  // key scope, app not associated with partner, or Steam server error.
+  const productErrors: Array<{ productId: number; title: string; error: string }> = [];
 
   for (const product of saberProducts) {
     try {
       // Steamworks Partner API: ISteamUserStats/GetAppWishlistReporting
-      // This is the official partner API released March 2026
+      // Requires a Publisher-level Web API key (partner.steamgames.com)
+      // and the app must be associated with that partner account.
       const wishlistUrl = `https://partner.steam-api.com/ISteamUserStats/GetAppWishlistReporting/v1/?key=${apiKey}&appid=${product.steamAppId}`;
-      
+
       const wlResponse = await fetch(wishlistUrl);
-      if (wlResponse.ok) {
+      if (!wlResponse.ok) {
+        // Read the response body for diagnosis. Steam typically returns a
+        // plain-text error or a very small JSON error blob on 4xx.
+        const bodyText = await wlResponse.text().catch(() => "");
+        const errSummary = `HTTP ${wlResponse.status} — ${bodyText.slice(0, 200)}`;
+        productErrors.push({ productId: product.id, title: product.title, error: `wishlist: ${errSummary}` });
+        log(`Steam wishlist ${errSummary} for ${product.title} (appid=${product.steamAppId})`, "ingestion");
+      } else {
         const wlData = await wlResponse.json();
         // Extract the latest wishlist count from the response
         const totalWishlists = wlData?.response?.total_wishlists;
@@ -58,7 +70,7 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
           const latest = storage.getLatestSteamWishlist(product.id);
           const prevCount = latest?.cumulativeCount ?? 0;
           const delta = totalWishlists - prevCount;
-          
+
           storage.addSteamWishlist({
             productId: product.id,
             date: today,
@@ -67,6 +79,14 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
             source: "api",
           });
           dataPoints++;
+        } else {
+          // 200 OK but no total_wishlists field — unusual, capture the shape
+          productErrors.push({
+            productId: product.id,
+            title: product.title,
+            error: `wishlist: 200 OK but no response.total_wishlists field. Body: ${JSON.stringify(wlData).slice(0, 200)}`,
+          });
+          log(`Steam wishlist 200 OK but empty for ${product.title}`, "ingestion");
         }
       }
 
@@ -106,10 +126,17 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
     }
   }
 
+  // Include the per-product errors in the message so users can see why
+  // ingestion ran but added zero data points (most common cause: partner
+  // key scope / app-not-in-account).
+  const errorSummary = productErrors.length > 0
+    ? ` — ${productErrors.length} error${productErrors.length === 1 ? "" : "s"}: ${productErrors.map(e => `[${e.title}] ${e.error}`).join("; ")}`
+    : "";
+
   return {
     source: "steam",
-    status: "success",
-    message: `Processed ${saberProducts.length} Saber-published Steam titles`,
+    status: productErrors.length > 0 && dataPoints === 0 ? "error" : "success",
+    message: `Processed ${saberProducts.length} Saber-published Steam titles${errorSummary}`,
     productsProcessed: saberProducts.length,
     dataPointsAdded: dataPoints,
   };
