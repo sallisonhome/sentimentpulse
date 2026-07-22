@@ -73,6 +73,39 @@ export const insertSteamWishlistSchema = createInsertSchema(steamWishlistDaily).
 export type InsertSteamWishlist = z.infer<typeof insertSteamWishlistSchema>;
 export type SteamWishlistDaily = typeof steamWishlistDaily.$inferSelect;
 
+// ─── Steam Wishlist Reporting Daily (IPartnerFinancialsService) ─────────────
+// Raw daily-delta rows from the *correct* Steamworks Partner Financials API
+// (GetAppWishlistReporting). Each row is a per-day delta for a given product,
+// NOT a cumulative total. Kept separate from the legacy `steam_wishlist_daily`
+// table (which stores cumulativeCount/dailyDelta and is still written to by
+// ingestion for dashboard backwards-compatibility — see ingestion.ts).
+export const steamWishlistReportingDaily = sqliteTable("steam_wishlist_reporting_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  date: text("date").notNull(), // YYYY-MM-DD (GMT)
+  wishlistAdds: integer("wishlist_adds").notNull().default(0),
+  wishlistDeletes: integer("wishlist_deletes").notNull().default(0),
+  wishlistPurchases: integer("wishlist_purchases").notNull().default(0),
+  wishlistGifts: integer("wishlist_gifts").notNull().default(0),
+  wishlistAddsWindows: integer("wishlist_adds_windows").notNull().default(0),
+  wishlistAddsMac: integer("wishlist_adds_mac").notNull().default(0),
+  wishlistAddsLinux: integer("wishlist_adds_linux").notNull().default(0),
+  // Optional dumps for later country/language analysis without needing a re-fetch:
+  countrySummaryJson: text("country_summary_json"), // full JSON of country_summary array
+  languageSummaryJson: text("language_summary_json"), // full JSON of language_summary array
+  fetchedAt: text("fetched_at").notNull(), // ISO timestamp of fetch
+  source: text("source").notNull().default("api"), // "api" or "csv-backfill"
+}, (table) => ({
+  uniqueProductDate: uniqueIndex("steam_wishlist_reporting_unique").on(table.productId, table.date),
+}));
+
+export const insertSteamWishlistReportingSchema = createInsertSchema(steamWishlistReportingDaily).omit({
+  id: true,
+});
+
+export type InsertSteamWishlistReporting = z.infer<typeof insertSteamWishlistReportingSchema>;
+export type SteamWishlistReportingDaily = typeof steamWishlistReportingDaily.$inferSelect;
+
 // ─── Steam Prepurchase Daily ─────────────────────────────────────────────────
 
 export const steamPrepurchaseDaily = sqliteTable("steam_prepurchase_daily", {

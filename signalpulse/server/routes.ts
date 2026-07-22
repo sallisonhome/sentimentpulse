@@ -5,7 +5,7 @@ import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForec
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
-import { runIngestion } from "./ingestion";
+import { runIngestion, fetchSteamWishlistReportingDay, persistSteamWishlistReportingDay, getYesterdayGmtDateString } from "./ingestion";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -521,6 +521,212 @@ export async function registerRoutes(
         ...req.body,
       });
       res.status(201).json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Steam Wishlist Reporting (IPartnerFinancialsService) + Backfill ───────
+  //
+  // New in the Steam Partner API rebuild (2026-07-22). Exposes:
+  //   - GET  /api/products/:id/steam-wishlist-daily  — raw daily-delta rows
+  //     from the new steam_wishlist_reporting_daily table, with a computed
+  //     runningCumulative field per row.
+  //   - POST /api/steam/backfill/:productId — kicks off an async historical
+  //     backfill (rate-limited to Steam's Financial API) and returns a job id.
+  //   - GET  /api/steam/backfill/:jobId — poll job status.
+  //
+  // Backfill jobs are tracked in-memory only (no persistence needed per spec).
+
+  interface BackfillJob {
+    id: string;
+    productId: number;
+    status: "running" | "completed" | "failed";
+    startedAt: string;
+    completedAt: string | null;
+    fromDate: string | null;
+    toDate: string | null;
+    totalDays: number;
+    daysProcessed: number;
+    daysSucceeded: number;
+    daysFailed: number;
+    errors: Array<{ date: string; error: string }>;
+    message: string;
+  }
+
+  const backfillJobs = new Map<string, BackfillJob>();
+
+  // Rate limit: Steam's Partner Financials API docs mention excessive calls
+  // will lead to WebAPI key rate limiting. We use 1 request/sec (safer than
+  // the 2/sec ceiling mentioned in the docs) between backfill calls.
+  const BACKFILL_DELAY_MS = 1000;
+
+  function makeJobId(): string {
+    return `steam-backfill-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async function runBackfillJob(job: BackfillJob, apiKey: string, appId: string) {
+    try {
+      // Canonical fetch (yesterday) to discover app_min_date.
+      const yesterday = getYesterdayGmtDateString();
+      const canonical = await fetchSteamWishlistReportingDay(apiKey, appId, yesterday);
+
+      if (!canonical.ok) {
+        job.status = "failed";
+        job.completedAt = new Date().toISOString();
+        job.message = `Could not fetch canonical date (${yesterday}) to discover app_min_date: ${canonical.error}`;
+        return;
+      }
+
+      persistSteamWishlistReportingDay(job.productId, yesterday, canonical.data, "api");
+      job.daysProcessed++;
+      job.daysSucceeded++;
+
+      const appMinDate = canonical.data.response.app_min_date;
+      if (!appMinDate) {
+        // Assumption: if Steam doesn't return app_min_date, we can't safely
+        // determine how far back to backfill. We stop here rather than
+        // guessing an arbitrary window, but the canonical (yesterday) day
+        // fetched above is still saved.
+        job.status = "completed";
+        job.completedAt = new Date().toISOString();
+        job.fromDate = yesterday;
+        job.toDate = yesterday;
+        job.totalDays = 1;
+        job.message = "app_min_date was null in the API response — backfill bounds unknown, so only yesterday's canonical day was fetched. Re-run once Steam reports a valid app_min_date.";
+        return;
+      }
+
+      job.fromDate = appMinDate;
+      job.toDate = yesterday;
+
+      // Build the list of remaining dates: [appMinDate, yesterday), excluding
+      // yesterday itself (already fetched above).
+      const dates: string[] = [];
+      let cursor = new Date(appMinDate + "T00:00:00Z");
+      const end = new Date(yesterday + "T00:00:00Z");
+      while (cursor.getTime() < end.getTime()) {
+        dates.push(cursor.toISOString().split("T")[0]);
+        cursor = new Date(cursor.getTime() + 86400000);
+      }
+
+      job.totalDays = dates.length + 1; // +1 for the canonical day already done
+
+      for (const date of dates) {
+        // Idempotent: upsert on unique (productId, date) — safe to re-run.
+        await new Promise(resolve => setTimeout(resolve, BACKFILL_DELAY_MS));
+        try {
+          const result = await fetchSteamWishlistReportingDay(apiKey, appId, date);
+          job.daysProcessed++;
+          if (result.ok) {
+            // "api" source: this IS a live API call (just historical), not a
+            // CSV import. "csv-backfill" is reserved for manually-imported
+            // Steamworks export files, which this endpoint does not handle.
+            persistSteamWishlistReportingDay(job.productId, date, result.data, "api");
+            job.daysSucceeded++;
+          } else {
+            job.daysFailed++;
+            job.errors.push({ date, error: result.error });
+          }
+        } catch (err: any) {
+          job.daysProcessed++;
+          job.daysFailed++;
+          job.errors.push({ date, error: err?.message || String(err) });
+        }
+      }
+
+      job.status = "completed";
+      job.completedAt = new Date().toISOString();
+      job.message = `Backfilled ${job.daysSucceeded}/${job.totalDays} days from ${job.fromDate} to ${job.toDate}${job.daysFailed > 0 ? ` (${job.daysFailed} failed)` : ""}`;
+    } catch (err: any) {
+      job.status = "failed";
+      job.completedAt = new Date().toISOString();
+      job.message = `Backfill crashed: ${err?.message || String(err)}`;
+    }
+  }
+
+  app.post("/api/steam/backfill/:productId", async (req, res) => {
+    try {
+      const productId = parseInt(req.params.productId);
+      const product = storage.getProduct(productId);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      if (!product.steamAppId) return res.status(400).json({ error: "Product has no steamAppId configured" });
+
+      const apiKeySetting = storage.getSetting("steam_api_key");
+      const apiKey = apiKeySetting?.value;
+      if (!apiKey || apiKey.trim().length === 0) {
+        return res.status(400).json({ error: "No Steam API key configured in Settings" });
+      }
+
+      const job: BackfillJob = {
+        id: makeJobId(),
+        productId,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        fromDate: null,
+        toDate: null,
+        totalDays: 0,
+        daysProcessed: 0,
+        daysSucceeded: 0,
+        daysFailed: 0,
+        errors: [],
+        message: "Backfill started",
+      };
+      backfillJobs.set(job.id, job);
+
+      // Fire and forget — client polls GET /api/steam/backfill/:jobId
+      runBackfillJob(job, apiKey, product.steamAppId).catch(err => {
+        job.status = "failed";
+        job.completedAt = new Date().toISOString();
+        job.message = `Unhandled backfill error: ${err?.message || String(err)}`;
+      });
+
+      res.status(202).json({ jobId: job.id, status: job.status, message: "Backfill started" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/steam/backfill/:jobId", (req, res) => {
+    const job = backfillJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "Backfill job not found" });
+    res.json(job);
+  });
+
+  // Daily wishlist-reporting rows (new table) with a computed running
+  // cumulative per row, for optional from/to date filtering.
+  app.get("/api/products/:id/steam-wishlist-daily", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const from = typeof req.query.from === "string" ? req.query.from : undefined;
+      const to = typeof req.query.to === "string" ? req.query.to : undefined;
+
+      const rows = storage.getSteamWishlistReporting(id, from, to);
+
+      // Running cumulative is computed fresh here (not stored) so it always
+      // reflects the full history even when a `from` filter is applied —
+      // we need the cumulative baseline from before `from`, if any.
+      let baseline = 0;
+      if (from) {
+        const priorRows = storage.getSteamWishlistReporting(id).filter(r => r.date < from);
+        for (const r of priorRows) {
+          baseline += r.wishlistAdds - r.wishlistDeletes - r.wishlistPurchases;
+        }
+      }
+
+      let running = baseline;
+      const enriched = rows.map(r => {
+        running += r.wishlistAdds - r.wishlistDeletes - r.wishlistPurchases;
+        return {
+          ...r,
+          countrySummary: r.countrySummaryJson ? JSON.parse(r.countrySummaryJson) : null,
+          languageSummary: r.languageSummaryJson ? JSON.parse(r.languageSummaryJson) : null,
+          runningCumulative: Math.max(0, running),
+        };
+      });
+
+      res.json(enriched);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

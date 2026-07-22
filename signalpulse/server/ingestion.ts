@@ -31,16 +31,144 @@ interface IngestionRunResult {
 }
 
 // ─── Steam Ingestion ─────────────────────────────────────────────────────────
+//
+// v2.0 (2026-07-22): rebuilt against the *correct* Steamworks Partner API.
+// The old code called ISteamUserStats/GetAppWishlistReporting, which does
+// not exist (404 — "Method 'GetAppWishlistReporting' not found in interface
+// 'ISteamUserStats'"). The real endpoint lives on IPartnerFinancialsService
+// and requires a Web API key created in a Steamworks group with Financial
+// permissions. Docs: https://partner.steamgames.com/doc/webapi/IPartnerFinancialsService
+//
+// Each call returns DAILY DELTAS for one `date` (GMT), not a running total.
+// Data is only final a few hours after the target day ends in GMT, so we
+// always request YESTERDAY's date, never today's.
+
+export const STEAM_PARTNER_FINANCIALS_BASE = "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/";
+
+export interface SteamWishlistReportingApiResponse {
+  response: {
+    appid: number;
+    date: string;
+    wishlist_summary: {
+      wishlist_adds: number;
+      wishlist_deletes: number;
+      wishlist_purchases: number;
+      wishlist_gifts: number;
+      wishlist_adds_windows: number;
+      wishlist_adds_mac: number;
+      wishlist_adds_linux: number;
+    };
+    country_summary?: unknown[];
+    language_summary?: unknown[];
+    app_min_date?: string | null;
+  };
+}
+
+/** Returns YYYY-MM-DD for "yesterday" in GMT, matching Steam's date-bounding. */
+export function getYesterdayGmtDateString(): string {
+  return new Date(Date.now() - 86400000).toISOString().split("T")[0];
+}
+
+/**
+ * Fetches one day of wishlist reporting data for a single app from the
+ * Steamworks Partner Financials API. Throws on network error; returns a
+ * structured result on HTTP-level failure so callers can decide how to
+ * surface it (ingestion aggregates errors per-product; backfill aggregates
+ * per-day).
+ */
+export async function fetchSteamWishlistReportingDay(
+  apiKey: string,
+  appId: string,
+  date: string,
+): Promise<
+  | { ok: true; data: SteamWishlistReportingApiResponse }
+  | { ok: false; error: string }
+> {
+  const url = `${STEAM_PARTNER_FINANCIALS_BASE}?key=${apiKey}&appid=${appId}&date=${date}`;
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    const bodyText = await resp.text().catch(() => "");
+    return { ok: false, error: `HTTP ${resp.status} — ${bodyText.slice(0, 200)}` };
+  }
+  const data = await resp.json() as SteamWishlistReportingApiResponse;
+  if (!data?.response || data.response.wishlist_summary == null) {
+    return { ok: false, error: `200 OK but no response.wishlist_summary field. Body: ${JSON.stringify(data).slice(0, 200)}` };
+  }
+  return { ok: true, data };
+}
+
+/**
+ * Persists one day of wishlist reporting data: upserts the raw daily-delta
+ * row into steam_wishlist_reporting_daily, AND computes+upserts a running
+ * cumulative into the legacy steam_wishlist_daily table so existing
+ * dashboards (which read cumulativeCount) keep working.
+ *
+ * Cumulative formula: newCumulative = latestKnownCumulative + (adds - deletes - purchases)
+ * Gifts are treated as neutral (not subtracted) — see note below.
+ */
+export function persistSteamWishlistReportingDay(
+  productId: number,
+  date: string,
+  data: SteamWishlistReportingApiResponse,
+  source: "api" | "csv-backfill" = "api",
+): void {
+  const s = data.response.wishlist_summary;
+  const fetchedAt = new Date().toISOString();
+
+  storage.upsertSteamWishlistReporting({
+    productId,
+    date,
+    wishlistAdds: s.wishlist_adds,
+    wishlistDeletes: s.wishlist_deletes,
+    wishlistPurchases: s.wishlist_purchases,
+    wishlistGifts: s.wishlist_gifts,
+    wishlistAddsWindows: s.wishlist_adds_windows,
+    wishlistAddsMac: s.wishlist_adds_mac,
+    wishlistAddsLinux: s.wishlist_adds_linux,
+    countrySummaryJson: data.response.country_summary ? JSON.stringify(data.response.country_summary) : null,
+    languageSummaryJson: data.response.language_summary ? JSON.stringify(data.response.language_summary) : null,
+    fetchedAt,
+    source,
+  });
+
+  // Compute a running cumulative for the legacy steam_wishlist_daily table.
+  // We look up the latest known cumulative STRICTLY BEFORE `date` so that
+  // re-running/backfilling a day is idempotent and doesn't double-count.
+  const priorRows = storage.getSteamWishlists(productId).filter(r => r.date < date);
+  const latestPrior = priorRows.length > 0 ? priorRows[priorRows.length - 1] : undefined;
+  const latestKnownCumulative = latestPrior?.cumulativeCount ?? 0;
+
+  // NOTE on gifts: Steam's docs are ambiguous about whether a "gift" (a
+  // wishlisted item purchased as a gift for someone else) removes the item
+  // from the recipient's original wishlist the same way a direct purchase
+  // does. We deliberately do NOT subtract wishlist_gifts from the cumulative
+  // — a gift is economically similar to a purchase (conversion, not churn),
+  // but since the docs don't confirm it decrements the count, we treat it as
+  // neutral rather than risk under-counting the wishlist. If Steam's docs are
+  // later clarified, update this formula.
+  const netChange = s.wishlist_adds - s.wishlist_deletes - s.wishlist_purchases;
+  const newCumulative = Math.max(0, latestKnownCumulative + netChange);
+
+  storage.addSteamWishlist({
+    productId,
+    date,
+    cumulativeCount: newCumulative,
+    dailyDelta: netChange,
+    source,
+  });
+}
 
 async function ingestSteamData(apiKey: string, partnerId: string): Promise<IngestionResult> {
   const products = storage.getAllProducts();
   const saberProducts = products.filter(p => p.isSaberPublished && p.steamAppId);
-  
+
   if (saberProducts.length === 0) {
     return { source: "steam", status: "skipped", message: "No Saber-published titles with Steam App IDs" };
   }
 
-  const today = new Date().toISOString().split("T")[0];
+  // Data is only final a few hours after the target GMT day ends, so the
+  // cron always requests YESTERDAY's date, never today's.
+  const targetDate = getYesterdayGmtDateString();
   let dataPoints = 0;
   // v1.2 (2026-07-22): surface Steam API failures per product so users
   // can diagnose 'ingestion ran but 0 data points added' -- e.g. wrong
@@ -49,45 +177,14 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
 
   for (const product of saberProducts) {
     try {
-      // Steamworks Partner API: ISteamUserStats/GetAppWishlistReporting
-      // Requires a Publisher-level Web API key (partner.steamgames.com)
-      // and the app must be associated with that partner account.
-      const wishlistUrl = `https://partner.steam-api.com/ISteamUserStats/GetAppWishlistReporting/v1/?key=${apiKey}&appid=${product.steamAppId}`;
+      const result = await fetchSteamWishlistReportingDay(apiKey, product.steamAppId!, targetDate);
 
-      const wlResponse = await fetch(wishlistUrl);
-      if (!wlResponse.ok) {
-        // Read the response body for diagnosis. Steam typically returns a
-        // plain-text error or a very small JSON error blob on 4xx.
-        const bodyText = await wlResponse.text().catch(() => "");
-        const errSummary = `HTTP ${wlResponse.status} — ${bodyText.slice(0, 200)}`;
-        productErrors.push({ productId: product.id, title: product.title, error: `wishlist: ${errSummary}` });
-        log(`Steam wishlist ${errSummary} for ${product.title} (appid=${product.steamAppId})`, "ingestion");
+      if (!result.ok) {
+        productErrors.push({ productId: product.id, title: product.title, error: `wishlist: ${result.error}` });
+        log(`Steam wishlist ${result.error} for ${product.title} (appid=${product.steamAppId})`, "ingestion");
       } else {
-        const wlData = await wlResponse.json();
-        // Extract the latest wishlist count from the response
-        const totalWishlists = wlData?.response?.total_wishlists;
-        if (totalWishlists != null) {
-          const latest = storage.getLatestSteamWishlist(product.id);
-          const prevCount = latest?.cumulativeCount ?? 0;
-          const delta = totalWishlists - prevCount;
-
-          storage.addSteamWishlist({
-            productId: product.id,
-            date: today,
-            cumulativeCount: totalWishlists,
-            dailyDelta: Math.max(0, delta),
-            source: "api",
-          });
-          dataPoints++;
-        } else {
-          // 200 OK but no total_wishlists field — unusual, capture the shape
-          productErrors.push({
-            productId: product.id,
-            title: product.title,
-            error: `wishlist: 200 OK but no response.total_wishlists field. Body: ${JSON.stringify(wlData).slice(0, 200)}`,
-          });
-          log(`Steam wishlist 200 OK but empty for ${product.title}`, "ingestion");
-        }
+        persistSteamWishlistReportingDay(product.id, targetDate, result.data, "api");
+        dataPoints++;
       }
 
       // Steam prepurchase data — only ingest if prepurchase period has started
@@ -97,8 +194,11 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
       const prepurchaseActive = !!prepurchaseStart?.actualDate;
 
       if (prepurchaseActive) {
+        // NOTE: GetAppPrepurchaseReporting is a separate, still-unverified
+        // legacy endpoint. Left untouched per task scope (only the wishlist
+        // endpoint was confirmed broken/fixed here) — kept best-effort.
         const prepurchaseUrl = `https://partner.steam-api.com/ISteamUserStats/GetAppPrepurchaseReporting/v1/?key=${apiKey}&appid=${product.steamAppId}`;
-        
+
         const preResponse = await fetch(prepurchaseUrl);
         if (preResponse.ok) {
           const preData = await preResponse.json();
@@ -107,10 +207,10 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
             const latest = storage.getLatestSteamPrepurchase(product.id);
             const prevCount = latest?.cumulativeCount ?? 0;
             const delta = totalPrepurchases - prevCount;
-            
+
             storage.addSteamPrepurchase({
               productId: product.id,
-              date: today,
+              date: targetDate,
               cumulativeCount: totalPrepurchases,
               dailyDelta: Math.max(0, delta),
               source: "api",
@@ -122,6 +222,7 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
         log(`Steam prepurchase skipped for ${product.title}: prepurchase period not started`, "ingestion");
       }
     } catch (err) {
+      productErrors.push({ productId: product.id, title: product.title, error: `wishlist: ${String(err)}` });
       log(`Steam ingestion error for ${product.title}: ${err}`, "ingestion");
     }
   }
@@ -136,7 +237,7 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
   return {
     source: "steam",
     status: productErrors.length > 0 && dataPoints === 0 ? "error" : "success",
-    message: `Processed ${saberProducts.length} Saber-published Steam titles${errorSummary}`,
+    message: `Processed ${saberProducts.length} Saber-published Steam titles for ${targetDate}${errorSummary}`,
     productsProcessed: saberProducts.length,
     dataPointsAdded: dataPoints,
   };

@@ -2,6 +2,7 @@ import {
   type Product, type InsertProduct, products,
   type ForecastComps, type InsertForecastComps, productForecastsComps,
   type SteamWishlistDaily, type InsertSteamWishlist, steamWishlistDaily,
+  type SteamWishlistReportingDaily, type InsertSteamWishlistReporting, steamWishlistReportingDaily,
   type SteamPrepurchaseDaily, type InsertSteamPrepurchase, steamPrepurchaseDaily,
   type Ps5WishlistDaily, type InsertPs5Wishlist, ps5WishlistDaily,
   type Ps5PrepurchaseDaily, type InsertPs5Prepurchase, ps5PrepurchaseDaily,
@@ -14,7 +15,7 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, and, desc, isNull, asc } from "drizzle-orm";
+import { eq, and, desc, isNull, asc, gte, lte } from "drizzle-orm";
 
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -65,6 +66,28 @@ function initializeDatabase() {
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS steam_wishlist_unique ON steam_wishlist_daily(product_id, date);
+
+    -- Steam Partner Financials API (IPartnerFinancialsService/GetAppWishlistReporting)
+    -- daily-delta rows. Additive table; does not replace steam_wishlist_daily above,
+    -- which the dashboard still reads via cumulativeCount/dailyDelta.
+    CREATE TABLE IF NOT EXISTS steam_wishlist_reporting_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      wishlist_adds INTEGER NOT NULL DEFAULT 0,
+      wishlist_deletes INTEGER NOT NULL DEFAULT 0,
+      wishlist_purchases INTEGER NOT NULL DEFAULT 0,
+      wishlist_gifts INTEGER NOT NULL DEFAULT 0,
+      wishlist_adds_windows INTEGER NOT NULL DEFAULT 0,
+      wishlist_adds_mac INTEGER NOT NULL DEFAULT 0,
+      wishlist_adds_linux INTEGER NOT NULL DEFAULT 0,
+      country_summary_json TEXT,
+      language_summary_json TEXT,
+      fetched_at TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'api',
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS steam_wishlist_reporting_unique ON steam_wishlist_reporting_daily(product_id, date);
 
     CREATE TABLE IF NOT EXISTS steam_prepurchase_daily (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -198,6 +221,13 @@ export interface IStorage {
   getLatestSteamWishlist(productId: number): SteamWishlistDaily | undefined;
   addSteamWishlist(data: InsertSteamWishlist): SteamWishlistDaily;
 
+  // Steam Wishlist Reporting (IPartnerFinancialsService daily deltas)
+  getSteamWishlistReporting(productId: number, from?: string, to?: string): SteamWishlistReportingDaily[];
+  getSteamWishlistReportingByDate(productId: number, date: string): SteamWishlistReportingDaily | undefined;
+  getLatestSteamWishlistReporting(productId: number): SteamWishlistReportingDaily | undefined;
+  getEarliestSteamWishlistReporting(productId: number): SteamWishlistReportingDaily | undefined;
+  upsertSteamWishlistReporting(data: InsertSteamWishlistReporting): SteamWishlistReportingDaily;
+
   // Steam Prepurchases
   getSteamPrepurchases(productId: number): SteamPrepurchaseDaily[];
   getLatestSteamPrepurchase(productId: number): SteamPrepurchaseDaily | undefined;
@@ -308,6 +338,7 @@ export class DatabaseStorage implements IStorage {
     db.delete(dynamicForecastsDaily).where(eq(dynamicForecastsDaily.productId, id)).run();
     // 4. Daily tracking data
     db.delete(steamWishlistDaily).where(eq(steamWishlistDaily.productId, id)).run();
+    db.delete(steamWishlistReportingDaily).where(eq(steamWishlistReportingDaily.productId, id)).run();
     db.delete(steamPrepurchaseDaily).where(eq(steamPrepurchaseDaily.productId, id)).run();
     db.delete(ps5WishlistDaily).where(eq(ps5WishlistDaily.productId, id)).run();
     db.delete(ps5PrepurchaseDaily).where(eq(ps5PrepurchaseDaily.productId, id)).run();
@@ -375,6 +406,62 @@ export class DatabaseStorage implements IStorage {
       }
       throw err;
     }
+  }
+
+  // ─── Steam Wishlist Reporting (IPartnerFinancialsService) ──────────────────
+
+  getSteamWishlistReporting(productId: number, from?: string, to?: string): SteamWishlistReportingDaily[] {
+    const conditions = [eq(steamWishlistReportingDaily.productId, productId)];
+    if (from) conditions.push(gte(steamWishlistReportingDaily.date, from));
+    if (to) conditions.push(lte(steamWishlistReportingDaily.date, to));
+    return db.select().from(steamWishlistReportingDaily)
+      .where(and(...conditions))
+      .orderBy(asc(steamWishlistReportingDaily.date)).all();
+  }
+
+  getSteamWishlistReportingByDate(productId: number, date: string): SteamWishlistReportingDaily | undefined {
+    return db.select().from(steamWishlistReportingDaily)
+      .where(and(
+        eq(steamWishlistReportingDaily.productId, productId),
+        eq(steamWishlistReportingDaily.date, date),
+      )).get();
+  }
+
+  getLatestSteamWishlistReporting(productId: number): SteamWishlistReportingDaily | undefined {
+    return db.select().from(steamWishlistReportingDaily)
+      .where(eq(steamWishlistReportingDaily.productId, productId))
+      .orderBy(desc(steamWishlistReportingDaily.date))
+      .limit(1).get();
+  }
+
+  getEarliestSteamWishlistReporting(productId: number): SteamWishlistReportingDaily | undefined {
+    return db.select().from(steamWishlistReportingDaily)
+      .where(eq(steamWishlistReportingDaily.productId, productId))
+      .orderBy(asc(steamWishlistReportingDaily.date))
+      .limit(1).get();
+  }
+
+  upsertSteamWishlistReporting(data: InsertSteamWishlistReporting): SteamWishlistReportingDaily {
+    const existing = this.getSteamWishlistReportingByDate(data.productId, data.date);
+    if (existing) {
+      return db.update(steamWishlistReportingDaily)
+        .set({
+          wishlistAdds: data.wishlistAdds,
+          wishlistDeletes: data.wishlistDeletes,
+          wishlistPurchases: data.wishlistPurchases,
+          wishlistGifts: data.wishlistGifts,
+          wishlistAddsWindows: data.wishlistAddsWindows,
+          wishlistAddsMac: data.wishlistAddsMac,
+          wishlistAddsLinux: data.wishlistAddsLinux,
+          countrySummaryJson: data.countrySummaryJson,
+          languageSummaryJson: data.languageSummaryJson,
+          fetchedAt: data.fetchedAt,
+          source: data.source,
+        })
+        .where(eq(steamWishlistReportingDaily.id, existing.id))
+        .returning().get();
+    }
+    return db.insert(steamWishlistReportingDaily).values(data).returning().get();
   }
 
   // ─── Steam Prepurchases ──────────────────────────────────────────────────────
