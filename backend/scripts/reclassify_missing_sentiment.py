@@ -30,12 +30,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from sqlalchemy import and_, or_
+
 # Add backend directory to sys.path so absolute imports work when run
 # directly as `python scripts/reclassify_missing_sentiment.py` from within backend/.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from database import SessionLocal  # noqa: E402
-from models import Game  # noqa: E402
+from models import Game, RawPost, SentimentRecord  # noqa: E402
 from services.ingestor import _step5_classify_sentiment  # noqa: E402
 from services.nlp_service import load_model  # noqa: E402
 
@@ -49,6 +51,37 @@ def main() -> int:
 
     db = SessionLocal()
     try:
+        # ── Step 0: Un-gate wrongly-purged posts ──────────────────────────────
+        # purge_july_offtopic_sentiment.py set RawPost.is_relevant = False on
+        # every post it purged. When it ran WITHOUT keywords loaded, that
+        # marked ~7,594 legitimate posts as is_relevant=False. Reset those
+        # so _step5_classify_sentiment picks them up again.
+        #
+        # Signal that a RawPost was wrongly purged: it has
+        #   is_relevant = False   (purge script marked it)
+        #   AND no SentimentRecord (purge script deleted it)
+        # Legitimately-purged posts also fit this profile — but that's OK.
+        # After we reset them to None, the gate re-checks with keywords
+        # loaded. Truly off-topic posts get is_relevant=False set AGAIN by
+        # _step5_classify_sentiment. Real posts get classified. Net-net,
+        # legit purges are re-purged (no data change) and false-positive
+        # purges are recovered.
+        reset_count = (
+            db.query(RawPost)
+            .outerjoin(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
+            .filter(
+                RawPost.is_relevant.is_(False),
+                SentimentRecord.id.is_(None),
+            )
+            .update({RawPost.is_relevant: None}, synchronize_session=False)
+        )
+        db.commit()
+        logger.info(
+            "Reset is_relevant=None on %d wrongly-purged RawPost(s) so they\n"
+            "    can be re-evaluated by _step5_classify_sentiment below.",
+            reset_count,
+        )
+
         active_games = db.query(Game).filter(Game.is_active == True).all()  # noqa: E712
         logger.info("Reclassify: %d active games to process", len(active_games))
 

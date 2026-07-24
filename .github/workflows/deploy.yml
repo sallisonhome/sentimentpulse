@@ -202,6 +202,16 @@ jobs:
             # Guarded by its own app_settings row so it only runs once. Only
             # runs if the apply-keywords guard is now set (i.e. this deploy or
             # a previous one successfully persisted the keyword lists).
+            # v2 (2026-07-24 second-recovery): the first recovery deploy marked
+            # this guard even though the script found "no unclassified posts"
+            # for every game. Root cause: purge_july_offtopic_sentiment.py had
+            # set RawPost.is_relevant=False on every wrongly-purged post, so
+            # _step5_classify_sentiment (which filters is_relevant IS NULL)
+            # skipped them. The recovery script now has a Step 0 that resets
+            # is_relevant=None on posts that are (False AND have no
+            # SentimentRecord) before doing anything else. Force-clear the
+            # guard so the fixed recovery script runs on this deploy.
+            python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.query(AppSetting).filter(AppSetting.key=="sentiment_july_recovery_done_at").delete(); db.commit(); db.close(); print("Force-cleared sentiment_july_recovery_done_at so v2 recovery runs")' 2>/dev/null || true
             RECOVERY_ALREADY_DONE=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="sentiment_july_recovery_done_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
             KEYWORDS_APPLIED_NOW=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="keyword_lists_applied_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
             if [ "$RECOVERY_ALREADY_DONE" = "yes" ]; then
