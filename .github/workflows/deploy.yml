@@ -141,19 +141,22 @@ jobs:
             # deploy (including the guarded apply/purge/restart), and exited 0.
             # This rewrite uses `python -c "..."` inline — no heredocs, no
             # indentation trap.
-            KEYWORDS_ALREADY_APPLIED=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="keyword_lists_applied_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
-            if [ "$KEYWORDS_ALREADY_APPLIED" = "yes" ]; then
-              echo "keyword_lists_applied_at already set — skipping apply_keyword_lists.py"
-            else
-              if [ -f scripts/apply_keyword_lists.py ]; then
-                if python scripts/apply_keyword_lists.py; then
-                  python -c 'from datetime import datetime, timezone; from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.merge(AppSetting(key="keyword_lists_applied_at", value=datetime.now(timezone.utc).isoformat())); db.commit(); db.close(); print("Marked keyword_lists_applied_at")'
-                else
-                  echo "WARN: apply_keyword_lists.py failed (non-fatal, will retry next deploy)"
-                fi
+            # v3 (2026-07-24 keyword-hardening): apply_keyword_lists.py is
+            # fully idempotent (an UPDATE that sets the same list is a no-op,
+            # a change gets a fresh persistence). Removing the guard so every
+            # deploy re-applies from backend/data/proposed_keywords.json.
+            # That lets us tighten the keyword table (dropping
+            # over-lenient variants like 'Space Marine2', 'Crysis3 Remastered',
+            # 'Crysis2 Remastered', 'Halo3 MCC') and have the change take
+            # effect on the next push, without needing a separate migration.
+            if [ -f scripts/apply_keyword_lists.py ]; then
+              if python scripts/apply_keyword_lists.py; then
+                python -c 'from datetime import datetime, timezone; from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.merge(AppSetting(key="keyword_lists_applied_at", value=datetime.now(timezone.utc).isoformat())); db.commit(); db.close(); print("Marked keyword_lists_applied_at")'
               else
-                echo "scripts/apply_keyword_lists.py missing, skipping"
+                echo "WARN: apply_keyword_lists.py failed (non-fatal, will retry next deploy)"
               fi
+            else
+              echo "scripts/apply_keyword_lists.py missing, skipping"
             fi
 
             echo ""
@@ -209,9 +212,9 @@ jobs:
             # _step5_classify_sentiment (which filters is_relevant IS NULL)
             # skipped them. The recovery script now has a Step 0 that resets
             # is_relevant=None on posts that are (False AND have no
-            # SentimentRecord) before doing anything else. Force-clear the
-            # guard so the fixed recovery script runs on this deploy.
-            python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.query(AppSetting).filter(AppSetting.key=="sentiment_july_recovery_done_at").delete(); db.commit(); db.close(); print("Force-cleared sentiment_july_recovery_done_at so v2 recovery runs")' 2>/dev/null || true
+            # SentimentRecord) before doing anything else. Force-cleared once
+            # in an earlier deploy; guard is now set correctly and this
+            # recovery block is a no-op on subsequent runs.
             RECOVERY_ALREADY_DONE=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="sentiment_july_recovery_done_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
             KEYWORDS_APPLIED_NOW=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="keyword_lists_applied_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
             if [ "$RECOVERY_ALREADY_DONE" = "yes" ]; then
@@ -231,6 +234,39 @@ jobs:
                 fi
               else
                 echo "scripts/reclassify_missing_sentiment.py missing, skipping"
+              fi
+            fi
+
+            echo ""
+            echo "## One-time: cleanup SM2 & sibling over-matches (idempotent) ##"
+            # 2026-07-24 keyword-hardening cleanup. The initial recovery
+            # classified real Warhammer 40k lore posts as SM2 game posts because
+            # the keyword variant 'Space Marine2' (13 chars, 2 words) fuzzy-
+            # matched bare 'Space Marine' with edit distance 1 on the 'Marine2'
+            # token vs 'Marine'. Same pattern hit 'Crysis3 Remastered' (#37),
+            # 'Crysis2 Remastered' (#39), and 'Halo3 MCC' (#105). Those four
+            # variants are now removed from backend/data/proposed_keywords.json
+            # and re-applied above.
+            #
+            # This step invalidates every SentimentRecord in the July 2026
+            # window for those four games where RawPost.is_relevant=True
+            # (i.e. classified as relevant under the too-lenient gate),
+            # resets those posts to is_relevant=None, then re-runs Step 5
+            # against them with the tightened keyword list. False positives
+            # get is_relevant=False and no SentimentRecord. Real posts get
+            # re-classified.
+            SM2_CLEANUP_DONE=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="sm2_overmatch_cleanup_done_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
+            if [ "$SM2_CLEANUP_DONE" = "yes" ]; then
+              echo "sm2_overmatch_cleanup_done_at already set — skipping cleanup_sm2_overmatch.py"
+            else
+              if [ -f scripts/cleanup_sm2_overmatch.py ]; then
+                if python scripts/cleanup_sm2_overmatch.py; then
+                  python -c 'from datetime import datetime, timezone; from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.merge(AppSetting(key="sm2_overmatch_cleanup_done_at", value=datetime.now(timezone.utc).isoformat())); db.commit(); db.close(); print("Marked sm2_overmatch_cleanup_done_at")'
+                else
+                  echo "WARN: cleanup_sm2_overmatch.py failed (non-fatal, will retry next deploy)"
+                fi
+              else
+                echo "scripts/cleanup_sm2_overmatch.py missing, skipping"
               fi
             fi
 
