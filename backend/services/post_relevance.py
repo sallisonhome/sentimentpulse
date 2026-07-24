@@ -15,7 +15,10 @@ Rules (implemented below, in priority order)
 1. Empty or very short text (< 30 chars combined) → NOT relevant.
 2. At least one distinctive_keyword must appear as a case-insensitive
    whole-word (single-word) or whole-phrase (multi-word) match in the
-   combined text.  If no keyword matches → NOT relevant.
+   combined text (Layer 1 — exact match).  If Layer 1 finds nothing, a
+   second pass (Layer 2 — fuzzy match) attempts a proportional-edit-distance
+   match against multi-word keywords only (see _fuzzy_match_relevant below).
+   If neither layer matches → NOT relevant.
 3. If any movie/IP cue appears *near* the only matching keyword, the post is
    classified as being about the IP, not the game → NOT relevant.
 4. If the text mentions ≥2 other known game titles from a genre that
@@ -30,6 +33,12 @@ Design notes
   registry GAME_KEYWORD_FALLBACK (same content as the Alembic seed).
 - "Distinctive" means the keyword uniquely identifies *this* game, not the
   broader IP.  Multi-word phrases are required for ambiguous single-word titles.
+- v2 (2026-07-24): a game with NO keywords configured (neither DB column nor
+  static fallback) is HARD-BLOCKED — no sentiment classification runs on its
+  posts until keywords are set.  This function never falls through to
+  "accept all" for an unconfigured game; see the `if not keywords` branch
+  below.  Use the startup validation check (services/keyword_health_check.py)
+  to catch games missing keywords.
 - The movie/IP cue detection intentionally looks only within a ±120-character
   window around the keyword match to avoid false positives from long posts that
   happen to mention a film somewhere.
@@ -37,16 +46,29 @@ Design notes
   (a) ≥2 other-genre titles are present AND (b) none of those titles co-appear
   with the focal game's genre markers.  This prevents rejecting legitimate
   comparison posts within the same genre.
+- Layer 2 fuzzy fallback (added 2026-07-24): only runs when Layer 1 finds
+  zero matches.  Tolerates typos on MULTI-WORD keywords only (length >= 8
+  chars), within a proportional edit-distance budget of floor(0.20 * len).
+  All words in the keyword must have a close match within a sliding window
+  of post text ("all-word coverage").  A cross-game precedence guard skips
+  Layer 2 if the post text contains an exact Layer-1 hit for a DIFFERENT
+  game in the catalogue.  Gated behind config.settings.relevance_fuzzy_layer_enabled
+  (env var RELEVANCE_FUZZY_LAYER_ENABLED, default true) as a kill-switch.
 """
 import logging
+import math
 import re
 from typing import Optional
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Static fallback registry — matches the Alembic 0003 seed exactly.
-# Games not in this dict have no keywords → all posts pass (no filter applied).
+# v2 (2026-07-24): games NOT in this dict AND with no DB distinctive_keywords
+# are HARD-BLOCKED — no posts pass without a keyword match. See the
+# `if not keywords: return False` branch in is_post_relevant_to_game().
 # ---------------------------------------------------------------------------
 GAME_KEYWORD_FALLBACK: dict[str, list[str]] = {
     # ── Spec-provided examples ─────────────────────────────────────────────
@@ -403,19 +425,41 @@ def is_post_relevant_to_game(title: str, body: str, game) -> bool:
     # Determine keywords to use
     keywords: list[str] = _get_keywords(game)
 
-    # If no keywords are configured for this game, pass all posts through
-    # (we have no filter signal — assume on-topic from the data pipeline).
+    # v2 (2026-07-24): user rule — games without keywords are gated OUT.
+    # No sentiment classification runs on their posts until keywords are
+    # configured. Never fall through to "accept all".
     if not keywords:
-        return True
-
-    # Rule 2: at least one keyword must match
-    match_positions = _find_keyword_matches(combined, keywords)
-    if not match_positions:
-        logger.debug(
-            "No keyword match in post for game '%s' — not relevant.",
+        logger.warning(
+            "Game '%s' has no distinctive_keywords configured; post filtered out. "
+            "Configure keywords in Settings to enable sentiment tracking for this game.",
             game.name,
         )
         return False
+
+    # Rule 2: at least one keyword must match (Layer 1 — exact match)
+    match_positions = _find_keyword_matches(combined, keywords)
+    if not match_positions:
+        # Layer 2 — fuzzy fallback. Only runs when Layer 1 found nothing.
+        if settings.relevance_fuzzy_layer_enabled:
+            post_id_for_log = getattr(game, "_current_post_id_for_log", None)
+            if _fuzzy_match_relevant(
+                combined, keywords, game.name,
+                getattr(game, "id", "?"), post_id_for_log,
+            ):
+                # Layer 2 hit — skip straight to IP-cue / cross-genre checks below.
+                match_positions = None  # sentinel: no char-span positions for a fuzzy hit
+            else:
+                logger.debug(
+                    "No keyword match (Layer 1 or Layer 2) in post for game '%s' — not relevant.",
+                    game.name,
+                )
+                return False
+        else:
+            logger.debug(
+                "No keyword match in post for game '%s' — not relevant.",
+                game.name,
+            )
+            return False
 
     # Rule 3: IP/movie cue near each keyword match?
     # If there is exactly one match (or all matches are close together),
@@ -549,4 +593,213 @@ def _is_cross_genre_contaminated(text: str, game) -> bool:
             if other_genre_count >= _CROSS_GENRE_THRESHOLD:
                 return True
 
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Layer 2 — fuzzy fallback matching (2026-07-24)
+#
+# Only invoked from is_post_relevant_to_game() when Layer 1 (exact substring
+# match) finds zero matches. See code_plan.md §1d for the full spec. Rules:
+#   1. Multi-word keywords ONLY — single-word keywords are never fuzzy-matched.
+#   2. Length floor — keyword must be >= 8 characters.
+#   3. Proportional edit distance — allowed edits = floor(0.20 * len(keyword)).
+#   4. All-word coverage — every word of an N-word keyword must have a
+#      Levenshtein-close match to some token in the same N-word sliding
+#      window of the post text (not just one word out of N).
+#   5. Cross-game precedence guard — if the post text contains an exact
+#      Layer-1 hit for a DIFFERENT game in the catalogue, Layer 2 is skipped
+#      (that other game "wins").
+#
+# Uses a small pure-Python Damerau-Levenshtein implementation (no external
+# dependency — python-Levenshtein is not in requirements.txt and we want to
+# keep deps light per the approved plan).
+# ---------------------------------------------------------------------------
+
+_FUZZY_MIN_KEYWORD_LEN = 8
+_FUZZY_MAX_EDIT_RATIO = 0.20
+_WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+
+
+def _tokenize(text: str) -> list[str]:
+    """Lowercase word tokens, punctuation stripped."""
+    return [t.lower() for t in _WORD_TOKEN_RE.findall(text or "")]
+
+
+def damerau_levenshtein(a: str, b: str) -> int:
+    """
+    Compute the Damerau-Levenshtein edit distance between two strings
+    (insertions, deletions, substitutions, and adjacent-transpositions all
+    cost 1). Pure-Python implementation — no external dependency.
+
+    Used instead of plain Levenshtein because adjacent-character transposition
+    typos ("Rissign" vs "Rising"-style swaps) are extremely common in the
+    community-misspelling patterns this gate needs to tolerate (see
+    proposed_keywords.md notes on transposition typos).
+    """
+    a = a.lower()
+    b = b.lower()
+    la, lb = len(a), len(b)
+    if la == 0:
+        return lb
+    if lb == 0:
+        return la
+
+    # d[i][j] = edit distance between a[:i] and b[:j]
+    d = [[0] * (lb + 1) for _ in range(la + 1)]
+    for i in range(la + 1):
+        d[i][0] = i
+    for j in range(lb + 1):
+        d[0][j] = j
+
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(
+                d[i - 1][j] + 1,        # deletion
+                d[i][j - 1] + 1,        # insertion
+                d[i - 1][j - 1] + cost,  # substitution
+            )
+            if (
+                i > 1 and j > 1
+                and a[i - 1] == b[j - 2]
+                and a[i - 2] == b[j - 1]
+            ):
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)  # transposition
+
+    return d[la][lb]
+
+
+def _word_edit_budget(word: str) -> int:
+    """Per-word edit budget, proportional to that word's own length, using
+    the same 20% ceiling as the phrase-level budget."""
+    return math.floor(_FUZZY_MAX_EDIT_RATIO * len(word))
+
+
+def _covers_all_words_within_window(
+    kw_words: list[str], text_tokens: list[str], _unused_max_edits: int = None,
+) -> bool:
+    """
+    Rule 4 — all-word coverage. Slide an N-token window across text_tokens
+    (N = len(kw_words)) and check whether, at ANY window position, every
+    keyword word has some window token within its own per-word edit budget.
+
+    Returns True on the first window position where all N words are covered.
+    """
+    n = len(kw_words)
+    if n == 0 or len(text_tokens) < n:
+        return False
+
+    word_budgets = [_word_edit_budget(w) for w in kw_words]
+
+    for start in range(0, len(text_tokens) - n + 1):
+        window = text_tokens[start:start + n]
+        if _all_words_covered_in_window(kw_words, word_budgets, window):
+            return True
+    return False
+
+
+def _all_words_covered_in_window(
+    kw_words: list[str], word_budgets: list[int], window: list[str],
+) -> bool:
+    """Every keyword word must be within its edit budget of SOME token in
+    the window (not necessarily the token at the same index — handles
+    word-order variance / minor insertions within the window)."""
+    for kw_word, budget in zip(kw_words, word_budgets):
+        if not any(
+            damerau_levenshtein(kw_word, tok) <= budget
+            for tok in window
+        ):
+            return False
+    return True
+
+
+def _collides_with_other_game_exact_keyword(text: str, focal_game_id) -> bool:
+    """
+    Rule 5 — cross-game precedence guard. Returns True if `text` contains an
+    exact (Layer-1) keyword match belonging to a DIFFERENT active game in the
+    catalogue, meaning that other game's exact hit should win and this
+    Layer-2 fuzzy hit should be discarded.
+
+    Queries the live DB for all other active games' keyword lists. Falls
+    back to the static GAME_KEYWORD_FALLBACK registry if a DB session isn't
+    available (e.g. in unit tests using plain mock Game objects) — best
+    effort, never raises.
+    """
+    try:
+        from database import SessionLocal  # local import to avoid any
+        from models import Game            # circular-import risk at module load
+
+        db = SessionLocal()
+        try:
+            other_games = (
+                db.query(Game)
+                .filter(Game.is_active == True)  # noqa: E712
+                .all()
+            )
+            for other in other_games:
+                if getattr(other, "id", None) == focal_game_id:
+                    continue
+                other_keywords = _get_keywords(other)
+                if not other_keywords:
+                    continue
+                if _find_keyword_matches(text, other_keywords):
+                    return True
+            return False
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.debug(
+            "Cross-game collision guard: DB lookup unavailable (%s); "
+            "falling back to static registry only.", exc,
+        )
+        for other_name, other_keywords in GAME_KEYWORD_FALLBACK.items():
+            if not other_keywords:
+                continue
+            if _find_keyword_matches(text, other_keywords):
+                return True
+        return False
+
+
+def _fuzzy_match_relevant(
+    text: str,
+    keywords: list[str],
+    game_name_for_log: str,
+    game_id_for_log,
+    post_id_for_log=None,
+) -> bool:
+    """
+    Layer 2 fallback. Only called when Layer 1 (exact substring match) found
+    nothing. Tolerates typos on MULTI-WORD keywords only; never fuzzy-matches
+    single-word keywords (those must hit Layer 1 exactly).
+    """
+    text_tokens = _tokenize(text)
+    for kw in keywords:
+        kw_stripped = kw.strip()
+        if not kw_stripped:
+            continue
+        kw_words = kw_stripped.split()
+        if len(kw_words) < 2:
+            continue  # rule 1: single-word keywords are exact-only, never fuzzy
+        if len(kw_stripped) < _FUZZY_MIN_KEYWORD_LEN:
+            continue  # rule 2: length floor — short phrases are exact-only
+
+        if _covers_all_words_within_window(kw_words, text_tokens):
+            # rule 5 guard — a different game's exact Layer-1 hit takes precedence
+            if _collides_with_other_game_exact_keyword(text, game_id_for_log):
+                logger.debug(
+                    "LAYER2_FUZZY_SKIP post_id=%s game_id=%s game=%r keyword=%r "
+                    "— skipped: exact hit for a different game takes precedence.",
+                    post_id_for_log, game_id_for_log, game_name_for_log, kw_stripped,
+                )
+                continue
+
+            max_edits = math.floor(_FUZZY_MAX_EDIT_RATIO * len(kw_stripped))
+            logger.info(
+                "LAYER2_FUZZY_HIT post_id=%s game_id=%s game_name=%r keyword=%r "
+                "edit_distance=%d matched_text=%r",
+                post_id_for_log, game_id_for_log, game_name_for_log,
+                kw_stripped, max_edits, text[:160],
+            )
+            return True
     return False

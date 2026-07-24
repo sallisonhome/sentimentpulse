@@ -872,8 +872,13 @@ def _step5_classify_sentiment(
     errors: list,
 ) -> None:
     """
-    Batch-classify ALL unprocessed posts for this game.
+    Batch-classify unprocessed posts for this game.
     Processes any backlog from previous failed runs, not just today's posts.
+
+    v2 relevance gate (2026-07-24): the §14 relevance filter now runs HERE,
+    BEFORE classification — not in Step 6 (topic extraction) as before. Off-
+    topic posts never get a SentimentRecord created, so they can never count
+    toward dashboard aggregates. See code_plan.md §1 for the full rationale.
     """
     unprocessed: list[RawPost] = (
         db.query(RawPost)
@@ -881,6 +886,7 @@ def _step5_classify_sentiment(
         .filter(
             RawPost.game_id == game.id,
             SentimentRecord.id.is_(None),
+            RawPost.is_relevant.is_(None),   # not yet gated
         )
         .all()
     )
@@ -889,7 +895,44 @@ def _step5_classify_sentiment(
         log_lines.append(f"[Step 5] '{game.name}': no unclassified posts.")
         return
 
-    items = [{'title': p.title or '', 'body': p.body or ''} for p in unprocessed]
+    # ── Relevance gate — runs BEFORE classification, not after ────────────────
+    relevant_posts: list[RawPost] = []
+    irrelevant_posts: list[RawPost] = []
+    for post in unprocessed:
+        if is_post_relevant_to_game(post.title or "", post.body or "", game):
+            relevant_posts.append(post)
+        else:
+            irrelevant_posts.append(post)
+            logger.debug(
+                "[Step5-Filter] post_id=%s game=%s title=%s",
+                post.id, game.name, (post.title or "")[:60],
+            )
+
+    relevant_count = len(relevant_posts)
+    irrelevant_count = len(irrelevant_posts)
+    log_lines.append(
+        f"[Step 5] '{game.name}': {relevant_count} relevant, "
+        f"{irrelevant_count} filtered as off-topic"
+    )
+
+    # Mark filtered posts so they're never re-evaluated on subsequent runs and
+    # never picked up by Step 6 either. No SentimentRecord is created for them.
+    for post in irrelevant_posts:
+        post.is_relevant = False
+
+    if not relevant_posts:
+        try:
+            db.commit()  # persist the is_relevant=False marks even if nothing passed
+        except Exception as exc:
+            db.rollback()
+            msg = f"[Step 5] Error saving relevance marks for '{game.name}': {exc}"
+            errors.append(msg)
+            logger.error(msg)
+            return
+        log_lines.append(f"[Step 5] '{game.name}': all posts filtered; nothing to classify.")
+        return
+
+    items = [{'title': p.title or '', 'body': p.body or ''} for p in relevant_posts]
     try:
         results = classify_batch_with_gate_v2(items)
     except Exception as exc:
@@ -898,9 +941,10 @@ def _step5_classify_sentiment(
         logger.error(msg)
         return
 
-    for post, result in zip(unprocessed, results):
+    for post, result in zip(relevant_posts, results):
         label = result["label"]
         score = result["score"]
+        post.is_relevant = True
         db.add(SentimentRecord(
             raw_post_id=post.id,
             sentiment=SentimentEnum(label),
@@ -917,7 +961,8 @@ def _step5_classify_sentiment(
     try:
         db.commit()
         log_lines.append(
-            f"[Step 5] '{game.name}': classified {len(unprocessed)} post(s)."
+            f"[Step 5] '{game.name}': classified {len(relevant_posts)} post(s) "
+            f"({irrelevant_count} filtered as irrelevant)."
         )
     except Exception as exc:
         db.rollback()
@@ -944,10 +989,14 @@ def _step6_extract_topics(
     Cluster today's posts per sentiment group.
 
     Now implements:
-      §14 — Relevance filter: skip posts that are not substantively about the
-              focal game (off-topic, IP/movie references, cross-genre contamination).
       §15 — Critical-mass gate: only surface clusters with ≥3 posts, ≥3 distinct
               authors, and presence on ≥2 distinct days.
+
+    v2 relevance gate (2026-07-24): the §14 relevance filter no longer runs
+    here. It runs once, in Step 5 (_step5_classify_sentiment), BEFORE
+    classification. Every RawPost joined to a SentimentRecord here is
+    ALREADY relevant by construction — irrelevant posts never get a
+    SentimentRecord created for them.
 
     Upserts results into topic_trends and back-fills SentimentRecord.topics.
     """
@@ -972,25 +1021,6 @@ def _step6_extract_topics(
         log_lines.append(f"[Step 6] '{game.name}': no posts today (range {day_start} - {day_end}).")
         return
 
-    # ── §14: Relevance filter ────────────────────────────────────────────────
-    relevant_rows: list[tuple[RawPost, SentimentRecord]] = []
-    filtered_count = 0
-    for post, sr in rows:
-        if is_post_relevant_to_game(post.title or "", post.body or "", game):
-            relevant_rows.append((post, sr))
-        else:
-            filtered_count += 1
-
-    if filtered_count:
-        log_lines.append(
-            f"[Step 6] '§14 filter' '{game.name}': "
-            f"{filtered_count}/{len(rows)} post(s) excluded as irrelevant today."
-        )
-
-    if not relevant_rows:
-        log_lines.append(f"[Step 6] '{game.name}': all posts filtered as irrelevant today.")
-        return
-
     # ── Group text + metadata by sentiment ───────────────────────────────────
     # For each sentiment group, collect parallel lists:
     #   texts, author_ids, day_ids
@@ -999,7 +1029,7 @@ def _step6_extract_topics(
     grouped_authors: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
     grouped_days: dict[str, list[str]] = {"positive": [], "negative": [], "neutral": []}
 
-    for post, sr in relevant_rows:
+    for post, sr in rows:
         text = _post_text(post)
         if not text:
             continue
@@ -1067,7 +1097,7 @@ def _step6_extract_topics(
 
     # Back-fill top topics onto each SentimentRecord for this game/day
     top_map = {k: v[:5] for k, v in topics_by_sentiment.items()}
-    for _, sr in relevant_rows:
+    for _, sr in rows:
         sr.topics = top_map.get(sr.sentiment.value, [])
 
     # Upsert into topic_trends (includes its own commit)
@@ -1082,7 +1112,7 @@ def _step6_extract_topics(
     total = sum(len(v) for v in topics_by_sentiment.values())
     log_lines.append(
         f"[Step 6] '{game.name}': {total} topic(s) extracted/updated "
-        f"({len(relevant_rows)} relevant posts, {filtered_count} filtered)."
+        f"({len(rows)} post(s), already relevance-gated in Step 5)."
     )
 
 # ── Step 7: Daily Summary ─────────────────────────────────────────────────────

@@ -118,6 +118,29 @@ def create_game(data: GameCreate, db: Session = Depends(get_db)):
             )
             subreddits = []
 
+    # Resolve distinctive_keywords. Auto-generate a heuristic default list
+    # when omitted so the game is never created with an empty keyword list
+    # (2026-07-24 relevance gate: games without keywords are gated OUT of
+    # sentiment classification entirely — see services/post_relevance.py).
+    keywords = data.distinctive_keywords
+    if keywords is None:
+        from services.keyword_generator import generate_default_keywords  # noqa: PLC0415
+        try:
+            keywords = generate_default_keywords(name)
+        except Exception as exc:
+            logger.warning(
+                "Keyword generation failed for %r: %s. Inserting with [].",
+                name, exc,
+            )
+            keywords = []
+        if len(keywords) < 3:
+            logger.warning(
+                "Auto-generated only %d keyword(s) for new game %r — below "
+                "the 3-keyword floor. Review distinctive_keywords manually "
+                "via PATCH /api/games/{id} before this game starts ingesting Reddit.",
+                len(keywords), name,
+            )
+
     game = Game(
         publisher_id=pub.id,
         steam_app_id=data.steam_app_id,
@@ -125,6 +148,7 @@ def create_game(data: GameCreate, db: Session = Depends(get_db)):
         release_date=release_date,
         is_active=data.is_active,
         subreddits=subreddits,
+        distinctive_keywords=keywords,
     )
     db.add(game)
     try:

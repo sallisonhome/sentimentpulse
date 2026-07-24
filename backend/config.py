@@ -69,5 +69,13 @@ class Settings(BaseSettings):
     ingest_hour: int = 2
     ingest_minute: int = 0
 
+    # v2 relevance gate (2026-07-24): Layer 2 fuzzy fallback kill-switch.
+    # When True (default), is_post_relevant_to_game() attempts a proportional
+    # Levenshtein fuzzy match against multi-word distinctive_keywords when
+    # Layer 1's exact-substring match finds nothing. Set to False to disable
+    # Layer 2 entirely (e.g. if a week of LAYER2_FUZZY_HIT audit logs shows
+    # it's net-noisy) without touching any keyword lists.
+    relevance_fuzzy_layer_enabled: bool = True
+
 
 settings = Settings()

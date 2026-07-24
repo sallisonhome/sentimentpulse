@@ -129,6 +129,11 @@ class RawPost(Base):
         DateTime, server_default=func.now(), nullable=False
     )
     post_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # v2 relevance gate (2026-07-24, migration 0010): tri-state audit column.
+    #   None  = not yet evaluated by the relevance gate
+    #   True  = passed the gate; a SentimentRecord was/will be created
+    #   False = failed the gate; RawPost retained for audit, no SentimentRecord
+    is_relevant: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=None)
 
     game: Mapped["Game"] = relationship("Game", back_populates="raw_posts")
     sentiment_record: Mapped[Optional["SentimentRecord"]] = relationship(
@@ -373,3 +378,28 @@ class EditorialArticle(Base):
     cite: Mapped[str] = mapped_column(String(8), nullable=False)
 
     game: Mapped["Game"] = relationship("Game", back_populates="editorial_articles")
+
+
+class AppSetting(Base):
+    """
+    Generic single-row key/value settings store, used for one-time-operation
+    idempotency markers (migration 0010, 2026-07-24).
+
+    Examples:
+      key='keyword_lists_applied_at'          — set once apply_keyword_lists.py
+                                                 has persisted the 29-game
+                                                 keyword table to games.distinctive_keywords.
+      key='sentiment_july_backfill_done_at'   — set once
+                                                 purge_july_offtopic_sentiment.py
+                                                 has run against the live DB.
+
+    value stores an ISO-8601 UTC timestamp string (informational only — the
+    presence of the row is what gates re-runs, not its content).
+    """
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )

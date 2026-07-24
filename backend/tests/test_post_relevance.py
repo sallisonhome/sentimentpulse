@@ -216,8 +216,13 @@ class TestEdgeCases:
         # "John Wick game nice" → 19 chars → too short
         assert result is False
 
-    def test_no_keywords_configured_passes_all(self):
-        """If game has no keywords (no DB column, no fallback), all posts pass through."""
+    def test_no_keywords_configured_blocks_all(self):
+        """
+        v2 (2026-07-24): games with no keywords configured (no DB column, no
+        fallback) are now gated OUT — the old 'pass all through' escape hatch
+        was removed because it silently classified sentiment for games with
+        zero relevance signal.
+        """
         game = _make_game("Unknown Indie Game XYZ 2099")  # not in fallback
         game.distinctive_keywords = None
         title = "This game is amazing and I love it so much"
@@ -226,7 +231,7 @@ class TestEdgeCases:
             "Highly recommend to anyone who enjoys action games."
         )
         result = is_post_relevant_to_game(title, body, game)
-        assert result is True, "Games without keywords should pass all posts through."
+        assert result is False, "Games without keywords must now be filtered out, not passed through."
 
     def test_custom_db_keywords_override_fallback(self):
         """Game.distinctive_keywords from DB is used instead of fallback registry."""
@@ -382,3 +387,99 @@ class TestFallbackRegistry:
         assert any(" " in k for k in kws), (
             "Inversion must have at least one multi-word keyword."
         )
+
+
+# ── Layer 2 fuzzy fallback (2026-07-24) ────────────────────────────────────────
+
+class TestLayer2FuzzyMatch:
+    """
+    Layer 2 only runs when Layer 1 (exact substring match) finds nothing, and
+    only fuzzy-matches multi-word keywords >= 8 characters. Single-word
+    keywords and short phrases are exact-only.
+    """
+
+    def test_typo_of_multiword_keyword_matches(self):
+        """'Bus Buond' (transposition typo of 'Bus Bound') should still match."""
+        game = _make_game("Bus Bound", keywords=["Bus Bound", "BusBound", "Saber Bus Bound"])
+        title = "Bus Buond just got a new update today"
+        body = (
+            "The devs pushed a big patch for Bus Buond this week with new routes "
+            "and vehicle physics improvements. Really enjoying the driving model."
+        )
+        result = is_post_relevant_to_game(title, body, game)
+        assert result is True, "Layer 2 fuzzy match should catch 'Bus Buond' as a typo of 'Bus Bound'."
+
+    def test_unrelated_skyrim_shout_does_not_match(self):
+        """
+        'Fus Bound' should NOT match 'Bus Bound' — 'Fus' (Skyrim's 'Fus Ro Dah'
+        shout) is not within edit-distance range of 'Bus', so this must not be
+        treated as a typo.
+        """
+        game = _make_game("Bus Bound", keywords=["Bus Bound", "BusBound", "Saber Bus Bound"])
+        title = "Fus Bound to the wall by the shout mechanic in this mod"
+        body = (
+            "This Skyrim mod makes the Fus Ro Dah shout so much stronger that "
+            "enemies get bound to walls on impact. Total chaos in dungeons."
+        )
+        result = is_post_relevant_to_game(title, body, game)
+        assert result is False, "'Fus Bound' must not fuzzy-match 'Bus Bound' — different first word."
+
+    def test_single_word_keyword_never_fuzzy_matched(self):
+        """Single-word keywords are exact-only; typos of them must not match via Layer 2."""
+        game = _make_game("Gloomhaven", keywords=["Gloomhaven"])
+        title = "Gloomhavne is such a fantastic tactical game to play"
+        body = (
+            "I've been playing Gloomhavne with friends every week and the "
+            "combat system keeps getting deeper the more scenarios we unlock."
+        )
+        result = is_post_relevant_to_game(title, body, game)
+        assert result is False, "Single-word keywords must never be fuzzy-matched."
+
+    def test_short_multiword_keyword_below_length_floor_not_fuzzy_matched(self):
+        """Multi-word keywords under the 8-char length floor are exact-only."""
+        game = _make_game("H2A", keywords=["H2A"])  # single token anyway, but also short
+        game.distinctive_keywords = ["H2 MCC"]  # 6 chars, multi-word but below floor
+        title = "H3 MCC campaign co-op run was incredible last night"
+        body = (
+            "We finished the whole H3 MCC campaign in one sitting on legendary "
+            "difficulty. The checkpoint system held up great the entire way through."
+        )
+        result = is_post_relevant_to_game(title, body, game)
+        assert result is False, "'H2 MCC' is below the 8-char fuzzy floor, so 'H3 MCC' must not match it."
+
+    def test_cross_game_exact_match_takes_precedence_over_fuzzy(self):
+        """
+        If the post text contains an EXACT Layer-1 hit for a different game,
+        Layer 2 must not fire a fuzzy match for the focal game, even if a
+        fuzzy candidate is technically within edit distance.
+        """
+        game = _make_game("Bus Bound", keywords=["Bus Bound"])
+        # "Bus Bund" is a 1-edit typo of "Bus Bound", but the text also
+        # contains an exact, unrelated keyword phrase for a different game
+        # in the static fallback registry: "Master Chief Collection".
+        title = "Bus Bund review plus my thoughts on Master Chief Collection today"
+        body = (
+            "Playing Bus Bund alongside the Master Chief Collection this week. "
+            "Two very different games but both keeping me busy most evenings."
+        )
+        result = is_post_relevant_to_game(title, body, game)
+        assert result is False, (
+            "Cross-game precedence guard should block the fuzzy hit when an exact "
+            "match for a different catalogue game is present in the same text."
+        )
+
+    def test_fuzzy_layer_disabled_via_config_flag(self, monkeypatch):
+        """When RELEVANCE_FUZZY_LAYER_ENABLED is False, Layer 2 never fires."""
+        from config import settings as _settings
+        from services import post_relevance as pr_module
+
+        monkeypatch.setattr(pr_module.settings, "relevance_fuzzy_layer_enabled", False)
+
+        game = _make_game("Bus Bound", keywords=["Bus Bound"])
+        title = "Bus Buond just got a new update today"
+        body = (
+            "The devs pushed a big patch for Bus Buond this week with new routes "
+            "and vehicle physics improvements. Really enjoying the driving model."
+        )
+        result = is_post_relevant_to_game(title, body, game)
+        assert result is False, "Layer 2 must not run when the config flag is disabled."

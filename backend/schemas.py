@@ -83,11 +83,19 @@ class GameCreate(BaseModel):
     Only steam_app_id is required.  If `name` is omitted the endpoint will
     fetch it from Steam's appdetails API.  If `subreddits` is omitted the
     endpoint will run auto-discovery against Reddit.
+
+    If `distinctive_keywords` is omitted (None), the endpoint auto-generates
+    a heuristic default list via services.keyword_generator so the game is
+    never created with an empty keyword list (2026-07-24 relevance gate:
+    games without keywords are gated OUT of sentiment classification
+    entirely). Pass an explicit list (including []) to opt out of
+    auto-generation.
     """
     steam_app_id: int
     name: Optional[str] = None
     subreddits: Optional[List[str]] = None
     is_active: bool = True
+    distinctive_keywords: Optional[List[str]] = None
 
 
 # ── Daily Summaries ───────────────────────────────────────────────────────────

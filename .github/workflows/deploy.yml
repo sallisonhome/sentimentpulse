@@ -122,6 +122,89 @@ jobs:
             pip install --quiet --upgrade-strategy only-if-needed -r requirements.txt
             alembic upgrade head
 
+            echo ""
+            echo "## One-time: apply approved distinctive_keywords lists (idempotent) ##"
+            # 2026-07-24 relevance-gate fix: persists the 29-game keyword table
+            # from sentiment_relevance_fix/proposed_keywords.json into
+            # games.distinctive_keywords. Guarded by an app_settings row so it
+            # only runs once across all future deploys — re-run manually with
+            # `python scripts/apply_keyword_lists.py` if the keyword table is
+            # revised later.
+            sed 's/^            //' > /tmp/check_keywords_applied.py << 'PYCHECK1'
+            from database import SessionLocal
+            from models import AppSetting
+            db = SessionLocal()
+            row = db.query(AppSetting).filter(AppSetting.key == "keyword_lists_applied_at").first()
+            print("yes" if row else "no")
+            db.close()
+            PYCHECK1
+            KEYWORDS_ALREADY_APPLIED=$(python /tmp/check_keywords_applied.py 2>/dev/null || echo "no")
+            if [ "$KEYWORDS_ALREADY_APPLIED" = "yes" ]; then
+              echo "keyword_lists_applied_at already set — skipping apply_keyword_lists.py"
+            else
+              if [ -f scripts/apply_keyword_lists.py ]; then
+                sed 's/^            //' > /tmp/mark_keywords_applied.py << 'PYMARK1'
+            from datetime import datetime, timezone
+            from database import SessionLocal
+            from models import AppSetting
+            db = SessionLocal()
+            db.merge(AppSetting(key="keyword_lists_applied_at", value=datetime.now(timezone.utc).isoformat()))
+            db.commit()
+            db.close()
+            print("Marked keyword_lists_applied_at")
+            PYMARK1
+                python scripts/apply_keyword_lists.py && python /tmp/mark_keywords_applied.py \
+                  || echo "WARN: apply_keyword_lists.py failed (non-fatal, will retry next deploy)"
+              else
+                echo "scripts/apply_keyword_lists.py missing, skipping"
+              fi
+            fi
+
+            echo ""
+            echo "## One-time: purge July 2026 off-topic reddit sentiment (idempotent) ##"
+            # 2026-07-24 relevance-gate fix: re-checks every reddit
+            # SentimentRecord in the 2026-07-01..2026-07-24 window against the
+            # NEW relevance gate (now using the just-applied keyword lists) and
+            # deletes the ones that are off-topic. Must run AFTER the keyword
+            # apply step above. Guarded by its own app_settings row.
+            sed 's/^            //' > /tmp/check_backfill_done.py << 'PYCHECK2'
+            from database import SessionLocal
+            from models import AppSetting
+            db = SessionLocal()
+            row = db.query(AppSetting).filter(AppSetting.key == "sentiment_july_backfill_done_at").first()
+            print("yes" if row else "no")
+            db.close()
+            PYCHECK2
+            BACKFILL_ALREADY_DONE=$(python /tmp/check_backfill_done.py 2>/dev/null || echo "no")
+            if [ "$BACKFILL_ALREADY_DONE" = "yes" ]; then
+              echo "sentiment_july_backfill_done_at already set — skipping purge_july_offtopic_sentiment.py"
+            else
+              if [ -f scripts/purge_july_offtopic_sentiment.py ]; then
+                sed 's/^            //' > /tmp/mark_backfill_done.py << 'PYMARK2'
+            from datetime import datetime, timezone
+            from database import SessionLocal
+            from models import AppSetting, MonthlySummary
+            db = SessionLocal()
+            # Delete any pre-existing July 2026 monthly summary rows so the next
+            # scheduled/regen run recomputes them from the now-purged
+            # sentiment_records table (period_year/period_month are the actual
+            # schema columns -- NOT period_start/period_end).
+            deleted = db.query(MonthlySummary).filter(
+                MonthlySummary.period_year == 2026,
+                MonthlySummary.period_month == 7,
+            ).delete()
+            db.merge(AppSetting(key="sentiment_july_backfill_done_at", value=datetime.now(timezone.utc).isoformat()))
+            db.commit()
+            db.close()
+            print(f"Deleted {deleted} stale July 2026 monthly_summary row(s); marked sentiment_july_backfill_done_at")
+            PYMARK2
+                python scripts/purge_july_offtopic_sentiment.py && python /tmp/mark_backfill_done.py \
+                  || echo "WARN: purge_july_offtopic_sentiment.py failed (non-fatal, will retry next deploy)"
+              else
+                echo "scripts/purge_july_offtopic_sentiment.py missing, skipping"
+              fi
+            fi
+
             # §24b (2026-06-29): install Playwright Chromium for editorial
             # body fetching.  --with-deps installs system libraries the
             # browser needs (libnss, libatk, etc.).  Idempotent: skip if

@@ -20,6 +20,7 @@ from models import Base, Publisher
 from routers import dashboard, digest, games, ingest, posts, publisher, reddit_upload, summaries, topics
 from scheduler import create_scheduler
 from services.bluesky_log_buffer import install_buffer as install_bluesky_log_buffer
+from services.keyword_health_check import check_missing_keywords
 from services.nlp_service import load_model
 
 logging.basicConfig(
@@ -64,6 +65,17 @@ async def lifespan(app: FastAPI):
     # diagnostic endpoint can surface them without journalctl access.
     if install_bluesky_log_buffer():
         logger.info("Bluesky log ring buffer installed.")
+
+    # Startup validation (2026-07-24): warn about active games with no
+    # distinctive_keywords configured — those games are gated out of
+    # sentiment classification entirely by the relevance gate.
+    db = SessionLocal()
+    try:
+        check_missing_keywords(db)
+    except Exception as exc:
+        logger.error("Startup keyword check failed: %s", exc)
+    finally:
+        db.close()
 
     # Pre-load NLP model (synchronous; happens once at startup)
     load_model()
