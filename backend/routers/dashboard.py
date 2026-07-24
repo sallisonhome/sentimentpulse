@@ -85,19 +85,35 @@ def get_dashboard(
     # ── 1. Period-aggregated sentiment counts ─────────────────────────────────
     # Sum daily summary counts across all days in the selected period so that
     # KPI cards reflect the correct totals for the chosen time range.
-    agg_q = db.query(
-        func.sum(DailySummary.positive_count),
-        func.sum(DailySummary.negative_count),
-        func.sum(DailySummary.neutral_count),
-    ).filter(DailySummary.game_id == game_id)
-
+    # v3 (2026-07-24): count sentiment directly from SentimentRecord instead
+    # of aggregating DailySummary rows. Historically the KPI read from
+    # DailySummary and the volume chart read from RawPost, and after any
+    # data-quality operation (relevance purge, low-substance purge,
+    # keyword tightening) that mutated SentimentRecord without regenerating
+    # DailySummary the two would silently disagree. Now the KPI, trend,
+    # volume chart, and Summary-page window-summary all count exactly the
+    # same rows: the current live set of SentimentRecords for the game
+    # in the period window, joined through RawPost.post_date/collected_at
+    # for period scoping.
+    effective_date_expr = func.coalesce(RawPost.post_date, RawPost.collected_at)
+    kpi_q = (
+        db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
+        .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+        .filter(RawPost.game_id == game_id)
+    )
     if p_start is not None:
-        agg_q = agg_q.filter(DailySummary.summary_date >= p_start)
+        kpi_q = kpi_q.filter(func.date(effective_date_expr) >= str(p_start))
+    kpi_rows = kpi_q.group_by(SentimentRecord.sentiment).all()
 
-    agg_row = agg_q.first()
-    pos = int(agg_row[0] or 0)
-    neg = int(agg_row[1] or 0)
-    neu = int(agg_row[2] or 0)
+    pos = neg = neu = 0
+    for sentiment_enum, cnt in kpi_rows:
+        v = sentiment_enum.value if hasattr(sentiment_enum, "value") else sentiment_enum
+        if v == "positive":
+            pos = int(cnt)
+        elif v == "negative":
+            neg = int(cnt)
+        elif v == "neutral":
+            neu = int(cnt)
     total_today = pos + neg + neu
     # Positive/Negative Ratio (excludes neutral posts)
     pos_neg_ratio = round(pos / neg, 2) if neg > 0 else (float(pos) if pos > 0 else None)
@@ -114,21 +130,38 @@ def get_dashboard(
     )
 
     # ── 2. Net sentiment trend (from daily_summaries) ─────────────────────────
-    sum_q = db.query(DailySummary).filter(DailySummary.game_id == game_id)
+    # v3 (2026-07-24): compute trend directly from SentimentRecord (per-day
+    # rollup) instead of reading pre-aggregated DailySummary rows. Keeps
+    # trend consistent with the KPI/volume numbers on the same page even
+    # when DailySummary is stale.
+    trend_day_expr = func.date(effective_date_expr).label("day")
+    trend_rows_q = (
+        db.query(trend_day_expr, SentimentRecord.sentiment, func.count(SentimentRecord.id))
+        .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+        .filter(RawPost.game_id == game_id)
+    )
     if p_start:
-        sum_q = sum_q.filter(DailySummary.summary_date >= p_start)
-    summaries = sum_q.order_by(DailySummary.summary_date.asc()).all()
+        trend_rows_q = trend_rows_q.filter(func.date(effective_date_expr) >= str(p_start))
+    trend_rows = trend_rows_q.group_by(trend_day_expr, SentimentRecord.sentiment).order_by(trend_day_expr).all()
+
+    trend_map: dict[date, dict[str, int]] = {}
+    for day_val, sentiment_enum, cnt in trend_rows:
+        d = _to_date(day_val)
+        entry = trend_map.setdefault(d, {"positive": 0, "negative": 0, "neutral": 0})
+        v = sentiment_enum.value if hasattr(sentiment_enum, "value") else sentiment_enum
+        entry[v] = int(cnt)
 
     trend = []
-    for s in summaries:
-        s_total = s.positive_count + s.negative_count + s.neutral_count
-        net = (s.positive_count - s.negative_count) / s_total if s_total else 0.0
+    for d in sorted(trend_map.keys()):
+        counts = trend_map[d]
+        s_total = counts["positive"] + counts["negative"] + counts["neutral"]
+        net = (counts["positive"] - counts["negative"]) / s_total if s_total else 0.0
         trend.append(NetSentimentPoint(
-            summary_date=s.summary_date,
+            summary_date=d,
             net_sentiment=round(net, 4),
-            positive_count=s.positive_count,
-            negative_count=s.negative_count,
-            neutral_count=s.neutral_count,
+            positive_count=counts["positive"],
+            negative_count=counts["negative"],
+            neutral_count=counts["neutral"],
             total=s_total,
         ))
 
@@ -155,14 +188,24 @@ def get_dashboard(
     # Use post_date (when the post was actually made) where available,
     # falling back to collected_at for sources without post_date.
     # Posts always appear on the day they were originally posted.
-    effective_date_expr = func.coalesce(RawPost.post_date, RawPost.collected_at)
+    # (effective_date_expr is defined above in the KPI block — reuse it.)
     day_expr = func.date(effective_date_expr).label("day")
+    # v2 (2026-07-24): INNER JOIN against SentimentRecord so this chart
+    # counts ONLY posts that survived the relevance gate. Previous behavior
+    # counted all RawPost rows for the game, which meant the chart showed
+    # 260 raw posts for Hellraiser today while the KPI card correctly
+    # showed 1 sentiment-classified post. That mismatch is the entire
+    # class of bug the user called out: 'the numbers MUST MATCH'.
+    # By construction, a RawPost has a SentimentRecord iff it passed the
+    # relevance gate at Step 5. Joining here makes the chart consistent
+    # with the KPI/trend/topics data on the same dashboard.
     vol_q = (
         db.query(
             day_expr,
             RawPost.source,
             func.count(RawPost.id).label("cnt"),
         )
+        .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id == game_id)
     )
     if p_start:
@@ -196,28 +239,47 @@ def get_dashboard(
     # ── 5. Sentiment velocity (based on Positive/Negative Ratio trend) ────────
     # For "Today": compare today's ratio vs yesterday's.
     # For longer periods: compare first half vs second half of the period.
-    vel_q = db.query(
-        DailySummary.summary_date,
-        DailySummary.positive_count,
-        DailySummary.negative_count,
-    ).filter(DailySummary.game_id == game_id)
-
+    # v3 (2026-07-24): reuse the trend_map already built from SentimentRecord
+    # (section 2 above) so velocity, KPI, and volume are all consistent.
+    # For period=today we need today + yesterday specifically; that
+    # information is in trend_map if the trend query's window covered it,
+    # but trend_map for period=today only includes today. Re-query for
+    # yesterday when needed.
     if period == PeriodEnum.today:
-        # Fetch today + yesterday for comparison
         yesterday = today - timedelta(days=1)
-        vel_q = vel_q.filter(DailySummary.summary_date >= yesterday)
-    elif p_start is not None:
-        vel_q = vel_q.filter(DailySummary.summary_date >= p_start)
+        y_rows = (
+            db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(
+                RawPost.game_id == game_id,
+                func.date(effective_date_expr) == str(yesterday),
+            )
+            .group_by(SentimentRecord.sentiment)
+            .all()
+        )
+        y_counts = {"positive": 0, "negative": 0}
+        for sentiment_enum, cnt in y_rows:
+            v = sentiment_enum.value if hasattr(sentiment_enum, "value") else sentiment_enum
+            if v in y_counts:
+                y_counts[v] = int(cnt)
 
-    vel_rows = vel_q.order_by(DailySummary.summary_date.asc()).all()
-
-    # Build daily pos/neg percentage for each day (only days with pos+neg > 0)
-    daily_pcts = []
-    for row in vel_rows:
-        p, n = int(row[1] or 0), int(row[2] or 0)
-        pn_total = p + n
-        if pn_total > 0:
-            daily_pcts.append(p / pn_total)
+        daily_pcts = []
+        # Yesterday
+        y_total = y_counts["positive"] + y_counts["negative"]
+        if y_total > 0:
+            daily_pcts.append(y_counts["positive"] / y_total)
+        # Today (from trend_map or from KPI counts if not in trend_map)
+        t_total = pos + neg
+        if t_total > 0:
+            daily_pcts.append(pos / t_total)
+    else:
+        # Longer periods: derive daily pos/neg percentages from trend_map.
+        daily_pcts = []
+        for d in sorted(trend_map.keys()):
+            counts = trend_map[d]
+            pn = counts["positive"] + counts["negative"]
+            if pn > 0:
+                daily_pcts.append(counts["positive"] / pn)
 
     if len(daily_pcts) >= 2:
         # Split into first half and second half, compare averages

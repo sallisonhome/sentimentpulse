@@ -112,6 +112,35 @@ class TestDashboard:
             r = client.get(f"/api/games/{game.id}/dashboard?period={period}")
             assert r.status_code == 200, f"Failed for period={period}"
 
+    def test_dashboard_kpi_matches_volume_chart_total(self, client, game, sentiment_record):
+        """
+        Invariant (2026-07-24): the KPI Total Posts number MUST equal the sum
+        of the Post Volume by Source bars for the same period. Previously the
+        KPI counted DailySummary sentiment rows (which are post-relevance-gate)
+        while the volume chart counted all RawPost rows (which are pre-gate).
+        For Hellraiser today this meant KPI=1 but chart=260 — the exact bug
+        the user surfaced: 'the numbers MUST MATCH'.
+
+        The fix: /dashboard's volume_by_source query INNER JOINs against
+        SentimentRecord so both figures come from the same post population.
+        """
+        r = client.get(f"/api/games/{game.id}/dashboard?period=lifetime")
+        assert r.status_code == 200
+        data = r.json()
+
+        kpi_total = data["sentiment_today"]["total"]
+        volume_total = sum(
+            (day.get("steam_review", 0) + day.get("steam_forum", 0)
+             + day.get("reddit", 0) + day.get("bluesky", 0))
+            for day in data["volume_by_source"]
+        )
+
+        assert kpi_total == volume_total, (
+            f"Dashboard invariant broken: KPI Total Posts={kpi_total} but "
+            f"Post Volume chart sum={volume_total}. These MUST match by "
+            f"construction — both should count only relevance-gate-passing posts."
+        )
+
 
 # ── Summaries ──────────────────────────────────────────────────────────────────
 
