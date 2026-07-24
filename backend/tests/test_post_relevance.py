@@ -202,12 +202,20 @@ class TestEdgeCases:
         # Combined text is only 14 chars → too short
         assert result is False
 
-    def test_just_the_game_name_excluded(self):
-        """Just the game name alone (too short) → NOT relevant."""
+    def test_just_the_game_name_with_game_word_admitted(self):
+        """
+        v3 (2026-07-24 fast-path): a title containing both the game name
+        (which serves as a keyword) AND the context word 'game' IS admitted
+        even at 23 chars, because it clearly IS a post about the game.
+        Under the pre-v3 rules this would have been rejected as too short.
+        The user-directive fast-path admits keyword + context regardless
+        of the strict content-substance thresholds.
+        """
         game = _make_game("Untitled John Wick Game")
         result = is_post_relevant_to_game("Untitled John Wick Game", "", game)
-        # 23 chars → below 30
-        assert result is False
+        # 23 chars → above the fast-path's 20-char minimum, and contains
+        # both a keyword hit and the 'game' context word.
+        assert result is True
 
     def test_game_name_with_minimal_body_excluded(self):
         """Game name as title + very short body → NOT relevant."""
@@ -322,6 +330,99 @@ class TestEdgeCases:
             "Anyone else here into Warhammer 40k tabletop lately?"
         )
         result = is_post_relevant_to_game("", body, game)
+        assert result is False
+
+    def test_fast_path_admits_short_post_with_keyword_and_platform(self):
+        """
+        v3 fast-path (2026-07-24): user rule — posts that combine a game
+        keyword AND a game-context word (saber / game / games / platform)
+        should be admitted regardless of the 60-char / 8-word / 40-char
+        content-substance thresholds.
+        """
+        game = _make_game(
+            "Clive Barker's Hellraiser: Revival",
+            keywords=["Hellraiser Revival", "Hellraiser game"],
+        )
+        # 44 chars, 6 words, no 40-char component — fails all three of
+        # Rules 1a/1b/1c under the strict path.
+        result = is_post_relevant_to_game(
+            "Love Hellraiser Revival on PS5", "", game,
+        )
+        assert result is True
+
+    def test_fast_path_admits_saber_plus_keyword(self):
+        """'saber' publisher mention + game keyword = fast-path admit."""
+        game = _make_game("Turok: Origins", keywords=["Turok Origins"])
+        result = is_post_relevant_to_game(
+            "Saber Turok Origins hype", "", game,
+        )
+        assert result is True
+
+    def test_fast_path_requires_both_signals(self):
+        """
+        Fast-path requires BOTH the game keyword AND a game-context word.
+        A short post with only 'PS5' (no game keyword) still fails.
+        """
+        game = _make_game(
+            "Clive Barker's Hellraiser: Revival",
+            keywords=["Hellraiser Revival"],
+        )
+        # Only 'PS5' — no Hellraiser keyword
+        result = is_post_relevant_to_game(
+            "Just got a PS5", "", game,
+        )
+        assert result is False
+
+    def test_fast_path_requires_context_word(self):
+        """
+        Fast-path requires the context word. A short post with the keyword
+        but no game/platform context word still fails the standard rules
+        (falls through to the 60-char gate and gets rejected).
+        """
+        game = _make_game(
+            "Clive Barker's Hellraiser: Revival",
+            keywords=["Hellraiser Revival"],
+        )
+        # 22 chars, no game/platform word — fails Rule 1a (≥60 chars)
+        result = is_post_relevant_to_game(
+            "Hellraiser Revival hype", "", game,
+        )
+        assert result is False
+
+    def test_fast_path_ignores_gamertag_substring(self):
+        """
+        Word-boundary check on context words: 'gamertag' should NOT trigger
+        the 'game' context match, because it's a substring not a whole word.
+        """
+        game = _make_game(
+            "Clive Barker's Hellraiser: Revival",
+            keywords=["Hellraiser Revival"],
+        )
+        # 'gamertag' contains 'game' as substring but not as a whole word.
+        # Post is short (< 60 chars) and has no 40-char component, so if
+        # the fast-path fires it would incorrectly admit. If word-boundary
+        # matching works, the fast-path passes over 'gamertag' and the
+        # post falls through to Rule 1a which rejects it.
+        result = is_post_relevant_to_game(
+            "Hellraiser Revival gamertag ideas", "", game,
+        )
+        assert result is False
+
+    def test_fast_path_ipcue_still_enforced(self):
+        """
+        Fast-path still enforces the IP-cue rejection: a post like
+        'Hellraiser Revival movie ending on PS5' has all three signals
+        (keyword + platform + IP cue near the keyword) and should be
+        rejected as IP-only discussion.
+        """
+        game = _make_game(
+            "Clive Barker's Hellraiser: Revival",
+            keywords=["Hellraiser Revival"],
+        )
+        # 'Hellraiser Revival' with 'movie' cue immediately before + PS5.
+        result = is_post_relevant_to_game(
+            "Watching the Hellraiser Revival movie on PS5 tonight", "", game,
+        )
         assert result is False
 
     def test_layer2_concat_no_hit_on_bare_first_word(self):

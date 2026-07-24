@@ -9,6 +9,7 @@ Uses multiple strategies to avoid 403 blocks from datacenter IPs:
 All calls are wrapped in try/except so failures are logged, not raised.
 """
 import logging
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -84,13 +85,38 @@ def _get(url: str, params: Optional[dict] = None) -> Optional[dict]:
     return None
 
 
-# Large general subreddits where posts must be filtered by game name.
-# Dedicated game subs (e.g. r/snowrunner) don't need filtering since
-# every post is already about the game.
+# Large general-gaming subs where posts must be pre-filtered by game name
+# because they contain content about many different games. For these,
+# we search the sub for a distinctive game-name term BEFORE saving. The
+# downstream Step 5 relevance gate then re-checks against distinctive
+# keywords for final relevance.
+#
+# Dedicated game/IP/franchise subs (r/hellraiser, r/JurassicPark,
+# r/snowrunner, r/halo, r/Ghostbusters, etc.) are NOT in this list —
+# every post in those subs is about that game/IP by definition, and
+# the relevance-gate downstream handles finer filtering.
+#
+# v2 (2026-07-24): removed 'halo', 'ghostbusters', 'JurassicPark',
+# 'hellraiser', 'JohnWick' from this list. They are dedicated IP subs —
+# every post is on-topic to the IP by definition, and pre-filtering
+# them via a search query (which PullPush treats as AND) was the
+# reason r/hellraiser was returning 1 post from 2021 for the search
+# 'Hellraiser Revival' instead of the ~25 recent Hellraiser-franchise
+# posts actually available. Fixing this shifts filtering responsibility
+# to the relevance gate at Step 5, which is where game-vs-IP
+# disambiguation belongs (see is_post_relevant_to_game).
 _GENERAL_SUBREDDITS = {
-    "gaming", "games", "pcgaming", "ps5", "xbox", "steam",
-    "halo", "ghostbusters", "JurassicPark", "hellraiser", "JohnWick",
-    "patientgamers", "ShouldIbuythisgame",
+    # Console/platform subs
+    "gaming", "games", "pcgaming", "ps5", "playstation", "xbox",
+    "xboxseriesx", "steam", "steamdeck", "nintendoswitch",
+    # Meta / discovery subs
+    "patientgamers", "shouldibuythisgame", "gamingsuggestions",
+    "truegaming", "gamedeals", "gamingleaksandrumours",
+    "gamingnews", "gamingnews", "gamedev", "retrogaming",
+    "cozygamers", "gamecollecting",
+    # Genre subs (broad enough to need filtering)
+    "fps", "shootergames", "thirdpersonshooter", "coopgaming",
+    "simracing", "tycoon", "movies",
 }
 
 
@@ -467,11 +493,83 @@ def _game_search_query(game_name: str) -> str:
     Strips possessive studio/director prefixes (e.g. "John Carpenter's Toxic
     Commando" → "Toxic Commando") so searches target the actual game title
     rather than the studio/creator's name.
+
+    v2 (2026-07-24): returns a SINGLE distinctive word rather than a
+    multi-word phrase. PullPush's `q=` parameter and Reddit's own search
+    both AND-match multiple words (so `q=Hellraiser Revival` only
+    matches posts with BOTH words, missing every post that only says
+    "Hellraiser"). The single most-distinctive word finds substantially
+    more relevant posts. The downstream Step 5 relevance gate then
+    disambiguates game-vs-IP (see is_post_relevant_to_game).
+
+    Heuristic for picking the distinctive word: strip stopwords /
+    generic gaming vocab / short words, prefer the longest remaining
+    proper-noun-looking token.
     """
     # Strip "Studio's " / "Director's " possessive prefix
     if "'s " in game_name:
         game_name = game_name.split("'s ", 1)[1]
-    return game_name.strip()
+
+    # Drop trademark symbols and punctuation
+    stripped = re.sub(r"[™®©:\-–—.,!?/\\()]", " ", game_name)
+    tokens = [t for t in stripped.split() if t]
+
+    # Common generic words we don't want to search on — they'd match
+    # thousands of unrelated posts.
+    _GENERIC = {
+        "the", "a", "an", "of", "and", "in", "on", "to", "for", "with",
+        "game", "games", "edition", "remastered", "remaster", "remake",
+        "deluxe", "complete", "anniversary", "collection", "trilogy",
+        "legendary", "ultimate", "gold", "platinum", "season", "origins",
+        "revival", "survival", "combat", "evolved", "mod", "mods", "tools",
+        "expansion", "pack", "dlc", "soundtrack", "official", "vinyl",
+        "wrap", "pack", "livery", "tour", "tank", "truck", "pack",
+        "pt", "volume", "vol", "chapter", "episode", "part",
+        "iii", "iv", "vi", "vii", "viii", "ix", "xi", "xii",
+        # v2b (2026-07-24): additional generic words that would produce
+        # low-signal search matches. 'bound' matches every 'homeward bound',
+        # 'untitled' matches every placeholder title, 'master' + 'chief'
+        # are common english + military terms, 'quiet' + 'place' + 'road'
+        # + 'ahead' are all everyday english.
+        "bound", "untitled", "master", "chief", "quiet", "place", "road",
+        "ahead", "video", "team", "boss", "deep", "waters", "docked",
+        "reap", "sow", "expedition", "expeditions", "map", "editor",
+        "veti", "wrath", "crawler", "salvage", "reclaim", "anniversary",
+        "aftermath", "prologue", "world", "land", "live", "action",
+        "first", "person", "third", "story", "episode", "prequel",
+        "sequel", "launch", "early", "access", "free", "pass", "battle",
+        "pass", "stakes", "final", "return", "reborn", "reboot",
+        "unleashed", "assault", "strike", "force",
+    }
+
+    # Filter to tokens that look distinctive: proper-noun-like
+    # (starts with uppercase in the original), ≥ 4 chars, not generic.
+    # Fall back to any ≥4-char non-generic token if nothing looks like a
+    # proper noun (rare, but e.g. lowercased sequel numbers).
+    distinctive = [
+        t for t in tokens
+        if len(t) >= 4
+        and t.lower() not in _GENERIC
+    ]
+
+    if not distinctive:
+        # Nothing distinctive left — fall back to the longest token overall.
+        distinctive = sorted(tokens, key=len, reverse=True)
+
+    if not distinctive:
+        # Truly empty (e.g. game_name was all punctuation) — return
+        # original stripped name as last resort.
+        return game_name.strip()
+
+    # Prefer the FIRST distinctive word among those ≥ 6 chars — game
+    # titles almost always lead with their proper-noun identifier
+    # ('Hellraiser', 'Turok', 'Jurassic', 'Crysis', 'Ghostbusters',
+    # 'SnowRunner'). Falls back to the longest distinctive word if none
+    # reach 6 chars (rare, mostly short 2-word titles).
+    long_enough = [t for t in distinctive if len(t) >= 6]
+    if long_enough:
+        return long_enough[0]
+    return max(distinctive, key=len)
 
 
 def _post_mentions_game(post: dict, search_query: str) -> bool:

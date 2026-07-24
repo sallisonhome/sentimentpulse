@@ -414,6 +414,53 @@ def is_post_relevant_to_game(title: str, body: str, game) -> bool:
     body = (body or "").strip()
     combined = f"{title} {body}".strip()
 
+    # v3 (2026-07-24): Fast-path admission for game-context signals.
+    #
+    # User rule: "Posts with any keyword saber or game or any platform
+    # like PlayStation, Switch 2, PC or Xbox should go through in
+    # combination with a keyword from the title of the game we're tracking."
+    #
+    # If a post contains BOTH a distinctive game keyword AND at least one
+    # video-game context word (saber, game, or a platform name), admit it
+    # regardless of the content-substance thresholds. This catches short
+    # but clearly-on-topic posts like a 45-char Steam review 'love
+    # Hellraiser on PS5' that would otherwise fail Rule 1a (≥60 chars)
+    # or Rule 1c (≥40-char component).
+    #
+    # Rules that still apply even in the fast-path:
+    #   - Rule 3 (IP/movie cue rejection)
+    #   - Rule 4 (cross-genre contamination)
+    # These are AFTER the fast-path so we can't accidentally admit an
+    # off-topic post that happens to contain the game name in a movie
+    # discussion (e.g. "the Hellraiser movie on PS5" style).
+    # Minimum viable content for the fast-path: 20 chars total. Even the
+    # permissive path won't admit a 3-word title with no other content —
+    # BERT can't classify sentiment on a bare game name. This is well
+    # below the strict-path floor of 60 chars.
+    _FAST_PATH_MIN_CHARS = 20
+    _keywords_for_fast_path = _get_keywords(game)
+    if _keywords_for_fast_path and len(combined) >= _FAST_PATH_MIN_CHARS:
+        _has_kw = bool(_find_keyword_matches(combined, _keywords_for_fast_path))
+        _has_ctx = _has_game_context_word(combined)
+        if _has_kw and _has_ctx:
+            # Still enforce IP-cue + cross-genre checks below — skip to Rule 3.
+            match_positions = _find_keyword_matches(combined, _keywords_for_fast_path)
+            if _all_matches_near_ip_cue(combined, match_positions):
+                logger.debug(
+                    "Fast-path IP-cue rejection for '%s'.", game.name,
+                )
+                return False
+            if _is_cross_genre_contaminated(combined, game):
+                logger.debug(
+                    "Fast-path cross-genre rejection for '%s'.", game.name,
+                )
+                return False
+            logger.debug(
+                "Fast-path admission for '%s' (keyword + game-context word).",
+                game.name,
+            )
+            return True
+
     # Rule 1: content-substance gate (raised 2026-07-24 from 30 chars).
     #
     # Data-driven: sampling neutral posts across the 29 active games showed
@@ -527,6 +574,66 @@ def is_post_relevant_to_game(title: str, body: str, game) -> bool:
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+
+# v3 (2026-07-24): game-context words that strengthen a keyword hit
+# per user rule: "Posts with any keyword saber or game or any platform
+# like PlayStation, Switch 2, PC or Xbox should go through in combination
+# with a keyword from the title of the game."
+#
+# Matched with word-boundary anchors (case-insensitive) so 'games' is a
+# match but 'gamers' or 'gamertag' is not; 'PC' matches as a token but
+# not inside 'PCB' or 'MPC'; 'Xbox Series X' is matched as a phrase.
+_GAME_CONTEXT_TOKENS = {
+    "saber", "sabre",         # publisher name
+    "game", "games",          # the word 'game' or 'games' itself
+    # PlayStation family
+    "playstation", "ps5", "ps4", "ps3",
+    # Xbox family
+    "xbox", "xsx", "xss",
+    # Nintendo
+    "switch", "nintendo",
+    # PC / Valve
+    "pc", "steam", "steamdeck",
+    # Epic
+    "egs", "epic",
+}
+_GAME_CONTEXT_PHRASES = {
+    "xbox series x",
+    "xbox series s",
+    "xbox one",
+    "switch 2",
+    "steam deck",
+    "nintendo switch",
+    "epic games",
+    "epic store",
+}
+# Precompile boundary-aware regex once at module load.
+_CONTEXT_TOKEN_RE = re.compile(
+    r"(?<!\w)(?:" + "|".join(re.escape(t) for t in _GAME_CONTEXT_TOKENS) + r")(?!\w)",
+    re.IGNORECASE,
+)
+_CONTEXT_PHRASE_RE = re.compile(
+    r"(?<!\w)(?:" + "|".join(re.escape(p) for p in _GAME_CONTEXT_PHRASES) + r")(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _has_game_context_word(text: str) -> bool:
+    """
+    Return True iff `text` contains at least one game-context signal
+    (publisher 'saber', the word 'game/games', or a platform name).
+
+    Used by is_post_relevant_to_game() as part of the fast-path admission
+    for posts that combine a game keyword with a video-game context word.
+    """
+    if not text:
+        return False
+    if _CONTEXT_TOKEN_RE.search(text):
+        return True
+    if _CONTEXT_PHRASE_RE.search(text):
+        return True
+    return False
+
 
 def _get_keywords(game) -> list[str]:
     """Return distinctive keywords for the game.
