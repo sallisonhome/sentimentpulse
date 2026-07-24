@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { X, Plus } from 'lucide-react'
+import { X, Plus, Trash2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Switch } from '../ui/switch'
 import { Badge } from '../ui/badge'
 import { useUpdateGameSettings } from '../../hooks/useGames'
+import { useAddCompetitor, useCompetitors, useRemoveCompetitor } from '../../hooks/useCompetitors'
+import { MAX_COMPETITORS_PER_PARENT } from '../../types'
 import type { Game } from '../../types'
+import CompetitorSubredditEditor from './CompetitorSubredditEditor'
 
 interface GameSettingsCardProps {
   game: Game
@@ -152,7 +155,127 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
             </Button>
           </div>
         </div>
+
+        {/* Competitor Titles */}
+        <CompetitorTitlesSection parentId={game.id} parentName={game.name} />
       </CardContent>
     </Card>
+  )
+}
+
+// ── Competitor Titles section ───────────────────────────────────────────────
+// Lets the operator track up to MAX_COMPETITORS_PER_PARENT competing
+// titles alongside this Saber title. Each competitor becomes a fully-
+// fledged Game row (own subreddits, sentiment, topics, executive summary)
+// linked to this game as its parent via the competitor_games join table.
+
+function CompetitorTitlesSection({ parentId, parentName }: { parentId: number; parentName: string }) {
+  const { data: competitors, isLoading } = useCompetitors(parentId)
+  const addCompetitor = useAddCompetitor(parentId)
+  const removeCompetitor = useRemoveCompetitor(parentId)
+  const [appIdInput, setAppIdInput] = useState('')
+  const [addError, setAddError] = useState<string | null>(null)
+  const [editingCompetitorId, setEditingCompetitorId] = useState<number | null>(null)
+
+  const count = competitors?.length ?? 0
+  const atCapacity = count >= MAX_COMPETITORS_PER_PARENT
+
+  async function handleAdd() {
+    setAddError(null)
+    const appId = parseInt(appIdInput.trim(), 10)
+    if (!appId || appId <= 0) {
+      setAddError('Enter a valid numeric Steam AppID.')
+      return
+    }
+    try {
+      await addCompetitor.mutateAsync(appId)
+      setAppIdInput('')
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : 'Failed to add competitor')
+    }
+  }
+
+  function handleRemove(id: number, name: string) {
+    if (!confirm(`Remove ${name} as a competitor? This permanently deletes its posts, sentiment, and summaries.`)) return
+    removeCompetitor.mutate(id)
+    if (editingCompetitorId === id) setEditingCompetitorId(null)
+  }
+
+  return (
+    <div className="pt-4 border-t">
+      <p className="mb-0.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+        Competitor Titles
+      </p>
+      <p className="mb-3 text-[11px] text-muted-foreground">
+        Track up to {MAX_COMPETITORS_PER_PARENT} competing titles alongside {parentName}. Each competitor is
+        treated as a full game with its own subreddits, sentiment analysis, topics, and executive summary.
+      </p>
+
+      {isLoading ? (
+        <p className="text-xs text-muted-foreground">Loading competitors…</p>
+      ) : count === 0 ? (
+        <p className="text-xs text-muted-foreground italic mb-3">No competitors tracked yet.</p>
+      ) : (
+        <div className="space-y-2 mb-3">
+          {competitors!.map(c => (
+            <div key={c.id} className="rounded-md border p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">{c.name}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Steam App ID: {c.steam_app_id}
+                    {c.release_date && <> · Released {c.release_date}</>}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 flex-none">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditingCompetitorId(id => (id === c.id ? null : c.id))}
+                  >
+                    {editingCompetitorId === c.id ? 'Hide subreddits' : 'Edit subreddits →'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => handleRemove(c.id, c.name)}
+                    aria-label={`Remove ${c.name} as a competitor`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+              {editingCompetitorId === c.id && (
+                <CompetitorSubredditEditor competitorId={c.id} initialSubreddits={c.subreddits ?? []} />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {atCapacity ? (
+        <p className="text-xs text-muted-foreground">
+          Maximum of {MAX_COMPETITORS_PER_PARENT} competitors reached. Remove one to add another.
+        </p>
+      ) : (
+        <div className="flex items-center gap-2">
+          <Input
+            placeholder="Steam AppID (e.g. 2138710)"
+            value={appIdInput}
+            onChange={e => setAppIdInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleAdd()}
+            className="max-w-xs"
+            disabled={addCompetitor.isPending}
+          />
+          <Button type="button" variant="outline" size="sm" onClick={handleAdd} disabled={addCompetitor.isPending}>
+            <Plus className="mr-1 h-3.5 w-3.5" />
+            {addCompetitor.isPending ? 'Looking up…' : 'Look up'}
+          </Button>
+        </div>
+      )}
+      {addError && <p className="mt-1 text-xs text-destructive">{addError}</p>}
+    </div>
   )
 }

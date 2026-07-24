@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from database import SessionLocal, engine
 from models import Base, Publisher
-from routers import dashboard, digest, games, ingest, posts, publisher, reddit_upload, summaries, topics
+from routers import competitors, dashboard, digest, games, ingest, posts, publisher, reddit_upload, summaries, topics
 from scheduler import create_scheduler
 from services.bluesky_log_buffer import install_buffer as install_bluesky_log_buffer
 from services.keyword_health_check import check_missing_keywords
@@ -120,6 +120,7 @@ app.add_middleware(
 
 app.include_router(publisher.router, prefix=_API_PREFIX)
 app.include_router(games.router,     prefix=_API_PREFIX)
+app.include_router(competitors.router, prefix=_API_PREFIX)
 app.include_router(dashboard.router, prefix=_API_PREFIX)
 app.include_router(summaries.router, prefix=_API_PREFIX)
 app.include_router(summaries._diag_router, prefix=_API_PREFIX)

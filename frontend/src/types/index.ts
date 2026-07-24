@@ -33,6 +33,39 @@ export interface GameDetail extends Game {
   latest_summary: DailySummary | null
 }
 
+// ── Competitor Games ──────────────────────────────────────────────────────────
+
+/** Max competitors trackable under a single parent Saber title. */
+export const MAX_COMPETITORS_PER_PARENT = 4
+
+export interface CompetitorGame {
+  id: number
+  name: string
+  steam_app_id: number
+  subreddits: string[] | null
+  distinctive_keywords: string[] | null
+  release_date: string | null
+}
+
+// ── Competitor Timeseries (dashboard cross-title chart) ────────────────────────
+
+export interface CompetitorTimeseriesGame {
+  game_id: number
+  name: string
+  is_parent: boolean
+}
+
+export interface CompetitorTimeseriesDay {
+  day: string
+  /** Keyed by game_id as a string (JSON object keys are always strings). */
+  counts: Record<string, number>
+}
+
+export interface CompetitorTimeseriesResponse {
+  games: CompetitorTimeseriesGame[]
+  timeseries: CompetitorTimeseriesDay[]
+}
+
 // ── Daily Summaries ───────────────────────────────────────────────────────────
 
 export interface DailySummary {

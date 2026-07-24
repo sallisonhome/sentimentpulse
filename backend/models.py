@@ -86,22 +86,62 @@ class Game(Base):
     )
 
     publisher: Mapped["Publisher"] = relationship("Publisher", back_populates="games")
-    raw_posts: Mapped[List["RawPost"]] = relationship("RawPost", back_populates="game")
+    # cascade="all, delete-orphan" (added 2026-07-24 for competitor removal,
+    # DELETE /api/games/{parent_id}/competitors/{competitor_id}): deleting a
+    # Game row must cascade to ALL of its dependent rows so a removed
+    # competitor doesn't leave orphaned raw_posts / sentiment_records /
+    # summaries behind.  Safe for existing Saber-title deletes too (there
+    # was previously no supported way to delete a Game at all).
+    raw_posts: Mapped[List["RawPost"]] = relationship(
+        "RawPost", back_populates="game", cascade="all, delete-orphan",
+    )
     daily_summaries: Mapped[List["DailySummary"]] = relationship(
-        "DailySummary", back_populates="game"
+        "DailySummary", back_populates="game", cascade="all, delete-orphan",
     )
     topic_trends: Mapped[List["TopicTrend"]] = relationship(
-        "TopicTrend", back_populates="game"
+        "TopicTrend", back_populates="game", cascade="all, delete-orphan",
     )
     monthly_summaries: Mapped[List["MonthlySummary"]] = relationship(
-        "MonthlySummary", back_populates="game"
+        "MonthlySummary", back_populates="game", cascade="all, delete-orphan",
     )
     window_summaries: Mapped[List["WindowSummary"]] = relationship(
-        "WindowSummary", back_populates="game"
+        "WindowSummary", back_populates="game", cascade="all, delete-orphan",
     )
     editorial_articles: Mapped[List["EditorialArticle"]] = relationship(
         "EditorialArticle", back_populates="game", cascade="all, delete-orphan",
     )
+    # Competitor-tracking (2026-07-24): rows in competitor_games where this
+    # game is the PARENT (Saber title) — one per tracked competitor, max 4
+    # enforced at the API layer (routers/competitors.py), not the DB layer.
+    competitor_links: Mapped[List["CompetitorGame"]] = relationship(
+        "CompetitorGame",
+        foreign_keys="CompetitorGame.parent_id",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+    # Reverse side: the row in competitor_games where this game IS the
+    # competitor being tracked under some parent.  A game can only be a
+    # competitor under one parent at a time (unique constraint), so this is
+    # at most one row — exposed as a list for relationship symmetry.
+    parent_links: Mapped[List["CompetitorGame"]] = relationship(
+        "CompetitorGame",
+        foreign_keys="CompetitorGame.competitor_id",
+        back_populates="competitor",
+        cascade="all, delete-orphan",
+    )
+
+    @property
+    def is_competitor(self) -> bool:
+        """
+        True if this Game is tracked as a competitor under some parent
+        (i.e. it has a row in competitor_games where it is the competitor_id).
+
+        Saber titles and competitors are kept as separate concepts in query
+        semantics even though both live in the `games` table — this property
+        is the single source of truth other code should use to distinguish
+        them (e.g. GET /api/games?exclude_competitors=true).
+        """
+        return len(self.parent_links) > 0
 
 
 class RawPost(Base):
@@ -136,8 +176,12 @@ class RawPost(Base):
     is_relevant: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=None)
 
     game: Mapped["Game"] = relationship("Game", back_populates="raw_posts")
+    # cascade="all, delete-orphan" (2026-07-24, competitor removal): deleting
+    # a RawPost (e.g. via a cascaded Game delete) must also delete its
+    # SentimentRecord so no orphaned sentiment rows are left behind.
     sentiment_record: Mapped[Optional["SentimentRecord"]] = relationship(
-        "SentimentRecord", back_populates="raw_post", uselist=False
+        "SentimentRecord", back_populates="raw_post", uselist=False,
+        cascade="all, delete-orphan",
     )
 
 
@@ -378,6 +422,50 @@ class EditorialArticle(Base):
     cite: Mapped[str] = mapped_column(String(8), nullable=False)
 
     game: Mapped["Game"] = relationship("Game", back_populates="editorial_articles")
+
+
+class CompetitorGame(Base):
+    """
+    Join table linking a Saber (parent) title to a competitor title it
+    tracks for comparative sentiment analysis.
+
+    Both parent and competitor are rows in the `games` table — a competitor
+    is a fully-fledged Game (own subreddits, sentiment pipeline, topics,
+    daily/weekly/monthly summaries) that happens to also be linked here for
+    dashboard grouping and the cross-title timeseries chart.  See
+    CLAUDE.md and lessons.md 2026-07-24 entries for the rationale on why
+    parenthood is a UI/query concept layered on top of the existing Game
+    table rather than a new games-shaped table.
+
+    A game may be a competitor under at most ONE parent (unique on
+    competitor_id).  A parent may have up to 4 competitors — that cap is
+    enforced in routers/competitors.py, not at the DB layer, so it can
+    produce a friendly 409 error instead of an IntegrityError.
+    """
+    __tablename__ = "competitor_games"
+    __table_args__ = (
+        UniqueConstraint(
+            "parent_id", "competitor_id", name="uq_competitor_games_parent_competitor"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    parent_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("games.id"), nullable=False, index=True
+    )
+    competitor_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("games.id"), nullable=False, index=True, unique=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    parent: Mapped["Game"] = relationship(
+        "Game", foreign_keys=[parent_id], back_populates="competitor_links"
+    )
+    competitor: Mapped["Game"] = relationship(
+        "Game", foreign_keys=[competitor_id], back_populates="parent_links"
+    )
 
 
 class AppSetting(Base):

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import DailySummary, Game, Publisher
+from models import CompetitorGame, DailySummary, Game, Publisher
 from schemas import (
     DailySummaryResponse,
     GameCreate,
@@ -38,12 +38,22 @@ router = APIRouter(prefix="/games", tags=["games"])
 @router.get("", response_model=List[GameResponse])
 def list_games(
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    exclude_competitors: bool = Query(
+        False,
+        description=(
+            "If true, exclude games that are tracked as a competitor under "
+            "some parent Saber title (default false for backwards compat)."
+        ),
+    ),
     db: Session = Depends(get_db),
 ):
     """List all discovered games, newest first."""
     q = db.query(Game)
     if is_active is not None:
         q = q.filter(Game.is_active == is_active)
+    if exclude_competitors:
+        competitor_ids = db.query(CompetitorGame.competitor_id)
+        q = q.filter(~Game.id.in_(competitor_ids))
     return q.order_by(Game.id.desc()).all()
 
 

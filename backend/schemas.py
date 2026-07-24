@@ -330,6 +330,53 @@ class WindowSummaryRequest(BaseModel):
 GameDetailResponse.model_rebuild()
 
 
+# ── Competitor Games ──────────────────────────────────────────────────────────
+
+MAX_COMPETITORS_PER_PARENT = 4
+
+
+class CompetitorGameResponse(BaseModel):
+    """A competitor Game as returned by GET/POST /api/games/{parent_id}/competitors.
+
+    Deliberately a subset of GameResponse's fields -- the ones the Settings
+    UI and timeseries chart need -- rather than the full GameResponse, so
+    the competitor list endpoint has a stable, purpose-built shape.
+    """
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    steam_app_id: int
+    subreddits: Optional[list] = None
+    distinctive_keywords: Optional[list] = None
+    release_date: Optional[str] = None
+
+
+class CompetitorCreate(BaseModel):
+    """POST body for adding a competitor title under a parent Saber game."""
+    steam_app_id: int
+
+
+# ── Competitor Timeseries (dashboard cross-title chart) ─────────────────────
+
+class CompetitorTimeseriesGame(BaseModel):
+    game_id: int
+    name: str
+    is_parent: bool
+
+
+class CompetitorTimeseriesDay(BaseModel):
+    day: date
+    # Keyed by game_id (as a string, since JSON object keys are always
+    # strings) -> post count for that game on that day.
+    counts: dict
+
+
+class CompetitorTimeseriesResponse(BaseModel):
+    games: List[CompetitorTimeseriesGame]
+    timeseries: List[CompetitorTimeseriesDay]
+
+
 # ── Digest Recipients ─────────────────────────────────────────────────────────
 
 class DigestRecipientResponse(BaseModel):

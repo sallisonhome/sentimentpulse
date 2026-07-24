@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import (
+    CompetitorGame,
     DailySummary,
     Game,
     RawPost,
@@ -26,6 +27,9 @@ from models import (
     TopicTrend,
 )
 from schemas import (
+    CompetitorTimeseriesDay,
+    CompetitorTimeseriesGame,
+    CompetitorTimeseriesResponse,
     DashboardResponse,
     NetSentimentPoint,
     PeriodEnum,
@@ -312,3 +316,88 @@ def get_dashboard(
         volume_by_source=volume_points,
         sentiment_velocity=velocity,
     )
+
+
+
+# ── Competitor timeseries (cross-title comparison chart) ──────────────────────
+
+@router.get(
+    "/{parent_id}/competitor-timeseries",
+    response_model=CompetitorTimeseriesResponse,
+)
+def get_competitor_timeseries(
+    parent_id: int,
+    period: PeriodEnum = Query(PeriodEnum.weekly),
+    db: Session = Depends(get_db),
+):
+    """
+    Daily post-volume comparison across a parent Saber title and its
+    tracked competitors, for the "Post Volume by Title" chart on the
+    parent's dashboard.
+
+    Uses the exact same aggregation pattern as the Post Volume by Source
+    chart above (INNER JOIN SentimentRecord, so only relevance-gate-passing
+    posts are counted; effective_date = COALESCE(post_date, collected_at);
+    same _period_start() windowing) but groups by game_id instead of
+    source, across the parent + all of its competitors.
+
+    Always returns HTTP 200, including when the parent has zero
+    competitors — in that case `games` contains only the parent and
+    `timeseries` reflects the parent's own daily counts. The frontend
+    treats `games.length > 1` as the "show this chart" signal.
+    """
+    parent = db.query(Game).filter_by(id=parent_id).first()
+    if not parent:
+        raise HTTPException(status_code=404, detail=f"Game {parent_id} not found.")
+
+    competitor_rows = (
+        db.query(Game)
+        .join(CompetitorGame, CompetitorGame.competitor_id == Game.id)
+        .filter(CompetitorGame.parent_id == parent_id)
+        .order_by(CompetitorGame.id.asc())
+        .all()
+    )
+
+    games_in_group = [parent] + list(competitor_rows)
+    game_ids = [g.id for g in games_in_group]
+
+    p_start = _period_start(period)
+    effective_date_expr = func.coalesce(RawPost.post_date, RawPost.collected_at)
+    day_expr = func.date(effective_date_expr).label("day")
+
+    ts_q = (
+        db.query(
+            day_expr,
+            RawPost.game_id,
+            func.count(RawPost.id).label("cnt"),
+        )
+        .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+        .filter(RawPost.game_id.in_(game_ids))
+    )
+    if p_start:
+        ts_q = ts_q.filter(func.date(effective_date_expr) >= str(p_start))
+
+    ts_rows = ts_q.group_by(day_expr, RawPost.game_id).order_by(day_expr).all()
+
+    # Fill zero-count days: every day that appears for ANY game in the
+    # group gets an entry for EVERY game in the group (default 0).
+    day_map: dict[date, dict[int, int]] = {}
+    for row in ts_rows:
+        d = _to_date(row.day)
+        day_map.setdefault(d, {gid: 0 for gid in game_ids})
+        day_map[d][row.game_id] = row.cnt
+
+    timeseries = [
+        CompetitorTimeseriesDay(
+            day=d,
+            counts={str(gid): counts.get(gid, 0) for gid in game_ids},
+        )
+        for d, counts in sorted(day_map.items())
+    ]
+
+    games_out = [
+        CompetitorTimeseriesGame(game_id=g.id, name=g.name, is_parent=(g.id == parent_id))
+        for g in games_in_group
+    ]
+
+    return CompetitorTimeseriesResponse(games=games_out, timeseries=timeseries)

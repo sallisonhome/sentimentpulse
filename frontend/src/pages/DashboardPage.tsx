@@ -4,6 +4,7 @@ import KpiCards from '../components/dashboard/KpiCards'
 import NetSentimentChart from '../components/dashboard/NetSentimentChart'
 import SentimentDonut from '../components/dashboard/SentimentDonut'
 import VolumeBySourceChart from '../components/dashboard/VolumeBySourceChart'
+import CompetitorTimeseriesChart from '../components/dashboard/CompetitorTimeseriesChart'
 import TopTopicsPanel from '../components/dashboard/TopTopicsPanel'
 import EmptyState from '../components/shared/EmptyState'
 import SkeletonCard from '../components/shared/SkeletonCard'
@@ -99,6 +100,10 @@ export default function DashboardPage() {
             neutral={data.top_neutral_topics}
           />
         </div>
+
+        {/* Row 4 — Post Volume by Title (parent + competitors). Renders
+            nothing (returns null) when this title has zero competitors. */}
+        <CompetitorTimeseriesChart parentId={selectedGameId} period={period} />
       </div>
     </ErrorBoundary>
   )
