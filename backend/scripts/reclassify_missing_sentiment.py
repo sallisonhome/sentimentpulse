@@ -66,19 +66,31 @@ def main() -> int:
         # _step5_classify_sentiment. Real posts get classified. Net-net,
         # legit purges are re-purged (no data change) and false-positive
         # purges are recovered.
-        reset_count = (
-            db.query(RawPost)
-            .outerjoin(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
-            .filter(
-                RawPost.is_relevant.is_(False),
-                SentimentRecord.id.is_(None),
+        # SQLAlchemy 2.x forbids Query.update() when the query has a JOIN.
+        # Materialize IDs first, then update by primary key (also cheaper
+        # than a joined bulk update for SQLite).
+        ids_to_reset = [
+            rid for (rid,) in (
+                db.query(RawPost.id)
+                .outerjoin(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
+                .filter(
+                    RawPost.is_relevant.is_(False),
+                    SentimentRecord.id.is_(None),
+                )
+                .all()
             )
-            .update({RawPost.is_relevant: None}, synchronize_session=False)
-        )
-        db.commit()
+        ]
+        reset_count = 0
+        if ids_to_reset:
+            reset_count = (
+                db.query(RawPost)
+                .filter(RawPost.id.in_(ids_to_reset))
+                .update({RawPost.is_relevant: None}, synchronize_session=False)
+            )
+            db.commit()
         logger.info(
-            "Reset is_relevant=None on %d wrongly-purged RawPost(s) so they\n"
-            "    can be re-evaluated by _step5_classify_sentiment below.",
+            "Reset is_relevant=None on %d wrongly-purged RawPost(s) so they "
+            "can be re-evaluated by _step5_classify_sentiment below.",
             reset_count,
         )
 
