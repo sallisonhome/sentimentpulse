@@ -365,6 +365,18 @@ jobs:
               fi
             fi
 
+            echo ""
+            echo "## One-time: invalidate cached WindowSummary rows for July 2026 ##"
+            # WindowSummary is a per-(game_id, window_days, ingest_date) cache
+            # populated when a user clicks '+ Past 7 days' / '+ 1 Day / Previous'.
+            # After the sentiment purges + DailySummary rebuild, every cached
+            # row from July needs to expire so the next click recomputes
+            # against clean data instead of serving pre-purge inflated
+            # numbers. Runs UNCONDITIONALLY on every deploy — idempotent:
+            # deleting an already-deleted row is a no-op, and the app
+            # regenerates any needed cache lazily on first click.
+            python -c 'from database import SessionLocal; from models import WindowSummary; from datetime import date; db=SessionLocal(); n=db.query(WindowSummary).filter(WindowSummary.ingest_date >= date(2026,7,1)).delete(synchronize_session=False); db.commit(); db.close(); print(f"Invalidated {n} cached WindowSummary row(s) with ingest_date >= 2026-07-01")' 2>&1 || echo "WARN: WindowSummary cache invalidation failed (non-fatal)"
+
             # §24b (2026-06-29): install Playwright Chromium for editorial
             # body fetching.  --with-deps installs system libraries the
             # browser needs (libnss, libatk, etc.).  Idempotent: skip if
