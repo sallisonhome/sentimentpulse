@@ -270,6 +270,44 @@ jobs:
               fi
             fi
 
+            echo ""
+            echo "## One-time: regenerate DailySummary + TopicTrend for affected games ##"
+            # 2026-07-24 cleanup follow-on. The July purge deleted 7,594
+            # SentimentRecords for the 5 batched games + the SM2 overmatch
+            # cleanup deleted another 117 for the over-match games. But
+            # DailySummary rows (which include cached top_positive_topics /
+            # top_negative_topics / top_neutral_topics fields) AND TopicTrend
+            # rows (which store cumulative topic-mention counts per game)
+            # were NOT deleted — they still reflect the pre-purge world.
+            #
+            # Symptom: Hellraiser: Revival has 19 relevant sentiment records
+            # over the last 7 days (mostly-empty-title Bluesky posts) but its
+            # UI still shows 'Turkish Language Support / Regional
+            # Localization Issues / Server & Multiplayer Discussion' as
+            # top topics — ghosts of the 460+ off-topic Warhammer/lore/
+            # generic-gaming posts that got purged. The DailySummary
+            # 'zero-new-records' fallback path carries forward the last
+            # topics list, so every day since inherits the ghost topics.
+            #
+            # Fix: purge DailySummary rows in the July window and TopicTrend
+            # rows entirely for the 9 affected games. Then re-run Steps 6+7
+            # for today so the UI immediately shows clean topics (rather
+            # than the 'insufficient signal' fallback for a day).
+            SUMMARY_REGEN_DONE=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="sentiment_july_summary_regen_done_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
+            if [ "$SUMMARY_REGEN_DONE" = "yes" ]; then
+              echo "sentiment_july_summary_regen_done_at already set — skipping regenerate_summaries.py"
+            else
+              if [ -f scripts/regenerate_summaries.py ]; then
+                if python scripts/regenerate_summaries.py; then
+                  python -c 'from datetime import datetime, timezone; from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.merge(AppSetting(key="sentiment_july_summary_regen_done_at", value=datetime.now(timezone.utc).isoformat())); db.commit(); db.close(); print("Marked sentiment_july_summary_regen_done_at")'
+                else
+                  echo "WARN: regenerate_summaries.py failed (non-fatal, will retry next deploy)"
+                fi
+              else
+                echo "scripts/regenerate_summaries.py missing, skipping"
+              fi
+            fi
+
             # §24b (2026-06-29): install Playwright Chromium for editorial
             # body fetching.  --with-deps installs system libraries the
             # browser needs (libnss, libatk, etc.).  Idempotent: skip if
