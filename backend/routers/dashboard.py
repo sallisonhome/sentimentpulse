@@ -43,12 +43,19 @@ router = APIRouter(prefix="/games", tags=["dashboard"])
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 def _period_start(period: PeriodEnum) -> Optional[date]:
+    # v2 (2026-07-24): windows are inclusive of both endpoints, so an
+    # N-day window covers [today - (N-1), today]. The old formulation
+    # (today - N days) was OFF-BY-ONE and rolled up 8 days for 'weekly',
+    # 31 for 'monthly', 91 for 'quarterly'. This diverged from the
+    # window-summary service which correctly uses days-1 offsets, causing
+    # the dashboard 7d KPI to sum 551 posts while the Summary page 7d
+    # showed 455. Now both aggregate the same 7/30/90 days.
     today = date.today()
     return {
         PeriodEnum.today:     today,
-        PeriodEnum.weekly:    today - timedelta(days=7),
-        PeriodEnum.monthly:   today - timedelta(days=30),
-        PeriodEnum.quarterly: today - timedelta(days=90),
+        PeriodEnum.weekly:    today - timedelta(days=6),
+        PeriodEnum.monthly:   today - timedelta(days=29),
+        PeriodEnum.quarterly: today - timedelta(days=89),
         PeriodEnum.lifetime:  None,
     }[period]
 
