@@ -6,6 +6,32 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-07-24 — Dashboard rendered same visual scope from three different tables
+
+**What happened.** Hellraiser today showed 258 posts in the Post Volume by Source chart but 1 post in the KPI cards on the same page. User: "these numbers MUST MATCH... if we're capturing 250 posts and only 1 was actually about the game then it's one post".
+
+**Root cause.** `routers/dashboard.py` had four independent aggregations reading from three different tables:
+- KPI cards → DailySummary (post-relevance-gate, but stale after purges)
+- Net Sentiment Trend chart → DailySummary (same stale cache)
+- Post Volume by Source chart → RawPost (PRE-relevance-gate, so counted ~260 off-topic Reddit posts that correctly never got a SentimentRecord)
+- Sentiment Velocity gauge → DailySummary (same stale cache)
+
+Every one of them was individually "correct" against its own data source, but together they showed the user four different pictures of what "posts about this game today" means.
+
+**Fix.** Every section now aggregates from `SentimentRecord JOIN RawPost` scoped by `COALESCE(post_date, collected_at)`. One data source, one answer. By construction a RawPost has a SentimentRecord iff it passed the relevance gate at Step 5 — so this joined query is the canonical answer for "how many posts about this game in this period".
+
+**Downstream effects.** Every data-quality operation (relevance purge, low-substance purge, keyword tightening) now reflects on the dashboard immediately; no more DailySummary rebuild scripts needed for dashboards to be correct. Volume/KPI/trend/velocity/topics are all internally consistent because they read the same rows.
+
+**Generalizable rule.** When a UI shows multiple numbers/charts scoped to the same (entity, time window), they MUST come from the same data source query. If they don't, they'll silently disagree the first time anything mutates the underlying tables. This is not a caching problem — it's a design problem. The fix is not "invalidate the cache faster", it's "read the same table for every number on the same page".
+
+**Codified invariant.** `test_dashboard_kpi_matches_volume_chart_total` in `backend/tests/test_api.py` asserts `KPI Total Posts == sum(Post Volume bars)` on the dashboard response. Regression protection for the whole class of "two aggregations disagree" bugs.
+
+**Live QA gate followed (CLAUDE.md §9).** After deploy, ran a 137-active-game × 3-period (today/weekly/monthly) invariant scan against the live droplet: 411/411 checks passed. Confirmed Hellraiser specifically dropped from KPI=1 vs volume=258 to KPI=1 vs volume=1.
+
+**Updated locations.** `backend/routers/dashboard.py` (all four sections). `backend/tests/test_api.py` (invariant test). This lessons.md entry.
+
+---
+
 ## 2026-07-01 — Monthly digest cron fired before the monthly summaries were generated
 
 **What happened.** On 2026-07-01 at 07:00 ET the monthly digest job fired and delivered an email whose Portfolio Brief read "No qualifying monthly summaries available for June 2026. Verify the monthly summary job ran and source health was OK across the period."  All 8 title blocks rendered "0 posts, no signal."
