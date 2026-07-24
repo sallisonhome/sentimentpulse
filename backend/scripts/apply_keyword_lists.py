@@ -1,7 +1,14 @@
 """
 One-time script — persists the approved 29-game distinctive_keywords lists
-from /home/user/workspace/sentiment_relevance_fix/proposed_keywords.json to
-the live `games` table.
+from backend/data/proposed_keywords.json to the live `games` table.
+
+Historical note (2026-07-24): the initial version defaulted to reading
+from /home/user/workspace/sentiment_relevance_fix/proposed_keywords.json,
+which only exists in the author's workspace — not on the deploy droplet.
+The first prod deploy of this script hit FileNotFoundError. Fixed by
+copying the JSON into backend/data/ (bundled with the repo) and
+pointing the default path there so `python scripts/apply_keyword_lists.py`
+from `backend/` works cleanly on any machine that has the repo checked out.
 
 Usage:
     cd backend
@@ -35,7 +42,9 @@ from models import Game  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
 logger = logging.getLogger(__name__)
 
-DEFAULT_KEYWORDS_FILE = "/home/user/workspace/sentiment_relevance_fix/proposed_keywords.json"
+# Bundled with the repo at backend/data/proposed_keywords.json (added
+# 2026-07-24 after the workspace-path default broke the first prod deploy).
+DEFAULT_KEYWORDS_FILE = str(Path(__file__).parent.parent / "data" / "proposed_keywords.json")
 
 
 def apply_keyword_lists(keywords_file: str = DEFAULT_KEYWORDS_FILE, dry_run: bool = False) -> dict:

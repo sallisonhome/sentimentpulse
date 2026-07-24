@@ -180,6 +180,50 @@ jobs:
               fi
             fi
 
+            echo ""
+            echo "## One-time: reclassify sentiment for posts wrongly purged (idempotent) ##"
+            # 2026-07-24 recovery step (add: after purge). The initial prod deploy
+            # of the relevance-gate fix (commit c66f777) hit FileNotFoundError in
+            # apply_keyword_lists.py because it defaulted to a workspace-only path,
+            # so the 29 keyword lists never landed in games.distinctive_keywords
+            # before purge_july_offtopic_sentiment.py ran. With no keywords loaded,
+            # the new `if not keywords: return False` gate rejected almost every
+            # post: 7,594 sentiment records deleted, only 265 kept — many of the
+            # deleted were legitimate posts (false positives).
+            #
+            # Recovery: RawPost rows were untouched (purge only deletes
+            # SentimentRecord). Re-running _step5_classify_sentiment against
+            # every active game picks up every RawPost that no longer has a
+            # SentimentRecord and has is_relevant IS NULL, applies the correct
+            # gate (now with keywords loaded), and restores classification for
+            # real posts. Truly off-topic posts stay marked is_relevant=False and
+            # never get a SentimentRecord.
+            #
+            # Guarded by its own app_settings row so it only runs once. Only
+            # runs if the apply-keywords guard is now set (i.e. this deploy or
+            # a previous one successfully persisted the keyword lists).
+            RECOVERY_ALREADY_DONE=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="sentiment_july_recovery_done_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
+            KEYWORDS_APPLIED_NOW=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="keyword_lists_applied_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
+            if [ "$RECOVERY_ALREADY_DONE" = "yes" ]; then
+              echo "sentiment_july_recovery_done_at already set — skipping reclassify_missing_sentiment.py"
+            elif [ "$KEYWORDS_APPLIED_NOW" != "yes" ]; then
+              echo "keyword_lists_applied_at not set — skipping recovery (keywords must be applied first)"
+            else
+              if [ -f scripts/reclassify_missing_sentiment.py ]; then
+                if python scripts/reclassify_missing_sentiment.py; then
+                  python -c 'from datetime import datetime, timezone; from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.merge(AppSetting(key="sentiment_july_recovery_done_at", value=datetime.now(timezone.utc).isoformat())); db.commit(); db.close(); print("Marked sentiment_july_recovery_done_at")'
+                  # After recovery, delete any pre-existing July 2026 monthly
+                  # summary rows AGAIN so they regenerate against the fully
+                  # restored data (not the mid-purge intermediate state).
+                  python -c 'from database import SessionLocal; from models import MonthlySummary; db=SessionLocal(); deleted=db.query(MonthlySummary).filter(MonthlySummary.period_year==2026, MonthlySummary.period_month==7).delete(); db.commit(); db.close(); print(f"Post-recovery: deleted {deleted} stale July 2026 monthly_summary row(s) so they regenerate against restored data")'
+                else
+                  echo "WARN: reclassify_missing_sentiment.py failed (non-fatal, will retry next deploy)"
+                fi
+              else
+                echo "scripts/reclassify_missing_sentiment.py missing, skipping"
+              fi
+            fi
+
             # §24b (2026-06-29): install Playwright Chromium for editorial
             # body fetching.  --with-deps installs system libraries the
             # browser needs (libnss, libatk, etc.).  Idempotent: skip if
