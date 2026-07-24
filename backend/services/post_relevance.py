@@ -814,6 +814,16 @@ def _fuzzy_match_relevant(
     Layer 2 fallback. Only called when Layer 1 (exact substring match) found
     nothing. Tolerates typos on MULTI-WORD keywords only; never fuzzy-matches
     single-word keywords (those must hit Layer 1 exactly).
+
+    v2 (2026-07-24): also matches CONCATENATED variants of multi-word keywords
+    against single tokens. Users and URLs frequently drop the space between
+    words in a game title — e.g. r/turokorigins in a subreddit slug, @turokorigins
+    Twitter handle, x.com/turokorigins/... URL, discord.gg/spacemarine2, or
+    simply typing 'BusBound' or 'JurassicParkSurvival'. Without this check,
+    those posts are correctly identified as being about the game by a human
+    but fail Layer 2's word-window rule (which requires N separate tokens for
+    an N-word keyword). This check preserves the strict 20% edit budget so
+    it still rejects unrelated tokens.
     """
     text_tokens = _tokenize(text)
     for kw in keywords:
@@ -826,7 +836,28 @@ def _fuzzy_match_relevant(
         if len(kw_stripped) < _FUZZY_MIN_KEYWORD_LEN:
             continue  # rule 2: length floor — short phrases are exact-only
 
+        matched_via = None
+
+        # Layer 2a — sliding-window over separate tokens (original behavior).
         if _covers_all_words_within_window(kw_words, text_tokens):
+            matched_via = "window"
+        else:
+            # Layer 2b (v2 2026-07-24) — concatenated single-token match.
+            # Try the keyword with spaces removed ("turok origins" -> "turokorigins")
+            # against every token in the post. Same 20% edit budget as the
+            # sliding-window path. Only applies to keywords with 2+ words and
+            # length >= 8 (same eligibility as the window path).
+            concat = "".join(kw_words).lower()
+            budget = math.floor(_FUZZY_MAX_EDIT_RATIO * len(concat))
+            for tok in text_tokens:
+                # Cheap early-exit: skip tokens whose length is way off.
+                if abs(len(tok) - len(concat)) > budget:
+                    continue
+                if damerau_levenshtein(concat, tok) <= budget:
+                    matched_via = f"concat({tok!r})"
+                    break
+
+        if matched_via:
             # rule 5 guard — a different game's exact Layer-1 hit takes precedence
             if _collides_with_other_game_exact_keyword(text, game_id_for_log):
                 logger.debug(
@@ -839,9 +870,9 @@ def _fuzzy_match_relevant(
             max_edits = math.floor(_FUZZY_MAX_EDIT_RATIO * len(kw_stripped))
             logger.info(
                 "LAYER2_FUZZY_HIT post_id=%s game_id=%s game_name=%r keyword=%r "
-                "edit_distance=%d matched_text=%r",
+                "edit_distance=%d via=%s matched_text=%r",
                 post_id_for_log, game_id_for_log, game_name_for_log,
-                kw_stripped, max_edits, text[:160],
+                kw_stripped, max_edits, matched_via, text[:160],
             )
             return True
     return False

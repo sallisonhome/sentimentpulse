@@ -280,6 +280,68 @@ class TestEdgeCases:
         result = is_post_relevant_to_game("", body, game)
         assert result is True
 
+    def test_layer2_concat_matches_url_slug(self):
+        """
+        v2 Layer-2b (2026-07-24): a URL/handle slug that concatenates a
+        multi-word keyword (e.g. 'turokorigins' from x.com/turokorigins)
+        matches the 'Turok Origins' keyword via the concat fallback. Without
+        this, real Turok posts that ONLY reference the game via a URL slug
+        or @handle are wrongly filtered out.
+        """
+        game = _make_game(
+            "Turok: Origins",
+            keywords=["Turok Origins", "Turok game"],
+        )
+        # Real steam-forum body observed in prod on 2026-07-24 that was
+        # incorrectly rejected before this fix.
+        body = (
+            "Originally posted by Saber Eric: another example here "
+            "https://x.com/turokorigins/status/2020204808423043275 "
+            "will we get Steam cloud saves so we can keep our progress "
+            "when we switch devices or perhaps later play it on the Steam Deck?"
+        )
+        result = is_post_relevant_to_game("", body, game)
+        assert result is True
+
+    def test_layer2_concat_rejects_unrelated_common_tokens(self):
+        """
+        v2 Layer-2b must not over-match on bare common words. A post about
+        Warhammer 40k lore that mentions 'space marine' (with a space) must
+        NOT trigger a Space Marine 2 (game #24) fuzzy hit via the concat
+        path, because 'space marine' with a space stays two tokens and the
+        concat target is 'spacemarine2' — far outside the 2-char edit budget
+        for a 12-char keyword.
+        """
+        game = _make_game(
+            "Warhammer 40,000: Space Marine 2",
+            keywords=["Space Marine 2", "SM2"],
+        )
+        body = (
+            "Been painting my space marine chapter for years now. The "
+            "Blood Angels palette really pops next to the Ultramarines. "
+            "Anyone else here into Warhammer 40k tabletop lately?"
+        )
+        result = is_post_relevant_to_game("", body, game)
+        assert result is False
+
+    def test_layer2_concat_no_hit_on_bare_first_word(self):
+        """
+        v2 Layer-2b must not fire when only the FIRST word of the keyword
+        appears (bare 'turok' with no 'origins') — that path is the sliding
+        window's territory and correctly stays out.
+        """
+        game = _make_game(
+            "Turok: Origins",
+            keywords=["Turok Origins"],
+        )
+        # Not a real Turok post — just a lore reference. Should not match.
+        body = (
+            "The Turok comic series from the 1950s is still worth reading. "
+            "Not sure if the new games really capture the same feel."
+        )
+        result = is_post_relevant_to_game("", body, game)
+        assert result is False
+
     def test_no_keywords_configured_blocks_all(self):
         """
         v2 (2026-07-24): games with no keywords configured (no DB column, no
