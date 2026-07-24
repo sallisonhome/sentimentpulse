@@ -88,3 +88,4 @@ genrepulse/test_server.py
 
 # GTM Studio runtime example output
 gtm/backend/static_example/
+frontend/src/CHANGELOG.md

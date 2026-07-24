@@ -5,6 +5,7 @@ import SummaryPage from './pages/SummaryPage'
 import TopicsPage from './pages/TopicsPage'
 import PostsPage from './pages/PostsPage'
 import SettingsPage from './pages/SettingsPage'
+import ChangelogPage from './pages/ChangelogPage'
 
 // Keep in sync with vite.config.ts `base` and the Nginx `/sentiment/` location.
 // Without this, deep links like /sentiment/summary fail because BrowserRouter
@@ -21,6 +22,8 @@ export default function App() {
           <Route path="topics" element={<TopicsPage />} />
           <Route path="posts" element={<PostsPage />} />
           <Route path="settings" element={<SettingsPage />} />
+          {/* v2026-07-24: standalone changelog page linked from the footer */}
+          <Route path="changelog" element={<ChangelogPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
