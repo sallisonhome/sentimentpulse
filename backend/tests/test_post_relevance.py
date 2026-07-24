@@ -216,6 +216,70 @@ class TestEdgeCases:
         # "John Wick game nice" → 19 chars → too short
         assert result is False
 
+    def test_below_60_chars_combined_excluded(self):
+        """
+        v3 (2026-07-24): Rule 1 raised from 30 to 60 chars. A 50-char combined
+        message about the game is now rejected as insufficient substance.
+        """
+        game = _make_game("Bus Bound")
+        # 50 chars, mentions the game, but too short to be substantive
+        result = is_post_relevant_to_game("Bus Bound", "looking forward to launch someday", game)
+        combined = "Bus Bound looking forward to launch someday"
+        assert len(combined) < 60
+        assert result is False
+
+    def test_word_count_below_8_excluded(self):
+        """
+        v3 Rule 1c: a post with ≥60 chars but fewer than 8 substantive words
+        (e.g. long URLs, emoji strings, hashtag walls) is rejected.
+        """
+        game = _make_game("Bus Bound")
+        # 64 chars combined but only 4 real words after tokenization
+        result = is_post_relevant_to_game(
+            "Bus Bound",
+            "https://example.com/very/long/url/that/pads/length 👍",
+            game,
+        )
+        assert result is False
+
+    def test_no_component_reaches_40_chars_excluded(self):
+        """
+        v3 Rule 1d: neither title nor body reaches 40 chars — fragments
+        totaling 60+ but split evenly aren't substantive enough. A Steam
+        Forum post with a 20-char title and a 41-char body is fine; two
+        30-char fragments are not.
+        """
+        game = _make_game("Bus Bound")
+        # Title 27c + body 34c = 62c combined, plenty of words, but neither
+        # component reaches the 40-char floor.
+        result = is_post_relevant_to_game(
+            "Bus Bound is cool tho maybe",
+            "waiting for Bus Bound to release yes",
+            game,
+        )
+        assert result is False
+
+    def test_substantive_reddit_title_only_accepted(self):
+        """
+        v3: a Reddit post with a substantive title-only (≥40 chars)
+        containing the game name and enough words is accepted.
+        """
+        game = _make_game("Bus Bound", keywords=["Bus Bound", "BusBound"])
+        # 87-char title, 12 real words, mentions the game
+        title = "Bus Bound looks like the transit management sim I have been waiting for since 2023"
+        result = is_post_relevant_to_game(title, "", game)
+        assert result is True
+
+    def test_substantive_body_only_review_accepted(self):
+        """
+        v3: a Steam review with a substantive body-only (≥40 chars, ≥8 words)
+        containing the game name is accepted.
+        """
+        game = _make_game("Bus Bound", keywords=["Bus Bound", "BusBound"])
+        body = "Really enjoying the Bus Bound early access build so far, driving mechanics feel great"
+        result = is_post_relevant_to_game("", body, game)
+        assert result is True
+
     def test_no_keywords_configured_blocks_all(self):
         """
         v2 (2026-07-24): games with no keywords configured (no DB column, no

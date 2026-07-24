@@ -308,6 +308,63 @@ jobs:
               fi
             fi
 
+            echo ""
+            echo "## One-time: purge low-substance sentiment records (idempotent) ##"
+            # 2026-07-24 holistic content-quality gate raise. Rule 1 of the
+            # relevance gate was raised from 'combined ≥ 30 chars' to
+            # '≥ 60 chars + ≥ 8 words + at least one 40-char title-or-body'.
+            # Retroactively purges every SentimentRecord across every game
+            # and every source whose linked RawPost fails the new gate.
+            # RawPost rows stay intact for audit; their is_relevant is reset
+            # to NULL so Step 5 re-evaluates on next tick.
+            LOW_SUB_PURGE_DONE=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="low_substance_purge_done_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
+            if [ "$LOW_SUB_PURGE_DONE" = "yes" ]; then
+              echo "low_substance_purge_done_at already set — skipping purge_low_substance_sentiment.py"
+            else
+              if [ -f scripts/purge_low_substance_sentiment.py ]; then
+                if python scripts/purge_low_substance_sentiment.py; then
+                  python -c 'from datetime import datetime, timezone; from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.merge(AppSetting(key="low_substance_purge_done_at", value=datetime.now(timezone.utc).isoformat())); db.commit(); db.close(); print("Marked low_substance_purge_done_at")'
+                else
+                  echo "WARN: purge_low_substance_sentiment.py failed (non-fatal, will retry next deploy)"
+                fi
+              else
+                echo "scripts/purge_low_substance_sentiment.py missing, skipping"
+              fi
+            fi
+
+            echo ""
+            echo "## One-time: rebuild DailySummary rows for all games in July window ##"
+            # 2026-07-24 dashboard/summary consistency fix. The dashboard KPI
+            # reads by summing DailySummary rows; the Summary page's window-
+            # summary reads directly from SentimentRecord. Because the July
+            # purge + recovery + overmatch cleanup + low-substance purge all
+            # modified SentimentRecord without recomputing DailySummary, the
+            # dashboard is stale for every game with any July activity.
+            # Symptom: SM2 dashboard 7d shows 1,185 total, Summary page 7d
+            # shows 778 total — same time window, same data source, different
+            # aggregation layer.
+            #
+            # This step recomputes every day in [2026-07-01 .. today] for
+            # every active game, directly from current SentimentRecord
+            # state. Topic fields (top_positive_topics etc.) are left empty
+            # — they'll refill on the next Step 6/7 tick. Must run AFTER
+            # purge_low_substance_sentiment.py so the counts reflect the
+            # tightened gate.
+            DAILY_REBUILD_DONE=$(python -c 'from database import SessionLocal; from models import AppSetting; db=SessionLocal(); row=db.query(AppSetting).filter(AppSetting.key=="sentiment_july_daily_rebuild_done_at").first(); print("yes" if row else "no"); db.close()' 2>/dev/null || echo "no")
+            if [ "$DAILY_REBUILD_DONE" = "yes" ]; then
+              echo "sentiment_july_daily_rebuild_done_at already set — skipping rebuild_daily_summaries.py"
+            else
+              if [ -f scripts/rebuild_daily_summaries.py ]; then
+                if python scripts/rebuild_daily_summaries.py; then
+                  python -c 'from datetime import datetime, timezone; from database import SessionLocal; from models import AppSetting; db=SessionLocal(); db.merge(AppSetting(key="sentiment_july_daily_rebuild_done_at", value=datetime.now(timezone.utc).isoformat())); db.commit(); db.close(); print("Marked sentiment_july_daily_rebuild_done_at")'
+                else
+                  echo "WARN: rebuild_daily_summaries.py failed (non-fatal, will retry next deploy)"
+                fi
+              else
+                echo "scripts/rebuild_daily_summaries.py missing, skipping"
+              fi
+            fi
+
             # §24b (2026-06-29): install Playwright Chromium for editorial
             # body fetching.  --with-deps installs system libraries the
             # browser needs (libnss, libatk, etc.).  Idempotent: skip if

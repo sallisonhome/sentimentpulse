@@ -414,11 +414,53 @@ def is_post_relevant_to_game(title: str, body: str, game) -> bool:
     body = (body or "").strip()
     combined = f"{title} {body}".strip()
 
-    # Rule 1: too short
-    if len(combined) < 30:
+    # Rule 1: content-substance gate (raised 2026-07-24 from 30 chars).
+    #
+    # Data-driven: sampling neutral posts across the 29 active games showed
+    # 60-80% of ingested posts are <80 chars; many are 1-4 characters (a
+    # bare ')', single emoji, hashtag string, or URL). These posts get
+    # sentiment-classified by BERT into positive/negative/neutral but
+    # carry no analytical value and pollute the dashboards
+    # (Hellraiser's 4 negative posts in the last 7d were all near-empty
+    # Bluesky posts; the 'A Real Horror Game.' 19-char Steam-forum title
+    # was one of only two coherent items). Rule now enforces:
+    #
+    #   a) combined length ≥ 60 characters (was 30)
+    #   b) at least 8 alphanumeric-heavy "words" (weeds out URL-only,
+    #      emoji-only, hashtag-strings, and single-emoji-plus-link Bluesky)
+    #   c) at least one of title OR body ≥ 40 chars (a 60-char
+    #      total split 20+40 is fine; two 30-char fragments is not)
+    #
+    # These thresholds still admit legit short-form content like a
+    # focused 65-char Steam review or a 70-char Reddit title.
+    if len(combined) < 60:
         logger.debug(
             "Post too short (%d chars) for game '%s' — not relevant.",
             len(combined), game.name,
+        )
+        return False
+
+    # "Words" = whitespace-separated tokens that contain at least one
+    # letter or digit and are ≥ 2 characters. Strips out URL-only posts,
+    # emoji-only posts, and hashtag strings (which tokenize as tokens
+    # like '#Hellraiser' — those count as words) but rejects '#a #b #c'
+    # style posts and pure-emoji strings.
+    word_re = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-']*")
+    words = [w for w in word_re.findall(combined) if len(w) >= 2]
+    if len(words) < 8:
+        logger.debug(
+            "Post has only %d substantive word(s) for game '%s' — not relevant.",
+            len(words), game.name,
+        )
+        return False
+
+    # Neither title-only ('A Real Horror Game.' = 19 chars) nor body-only
+    # ('If resident evil can do it...i dont see why this cant' = 53 chars)
+    # is enough on its own. Require at least one ≥ 40-char component.
+    if len(title) < 40 and len(body) < 40:
+        logger.debug(
+            "Post has no substantial title (%d) or body (%d) for game '%s' — not relevant.",
+            len(title), len(body), game.name,
         )
         return False
 
