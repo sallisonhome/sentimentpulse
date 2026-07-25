@@ -56,13 +56,19 @@ from services.reddit_service import (  # noqa: E402
     _GENERAL_SUBREDDITS,
     _game_search_query,
 )
+from services.arctic_shift_service import (  # noqa: E402
+    ARCTIC_SHIFT_BASE,
+    ARCTIC_SHIFT_USER_AGENT,
+    _convert_post,
+    _post_mentions_game,
+)
+import requests  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
 logger = logging.getLogger(__name__)
 
-PULLPUSH_BASE = "https://api.pullpush.io/reddit/search/submission/"
 STEAM_REVIEWS_BASE = "https://store.steampowered.com/appreviews/{app_id}"
-REQUEST_DELAY = 2.0
+REQUEST_DELAY = 1.5
 TIMEOUT = 30.0
 
 
@@ -70,38 +76,49 @@ def _to_epoch(dt: datetime) -> int:
     return int(dt.replace(tzinfo=timezone.utc).timestamp())
 
 
-def _pullpush_page(
+def _arctic_shift_page(
     subreddit: str,
     before_epoch: int,
-    size: int = 100,
-    q: str | None = None,
+    after_epoch: int,
+    limit: int = 100,
+    title_query: str | None = None,
+    selftext_query: str | None = None,
 ) -> list[dict]:
-    """Fetch one PullPush page. Empty list = end of history."""
+    """
+    Fetch one Arctic Shift page (raw items, not yet converted). Supports
+    before= to page backward. Empty list = end of history for this window.
+    """
     params: dict = {
         "subreddit": subreddit,
-        "size": size,
+        "limit": limit,
         "sort": "desc",
-        "sort_type": "created_utc",
         "before": before_epoch,
+        "after": after_epoch,
     }
-    if q:
-        params["q"] = q
+    if title_query:
+        params["title"] = title_query
+    if selftext_query:
+        params["selftext"] = selftext_query
     try:
-        r = httpx.get(
-            PULLPUSH_BASE,
+        r = requests.get(
+            ARCTIC_SHIFT_BASE,
             params=params,
-            headers={"User-Agent": "SentimentPulse-Backfill/1.0"},
+            headers={"User-Agent": ARCTIC_SHIFT_USER_AGENT, "Accept": "application/json"},
             timeout=TIMEOUT,
         )
         time.sleep(REQUEST_DELAY)
         if r.status_code != 200:
             logger.warning(
-                "PullPush HTTP %d for r/%s (before=%d)", r.status_code, subreddit, before_epoch,
+                "arctic_shift HTTP %d for r/%s (before=%d)", r.status_code, subreddit, before_epoch,
             )
             return []
-        return r.json().get("data", []) or []
+        data = r.json()
+        if not isinstance(data, dict) or "error" in data:
+            logger.warning("arctic_shift error for r/%s: %s", subreddit, data.get("error") if isinstance(data, dict) else data)
+            return []
+        return data.get("data") or []
     except Exception as exc:
-        logger.error("PullPush request failed for r/%s: %s", subreddit, exc)
+        logger.error("arctic_shift request failed for r/%s: %s", subreddit, exc)
         return []
 
 
@@ -121,7 +138,7 @@ def backfill_reddit_for_game(
     total_saved = 0
 
     # Only apply game-name search filter for general subs (matches
-    # reddit_service behavior). Dedicated subs get all posts.
+    # arctic_shift_service behavior). Dedicated subs get all posts.
     general_lower = {s.lower() for s in _GENERAL_SUBREDDITS}
 
     for raw_sub in game.subreddits:
@@ -134,69 +151,78 @@ def backfill_reddit_for_game(
             continue
 
         is_general = sub_name.lower() in general_lower
-        q_arg = _game_search_query(game.name) if is_general else None
+        query = _game_search_query(game.name) if is_general else None
 
-        before = int(datetime.now(tz=timezone.utc).timestamp())
-        pages_fetched = 0
+        # For general subs, we need to make TWO parallel walks (title +
+        # selftext) exactly like arctic_shift_service does, then merge.
+        # For dedicated subs, one walk.
+        query_variants: list[tuple[str | None, str | None]]
+        if is_general and query:
+            query_variants = [(query, None), (None, query)]
+        else:
+            query_variants = [(None, None)]
+
+        seen_ids: set[str] = set()
         sub_saved = 0
-        while True:
-            data = _pullpush_page(sub_name, before, size=100, q=q_arg)
-            if not data:
-                break
+        pages_total = 0
 
-            posts = []
-            oldest_epoch = before
-            for item in data:
-                created_utc = item.get("created_utc", 0)
-                try:
-                    created_utc = int(float(created_utc))
-                except Exception:
-                    continue
-                oldest_epoch = min(oldest_epoch, created_utc)
-                if created_utc < start_epoch:
-                    continue
-
-                external_id = item.get("id", "")
-                if not external_id:
-                    continue
-
-                permalink = item.get("permalink", "")
-                url = f"https://www.reddit.com{permalink}" if permalink else ""
-                posts.append({
-                    "external_id": external_id,
-                    "author": item.get("author", "[deleted]"),
-                    "title": item.get("title", ""),
-                    "body": (item.get("selftext", "") or "")[:2000],
-                    "url": url,
-                    "upvotes": max(0, int(item.get("score", 0))),
-                    "post_date": datetime.fromtimestamp(created_utc, tz=timezone.utc),
-                })
-
-            if posts:
-                saved = _bulk_save_posts(db, game.id, SourceEnum.reddit, posts, errors)
-                sub_saved += saved
-                total_saved += saved
-
-            pages_fetched += 1
-            # If the whole page was before the start date, we're done.
-            if oldest_epoch < start_epoch:
-                break
-            # Prevent infinite loop if page returns same or newer timestamps.
-            if oldest_epoch >= before:
-                break
-            before = oldest_epoch
-
-            # Safety cap: never more than 20 pages per sub (2000 posts each).
-            if pages_fetched >= 20:
-                logger.warning(
-                    "Hit 20-page cap for r/%s (%s) — stopping to avoid runaway",
-                    sub_name, game.name,
+        for title_q, selftext_q in query_variants:
+            before = int(datetime.now(tz=timezone.utc).timestamp())
+            pages_fetched = 0
+            while True:
+                data = _arctic_shift_page(
+                    sub_name, before, start_epoch,
+                    limit=100,
+                    title_query=title_q, selftext_query=selftext_q,
                 )
-                break
+                if not data:
+                    break
+
+                posts = []
+                oldest_epoch = before
+                for item in data:
+                    created_utc = item.get("created_utc", 0)
+                    try:
+                        created_utc = int(float(created_utc))
+                    except Exception:
+                        continue
+                    oldest_epoch = min(oldest_epoch, created_utc)
+                    if created_utc < start_epoch:
+                        continue
+                    external_id = item.get("id", "")
+                    if not external_id or external_id in seen_ids:
+                        continue
+                    seen_ids.add(external_id)
+                    converted = _convert_post(item)
+                    if converted is None:
+                        continue
+                    # For general subs, post-filter (matches arctic_shift_service).
+                    if is_general and query and not _post_mentions_game(converted, query):
+                        continue
+                    posts.append(converted)
+
+                if posts:
+                    saved = _bulk_save_posts(db, game.id, SourceEnum.reddit, posts, errors)
+                    sub_saved += saved
+                    total_saved += saved
+
+                pages_fetched += 1
+                pages_total += 1
+                if oldest_epoch < start_epoch:
+                    break
+                if oldest_epoch >= before:
+                    break
+                before = oldest_epoch
+                if pages_fetched >= 20:
+                    logger.warning(
+                        "20-page cap hit for r/%s (%s) title=%s selftext=%s",
+                        sub_name, game.name, title_q, selftext_q,
+                    )
+                    break
 
         logger.info(
-            "  r/%s (%s): %d pages, %d new posts",
-            sub_name, game.name, pages_fetched, sub_saved,
+            "  r/%s (%s): %d pages total across %d variants, %d new posts",
+            sub_name, game.name, pages_total, len(query_variants), sub_saved,
         )
 
     return total_saved
