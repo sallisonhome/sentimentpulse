@@ -172,6 +172,20 @@ def create_game(data: GameCreate, db: Session = Depends(get_db)):
         "Manually added game id=%d name=%r steam_app_id=%d subreddits=%s",
         game.id, game.name, game.steam_app_id, game.subreddits,
     )
+
+    # 2026-07-25 rule: every newly-added game triggers a 90-day Steam
+    # Forum backfill in the background so the dashboard starts populated
+    # instead of waiting for the daily cron. Same treatment competitor
+    # titles get in routers/competitors.py. Fire-and-forget.
+    try:
+        from services.new_game_onboarding import schedule_onboarding_backfill  # noqa: PLC0415
+        schedule_onboarding_backfill(game.id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to schedule onboarding backfill for new game id=%d: %s",
+            game.id, exc,
+        )
+
     return game
 
 

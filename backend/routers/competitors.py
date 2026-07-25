@@ -196,6 +196,21 @@ def add_competitor(parent_id: int, data: CompetitorCreate, db: Session = Depends
         "Added competitor game id=%d name=%r steam_app_id=%d under parent_id=%d",
         competitor_game.id, competitor_game.name, competitor_game.steam_app_id, parent_id,
     )
+
+    # 2026-07-25 rule: every newly-added game (Saber title OR competitor)
+    # kicks off a 90-day Steam Forum backfill in the background so the
+    # dashboard for the new title starts populated instead of waiting for
+    # the daily cron to slowly fill it in. Fire-and-forget; failure is
+    # logged but never blocks the POST response.
+    try:
+        from services.new_game_onboarding import schedule_onboarding_backfill  # noqa: PLC0415
+        schedule_onboarding_backfill(competitor_game.id)
+    except Exception as exc:
+        logger.warning(
+            "Failed to schedule onboarding backfill for competitor id=%d: %s",
+            competitor_game.id, exc,
+        )
+
     return competitor_game
 
 
