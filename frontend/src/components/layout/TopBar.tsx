@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useAppContext } from '../../contexts/AppContext'
-import { useGames, useLatestGame } from '../../hooks/useGames'
+import { useGames, useLatestGame, useGameDetail } from '../../hooks/useGames'
 import { useIngestStatus, useTriggerIngest } from '../../hooks/useIngest'
 import PeriodFilter from '../shared/PeriodFilter'
 import { Button } from '../ui/button'
@@ -13,6 +13,11 @@ export default function TopBar() {
   const { selectedGameId, setSelectedGameId, period, setPeriod } = useAppContext()
   const { data: games } = useGames()
   const { data: latestGame } = useLatestGame()
+  // Separate fetch for the currently-selected game so the picker can
+  // display competitor names (competitors are excluded from useGames() but
+  // still need to render as the picker's current value when the user
+  // navigates to a child dashboard via the Post Volume by Title chart).
+  const { data: currentGame } = useGameDetail(selectedGameId)
   const { data: ingestStatus } = useIngestStatus()
   const triggerIngest = useTriggerIngest()
 
@@ -32,7 +37,16 @@ export default function TopBar() {
           onValueChange={val => setSelectedGameId(Number(val))}
         >
           <SelectTrigger className="w-52">
-            <SelectValue placeholder="Select a game…" />
+            {/*
+              Radix's <SelectValue> reads the current value's corresponding
+              <SelectItem> text. For competitors (not in `games`), that
+              lookup fails and the trigger renders blank. Falling back to
+              the fetched game's name here keeps the trigger informative on
+              child dashboards.
+            */}
+            {currentGame && !games?.some(g => g.id === currentGame.id)
+              ? <span className="truncate">{currentGame.name}</span>
+              : <SelectValue placeholder="Select a game…" />}
           </SelectTrigger>
           <SelectContent>
             {games?.map(g => (

@@ -1,6 +1,6 @@
 import { ArrowLeft } from 'lucide-react'
 import { useAppContext } from '../../contexts/AppContext'
-import { useGames } from '../../hooks/useGames'
+import { useGameDetail } from '../../hooks/useGames'
 import { useParentOf } from '../../hooks/useCompetitors'
 import { Badge } from '../ui/badge'
 
@@ -18,13 +18,13 @@ import { Badge } from '../ui/badge'
  */
 export default function GameTitleHeader() {
   const { selectedGameId, setSelectedGameId } = useAppContext()
-  const { data: games } = useGames()
+  // Use useGameDetail (single-game fetch by id), NOT useGames() —
+  // useGames excludes competitors, so on a child dashboard the lookup
+  // would return undefined and the entire header would render null.
+  const { data: game } = useGameDetail(selectedGameId)
   const { data: parentOf } = useParentOf(selectedGameId)
 
-  if (!selectedGameId || !games) return null
-
-  const game = games.find(g => g.id === selectedGameId)
-  if (!game) return null
+  if (!selectedGameId || !game) return null
 
   const isChild = parentOf?.parent_id != null
 
