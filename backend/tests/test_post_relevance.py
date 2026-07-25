@@ -837,3 +837,88 @@ class TestFranchiseBareTokenStopwords_2026_07_24_Evening:
         for title, body in townfall_posts:
             assert is_post_relevant_to_game(title, body, game), \
                 f"Legit Townfall post was rejected: {title!r}"
+
+
+class TestShortCollisionWordsFuzzyGuard_2026_07_25:
+    """
+    Regression tests for the 2026-07-25 ILL false-positive fix. Multi-word
+    keywords that contain a short English collision word (ILL, GO, PC, RE,
+    IN, etc.) must be forced to Layer 1 exact match only — the fuzzy
+    sliding-window layer admits false positives on those because the short
+    word appears everywhere in normal English.
+
+    See lessons.md 2026-07-25 (ILL contamination fix).
+    """
+    def test_ill_game_all_caps_contraction_does_not_admit(self):
+        from types import SimpleNamespace
+        from services.post_relevance import is_post_relevant_to_game
+
+        game = SimpleNamespace(
+            id=999, name="ILL",
+            distinctive_keywords=["Team Clout ILL", "Mundfish ILL", "ILL game",
+                                  "ILLgame", "ILL horror game", "ILL Team Clout",
+                                  "ILL Mundfish"],
+        )
+        # Post is a caps-lock help-me-find-a-game post that contains "ILL"
+        # as a contraction of "I'll" and "GAME" multiple times. Prior to the
+        # 2026-07-25 fix, this admitted via Layer 2 fuzzy on 'ILL game'.
+        title = "HELP ME I NEED A GAME"
+        body = ("HELP, I DUG MYSELF INTO A HORROR GAME HOLE AND NOW IM NOT "
+                "SCARD OF A GOOD CHUNK. GIVE ME A GAME ILL PLAY IT, I JUST "
+                "NEED TO PLAY SOMETHING!")
+        assert not is_post_relevant_to_game(title, body, game), \
+            f"Caps-contraction false positive leaked through: {title!r}"
+
+    def test_ill_lowercase_contraction_does_not_admit(self):
+        from types import SimpleNamespace
+        from services.post_relevance import is_post_relevant_to_game
+
+        game = SimpleNamespace(
+            id=999, name="ILL",
+            distinctive_keywords=["ILL game", "ILL horror game", "Team Clout ILL"],
+        )
+        title = "Me and friends arguing about refund time"
+        body = ("To start off with, I ended up getting abiotic factor. Me and "
+                "friends did not like it, I forgot to close the game when I left "
+                "the house and had 3.8 hours on it. Ill play through more before "
+                "asking for a refund but the ill-considered decision to buy is "
+                "already bugging me. What do you think, should Steam extend the "
+                "refund window on games like this?")
+        assert not is_post_relevant_to_game(title, body, game), \
+            f"Lowercase contraction false positive leaked through: {title!r}"
+
+    def test_real_ill_launch_announcement_still_admits(self):
+        from types import SimpleNamespace
+        from services.post_relevance import is_post_relevant_to_game
+
+        game = SimpleNamespace(
+            id=999, name="ILL",
+            distinctive_keywords=["Team Clout ILL", "Mundfish ILL", "ILL game",
+                                  "ILLgame", "ILL horror game", "ILL Team Clout",
+                                  "ILL Mundfish"],
+        )
+        title = "Bloody First-Person Survival Horror Game 'ILL' Launches in 2027 [Trailer]"
+        body = ("ILL from Team Clout and Mundfish is a first-person survival "
+                "horror game targeting a 2027 launch on PC and consoles.")
+        assert is_post_relevant_to_game(title, body, game), \
+            "Legitimate ILL launch announcement was incorrectly rejected."
+
+    def test_bus_bound_typo_still_works_for_short_distinctive_word(self):
+        """
+        The fix targets English contractions (ILL, GO). Distinctive short
+        proper nouns like 'Bus' in 'Bus Bound' must still be fuzzy-eligible
+        so real typos ('Bus Buond') admit. Bus isn't in the collision list.
+        """
+        from types import SimpleNamespace
+        from services.post_relevance import is_post_relevant_to_game
+
+        game = SimpleNamespace(
+            id=999, name="Bus Bound",
+            distinctive_keywords=["Bus Bound", "BusBound", "Saber Bus Bound"],
+        )
+        title = "Bus Buond just got a new update today"
+        body = ("The devs pushed a big patch for Bus Buond this week with new "
+                "routes and vehicle physics improvements. Really enjoying the "
+                "driving model, though a couple of the trucks feel underpowered.")
+        assert is_post_relevant_to_game(title, body, game), \
+            "'Bus Buond' typo should still fuzzy-match to 'Bus Bound' — regression!"

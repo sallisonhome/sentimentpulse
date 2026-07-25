@@ -309,6 +309,45 @@ def steam_forum_backfill_status():
     return _STEAM_FORUM_BACKFILL_STATE
 
 
+@router.post("/remediate/ill_reddit_reclassify", status_code=202)
+def trigger_ill_reddit_reclassify(background_tasks: BackgroundTasks):
+    """
+    2026-07-25 afternoon fix: purge existing ILL Reddit SentimentRecords
+    + reset is_relevant=NULL on all ILL RawPost.reddit rows, so the next
+    Step 5 run re-evaluates them under the new short-collision-words
+    fuzzy-match guard. Idempotent.
+    """
+    def _run():
+        from scripts.reclassify_ill_2026_07_25 import main as _main
+        try:
+            _main()
+            from database import SessionLocal
+            from models import Game
+            from services.ingestor import (
+                _step5_classify_sentiment,
+                _step6_extract_topics,
+                _step7_daily_summary,
+            )
+            from services.nlp_service import load_model
+            load_model()
+            db = SessionLocal()
+            try:
+                game = db.query(Game).filter_by(id=138).first()
+                if game:
+                    log_lines: list[str] = []
+                    errors: list[str] = []
+                    _step5_classify_sentiment(db, game, log_lines, errors)
+                    _step6_extract_topics(db, game, log_lines, errors)
+                    _step7_daily_summary(db, game, log_lines, errors)
+                    db.commit()
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.exception("ILL reclassify crashed: %s", exc)
+    background_tasks.add_task(_run)
+    return {"status": "started"}
+
+
 @router.get("/diag/keyword_dryrun")
 def diag_keyword_dryrun(
     game_id: int = Query(...),

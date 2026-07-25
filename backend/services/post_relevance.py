@@ -967,6 +967,22 @@ def _is_cross_genre_contaminated(text: str, game) -> bool:
 
 _FUZZY_MIN_KEYWORD_LEN = 8
 _FUZZY_MAX_EDIT_RATIO = 0.20
+
+# Short (≤3-char) English words / contractions that are unsafe when they
+# appear as part of a multi-word keyword. The sliding-window fuzzy match
+# treats each keyword word independently, so any short word in this set
+# turns the fuzzy layer into a near-guaranteed admit on any post containing
+# that word plus the other keyword word(s) in a window. Force such keywords
+# to Layer 1 (exact substring) only. See lessons.md 2026-07-25.
+_SHORT_COLLISION_WORDS = frozenset({
+    # Contractions / adjectives / common English prefixes and short verbs.
+    "ill", "go", "fez", "hi", "in", "up", "we", "if", "do", "or",
+    "ok", "no", "my", "me", "is", "am", "be", "to", "of", "on",
+    "an", "as", "at", "by", "it", "so", "us", "he", "a",
+    # Short frequently-collided titles / IP acronyms that would trip the
+    # sliding window when combined with any common word.
+    "re", "pc", "ps", "vr", "ai", "ea", "ip",
+})
 _WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
 
@@ -1142,6 +1158,22 @@ def _fuzzy_match_relevant(
             continue  # rule 1: single-word keywords are exact-only, never fuzzy
         if len(kw_stripped) < _FUZZY_MIN_KEYWORD_LEN:
             continue  # rule 2: length floor — short phrases are exact-only
+        # rule 3 (2026-07-25): reject fuzzy match on keywords that contain
+        # a word which is BOTH short (≤3 chars) AND a common English word.
+        # Short collision-prone words (ILL, GO, PC, RE) admit false positives
+        # because the sliding window matches whenever the short word AND
+        # any other keyword word both appear anywhere in the text.
+        # Ex: kw='ILL game' was admitting 'HELP ME I NEED A GAME... GIVE ME
+        # A GAME ILL PLAY IT' (both 'ill' and 'game' present, distance=0).
+        # These keywords are forced to Layer 1 (exact substring) only.
+        #
+        # Distinctive short proper nouns like 'Bus' in 'Bus Bound' are still
+        # eligible for fuzzy match — they're not in the collision set.
+        if any(
+            w.strip(":;,.!?/-'\"").lower() in _SHORT_COLLISION_WORDS
+            for w in kw_words
+        ):
+            continue
 
         matched_via = None
 
