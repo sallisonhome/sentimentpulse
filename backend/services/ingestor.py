@@ -758,15 +758,19 @@ def _step3_steam_forums(
 ) -> tuple[int, int]:
     """Scrape Steam forum threads.  Returns (saved, fetched)."""
     try:
-        # v3 (2026-07-25): every daily ingest walks Steam forum pagination
-        # aggressively so we never accumulate a coverage gap. On busy games
-        # new active threads push older active threads off page 1 within
-        # hours, so a page-1-only fetch loses posts. Caps: max_pages=10
-        # (~150 threads visible) with max_threads=80 keeping total cost
-        # bounded to ~90 HTTP requests per game per day.
-        # _bulk_save_posts dedupes on external_id — re-scraping the same
-        # threads across days is free storage-wise, we only pay the fetch.
-        posts = scrape_forum_threads(game.steam_app_id, max_threads=80, max_pages=10)
+        # v4 (2026-07-25 pm): daily ingest walks Steam forum listing pages
+        # AND per-thread comment pagination (via since_epoch cutoff).
+        # since_epoch = 2 days ago — wide enough to cover overnight
+        # ingest gaps and late replies without walking ancient history.
+        # _bulk_save_posts dedupes on external_id so re-scraping is free.
+        import time as _t
+        _since_epoch = int(_t.time()) - 2 * 24 * 3600  # last 48h
+        posts = scrape_forum_threads(
+            game.steam_app_id,
+            max_threads=200,
+            max_pages=15,
+            since_epoch=_since_epoch,
+        )
     except Exception as exc:
         msg = f"[Step 3] Steam forums failed for '{game.name}': {exc}"
         errors.append(msg)

@@ -253,8 +253,9 @@ def backfill_steam_forums_for_game(
     try:
         posts = scrape_forum_threads(
             game.steam_app_id,
-            max_threads=200,
-            max_pages=15,
+            max_threads=500,     # allow all 264 ILL threads through
+            max_pages=25,        # 25 x 15 = up to 375 threads visible per game
+            since_epoch=int(start_dt.timestamp()),
         )
     except Exception as exc:
         logger.error("Steam forum backfill fetch failed for %s: %s", game.name, exc)

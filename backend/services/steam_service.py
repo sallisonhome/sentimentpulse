@@ -6,6 +6,7 @@ in try/except so a single failure never halts the ingestion pipeline.
 """
 import html
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -293,27 +294,31 @@ def scrape_forum_threads(
     steam_app_id: int,
     max_threads: int = 3,
     max_pages: int = 3,
+    since_epoch: Optional[int] = None,
 ) -> list[dict]:
     """
     Scrape forum threads for a Steam app across paginated listing pages.
     Collects top-level posts and first-level replies for each thread.
 
-    v2 (2026-07-25) — now walks Steam's forum pagination (?fp=N) rather
-    than only inspecting page 1. On busy forums, new active threads push
-    older threads off page 1 within a day, so a page-1-only fetcher
-    accumulates a permanent gap. Walking a few pages per daily run
-    (default 3 = ~45 threads visible) catches everything that's actually
-    active while keeping the request cost bounded.
+    v3 (2026-07-25 pm) — now walks EVERY listing page AND every thread's
+    comment pagination (via _scrape_single_thread). Prior versions only
+    grabbed page 1 of the listing + page 1 of each thread, so a game with
+    264 threads and 900-comment threads (like ILL) gave us maybe 15-30
+    posts total. Now ILL should yield thousands.
 
     Args:
         steam_app_id: The Steam AppID.
         max_threads: Cap on the TOTAL number of unique threads scraped
-            across all pages. Prevents runaway on very active games while
-            still giving us multi-page coverage.
-        max_pages: Cap on how many listing pages (?fp=1..N) to walk. The
-            listing itself is cheap; the cost is scraping every thread
-            we discover. Set higher for backfills; default 3 is fine for
-            daily deltas.
+            across all pages. Prevents runaway on very active games.
+        max_pages: Cap on how many listing pages (?fp=1..N) to walk. Set
+            high enough that all threads within `since_epoch` are visible.
+        since_epoch: Unix epoch cutoff; passed through to each
+            _scrape_single_thread call so per-thread comment walks stop
+            at the boundary. Also used to short-circuit the listing walk
+            — if we're on a listing page and every thread's last-post
+            date is older than since_epoch, later pages will be even
+            older and we can stop. (Listing pages are sorted by last-post
+            date desc on Steam.)
 
     Each returned dict has:
         external_id, author, title, body, url, upvotes, post_date
@@ -359,17 +364,19 @@ def scrape_forum_threads(
         return []
 
     all_posts: list[dict] = []
+    threads_visited = 0
     for thread_url, thread_id, thread_title in thread_refs[:max_threads]:
-        posts = _scrape_single_thread(thread_url, thread_id, thread_title)
+        posts = _scrape_single_thread(
+            thread_url, thread_id, thread_title,
+            since_epoch=since_epoch,
+        )
         all_posts.extend(posts)
+        threads_visited += 1
         time.sleep(_REQUEST_DELAY)
 
     logger.info(
-        "Scraped %d post(s) from %d forum thread(s) across %d listing page(s) for app %d",
-        len(all_posts),
-        min(max_threads, len(thread_refs)),
-        pages_walked,
-        steam_app_id,
+        "scrape_forum_threads app=%d pages=%d threads_visited=%d posts=%d",
+        steam_app_id, pages_walked, threads_visited, len(all_posts),
     )
     return all_posts
 
@@ -399,51 +406,249 @@ def _parse_thread_links(soup: BeautifulSoup) -> list[tuple[str, str, str]]:
     return results
 
 
+# Regex to pull the InitializeCommentThread bootstrap JSON from a thread page.
+# Steam embeds this inline so we can read total_count / pagesize / oldestfirst
+# without hitting a rate-limited AJAX endpoint. See lessons.md 2026-07-25.
+_INIT_COMMENT_THREAD_RE = re.compile(
+    r"InitializeCommentThread\(\s*\"[^\"]+\"\s*,\s*\"[^\"]+\"\s*,\s*(\{.*?\})\s*,\s*'https://",
+    re.DOTALL,
+)
+
+
+def _extract_thread_metadata(html: str) -> Optional[dict]:
+    """
+    Pull total_count, pagesize, and oldestfirst from the InitializeCommentThread
+    bootstrap JSON that Steam inlines on every thread page. Returns None if
+    the pattern isn't found (e.g., pinned FAQ threads or empty threads).
+    """
+    m = _INIT_COMMENT_THREAD_RE.search(html)
+    if not m:
+        return None
+    import json as _json
+    try:
+        data = _json.loads(m.group(1))
+        return {
+            "total_count": int(data.get("total_count", 0)),
+            "pagesize": int(data.get("pagesize", 15)) or 15,
+            "oldestfirst": bool(data.get("oldestfirst", False)),
+        }
+    except Exception:
+        return None
+
+
+def _scrape_comment_page(soup: BeautifulSoup) -> list[dict]:
+    """
+    Extract every comment on a thread page as a list of raw dicts:
+        {external_id, author, body, ts_epoch (int|None), permalink_hash}
+
+    Steam gives us a data-timestamp Unix epoch on every comment which is
+    100% reliable, so we skip _parse_steam_date entirely for comments.
+    Comment DOM: <div class="commentthread_comment" id="comment_{id}">
+    with .commentthread_author_link, .commentthread_comment_text, and
+    .commentthread_comment_timestamp[data-timestamp=\"<epoch>\"].
+    """
+    out = []
+    for el in soup.select("div.commentthread_comment"):
+        comment_id = (el.get("id") or "").replace("comment_", "")
+        author_el = el.select_one(".commentthread_author_link")
+        body_el = el.select_one(".commentthread_comment_text")
+        # Steam has TWO .commentthread_comment_timestamp divs per comment —
+        # the first is an empty placeholder above the awards row, the second
+        # carries the real data-timestamp attr. Pick the one with the attr.
+        ts_el = None
+        for candidate in el.select(".commentthread_comment_timestamp"):
+            if candidate.get("data-timestamp"):
+                ts_el = candidate
+                break
+
+        author = author_el.get_text(strip=True) if author_el else "[unknown]"
+        body = body_el.get_text(separator=" ", strip=True) if body_el else ""
+        ts_epoch: Optional[int] = None
+        if ts_el is not None:
+            ts_raw = ts_el.get("data-timestamp")
+            if ts_raw:
+                try:
+                    ts_epoch = int(ts_raw)
+                except Exception:
+                    ts_epoch = None
+
+        if not comment_id or not body:
+            continue
+        out.append({
+            "comment_id": comment_id,
+            "author": author,
+            "body": body,
+            "ts_epoch": ts_epoch,
+        })
+    return out
+
+
+def _scrape_thread_op(soup: BeautifulSoup) -> Optional[dict]:
+    """
+    Extract the OP (thread starter) post. Steam wraps it in div.forum_op with
+    .forum_op_username, .forum_op_text, and .forum_op_date. Returns a dict
+    similar to _scrape_comment_page items (with ts_epoch when possible).
+    """
+    op = soup.select_one("div.forum_op")
+    if op is None:
+        return None
+    author_el = op.select_one(".forum_op_username, .forum_topic_op a")
+    body_el = op.select_one(".forum_op_text")
+    date_el = op.select_one(".forum_op_date")
+
+    author = author_el.get_text(strip=True) if author_el else "[unknown]"
+    body = body_el.get_text(separator=" ", strip=True) if body_el else ""
+
+    ts_epoch: Optional[int] = None
+    # OP date element may carry a data-timestamp attr (newer Steam DOM); if not,
+    # fall back to parsing the visible text via _parse_steam_date.
+    if date_el is not None:
+        ts_raw = date_el.get("data-timestamp")
+        if ts_raw:
+            try:
+                ts_epoch = int(ts_raw)
+            except Exception:
+                ts_epoch = None
+        if ts_epoch is None:
+            parsed = _parse_steam_date(date_el.get_text(strip=True))
+            if parsed is not None:
+                ts_epoch = int(parsed.timestamp())
+    return {"author": author, "body": body, "ts_epoch": ts_epoch}
+
+
 def _scrape_single_thread(
     thread_url: str,
     thread_id: str,
     thread_title: str,
+    since_epoch: Optional[int] = None,
 ) -> list[dict]:
-    """Scrape top-level posts and first-level replies from one forum thread."""
+    """
+    Scrape every comment in a Steam Forum thread within the last `since_epoch`
+    seconds. Walks Steam's ?ctp=N comment pagination and stops once we've
+    walked past the since_epoch boundary.
+
+    v2 (2026-07-25): now paginates comments (was: only page 1 = ~15 posts).
+    Reads Steam's InitializeCommentThread bootstrap JSON to learn total_count,
+    pagesize, and oldestfirst so we can jump straight to the LAST page when
+    Steam serves oldest-first (which it does for ILL and most forums), and
+    walk backward without wasting requests on ancient comments.
+
+    Args:
+        thread_url: canonical thread URL (no ?ctp=).
+        thread_id: gidforumtopic used in the RawPost.external_id.
+        thread_title: shown on the OP row.
+        since_epoch: Unix epoch cutoff; comments older than this are dropped
+            AND the walk stops early (safe because oldestfirst means later
+            pages are always newer than earlier ones).
+
+    Returns list of RawPost-shaped dicts (external_id, author, title, body,
+    url, upvotes, post_date).
+    """
+    from datetime import datetime as _dt, timezone as _tz
+
     resp = _get(thread_url)
     if resp is None:
         return []
+    html = resp.text
 
-    posts = []
     try:
-        soup = BeautifulSoup(resp.text, "lxml")
-        # Steam forums use multiple possible CSS classes depending on page type
-        post_elements = soup.select(
-            "div.forum_op, div.commentthread_comment"
-        )
-        for idx, el in enumerate(post_elements):
-            author_el = el.select_one(
-                ".forum_op_username, .commentthread_author_link, .forum_topic_op a"
-            )
-            body_el = el.select_one(
-                ".forum_op_text, .commentthread_comment_text"
-            )
-            date_el = el.select_one(
-                ".forum_op_date, .commentthread_comment_timestamp, .date"
-            )
+        soup = BeautifulSoup(html, "lxml")
+    except Exception as exc:
+        logger.error("Error parsing thread HTML for %s: %s", thread_url, exc)
+        return []
 
-            author = author_el.get_text(strip=True) if author_el else "unknown"
-            body = body_el.get_text(separator=" ", strip=True) if body_el else ""
-            post_date = _parse_steam_date(
-                date_el.get_text(strip=True) if date_el else None
-            )
+    posts: list[dict] = []
 
+    # ── OP (always page 1, always present).
+    op = _scrape_thread_op(soup)
+    if op is not None:
+        op_ts = op["ts_epoch"]
+        if since_epoch is None or op_ts is None or op_ts >= since_epoch:
             posts.append({
-                "external_id": f"forum_{thread_id}_{idx}",
-                "author": author,
-                "title": thread_title if idx == 0 else None,
-                "body": body,
+                "external_id": f"forum_{thread_id}_op",
+                "author": op["author"],
+                "title": thread_title,
+                "body": op["body"],
                 "url": thread_url,
                 "upvotes": 0,
-                "post_date": post_date,
+                "post_date": (
+                    _dt.fromtimestamp(op_ts, tz=_tz.utc).replace(tzinfo=None)
+                    if op_ts else None
+                ),
             })
-    except Exception as exc:
-        logger.error("Error scraping thread %s: %s", thread_url, exc)
+
+    # ── Comment walk. Read Steam's bootstrap to know how many pages exist.
+    meta = _extract_thread_metadata(html)
+    if not meta or meta["total_count"] == 0:
+        return posts
+
+    pagesize = meta["pagesize"]
+    total = meta["total_count"]
+    oldestfirst = meta["oldestfirst"]
+    total_pages = max(1, (total + pagesize - 1) // pagesize)
+
+    # When oldestfirst=True, the newest comments live on the LAST page, so
+    # we walk from total_pages down to 1 and stop early once we cross
+    # since_epoch. When oldestfirst=False (Steam's older default), page 1
+    # already has the newest; walk 1..total_pages until we cross the cutoff.
+    if oldestfirst:
+        page_order = list(range(total_pages, 0, -1))
+    else:
+        page_order = list(range(1, total_pages + 1))
+
+    for page_num in page_order:
+        if page_num == 1:
+            page_soup = soup  # already fetched
+        else:
+            page_url = f"{thread_url}?ctp={page_num}"
+            page_resp = _get(page_url)
+            if page_resp is None:
+                logger.warning("Comment page fetch None for %s ctp=%d", thread_url, page_num)
+                break
+            time.sleep(_REQUEST_DELAY)
+            try:
+                page_soup = BeautifulSoup(page_resp.text, "lxml")
+            except Exception as exc:
+                logger.warning("Comment page parse err %s ctp=%d: %s", thread_url, page_num, exc)
+                break
+
+        page_comments = _scrape_comment_page(page_soup)
+        if not page_comments:
+            # Steam sometimes serves an empty comment page as the last-page-of-
+            # -exactly-N-comments edge case; stop cleanly.
+            continue
+
+        page_had_in_window = False
+        page_all_out_of_window = True
+        for c in page_comments:
+            ts = c["ts_epoch"]
+            if since_epoch is not None and ts is not None and ts < since_epoch:
+                # Out of window (too old); skip. When oldestfirst=True and
+                # walking last→first this triggers page-early-exit below.
+                continue
+            page_had_in_window = True
+            page_all_out_of_window = False
+            posts.append({
+                "external_id": f"forum_{thread_id}_c{c['comment_id']}",
+                "author": c["author"],
+                "title": None,
+                "body": c["body"],
+                "url": f"{thread_url}#c{c['comment_id']}",
+                "upvotes": 0,
+                "post_date": (
+                    _dt.fromtimestamp(ts, tz=_tz.utc).replace(tzinfo=None)
+                    if ts else None
+                ),
+            })
+
+        # Early-exit: if the WHOLE page was outside the window, later pages
+        # (in either walk direction) will be even further out — bail.
+        if since_epoch is not None and page_all_out_of_window and not page_had_in_window:
+            logger.debug(
+                "Thread %s: page %d all out-of-window, stopping walk",
+                thread_id, page_num,
+            )
+            break
 
     return posts
 
