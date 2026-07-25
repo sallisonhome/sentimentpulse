@@ -31,6 +31,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/games", tags=["competitors"])
 
 
+@router.get("/{game_id}/parent")
+def get_parent_of(game_id: int, db: Session = Depends(get_db)):
+    """
+    Return the parent Saber title that this game is a competitor of.
+
+    Used by the dashboard to render the "← Back to <parent>" breadcrumb
+    on child pages and, more generally, to detect whether the currently-
+    selected game is a competitor.
+
+    Response:
+      {"parent_id": int, "parent_name": str}  — if this game IS a competitor
+      {"parent_id": null, "parent_name": null} — if this game is NOT a competitor
+
+    Always returns HTTP 200 (never 404) so the frontend can call it for
+    every game without special-casing the parent titles — no error toast
+    on the common case.
+    """
+    row = (
+        db.query(CompetitorGame, Game)
+        .join(Game, Game.id == CompetitorGame.parent_id)
+        .filter(CompetitorGame.competitor_id == game_id)
+        .first()
+    )
+    if not row:
+        return {"parent_id": None, "parent_name": None}
+    _cg, parent = row
+    return {"parent_id": parent.id, "parent_name": parent.name}
+
+
 @router.get("/{parent_id}/competitors", response_model=List[CompetitorGameResponse])
 def list_competitors(parent_id: int, db: Session = Depends(get_db)):
     """List the competitor titles tracked under a parent Saber game."""

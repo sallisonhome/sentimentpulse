@@ -42,9 +42,14 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   // never flash an empty chart shell above/below neighboring cards.
   if (isLoading || !data || data.games.length <= 1) return null
 
+  // Flatten `counts` (an object keyed by game_id) into top-level keys so
+  // recharts' <Line dataKey="21" /> can find the numeric value at
+  // `formatted[i]["21"]`. Prior version left `counts` nested, so every
+  // line rendered as an empty polyline.
   const formatted = data.timeseries.map(point => ({
-    ...point,
+    day: point.day,
     date_label: format(parseISO(point.day), 'MMM d'),
+    ...point.counts,
   }))
 
   function handleLegendClick(gameId: number, isParent: boolean) {
@@ -52,7 +57,19 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
     // dashboard. Clicking a competitor switches the selected game and
     // returns to the Dashboard route (this app has no per-game URL
     // pattern; game selection is state-driven via AppContext).
+    //
+    // Persist the current parent to sessionStorage so the child dashboard
+    // can render the "← Back to <parent>" breadcrumb even after a hard
+    // refresh, and so back-nav within-app returns to the parent's
+    // dashboard instead of falling back to /settings via the browser
+    // history stack.
     if (isParent) return
+    try {
+      sessionStorage.setItem(
+        `sp_parent_of_${gameId}`,
+        JSON.stringify({ parent_id: parentId, ts: Date.now() }),
+      )
+    } catch { /* sessionStorage may be disabled; breadcrumb still works from API. */ }
     setSelectedGameId(gameId)
     navigate('/')
   }

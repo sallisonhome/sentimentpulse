@@ -5,6 +5,7 @@ import NetSentimentChart from '../components/dashboard/NetSentimentChart'
 import SentimentDonut from '../components/dashboard/SentimentDonut'
 import VolumeBySourceChart from '../components/dashboard/VolumeBySourceChart'
 import CompetitorTimeseriesChart from '../components/dashboard/CompetitorTimeseriesChart'
+import GameTitleHeader from '../components/dashboard/GameTitleHeader'
 import TopTopicsPanel from '../components/dashboard/TopTopicsPanel'
 import EmptyState from '../components/shared/EmptyState'
 import SkeletonCard from '../components/shared/SkeletonCard'
@@ -21,6 +22,9 @@ export default function DashboardPage() {
   if (isLoading) {
     return (
       <div className="space-y-4">
+        {/* Show the header immediately — users know which game they clicked
+            into even before the dashboard payload lands. */}
+        <GameTitleHeader />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => <SkeletonCard key={i} lines={2} />)}
         </div>
@@ -60,6 +64,10 @@ export default function DashboardPage() {
   return (
     <ErrorBoundary>
       <div className="space-y-4">
+        {/* Persistent per-page game-name header + "← Back to <parent>"
+            breadcrumb for competitor pages. Renders null until game data
+            resolves. */}
+        <GameTitleHeader />
         {noNewRecords && (
           <div className="rounded-md border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
             <strong>No new posts collected on last ingestion.</strong> Sentiment counts show zero for today. Topics and trend charts reflect historical data.

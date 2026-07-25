@@ -3,6 +3,28 @@ import { api } from '../lib/api'
 import { queryClient } from '../lib/queryClient'
 import type { CompetitorGame, CompetitorTimeseriesResponse, Period } from '../types'
 
+/**
+ * Return the parent title of a competitor game, if any. Used by the
+ * dashboard to render "← Back to <parent>" breadcrumbs on child pages.
+ * Backend always returns HTTP 200 with `{parent_id: null, parent_name: null}`
+ * for non-competitor games, so this hook is safe to call unconditionally
+ * for any selected game.
+ */
+export interface ParentOfResponse {
+  parent_id: number | null
+  parent_name: string | null
+}
+export function useParentOf(gameId: number | null) {
+  return useQuery<ParentOfResponse>({
+    queryKey: ['parent-of', gameId],
+    queryFn: () => api.get<ParentOfResponse>(`/games/${gameId}/parent`).then(r => r.data),
+    enabled: gameId != null,
+    // Parenthood almost never changes; cache aggressively so switching
+    // between games doesn't spam the backend.
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
 /** List the competitor titles tracked under a parent Saber game. */
 export function useCompetitors(parentId: number | null) {
   return useQuery<CompetitorGame[]>({
