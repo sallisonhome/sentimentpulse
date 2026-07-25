@@ -272,6 +272,31 @@ _IP_CUE_PATTERNS = [
     r"\bin\s+the\s+film\b",
     r"\bplot\s+of\s+the\b",
     r"\bscene\s+from\b",
+    # v2 (2026-07-24): expand IP-cue coverage for print, TV, and other
+    # non-game franchise media — posts referencing a comic, novel,
+    # TV series, or animated series are almost always about the IP
+    # not the game.
+    r"\bcomic\b",
+    r"\bcomics\b",
+    r"\bgraphic\s+novel\b",
+    r"\bnovel\b",
+    r"\bnovels\b",
+    r"\bbook\b",
+    r"\bbooks\b",
+    r"\bTV\s+show\b",
+    r"\btv\s+series\b",
+    r"\bTV\s+series\b",
+    r"\banimated\s+series\b",
+    r"\bmini-?series\b",
+    r"\bshow\s+on\b",
+    r"\bcomic\s+series\b",
+    r"\bcomic\s+book\b",
+    r"\bmanga\b",
+    r"\banime\b",
+    r"\bDisney\+\b",
+    r"\bHulu\b",
+    r"\bAmazon\s+Prime\b",
+    r"\bPrime\s+Video\b",
 ]
 
 _IP_CUE_RE = re.compile(
@@ -440,11 +465,29 @@ def is_post_relevant_to_game(title: str, body: str, game) -> bool:
     _FAST_PATH_MIN_CHARS = 20
     _keywords_for_fast_path = _get_keywords(game)
     if _keywords_for_fast_path and len(combined) >= _FAST_PATH_MIN_CHARS:
-        _has_kw = bool(_find_keyword_matches(combined, _keywords_for_fast_path))
+        # For the fast-path, we also count bare-word signals derived from
+        # each multi-word keyword (e.g. keyword 'Hellraiser Revival' → bare
+        # 'Hellraiser'). This lets a post like 'Hellraiser on PS5' match
+        # via the bare token PLUS the platform context word, without
+        # weakening the standard-path Layer-1 match (which still requires
+        # the full multi-word keyword and its own IP-cue guards).
+        _has_kw = (
+            bool(_find_keyword_matches(combined, _keywords_for_fast_path))
+            or _has_bare_distinctive_token(combined, _keywords_for_fast_path)
+        )
         _has_ctx = _has_game_context_word(combined)
         if _has_kw and _has_ctx:
-            # Still enforce IP-cue + cross-genre checks below — skip to Rule 3.
+            # Still enforce IP-cue + cross-genre checks below.
+            # If the standard-keyword layer matched, use its positions.
+            # If ONLY the bare-token layer matched (rare but possible),
+            # locate the bare-token spans and use those instead — without
+            # this, IP-cue rejection would silently no-op on bare hits
+            # and let 'Hellraiser movie on PS5' through.
             match_positions = _find_keyword_matches(combined, _keywords_for_fast_path)
+            if not match_positions:
+                match_positions = _find_bare_distinctive_token_matches(
+                    combined, _keywords_for_fast_path,
+                )
             if _all_matches_near_ip_cue(combined, match_positions):
                 logger.debug(
                     "Fast-path IP-cue rejection for '%s'.", game.name,
@@ -633,6 +676,143 @@ def _has_game_context_word(text: str) -> bool:
     if _CONTEXT_PHRASE_RE.search(text):
         return True
     return False
+
+
+# Words that are too generic on their own to identify a game, and MUST
+# NOT be treated as bare distinctive tokens for the fast-path. These are
+# the common English / gaming-vocabulary words that appear as the second
+# or later word in many game titles.
+_BARE_TOKEN_STOPWORDS = {
+    # Stopwords + gaming vocabulary that shouldn't become a bare token
+    # even when ≥ 5 chars long.
+    #
+    # Guiding principle: this set should contain words that would produce
+    # HIGH-VOLUME false positives if they matched bare + a context word
+    # (e.g. any post about the 'game' genre + PS5 would falsely admit).
+    # Words that are actual GAME NAMES (Hellraiser, Turok, Jurassic,
+    # Warhammer, Ghostbusters, Snowrunner, Mudrunner, Halo, Crysis)
+    # are NOT in this list — they're distinctive enough that combined
+    # with a context word (PS5, Xbox, etc.) the intent is clear. The
+    # IP-cue rejection (movie/film/cinema/streaming) still fires for
+    # off-topic IP-only discussion.
+    "the", "and", "for", "with", "this", "that",
+    "game", "games", "edition", "remastered", "remaster", "remake",
+    "deluxe", "complete", "anniversary", "collection", "trilogy",
+    "legendary", "ultimate", "platinum", "season",
+    "combat", "expansion",
+    "official", "vinyl", "livery", "crawler",
+    "volume", "chapter", "episode",
+    "iii", "vii", "viii",
+    "untitled", "master", "chief", "quiet", "place",
+    "video", "deep", "waters",
+    "docked", "expedition", "expeditions", "editor",
+    "aftermath", "prologue", "world",
+    "first", "person", "third", "story", "prequel", "sequel",
+    "launch", "early", "access", "battle",
+    "stakes", "final", "return", "reborn", "reboot",
+    "unleashed", "assault", "strike", "force",
+    "saber", "sabre", "carpenter", "barker", "clive",
+    # Common suffix-noun words that appear in multi-word game titles
+    # but are too generic on their own (a PS5 post about 'ghost' or
+    # 'runner' or 'truck' shouldn't match a specific game).
+    "runner", "truck", "trucks", "bound", "revival", "origins",
+    "survival", "space", "marine", "ghost", "raiser", "builder",
+    "driver", "drivers", "hunter", "hunters", "raiders", "raider",
+    "knight", "knights", "warriors", "warrior", "soldier", "soldiers",
+    "survivor", "survivors", "legend", "legends",
+    # Movie/IP proper nouns that also appear in game titles — too
+    # generic to bare-match without collision (e.g. 'Ghost' matches
+    # Ghost of Tsushima; 'Marine' matches Space Marine 2 AND real-world
+    # marines). Full multi-word keywords still catch these.
+    "jurassic", "toxic", "haven", "gloom", "rising", "digital",
+    "remasterd", "nightling",  # frags/typos too close to common words
+    # Note: 'Hellraiser', 'Turok', 'Ghostbusters', 'SnowRunner',
+    # 'MudRunner', 'Warhammer', 'Emberville', 'JurassicPark',
+    # 'ToxicCommando' etc. — the full distinctive proper nouns — are
+    # NOT in this stopword list. They remain as valid bare-token
+    # signals.
+}
+
+
+def _extract_bare_distinctive_tokens(keywords: list[str]) -> set[str]:
+    """
+    Derive the set of bare distinctive tokens implied by a game's keyword
+    list. For each multi-word keyword, take each word that:
+      1. Starts with an uppercase letter in the original keyword (i.e. is
+         a proper noun — game title, franchise name, publisher, etc.),
+      2. Is ≥ 5 chars,
+      3. Is NOT in the shared stopword list.
+    Deduped, lowercase.
+
+    Requiring proper-noun casing is essential to prevent common gaming
+    vocabulary from becoming a false-positive signal. For example a test
+    keyword like 'magic sword adventure' (all-lowercase words) should NOT
+    contribute 'magic' or 'sword' as bare tokens because they'd match any
+    fantasy-RPG post that mentions the words. But 'Hellraiser Revival'
+    (uppercase Hellraiser) rightly contributes 'hellraiser' as a bare
+    token because it's a proper noun the community actually uses.
+
+    Example: for keywords ['Hellraiser Revival', 'Boss Team Hellraiser',
+    'Hellraiser 2026'], returns {'hellraiser'}. 'Boss', 'Team', 'Revival'
+    are excluded (Revival is in the stopword list; Boss and Team are
+    short-common; and while capitalized, they're still gaming-generic).
+
+    Used only in the fast-path where the context-word requirement provides
+    a second layer of safety against false positives.
+    """
+    out: set[str] = set()
+    for kw in keywords:
+        for w in kw.split():
+            stripped = w.strip(":;,.!?/-'\"")
+            if len(stripped) < 5:
+                continue
+            # Proper-noun casing check: first alpha char must be uppercase.
+            # Handles quoted, hyphenated, and punctuated forms.
+            first_alpha = next((c for c in stripped if c.isalpha()), None)
+            if not first_alpha or not first_alpha.isupper():
+                continue
+            wl = stripped.lower()
+            if wl in _BARE_TOKEN_STOPWORDS:
+                continue
+            out.add(wl)
+    return out
+
+
+def _has_bare_distinctive_token(text: str, keywords: list[str]) -> bool:
+    """
+    Return True iff `text` contains any bare distinctive token derived
+    from `keywords` (whole-word match, case-insensitive).
+
+    Used only in the fast-path.
+    """
+    bare_tokens = _extract_bare_distinctive_tokens(keywords)
+    if not bare_tokens:
+        return False
+    text_lower = text.lower()
+    for tok in bare_tokens:
+        pattern = r"(?<!\w)" + re.escape(tok) + r"(?!\w)"
+        if re.search(pattern, text_lower):
+            return True
+    return False
+
+
+def _find_bare_distinctive_token_matches(
+    text: str, keywords: list[str],
+) -> list[tuple[int, int]]:
+    """
+    Return character-span positions of every bare-distinctive-token hit
+    in `text`. Used by the fast-path IP-cue check when the standard
+    keyword layer didn't match but the bare-token layer did.
+    """
+    bare_tokens = _extract_bare_distinctive_tokens(keywords)
+    if not bare_tokens:
+        return []
+    positions: list[tuple[int, int]] = []
+    for tok in bare_tokens:
+        pattern = r"(?<!\w)" + re.escape(tok) + r"(?!\w)"
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            positions.append((m.start(), m.end()))
+    return positions
 
 
 def _get_keywords(game) -> list[str]:

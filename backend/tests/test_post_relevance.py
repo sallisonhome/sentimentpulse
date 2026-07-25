@@ -408,6 +408,65 @@ class TestEdgeCases:
         )
         assert result is False
 
+    def test_bare_token_admits_short_reddit_hellraiser_on_ps5(self):
+        """
+        v3 bare-token fast-path (2026-07-24): a Reddit title 'Hellraiser
+        looks amazing on PS5' contains no full keyword ('Hellraiser Revival'
+        etc.) but has the proper-noun 'Hellraiser' as a bare token AND the
+        PS5 context word. Should be admitted.
+
+        Root cause of user's 'nerfed too much' report: 386 Hellraiser raw
+        posts today matched no multi-word keyword because Reddit users
+        say 'Hellraiser' not 'Hellraiser Revival'. The bare-token
+        + context fast-path fixes this while preserving the IP-cue
+        rejection safety belt.
+        """
+        game = _make_game(
+            "Clive Barker's Hellraiser: Revival",
+            keywords=["Hellraiser Revival", "Hellraiser game"],
+        )
+        result = is_post_relevant_to_game(
+            "Hellraiser looks amazing on PS5", "", game,
+        )
+        assert result is True
+
+    def test_bare_token_rejects_hellraiser_comic_reference(self):
+        """
+        Bare-token fast-path still rejects IP-only references. A post
+        'The Turok comic series from the 1950s is still worth reading.
+        Not sure if the new games really capture the same feel' has
+        both bare 'Turok' + context 'games' but ALSO 'comic series'
+        within 120 chars — IP-cue rejection fires.
+        """
+        game = _make_game(
+            "Turok: Origins",
+            keywords=["Turok Origins"],
+        )
+        body = (
+            "The Turok comic series from the 1950s is still worth reading. "
+            "Not sure if the new games really capture the same feel."
+        )
+        result = is_post_relevant_to_game("", body, game)
+        assert result is False
+
+    def test_bare_token_rejects_all_lowercase_fantasy_kw(self):
+        """
+        Bare-token extraction requires the source keyword word to be
+        proper-noun-cased. A test-fixture keyword like 'magic sword
+        adventure' (all-lowercase, gaming-vocab) does NOT contribute
+        any bare tokens — so a post 'magic swords are cool in fantasy
+        games' correctly falls through to the strict path (where the
+        partial phrase doesn't match).
+        """
+        game = _make_game("Some Game", keywords=["magic sword adventure"])
+        result = is_post_relevant_to_game(
+            "Magic swords are cool in fantasy games",
+            "I love how fantasy games handle magic swords and enchantments. "
+            "The best mechanic in RPGs hands down without any doubt at all.",
+            game,
+        )
+        assert result is False
+
     def test_fast_path_ipcue_still_enforced(self):
         """
         Fast-path still enforces the IP-cue rejection: a post like
