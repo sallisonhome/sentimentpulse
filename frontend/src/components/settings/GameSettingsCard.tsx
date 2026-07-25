@@ -1,42 +1,46 @@
 import { useState } from 'react'
-import { X, Plus, Trash2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Switch } from '../ui/switch'
-import { Badge } from '../ui/badge'
+import { Label } from '../ui/label'
 import { useUpdateGameSettings } from '../../hooks/useGames'
 import { useAddCompetitor, useCompetitors, useRemoveCompetitor } from '../../hooks/useCompetitors'
 import { MAX_COMPETITORS_PER_PARENT } from '../../types'
 import type { Game } from '../../types'
-import CompetitorSubredditEditor from './CompetitorSubredditEditor'
+import GameSubredditsEditor from './GameSubredditsEditor'
+import CompetitorGameCard from './CompetitorGameCard'
 
 interface GameSettingsCardProps {
   game: Game
 }
 
+/**
+ * Settings card for a top-level Saber title (parent game).
+ *
+ * Layout, top to bottom:
+ *  1. Header — name, Steam AppID, Visible/Hidden toggle
+ *  2. Tracked Subreddits (via <GameSubredditsEditor>, bound to this game's id)
+ *  3. Commercial Strategic Context
+ *  4. Save changes (parent-level fields only: is_active + commercial_context —
+ *     subreddits saving is now owned entirely by GameSubredditsEditor)
+ *  5. Competitor Titles section — visually separated (border-t + muted bg),
+ *     each competitor rendered as its own full <CompetitorGameCard>, with a
+ *     distinctly-styled "Add competitor title" zone below them.
+ *
+ * The parent's subreddits editor and the "Add competitor title" input are
+ * two different components with two different mutation targets (this game's
+ * id vs. the competitors endpoint) — there is no shared state, so a value
+ * typed into one can never land in the other.
+ */
 export default function GameSettingsCard({ game }: GameSettingsCardProps) {
-  const [isActive, setIsActive]       = useState(game.is_active)
-  const [subreddits, setSubreddits]   = useState<string[]>(game.subreddits ?? [])
-  const [subredditInput, setSubredditInput] = useState('')
+  const [isActive, setIsActive] = useState(game.is_active)
   const [commercialContext, setCommercialContext] = useState<string>(game.commercial_context ?? '')
-  const [showBrief, setShowBrief]     = useState(false)
-  const [dirty, setDirty]             = useState(false)
+  const [showBrief, setShowBrief] = useState(false)
+  const [dirty, setDirty] = useState(false)
 
   const { mutate: save, isPending, error } = useUpdateGameSettings(game.id)
-
-  function addSubreddit() {
-    const val = subredditInput.trim().replace(/^r\//, '')
-    if (!val || subreddits.includes(val)) return
-    setSubreddits(prev => [...prev, val])
-    setSubredditInput('')
-    setDirty(true)
-  }
-
-  function removeSubreddit(name: string) {
-    setSubreddits(prev => prev.filter(s => s !== name))
-    setDirty(true)
-  }
 
   function handleActiveToggle(checked: boolean) {
     setIsActive(checked)
@@ -44,8 +48,10 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
   }
 
   function handleSave() {
+    // Parent-level fields only — never touches subreddits (owned by
+    // GameSubredditsEditor) and never touches competitors.
     save(
-      { is_active: isActive, subreddits, commercial_context: commercialContext },
+      { is_active: isActive, commercial_context: commercialContext },
       { onSuccess: () => setDirty(false) },
     )
   }
@@ -67,55 +73,15 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
       </CardHeader>
 
       <CardContent className="space-y-4">
-        {/* Subreddit list */}
-        <div>
-          <p className="mb-2 text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Tracked Subreddits
-          </p>
-          <div className="flex flex-wrap gap-1.5 min-h-[2rem]">
-            {subreddits.length === 0 && (
-              <span className="text-xs text-muted-foreground italic">None — Reddit posts will not be collected.</span>
-            )}
-            {subreddits.map(sub => (
-              <Badge key={sub} variant="secondary" className="gap-1 pr-1">
-                r/{sub}
-                <button
-                  type="button"
-                  onClick={() => removeSubreddit(sub)}
-                  className="ml-0.5 rounded hover:text-destructive transition-colors"
-                  aria-label={`Remove r/${sub}`}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </Badge>
-            ))}
-          </div>
-        </div>
-
-        {/* Add subreddit */}
-        <div className="flex items-center gap-2">
-          <div className="relative flex-1 max-w-xs">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">r/</span>
-            <Input
-              placeholder="subreddit name"
-              value={subredditInput}
-              onChange={e => setSubredditInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && addSubreddit()}
-              className="pl-7"
-            />
-          </div>
-          <Button type="button" variant="outline" size="sm" onClick={addSubreddit}>
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            Add
-          </Button>
-        </div>
+        {/* Tracked subreddits — owns its own state + save, scoped to this game's id */}
+        <GameSubredditsEditor game={game} />
 
         {/* Commercial-strategic context brief (CLAUDE.md §21) */}
-        <div className="pt-1">
+        <div className="pt-1 border-t">
           <button
             type="button"
             onClick={() => setShowBrief(s => !s)}
-            className="flex items-center justify-between w-full text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors"
+            className="flex items-center justify-between w-full text-xs font-medium text-muted-foreground uppercase tracking-wide hover:text-foreground transition-colors pt-3"
           >
             <span>Commercial Strategic Context</span>
             <span className="text-[10px] normal-case font-normal">
@@ -140,7 +106,7 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
           )}
         </div>
 
-        {/* Save row */}
+        {/* Save row — parent-level fields (is_active, commercial_context) only */}
         <div className="flex items-center justify-between pt-1">
           {error && (
             <p className="text-xs text-destructive">{(error as Error).message}</p>
@@ -168,6 +134,10 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
 // titles alongside this Saber title. Each competitor becomes a fully-
 // fledged Game row (own subreddits, sentiment, topics, executive summary)
 // linked to this game as its parent via the competitor_games join table.
+// Visually separated from everything above it (border-t + muted/tinted
+// background) so it reads as a distinct zone of the card, and the
+// "Add competitor title" input is deliberately styled to look nothing like
+// the subreddit input above it.
 
 function CompetitorTitlesSection({ parentId, parentName }: { parentId: number; parentName: string }) {
   const { data: competitors, isLoading } = useCompetitors(parentId)
@@ -175,7 +145,6 @@ function CompetitorTitlesSection({ parentId, parentName }: { parentId: number; p
   const removeCompetitor = useRemoveCompetitor(parentId)
   const [appIdInput, setAppIdInput] = useState('')
   const [addError, setAddError] = useState<string | null>(null)
-  const [editingCompetitorId, setEditingCompetitorId] = useState<number | null>(null)
 
   const count = competitors?.length ?? 0
   const atCapacity = count >= MAX_COMPETITORS_PER_PARENT
@@ -198,15 +167,19 @@ function CompetitorTitlesSection({ parentId, parentName }: { parentId: number; p
   function handleRemove(id: number, name: string) {
     if (!confirm(`Remove ${name} as a competitor? This permanently deletes its posts, sentiment, and summaries.`)) return
     removeCompetitor.mutate(id)
-    if (editingCompetitorId === id) setEditingCompetitorId(null)
   }
 
   return (
-    <div className="pt-4 border-t">
-      <p className="mb-0.5 text-xs font-medium text-muted-foreground uppercase tracking-wide">
-        Competitor Titles
-      </p>
-      <p className="mb-3 text-[11px] text-muted-foreground">
+    <div className="-mx-6 -mb-6 mt-2 px-6 pb-6 pt-4 border-t bg-muted/20">
+      <div className="flex items-start justify-between gap-3 mb-0.5">
+        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+          Competitor Titles
+        </p>
+        <p className="text-[11px] text-muted-foreground whitespace-nowrap">
+          {count} of {MAX_COMPETITORS_PER_PARENT} tracked
+        </p>
+      </div>
+      <p className="mb-3 text-[11px] text-muted-foreground max-w-md">
         Track up to {MAX_COMPETITORS_PER_PARENT} competing titles alongside {parentName}. Each competitor is
         treated as a full game with its own subreddits, sentiment analysis, topics, and executive summary.
       </p>
@@ -214,65 +187,49 @@ function CompetitorTitlesSection({ parentId, parentName }: { parentId: number; p
       {isLoading ? (
         <p className="text-xs text-muted-foreground">Loading competitors…</p>
       ) : count === 0 ? (
-        <p className="text-xs text-muted-foreground italic mb-3">No competitors tracked yet.</p>
+        <p className="text-xs text-muted-foreground italic mb-3">
+          No competitors tracked yet. Add one below to compare its sentiment against {parentName}.
+        </p>
       ) : (
-        <div className="space-y-2 mb-3">
+        // Indented ~24px + left-border accent to signal these cards are
+        // children of the parent, stacked vertically.
+        <div className="space-y-3 mb-4 pl-6 border-l-2 border-muted">
           {competitors!.map(c => (
-            <div key={c.id} className="rounded-md border p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium truncate">{c.name}</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    Steam App ID: {c.steam_app_id}
-                    {c.release_date && <> · Released {c.release_date}</>}
-                  </p>
-                </div>
-                <div className="flex items-center gap-1 flex-none">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setEditingCompetitorId(id => (id === c.id ? null : c.id))}
-                  >
-                    {editingCompetitorId === c.id ? 'Hide subreddits' : 'Edit subreddits →'}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleRemove(c.id, c.name)}
-                    aria-label={`Remove ${c.name} as a competitor`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-              {editingCompetitorId === c.id && (
-                <CompetitorSubredditEditor competitorId={c.id} initialSubreddits={c.subreddits ?? []} />
-              )}
-            </div>
+            <CompetitorGameCard
+              key={c.id}
+              competitor={c}
+              parentName={parentName}
+              onRemove={handleRemove}
+              removePending={removeCompetitor.isPending}
+            />
           ))}
         </div>
       )}
 
       {atCapacity ? (
-        <p className="text-xs text-muted-foreground">
-          Maximum of {MAX_COMPETITORS_PER_PARENT} competitors reached. Remove one to add another.
-        </p>
+        <p className="text-xs text-muted-foreground">Maximum reached — remove one to add another.</p>
       ) : (
-        <div className="flex items-center gap-2">
-          <Input
-            placeholder="Steam AppID (e.g. 2138710)"
-            value={appIdInput}
-            onChange={e => setAppIdInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleAdd()}
-            className="max-w-xs"
-            disabled={addCompetitor.isPending}
-          />
-          <Button type="button" variant="outline" size="sm" onClick={handleAdd} disabled={addCompetitor.isPending}>
-            <Plus className="mr-1 h-3.5 w-3.5" />
-            {addCompetitor.isPending ? 'Looking up…' : 'Look up'}
-          </Button>
+        // Distinct visual zone (dashed border + tinted background) so this
+        // can never be confused with the "Add subreddit" input above.
+        <div className="border border-dashed bg-muted/30 p-3 rounded-md">
+          <Label htmlFor={`add-competitor-${parentId}`} className="text-xs">
+            Add a competitor by Steam AppID
+          </Label>
+          <div className="flex items-center gap-2 mt-1.5">
+            <Input
+              id={`add-competitor-${parentId}`}
+              placeholder="e.g. 2138710"
+              value={appIdInput}
+              onChange={e => setAppIdInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAdd()}
+              className="max-w-xs bg-background"
+              disabled={addCompetitor.isPending}
+            />
+            <Button type="button" variant="outline" size="sm" onClick={handleAdd} disabled={addCompetitor.isPending}>
+              <Plus className="mr-1 h-3.5 w-3.5" />
+              {addCompetitor.isPending ? 'Adding…' : 'Add competitor title'}
+            </Button>
+          </div>
         </div>
       )}
       {addError && <p className="mt-1 text-xs text-destructive">{addError}</p>}
