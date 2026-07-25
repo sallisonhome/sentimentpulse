@@ -19,11 +19,15 @@ export default function DashboardPage() {
     return <EmptyState title="No game selected" description="Select a game from the top bar." />
   }
 
+  // Wrap every downstream state (loading, error, empty, populated) with
+  // the GameTitleHeader so the game name + back-to-parent breadcrumb are
+  // ALWAYS visible on a child page, even when the game has no ingested
+  // data yet. Without this, the empty-state early return below would hide
+  // the header entirely on days when nothing has been collected.
+
   if (isLoading) {
     return (
       <div className="space-y-4">
-        {/* Show the header immediately — users know which game they clicked
-            into even before the dashboard payload lands. */}
         <GameTitleHeader />
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => <SkeletonCard key={i} lines={2} />)}
@@ -41,7 +45,12 @@ export default function DashboardPage() {
   }
 
   if (error) {
-    return <EmptyState title="Failed to load dashboard" description={error.message} />
+    return (
+      <div className="space-y-4">
+        <GameTitleHeader />
+        <EmptyState title="Failed to load dashboard" description={error.message} />
+      </div>
+    )
   }
 
   // Empty state: no data at all for this period
@@ -49,7 +58,12 @@ export default function DashboardPage() {
     const desc = period === 'today'
       ? "Today's ingestion has not run yet. Data updates automatically at 02:00."
       : "No data for this period. Try a wider time range or run an ingestion."
-    return <EmptyState title="No data available" description={desc} />
+    return (
+      <div className="space-y-4">
+        <GameTitleHeader />
+        <EmptyState title="No data available" description={desc} />
+      </div>
+    )
   }
 
   // Banners — only relevant on the Today view where zero counts are meaningful
