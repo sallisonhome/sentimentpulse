@@ -726,6 +726,26 @@ _BARE_TOKEN_STOPWORDS = {
     # marines). Full multi-word keywords still catch these.
     "jurassic", "toxic", "haven", "gloom", "rising", "digital",
     "remasterd", "nightling",  # frags/typos too close to common words
+    # 2026-07-24 evening — franchise-generic tokens added after the
+    # SILENT HILL: Townfall data-corruption incident. These are franchise
+    # names that would tag every franchise post as "about the specific
+    # spin-off" if bare-matched. Spin-off titles should rely on their
+    # unique-to-this-title word (Townfall, Revival, Origins) as the bare
+    # token, not the franchise-generic word.
+    "silent", "hill", "resident", "evil", "dying", "light",
+    "screen", "code", "burn", "metal", "gear", "solid", "fantasy",
+    "dragon", "street", "fighter", "tekken", "mortal", "kombat",
+    "grand", "theft", "auto", "assassin", "creed", "tomb",
+    "raider", "deus", "borderlands", "cyberpunk", "witcher", "skyrim",
+    "elder", "scrolls", "fallout", "souls", "bloodborne", "elden",
+    "ring", "sekiro", "nier", "persona", "final", "kingdom",
+    "hearts", "tales", "star", "wars", "marvel", "batman", "arkham",
+    "spider", "guardians", "thief", "deacon", "gods", "war",
+    "tsushima", "horizon", "forbidden", "west", "death", "stranding",
+    "resident", "evil", "village", "biohazard",
+    # And their common two-token franchise combinations that a bare
+    # match might still accidentally split on
+    "burnout", "paradise", "midnight", "club"
     # Note: 'Hellraiser', 'Turok', 'Ghostbusters', 'SnowRunner',
     # 'MudRunner', 'Warhammer', 'Emberville', 'JurassicPark',
     # 'ToxicCommando' etc. — the full distinctive proper nouns — are

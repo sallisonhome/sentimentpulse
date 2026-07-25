@@ -769,3 +769,71 @@ class TestLayer2FuzzyMatch:
         )
         result = is_post_relevant_to_game(title, body, game)
         assert result is False, "Layer 2 must not run when the config flag is disabled."
+
+
+class TestFranchiseBareTokenStopwords_2026_07_24_Evening:
+    """
+    Regression tests for the SILENT HILL: Townfall data-corruption fix.
+    Franchise-generic bare tokens ('silent', 'hill', 'resident', 'evil',
+    'dying', 'light', ...) must NOT admit posts via the bare-token fast
+    path, even when a game's keyword list contains those capitalized
+    words in a multi-word phrase.
+    See lessons.md 2026-07-24 (evening).
+    """
+    def test_silent_bare_token_stopwords_a_franchise_post_from_townfall(self):
+        from types import SimpleNamespace
+        from services.post_relevance import is_post_relevant_to_game
+
+        game = SimpleNamespace(
+            id=999,
+            name="SILENT HILL: Townfall",
+            distinctive_keywords=[
+                "Silent Hill Townfall",
+                "Silent Hill: Townfall",
+                "SH Townfall",
+                "Townfall Silent Hill",
+                "Screen Burn Townfall",
+                "No Code Townfall",
+                "Townfall game",
+            ],
+        )
+
+        # These are franchise-generic posts that used to pass the bare
+        # 'silent' token fast-path admission. They must all reject now.
+        franchise_noise_titles = [
+            "GOG Silent Hill 4 Issues",
+            "How are Silent Hill fans feeling about the new Hellraiser: Revival game?",
+            "Silent Hill f drawing on my PS5",
+            "I Made A Silent Hill Poster!",
+            "Is Spec Ops the Line an honorary Silent Hill game?",
+        ]
+        for title in franchise_noise_titles:
+            assert not is_post_relevant_to_game(
+                title, "some longer body content" * 5, game
+            ), f"Franchise noise leaked through gate: {title!r}"
+
+    def test_townfall_specific_posts_still_admitted(self):
+        from types import SimpleNamespace
+        from services.post_relevance import is_post_relevant_to_game
+
+        game = SimpleNamespace(
+            id=999,
+            name="SILENT HILL: Townfall",
+            distinctive_keywords=[
+                "Silent Hill Townfall",
+                "Silent Hill: Townfall",
+                "SH Townfall",
+                "Townfall Silent Hill",
+                "Screen Burn Townfall",
+                "No Code Townfall",
+                "Townfall game",
+            ],
+        )
+        # These posts explicitly mention Townfall — must admit.
+        townfall_posts = [
+            ("Silent Hill: Townfall release date on PS5", "Konami and Screen Burn announced Silent Hill: Townfall for September 24, 2026."),
+            ("New Townfall trailer looks great", "Silent Hill Townfall from Screen Burn is looking really strong on the new gameplay trailer for PC and PS5."),
+        ]
+        for title, body in townfall_posts:
+            assert is_post_relevant_to_game(title, body, game), \
+                f"Legit Townfall post was rejected: {title!r}"
