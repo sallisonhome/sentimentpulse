@@ -65,10 +65,15 @@ function parseChangelog(src: string): DateGroup[] {
   }
 
   for (const raw of lines) {
-    const line = raw.trimEnd()
-    // ## <Date> — new date group
-    const dateMatch = /^##\s+(.+?)\s*$/.exec(line)
-    if (dateMatch && !line.startsWith('###')) {
+    // Trim leading whitespace too. The changelog format nests entries
+    // under their bullet so `### Title` and body lines are indented with
+    // two spaces. Without lstrip'ing, the regexes below (anchored with
+    // ^) never matched and every entry rendered as a bare badge with no
+    // title or body. Fixed 2026-07-25.
+    const line = raw.trim()
+    // ## <Date> — new date group (must NOT match ###)
+    const dateMatch = /^##\s+(?!#)(.+?)\s*$/.exec(line)
+    if (dateMatch) {
       flushGroup()
       currentGroup = { date: dateMatch[1], entries: [] }
       continue
@@ -87,8 +92,10 @@ function parseChangelog(src: string): DateGroup[] {
       currentEntry.title = titleMatch[1]
       continue
     }
-    // # <Top-level title> — ignored; assumed to be the file header
-    if (/^#\s+/.test(line)) continue
+    // # <Top-level title> (single #) — ignored; assumed to be the file header.
+    // Skip ONLY when it's a real level-1 heading (# followed by space, not
+    // ## or ###); ## and ### are handled above.
+    if (/^#\s+/.test(line) && !line.startsWith('##')) continue
     // Anything else: accumulate as body if we're inside an entry
     if (currentEntry && currentEntry.title) {
       bodyBuffer.push(raw)
