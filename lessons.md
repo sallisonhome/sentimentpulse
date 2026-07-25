@@ -6,6 +6,54 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-07-24 (evening) — Weak auto-generated keywords let franchise/word-collision noise corrupt ILL and Silent Hill: Townfall
+
+**What happened.** I added ILL (#138) and SILENT HILL: Townfall (#139) as competitors under Hellraiser, batch-added 22 and 25 subreddits, and ran an April→today backfill (14,805 raw Reddit posts). Post-backfill: ILL showed 15 posts monthly, Townfall showed 587. When the user asked "Are you sure ILL and game and ILL and Steam, Trailer and other game adjacent words didn’t get cut out by our rules," I audited via a new `/api/ingest/diag/game_records` endpoint and found the OPPOSITE problem: massive false-positive contamination.
+- ILL: 42 SentimentRecords, ~1/15 sampled were actually about the game. The bare `"ILL"` keyword matched every English "ill" / "I'll" / "illness" occurrence: "Should I trophy hunt Both the RE Revelation Games?" ("ill only have requiem left"), "ill leave this for women audiences", "Horror Movie Mental Illness Scapegoating", etc.
+- Townfall: 819 SentimentRecords, **0/20 sampled** were about Townfall. The bare `"SILENT HILL"` keyword matched every Silent Hill franchise post: SH2, SH3, SH4, Silent Hill F reviews, wallpapers, drawings, remakes, movie, "How do Silent Hill fans feel about Hellraiser Revival", etc.
+
+This directly violates the user's non-negotiable: **"Zero comments that are about things other than the game specifically make it into the daily updated post counts even as neutral we have to be crisp on that of the data is corrupted".** ~93% of ILL's post counts and ~100% of Townfall's were corrupted.
+
+**Root cause.** `services/keyword_generator.generate_default_keywords()` produced:
+- `ILL` → `['ILL', 'ILL game']`. The bare 3-char `ILL` matched `\bill\b` in Reddit posts.
+- `SILENT HILL: Townfall` → `['SILENT HILL: Townfall', 'SILENT HILL: Townfall game', 'SILENT HILL', 'SILENT HILL Townfall']`. The bare `SILENT HILL` (via the multi-word main-title branch — `main_part.split() >= 2`) matched every franchise post across the 25 SH-adjacent subs.
+
+The generator's design assumption was "multi-word main title fragments are distinctive enough not to collide." That's false for franchise names — SILENT HILL is 2 words but is a franchise name that appears in tens of thousands of unrelated posts.
+
+Compounding the failure: `GameResponse` schema doesn't expose `distinctive_keywords`, so my earlier `curl /api/games/138 | .distinctive_keywords` returned `None`, making me think the keywords weren't set at all. They were set, they were just poison.
+
+**Fix.**
+- `services/keyword_generator.py` v2:
+  - Short-title guard: for titles ≤3 chars OR in a curated `_UNSAFE_SHORT_TITLES` collision list (`ill, go, fez, hi, in, up, ...`) OR ≤5-char single-word-lowercase, the generator NEVER emits the bare title. Only emits `"<title> game"` and `"<title> the game"`.
+  - Franchise-spinoff guard: bare main-title fragments are only emitted when main title is ≥3 words. `"SILENT HILL: Townfall"` (2-word main) no longer emits `"SILENT HILL"`; `"A Quiet Place: The Road Ahead"` (3-word main) still emits `"A Quiet Place"` (distinctive enough).
+  - Combined main+subtitle disambiguated forms added: `"SILENT HILL Townfall"`, `"Townfall SILENT HILL"`.
+- `tests/test_keyword_generator.py` — 11 regression tests covering: 3-char titles, common-word titles, franchise-spinoff 2-word/3-word main titles, possessive main titles, and generic behavior (empty, dedup, trademark strip, remaster year). All pass.
+- `scripts/purge_and_rebuild_ill_townfall.py` — one-time idempotent purge (all SentimentRecord + DailySummary + WindowSummary for both games), rewrite keywords to stricter values, re-run Steps 5–7 against existing RawPost rows.
+- `/api/ingest/diag/keyword_dryrun?game_id=X&sample_size=50` — NEW endpoint to preview relevance-gate admission rate + admitted samples + rejected samples against a random slice of existing RawPost. Use before any bulk backfill to catch bad keywords.
+
+**Generalizable rules for future new-title onboarding.**
+
+> **BEFORE batch-adding subreddits and running any backfill for a newly-added title, this checklist MUST be completed:**
+>
+> 1. **Load lessons.md 2026-07-24 (evening) first — this one.** Re-read the ILL/Townfall failure so the failure pattern is fresh in context.
+> 2. **Inspect the auto-generated `distinctive_keywords`.** Query the DB directly (`GameResponse` schema hides them). Look at every keyword and ask: "Would this keyword match posts that aren't about this specific game?" If yes, it must go.
+> 3. **Reject bare-word keywords under any of these conditions:**
+>    - Keyword is a common English word (ill, go, in, up, we, if, do, or, ok, no, my, ...) — will match contractions and adjectives.
+>    - Keyword is a short (≤5 char) single-word non-proper-noun — high homograph risk.
+>    - Keyword is a franchise name for a game that is a spin-off (Silent Hill, Resident Evil, Halo, Call of Duty) — will match every franchise-adjacent post, not just the new title.
+>    - Keyword is a common short IP handle (RE, MGS, GTA, CoD, FF) UNLESS combined with a distinguishing token.
+> 4. **Every keyword for a spin-off title MUST contain the unique-to-this-title token** (Townfall for SILENT HILL: Townfall, Revival for Hellraiser: Revival, Origins for Turok Origins).
+> 5. **Run the pre-backfill dry-run.** After the FIRST small natural-ingestion pass (a few hundred RawPost per game), call `GET /api/ingest/diag/keyword_dryrun?game_id=X&sample_size=50`. Read the admitted_samples list. Every single admitted post title should visibly be about the specific game. If any admitted sample is about the franchise generally, a movie, an adjective, or a different game, tighten keywords BEFORE running the full backfill.
+>    - **Threshold rule of thumb:** admission rate >25% for a low-signal pre-launch title is a red flag. Rechecke every admitted sample.
+> 6. **Only after the dry-run is clean** run the full backfill via `POST /api/ingest/backfill?game_ids=X,Y&start_date=YYYY-MM-DD`.
+> 7. **Post-backfill audit.** Call `/api/ingest/diag/game_records?game_id=X&limit=20` and manually verify every SentimentRecord in the sample_sentiment_records list is actually about the game. If contamination is present, purge and retighten keywords before any dashboard, digest, or report goes out.
+
+**Also:** `GameResponse` schema needs `distinctive_keywords` field added so future `curl /api/games/{id}` audits show the actual keyword set instead of `None` by default. Deferred for now (won't affect ingestion; is a diagnostic-only ergonomics issue), but noted.
+
+**Updated locations.** `services/keyword_generator.py`, `tests/test_keyword_generator.py`, `scripts/purge_and_rebuild_ill_townfall.py`, `routers/ingest.py` (endpoints: `/remediate/ill_townfall`, `/remediate/ill_townfall/status`, `/diag/keyword_dryrun`, `/diag/game_records`), this lessons.md entry.
+
+---
+
 ## 2026-07-24 — Dashboard rendered same visual scope from three different tables
 
 **What happened.** Hellraiser today showed 258 posts in the Post Volume by Source chart but 1 post in the KPI cards on the same page. User: "these numbers MUST MATCH... if we're capturing 250 posts and only 1 was actually about the game then it's one post".

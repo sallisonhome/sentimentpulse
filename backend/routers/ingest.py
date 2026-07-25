@@ -158,6 +158,130 @@ def backfill_status():
     }
 
 
+# In-process guard for remediation runs.
+_REMEDIATION_STATE: dict = {"running": False, "last_result": None}
+
+
+def _run_ill_townfall_remediation() -> None:
+    """Background wrapper for the one-time ILL/Townfall purge-and-rebuild."""
+    try:
+        _REMEDIATION_STATE["running"] = True
+        # Import inside the function so an import error surfaces in
+        # last_result rather than crashing the server on startup.
+        from scripts.purge_and_rebuild_ill_townfall import main as _remed_main
+        rc = _remed_main()
+        _REMEDIATION_STATE["last_result"] = f"rc={rc}"
+    except Exception as exc:
+        logger.exception("Remediation crashed: %s", exc)
+        _REMEDIATION_STATE["last_result"] = f"CRASHED: {exc}"
+    finally:
+        _REMEDIATION_STATE["running"] = False
+
+
+@router.post("/remediate/ill_townfall", status_code=202)
+def trigger_ill_townfall_remediation(background_tasks: BackgroundTasks):
+    """
+    One-time endpoint (safe to call multiple times — the underlying script
+    is idempotent). Purges contaminated SentimentRecords + DailySummary
+    + WindowSummary rows for ILL (#138) and SILENT HILL: Townfall (#139),
+    rewrites their distinctive_keywords to stricter values, and re-runs
+    Steps 5–7 against the RawPost rows already in the DB.
+    """
+    if _REMEDIATION_STATE["running"]:
+        return {"status": "skipped", "errors": ["remediation already running"]}
+    background_tasks.add_task(_run_ill_townfall_remediation)
+    return {"status": "started"}
+
+
+@router.get("/remediate/ill_townfall/status")
+def remediation_status():
+    return _REMEDIATION_STATE
+
+
+@router.get("/diag/keyword_dryrun")
+def diag_keyword_dryrun(
+    game_id: int = Query(...),
+    sample_size: int = Query(50, ge=10, le=500),
+):
+    """
+    Dry-run the relevance gate against a random sample of the game's
+    existing RawPost rows and return how many would be admitted vs
+    rejected under the game's CURRENT distinctive_keywords.
+
+    Use this BEFORE running a large backfill for a newly-added title
+    to spot bad keyword lists (like a bare 'ILL' or 'SILENT HILL' that
+    would let franchise noise through). If admission rate is unusually
+    high (>25%) for a low-signal pre-launch title, that's a red flag —
+    tighten the keywords first.
+    """
+    from database import SessionLocal
+    from models import Game, RawPost
+    from services.post_relevance import is_post_relevant_to_game
+    from sqlalchemy.sql.expression import func as sfunc
+
+    db = SessionLocal()
+    try:
+        game = db.query(Game).filter_by(id=game_id).first()
+        if not game:
+            return {"error": f"game {game_id} not found"}
+
+        # Random sample of RawPost rows for this game.
+        posts = (
+            db.query(RawPost)
+            .filter(RawPost.game_id == game_id)
+            .order_by(sfunc.random())
+            .limit(sample_size)
+            .all()
+        )
+        if not posts:
+            return {
+                "game_id": game_id,
+                "game_name": game.name,
+                "distinctive_keywords": game.distinctive_keywords,
+                "error": "no RawPost rows for this game",
+            }
+
+        admitted = []
+        rejected = []
+        for p in posts:
+            try:
+                if is_post_relevant_to_game(p, game):
+                    admitted.append(p)
+                else:
+                    rejected.append(p)
+            except Exception as exc:
+                logger.warning("keyword_dryrun: gate exception on post %d: %s", p.id, exc)
+
+        return {
+            "game_id": game_id,
+            "game_name": game.name,
+            "distinctive_keywords": game.distinctive_keywords,
+            "sample_size": len(posts),
+            "admitted": len(admitted),
+            "rejected": len(rejected),
+            "admission_rate_pct": round(len(admitted) / len(posts) * 100, 2),
+            "admitted_samples": [
+                {
+                    "raw_post_id": p.id,
+                    "source": str(p.source),
+                    "title": (p.title or "")[:200],
+                    "body_preview": (p.body or "")[:200],
+                }
+                for p in admitted[:15]
+            ],
+            "rejected_samples": [
+                {
+                    "raw_post_id": p.id,
+                    "source": str(p.source),
+                    "title": (p.title or "")[:200],
+                }
+                for p in rejected[:5]
+            ],
+        }
+    finally:
+        db.close()
+
+
 @router.get("/diag/game_records")
 def diag_game_records(
     game_id: int = Query(...),

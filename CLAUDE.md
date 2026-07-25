@@ -43,6 +43,20 @@ Frontend calls backend at http://localhost:8000/api in dev (Vite proxy configure
 - Do not remove existing tests
 - Do not hard-code publisher names or game IDs — all must come from the database
 
+## CRITICAL — Before batch-adding subreddits or running a backfill for any newly-added title
+
+**You MUST re-read `lessons.md` — specifically the 2026-07-24 (evening) entry on the ILL/Townfall data-corruption incident — and then follow the 7-step pre-batch-add checklist documented there.**
+
+Short version of the load-bearing rules (full context and rationale in lessons.md):
+
+1. **Never trust auto-generated `distinctive_keywords` for a new title without inspecting them.** The `GameResponse` schema hides them; query the DB directly or via `/api/ingest/diag/game_records`.
+2. **Reject keywords that would collide with English usage or franchise noise.** Bare short words (ILL, GO, FEZ), common contractions/adjectives, and bare franchise names for spin-offs (SILENT HILL for Townfall, RESIDENT EVIL for RE Village, HALO for Halo Infinite) are poisonous — they let franchise/dictionary noise contaminate the game's sentiment records.
+3. **Every keyword for a spin-off/sequel title MUST contain the unique-to-this-title token** (Townfall, Revival, Origins, Infinite).
+4. **Run `GET /api/ingest/diag/keyword_dryrun?game_id=X&sample_size=50` BEFORE running a full backfill.** Read every admitted_sample. If any admitted post is about the franchise generally, a movie, an adjective, or a different game, tighten keywords first.
+5. **After any backfill, audit via `/api/ingest/diag/game_records?game_id=X&limit=20`.** Every SentimentRecord in the sample must visibly be about the specific game. If not, purge and retighten.
+
+Skipping this checklist violates the user's non-negotiable: *"Zero comments that are about things other than the game specifically make it into the daily updated post counts even as neutral we have to be crisp on that of the data is corrupted."*
+
 <!-- BEGIN PRINCIPLES PROMPT COPY -->
 
 ## Workflow Orchestration

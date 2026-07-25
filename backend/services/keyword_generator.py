@@ -16,6 +16,24 @@ requires human judgment about community slang and is intentionally left for
 manual review. A WARNING is logged by the caller (routers/games.py) when
 fewer than 3 keywords come out, which is the signal for a human to add
 nickname-level keywords the same way the initial 29-game review pass did.
+
+v2 (2026-07-24 evening) — hardened after the ILL/Townfall data-corruption
+incident. Two new safety rules:
+
+  * Short-single-word titles (≤3 chars, or a common English word like
+    'ill', 'go', 'fez') NEVER emit a bare-title keyword. They MUST emit
+    only qualified variants ('<title> game', '<title> horror game').
+    The bare form was causing catastrophic false positives on the ILL
+    game (matched every 'ill', "I'll", 'illness' occurrence). See
+    lessons.md 2026-07-24 (evening).
+
+  * Franchise-spin-off titles (title contains a colon separator) NEVER
+    emit the bare main-title fragment as a keyword when the subtitle is
+    itself a distinctive spin-off name. This prevents 'SILENT HILL:
+    Townfall' from emitting bare 'SILENT HILL' (which matched all
+    Silent Hill franchise noise across the SH2/SH3/SHf discussion
+    threads). Instead the main-title fragment is combined with the
+    subtitle to produce disambiguated variants only.
 """
 from __future__ import annotations
 
@@ -31,6 +49,19 @@ _REMASTER_SIGNAL_RE = re.compile(
     r"\b(remaster(?:ed)?|remake|revival|origins?|anniversary)\b",
     re.IGNORECASE,
 )
+
+# Short-title collision list — words that as a standalone game title
+# collide with common English usage (contractions, adjectives, prefixes,
+# proper-noun homographs). For any of these OR any ≤3-char title, we
+# refuse to emit the bare title as a keyword. See lessons.md 2026-07-24.
+_UNSAFE_SHORT_TITLES = frozenset({
+    # Contractions / adjectives / common prefixes
+    "ill", "go", "fez", "hi", "in", "up", "we", "if", "do", "or",
+    "ok", "no", "my", "me", "is", "am", "be", "to", "of", "on",
+    # Common short words game titles have historically used unsafely
+    "one", "two", "the", "and", "for", "pop", "top", "box", "day",
+    "end", "war", "run", "fly", "win", "sit", "cat", "dog", "sea",
+})
 
 # Trademark / registration glyphs to strip from every generated keyword.
 _TRADEMARK_GLYPHS_RE = re.compile(r"[™®©]")
@@ -83,24 +114,58 @@ def generate_default_keywords(title: str, current_year: int | None = None) -> li
 
     candidates: list[str] = []
 
-    # 1. Full title, verbatim.
-    candidates.append(title)
+    # v2 short-title guard: for very short or common-word titles, refuse
+    # to emit the bare title as a keyword. Only emit qualified forms.
+    title_lower = title.lower()
+    is_unsafe_short = (
+        len(title) <= 3
+        or title_lower in _UNSAFE_SHORT_TITLES
+        or (" " not in title and len(title) <= 5 and title_lower.isalpha())
+    )
 
-    # 2. Title + "game".
+    # 1. Full title, verbatim — ONLY for safe titles.
+    if not is_unsafe_short:
+        candidates.append(title)
+
+    # 2. Title + "game" — always safe ("game" is the disambiguator).
     candidates.append(f"{title} game")
 
-    # 3. Subtitle-only (if >= 2 words).
+    # 2b. For unsafe short titles, add extra qualified variants so we
+    # get to the caller's 3-keyword floor without emitting the bare form.
+    if is_unsafe_short:
+        candidates.append(f"{title} the game")
+        # Only these two extra variants are safe generic disambiguators;
+        # anything else ("<title> horror game") assumes genre we don't
+        # know. Caller will still log a WARNING and expect manual review.
+
+    # 3. Subtitle-only (if >= 2 words) + qualified main-title fragment.
+    # v2: NEVER emit bare main-title fragment for spin-offs. If the
+    # subtitle exists and is itself ≥1 word, combine main+sub into a
+    # disambiguated form rather than emitting either bare.
     parts = _SEPARATOR_RE.split(title, maxsplit=1)
     if len(parts) == 2:
         main_part, subtitle = parts[0].strip(), parts[1].strip()
         if subtitle and len(subtitle.split()) >= 2:
+            # Multi-word subtitle IS safe as a standalone keyword
+            # (e.g. "The Road Ahead" for "A Quiet Place: The Road Ahead").
             candidates.append(subtitle)
-        if main_part and len(main_part.split()) >= 2:
-            # Keep the qualified main-title fragment too — e.g. for
-            # "A Quiet Place: The Road Ahead" this yields "A Quiet Place".
-            # Only kept if it's still multi-word (avoids re-adding a single
-            # common word bare).
+        # v2: bare main_part is emitted only for ≥3-word main titles.
+        # "SILENT HILL: Townfall" (2-word main) no longer emits bare
+        # "SILENT HILL". "A Quiet Place: The Road Ahead" (3-word main)
+        # still emits "A Quiet Place" — 3+ words are distinctive enough
+        # not to collide with franchise noise.
+        if main_part and len(main_part.split()) >= 3:
             candidates.append(main_part)
+        if main_part and subtitle:
+            # Combined form 1: "<main> <subtitle>" (space-normalized)
+            combined = f"{main_part} {subtitle}".strip()
+            if combined and combined.lower() != title.lower():
+                candidates.append(combined)
+            # Combined form 2: reversed — "<subtitle> <main>" — catches
+            # community usage patterns like "Townfall Silent Hill".
+            reversed_ = f"{subtitle} {main_part}".strip()
+            if reversed_ and reversed_.lower() != combined.lower():
+                candidates.append(reversed_)
 
     # 4. Punctuation-stripped compressed form (colon/hyphen removed, no
     #    extra whitespace) — catches "JP:Survival"-style shorthand typed
