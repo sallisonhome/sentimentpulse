@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
+
+# In-process guard so the same POST /backfill can't be double-triggered.
+_BACKFILL_RUNNING: dict = {"running": False, "last_started_at": None, "last_result": None}
+
 # Same log directory the ingestor itself writes to.
 _LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
@@ -57,6 +61,101 @@ def trigger_ingestion(background_tasks: BackgroundTasks):
     background_tasks.add_task(run_ingestion)
     logger.info("Manual ingestion trigger accepted — queued as background task.")
     return IngestRunResponse(status="started")
+
+
+# ------------------------------------------------------------------ backfill
+
+def _run_backfill(game_ids: list[int], start_date: str) -> None:
+    """Background wrapper for historical_backfill.main()."""
+    from datetime import datetime, timezone as _tz
+    from database import SessionLocal
+    from models import Game
+    from services.ingestor import (
+        _step5_classify_sentiment,
+        _step6_extract_topics,
+        _step7_daily_summary,
+    )
+    from scripts.historical_backfill import (
+        backfill_reddit_for_game,
+        backfill_steam_reviews_for_game,
+    )
+    from services.nlp_service import load_model
+
+    try:
+        _BACKFILL_RUNNING["running"] = True
+        start_dt = datetime.fromisoformat(start_date).replace(tzinfo=_tz.utc)
+        start_epoch = int(start_dt.timestamp())
+        load_model()
+        db = SessionLocal()
+        result_lines: list[str] = []
+        try:
+            for gid in game_ids:
+                game = db.query(Game).filter_by(id=gid).first()
+                if not game:
+                    result_lines.append(f"game {gid}: not found")
+                    continue
+                errors: list[str] = []
+                r_saved = backfill_reddit_for_game(db, game, start_epoch, errors)
+                db.commit()
+                sr_saved = backfill_steam_reviews_for_game(db, game, start_dt, errors)
+                db.commit()
+
+                log_lines: list[str] = []
+                step_errors: list[str] = []
+                _step5_classify_sentiment(db, game, log_lines, step_errors)
+                _step6_extract_topics(db, game, log_lines, step_errors)
+                _step7_daily_summary(db, game, log_lines, step_errors)
+                db.commit()
+
+                result_lines.append(
+                    f"#{gid} {game.name}: reddit={r_saved} steam_reviews={sr_saved} "
+                    f"fetch_errors={len(errors)} step_errors={len(step_errors)}"
+                )
+        finally:
+            db.close()
+        _BACKFILL_RUNNING["last_result"] = result_lines
+    except Exception as exc:
+        logger.exception("Backfill crashed: %s", exc)
+        _BACKFILL_RUNNING["last_result"] = [f"CRASHED: {exc}"]
+    finally:
+        _BACKFILL_RUNNING["running"] = False
+
+
+@router.post("/backfill", status_code=202)
+def trigger_backfill(
+    background_tasks: BackgroundTasks,
+    game_ids: str = Query(..., description="Comma-separated game IDs, e.g. 138,139"),
+    start_date: str = Query(..., description="ISO date, e.g. 2026-04-01"),
+):
+    """
+    Historical backfill for one or more games. Pulls Reddit (via PullPush
+    paged by `before=`) and Steam Reviews (cursor-paged) all the way back
+    to `start_date`, then runs Step 5–7 (sentiment, topics, daily summary).
+
+    Runs in the background. Poll GET /api/ingest/backfill/status.
+    """
+    from datetime import datetime
+    try:
+        parsed_ids = [int(x.strip()) for x in game_ids.split(",") if x.strip()]
+        datetime.fromisoformat(start_date)  # validate
+    except Exception as exc:
+        return {"status": "error", "errors": [f"invalid input: {exc}"]}
+
+    if _BACKFILL_RUNNING["running"]:
+        return {"status": "skipped", "errors": ["backfill already running"]}
+
+    _BACKFILL_RUNNING["last_started_at"] = start_date
+    background_tasks.add_task(_run_backfill, parsed_ids, start_date)
+    return {"status": "started", "game_ids": parsed_ids, "start_date": start_date}
+
+
+@router.get("/backfill/status")
+def backfill_status():
+    return {
+        "running": _BACKFILL_RUNNING["running"],
+        "last_started_at": _BACKFILL_RUNNING["last_started_at"],
+        "last_result": _BACKFILL_RUNNING["last_result"],
+    }
 
 
 # ── Bluesky diagnostic ──────────────────────────────────────────────────────
