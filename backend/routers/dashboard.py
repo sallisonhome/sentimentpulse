@@ -155,6 +155,20 @@ def get_dashboard(
         v = sentiment_enum.value if hasattr(sentiment_enum, "value") else sentiment_enum
         entry[v] = int(cnt)
 
+    # Zero-fill every day in the window so a sparse title still renders a
+    # continuous line (matches Post Volume by Title behavior on the parent
+    # dashboard). Without this, a title with only a couple of active days
+    # renders as disconnected points and the chart looks broken — the fix
+    # asked for on 2026-07-25 for the ILL child dashboard's 7d/30d/90d/All
+    # views. Lifetime (p_start is None) still uses observed days only
+    # (zero-filling from the first-ever post to today can be years).
+    if p_start is not None:
+        cursor = p_start
+        today_local = date.today()
+        while cursor <= today_local:
+            trend_map.setdefault(cursor, {"positive": 0, "negative": 0, "neutral": 0})
+            cursor += timedelta(days=1)
+
     trend = []
     for d in sorted(trend_map.keys()):
         counts = trend_map[d]
@@ -227,6 +241,16 @@ def get_dashboard(
         d = _to_date(row.day)
         vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0})
         vol_map[d][row.source.value] = row.cnt
+
+    # Same zero-fill treatment as the trend chart above — sparse titles
+    # otherwise render a handful of disconnected bars across a wide
+    # window, hiding the "nothing collected on this day" signal.
+    if p_start is not None:
+        cursor = p_start
+        today_local = date.today()
+        while cursor <= today_local:
+            vol_map.setdefault(cursor, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0})
+            cursor += timedelta(days=1)
 
     volume_points = [
         VolumePoint(
