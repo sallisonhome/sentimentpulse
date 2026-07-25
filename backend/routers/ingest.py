@@ -158,6 +158,89 @@ def backfill_status():
     }
 
 
+@router.get("/diag/game_records")
+def diag_game_records(
+    game_id: int = Query(...),
+    limit: int = Query(20, ge=1, le=100),
+):
+    """
+    Read-only diagnostic: for a given game, return counts and a sample of
+    RawPost rows, SentimentRecord rows, and the game's distinctive_keywords.
+    Used to audit whether the relevance gate is admitting/rejecting posts
+    correctly.
+    """
+    from database import SessionLocal
+    from models import Game, RawPost, SentimentRecord
+    from sqlalchemy import func as sfunc
+
+    db = SessionLocal()
+    try:
+        game = db.query(Game).filter_by(id=game_id).first()
+        if not game:
+            return {"error": f"game {game_id} not found"}
+
+        raw_total = db.query(sfunc.count(RawPost.id)).filter(RawPost.game_id == game_id).scalar() or 0
+        raw_by_source = dict(
+            db.query(RawPost.source, sfunc.count(RawPost.id))
+            .filter(RawPost.game_id == game_id)
+            .group_by(RawPost.source)
+            .all()
+        )
+        sr_total = db.query(sfunc.count(SentimentRecord.id)).filter(SentimentRecord.game_id == game_id).scalar() or 0
+
+        sample_raw = (
+            db.query(RawPost)
+            .filter(RawPost.game_id == game_id)
+            .order_by(RawPost.post_date.desc())
+            .limit(limit)
+            .all()
+        )
+        sample_sr = (
+            db.query(SentimentRecord, RawPost)
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(SentimentRecord.game_id == game_id)
+            .order_by(RawPost.post_date.desc())
+            .limit(limit)
+            .all()
+        )
+
+        return {
+            "game_id": game.id,
+            "game_name": game.name,
+            "distinctive_keywords": game.distinctive_keywords,
+            "raw_post_total": raw_total,
+            "raw_by_source": {str(k): v for k, v in raw_by_source.items()},
+            "sentiment_record_total": sr_total,
+            "gate_admission_rate": round((sr_total / raw_total * 100) if raw_total else 0.0, 2),
+            "sample_raw_posts": [
+                {
+                    "id": r.id,
+                    "source": str(r.source),
+                    "post_date": r.post_date.isoformat() if r.post_date else None,
+                    "title": (r.title or "")[:200],
+                    "body": (r.body or "")[:400],
+                    "url": r.url,
+                }
+                for r in sample_raw
+            ],
+            "sample_sentiment_records": [
+                {
+                    "sr_id": sr.id,
+                    "raw_post_id": rp.id,
+                    "source": str(rp.source),
+                    "post_date": rp.post_date.isoformat() if rp.post_date else None,
+                    "sentiment": sr.sentiment,
+                    "title": (rp.title or "")[:200],
+                    "body": (rp.body or "")[:400],
+                    "url": rp.url,
+                }
+                for sr, rp in sample_sr
+            ],
+        }
+    finally:
+        db.close()
+
+
 # ── Bluesky diagnostic ──────────────────────────────────────────────────────
 
 def _bluesky_log_lines(max_lines: int = 60) -> list[str]:
