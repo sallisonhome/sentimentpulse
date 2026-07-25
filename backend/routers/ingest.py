@@ -186,7 +186,13 @@ def diag_game_records(
             .group_by(RawPost.source)
             .all()
         )
-        sr_total = db.query(sfunc.count(SentimentRecord.id)).filter(SentimentRecord.game_id == game_id).scalar() or 0
+        # SentimentRecord has no game_id column — join through RawPost.
+        sr_total = (
+            db.query(sfunc.count(SentimentRecord.id))
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(RawPost.game_id == game_id)
+            .scalar() or 0
+        )
 
         sample_raw = (
             db.query(RawPost)
@@ -198,7 +204,7 @@ def diag_game_records(
         sample_sr = (
             db.query(SentimentRecord, RawPost)
             .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
-            .filter(SentimentRecord.game_id == game_id)
+            .filter(RawPost.game_id == game_id)
             .order_by(RawPost.post_date.desc())
             .limit(limit)
             .all()
