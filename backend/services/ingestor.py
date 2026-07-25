@@ -758,7 +758,15 @@ def _step3_steam_forums(
 ) -> tuple[int, int]:
     """Scrape Steam forum threads.  Returns (saved, fetched)."""
     try:
-        posts = scrape_forum_threads(game.steam_app_id, max_threads=10)
+        # v3 (2026-07-25): every daily ingest walks Steam forum pagination
+        # aggressively so we never accumulate a coverage gap. On busy games
+        # new active threads push older active threads off page 1 within
+        # hours, so a page-1-only fetch loses posts. Caps: max_pages=10
+        # (~150 threads visible) with max_threads=80 keeping total cost
+        # bounded to ~90 HTTP requests per game per day.
+        # _bulk_save_posts dedupes on external_id — re-scraping the same
+        # threads across days is free storage-wise, we only pay the fetch.
+        posts = scrape_forum_threads(game.steam_app_id, max_threads=80, max_pages=10)
     except Exception as exc:
         msg = f"[Step 3] Steam forums failed for '{game.name}': {exc}"
         errors.append(msg)
@@ -896,9 +904,20 @@ def _step5_classify_sentiment(
         return
 
     # ── Relevance gate — runs BEFORE classification, not after ────────────────
+    # Source-aware admission: Steam Reviews and Steam Forum posts live on
+    # the game's own Steam store page, so their audience is definitionally
+    # players and buyers of THIS game — no franchise/dictionary noise is
+    # possible the way it is on cross-cutting Reddit + Bluesky feeds. They
+    # bypass the relevance gate (2026-07-25 rule) and are auto-admitted.
+    # Reddit and Bluesky still run through the full keyword + fast-path +
+    # fuzzy layer.
+    _AUTO_ADMIT_SOURCES = {SourceEnum.steam_review, SourceEnum.steam_forum}
     relevant_posts: list[RawPost] = []
     irrelevant_posts: list[RawPost] = []
     for post in unprocessed:
+        if post.source in _AUTO_ADMIT_SOURCES:
+            relevant_posts.append(post)
+            continue
         if is_post_relevant_to_game(post.title or "", post.body or "", game):
             relevant_posts.append(post)
         else:

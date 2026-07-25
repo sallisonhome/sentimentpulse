@@ -62,6 +62,9 @@ from services.arctic_shift_service import (  # noqa: E402
     _convert_post,
     _post_mentions_game,
 )
+from services.steam_service import (  # noqa: E402
+    scrape_forum_threads,
+)
 import requests  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
@@ -228,6 +231,60 @@ def backfill_reddit_for_game(
     return total_saved
 
 
+def backfill_steam_forums_for_game(
+    db, game: Game, start_dt: datetime, errors: list[str],
+) -> int:
+    """
+    Steam Forum historical backfill.
+
+    The daily ingestion (via services.steam_service.scrape_forum_threads)
+    now paginates by default, but caps at max_threads=30 across ~3 pages
+    for daily-cron cost containment. For a one-time historical fill on a
+    newly-added game, we want much broader coverage — up to 200 threads
+    across up to 15 listing pages — so we call the same function with
+    generous caps.
+
+    Each returned post has a post_date; we filter to posts newer than
+    start_dt before saving (deduplicated by external_id in _bulk_save_posts).
+    """
+    if not game.steam_app_id:
+        return 0
+
+    try:
+        posts = scrape_forum_threads(
+            game.steam_app_id,
+            max_threads=200,
+            max_pages=15,
+        )
+    except Exception as exc:
+        logger.error("Steam forum backfill fetch failed for %s: %s", game.name, exc)
+        errors.append(f"steam_forum backfill {game.name}: {exc}")
+        return 0
+
+    start_naive = start_dt.replace(tzinfo=None)
+    in_window = [
+        p for p in posts
+        if p.get("post_date") and p["post_date"] >= start_naive
+    ]
+    dropped_old = len(posts) - len(in_window)
+
+    if not in_window:
+        logger.info(
+            "  Steam Forum (%s): scraped %d posts total, none newer than %s",
+            game.name, len(posts), start_dt.date(),
+        )
+        return 0
+
+    saved = _bulk_save_posts(
+        db, game.id, SourceEnum.steam_forum, in_window, errors,
+    )
+    logger.info(
+        "  Steam Forum (%s): scraped %d posts (%d in window since %s, %d older), saved %d new",
+        game.name, len(posts), len(in_window), start_dt.date(), dropped_old, saved,
+    )
+    return saved
+
+
 def backfill_steam_reviews_for_game(
     db, game: Game, start_dt: datetime, errors: list[str],
 ) -> int:
@@ -343,10 +400,12 @@ def main() -> int:
             db.commit()
             sr_saved = backfill_steam_reviews_for_game(db, game, start_dt, errors)
             db.commit()
+            sf_saved = backfill_steam_forums_for_game(db, game, start_dt, errors)
+            db.commit()
 
             logger.info(
-                "Fetch complete for %s: reddit=%d steam_reviews=%d",
-                game.name, r_saved, sr_saved,
+                "Fetch complete for %s: reddit=%d steam_reviews=%d steam_forums=%d",
+                game.name, r_saved, sr_saved, sf_saved,
             )
 
             # Now run Step 5 (relevance + sentiment) on all the newly-inserted

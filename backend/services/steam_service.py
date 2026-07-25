@@ -289,25 +289,70 @@ def fetch_reviews(
 
 # ── Forum scraping ────────────────────────────────────────────────────────────
 
-def scrape_forum_threads(steam_app_id: int, max_threads: int = 3) -> list[dict]:
+def scrape_forum_threads(
+    steam_app_id: int,
+    max_threads: int = 3,
+    max_pages: int = 3,
+) -> list[dict]:
     """
-    Scrape the most active forum threads for a Steam app.
-    Collects top-level posts and first-level replies (up to `max_threads`).
+    Scrape forum threads for a Steam app across paginated listing pages.
+    Collects top-level posts and first-level replies for each thread.
+
+    v2 (2026-07-25) — now walks Steam's forum pagination (?fp=N) rather
+    than only inspecting page 1. On busy forums, new active threads push
+    older threads off page 1 within a day, so a page-1-only fetcher
+    accumulates a permanent gap. Walking a few pages per daily run
+    (default 3 = ~45 threads visible) catches everything that's actually
+    active while keeping the request cost bounded.
+
+    Args:
+        steam_app_id: The Steam AppID.
+        max_threads: Cap on the TOTAL number of unique threads scraped
+            across all pages. Prevents runaway on very active games while
+            still giving us multi-page coverage.
+        max_pages: Cap on how many listing pages (?fp=1..N) to walk. The
+            listing itself is cheap; the cost is scraping every thread
+            we discover. Set higher for backfills; default 3 is fine for
+            daily deltas.
 
     Each returned dict has:
         external_id, author, title, body, url, upvotes, post_date
     """
-    forum_url = STEAM_FORUM_URL.format(appid=steam_app_id)
-    resp = _get(forum_url)
-    if resp is None:
-        return []
+    base_url = STEAM_FORUM_URL.format(appid=steam_app_id)
 
-    try:
-        soup = BeautifulSoup(resp.text, "lxml")
-        thread_refs = _parse_thread_links(soup)
-    except Exception as exc:
-        logger.error("Error parsing forum listing for app %d: %s", steam_app_id, exc)
-        return []
+    thread_refs: list[tuple[str, str, str]] = []
+    seen_ids: set[str] = set()
+    pages_walked = 0
+    for page_num in range(1, max_pages + 1):
+        page_url = base_url if page_num == 1 else f"{base_url}?fp={page_num}"
+        resp = _get(page_url)
+        if resp is None:
+            logger.warning("Steam forum p%d fetch returned None for app %d", page_num, steam_app_id)
+            break
+        try:
+            soup = BeautifulSoup(resp.text, "lxml")
+            page_refs = _parse_thread_links(soup)
+        except Exception as exc:
+            logger.error("Error parsing forum p%d for app %d: %s", page_num, steam_app_id, exc)
+            break
+
+        if not page_refs:
+            # No more threads — end of forum reached.
+            break
+
+        # Dedupe (Steam sometimes repeats pinned threads across pages).
+        new_refs = [(u, tid, t) for (u, tid, t) in page_refs if tid not in seen_ids]
+        for _, tid, _ in new_refs:
+            seen_ids.add(tid)
+        thread_refs.extend(new_refs)
+        pages_walked += 1
+
+        # Stop early if we already have more than max_threads.
+        if len(thread_refs) >= max_threads:
+            break
+
+        # Small courtesy delay between listing pages.
+        time.sleep(_REQUEST_DELAY)
 
     if not thread_refs:
         logger.info("No forum threads found for app %d", steam_app_id)
@@ -320,9 +365,10 @@ def scrape_forum_threads(steam_app_id: int, max_threads: int = 3) -> list[dict]:
         time.sleep(_REQUEST_DELAY)
 
     logger.info(
-        "Scraped %d post(s) from %d forum thread(s) for app %d",
+        "Scraped %d post(s) from %d forum thread(s) across %d listing page(s) for app %d",
         len(all_posts),
         min(max_threads, len(thread_refs)),
+        pages_walked,
         steam_app_id,
     )
     return all_posts

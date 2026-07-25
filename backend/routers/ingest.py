@@ -78,6 +78,7 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
     from scripts.historical_backfill import (
         backfill_reddit_for_game,
         backfill_steam_reviews_for_game,
+        backfill_steam_forums_for_game,
     )
     from services.nlp_service import load_model
 
@@ -99,6 +100,8 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
                 db.commit()
                 sr_saved = backfill_steam_reviews_for_game(db, game, start_dt, errors)
                 db.commit()
+                sf_saved = backfill_steam_forums_for_game(db, game, start_dt, errors)
+                db.commit()
 
                 log_lines: list[str] = []
                 step_errors: list[str] = []
@@ -109,7 +112,7 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
 
                 result_lines.append(
                     f"#{gid} {game.name}: reddit={r_saved} steam_reviews={sr_saved} "
-                    f"fetch_errors={len(errors)} step_errors={len(step_errors)}"
+                    f"steam_forums={sf_saved} fetch_errors={len(errors)} step_errors={len(step_errors)}"
                 )
         finally:
             db.close()
@@ -196,6 +199,114 @@ def trigger_ill_townfall_remediation(background_tasks: BackgroundTasks):
 @router.get("/remediate/ill_townfall/status")
 def remediation_status():
     return _REMEDIATION_STATE
+
+
+# ── Steam Forum 90-day backfill (all active games) ────────────────────────
+_STEAM_FORUM_BACKFILL_STATE: dict = {"running": False, "last_result": None}
+
+
+def _run_steam_forum_backfill_all_active(days_back: int) -> None:
+    """Background wrapper: 90-day Steam Forum backfill across every active game."""
+    from datetime import datetime, timedelta, timezone as _tz
+    from database import SessionLocal
+    from models import Game
+    from services.ingestor import (
+        _step5_classify_sentiment,
+        _step6_extract_topics,
+        _step7_daily_summary,
+    )
+    from scripts.historical_backfill import backfill_steam_forums_for_game
+    from scripts.reclassify_steam_source_posts import main as _reset_steam_relevance
+    from services.nlp_service import load_model
+
+    try:
+        _STEAM_FORUM_BACKFILL_STATE["running"] = True
+        _STEAM_FORUM_BACKFILL_STATE["last_result"] = None
+
+        # Step 0: reset is_relevant on existing Steam Source rows so Step 5
+        # will re-evaluate them under the new auto-admit rule.
+        try:
+            _reset_steam_relevance()
+        except Exception as exc:
+            logger.exception("steam_source relevance reset crashed: %s", exc)
+
+        start_dt = datetime.now(tz=_tz.utc) - timedelta(days=days_back)
+        load_model()
+        db = SessionLocal()
+        result_lines: list[str] = []
+        try:
+            games = db.query(Game).filter_by(is_active=True).all()
+            logger.info(
+                "Steam Forum backfill starting: %d active games, days_back=%d, start_dt=%s",
+                len(games), days_back, start_dt.date(),
+            )
+            for game in games:
+                if not game.steam_app_id:
+                    result_lines.append(f"#{game.id} {game.name}: skipped (no steam_app_id)")
+                    continue
+                errors: list[str] = []
+                try:
+                    sf_saved = backfill_steam_forums_for_game(db, game, start_dt, errors)
+                    db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    result_lines.append(f"#{game.id} {game.name}: FETCH_CRASHED {exc}")
+                    continue
+
+                # Rerun Steps 5-7 so newly-saved forum posts get SentimentRecords
+                # + topic + daily summaries immediately (rather than waiting for
+                # the nightly cron).
+                log_lines: list[str] = []
+                step_errors: list[str] = []
+                try:
+                    _step5_classify_sentiment(db, game, log_lines, step_errors)
+                    _step6_extract_topics(db, game, log_lines, step_errors)
+                    _step7_daily_summary(db, game, log_lines, step_errors)
+                    db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    step_errors.append(str(exc))
+
+                result_lines.append(
+                    f"#{game.id} {game.name}: steam_forums_saved={sf_saved} "
+                    f"fetch_errors={len(errors)} step_errors={len(step_errors)}"
+                )
+        finally:
+            db.close()
+        _STEAM_FORUM_BACKFILL_STATE["last_result"] = result_lines
+    except Exception as exc:
+        logger.exception("Steam Forum backfill crashed: %s", exc)
+        _STEAM_FORUM_BACKFILL_STATE["last_result"] = [f"CRASHED: {exc}"]
+    finally:
+        _STEAM_FORUM_BACKFILL_STATE["running"] = False
+
+
+@router.post("/backfill/steam_forums_all", status_code=202)
+def trigger_steam_forum_backfill_all(
+    background_tasks: BackgroundTasks,
+    days_back: int = Query(90, ge=1, le=730),
+):
+    """
+    Deep Steam Forum backfill for EVERY active game with a Steam AppID.
+    Walks up to 15 pages of forum listings per game (~200 threads max)
+    and saves every post newer than N days ago (default 90). Runs in the
+    background — poll GET /api/ingest/backfill/steam_forums_all/status.
+
+    Also resets is_relevant=NULL on existing Steam Review + Steam Forum
+    RawPost rows so the new source-aware auto-admit rule (Step 5) can
+    re-classify them into SentimentRecords — fixes the pre-2026-07-25
+    gap where many Steam Source posts were rejected by the same
+    distinctive_keyword filter used for Reddit + Bluesky.
+    """
+    if _STEAM_FORUM_BACKFILL_STATE["running"]:
+        return {"status": "skipped", "errors": ["steam forum backfill already running"]}
+    background_tasks.add_task(_run_steam_forum_backfill_all_active, days_back)
+    return {"status": "started", "days_back": days_back}
+
+
+@router.get("/backfill/steam_forums_all/status")
+def steam_forum_backfill_status():
+    return _STEAM_FORUM_BACKFILL_STATE
 
 
 @router.get("/diag/keyword_dryrun")
