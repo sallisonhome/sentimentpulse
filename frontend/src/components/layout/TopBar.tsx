@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useAppContext } from '../../contexts/AppContext'
-import { useGames, useLatestGame, useGameDetail } from '../../hooks/useGames'
+import { useGames, useParentGames, useLatestGame, useGameDetail } from '../../hooks/useGames'
 import { useIngestStatus, useTriggerIngest } from '../../hooks/useIngest'
 import PeriodFilter from '../shared/PeriodFilter'
 import { Button } from '../ui/button'
@@ -12,6 +12,11 @@ import ThemeToggle from '../shared/ThemeToggle'
 export default function TopBar() {
   const { selectedGameId, setSelectedGameId, period, setPeriod } = useAppContext()
   const { data: games } = useGames()
+  // Parents-only list — diffed against `games` below to identify which
+  // dropdown items are competitors so we can render a "Competitor" badge
+  // next to their names. Cheap: same table, same query, no join.
+  const { data: parentGames } = useParentGames()
+  const parentIds = new Set(parentGames?.map(g => g.id) ?? [])
   const { data: latestGame } = useLatestGame()
   // Separate fetch for the currently-selected game so the picker can
   // display competitor names (competitors are excluded from useGames() but
@@ -44,16 +49,38 @@ export default function TopBar() {
               the fetched game's name here keeps the trigger informative on
               child dashboards.
             */}
-            {currentGame && !games?.some(g => g.id === currentGame.id)
-              ? <span className="truncate">{currentGame.name}</span>
+            {/* Guard against the tiny window before useGames() resolves —
+                still show the fetched game's name from useGameDetail so the
+                trigger is never blank when a game is selected. */}
+            {currentGame
+              ? (
+                <span className="flex items-center gap-2">
+                  <span className="truncate">{currentGame.name}</span>
+                  {parentGames != null && !parentIds.has(currentGame.id) && (
+                    <span className="rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Competitor
+                    </span>
+                  )}
+                </span>
+              )
               : <SelectValue placeholder="Select a game…" />}
           </SelectTrigger>
           <SelectContent>
-            {games?.map(g => (
-              <SelectItem key={g.id} value={g.id.toString()}>
-                {g.name}
-              </SelectItem>
-            ))}
+            {games?.map(g => {
+              const isCompetitor = parentGames != null && !parentIds.has(g.id)
+              return (
+                <SelectItem key={g.id} value={g.id.toString()}>
+                  <span className="flex items-center gap-2">
+                    <span className="truncate">{g.name}</span>
+                    {isCompetitor && (
+                      <span className="rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                        Competitor
+                      </span>
+                    )}
+                  </span>
+                </SelectItem>
+              )
+            })}
           </SelectContent>
         </Select>
 

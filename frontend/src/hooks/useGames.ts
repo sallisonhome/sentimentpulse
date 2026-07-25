@@ -4,14 +4,26 @@ import { queryClient } from '../lib/queryClient'
 import type { Game, GameDetail } from '../types'
 
 /**
- * Fetch only active, non-competitor games (used by the main app dropdown).
- * exclude_competitors=true keeps competitor titles out of the top-level
- * game switcher — they're reached only by clicking their name on the
- * parent's Post Volume by Title chart (see CompetitorTimeseriesChart).
+ * Fetch all active games INCLUDING competitor titles — used by the main
+ * app dropdown. Competitors render with a "Competitor" badge in the
+ * picker so users can pick them directly instead of hunting the parent's
+ * Post Volume by Title chart.
  */
 export function useGames() {
   return useQuery<Game[]>({
     queryKey: ['games'],
+    queryFn: () => api.get<Game[]>('/games?is_active=true').then(r => r.data),
+  })
+}
+
+/**
+ * Same as useGames() but excludes competitors — used only where a truly
+ * parents-only view matters (e.g. Settings page's parent-card list, or
+ * the competitor-timeseries chart's group‑set).
+ */
+export function useParentGames() {
+  return useQuery<Game[]>({
+    queryKey: ['games', 'parents-only'],
     queryFn: () => api.get<Game[]>('/games?is_active=true&exclude_competitors=true').then(r => r.data),
   })
 }
@@ -20,7 +32,12 @@ export function useGames() {
 export function useAllGames() {
   return useQuery<Game[]>({
     queryKey: ['games', 'all'],
-    queryFn: () => api.get<Game[]>('/games').then(r => r.data),
+    // exclude_competitors=true — competitors get their own dedicated
+    // sub-cards nested inside each parent's GameSettingsCard; they must
+    // not render as top-level parent cards in the Settings list (see the
+    // 2026-07-24 UX rule from the user: "ILL is not a Saber game it is a
+    // competitor to sit under Hellraiser as a child game").
+    queryFn: () => api.get<Game[]>('/games?exclude_competitors=true').then(r => r.data),
   })
 }
 
