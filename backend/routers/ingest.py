@@ -243,13 +243,16 @@ def diag_keyword_dryrun(
 
         admitted = []
         rejected = []
+        errors_count = 0
         for p in posts:
             try:
-                if is_post_relevant_to_game(p, game):
+                # is_post_relevant_to_game(title, body, game) — not (post, game).
+                if is_post_relevant_to_game(p.title or "", p.body or "", game):
                     admitted.append(p)
                 else:
                     rejected.append(p)
             except Exception as exc:
+                errors_count += 1
                 logger.warning("keyword_dryrun: gate exception on post %d: %s", p.id, exc)
 
         return {
@@ -259,6 +262,7 @@ def diag_keyword_dryrun(
             "sample_size": len(posts),
             "admitted": len(admitted),
             "rejected": len(rejected),
+            "errors": errors_count,
             "admission_rate_pct": round(len(admitted) / len(posts) * 100, 2),
             "admitted_samples": [
                 {

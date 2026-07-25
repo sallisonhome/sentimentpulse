@@ -140,6 +140,19 @@ def main() -> int:
             db.refresh(game)
             logger.info("New distinctive_keywords: %s", game.distinctive_keywords)
 
+            # ── Step 3b: reset RawPost.is_relevant to NULL so Step 5 will
+            # re-evaluate every post against the new keywords. Without this,
+            # Step 5's filter (RawPost.is_relevant.is_(None)) would skip
+            # every post that was gated under the OLD keywords.
+            from sqlalchemy import update as _update
+            rp_reset = db.execute(
+                _update(RawPost)
+                .where(RawPost.game_id == game_id)
+                .values(is_relevant=None)
+            ).rowcount
+            db.commit()
+            logger.info("Reset is_relevant=NULL on %d RawPost rows for rerun.", rp_reset)
+
             # ── Step 4: rerun Step 5 (relevance + sentiment) against the
             # 9,751 / 5,054 RawPost rows already collected. This is the
             # rebuild pass — the gate will admit ONLY posts that pass the
