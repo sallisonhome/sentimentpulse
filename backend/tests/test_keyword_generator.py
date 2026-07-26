@@ -88,6 +88,26 @@ class TestGenericBehavior:
         assert len(kws) == len(set(k.lower() for k in kws))
         assert kws[0] == "Space Marine 2"
 
+    def test_generic_subtitle_the_game_never_emitted_bare(self):
+        """lessons.md 2026-07-26 regression:
+        "Halloween: The Game" used to emit "The Game" as a standalone
+        keyword because the subtitle was 2 words. "The Game" matches
+        every gaming post ever — the same class of failure as
+        "SILENT HILL" but on the subtitle side. The subtitle-stopword
+        guard must catch this."""
+        kws = generate_default_keywords("Halloween: The Game")
+        assert "The Game" not in kws, f"'The Game' must never appear bare, got: {kws}"
+        assert "the game" not in [k.lower() for k in kws], (
+            f"'the game' must never appear bare, got: {kws}"
+        )
+
+    def test_distinctive_subtitle_still_emitted(self):
+        """'The Road Ahead' has a non-stopword token ('road', 'ahead')
+        so it MUST still be emitted as a standalone keyword. Verifies
+        the stopword guard doesn't over-block."""
+        kws = generate_default_keywords("A Quiet Place: The Road Ahead")
+        assert "The Road Ahead" in kws, f"distinctive subtitle should be kept, got: {kws}"
+
     def test_remaster_signal_adds_year(self):
         kws = generate_default_keywords("Turok Origins", current_year=2026)
         assert "Turok Origins 2026" in kws

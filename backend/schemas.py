@@ -70,6 +70,12 @@ class GameSettingsUpdate(BaseModel):
     commercial_context: Optional[str] = None
     # CLAUDE.md §24: same semantics — empty string clears, omit to leave.
     demographic_context: Optional[str] = None
+    # lessons.md 2026-07-24 (evening) rule 3: operators MUST be able to tighten
+    # bad auto-generated keywords BEFORE running a backfill. This field lets
+    # a PATCH replace the full keyword list. Passing an empty list is
+    # rejected server-side because a game without keywords cannot get
+    # sentiment records (per the user's non-negotiable rule).
+    distinctive_keywords: Optional[List[str]] = None
 
 
 class GameCreate(BaseModel):

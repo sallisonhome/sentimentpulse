@@ -252,6 +252,23 @@ def update_game(
         # §24: empty string → NULL so bold-ideas prompt skips the
         # demographic clause.
         game.demographic_context = data.demographic_context.strip() or None
+    if data.distinctive_keywords is not None:
+        # lessons.md 2026-07-24 (evening) rule 3: operators must be able to
+        # replace poison auto-generated keywords BEFORE running a backfill.
+        # Reject empty list — a game with zero keywords cannot get sentiment
+        # records, which would silently disable it. If an operator wants to
+        # disable the game, they should PATCH is_active=False instead.
+        cleaned = [k.strip() for k in data.distinctive_keywords if k and k.strip()]
+        if not cleaned:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "distinctive_keywords cannot be empty. A game without "
+                    "keywords will silently produce no sentiment records. "
+                    "To pause ingestion, PATCH is_active=false instead."
+                ),
+            )
+        game.distinctive_keywords = cleaned
 
     try:
         db.commit()

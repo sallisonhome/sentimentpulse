@@ -54,6 +54,36 @@ _REMASTER_SIGNAL_RE = re.compile(
 # collide with common English usage (contractions, adjectives, prefixes,
 # proper-noun homographs). For any of these OR any ≤3-char title, we
 # refuse to emit the bare title as a keyword. See lessons.md 2026-07-24.
+# Subtitles that are entirely made of these tokens are refused as
+# standalone keywords. Curated from actual gaming-post noise — phrases
+# like "The Game", "The Sequel", "Part Two" would produce catastrophic
+# false-positive rates. Guard added 2026-07-26 after "Halloween: The
+# Game" emitted "The Game" as a keyword.
+_SUBTITLE_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "and", "or", "in", "on", "at", "to", "for",
+    "is", "it", "be", "by", "my", "me", "we", "us", "you",
+    # Generic "is this thing" nouns — alone or paired with articles they
+    # never distinguish one game from another.
+    "game", "games", "video", "videogame", "vg", "tvg",
+    "movie", "film", "series", "show",
+    "sequel", "prequel", "part", "chapter", "episode",
+    "one", "two", "three", "four", "five",
+    "i", "ii", "iii", "iv", "v", "vi",
+    "story", "tale", "edition",
+})
+
+
+def _subtitle_is_distinctive(subtitle: str) -> bool:
+    """True iff subtitle contains at least one non-stopword token.
+
+    'The Game' → all stopwords → False (rejected).
+    'The Road Ahead' → 'road', 'ahead' non-stop → True (kept).
+    'Townfall' → 'townfall' non-stop → True (kept).
+    """
+    tokens = [t.strip(".,!?").lower() for t in subtitle.split() if t.strip()]
+    return any(t and t not in _SUBTITLE_STOPWORDS for t in tokens)
+
+
 _UNSAFE_SHORT_TITLES = frozenset({
     # Contractions / adjectives / common prefixes
     "ill", "go", "fez", "hi", "in", "up", "we", "if", "do", "or",
@@ -145,9 +175,14 @@ def generate_default_keywords(title: str, current_year: int | None = None) -> li
     parts = _SEPARATOR_RE.split(title, maxsplit=1)
     if len(parts) == 2:
         main_part, subtitle = parts[0].strip(), parts[1].strip()
-        if subtitle and len(subtitle.split()) >= 2:
+        if subtitle and len(subtitle.split()) >= 2 and _subtitle_is_distinctive(subtitle):
             # Multi-word subtitle IS safe as a standalone keyword
-            # (e.g. "The Road Ahead" for "A Quiet Place: The Road Ahead").
+            # (e.g. "The Road Ahead" for "A Quiet Place: The Road Ahead"),
+            # but NOT when every token is a stopword / generic gaming
+            # phrase. "Halloween: The Game" → subtitle="The Game" would
+            # have matched every gaming post ever — the exact class of
+            # failure lessons.md 2026-07-24 (evening) warns about, applied
+            # to a subtitle instead of a main-title fragment (2026-07-26).
             candidates.append(subtitle)
         # v2: bare main_part is emitted only for ≥3-word main titles.
         # "SILENT HILL: Townfall" (2-word main) no longer emits bare
