@@ -222,17 +222,32 @@ def run_ingestion() -> dict:
                 b_saved, b_fetched = _step4b_bluesky(db, game, log_lines, errors)
                 game_posts_local += b_saved
 
-            return game_posts_local, r_fetched, b_fetched, sr_fetched, sf_fetched
+            # Step 4c: DTF.ru — Russian-language coverage. Only kicks in
+            # if the DTF_ENABLED env var is truthy; disabled by default
+            # so existing pipelines aren't affected until we're happy
+            # with the audit numbers (2026-07-26 launch).
+            d_saved, d_fetched = 0, 0
+            if os.getenv("DTF_ENABLED", "false").lower() in {"1", "true", "yes"}:
+                d_saved, d_fetched = _step4c_dtf(db, game, log_lines, errors)
+                game_posts_local += d_saved
+            else:
+                log_lines.append(
+                    f"[Step 4c] '{game.name}': DTF disabled (DTF_ENABLED=false)"
+                )
 
-        # ── Phase A: fetch sources (Steps 2 -> 4b) for every active game ────────
+            return game_posts_local, r_fetched, b_fetched, sr_fetched, sf_fetched, d_fetched
+
+        # ── Phase A: fetch sources (Steps 2 -> 4c) for every active game ────────
+        dtf_fetched_total = 0
         for game in active_games:
             try:
-                (game_posts, r_f, b_f, sr_f, sf_f) = _safe_run_steps_2_to_4b(game)
+                (game_posts, r_f, b_f, sr_f, sf_f, d_f) = _safe_run_steps_2_to_4b(game)
                 per_game_posts[game.id] = per_game_posts.get(game.id, 0) + game_posts
                 reddit_fetched_total += r_f
                 bluesky_fetched_total += b_f
                 steam_review_fetched_total += sr_f
                 steam_forum_fetched_total += sf_f
+                dtf_fetched_total += d_f
             except Exception as exc:
                 msg = f"Unhandled error processing game '{game.name}': {exc}"
                 errors.append(msg)
@@ -870,6 +885,54 @@ def _step4b_bluesky(
         return 0, 0
     log_lines.append(
         f"[Step 4b] '{game.name}': {total_saved} new Bluesky post(s) "
+        f"(fetched {len(posts)})."
+    )
+    return total_saved, len(posts)
+
+
+# ── Step 4c: DTF.ru (Russian-language gaming forum) ─────────────────────
+def _step4c_dtf(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> tuple[int, int]:
+    """Search DTF.ru for entries mentioning the game and save new ones.
+
+    Added 2026-07-26: our English-only sub monitoring was systematically
+    undercounting Russian-language ILL discussion (Team Clout is a
+    Russian-origin studio, Mundfish is Russian/Cypriot). DTF.ru is the
+    primary Russian-language gaming forum where this discussion lives.
+
+    Search strategy:
+      * We hit DTF's global search with the game name as the primary
+        query. DTF's index picks up both Cyrillic and Latin references
+        that mention the exact game name, which for Team Clout titles
+        is usually written in Latin even in Russian-language articles
+        ("ILL от Team Clout" → hit on "ILL").
+      * For non-Latin-safe games we could add per-game Russian aliases
+        later via game.distinctive_keywords — the relevance gate downstream
+        does the final filtering, so it's safe to over-include here.
+
+    Returns:
+        (saved, fetched) tuple with the same semantics as Steps 4 / 4b.
+    """
+    # Import lazily so the module stays importable even if DTF service
+    # ends up disabled behind a feature flag later.
+    from services.dtf_service import fetch_dtf_posts  # noqa: PLC0415
+
+    try:
+        posts = fetch_dtf_posts(query=game.name, game_name=game.name, limit=100)
+        total_saved = _bulk_save_posts(
+            db, game.id, SourceEnum.dtf, posts, errors,
+        )
+    except Exception as exc:
+        msg = f"[Step 4c] DTF error for '{game.name}': {exc}"
+        errors.append(msg)
+        logger.error(msg)
+        return 0, 0
+    log_lines.append(
+        f"[Step 4c] '{game.name}': {total_saved} new DTF post(s) "
         f"(fetched {len(posts)})."
     )
     return total_saved, len(posts)

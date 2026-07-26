@@ -18,6 +18,11 @@ class SourceEnum(str, enum.Enum):
     steam_forum = "steam_forum"
     reddit = "reddit"
     bluesky = "bluesky"
+    # DTF.ru — Russian-language gaming forum. Added 2026-07-26 to capture
+    # Russian-language discussion of Team Clout's ILL (developer is Russian
+    # in origin, Mundfish publisher is Russian/Cypriot), which our English-
+    # only sub/keyword monitoring was systematically undercounting. Content
+    # comes from api.dtf.ru's public read endpoints — no auth needed.
 
 
 class SentimentEnum(str, enum.Enum):

@@ -125,6 +125,53 @@ def _arctic_shift_page(
         return []
 
 
+def backfill_dtf_for_game(
+    db, game: Game, start_dt: datetime, errors: list[str],
+) -> int:
+    """
+    DTF.ru backfill — walk the search endpoint backwards in date until we
+    cross the start_dt boundary.  Uses the DTF service's paginated
+    ``fetch_dtf_posts_since`` helper so the paging + cutoff logic lives
+    in one place.
+
+    Only enabled when DTF_ENABLED env var is truthy (matches the
+    incremental ingestor's flag) — lets operators disable DTF backfills
+    without a deploy.  Added 2026-07-26.
+    """
+    import os  # noqa: PLC0415
+    if os.getenv("DTF_ENABLED", "false").lower() not in {"1", "true", "yes"}:
+        logger.info("DTF backfill skipped for %s (DTF_ENABLED=false)", game.name)
+        return 0
+
+    from services.dtf_service import fetch_dtf_posts_since  # noqa: PLC0415
+
+    try:
+        # Use the exact game name as the search query — same rationale
+        # as _step4c_dtf.  For non-Latin-safe games we can add per-game
+        # Russian aliases later.
+        posts = fetch_dtf_posts_since(
+            query=game.name,
+            since_utc=start_dt.astimezone(timezone.utc),
+            game_name=game.name,
+            hard_cap=2000,  # Generous cap; DTF's ILL result set is ~200-500
+        )
+    except Exception as exc:
+        errors.append(f"DTF backfill fetch failed for {game.name}: {exc}")
+        logger.error("DTF backfill fetch failed for %s: %s", game.name, exc)
+        return 0
+
+    if not posts:
+        logger.info("DTF backfill: 0 posts found for %s", game.name)
+        return 0
+
+    saved = _bulk_save_posts(db, game.id, SourceEnum.dtf, posts, errors)
+    logger.info(
+        "DTF backfill for %s: fetched=%d saved=%d",
+        game.name, len(posts), saved,
+    )
+    return saved
+
+
 def backfill_reddit_for_game(
     db, game: Game, start_epoch: int, errors: list[str],
 ) -> int:
@@ -403,10 +450,12 @@ def main() -> int:
             db.commit()
             sf_saved = backfill_steam_forums_for_game(db, game, start_dt, errors)
             db.commit()
+            d_saved = backfill_dtf_for_game(db, game, start_dt, errors)
+            db.commit()
 
             logger.info(
-                "Fetch complete for %s: reddit=%d steam_reviews=%d steam_forums=%d",
-                game.name, r_saved, sr_saved, sf_saved,
+                "Fetch complete for %s: reddit=%d steam_reviews=%d steam_forums=%d dtf=%d",
+                game.name, r_saved, sr_saved, sf_saved, d_saved,
             )
 
             # Now run Step 5 (relevance + sentiment) on all the newly-inserted
