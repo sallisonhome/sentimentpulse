@@ -11,8 +11,11 @@ import {
   type TooltipProps,
 } from 'recharts'
 import { format, parseISO } from 'date-fns'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { toJpeg } from 'html-to-image'
+import { Download } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { useAppContext } from '../../contexts/AppContext'
 import { useCompetitorTimeseries } from '../../hooks/useCompetitors'
@@ -39,15 +42,54 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   const { setSelectedGameId } = useAppContext()
   const { data, isLoading } = useCompetitorTimeseries(parentId, period)
 
-  // Hidden entirely when the parent has no competitors — `games` contains
-  // only the parent in that case. Also render nothing while loading so we
-  // never flash an empty chart shell above/below neighboring cards.
-  if (isLoading || !data || data.games.length <= 1) return null
+  // Ref to the chart's outer card so the JPEG download can capture the
+  // full card layout (title + chart + event list) instead of just the
+  // recharts SVG.
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [downloading, setDownloading] = useState(false)
 
   // Hover state for the event marker tooltip. Recharts' ReferenceLine
   // doesn't emit hover events natively, so we render invisible SVG
   // hitboxes over each marker and track which one is hovered here.
   const [hoveredEventId, setHoveredEventId] = useState<number | null>(null)
+
+  // Hidden entirely when the parent has no competitors — `games` contains
+  // only the parent in that case. Also render nothing while loading so we
+  // never flash an empty chart shell above/below neighboring cards.
+  if (isLoading || !data || data.games.length <= 1) return null
+
+  async function handleDownload() {
+    if (!cardRef.current || !data) return
+    try {
+      setDownloading(true)
+      // Use the resolved --background CSS var so the exported image has
+      // an opaque backdrop matching the current theme (light or dark)
+      // instead of transparent-black which reads as garbled on both.
+      const bg = getComputedStyle(document.body).getPropertyValue('--background').trim() || '#ffffff'
+      const dataUrl = await toJpeg(cardRef.current, {
+        cacheBust: true,
+        pixelRatio: 2,               // 2x for sharper text on retina
+        quality: 0.95,
+        backgroundColor: bg.startsWith('#') ? bg : `hsl(${bg})`,
+      })
+      // Filename includes the parent title and period so downloads accumulate
+      // in a scannable way in the user's Downloads folder.
+      const parent = data.games.find(g => g.is_parent)
+      const parentSlug = (parent?.name ?? `game-${parentId}`)
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      const dateStr = format(new Date(), 'yyyy-MM-dd')
+      const a = document.createElement('a')
+      a.href = dataUrl
+      a.download = `${parentSlug}_post-volume_${period}_${dateStr}.jpg`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    } catch (e) {
+      console.error('Chart download failed', e)
+    } finally {
+      setDownloading(false)
+    }
+  }
 
   // Flatten `counts` (an object keyed by game_id) into top-level keys so
   // recharts' <Line dataKey="21" /> can find the numeric value at
@@ -82,16 +124,33 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">Post Volume by Title</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Daily post volume comparison across parent title and competitors
-        </p>
+    <Card ref={cardRef} className="w-full">
+      <CardHeader className="flex flex-row items-start justify-between gap-4 space-y-0">
+        <div>
+          <CardTitle className="text-base">Post Volume by Title</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Daily post volume comparison across parent title and competitors
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleDownload}
+          disabled={downloading}
+          className="shrink-0 gap-1.5"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {downloading ? 'Preparing…' : 'Download JPEG'}
+        </Button>
       </CardHeader>
       <CardContent>
-        <ResponsiveContainer width="100%" height={240}>
-          <LineChart data={formatted} margin={{ top: 4, right: 16, left: -8, bottom: 0 }}>
+        {/* Chart is taller (420 vs prior 240) and always full-card-width so
+            event labels next to their vertical markers have room to sit
+            without overlapping neighboring lines. Extra top margin (44px)
+            reserves space for the wrapped event-name labels rendered above
+            each marker; extra bottom margin (8px) keeps date ticks readable. */}
+        <ResponsiveContainer width="100%" height={420}>
+          <LineChart data={formatted} margin={{ top: 44, right: 24, left: 4, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
             <XAxis
               dataKey="date_label"
@@ -137,18 +196,23 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
               />
             ))}
             {/* Timeline event markers — vertical dashed lines colored to
-                match the game each event belongs to. Only events whose
-                event_date falls inside the current period window are in
-                data.events (the backend filters). */}
-            {(data.events ?? []).map(ev => {
+                match the game each event belongs to, with the event name
+                rendered above the marker so it's legible without hover.
+                Only events whose event_date falls inside the current
+                period window are in data.events (the backend filters). */}
+            {(data.events ?? []).map((ev, i) => {
               const gameIdx = data.games.findIndex(g => g.game_id === ev.game_id)
               if (gameIdx < 0) return null
               const color = LINE_COLORS[gameIdx % LINE_COLORS.length]
-              // ReferenceLine x= must match the LineChart's dataKey for x,
-              // which is date_label formatted as 'MMM d'. Convert the
-              // ISO event_date the same way so the marker lines up.
               const dateLabel = format(parseISO(ev.event_date), 'MMM d')
               const isHovered = hoveredEventId === ev.id
+              // Stagger label vertical position by index (offset 0 / 14 /
+              // 28 px) so labels on nearby dates don't collide. dy is
+              // relative to the top of the plot area (position='top').
+              const dy = -(4 + (i % 3) * 14)
+              // Truncate very long names for the on-chart label; the
+              // event list beneath the chart shows the full text.
+              const displayName = ev.name.length > 28 ? ev.name.slice(0, 27) + '…' : ev.name
               return (
                 <ReferenceLine
                   key={`ev-${ev.id}`}
@@ -160,10 +224,12 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
                   ifOverflow="visible"
                   isFront
                   label={{
-                    value: '●',
+                    value: displayName,
                     position: 'top',
                     fill: color,
-                    fontSize: isHovered ? 12 : 9,
+                    fontSize: 11,
+                    fontWeight: isHovered ? 600 : 500,
+                    dy,
                   }}
                   onMouseEnter={() => setHoveredEventId(ev.id)}
                   onMouseLeave={() => setHoveredEventId(null)}
