@@ -10,17 +10,23 @@ Digest router (all under /api/digest):
   GET    /api/digest/preview/monthly    — render the monthly digest HTML (no send)
   POST   /api/digest/send/weekly        — send the weekly digest NOW (operator action)
   POST   /api/digest/send/monthly       — send the monthly digest NOW (operator action)
+
+  GET    /api/digest/skip                — read current skip-until timestamps
+  POST   /api/digest/skip                — defer next weekly/monthly digest
+  DELETE /api/digest/skip                — clear a skip-until flag
 """
 import logging
 import re
-from typing import List
+from datetime import datetime, timezone
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import DigestRecipient
+from models import AppSetting, DigestRecipient
 from schemas import DigestRecipientCreate, DigestRecipientResponse
 from services import digest_service
 
@@ -114,3 +120,101 @@ def send_weekly_now(db: Session = Depends(get_db)):
 def send_monthly_now(db: Session = Depends(get_db)):
     """Trigger an immediate monthly digest send to all active recipients."""
     return digest_service.send_monthly_digest(db)
+
+
+# ── One-time skip flags for the scheduled digest jobs ───────────────────────
+#
+# The APScheduler jobs in backend/scheduler.py honor AppSetting rows
+# named 'weekly_digest_skip_until' and 'monthly_digest_skip_until'.
+# While `now < skip_until`, the corresponding job no-ops (logging that
+# it was skipped). Once the timestamp passes, normal cadence resumes
+# automatically — no follow-up action needed.
+
+_WEEKLY_SKIP_KEY = "weekly_digest_skip_until"
+_MONTHLY_SKIP_KEY = "monthly_digest_skip_until"
+_VALID_SKIP_KEYS = {"weekly": _WEEKLY_SKIP_KEY, "monthly": _MONTHLY_SKIP_KEY}
+
+
+class DigestSkipRequest(BaseModel):
+    which: str            # 'weekly' or 'monthly'
+    skip_until: str       # ISO-8601 UTC timestamp (e.g. '2026-07-28T00:00:00Z')
+
+
+class DigestSkipResponse(BaseModel):
+    key: str
+    skip_until: Optional[str]
+    active_now: bool      # True iff now < skip_until
+
+
+def _read_skip(db: Session, key: str) -> DigestSkipResponse:
+    row = db.query(AppSetting).filter_by(key=key).first()
+    value = row.value if row and row.value else None
+    active = False
+    if value:
+        try:
+            raw = value.strip()
+            if raw.endswith("Z"):
+                raw = raw[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(raw)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            active = datetime.now(tz=timezone.utc) < parsed
+        except Exception:
+            active = False
+    return DigestSkipResponse(key=key, skip_until=value, active_now=active)
+
+
+@router.get("/skip", response_model=List[DigestSkipResponse])
+def list_skip_flags(db: Session = Depends(get_db)):
+    """Return both weekly + monthly skip flags with an active_now boolean."""
+    return [_read_skip(db, k) for k in (_WEEKLY_SKIP_KEY, _MONTHLY_SKIP_KEY)]
+
+
+@router.post("/skip", response_model=DigestSkipResponse)
+def set_skip_flag(payload: DigestSkipRequest, db: Session = Depends(get_db)):
+    """Set a skip-until timestamp for the weekly or monthly digest job."""
+    if payload.which not in _VALID_SKIP_KEYS:
+        raise HTTPException(400, "which must be 'weekly' or 'monthly'")
+    # Validate the timestamp parses — don't silently store garbage.
+    raw = payload.skip_until.strip()
+    if raw.endswith("Z"):
+        raw_for_parse = raw[:-1] + "+00:00"
+    else:
+        raw_for_parse = raw
+    try:
+        parsed = datetime.fromisoformat(raw_for_parse)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except Exception as exc:
+        raise HTTPException(400, f"skip_until must be ISO-8601: {exc}")
+    if datetime.now(tz=timezone.utc) >= parsed:
+        raise HTTPException(
+            400, "skip_until must be a future UTC timestamp; nothing to skip",
+        )
+    key = _VALID_SKIP_KEYS[payload.which]
+    row = db.query(AppSetting).filter_by(key=key).first()
+    if row is None:
+        row = AppSetting(key=key, value=raw)
+        db.add(row)
+    else:
+        row.value = raw
+    db.commit()
+    logger.info("Digest skip flag set: %s = %s", key, raw)
+    return _read_skip(db, key)
+
+
+@router.delete("/skip", response_model=DigestSkipResponse)
+def clear_skip_flag(
+    which: str = Query(..., description="'weekly' or 'monthly'"),
+    db: Session = Depends(get_db),
+):
+    """Clear a previously-set skip flag so the next scheduled run fires."""
+    if which not in _VALID_SKIP_KEYS:
+        raise HTTPException(400, "which must be 'weekly' or 'monthly'")
+    key = _VALID_SKIP_KEYS[which]
+    row = db.query(AppSetting).filter_by(key=key).first()
+    if row is not None:
+        db.delete(row)
+        db.commit()
+        logger.info("Digest skip flag cleared: %s", key)
+    return _read_skip(db, key)

@@ -161,14 +161,58 @@ def _smoke_test_job() -> None:
     )
 
 
+# One-time skip mechanism for the weekly/monthly digest jobs (2026-07-26).
+# Set AppSetting rows with these keys and an ISO-8601 UTC "skip until"
+# timestamp; the digest job will no-op (with an info log) as long as
+# now < that timestamp. Cleaner than manually pausing the APScheduler job
+# because it survives redeploys and requires zero SSH access.
+_WEEKLY_DIGEST_SKIP_KEY = "weekly_digest_skip_until"
+_MONTHLY_DIGEST_SKIP_KEY = "monthly_digest_skip_until"
+
+
+def _is_skipped(db, key: str) -> bool:
+    """Return True iff AppSetting[key] holds a future UTC ISO timestamp."""
+    from models import AppSetting  # noqa: PLC0415
+    from datetime import datetime, timezone  # noqa: PLC0415
+    row = db.query(AppSetting).filter_by(key=key).first()
+    if not row or not row.value:
+        return False
+    try:
+        # Accept both '2026-07-27T00:00:00' and full ISO with tz.
+        raw = row.value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        skip_until = datetime.fromisoformat(raw)
+        if skip_until.tzinfo is None:
+            skip_until = skip_until.replace(tzinfo=timezone.utc)
+    except Exception:
+        logger.warning(
+            "AppSetting %r has unparseable value %r; ignoring skip.",
+            key, row.value,
+        )
+        return False
+    now = datetime.now(tz=timezone.utc)
+    return now < skip_until
+
+
 def _weekly_digest_job() -> None:
-    """APScheduler entry-point for the Monday 07:00 ET weekly digest."""
+    """APScheduler entry-point for the Monday 07:00 ET weekly digest.
+
+    Honors AppSetting[weekly_digest_skip_until] so operators can defer a
+    single run without touching APScheduler internals.
+    """
     from database import SessionLocal  # noqa: PLC0415
     from services.digest_service import send_weekly_digest  # noqa: PLC0415
 
-    logger.info("Scheduled weekly digest starting.")
     db = SessionLocal()
     try:
+        if _is_skipped(db, _WEEKLY_DIGEST_SKIP_KEY):
+            logger.info(
+                "Weekly digest skipped by AppSetting %r.",
+                _WEEKLY_DIGEST_SKIP_KEY,
+            )
+            return
+        logger.info("Scheduled weekly digest starting.")
         result = send_weekly_digest(db)
         logger.info("Scheduled weekly digest complete: %s", result)
     except Exception as exc:
@@ -183,13 +227,22 @@ def _weekly_digest_job() -> None:
 def _monthly_digest_job() -> None:
     """APScheduler entry-point for the 1st-of-month 12:00 ET monthly digest.
     Runs after the 10:45 local ingestion cron completes so Step 9 has already
-    generated the current MonthlySummary rows.  See scheduler comment above."""
+    generated the current MonthlySummary rows.  See scheduler comment above.
+
+    Honors AppSetting[monthly_digest_skip_until] the same way the weekly
+    job honors its skip key."""
     from database import SessionLocal  # noqa: PLC0415
     from services.digest_service import send_monthly_digest  # noqa: PLC0415
 
-    logger.info("Scheduled monthly digest starting.")
     db = SessionLocal()
     try:
+        if _is_skipped(db, _MONTHLY_DIGEST_SKIP_KEY):
+            logger.info(
+                "Monthly digest skipped by AppSetting %r.",
+                _MONTHLY_DIGEST_SKIP_KEY,
+            )
+            return
+        logger.info("Scheduled monthly digest starting.")
         result = send_monthly_digest(db)
         logger.info("Scheduled monthly digest complete: %s", result)
     except Exception as exc:
