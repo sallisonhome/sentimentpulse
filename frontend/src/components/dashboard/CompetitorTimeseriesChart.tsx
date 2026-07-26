@@ -193,9 +193,23 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
                 let chip: ReactNode = null
                 if (g.current_total != null) {
                   if (pct == null) {
+                    // Two cases both resolve to null pct_change:
+                    //   1. prev_total is 0 — title genuinely new in this window
+                    //   2. Backend zeroed prev_totals across ALL games because
+                    //      the prior window didn't have enough coverage days
+                    //      (typically 90d view before we've backfilled >180d).
+                    //      Detect (2) heuristically: if prev_total==0 for
+                    //      EVERY game while current_total is non-zero for
+                    //      several, prior data is missing group-wide.
+                    const groupSuppressed = (data.games ?? [])
+                      .every(x => (x.prev_total ?? 0) === 0)
+                    const chipText = groupSuppressed ? '(no baseline)' : '(new)'
+                    const chipTitle = groupSuppressed
+                      ? 'Not enough prior-window data to compute a % change for this view.'
+                      : `0 posts in prior window → ${g.current_total} now`
                     chip = (
-                      <span className="ml-1 text-muted-foreground" title={`0 posts in prior window → ${g.current_total} now`}>
-                        (new)
+                      <span className="ml-1 text-muted-foreground" title={chipTitle}>
+                        {chipText}
                       </span>
                     )
                   } else {

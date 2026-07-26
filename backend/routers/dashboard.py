@@ -470,6 +470,29 @@ def get_competitor_timeseries(
             else:
                 prev_totals[row.game_id] = row.cnt
 
+        # Data-coverage guard (2026-07-26): the prior window must have at
+        # least ~half the days worth of any ingestion activity for the
+        # comparison to be meaningful. Otherwise (typically because
+        # historical backfill hasn't reached that far back yet), a full
+        # current window compared against a nearly-empty prior window
+        # produces absurd % values (e.g. +61,000%). When coverage is
+        # insufficient we clear prev_totals so pct_change collapses to
+        # None (rendered as '(new)' in the chart legend, which is honest
+        # about the missing baseline).
+        coverage_q = (
+            db.query(func.count(func.distinct(func.date(effective_date_expr))))
+            .select_from(RawPost)
+            .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(RawPost.game_id.in_(game_ids))
+            .filter(func.date(effective_date_expr) >= str(prev_start))
+            .filter(func.date(effective_date_expr) <= str(prev_end))
+        )
+        prev_days_with_data = coverage_q.scalar() or 0
+        min_days_required = max(3, pct_window_days // 2)
+        if prev_days_with_data < min_days_required:
+            # Zero out prev_totals — pct_change will resolve to None below.
+            prev_totals = {gid: 0 for gid in game_ids}
+
     def _pct(curr: int, prev: int) -> Optional[float]:
         """Signed % change; None when prev is 0 (division undefined)."""
         if prev <= 0:
