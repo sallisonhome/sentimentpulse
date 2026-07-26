@@ -491,3 +491,43 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
     )
+
+
+class TimelineEvent(Base):
+    """
+    User-authored timeline events overlaid on the Post Volume by Title
+    chart on a parent's dashboard.
+
+    Feature added 2026-07-26. Modeled after SignalPulse's PLS milestone
+    pattern (client/src/components/pls-section.tsx) — one event per
+    (game_id, event_date, name) tuple, freely edited/deleted by the user.
+    Rendered as a vertical ReferenceLine on the Post Volume by Title
+    chart, colored to match the game's line.
+
+    Scope rule (enforced in routers/timeline_events.py):
+      * A game must EITHER be a parent (has ≥1 competitor row where
+        parent_id == this.id) OR a competitor (has a row where
+        competitor_id == this.id) for events to be creatable on it.
+        Standalone Saber titles with no competitors have no events UI —
+        the whole widget is hidden client-side too.
+
+    No cap on events per game. Events with event_date outside the
+    dashboard's selected period are silently omitted from the chart
+    payload but remain in the DB.
+    """
+    __tablename__ = "timeline_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    game_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("games.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    event_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    # Concise description shown in the tooltip and in the settings list.
+    # ≤120 chars enforced at the schema layer (Pydantic).
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False,
+    )
+
+    game: Mapped["Game"] = relationship("Game")

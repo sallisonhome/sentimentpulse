@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Button } from '../ui/button'
 import { Badge } from '../ui/badge'
 import GameSubredditsEditor from './GameSubredditsEditor'
+import TimelineEventsEditor from './TimelineEventsEditor'
 import type { CompetitorGame } from '../../types'
 
 interface CompetitorGameCardProps {
@@ -59,6 +60,14 @@ export default function CompetitorGameCard({ competitor, parentName, onRemove, r
 
       <CardContent className="space-y-4">
         <GameSubredditsEditor game={competitor} compact />
+
+        {/* Timeline events for this competitor — rendered in every
+            competitor card because a competitor's very existence means
+            we're in a parent/competitor group (which is the visibility
+            gate for this widget per the 2026-07-26 spec). */}
+        <div className="mt-3">
+          <TimelineEventsEditor gameId={competitor.id} gameName={competitor.name} />
+        </div>
 
         {/* Commercial context is optional for competitors — they're benchmarks,
             not our own titles. Only surfaced (collapsed) when one already exists. */}

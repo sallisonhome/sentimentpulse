@@ -7,9 +7,11 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
+  ReferenceLine,
   type TooltipProps,
 } from 'recharts'
 import { format, parseISO } from 'date-fns'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { useAppContext } from '../../contexts/AppContext'
@@ -41,6 +43,11 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   // only the parent in that case. Also render nothing while loading so we
   // never flash an empty chart shell above/below neighboring cards.
   if (isLoading || !data || data.games.length <= 1) return null
+
+  // Hover state for the event marker tooltip. Recharts' ReferenceLine
+  // doesn't emit hover events natively, so we render invisible SVG
+  // hitboxes over each marker and track which one is hovered here.
+  const [hoveredEventId, setHoveredEventId] = useState<number | null>(null)
 
   // Flatten `counts` (an object keyed by game_id) into top-level keys so
   // recharts' <Line dataKey="21" /> can find the numeric value at
@@ -129,11 +136,77 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
                 activeDot={{ r: 4 }}
               />
             ))}
+            {/* Timeline event markers — vertical dashed lines colored to
+                match the game each event belongs to. Only events whose
+                event_date falls inside the current period window are in
+                data.events (the backend filters). */}
+            {(data.events ?? []).map(ev => {
+              const gameIdx = data.games.findIndex(g => g.game_id === ev.game_id)
+              if (gameIdx < 0) return null
+              const color = LINE_COLORS[gameIdx % LINE_COLORS.length]
+              // ReferenceLine x= must match the LineChart's dataKey for x,
+              // which is date_label formatted as 'MMM d'. Convert the
+              // ISO event_date the same way so the marker lines up.
+              const dateLabel = format(parseISO(ev.event_date), 'MMM d')
+              const isHovered = hoveredEventId === ev.id
+              return (
+                <ReferenceLine
+                  key={`ev-${ev.id}`}
+                  x={dateLabel}
+                  stroke={color}
+                  strokeDasharray="4 3"
+                  strokeWidth={isHovered ? 2.5 : 1.5}
+                  strokeOpacity={isHovered ? 1 : 0.75}
+                  ifOverflow="visible"
+                  isFront
+                  label={{
+                    value: '●',
+                    position: 'top',
+                    fill: color,
+                    fontSize: isHovered ? 12 : 9,
+                  }}
+                  onMouseEnter={() => setHoveredEventId(ev.id)}
+                  onMouseLeave={() => setHoveredEventId(null)}
+                />
+              )
+            })}
           </LineChart>
         </ResponsiveContainer>
         <p className="mt-2 text-[11px] text-muted-foreground">
           Click a competitor's name in the legend to open its full dashboard.
+          {(data.events?.length ?? 0) > 0 && (
+            <> · Dashed vertical markers are user-added timeline events (add or edit in Settings).</>
+          )}
         </p>
+
+        {/* Event list beneath the chart — gives users a clean way to read
+            each marker's date, description, and which game it belongs to,
+            without depending on hover interactions with the small dot on
+            the chart itself. */}
+        {(data.events?.length ?? 0) > 0 && (
+          <div className="mt-3 border-t border-border/60 pt-2">
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Events in this window
+            </p>
+            <ul className="grid grid-cols-1 gap-x-4 gap-y-0.5 text-[11px] sm:grid-cols-2">
+              {data.events!.map(ev => {
+                const gameIdx = data.games.findIndex(g => g.game_id === ev.game_id)
+                const color = LINE_COLORS[Math.max(gameIdx, 0) % LINE_COLORS.length]
+                const g = data.games[gameIdx]
+                return (
+                  <li key={ev.id} className="flex items-baseline gap-1.5">
+                    <span aria-hidden style={{ color }}>●</span>
+                    <span className="tabular-nums text-muted-foreground">{ev.event_date}</span>
+                    <span className="truncate" title={`${g?.name ?? ''} — ${ev.name}`}>
+                      {ev.name}
+                      {g && <span className="text-muted-foreground"> — {g.name}</span>}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+        )}
       </CardContent>
     </Card>
   )

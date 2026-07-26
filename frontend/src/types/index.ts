@@ -61,9 +61,17 @@ export interface CompetitorTimeseriesDay {
   counts: Record<string, number>
 }
 
+export interface CompetitorTimeseriesEvent {
+  id: number
+  game_id: number
+  event_date: string  // YYYY-MM-DD
+  name: string
+}
+
 export interface CompetitorTimeseriesResponse {
   games: CompetitorTimeseriesGame[]
   timeseries: CompetitorTimeseriesDay[]
+  events?: CompetitorTimeseriesEvent[]
 }
 
 // ── Daily Summaries ───────────────────────────────────────────────────────────

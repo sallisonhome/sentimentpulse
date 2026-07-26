@@ -28,6 +28,7 @@ from models import (
 )
 from schemas import (
     CompetitorTimeseriesDay,
+    CompetitorTimeseriesEvent,
     CompetitorTimeseriesGame,
     CompetitorTimeseriesResponse,
     DashboardResponse,
@@ -424,4 +425,22 @@ def get_competitor_timeseries(
         for g in games_in_group
     ]
 
-    return CompetitorTimeseriesResponse(games=games_out, timeseries=timeseries)
+    # Timeline events overlay (2026-07-26). Pull events for every game in
+    # the group, filtered to the same window as the timeseries. Events
+    # OUTSIDE the window are silently omitted — the settings UI still
+    # shows them so the user can see they're stored, but they won't
+    # render on this chart until the period widens to include them.
+    from models import TimelineEvent  # local import: avoids cycles
+    ev_q = db.query(TimelineEvent).filter(TimelineEvent.game_id.in_(game_ids))
+    if p_start:
+        ev_q = ev_q.filter(TimelineEvent.event_date >= p_start)
+    events_out = [
+        CompetitorTimeseriesEvent(
+            id=e.id, game_id=e.game_id, event_date=e.event_date, name=e.name,
+        )
+        for e in ev_q.order_by(TimelineEvent.event_date.asc()).all()
+    ]
+
+    return CompetitorTimeseriesResponse(
+        games=games_out, timeseries=timeseries, events=events_out,
+    )

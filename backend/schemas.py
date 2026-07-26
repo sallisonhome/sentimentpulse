@@ -372,9 +372,18 @@ class CompetitorTimeseriesDay(BaseModel):
     counts: dict
 
 
+class CompetitorTimeseriesEvent(BaseModel):
+    """Timeline event overlay on the Post Volume by Title chart."""
+    id: int
+    game_id: int
+    event_date: date
+    name: str
+
+
 class CompetitorTimeseriesResponse(BaseModel):
     games: List[CompetitorTimeseriesGame]
     timeseries: List[CompetitorTimeseriesDay]
+    events: List[CompetitorTimeseriesEvent] = []
 
 
 # ── Digest Recipients ─────────────────────────────────────────────────────────

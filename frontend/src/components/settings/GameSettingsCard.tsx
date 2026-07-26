@@ -11,6 +11,7 @@ import { MAX_COMPETITORS_PER_PARENT } from '../../types'
 import type { Game } from '../../types'
 import GameSubredditsEditor from './GameSubredditsEditor'
 import CompetitorGameCard from './CompetitorGameCard'
+import TimelineEventsEditor from './TimelineEventsEditor'
 
 interface GameSettingsCardProps {
   game: Game
@@ -140,6 +141,11 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
 // the subreddit input above it.
 
 function CompetitorTitlesSection({ parentId, parentName }: { parentId: number; parentName: string }) {
+  // Whole section — including timeline-events editors — is gated on
+  // count > 0 below. The parent's own timeline events widget only
+  // appears once at least one competitor exists (per the 2026-07-26
+  // spec: "If a title isn't set up with child competitor titles these
+  // widgets won't be available on the game card").
   const { data: competitors, isLoading } = useCompetitors(parentId)
   const addCompetitor = useAddCompetitor(parentId)
   const removeCompetitor = useRemoveCompetitor(parentId)
@@ -194,6 +200,15 @@ function CompetitorTitlesSection({ parentId, parentName }: { parentId: number; p
         // Indented ~24px + left-border accent to signal these cards are
         // children of the parent, stacked vertically.
         <div className="space-y-3 mb-4 pl-6 border-l-2 border-muted">
+          {/* Parent title's own timeline events — rendered inside this
+              section so it only appears when the parent has competitors.
+              (Otherwise there'd be no chart to overlay them on.) */}
+          <div className="rounded-md border border-border/60 bg-background/40 p-3">
+            <p className="mb-1.5 text-xs font-medium text-foreground">
+              {parentName} <span className="text-muted-foreground">(parent)</span>
+            </p>
+            <TimelineEventsEditor gameId={parentId} gameName={parentName} />
+          </div>
           {competitors!.map(c => (
             <CompetitorGameCard
               key={c.id}
