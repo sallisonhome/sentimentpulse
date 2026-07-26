@@ -14,7 +14,10 @@ import { format, parseISO } from 'date-fns'
 import { useRef, useState } from 'react'
 import { toJpeg } from 'html-to-image'
 import { Download } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
+// (useLocation still imported so the pathname check below stays authoritative;
+//  the actual game switch is state-driven via setSelectedGameId which now
+//  syncs to the ?game=<id> URL query param — see contexts/AppContext.tsx)
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { useAppContext } from '../../contexts/AppContext'
@@ -39,6 +42,7 @@ function formatMentions(v: number): string {
 
 export default function CompetitorTimeseriesChart({ parentId, period }: CompetitorTimeseriesChartProps) {
   const navigate = useNavigate()
+  const location = useLocation()
   const { setSelectedGameId } = useAppContext()
   const { data, isLoading } = useCompetitorTimeseries(parentId, period)
 
@@ -103,15 +107,15 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
 
   function handleLegendClick(gameId: number, isParent: boolean) {
     // Clicking the parent's own name is a no-op — we're already on its
-    // dashboard. Clicking a competitor switches the selected game and
-    // returns to the Dashboard route (this app has no per-game URL
-    // pattern; game selection is state-driven via AppContext).
+    // dashboard. Clicking a competitor sets the game via AppContext,
+    // which in turn updates the ?game=<id> URL query param (browser
+    // back/forward now correctly returns to the previously‑selected
+    // game). No manual navigate('/') needed — URL sync handles it.
     //
     // Persist the current parent to sessionStorage so the child dashboard
     // can render the "← Back to <parent>" breadcrumb even after a hard
-    // refresh, and so back-nav within-app returns to the parent's
-    // dashboard instead of falling back to /settings via the browser
-    // history stack.
+    // refresh from a bookmarked child URL that doesn't include the
+    // parent context.
     if (isParent) return
     try {
       sessionStorage.setItem(
@@ -120,7 +124,11 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
       )
     } catch { /* sessionStorage may be disabled; breadcrumb still works from API. */ }
     setSelectedGameId(gameId)
-    navigate('/')
+    // If we're not on the Dashboard route (e.g., viewed the chart from
+    // Summary or Posts routes), navigate there. On '/' this is a no-op.
+    if (location.pathname !== '/') {
+      navigate('/')
+    }
   }
 
   return (
