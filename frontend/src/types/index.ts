@@ -53,6 +53,13 @@ export interface CompetitorTimeseriesGame {
   game_id: number
   name: string
   is_parent: boolean
+  /** Period-over-period totals (2026-07-26).
+   *  Populated only for 7d / 30d / 90d views — null for `today` and
+   *  `lifetime` (no comparable prior window). pct_change is null when
+   *  prev_total is 0 (division undefined). */
+  current_total: number | null
+  prev_total: number | null
+  pct_change: number | null
 }
 
 export interface CompetitorTimeseriesDay {

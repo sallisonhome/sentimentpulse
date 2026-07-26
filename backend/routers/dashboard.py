@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -420,8 +420,72 @@ def get_competitor_timeseries(
         for d, counts in sorted(day_map.items())
     ]
 
+    # Period-over-period totals (2026-07-26).
+    # For 7d / 30d / 90d views, compute total posts per game over both
+    # the current window and the immediately preceding same-length
+    # window, then surface a signed pct_change so the chart legend can
+    # show a ▲/▼ chip next to each title's name. Skipped for `today`
+    # (single day, comparing to yesterday is misleading given the
+    # in-progress day) and `lifetime` (no comparable prior window).
+    pct_window_days = {
+        PeriodEnum.weekly: 7,
+        PeriodEnum.monthly: 30,
+        PeriodEnum.quarterly: 90,
+    }.get(period)
+
+    current_totals: dict[int, int] = {gid: 0 for gid in game_ids}
+    prev_totals: dict[int, int] = {gid: 0 for gid in game_ids}
+
+    if pct_window_days is not None:
+        today_d = date.today()
+        curr_start = today_d - timedelta(days=pct_window_days - 1)
+        curr_end = today_d
+        prev_end = curr_start - timedelta(days=1)
+        prev_start = prev_end - timedelta(days=pct_window_days - 1)
+
+        # Query both windows in a single pass by grouping on a CASE that
+        # tags each row as 'curr' or 'prev'. Rows outside both windows
+        # are filtered out by the outer date range. Same INNER JOIN on
+        # SentimentRecord as the main timeseries query so the totals are
+        # apples-to-apples with what the chart lines add up to.
+        window_case = case(
+            (func.date(effective_date_expr) >= str(curr_start), "curr"),
+            else_="prev",
+        ).label("win")
+        pop_q = (
+            db.query(
+                RawPost.game_id,
+                window_case,
+                func.count(RawPost.id).label("cnt"),
+            )
+            .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(RawPost.game_id.in_(game_ids))
+            .filter(func.date(effective_date_expr) >= str(prev_start))
+            .filter(func.date(effective_date_expr) <= str(curr_end))
+            .group_by(RawPost.game_id, window_case)
+        )
+        for row in pop_q.all():
+            if row.win == "curr":
+                current_totals[row.game_id] = row.cnt
+            else:
+                prev_totals[row.game_id] = row.cnt
+
+    def _pct(curr: int, prev: int) -> Optional[float]:
+        """Signed % change; None when prev is 0 (division undefined)."""
+        if prev <= 0:
+            return None
+        return round(((curr - prev) / prev) * 100.0, 1)
+
     games_out = [
-        CompetitorTimeseriesGame(game_id=g.id, name=g.name, is_parent=(g.id == parent_id))
+        CompetitorTimeseriesGame(
+            game_id=g.id,
+            name=g.name,
+            is_parent=(g.id == parent_id),
+            current_total=(current_totals[g.id] if pct_window_days is not None else None),
+            prev_total=(prev_totals[g.id] if pct_window_days is not None else None),
+            pct_change=(_pct(current_totals[g.id], prev_totals[g.id])
+                        if pct_window_days is not None else None),
+        )
         for g in games_in_group
     ]
 

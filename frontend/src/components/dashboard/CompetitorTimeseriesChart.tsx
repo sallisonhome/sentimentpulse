@@ -11,7 +11,7 @@ import {
   type TooltipProps,
 } from 'recharts'
 import { format, parseISO } from 'date-fns'
-import { useRef, useState } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { toJpeg } from 'html-to-image'
 import { Download } from 'lucide-react'
 import { useNavigate, useLocation } from 'react-router-dom'
@@ -181,12 +181,47 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
                 const gameId = Number((entry as { dataKey?: string }).dataKey)
                 const g = data.games.find(x => x.game_id === gameId)
                 if (!g) return null
+                // Period-over-period chip (2026-07-26). Only shown when
+                // the backend supplied a pct_change value — which happens
+                // for 7d / 30d / 90d views only. On 'today' and 'All'
+                // there's no comparable prior window so no chip appears.
+                // pct_change === null (with a non-null current_total)
+                // means "prev window was 0 posts" — we render 'new' in
+                // muted text so the user knows the title had no prior
+                // baseline rather than misreading a missing chip as "no change".
+                const pct = g.pct_change
+                let chip: ReactNode = null
+                if (g.current_total != null) {
+                  if (pct == null) {
+                    chip = (
+                      <span className="ml-1 text-muted-foreground" title={`0 posts in prior window → ${g.current_total} now`}>
+                        (new)
+                      </span>
+                    )
+                  } else {
+                    const up = pct > 0
+                    const flat = pct === 0
+                    const arrow = flat ? '–' : up ? '▲' : '▼'
+                    const cls = flat
+                      ? 'text-muted-foreground'
+                      : up ? 'text-emerald-500' : 'text-rose-500'
+                    const sign = flat ? '' : up ? '+' : ''
+                    chip = (
+                      <span
+                        className={`ml-1 ${cls}`}
+                        title={`Current: ${g.current_total} posts • Previous: ${g.prev_total} posts`}
+                      >
+                        {arrow} {sign}{pct}%
+                      </span>
+                    )
+                  }
+                }
                 return (
                   <span
                     onClick={() => handleLegendClick(g.game_id, g.is_parent)}
                     className={g.is_parent ? '' : 'hover:underline'}
                   >
-                    {g.name}{g.is_parent ? ' (this title)' : ''}
+                    {g.name}{g.is_parent ? ' (this title)' : ''}{chip}
                   </span>
                 )
               }}

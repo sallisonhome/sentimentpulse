@@ -363,6 +363,20 @@ class CompetitorTimeseriesGame(BaseModel):
     game_id: int
     name: str
     is_parent: bool
+    # Period-over-period post-volume totals (2026-07-26). Populated for
+    # 7d/30d/90d (`weekly`/`monthly`/`quarterly`) views only — for
+    # `today` and `lifetime` these are None because there is no directly
+    # comparable prior window of the same length.
+    #
+    #   current_total = post count over [today - (N-1), today]
+    #   prev_total    = post count over the immediately preceding same-length window
+    #                   e.g. weekly → [today-13, today-7]
+    #
+    # pct_change is `current_total` vs `prev_total` expressed as a signed
+    # percentage; None when prev_total == 0 (no meaningful ratio).
+    current_total: Optional[int] = None
+    prev_total: Optional[int] = None
+    pct_change: Optional[float] = None
 
 
 class CompetitorTimeseriesDay(BaseModel):
