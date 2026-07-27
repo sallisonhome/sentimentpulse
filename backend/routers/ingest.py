@@ -401,6 +401,103 @@ def trigger_ill_reddit_reclassify(background_tasks: BackgroundTasks):
     return {"status": "started"}
 
 
+@router.get("/diag/dtf_test")
+def diag_dtf_test(db: Session = Depends(get_db)):
+    """Diagnostic (2026-07-26): probe every step of the DTF ingestion path
+    to find why the last backfill returned dtf=0 across all four games.
+
+    Steps executed and reported:
+      1. Read AppSetting['dtf_enabled'] to confirm the runtime flag.
+      2. Import services.dtf_service and call fetch_dtf_posts with the
+         same query the ingestor would use for game_id=138 (ILL) — the
+         highest-signal case we researched (91 total DTF entries).
+      3. Attempt to save one throwaway RawPost row with
+         source=SourceEnum.dtf into a nested transaction (rolled back
+         immediately) to catch a Postgres enum-value error without
+         mutating live data.
+      4. Return the full outcome + any exception messages so we can
+         see exactly which stage is failing.
+
+    Never touches production data. Read-only apart from the rolled-back
+    savepoint in step 3.
+    """
+    from datetime import datetime, timezone  # noqa: PLC0415
+    from models import AppSetting, RawPost, SourceEnum, Game  # noqa: PLC0415
+
+    result: dict = {"stages": {}}
+
+    # Stage 1: flag state.
+    row = db.query(AppSetting).filter_by(key="dtf_enabled").first()
+    result["stages"]["1_flag"] = {
+        "value_in_db": row.value if row else None,
+        "env_var": os.getenv("DTF_ENABLED", "(unset)"),
+    }
+
+    # Stage 2: service call. Import inside a try so a bad import surfaces here.
+    try:
+        from services.dtf_service import fetch_dtf_posts  # noqa: PLC0415
+        posts = fetch_dtf_posts("ILL Team Clout", game_name="ILL", limit=10)
+        result["stages"]["2_service_call"] = {
+            "ok": True,
+            "posts_returned": len(posts),
+            "first_post_preview": (
+                {
+                    "external_id": posts[0]["external_id"],
+                    "title": (posts[0].get("title") or "")[:120],
+                    "post_date": posts[0]["post_date"].isoformat(),
+                    "url": posts[0].get("url"),
+                }
+                if posts else None
+            ),
+        }
+    except Exception as exc:
+        result["stages"]["2_service_call"] = {"ok": False, "error": repr(exc)}
+        return result
+
+    # Stage 3: try inserting one throwaway RawPost. Do it in a nested
+    # transaction (SAVEPOINT) so we can roll it back cleanly. This will
+    # catch the enum-value error if migration 0013 didn't run.
+    ill_game = db.query(Game).filter_by(id=138).first()
+    if not ill_game:
+        result["stages"]["3_db_insert"] = {"ok": False, "error": "ILL game (id=138) not found"}
+        return result
+    savepoint = db.begin_nested()
+    try:
+        test_row = RawPost(
+            game_id=ill_game.id,
+            source=SourceEnum.dtf,
+            external_id=f"dtf:__diag__{datetime.now(tz=timezone.utc).timestamp()}",
+            author="__diagnostic__",
+            title="__diag__",
+            body="",
+            url="https://example.invalid/dtf-diag",
+            upvotes=0,
+            post_date=datetime.now(tz=timezone.utc),
+        )
+        db.add(test_row)
+        db.flush()  # actually push to Postgres, catches enum errors here
+        # Immediately roll back the savepoint so we don't pollute the DB.
+        savepoint.rollback()
+        result["stages"]["3_db_insert"] = {"ok": True, "note": "savepoint rolled back"}
+    except Exception as exc:
+        savepoint.rollback()
+        result["stages"]["3_db_insert"] = {
+            "ok": False,
+            "error_type": type(exc).__name__,
+            "error": repr(exc)[:500],
+        }
+
+    # Stage 4: peek at how many raw posts with source=dtf already exist
+    # (should be 0 if enum is broken).
+    try:
+        n = db.query(RawPost).filter(RawPost.source == SourceEnum.dtf).count()
+        result["stages"]["4_existing_dtf_rows"] = {"count": n}
+    except Exception as exc:
+        result["stages"]["4_existing_dtf_rows"] = {"error": repr(exc)[:200]}
+
+    return result
+
+
 @router.get("/diag/keyword_dryrun")
 def diag_keyword_dryrun(
     game_id: int = Query(...),
