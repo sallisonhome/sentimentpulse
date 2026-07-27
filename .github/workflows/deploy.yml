@@ -516,6 +516,71 @@ jobs:
             fi
 
             echo ""
+            echo "## Cache-bust: touch index.html + install nginx no-cache header (2026-07-27) ##"
+            # Root cause of the DTF-not-showing-in-regular-browser issue on
+            # 2026-07-27: nginx sent index.html with no Cache-Control header,
+            # so browsers applied heuristic caching (up to 10% of Last-Modified
+            # age) and kept serving old bundles for hours after each deploy.
+            # Vite hashes bundle filenames, so the assets themselves invalidate
+            # correctly — but if index.html itself is stale it keeps pointing
+            # at the older bundle hash.
+            #
+            # Two-part fix:
+            #   1) touch each rebuilt index.html so Last-Modified advances,
+            #      forcing heuristic-caching browsers to re-fetch on next
+            #      request. Fixes the CURRENT stale copies in the wild.
+            #   2) install /etc/nginx/conf.d/spa_index_no_cache.conf which
+            #      adds Cache-Control: no-cache on index.html responses so
+            #      this can't happen again going forward.
+
+            # (1) Touch every rebuilt index.html.
+            for html in /opt/sentimentpulse/frontend/dist/index.html \
+                        /opt/sentimentpulse/signalpulse/dist/public/index.html; do
+              if [ -f "$html" ]; then touch "$html"; fi
+            done
+            echo "index.html files touched"
+
+            # (2) Install nginx snippet. Ships as a small conf.d snippet
+            # (not a full server-block rewrite) so we don't risk clobbering
+            # the multi-app nginx config (trips/genrepulse/gtm all share
+            # the same server block). Uses python to write the file so we
+            # don't have to fight bash heredoc quoting through two nested
+            # heredocs (outer YAML block + outer bash heredoc).
+            python3 <<'PYNGX'
+snippet = '''map $uri $spa_index_cache_control {
+    default "";
+    "~^/sentiment/(index.html)?$" "no-cache, must-revalidate";
+    "~^/signal/(index.html)?$"    "no-cache, must-revalidate";
+    "~^/trips/(index.html)?$"     "no-cache, must-revalidate";
+    "~^/gtm/(index.html)?$"       "no-cache, must-revalidate";
+}
+add_header Cache-Control $spa_index_cache_control always;
+'''
+import os, subprocess
+target = "/etc/nginx/conf.d/spa_index_no_cache.conf"
+existing = ""
+if os.path.exists(target):
+    with open(target) as f:
+        existing = f.read()
+if existing == snippet:
+    print("nginx SPA no-cache snippet already up to date")
+else:
+    tmp = target + ".new"
+    with open(tmp, "w") as f:
+        f.write(snippet)
+    # Validate before atomically installing
+    os.rename(tmp, target)
+    check = subprocess.run(["nginx", "-t"], capture_output=True, text=True)
+    if check.returncode == 0:
+        subprocess.run(["systemctl", "reload", "nginx"], check=False)
+        print("nginx reloaded with SPA no-cache snippet")
+    else:
+        print("ERROR: nginx -t failed after install; removing snippet")
+        print(check.stderr)
+        os.remove(target)
+PYNGX
+
+            echo ""
             echo "## restart services ##"
             # Match service unit lines like 'sentimentpulse.service enabled enabled'.
             # Escape the literal '.' in the regex so '^name.service' doesn't false-positive,
