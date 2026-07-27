@@ -444,6 +444,48 @@ def diag_null_post_dates(
 
     total_raw = db.query(func.count(RawPost.id)).filter(RawPost.game_id == game_id).scalar()
     total_null = sum(null_by_source.values())
+    # Sample of NULL-date rows with external_ids + urls so we can
+    # distinguish OP posts (external_id = forum_{thread_id}) from
+    # comment posts (external_id = forum_{thread_id}_c{comment_id}).
+    samples = (
+        db.query(RawPost.external_id, RawPost.url, RawPost.collected_at, RawPost.title)
+        .filter(RawPost.game_id == game_id, RawPost.post_date.is_(None))
+        .limit(10)
+        .all()
+    )
+    null_samples = [
+        {
+            "external_id": s[0],
+            "url": s[1],
+            "collected_at": s[2].isoformat() if s[2] else None,
+            "title": (s[3] or "")[:80],
+            "is_op": s[0].startswith("forum_") and "_c" not in s[0],
+        }
+        for s in samples
+    ]
+
+    # How many NULL rows are OP vs comment?
+    op_count = (
+        db.query(func.count(RawPost.id))
+        .filter(
+            RawPost.game_id == game_id,
+            RawPost.post_date.is_(None),
+            RawPost.source == "steam_forum",
+            ~RawPost.external_id.contains("_c"),
+        )
+        .scalar() or 0
+    )
+    comment_count = (
+        db.query(func.count(RawPost.id))
+        .filter(
+            RawPost.game_id == game_id,
+            RawPost.post_date.is_(None),
+            RawPost.source == "steam_forum",
+            RawPost.external_id.contains("_c"),
+        )
+        .scalar() or 0
+    )
+
     return {
         "game_id": game_id,
         "total_raw_posts": total_raw,
@@ -451,6 +493,9 @@ def diag_null_post_dates(
         "null_pct": round(100 * total_null / total_raw, 2) if total_raw else 0,
         "null_raw_by_source": null_by_source,
         "null_with_sentiment_record_by_source": sr_null_by_source,
+        "null_steam_forum_op_count": op_count,
+        "null_steam_forum_comment_count": comment_count,
+        "null_samples": null_samples,
     }
 
 
