@@ -7,24 +7,34 @@ by Komitet (formerly cmtt).  Structure:
   * "Subsites" — topical channels (like subreddits) that entries belong to
   * "Comments" — nested threaded comments on each entry
 
-Every entry has a numeric ``id`` and a public read endpoint at
-``https://api.dtf.ru/v3.0/entry/{id}``.  There is a public search endpoint
-that returns entries matching a keyword query.
+We hit DTF's public search endpoint at ``api.dtf.ru/v2.1/search`` — no
+auth required.  Response shape:
 
-Why we're here (2026-07-26): our English-only Reddit + Steam pipeline was
+    {
+      "result": {
+        "contents": [
+          {"type": "entry", "data": {...entry fields...}, "meta": {...}},
+          ...
+        ],
+        "lastId": 2   # 1-indexed page counter; pass +1 for the next page
+      }
+    }
+
+Entry data schema captured 2026-07-26:
+  id, subsiteId, date (unix seconds), title, blocks (array), url,
+  author {id,name,nickname,uri,...},
+  subsite {id,name,uri,...},
+  likes {counterLikes, counterDislikes, ...},
+  hitsCount, commentsCount, isNews, isEditorial, etc.
+
+Why we're here: our English-only Reddit + Steam pipeline was
 systematically undercounting Russian-language discussion of Team Clout's
 ILL (Russian-origin studio published by Mundfish).  DTF is the primary
-Russian gaming forum where this discussion lives.  See lessons.md and the
-SentimentPulse changelog for context.
+Russian gaming forum where that discussion lives.  See lessons.md and
+the SentimentPulse changelog for context.
 
-Design mirrors ``reddit_service.py`` — we expose ``fetch_dtf_posts`` that
-takes a search query + game_name and returns a list of standard post
-dicts with the same shape as reddit posts, so the ingestor can call
-``_bulk_save_posts`` with them unchanged.
-
-No auth is required for the read endpoints we hit — DTF exposes its
-public read API without a token.  We keep to <=1 request/sec (documented
-courtesy limit; DTF has soft rate-limiting) with a small polite delay.
+We keep to ~1 request/sec (documented courtesy limit; DTF has soft
+rate-limiting) with a small polite delay.
 """
 from __future__ import annotations
 
@@ -40,15 +50,16 @@ import requests
 logger = logging.getLogger(__name__)
 
 _BASE = "https://api.dtf.ru"
-_SEARCH_URL = f"{_BASE}/v2.5/search/content"
+# Confirmed 2026-07-26 as the working search endpoint. Earlier versions
+# (v2.3, v2.4, v2.5, v3.0/search) all return 404 on this host — DTF's
+# public API surface has been consolidating over the years and v2.1 is
+# the one that actually resolves for search.
+_SEARCH_URL = f"{_BASE}/v2.1/search"
 
-# Courtesy delay between calls.  DTF doesn't publish a hard rate limit but
-# has soft anti-abuse throttling — 1s is safe and matches what community
-# API clients (Dtf-Client-API, LightVolk) do.
+# Courtesy delay between calls.  DTF doesn't publish a hard rate limit
+# but has soft anti-abuse throttling — 1s is safe.
 _REQUEST_DELAY_S = 1.0
 
-# Standard headers — user agent identifies the bot for DTF ops if they
-# ever look at their logs, no auth is required.
 _HEADERS = {
     "User-Agent": (
         "SentimentPulse/1.0 (+https://sallisonhome.com; monitoring for "
@@ -57,10 +68,6 @@ _HEADERS = {
     "Accept": "application/json",
 }
 
-# HTTP timeout — DTF's API is generally fast (< 500 ms) but we've seen
-# occasional 3-5 s stalls under load; 15 s gives plenty of headroom
-# without letting a single stuck request block the whole ingest for a
-# minute+.
 _HTTP_TIMEOUT_S = 15
 
 
@@ -81,8 +88,6 @@ def _get(url: str, params: Optional[dict] = None) -> Optional[dict]:
         time.sleep(_REQUEST_DELAY_S)
 
     if resp.status_code >= 400:
-        # DTF returns HTML for some 500s; don't log the body at ERROR to
-        # keep the log clean — INFO is enough for diagnostics.
         logger.info(
             "DTF non-2xx %s for %s params=%s body=%s",
             resp.status_code, url, params, resp.text[:200],
@@ -95,10 +100,10 @@ def _get(url: str, params: Optional[dict] = None) -> Optional[dict]:
         return None
 
 
-# HTML text extraction — DTF entries can be either short "posts" with
-# a text body or long-form articles with a "blocks" schema (paragraph,
-# quote, image, embed, etc).  For sentiment we only care about the
-# text of text/header/quote blocks; images, embeds, and code are ignored.
+# HTML text extraction.  DTF entries use a "blocks" array — each block has
+# a type ("text","header","quote","incut","media","tweet",...) and a
+# "data" object.  For sentiment we only care about text/header/quote —
+# the rest are images, embeds, code fences, ads, etc.
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
@@ -109,17 +114,8 @@ def _strip_html(s: str) -> str:
 
 
 def _extract_body_text(entry: dict) -> str:
-    """Pull the human-readable text out of a DTF entry.
-
-    DTF has multiple content schemas.  We try the modern ``blocks`` array
-    first (used since ~2020) and fall back to ``intro`` / ``text``.  If
-    none of those exist, we return "" and let the relevance gate decide
-    from the title alone.
-    """
+    """Pull the human-readable text out of a DTF entry."""
     parts: list[str] = []
-
-    # v2+ block schema — a list of {"type": "text"|"header"|"quote"|...,
-    # "data": {"text": "…"}} objects.  We only surface text/header/quote.
     blocks = entry.get("blocks") or []
     if isinstance(blocks, list):
         for block in blocks:
@@ -131,13 +127,6 @@ def _extract_body_text(entry: dict) -> str:
             text = ((block.get("data") or {}).get("text") or "").strip()
             if text:
                 parts.append(_strip_html(text))
-
-    if not parts:
-        # Older / short-post schema.
-        intro = entry.get("intro") or entry.get("text") or ""
-        if intro:
-            parts.append(_strip_html(intro))
-
     return "\n\n".join(p for p in parts if p)
 
 
@@ -148,39 +137,38 @@ def _entry_to_dict(entry: dict) -> dict:
     ingestor's ``_bulk_save_posts`` can accept it unchanged.
     """
     entry_id = entry.get("id")
-    author = ((entry.get("author") or {}).get("name")) or "[unknown]"
+    author_block = entry.get("author") or {}
+    author = author_block.get("name") or author_block.get("nickname") or "[unknown]"
     title = entry.get("title") or ""
     body = _extract_body_text(entry)
 
-    # DTF URLs are ``https://dtf.ru/<subsite>/<id>-<slug>`` — the API
-    # returns the full URL in ``url`` when present, otherwise we
-    # reconstruct from subsite + id.
+    # Prefer the API-provided full URL; fall back to reconstruction.
     url = entry.get("url") or ""
     if not url and entry_id:
-        subsite = ((entry.get("subsite") or {}).get("url")) or ""
+        subsite = ((entry.get("subsite") or {}).get("uri")) or ""
         if subsite:
+            # subsite.uri is already "/games" or similar
             url = f"https://dtf.ru{subsite}/{entry_id}"
         else:
-            url = f"https://dtf.ru/u/0-user/{entry_id}"
+            url = f"https://dtf.ru/{entry_id}"
 
-    # DTF stores dates as Unix seconds under ``date`` (creation) or
-    # ``last_modification_date`` — we prefer creation.
-    ts = entry.get("date") or entry.get("date_favorite") or 0
+    # Unix seconds; DTF stores creation date under 'date'.
+    ts = entry.get("date") or 0
     try:
         post_date = datetime.fromtimestamp(float(ts), tz=timezone.utc)
     except (TypeError, ValueError, OSError):
         post_date = datetime.now(tz=timezone.utc)
 
-    # Upvotes — DTF has a ``likes`` block with a ``summ`` counter that
-    # can be negative (like Reddit score).  Clamp to non-negative for
-    # consistency with reddit_service which also clamps.
-    likes = 0
+    # Likes: counterLikes is unsigned; a post's karma is
+    # counterLikes - counterDislikes (both non-negative). We store
+    # net positive likes (clamped to 0) to match reddit_service.
     likes_block = entry.get("likes") or {}
-    if isinstance(likes_block, dict):
-        try:
-            likes = max(0, int(likes_block.get("summ", 0) or 0))
-        except (TypeError, ValueError):
-            likes = 0
+    try:
+        cl = int(likes_block.get("counterLikes") or 0)
+        cd = int(likes_block.get("counterDislikes") or 0)
+        upvotes = max(0, cl - cd)
+    except (TypeError, ValueError):
+        upvotes = 0
 
     return {
         "external_id": f"dtf:{entry_id}" if entry_id is not None else "",
@@ -188,92 +176,96 @@ def _entry_to_dict(entry: dict) -> dict:
         "title": title,
         "body": body,
         "url": url,
-        "upvotes": likes,
+        "upvotes": upvotes,
         "post_date": post_date,
     }
+
+
+def _search_page(query: str, page: int = 1) -> tuple[list[dict], Optional[int]]:
+    """Fetch a single page of DTF search results.
+
+    Returns:
+        (items, next_page) — items is the list of normalized post dicts;
+        next_page is the ``lastId`` to pass on the next call, or None if
+        there is no next page.
+    """
+    params = {"query": query}
+    if page > 1:
+        params["lastId"] = page
+    payload = _get(_SEARCH_URL, params=params)
+    if not payload:
+        return [], None
+    result = payload.get("result") or {}
+    raw_items = result.get("contents") or []
+    normalized: list[dict] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        # DTF returns mixed types in search results (entry, subsite, user,
+        # comment). Only "entry" gets ingested.
+        if item.get("type") != "entry":
+            continue
+        entry = item.get("data") or {}
+        if not entry.get("id"):
+            continue
+        normalized.append(_entry_to_dict(entry))
+    next_page = result.get("lastId")
+    # DTF returns lastId even when it's the same as the current page;
+    # detect the end by empty results.
+    if not raw_items:
+        next_page = None
+    return normalized, next_page
 
 
 def fetch_dtf_posts(
     query: str,
     game_name: str = "",
-    limit: int = 25,
+    limit: int = 100,
 ) -> list[dict]:
     """Search DTF for entries matching ``query`` and return normalized posts.
 
     Args:
         query:      A keyword phrase to search DTF for (e.g. "ILL Team Clout",
-                    "хоррор ILL", "Halloween Illfonic").  Passed straight to
-                    DTF's search endpoint; DTF handles Cyrillic + Latin
-                    without transliteration.
-        game_name:  Only used for logging + downstream keyword filtering;
-                    doesn't affect the DTF request.
-        limit:      Maximum number of entries to return.  DTF's search
-                    endpoint returns 25 per page by default; we cap at
-                    100 to be polite (roughly 4 pages).
+                    "Halloween Illfonic", "Silent Hill Townfall").  DTF's
+                    search index handles Cyrillic and Latin equally.
+        game_name:  Only used for logging + downstream filtering.
+        limit:      Cap on total returned entries.  DTF returns ~30 per
+                    page so ``limit=100`` = up to 4 pages of results.
 
     Returns:
-        A list of post dicts matching the same shape as reddit posts —
-        the ingestor's ``_bulk_save_posts`` accepts them directly.
-        Empty list on any error (we NEVER raise from here so a DTF outage
-        cannot break a full ingestion run).
+        A list of post dicts matching the reddit_service shape.  Empty
+        list on any error (we NEVER raise from here — DTF outage cannot
+        break a full ingestion run).
     """
-    limit = max(1, min(int(limit), 100))
-    per_page = 25
-    pages_needed = (limit + per_page - 1) // per_page
-
-    all_entries: list[dict] = []
-    for page in range(pages_needed):
-        params = {
-            "query": query,
-            # subsites=all is DTF's way of asking for global search across
-            # every subsite (not restricted to one channel).
-            "subsites": "all",
-            "sorting": "date",
-            "offset": page * per_page,
-            "count": per_page,
-        }
-        payload = _get(_SEARCH_URL, params=params)
-        if not payload:
-            # Break out: either an error or an empty page.  Don't keep
-            # hammering — the ingestor will retry on the next cron.
-            break
-        # DTF search response shape (v2.5):
-        #   {"result": {"items": [ {"id":…, "type": "entry", "data": {...entry...}}, … ] } }
-        # or under some versions:
-        #   {"result": [ {...entry...}, ... ]}
-        # We defensively handle both.
-        result = payload.get("result", payload)
-        items = []
-        if isinstance(result, dict):
-            items = result.get("items") or result.get("entries") or []
-        elif isinstance(result, list):
-            items = result
+    limit = max(1, min(int(limit), 500))
+    out: list[dict] = []
+    page = 1
+    while len(out) < limit:
+        items, next_page = _search_page(query, page=page)
         if not items:
             break
-
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            # Some search responses wrap the entry in {"type": "entry",
-            # "data": {...}}; unwrap.
-            entry = item.get("data") if item.get("type") in {"entry", "post"} else item
-            if not isinstance(entry, dict):
-                entry = item
-            # Skip non-entry results (users, subsites, tags) — they show
-            # up occasionally in mixed search results.
-            if entry.get("id") is None:
-                continue
-            all_entries.append(_entry_to_dict(entry))
-
-        if len(items) < per_page:
-            # Last page reached.
+        out.extend(items)
+        if not next_page or next_page == page:
+            break
+        # DTF's next_page is 1-indexed and increments by 1 per page. We
+        # bump ourselves rather than trusting the returned value because
+        # DTF has been observed to echo lastId=2 on page 1 even when
+        # there IS a page 2 — meaning next_page is the value we pass
+        # on our next request, which happens to be page+1.
+        page += 1
+        # Sanity: DTF search caps at ~4 pages (~90 results) for niche
+        # queries; hard-cap the outer loop to prevent runaway.
+        if page > 20:
             break
 
+    if len(out) > limit:
+        out = out[:limit]
+
     logger.info(
-        "DTF search q=%r game=%r returned %d entries",
-        query, game_name, len(all_entries),
+        "DTF search q=%r game=%r returned %d entries (page cap=%d)",
+        query, game_name, len(out), page,
     )
-    return all_entries
+    return out
 
 
 def fetch_dtf_posts_since(
@@ -282,61 +274,43 @@ def fetch_dtf_posts_since(
     game_name: str = "",
     hard_cap: int = 500,
 ) -> list[dict]:
-    """Backfill helper: fetch all DTF posts matching ``query`` newer than
-    ``since_utc`` — paging until we hit a post older than the cutoff or
-    the hard cap.  Used by the ingest backfill job.
+    """Fetch DTF posts matching ``query`` newer than ``since_utc``.
 
-    We rely on DTF's ``sorting=date`` returning newest-first, so we can
-    stop as soon as we see one post older than ``since_utc``.
+    Walks the search results page by page until either every post on a
+    page is older than the cutoff, we hit ``hard_cap`` accepted posts,
+    or the search is exhausted.  Used by the ingest backfill job.
+
+    Note: DTF's search doesn't return in strict date-sorted order — it
+    weights by relevance and recency together.  We can't rely on
+    "first post older than cutoff means we're done"; instead we scan
+    every page and filter, stopping only when a whole page yielded
+    zero in-window posts or when we exhaust the search.
     """
-    per_page = 25
+    if since_utc.tzinfo is None:
+        since_utc = since_utc.replace(tzinfo=timezone.utc)
     out: list[dict] = []
-    offset = 0
-    while len(out) < hard_cap:
-        params = {
-            "query": query,
-            "subsites": "all",
-            "sorting": "date",
-            "offset": offset,
-            "count": per_page,
-        }
-        payload = _get(_SEARCH_URL, params=params)
-        if not payload:
-            break
-        result = payload.get("result", payload)
-        items = []
-        if isinstance(result, dict):
-            items = result.get("items") or result.get("entries") or []
-        elif isinstance(result, list):
-            items = result
+    page = 1
+    zero_streak = 0  # consecutive pages with 0 in-window posts
+    while len(out) < hard_cap and zero_streak < 2 and page <= 20:
+        items, next_page = _search_page(query, page=page)
         if not items:
             break
-
-        page_hit_cutoff = False
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            entry = item.get("data") if item.get("type") in {"entry", "post"} else item
-            if not isinstance(entry, dict) or entry.get("id") is None:
-                continue
-            normalized = _entry_to_dict(entry)
-            if normalized["post_date"] < since_utc:
-                page_hit_cutoff = True
-                # Do NOT break here — DTF's date sort has occasional
-                # anomalies where a slightly-older post sneaks in; we
-                # still want to keep any newer ones on this page. We
-                # only stop paginating after this page finishes.
-                continue
-            out.append(normalized)
-            if len(out) >= hard_cap:
-                break
-
-        if page_hit_cutoff or len(items) < per_page:
+        in_window = [p for p in items if p["post_date"] >= since_utc]
+        out.extend(in_window)
+        if not in_window:
+            zero_streak += 1
+        else:
+            zero_streak = 0
+        if not next_page or next_page == page:
             break
-        offset += per_page
+        page += 1
+
+    if len(out) > hard_cap:
+        out = out[:hard_cap]
 
     logger.info(
-        "DTF backfill q=%r since=%s game=%r returned %d entries",
-        query, since_utc.isoformat(), game_name, len(out),
+        "DTF backfill q=%r since=%s game=%r returned %d entries "
+        "(scanned %d pages)",
+        query, since_utc.isoformat(), game_name, len(out), page,
     )
     return out
