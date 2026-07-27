@@ -100,7 +100,18 @@ def get_dashboard(
     # same rows: the current live set of SentimentRecords for the game
     # in the period window, joined through RawPost.post_date/collected_at
     # for period scoping.
-    effective_date_expr = func.coalesce(RawPost.post_date, RawPost.collected_at)
+    # 2026-07-27 fix: previously we fell back to collected_at when post_date
+    # was NULL. That silently bucketed legacy-scraper NULL-date Steam Forum
+    # rows (from an older scraper version whose external_ids were
+    # 'forum_{thread_id}_{page_num}' instead of the current
+    # 'forum_{thread_id}_op' + '..._c{comment_id}' scheme) into the day
+    # they were RE-SCRAPED, producing phantom 100-200 post spikes every
+    # time the incremental cron ran (Hellraiser 7/26=187, ILL 7/27=202,
+    # Halloween 7/27=208, and thousands more across SM2/SnowRunner/Halo MCC).
+    # Now we use only post_date and skip rows without a real timestamp.
+    # The corrupted RawPost rows stay in the DB for audit, but their
+    # SentimentRecords no longer produce fake daily activity.
+    effective_date_expr = RawPost.post_date
     kpi_q = (
         db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
@@ -388,7 +399,18 @@ def get_competitor_timeseries(
     game_ids = [g.id for g in games_in_group]
 
     p_start = _period_start(period)
-    effective_date_expr = func.coalesce(RawPost.post_date, RawPost.collected_at)
+    # 2026-07-27 fix: previously we fell back to collected_at when post_date
+    # was NULL. That silently bucketed legacy-scraper NULL-date Steam Forum
+    # rows (from an older scraper version whose external_ids were
+    # 'forum_{thread_id}_{page_num}' instead of the current
+    # 'forum_{thread_id}_op' + '..._c{comment_id}' scheme) into the day
+    # they were RE-SCRAPED, producing phantom 100-200 post spikes every
+    # time the incremental cron ran (Hellraiser 7/26=187, ILL 7/27=202,
+    # Halloween 7/27=208, and thousands more across SM2/SnowRunner/Halo MCC).
+    # Now we use only post_date and skip rows without a real timestamp.
+    # The corrupted RawPost rows stay in the DB for audit, but their
+    # SentimentRecords no longer produce fake daily activity.
+    effective_date_expr = RawPost.post_date
     day_expr = func.date(effective_date_expr).label("day")
 
     ts_q = (
