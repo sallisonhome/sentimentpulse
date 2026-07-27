@@ -1,6 +1,6 @@
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, type TooltipProps } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
-import type { SentimentCounts } from '../../types'
+import type { SentimentCounts, Period } from '../../types'
 
 const SLICES = [
   { key: 'positive', label: 'Positive', color: '#22c55e' },
@@ -8,11 +8,27 @@ const SLICES = [
   { key: 'neutral',  label: 'Neutral',  color: '#94a3b8' },
 ] as const
 
-interface SentimentDonutProps {
-  sentiment: SentimentCounts
+// Period → card title mapping. The underlying data payload is already
+// period-scoped by the backend (see /api/games/{id}/dashboard's kpi_q
+// which filters by p_start when period != 'today'), so all we're
+// changing here is the visible label. Previously this card was
+// hardcoded to "Today's Breakdown" regardless of the selected period,
+// which was confusing on 7d/30d/90d/All views (2026-07-27 fix).
+const PERIOD_TITLES: Record<Period, string> = {
+  today:     "Today's Breakdown",
+  weekly:    'Last 7 Days',
+  monthly:   'Last 30 Days',
+  quarterly: 'Last 90 Days',
+  lifetime:  'All Time',
 }
 
-export default function SentimentDonut({ sentiment }: SentimentDonutProps) {
+interface SentimentDonutProps {
+  sentiment: SentimentCounts
+  period?: Period
+}
+
+export default function SentimentDonut({ sentiment, period = 'today' }: SentimentDonutProps) {
+  const title = PERIOD_TITLES[period] ?? "Today's Breakdown"
   const chartData = SLICES.map(s => ({
     name:  s.label,
     value: sentiment[s.key],
@@ -22,7 +38,7 @@ export default function SentimentDonut({ sentiment }: SentimentDonutProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Today's Breakdown</CardTitle>
+        <CardTitle className="text-base">{title}</CardTitle>
       </CardHeader>
       <CardContent className="flex items-center gap-4">
         <ResponsiveContainer width={160} height={160}>

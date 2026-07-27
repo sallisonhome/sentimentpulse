@@ -105,7 +105,7 @@ export default function DashboardPage() {
               : <EmptyState title="No trend data" description="Data will appear after the first ingestion." />
             }
           </div>
-          <SentimentDonut sentiment={data.sentiment_today} />
+          <SentimentDonut sentiment={data.sentiment_today} period={period} />
         </div>
 
         {/* Row 3 — Volume by source (wide) + top topics (narrow) */}
