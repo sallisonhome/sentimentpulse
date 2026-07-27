@@ -486,6 +486,27 @@ def diag_null_post_dates(
         .scalar() or 0
     )
 
+    # Distribution of NULL-date rows by collected_at date. This tells us
+    # which day the dashboard is bucketing them into (COALESCE picks
+    # collected_at when post_date is NULL). Concentration on today = a
+    # recent bad ingest run; even spread over months = old legacy rows.
+    collected_dist_rows = (
+        db.query(func.date(RawPost.collected_at).label("d"), func.count(RawPost.id))
+        .filter(
+            RawPost.game_id == game_id,
+            RawPost.post_date.is_(None),
+            RawPost.source == "steam_forum",
+        )
+        .group_by(func.date(RawPost.collected_at))
+        .order_by(func.date(RawPost.collected_at).desc())
+        .limit(10)
+        .all()
+    )
+    collected_dist = [
+        {"collected_date": str(r[0]) if r[0] else None, "count": r[1]}
+        for r in collected_dist_rows
+    ]
+
     return {
         "game_id": game_id,
         "total_raw_posts": total_raw,
@@ -496,6 +517,7 @@ def diag_null_post_dates(
         "null_steam_forum_op_count": op_count,
         "null_steam_forum_comment_count": comment_count,
         "null_samples": null_samples,
+        "null_by_collected_date_top10": collected_dist,
     }
 
 
