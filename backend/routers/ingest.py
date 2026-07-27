@@ -12,8 +12,10 @@ import os
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from sqlalchemy.orm import Session
 
+from database import get_db
 from scheduler import get_next_run_time
 from schemas import IngestRunResponse, IngestStatusResponse
 from services.ingestor import get_status, run_ingestion
