@@ -407,6 +407,59 @@ def trigger_ill_reddit_reclassify(background_tasks: BackgroundTasks):
     return {"status": "started"}
 
 
+@router.post("/purge/null_date_steamforum", status_code=202)
+def purge_null_date_steamforum(db: Session = Depends(get_db)):
+    """One-shot purge of legacy Steam Forum RawPost rows with NULL post_date
+    (added 2026-07-27). These come from an older scraper version and can't
+    be repaired — the post timestamps were never captured. Their
+    SentimentRecords have been silenced on the dashboard via the
+    effective_date_expr fix, but they still inflate lifetime totals and
+    raw_post_total on Settings.
+
+    Deletes SentimentRecords first (FK order), then RawPosts. Idempotent —
+    re-run is safe and returns zero counts once complete.
+    """
+    from models import RawPost, SentimentRecord, SourceEnum  # noqa: PLC0415
+
+    candidate_ids_q = db.query(RawPost.id).filter(
+        RawPost.source == SourceEnum.steam_forum,
+        RawPost.post_date.is_(None),
+    )
+    candidate_ids = [r[0] for r in candidate_ids_q.all()]
+    if not candidate_ids:
+        return {"status": "noop", "sr_deleted": 0, "raw_deleted": 0}
+
+    chunk = 1000
+    sr_deleted = 0
+    raw_deleted = 0
+    for i in range(0, len(candidate_ids), chunk):
+        batch = candidate_ids[i:i+chunk]
+        sr_deleted += (
+            db.query(SentimentRecord)
+            .filter(SentimentRecord.raw_post_id.in_(batch))
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+    for i in range(0, len(candidate_ids), chunk):
+        batch = candidate_ids[i:i+chunk]
+        raw_deleted += (
+            db.query(RawPost)
+            .filter(RawPost.id.in_(batch))
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+
+    logger.info(
+        "NULL-date Steam Forum purge: sr_deleted=%d raw_deleted=%d",
+        sr_deleted, raw_deleted,
+    )
+    return {
+        "status": "done",
+        "sr_deleted": sr_deleted,
+        "raw_deleted": raw_deleted,
+    }
+
+
 @router.get("/diag/null_post_dates")
 def diag_null_post_dates(
     game_id: int = Query(..., description="Game to inspect"),
