@@ -157,26 +157,30 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
             without overlapping neighboring lines. Extra top margin (44px)
             reserves space for the wrapped event-name labels rendered above
             each marker; extra bottom margin (8px) keeps date ticks readable. */}
-        <ResponsiveContainer width="100%" height={420}>
-          <LineChart data={formatted} margin={{ top: 44, right: 24, left: 4, bottom: 8 }}>
+        {/* Height bumped from 420 to 520 and top margin from 44 to 88 on
+            2026-07-27 to accommodate significantly larger event labels
+            (11px → 20px = ~180%) and staggered rows without truncating.
+            The tallest label rows now sit ~72px above y-max instead of ~32px. */}
+        <ResponsiveContainer width="100%" height={520}>
+          <LineChart data={formatted} margin={{ top: 88, right: 32, left: 12, bottom: 12 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
             <XAxis
               dataKey="date_label"
-              tick={{ fontSize: 11 }}
+              tick={{ fontSize: 16 }}
               tickLine={false}
               axisLine={false}
             />
             <YAxis
               tickFormatter={formatMentions}
-              tick={{ fontSize: 11 }}
+              tick={{ fontSize: 16 }}
               tickLine={false}
               axisLine={false}
               allowDecimals={false}
-              label={{ value: 'Mentions', angle: -90, position: 'insideLeft', fontSize: 11, fill: 'hsl(var(--muted-foreground))' }}
+              label={{ value: 'Mentions', angle: -90, position: 'insideLeft', fontSize: 16, fill: 'hsl(var(--muted-foreground))' }}
             />
             <Tooltip content={<CompetitorTooltip games={data.games} />} />
             <Legend
-              wrapperStyle={{ fontSize: 11, cursor: 'pointer' }}
+              wrapperStyle={{ fontSize: 18, cursor: 'pointer', paddingTop: 12 }}
               formatter={(_value, entry) => {
                 const gameId = Number((entry as { dataKey?: string }).dataKey)
                 const g = data.games.find(x => x.game_id === gameId)
@@ -266,10 +270,17 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
               // Stagger label vertical position by index (offset 0 / 14 /
               // 28 px) so labels on nearby dates don't collide. dy is
               // relative to the top of the plot area (position='top').
-              const dy = -(4 + (i % 3) * 14)
+              // 2026-07-27: bumped stagger from 14 -> 26 to give the
+              // 20px event labels enough vertical breathing room.
+              // With 3 rows at (4, 30, 56) px above the marker, the top
+              // row sits at ~72px — which is exactly why we increased
+              // top margin from 44 -> 88 above.
+              const dy = -(4 + (i % 3) * 26)
               // Truncate very long names for the on-chart label; the
               // event list beneath the chart shows the full text.
-              const displayName = ev.name.length > 28 ? ev.name.slice(0, 27) + '…' : ev.name
+              // 2026-07-27: shortened cap from 28 to 22 chars since the
+              // 20px font means each char is roughly 60% wider on screen.
+              const displayName = ev.name.length > 22 ? ev.name.slice(0, 21) + '…' : ev.name
               return (
                 <ReferenceLine
                   key={`ev-${ev.id}`}
@@ -284,8 +295,12 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
                     value: displayName,
                     position: 'top',
                     fill: color,
-                    fontSize: 11,
-                    fontWeight: isHovered ? 600 : 500,
+                    // 2026-07-27: bumped from 11 to 20 (~180%) so event
+                    // labels are readable in a full-width Post Volume
+                    // chart without zooming. Chart height and top margin
+                    // were also enlarged to give these labels room.
+                    fontSize: 20,
+                    fontWeight: isHovered ? 700 : 600,
                     dy,
                   }}
                   onMouseEnter={() => setHoveredEventId(ev.id)}
@@ -295,7 +310,7 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
             })}
           </LineChart>
         </ResponsiveContainer>
-        <p className="mt-2 text-[11px] text-muted-foreground">
+        <p className="mt-3 text-sm text-muted-foreground">
           Click a competitor's name in the legend to open its full dashboard.
           {(data.events?.length ?? 0) > 0 && (
             <> · Dashed vertical markers are user-added timeline events (add or edit in Settings).</>
@@ -307,11 +322,11 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
             without depending on hover interactions with the small dot on
             the chart itself. */}
         {(data.events?.length ?? 0) > 0 && (
-          <div className="mt-3 border-t border-border/60 pt-2">
-            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          <div className="mt-4 border-t border-border/60 pt-3">
+            <p className="mb-2 text-sm font-medium uppercase tracking-wide text-muted-foreground">
               Events in this window
             </p>
-            <ul className="grid grid-cols-1 gap-x-4 gap-y-0.5 text-[11px] sm:grid-cols-2">
+            <ul className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
               {data.events!.map(ev => {
                 const gameIdx = data.games.findIndex(g => g.game_id === ev.game_id)
                 const color = LINE_COLORS[Math.max(gameIdx, 0) % LINE_COLORS.length]
