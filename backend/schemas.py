@@ -159,6 +159,11 @@ class VolumePoint(BaseModel):
     steam_forum: int
     reddit: int
     bluesky: int = 0
+    # DTF.ru (Russian-language gaming forum) — added 2026-07-27 after the
+    # source itself was wired into the ingestor a day earlier. Default 0
+    # so old rows and JSON payloads from before this field existed
+    # deserialize cleanly.
+    dtf: int = 0
     total: int
 
 

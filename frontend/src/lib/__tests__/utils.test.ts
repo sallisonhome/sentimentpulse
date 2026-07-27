@@ -100,6 +100,10 @@ describe('sourceLabel', () => {
     expect(sourceLabel('reddit')).toBe('Reddit')
   })
 
+  it('maps dtf', () => {
+    expect(sourceLabel('dtf')).toBe('DTF')
+  })
+
   it('maps bluesky', () => {
     expect(sourceLabel('bluesky')).toBe('Bluesky')
   })

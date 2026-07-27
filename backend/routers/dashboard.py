@@ -240,7 +240,7 @@ def get_dashboard(
     vol_map: dict[date, dict[str, int]] = {}
     for row in vol_rows:
         d = _to_date(row.day)
-        vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0})
+        vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0, "dtf": 0})
         vol_map[d][row.source.value] = row.cnt
 
     # Same zero-fill treatment as the trend chart above — sparse titles
@@ -250,7 +250,7 @@ def get_dashboard(
         cursor = p_start
         today_local = date.today()
         while cursor <= today_local:
-            vol_map.setdefault(cursor, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0})
+            vol_map.setdefault(cursor, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0, "dtf": 0})
             cursor += timedelta(days=1)
 
     volume_points = [
@@ -260,6 +260,7 @@ def get_dashboard(
             steam_forum=counts.get("steam_forum", 0),
             reddit=counts.get("reddit", 0),
             bluesky=counts.get("bluesky", 0),
+            dtf=counts.get("dtf", 0),
             total=sum(counts.values()),
         )
         for d, counts in sorted(vol_map.items())

@@ -2,7 +2,7 @@
 
 export type Period = 'today' | 'weekly' | 'monthly' | 'quarterly' | 'lifetime'
 export type Sentiment = 'positive' | 'negative' | 'neutral'
-export type Source = 'steam_review' | 'steam_forum' | 'reddit' | 'bluesky'
+export type Source = 'steam_review' | 'steam_forum' | 'reddit' | 'bluesky' | 'dtf'
 export type TrendDirection = 'rising' | 'falling' | 'stable'
 export type VelocityDirection = 'improving' | 'stable' | 'declining'
 
@@ -134,6 +134,9 @@ export interface VolumePoint {
   steam_forum: number
   reddit: number
   bluesky: number
+  /** DTF.ru — Russian-language gaming forum. Added 2026-07-27; older
+   *  responses may omit this field, so treat as optional client-side. */
+  dtf?: number
   total: number
 }
 

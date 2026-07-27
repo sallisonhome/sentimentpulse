@@ -38,6 +38,8 @@ export function sourceLabel(source: string): string {
     steam_forum:  'Steam Forum',
     reddit:       'Reddit',
     bluesky:      'Bluesky',
+    // DTF.ru — Russian-language gaming forum. Added 2026-07-27.
+    dtf:          'DTF',
   }[source] ?? source
 }
 

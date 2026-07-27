@@ -58,6 +58,7 @@ export default function PostFilters({
           <SelectItem value="steam_forum">Steam Forums</SelectItem>
           <SelectItem value="reddit">Reddit</SelectItem>
           <SelectItem value="bluesky">Bluesky</SelectItem>
+          <SelectItem value="dtf">DTF</SelectItem>
         </SelectContent>
       </Select>
 
