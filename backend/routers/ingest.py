@@ -132,6 +132,7 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
         backfill_reddit_for_game,
         backfill_steam_reviews_for_game,
         backfill_steam_forums_for_game,
+        backfill_dtf_for_game,
     )
     from services.nlp_service import load_model
 
@@ -155,6 +156,10 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
                 db.commit()
                 sf_saved = backfill_steam_forums_for_game(db, game, start_dt, errors)
                 db.commit()
+                # DTF backfill (2026-07-26). Skips at runtime when the
+                # AppSetting['dtf_enabled'] flag is not set to true.
+                d_saved = backfill_dtf_for_game(db, game, start_dt, errors)
+                db.commit()
 
                 log_lines: list[str] = []
                 step_errors: list[str] = []
@@ -165,7 +170,8 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
 
                 result_lines.append(
                     f"#{gid} {game.name}: reddit={r_saved} steam_reviews={sr_saved} "
-                    f"steam_forums={sf_saved} fetch_errors={len(errors)} step_errors={len(step_errors)}"
+                    f"steam_forums={sf_saved} dtf={d_saved} fetch_errors={len(errors)} "
+                    f"step_errors={len(step_errors)}"
                 )
         finally:
             db.close()
