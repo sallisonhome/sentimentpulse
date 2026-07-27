@@ -30,6 +30,57 @@ _BACKFILL_RUNNING: dict = {"running": False, "last_started_at": None, "last_resu
 _LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 
 
+# ── DTF ingestion toggle (2026-07-26) ───────────────────────────────────
+#
+# Runtime flag stored in AppSetting['dtf_enabled'] so operators can flip
+# DTF on/off through the API without SSHing to the droplet.  Value
+# 'true'/'1'/'yes'/'on' enables; anything else (or missing row) disables.
+
+
+from pydantic import BaseModel  # noqa: E402
+
+
+class DTFToggleRequest(BaseModel):
+    enabled: bool
+
+
+class DTFToggleResponse(BaseModel):
+    enabled: bool
+    source: str  # 'appsetting' or 'env'
+
+
+@router.get("/dtf/enabled", response_model=DTFToggleResponse)
+def dtf_get_enabled(db: Session = Depends(get_db)):
+    """Return current DTF ingestion flag state."""
+    from models import AppSetting  # noqa: PLC0415
+    row = db.query(AppSetting).filter_by(key="dtf_enabled").first()
+    if row and row.value:
+        return DTFToggleResponse(
+            enabled=row.value.strip().lower() in {"1", "true", "yes", "on"},
+            source="appsetting",
+        )
+    import os  # noqa: PLC0415
+    return DTFToggleResponse(
+        enabled=os.getenv("DTF_ENABLED", "false").lower() in {"1", "true", "yes"},
+        source="env",
+    )
+
+
+@router.post("/dtf/enabled", response_model=DTFToggleResponse)
+def dtf_set_enabled(payload: DTFToggleRequest, db: Session = Depends(get_db)):
+    """Set the DTF ingestion flag in AppSetting (survives redeploys)."""
+    from models import AppSetting  # noqa: PLC0415
+    row = db.query(AppSetting).filter_by(key="dtf_enabled").first()
+    if row is None:
+        row = AppSetting(key="dtf_enabled", value="true" if payload.enabled else "false")
+        db.add(row)
+    else:
+        row.value = "true" if payload.enabled else "false"
+    db.commit()
+    logger.info("DTF ingestion flag set to %s", payload.enabled)
+    return DTFToggleResponse(enabled=payload.enabled, source="appsetting")
+
+
 @router.get("/status", response_model=IngestStatusResponse)
 def get_ingest_status():
     """

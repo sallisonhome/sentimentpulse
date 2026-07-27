@@ -134,13 +134,14 @@ def backfill_dtf_for_game(
     ``fetch_dtf_posts_since`` helper so the paging + cutoff logic lives
     in one place.
 
-    Only enabled when DTF_ENABLED env var is truthy (matches the
-    incremental ingestor's flag) — lets operators disable DTF backfills
-    without a deploy.  Added 2026-07-26.
+    Only enabled when the DTF flag is truthy (checked via the same
+    ``_dtf_enabled`` helper that the incremental ingestor uses —
+    AppSetting['dtf_enabled'] first, DTF_ENABLED env var fallback).
+    Lets operators disable DTF backfills without a deploy. Added 2026-07-26.
     """
-    import os  # noqa: PLC0415
-    if os.getenv("DTF_ENABLED", "false").lower() not in {"1", "true", "yes"}:
-        logger.info("DTF backfill skipped for %s (DTF_ENABLED=false)", game.name)
+    from services.ingestor import _dtf_enabled  # noqa: PLC0415
+    if not _dtf_enabled(db):
+        logger.info("DTF backfill skipped for %s (dtf_enabled flag unset)", game.name)
         return 0
 
     from services.dtf_service import fetch_dtf_posts_since  # noqa: PLC0415

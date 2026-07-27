@@ -223,16 +223,21 @@ def run_ingestion() -> dict:
                 game_posts_local += b_saved
 
             # Step 4c: DTF.ru — Russian-language coverage. Only kicks in
-            # if the DTF_ENABLED env var is truthy; disabled by default
-            # so existing pipelines aren't affected until we're happy
-            # with the audit numbers (2026-07-26 launch).
+            # when the runtime flag is truthy. Two sources of truth,
+            # checked in order:
+            #   1. AppSetting['dtf_enabled'] — lets operators flip DTF
+            #      on/off via the API without SSHing to the droplet or
+            #      redeploying, matching the digest-skip pattern.
+            #   2. Env var DTF_ENABLED — fallback for local dev.
+            # Disabled by default so existing pipelines aren't affected
+            # until we're happy with the audit numbers (2026-07-26 launch).
             d_saved, d_fetched = 0, 0
-            if os.getenv("DTF_ENABLED", "false").lower() in {"1", "true", "yes"}:
+            if _dtf_enabled(db):
                 d_saved, d_fetched = _step4c_dtf(db, game, log_lines, errors)
                 game_posts_local += d_saved
             else:
                 log_lines.append(
-                    f"[Step 4c] '{game.name}': DTF disabled (DTF_ENABLED=false)"
+                    f"[Step 4c] '{game.name}': DTF disabled (dtf_enabled flag unset)"
                 )
 
             return game_posts_local, r_fetched, b_fetched, sr_fetched, sf_fetched, d_fetched
@@ -891,6 +896,26 @@ def _step4b_bluesky(
 
 
 # ── Step 4c: DTF.ru (Russian-language gaming forum) ─────────────────────
+def _dtf_enabled(db: Session) -> bool:
+    """Return True iff the DTF ingestion path should be exercised.
+
+    Checks AppSetting['dtf_enabled'] first (so operators can flip via the
+    /api/dtf/toggle endpoint without SSH), then falls back to env var
+    DTF_ENABLED for local development.
+    """
+    try:
+        from models import AppSetting  # noqa: PLC0415
+        row = db.query(AppSetting).filter_by(key="dtf_enabled").first()
+        if row and row.value:
+            return row.value.strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        # If the DB is unreachable / migration hasn't run, fall through
+        # to env var without erroring out the whole ingestion.
+        pass
+    return os.getenv("DTF_ENABLED", "false").lower() in {"1", "true", "yes"}
+
+
+
 def _step4c_dtf(
     db: Session,
     game: Game,
