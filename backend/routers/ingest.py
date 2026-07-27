@@ -407,6 +407,53 @@ def trigger_ill_reddit_reclassify(background_tasks: BackgroundTasks):
     return {"status": "started"}
 
 
+@router.get("/diag/null_post_dates")
+def diag_null_post_dates(
+    game_id: int = Query(..., description="Game to inspect"),
+    db: Session = Depends(get_db),
+):
+    """Diagnostic (2026-07-27): count RawPost rows with NULL post_date by
+    source, per game. Suspicious single-day volume spikes in the timeseries
+    are almost always caused by RawPost.post_date being NULL and the
+    dashboard's ``COALESCE(post_date, collected_at)`` bucketing them into
+    the ingest date instead of their true post date. This endpoint tells
+    us HOW MANY rows are affected and their source distribution so we can
+    prioritize fixing the scraper that's returning NULL dates.
+    """
+    from sqlalchemy import func  # noqa: PLC0415
+    from models import RawPost, SentimentRecord  # noqa: PLC0415
+
+    rows = (
+        db.query(RawPost.source, func.count(RawPost.id))
+        .filter(RawPost.game_id == game_id, RawPost.post_date.is_(None))
+        .group_by(RawPost.source)
+        .all()
+    )
+    null_by_source = {r[0].value if hasattr(r[0], 'value') else str(r[0]): r[1] for r in rows}
+
+    # Also compute how many of those NULL-date raw posts have a
+    # SentimentRecord attached (i.e. would show up in the dashboard).
+    sr_rows = (
+        db.query(RawPost.source, func.count(SentimentRecord.id))
+        .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+        .filter(RawPost.game_id == game_id, RawPost.post_date.is_(None))
+        .group_by(RawPost.source)
+        .all()
+    )
+    sr_null_by_source = {r[0].value if hasattr(r[0], 'value') else str(r[0]): r[1] for r in sr_rows}
+
+    total_raw = db.query(func.count(RawPost.id)).filter(RawPost.game_id == game_id).scalar()
+    total_null = sum(null_by_source.values())
+    return {
+        "game_id": game_id,
+        "total_raw_posts": total_raw,
+        "total_null_post_date": total_null,
+        "null_pct": round(100 * total_null / total_raw, 2) if total_raw else 0,
+        "null_raw_by_source": null_by_source,
+        "null_with_sentiment_record_by_source": sr_null_by_source,
+    }
+
+
 @router.get("/diag/dtf_test")
 def diag_dtf_test(db: Session = Depends(get_db)):
     """Diagnostic (2026-07-26): probe every step of the DTF ingestion path
