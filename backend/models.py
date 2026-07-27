@@ -23,6 +23,7 @@ class SourceEnum(str, enum.Enum):
     # in origin, Mundfish publisher is Russian/Cypriot), which our English-
     # only sub/keyword monitoring was systematically undercounting. Content
     # comes from api.dtf.ru's public read endpoints — no auth needed.
+    dtf = "dtf"
 
 
 class SentimentEnum(str, enum.Enum):
