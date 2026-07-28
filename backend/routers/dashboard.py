@@ -24,7 +24,6 @@ from models import (
     RawPost,
     SentimentEnum,
     SentimentRecord,
-    TopicTrend,
 )
 from schemas import (
     CompetitorTimeseriesDay,
@@ -196,22 +195,95 @@ def get_dashboard(
         ))
 
     # ── 3. Top 3 topics per sentiment ─────────────────────────────────────────
-    def _top_topics(sentiment: SentimentEnum, limit: int = 3) -> list[TopicItem]:
-        rows = (
-            db.query(TopicTrend)
-            .filter_by(game_id=game_id, sentiment=sentiment)
-            .order_by(TopicTrend.mention_count.desc())
-            .limit(limit)
-            .all()
+    # v4 (2026-07-28): the previous implementation read the game-wide
+    # TopicTrend table which is not scoped to the selected period AND was
+    # returning empty across every game, leaving the dashboard "Top Topics"
+    # widget blank. Rebuilt to mirror the Summary page's proven
+    # DailySummary-aggregation path (see period_summary_service._weighted_top),
+    # scoped independently to the dashboard's currently-selected period
+    # window. Each day's rank-ordered top-N contributes weighted votes
+    # (rank 1=5, 2=4, 3=3, 4=2, 5=1) so a topic that ranks #1 for multiple
+    # days outranks one that ranks low on many days — this is "dynamically
+    # weighted by volume of conversation" over the filtered range. Falls
+    # back to per-post SentimentRecord.topics when the window has no
+    # DailySummary rows yet (cold-start / same-day-first-ingest case).
+
+    ds_q = db.query(DailySummary).filter(DailySummary.game_id == game_id)
+    if p_start is not None:
+        ds_q = ds_q.filter(DailySummary.summary_date >= p_start)
+    # Cap the window at today so future-dated rows (if any) never leak in.
+    ds_q = ds_q.filter(DailySummary.summary_date <= today)
+    _ds_rows = ds_q.all()
+
+    _sentiment_to_attr = {
+        SentimentEnum.positive: "top_positive_topics",
+        SentimentEnum.negative: "top_negative_topics",
+        SentimentEnum.neutral:  "top_neutral_topics",
+    }
+
+    def _weighted_daily_top(sentiment: SentimentEnum) -> list[tuple[str, float, int]]:
+        """Return [(label, weight, day_appearances), ...] for the window."""
+        attr = _sentiment_to_attr[sentiment]
+        freq: dict[str, float] = {}
+        days: dict[str, int] = {}
+        for row in _ds_rows:
+            topics = getattr(row, attr, None) or []
+            seen_this_row: set[str] = set()
+            for rank, topic in enumerate(topics[:5]):
+                if not topic or not isinstance(topic, str):
+                    continue
+                # Rank weight: 5,4,3,2,1 — #1 gets 5 votes, #5 gets 1.
+                freq[topic] = freq.get(topic, 0.0) + (5 - rank)
+                if topic not in seen_this_row:
+                    days[topic] = days.get(topic, 0) + 1
+                    seen_this_row.add(topic)
+        return sorted(
+            [(label, w, days.get(label, 0)) for label, w in freq.items()],
+            key=lambda x: -x[1],
         )
+
+    def _record_top(sentiment: SentimentEnum) -> list[tuple[str, float, int]]:
+        """Cold-start fallback: aggregate per-post SentimentRecord.topics
+        directly across the window. Each mention is worth 1 vote."""
+        q = (
+            db.query(SentimentRecord.topics)
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(
+                RawPost.game_id == game_id,
+                SentimentRecord.sentiment == sentiment,
+            )
+        )
+        if p_start is not None:
+            q = q.filter(func.date(effective_date_expr) >= str(p_start))
+        freq: dict[str, int] = {}
+        for (topics,) in q.all():
+            for topic in (topics or []):
+                if not topic or not isinstance(topic, str):
+                    continue
+                freq[topic] = freq.get(topic, 0) + 1
+        return sorted(
+            [(label, float(cnt), 0) for label, cnt in freq.items()],
+            key=lambda x: -x[1],
+        )
+
+    def _top_topics(sentiment: SentimentEnum, limit: int = 3) -> list[TopicItem]:
+        ranked = _weighted_daily_top(sentiment)
+        if not ranked:
+            ranked = _record_top(sentiment)
         return [
             TopicItem(
-                topic_label=t.topic_label,
-                mention_count=t.mention_count,
-                trend_direction=t.trend_direction.value,
-                velocity=round(t.velocity, 4),
+                topic_label=label,
+                # Weight rounded to int so the widget's bar chart and the
+                # numeric badge ("324") both render as whole counts of
+                # "conversation weight" over the window.
+                mention_count=int(round(weight)),
+                # Trend arrow is per-widget cosmetic — we don't have
+                # rank-over-rank history here, so mark stable. The
+                # ordering already reflects dynamic volume weighting.
+                trend_direction="stable",
+                velocity=0.0,
             )
-            for t in rows
+            for label, weight, _days in ranked[:limit]
         ]
 
     # ── 4. Volume by source per day ───────────────────────────────────────────
