@@ -29,6 +29,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
+import re
 import requests
 
 from services.reddit_service import _game_search_query, _post_mentions_game
@@ -314,18 +315,85 @@ def _get_session() -> Optional[_BlueskySession]:
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-def _build_search_query(game_name: str) -> str:
-    """Build a Bluesky search query from the game name.
+# Generic words to drop from a game title before phrase-matching. Kept
+# deliberately narrower than reddit_service._GENERIC because Bluesky's
+# exact-phrase search benefits from more context (e.g. we WANT to keep
+# 'The Game' in 'Halloween: The Game' because that IS the distinctive
+# phrase for that title), whereas the Reddit path picks a single
+# distinctive word and can afford to be more aggressive.
+_BSKY_GENERIC_TAIL = {
+    # Version / edition tails that add no phrase-matching value and often
+    # aren't repeated by fans in the wild.
+    "remastered", "remaster", "remake", "deluxe", "complete",
+    "anniversary", "collection", "trilogy", "legendary", "ultimate",
+    "gold", "platinum", "edition", "pack", "dlc", "soundtrack",
+    "official", "expansion", "prologue",
+}
 
-    Uses the same possessive-prefix stripping as reddit_service._game_search_query,
-    then wraps multi-word names in double-quotes for exact-phrase matching so
-    'John Wick' doesn't match standalone 'John' or 'Wick'.
+
+def _build_search_query(game_name: str) -> str:
+    """Build a Bluesky exact-phrase search query from a game name.
+
+    Strategy (v3, 2026-07-28):
+      * Strip possessive studio/director prefix ("John Carpenter's Toxic
+        Commando" -> "Toxic Commando") — fans don't repeat the studio.
+      * Drop trademark symbols and punctuation that trip Bluesky's
+        search parser (:, colons, dashes, commas, em/en dashes).
+      * Drop generic edition tails ("Remastered", "Anniversary"...) so
+        "Halo 2: Anniversary" -> exact-phrase "Halo 2".
+      * If ≥2 meaningful tokens remain, return them wrapped in double
+        quotes for Bluesky's exact-phrase match.
+      * If only 1 token remains, return it bare — Bluesky doesn't need
+        quoting for a single token and quoting can misfire.
+
+    Why NOT reuse reddit_service._game_search_query:
+      That function returns a SINGLE distinctive word because
+      PullPush/Reddit AND-match multi-word queries (searching
+      "Space Marine 2" only matches posts with all three tokens present).
+      Bluesky's search supports true exact-phrase matching via quoting,
+      so a single-word query is strictly worse there — it matches
+      thousands of unrelated posts ('Silent' matches 'silent night',
+      'Marine' matches 'marine biologist', etc.).
+
+      Bluesky's downstream _post_mentions_game() still uses the
+      single-word extractor for post-fetch filtering; that's fine
+      because the filter runs on already-fetched candidates.
     """
-    query = _game_search_query(game_name)
-    # Wrap multi-word queries in quotes for exact-phrase search
-    if " " in query:
-        query = f'"{query}"'
-    return query
+    # Strip possessive prefix
+    if "'s " in game_name:
+        game_name = game_name.split("'s ", 1)[1]
+
+    # Normalize punctuation to spaces so we don't ship raw colons / dashes
+    # to Bluesky's search parser. Keep periods on version numbers by
+    # replacing everything else, then collapsing whitespace.
+    stripped = re.sub(r"[™®©:\-–—,!?/\\()]", " ", game_name)
+    tokens = [t for t in stripped.split() if t]
+
+    # Drop generic edition tails from the END of the token list. We only
+    # strip trailing generics because a title like "Halo: Combat Evolved
+    # Anniversary" is defined by "Combat Evolved" — "Anniversary" is a
+    # release-marker suffix. A leading generic like "Ultimate" in
+    # "Ultimate Marvel vs Capcom 3" is actually part of the title and
+    # must be kept.
+    while tokens and tokens[-1].lower() in _BSKY_GENERIC_TAIL:
+        tokens.pop()
+
+    if not tokens:
+        # Everything was generic — fall back to the raw stripped form so
+        # the caller still has something to search on. Unlikely in
+        # practice but never return empty (which would search Bluesky's
+        # global firehose).
+        fallback = stripped.strip()
+        return fallback if fallback else game_name.strip()
+
+    phrase = " ".join(tokens)
+
+    # Single-token titles don't need (and shouldn't have) quoting.
+    if len(tokens) == 1:
+        return phrase
+
+    # Multi-token: exact-phrase search.
+    return f'"{phrase}"'
 
 
 def _convert_post(raw: dict) -> Optional[dict]:
