@@ -122,19 +122,92 @@ def set_next_run(dt: Optional[datetime]) -> None:
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+# Maximum time a run is allowed to hold the is_running lock before the
+# next scheduled trigger will treat it as stuck and forcibly reclaim.
+# Set well above the expected wallclock (30-60 minutes for 32 games) so
+# healthy long runs are never interrupted. See run_ingestion() below.
+_STUCK_RUN_THRESHOLD_S = 2 * 60 * 60  # 2 hours
+
+# Maximum wallclock the entire run is allowed to take. Prevents a slow
+# source (Steam Forum on a busy game, Reddit backoff cascade, etc.) from
+# silently blowing past the daily scheduling boundary. Individual phases
+# already have their own budgets; this is the outer safety net.
+_RUN_WALLCLOCK_BUDGET_S = 75 * 60  # 75 minutes
+
+
+def _reclaim_stuck_lock_if_needed() -> None:
+    """Clear the is_running flag when the previous run is clearly dead.
+
+    A previous run can leave is_running=True forever if the process was
+    killed mid-run (SIGKILL / OOM) or hit a native crash the try/finally
+    couldn't catch. Without this reclaim, every subsequent scheduled
+    trigger bounces at the duplicate-trigger guard and daily ingest
+    silently stops working. Signals we treat as "dead":
+
+      * last_run_at is None (should never happen once is_running is
+        True, but be defensive).
+      * last_run_at is older than _STUCK_RUN_THRESHOLD_S.
+
+    Called at the very top of run_ingestion() BEFORE the is_running guard.
+    """
+    if not _status["is_running"]:
+        return
+    last_run_iso = _status.get("last_run_at")
+    if not last_run_iso:
+        logger.warning(
+            "Reclaiming is_running lock: no last_run_at recorded (defensive)."
+        )
+        _status["is_running"] = False
+        return
+    try:
+        # datetime.fromisoformat handles the trailing +00:00 that we write.
+        last_dt = datetime.fromisoformat(last_run_iso)
+    except ValueError:
+        logger.warning(
+            "Reclaiming is_running lock: unparseable last_run_at=%s",
+            last_run_iso,
+        )
+        _status["is_running"] = False
+        return
+    age_s = (datetime.now(timezone.utc) - last_dt).total_seconds()
+    if age_s > _STUCK_RUN_THRESHOLD_S:
+        logger.error(
+            "Reclaiming is_running lock: previous run has been in-progress "
+            "for %.0fs (threshold %ds). Marking prior run as 'error' and "
+            "allowing new run to proceed.",
+            age_s, _STUCK_RUN_THRESHOLD_S,
+        )
+        _status["is_running"] = False
+        _status["last_run_status"] = "error"
+        _status["last_run_errors"] = list(_status.get("last_run_errors") or []) + [
+            f"Prior run stuck for {int(age_s)}s; lock forcibly reclaimed."
+        ]
+
+
 def run_ingestion() -> dict:
     """
     Execute the full ingestion pipeline for all active games.
 
-    Thread-safe: returns immediately if a run is already in progress.
+    Thread-safe: returns immediately if a run is already in progress AND
+    the prior run is younger than _STUCK_RUN_THRESHOLD_S. Older stuck
+    locks are reclaimed automatically so daily ingest can survive a
+    process crash without manual intervention.
+
     Returns a summary dict suitable for serialising as a JSON response.
     """
+    _reclaim_stuck_lock_if_needed()
+
     if _status["is_running"]:
         logger.warning("Ingestion already running — ignoring duplicate trigger.")
         return {"status": "skipped", "reason": "already_running"}
 
     _status["is_running"] = True
     _status["last_run_at"] = datetime.now(timezone.utc).isoformat()
+    # Reset counters so mid-run observers see progress on THIS run, not
+    # stale numbers from the prior finally-block write.
+    _status["games_processed"] = 0
+    _status["posts_collected"] = 0
+    _run_started_at = time.monotonic()
 
     log_lines: list[str] = []
     errors: list[str] = []
@@ -244,7 +317,25 @@ def run_ingestion() -> dict:
 
         # ── Phase A: fetch sources (Steps 2 -> 4c) for every active game ────────
         dtf_fetched_total = 0
-        for game in active_games:
+        for i, game in enumerate(active_games, start=1):
+            # Outer wallclock safety net: if the run has already blown past
+            # _RUN_WALLCLOCK_BUDGET_S, skip remaining games so we still get
+            # to Phase C (sentiment/topics/summaries) on whatever data we
+            # collected before the deadline. Better a partial success with
+            # summaries computed than an indefinite hang.
+            if time.monotonic() - _run_started_at > _RUN_WALLCLOCK_BUDGET_S:
+                remaining = len(active_games) - (i - 1)
+                msg = (
+                    f"[Phase A] Wallclock budget "
+                    f"({_RUN_WALLCLOCK_BUDGET_S}s) exceeded after "
+                    f"{i - 1}/{len(active_games)} games; skipping remaining "
+                    f"{remaining} game(s) and jumping to Phase C."
+                )
+                errors.append(msg)
+                logger.error(msg)
+                log_lines.append(msg)
+                break
+
             try:
                 (game_posts, r_f, b_f, sr_f, sf_f, d_f) = _safe_run_steps_2_to_4b(game)
                 per_game_posts[game.id] = per_game_posts.get(game.id, 0) + game_posts
@@ -258,6 +349,18 @@ def run_ingestion() -> dict:
                 errors.append(msg)
                 logger.exception(msg)
                 # Continue with next game - never abort the whole pipeline
+
+            # Heartbeat: update the live status counters after every game
+            # so operators (and health probes) can see the run is making
+            # progress. Prior to this write the counters only updated in
+            # the finally block, so a mid-run stall looked identical to a
+            # never-started run.
+            _status["games_processed"] = i
+            _status["posts_collected"] = sum(per_game_posts.values())
+            _status["reddit_fetched_total"] = reddit_fetched_total
+            _status["bluesky_fetched_total"] = bluesky_fetched_total
+            _status["steam_review_fetched_total"] = steam_review_fetched_total
+            _status["steam_forum_fetched_total"] = steam_forum_fetched_total
 
         # ── Phase B.1: Reddit retry-with-backoff ─────────────────────────────
         # If EVERY active game returned 0 Reddit posts fetched despite having
@@ -778,18 +881,26 @@ def _step3_steam_forums(
 ) -> tuple[int, int]:
     """Scrape Steam forum threads.  Returns (saved, fetched)."""
     try:
-        # v4 (2026-07-25 pm): daily ingest walks Steam forum listing pages
-        # AND per-thread comment pagination (via since_epoch cutoff).
+        # v5 (2026-07-28): daily ingest walks Steam forum listing pages
+        # AND per-thread comment pagination (via since_epoch cutoff),
+        # with a per-game wallclock budget so no single stale forum can
+        # eat the whole daily run. See scrape_forum_threads v4 for the
+        # listing short-circuit + skip-if-stale behavior that makes this
+        # budget realistic.
         # since_epoch = 2 days ago — wide enough to cover overnight
         # ingest gaps and late replies without walking ancient history.
         # _bulk_save_posts dedupes on external_id so re-scraping is free.
         import time as _t
         _since_epoch = int(_t.time()) - 2 * 24 * 3600  # last 48h
+        # Per-game budget: 90s covers a typical fresh forum (10-30 hot
+        # threads at ~2-3s/each) with headroom, and hard-stops a runaway
+        # walk before it starves the next game in the queue.
         posts = scrape_forum_threads(
             game.steam_app_id,
             max_threads=200,
             max_pages=15,
             since_epoch=_since_epoch,
+            wallclock_budget_s=90,
         )
     except Exception as exc:
         msg = f"[Step 3] Steam forums failed for '{game.name}': {exc}"

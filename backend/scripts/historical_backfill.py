@@ -299,11 +299,18 @@ def backfill_steam_forums_for_game(
         return 0
 
     try:
+        # v2 (2026-07-28): pass the same since_epoch to scrape_forum_threads
+        # so the listing-walk short-circuit and per-thread skip-if-stale
+        # kick in during backfill too. Historical mode still needs a
+        # wallclock ceiling so a broken forum can't hang the whole backfill
+        # job — 15 minutes per game is enough for a from-scratch fill on
+        # even the heaviest active forums.
         posts = scrape_forum_threads(
             game.steam_app_id,
-            max_threads=500,     # allow all 264 ILL threads through
-            max_pages=25,        # 25 x 15 = up to 375 threads visible per game
+            max_threads=500,       # allow all 264 ILL threads through
+            max_pages=25,          # 25 x 15 = up to 375 threads visible per game
             since_epoch=int(start_dt.timestamp()),
+            wallclock_budget_s=15 * 60,
         )
     except Exception as exc:
         logger.error("Steam forum backfill fetch failed for %s: %s", game.name, exc)

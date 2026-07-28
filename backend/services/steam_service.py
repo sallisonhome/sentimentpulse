@@ -295,40 +295,79 @@ def scrape_forum_threads(
     max_threads: int = 3,
     max_pages: int = 3,
     since_epoch: Optional[int] = None,
+    wallclock_budget_s: Optional[float] = None,
 ) -> list[dict]:
     """
     Scrape forum threads for a Steam app across paginated listing pages.
     Collects top-level posts and first-level replies for each thread.
 
-    v3 (2026-07-25 pm) — now walks EVERY listing page AND every thread's
-    comment pagination (via _scrape_single_thread). Prior versions only
-    grabbed page 1 of the listing + page 1 of each thread, so a game with
-    264 threads and 900-comment threads (like ILL) gave us maybe 15-30
-    posts total. Now ILL should yield thousands.
+    v4 (2026-07-28) — correctness + performance overhaul. Previous versions
+    walked every listing page and every listed thread regardless of
+    since_epoch, so a stale forum burned 3-4s per dead thread. This
+    version:
+      * Reads the per-row last-post epoch from the listing DOM.
+      * Short-circuits the listing walk once we've seen K consecutive
+        non-sticky threads whose lastpost is older than since_epoch
+        (Steam sorts non-sticky threads last-post-desc, so once we're
+        past the boundary, later rows and later pages are all older).
+        Sticky/pinned threads are excluded from the short-circuit count
+        because they float above the sort.
+      * Skips visiting individual threads whose lastpost is older than
+        since_epoch — no HTTP call needed, we already know they're out
+        of window. Sticky threads are always visited because their pin
+        state hides their true position in the sort.
+      * Optional wallclock_budget_s caps the total time spent in this
+        function; the caller uses this to keep a single game from
+        blocking the whole daily ingest.
 
     Args:
         steam_app_id: The Steam AppID.
-        max_threads: Cap on the TOTAL number of unique threads scraped
-            across all pages. Prevents runaway on very active games.
-        max_pages: Cap on how many listing pages (?fp=1..N) to walk. Set
-            high enough that all threads within `since_epoch` are visible.
-        since_epoch: Unix epoch cutoff; passed through to each
-            _scrape_single_thread call so per-thread comment walks stop
-            at the boundary. Also used to short-circuit the listing walk
-            — if we're on a listing page and every thread's last-post
-            date is older than since_epoch, later pages will be even
-            older and we can stop. (Listing pages are sorted by last-post
-            date desc on Steam.)
+        max_threads: Cap on the TOTAL number of unique threads visited
+            (across all pages). Prevents runaway on very active games.
+            The listing walk may collect more refs than this, but only
+            the first max_threads within the cutoff are actually fetched.
+        max_pages: Hard cap on how many listing pages (?fp=1..N) to walk
+            even when since_epoch is None or short-circuit doesn't fire.
+        since_epoch: Unix epoch cutoff. When provided, drives both the
+            listing-walk short-circuit and the per-thread skip-if-stale.
+            When None, walks up to max_pages listing pages and visits up
+            to max_threads threads regardless of age (historical mode).
+        wallclock_budget_s: Optional soft budget (seconds). Checked
+            between listing pages and between thread visits. When the
+            budget is exceeded the function returns whatever it has
+            collected so far. `None` means unlimited.
 
     Each returned dict has:
         external_id, author, title, body, url, upvotes, post_date
     """
-    base_url = STEAM_FORUM_URL.format(appid=steam_app_id)
+    # Number of consecutive out-of-window non-sticky threads that
+    # triggers a listing-walk short-circuit. Set > 1 so a single
+    # necro-bumped thread that happens to slip into a stale zone
+    # doesn't accidentally end the walk.
+    _OUT_OF_WINDOW_STREAK_FOR_STOP = 5
 
-    thread_refs: list[tuple[str, str, str]] = []
+    base_url = STEAM_FORUM_URL.format(appid=steam_app_id)
+    started_at = time.monotonic()
+
+    def _budget_exhausted() -> bool:
+        if wallclock_budget_s is None:
+            return False
+        return (time.monotonic() - started_at) >= wallclock_budget_s
+
+    thread_refs: list[dict] = []
     seen_ids: set[str] = set()
     pages_walked = 0
+    listing_short_circuited = False
+    consecutive_stale_nonsticky = 0
+
     for page_num in range(1, max_pages + 1):
+        if _budget_exhausted():
+            logger.info(
+                "scrape_forum_threads app=%d listing budget hit at page %d",
+                steam_app_id, page_num,
+            )
+            break
+
         page_url = base_url if page_num == 1 else f"{base_url}?fp={page_num}"
         resp = _get(page_url)
         if resp is None:
@@ -345,15 +384,51 @@ def scrape_forum_threads(
             # No more threads — end of forum reached.
             break
 
-        # Dedupe (Steam sometimes repeats pinned threads across pages).
-        new_refs = [(u, tid, t) for (u, tid, t) in page_refs if tid not in seen_ids]
-        for _, tid, _ in new_refs:
-            seen_ids.add(tid)
+        # Dedupe (Steam repeats pinned threads across pages).
+        new_refs = [r for r in page_refs if r["thread_id"] not in seen_ids]
+        for r in new_refs:
+            seen_ids.add(r["thread_id"])
         thread_refs.extend(new_refs)
         pages_walked += 1
 
-        # Stop early if we already have more than max_threads.
-        if len(thread_refs) >= max_threads:
+        # ---- Listing-walk short-circuit --------------------------------
+        # Walk the rows in DOM order (which is Steam's last-post-desc
+        # sort for non-sticky threads). Track the current streak of
+        # non-sticky threads whose lastpost < since_epoch. Sticky rows
+        # never advance or reset the streak because their pin position
+        # is orthogonal to the sort. Once the streak crosses the
+        # threshold, later rows on this page (and every subsequent page)
+        # are all older — stop.
+        if since_epoch is not None:
+            for r in new_refs:
+                if r["is_sticky"]:
+                    continue
+                lp = r["lastpost_ts"]
+                if lp is None:
+                    # Unknown age — don't change the streak. Better to
+                    # visit than to bail incorrectly.
+                    consecutive_stale_nonsticky = 0
+                    continue
+                if lp < since_epoch:
+                    consecutive_stale_nonsticky += 1
+                    if consecutive_stale_nonsticky >= _OUT_OF_WINDOW_STREAK_FOR_STOP:
+                        listing_short_circuited = True
+                        logger.info(
+                            "scrape_forum_threads app=%d listing short-circuit at "
+                            "page %d after %d consecutive stale non-sticky threads",
+                            steam_app_id, page_num, consecutive_stale_nonsticky,
+                        )
+                        break
+                else:
+                    consecutive_stale_nonsticky = 0
+
+        if listing_short_circuited:
+            break
+
+        # Also stop if we already have enough refs to hit max_threads even
+        # after filtering (rough heuristic — the actual filter happens
+        # below).
+        if len(thread_refs) >= max_threads * 2:
             break
 
         # Small courtesy delay between listing pages.
@@ -363,11 +438,39 @@ def scrape_forum_threads(
         logger.info("No forum threads found for app %d", steam_app_id)
         return []
 
+    # ---- Per-thread skip-if-stale ---------------------------------------
+    # For non-sticky threads with a known lastpost_ts older than the
+    # cutoff, skip the HTTP fetch entirely — we already know they have
+    # no in-window content. Sticky threads are always visited because
+    # their pin state hides real activity; they're usually cheap anyway.
+    visitable: list[dict] = []
+    skipped_stale = 0
+    for r in thread_refs:
+        if (
+            since_epoch is not None
+            and not r["is_sticky"]
+            and r["lastpost_ts"] is not None
+            and r["lastpost_ts"] < since_epoch
+        ):
+            skipped_stale += 1
+            continue
+        visitable.append(r)
+        if len(visitable) >= max_threads:
+            break
+
     all_posts: list[dict] = []
     threads_visited = 0
-    for thread_url, thread_id, thread_title in thread_refs[:max_threads]:
+    for r in visitable:
+        if _budget_exhausted():
+            logger.info(
+                "scrape_forum_threads app=%d thread-visit budget hit after "
+                "%d/%d threads",
+                steam_app_id, threads_visited, len(visitable),
+            )
+            break
+
         posts = _scrape_single_thread(
-            thread_url, thread_id, thread_title,
+            r["url"], r["thread_id"], r["title"],
             since_epoch=since_epoch,
         )
         all_posts.extend(posts)
@@ -375,21 +478,41 @@ def scrape_forum_threads(
         time.sleep(_REQUEST_DELAY)
 
     logger.info(
-        "scrape_forum_threads app=%d pages=%d threads_visited=%d posts=%d",
-        steam_app_id, pages_walked, threads_visited, len(all_posts),
+        "scrape_forum_threads app=%d pages=%d refs=%d visited=%d "
+        "skipped_stale=%d short_circuited=%s posts=%d",
+        steam_app_id, pages_walked, len(thread_refs), threads_visited,
+        skipped_stale, listing_short_circuited, len(all_posts),
     )
     return all_posts
 
 
-def _parse_thread_links(soup: BeautifulSoup) -> list[tuple[str, str, str]]:
+def _parse_thread_links(soup: BeautifulSoup) -> list[dict]:
     """
-    Extract (url, thread_id, title) tuples from a forum listing page.
-    Thread URL pattern: .../discussions/0/{thread_id}/
+    Extract per-thread metadata from a forum listing page. Returns a list
+    of dicts, one per thread row visible on the page.
 
-    Steam uses a.forum_topic_overlay for the link and div.forum_topic_name
-    for the visible title text.
+    Each dict has:
+        url          - canonical thread URL
+        thread_id    - gidforumtopic (used in RawPost.external_id)
+        title        - visible thread title
+        lastpost_ts  - Unix epoch of the most recent post in the thread,
+                       parsed from forum_topic_lastpost[data-timestamp].
+                       None when Steam omits the attr (very rare; empty
+                       or corrupted threads).
+        is_sticky    - True when the outer div carries the `sticky` class
+                       (i.e., moderator-pinned thread). Sticky threads
+                       jump above regular threads on the listing so their
+                       lastpost_ts must be excluded from any
+                       "is-this-page-out-of-window" short-circuit or the
+                       walk would either bail too early (stale pin at top)
+                       or too late (fresh pin masking a stale page below).
+
+    v2 (2026-07-28): previously returned bare (url, thread_id, title)
+    tuples. Callers that only need the trio can still map(...) it out;
+    the new fields power the listing-walk short-circuit and per-thread
+    skip-if-stale in scrape_forum_threads.
     """
-    results = []
+    results: list[dict] = []
     for row in soup.select("div.forum_topic"):
         link_tag = row.select_one("a.forum_topic_overlay")
         if not link_tag:
@@ -401,8 +524,37 @@ def _parse_thread_links(soup: BeautifulSoup) -> list[tuple[str, str, str]]:
         # Last path segment (before trailing slash) is the thread ID
         parts = href.rstrip("/").split("/")
         thread_id = parts[-1] if parts else ""
-        if href and thread_id:
-            results.append((href, thread_id, title))
+        if not (href and thread_id):
+            continue
+
+        # Steam renders the last-post epoch as a data-timestamp attribute
+        # on div.forum_topic_lastpost inside the row. Verified live against
+        # https://steamcommunity.com/app/1486920/discussions/ on 2026-07-28.
+        lastpost_ts: Optional[int] = None
+        lastpost_el = row.select_one("div.forum_topic_lastpost")
+        if lastpost_el is not None:
+            ts_raw = lastpost_el.get("data-timestamp")
+            if ts_raw:
+                try:
+                    lastpost_ts = int(ts_raw)
+                except (TypeError, ValueError):
+                    lastpost_ts = None
+
+        # Sticky/pinned threads sit above the last-post-desc sort. We tag
+        # them so the caller can exclude them from the out-of-window
+        # short-circuit — a pinned FAQ from 6 months ago must not cause
+        # us to bail on a listing page that still has fresh regular
+        # threads below it.
+        row_classes = row.get("class") or []
+        is_sticky = "sticky" in row_classes
+
+        results.append({
+            "url": href,
+            "thread_id": thread_id,
+            "title": title,
+            "lastpost_ts": lastpost_ts,
+            "is_sticky": is_sticky,
+        })
     return results
 
 

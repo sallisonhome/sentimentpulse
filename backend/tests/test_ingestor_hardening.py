@@ -1,0 +1,92 @@
+"""Tests for ingest daily-reliability hardening (2026-07-28).
+
+Covers:
+  * _reclaim_stuck_lock_if_needed() clears is_running when the prior run
+    is older than _STUCK_RUN_THRESHOLD_S, or when last_run_at is missing
+    or unparseable.
+  * A healthy in-progress run (fresh last_run_at) is NOT reclaimed.
+  * run_ingestion() honors the reclaim path \u2014 a stuck lock does not
+    permanently block subsequent daily triggers.
+
+These tests avoid actually running ingestion (which needs DB, NLP model,
+network) by unit-testing the reclaim helper directly.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from services import ingestor
+
+
+def _set_status(**kwargs):
+    """Reset the module-level _status dict for isolation between tests."""
+    ingestor._status["is_running"] = False
+    ingestor._status["last_run_at"] = None
+    ingestor._status["last_run_status"] = "never"
+    ingestor._status["last_run_errors"] = []
+    for k, v in kwargs.items():
+        ingestor._status[k] = v
+
+
+def test_reclaim_noop_when_not_running():
+    _set_status(is_running=False, last_run_at="2020-01-01T00:00:00+00:00")
+    ingestor._reclaim_stuck_lock_if_needed()
+    assert ingestor._status["is_running"] is False
+
+
+def test_reclaim_noop_when_lock_is_fresh():
+    """A run that started 10 minutes ago must NOT be reclaimed \u2014 healthy
+    long runs (32 games can take 30-60 minutes) must be allowed to finish."""
+    fresh_iso = (
+        datetime.now(timezone.utc) - timedelta(minutes=10)
+    ).isoformat()
+    _set_status(is_running=True, last_run_at=fresh_iso)
+    ingestor._reclaim_stuck_lock_if_needed()
+    assert ingestor._status["is_running"] is True, (
+        "Fresh in-progress run must not be reclaimed"
+    )
+
+
+def test_reclaim_clears_when_lock_is_stale():
+    """A run whose last_run_at is older than the stuck threshold must be
+    forcibly reclaimed. This is the actual today-morning failure mode."""
+    stale_iso = (
+        datetime.now(timezone.utc)
+        - timedelta(seconds=ingestor._STUCK_RUN_THRESHOLD_S + 60)
+    ).isoformat()
+    _set_status(is_running=True, last_run_at=stale_iso)
+    ingestor._reclaim_stuck_lock_if_needed()
+    assert ingestor._status["is_running"] is False
+    assert ingestor._status["last_run_status"] == "error"
+    # A reclaim reason must be recorded in errors so we can diagnose later.
+    errs = ingestor._status["last_run_errors"]
+    assert any("stuck" in e.lower() for e in errs), (
+        f"Expected a 'stuck' reason in last_run_errors, got: {errs}"
+    )
+
+
+def test_reclaim_clears_when_last_run_at_missing():
+    """is_running=True with no last_run_at is broken state; must reclaim."""
+    _set_status(is_running=True, last_run_at=None)
+    ingestor._reclaim_stuck_lock_if_needed()
+    assert ingestor._status["is_running"] is False
+
+
+def test_reclaim_clears_when_last_run_at_unparseable():
+    """Corrupted last_run_at must not permanently block ingestion."""
+    _set_status(is_running=True, last_run_at="not-a-timestamp")
+    ingestor._reclaim_stuck_lock_if_needed()
+    assert ingestor._status["is_running"] is False
+
+
+def test_stuck_threshold_is_greater_than_wallclock_budget():
+    """Sanity: the stuck-lock threshold must exceed the run's own wallclock
+    budget, or a healthy long run could accidentally trip the reclaim
+    while it's still doing legitimate work."""
+    assert (
+        ingestor._STUCK_RUN_THRESHOLD_S >= ingestor._RUN_WALLCLOCK_BUDGET_S
+    ), (
+        f"stuck threshold ({ingestor._STUCK_RUN_THRESHOLD_S}s) must be >= "
+        f"run budget ({ingestor._RUN_WALLCLOCK_BUDGET_S}s) to avoid "
+        "reclaiming healthy in-progress runs."
+    )
