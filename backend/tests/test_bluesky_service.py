@@ -621,6 +621,73 @@ def test_default_max_pages_still_caps_at_three(monkeypatch):
     )
 
 
+# ── distinctive_keywords: filter + query end-to-end (2026-07-28) ───────────
+
+def test_distinctive_keywords_are_used_in_search_query(monkeypatch):
+    """When distinctive_keywords is passed to fetch_bluesky_posts_for_game,
+    the outgoing q= must be the OR of quoted keywords, NOT the game name."""
+    _set_credentials(monkeypatch)
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json={"posts": []})
+        fetch_bluesky_posts_for_game(
+            "Inversion",
+            limit=10,
+            distinctive_keywords=["Inversion 2012", "Saber Inversion"],
+        )
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    parsed = urlparse(search_calls[0].url)
+    qs = parse_qs(parsed.query)
+    q_value = qs.get("q", [""])[0]
+    assert q_value == '"Inversion 2012" OR "Saber Inversion"', (
+        f"expected OR of keywords, got: {q_value!r}"
+    )
+
+
+def test_distinctive_keywords_filter_drops_off_topic_posts(monkeypatch):
+    """A post that doesn't contain any distinctive keyword must be dropped
+    even if Bluesky returned it. This is the actual bug fix — previously
+    Inversion pulled 736 posts about Spanish politics/programming/etc."""
+    _set_credentials(monkeypatch)
+    on_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_on",
+        text="Just replayed Inversion 2012, forgot how good the gravity mechanic was.",
+    )
+    off_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_off",
+        text="Inversion of control is a great pattern for testable code.",
+    )
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([on_topic, off_topic]))
+        results = fetch_bluesky_posts_for_game(
+            "Inversion",
+            limit=100,
+            distinctive_keywords=["Inversion 2012", "Saber Inversion"],
+        )
+    ids = {r["external_id"] for r in results}
+    assert "at://did:x/app.bsky.feed.post/rkey_on" in ids
+    assert "at://did:x/app.bsky.feed.post/rkey_off" not in ids
+
+
+def test_empty_distinctive_keywords_falls_back_to_title_filter(monkeypatch):
+    """Games without distinctive_keywords set must keep using the old
+    single-word title filter — required so CLEAN games (Hellraiser,
+    SnowRunner) don't regress."""
+    _set_credentials(monkeypatch)
+    hellraiser_post = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_h",
+        text="Hellraiser is the best horror film ever",
+    )
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([hellraiser_post]))
+        results = fetch_bluesky_posts_for_game(
+            "Hellraiser", limit=10, distinctive_keywords=None
+        )
+    assert len(results) == 1
+
+
 # ── Test 10: Multi-word game name produces quoted exact-phrase query ───────────
 
 def test_multi_word_game_name_produces_quoted_query(monkeypatch):

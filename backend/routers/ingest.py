@@ -550,6 +550,121 @@ def trigger_ill_reddit_reclassify(background_tasks: BackgroundTasks):
     return {"status": "started"}
 
 
+@router.post("/purge/by_source_and_game", status_code=202)
+def purge_by_source_and_game(
+    source: str = Query(..., description="Source enum name (reddit, bluesky, steam_review, steam_forum, dtf)"),
+    game_ids: str = Query(..., description="Comma-separated game IDs, or 'all' for every active game"),
+    date_from: Optional[str] = Query(None, description="Optional ISO date lower bound on collected_at (inclusive)"),
+    date_to: Optional[str] = Query(None, description="Optional ISO date upper bound on collected_at (inclusive, end-of-day)"),
+    confirm: str = Query(..., description="Must equal 'YES_DELETE' to run. Guard against accidental purges."),
+    db: Session = Depends(get_db),
+):
+    """Scoped purge of RawPost + SentimentRecord rows by source + game_ids.
+
+    Added 2026-07-28 for the Bluesky noise-cleanup workstream. Removes
+    posts that shouldn't have been saved (e.g., pre-fix Bluesky noise
+    for games with ambiguous titles).
+
+    Safety:
+      * Requires confirm='YES_DELETE' to actually run. Missing/wrong
+        confirm returns 400 instead of deleting.
+      * Deletes SentimentRecord first (FK safety), then RawPost.
+      * Optional date_from / date_to bound the window on collected_at.
+        Both use inclusive semantics; date_to is treated as end-of-day.
+      * Idempotent — re-running returns zero counts once complete.
+
+    Returns counts, no side effects other than the DB delete.
+    """
+    from datetime import date as _date, datetime as _dt, time as _time
+    from models import Game, RawPost, SentimentRecord, SourceEnum
+
+    if confirm != "YES_DELETE":
+        return {
+            "status": "refused",
+            "reason": "confirm parameter must equal 'YES_DELETE' to run",
+        }
+
+    # Validate source
+    valid_sources = {s.name for s in SourceEnum}
+    if source not in valid_sources:
+        return {
+            "status": "error",
+            "reason": f"unknown source {source!r}; valid: {sorted(valid_sources)}",
+        }
+    source_enum = SourceEnum[source]
+
+    # Resolve game_ids
+    if game_ids.strip().lower() == "all":
+        resolved = [g.id for g in db.query(Game).filter(Game.is_active == True).all()]  # noqa: E712
+    else:
+        try:
+            resolved = [int(x.strip()) for x in game_ids.split(",") if x.strip()]
+        except ValueError:
+            return {"status": "error", "reason": "game_ids must be integers or 'all'"}
+    if not resolved:
+        return {"status": "error", "reason": "no games resolved"}
+
+    # Build the candidate query
+    q = db.query(RawPost.id).filter(
+        RawPost.source == source_enum,
+        RawPost.game_id.in_(resolved),
+    )
+    if date_from:
+        try:
+            df = _date.fromisoformat(date_from)
+            q = q.filter(RawPost.collected_at >= _dt.combine(df, _time.min))
+        except ValueError:
+            return {"status": "error", "reason": f"date_from={date_from!r} not ISO date"}
+    if date_to:
+        try:
+            dt_ = _date.fromisoformat(date_to)
+            q = q.filter(RawPost.collected_at <= _dt.combine(dt_, _time.max))
+        except ValueError:
+            return {"status": "error", "reason": f"date_to={date_to!r} not ISO date"}
+
+    candidate_ids = [r[0] for r in q.all()]
+    if not candidate_ids:
+        return {
+            "status": "noop",
+            "source": source, "game_ids": resolved,
+            "date_from": date_from, "date_to": date_to,
+            "sr_deleted": 0, "raw_deleted": 0,
+        }
+
+    # Chunked delete (SentimentRecord first for FK safety)
+    chunk = 1000
+    sr_deleted = 0
+    raw_deleted = 0
+    for i in range(0, len(candidate_ids), chunk):
+        batch = candidate_ids[i:i+chunk]
+        sr_deleted += (
+            db.query(SentimentRecord)
+            .filter(SentimentRecord.raw_post_id.in_(batch))
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+    for i in range(0, len(candidate_ids), chunk):
+        batch = candidate_ids[i:i+chunk]
+        raw_deleted += (
+            db.query(RawPost)
+            .filter(RawPost.id.in_(batch))
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+
+    logger.info(
+        "Scoped purge: source=%s games=%s window=%s..%s sr_deleted=%d raw_deleted=%d",
+        source, resolved, date_from, date_to, sr_deleted, raw_deleted,
+    )
+    return {
+        "status": "done",
+        "source": source, "game_ids": resolved,
+        "date_from": date_from, "date_to": date_to,
+        "sr_deleted": sr_deleted,
+        "raw_deleted": raw_deleted,
+    }
+
+
 @router.post("/purge/null_date_steamforum", status_code=202)
 def purge_null_date_steamforum(db: Session = Depends(get_db)):
     """One-shot purge of legacy Steam Forum RawPost rows with NULL post_date

@@ -467,6 +467,7 @@ def backfill_bluesky_for_game(
             since=since_iso,
             until=until_iso,
             max_pages=30,
+            distinctive_keywords=game.distinctive_keywords,
         )
     except Exception as exc:
         msg = f"Bluesky backfill fetch failed for {game.name}: {exc}"

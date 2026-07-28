@@ -331,14 +331,29 @@ _BSKY_GENERIC_TAIL = {
 }
 
 
-def _build_search_query(game_name: str) -> str:
+def _build_search_query(
+    game_name: str,
+    distinctive_keywords: Optional[list[str]] = None,
+) -> str:
     """Build a Bluesky exact-phrase search query from a game name.
 
-    Strategy (v3, 2026-07-28):
+    When distinctive_keywords is provided and non-empty, it takes
+    priority: the query becomes an OR of quoted phrases, one per
+    keyword. This is the correct strategy for games whose title is
+    a common English word (Docked, Inversion, TimeShift, MX Nitro,
+    Wick) or a common multi-word phrase ("A Quiet Place",
+    "Dakar Desert Rally") — Bluesky's default search can't
+    distinguish the game from the everyday meaning, so we rely on
+    game-specific distinctive terms curated per-title.
+
+    Verified 2026-07-28: Bluesky search supports OR of quoted phrases
+    (e.g. q="phrase 1" OR "phrase 2").
+
+    Fallback strategy when no distinctive_keywords:
       * Strip possessive studio/director prefix ("John Carpenter's Toxic
-        Commando" -> "Toxic Commando") — fans don't repeat the studio.
+        Commando" -> "Toxic Commando").
       * Drop trademark symbols and punctuation that trip Bluesky's
-        search parser (:, colons, dashes, commas, em/en dashes).
+        search parser (:, dashes, commas, em/en dashes).
       * Drop generic edition tails ("Remastered", "Anniversary"...) so
         "Halo 2: Anniversary" -> exact-phrase "Halo 2".
       * If ≥2 meaningful tokens remain, return them wrapped in double
@@ -346,19 +361,28 @@ def _build_search_query(game_name: str) -> str:
       * If only 1 token remains, return it bare — Bluesky doesn't need
         quoting for a single token and quoting can misfire.
 
-    Why NOT reuse reddit_service._game_search_query:
+    Why NOT reuse reddit_service._game_search_query for the fallback:
       That function returns a SINGLE distinctive word because
-      PullPush/Reddit AND-match multi-word queries (searching
-      "Space Marine 2" only matches posts with all three tokens present).
-      Bluesky's search supports true exact-phrase matching via quoting,
-      so a single-word query is strictly worse there — it matches
-      thousands of unrelated posts ('Silent' matches 'silent night',
-      'Marine' matches 'marine biologist', etc.).
-
-      Bluesky's downstream _post_mentions_game() still uses the
-      single-word extractor for post-fetch filtering; that's fine
-      because the filter runs on already-fetched candidates.
+      PullPush/Reddit AND-match multi-word queries. Bluesky supports
+      true exact-phrase matching via quoting, so a single-word query
+      is strictly worse there — it matches thousands of unrelated posts
+      ('Silent' matches 'silent night', 'Marine' matches 'marine
+      biologist', etc.). See the 2026-07-28 quality audit for details.
     """
+    # Distinctive-keywords path: preferred when set. Wraps each keyword
+    # in double quotes for exact-phrase match, then ORs them together.
+    # We cap at 8 keywords to keep the query string under Bluesky's
+    # implicit ~500-char limit.
+    if distinctive_keywords:
+        cleaned = [
+            k.strip() for k in distinctive_keywords
+            if isinstance(k, str) and k.strip()
+        ][:8]
+        if cleaned:
+            quoted = [f'"{k}"' for k in cleaned]
+            return " OR ".join(quoted)
+
+    # Fallback: derive from game name (original behavior).
     # Strip possessive prefix
     if "'s " in game_name:
         game_name = game_name.split("'s ", 1)[1]
@@ -710,6 +734,7 @@ def fetch_bluesky_posts_for_game(
     since: Optional[str] = None,
     until: Optional[str] = None,
     max_pages: Optional[int] = None,
+    distinctive_keywords: Optional[list[str]] = None,
 ) -> list[dict]:
     """Search Bluesky for recent posts mentioning a game.
 
@@ -765,9 +790,23 @@ def fetch_bluesky_posts_for_game(
     last_http_status: Optional[int] = None
 
     results: list[dict] = []
-    search_query = _build_search_query(game_name)
-    # _post_mentions_game uses a raw (unquoted) query for keyword matching
-    filter_query = _game_search_query(game_name)
+    search_query = _build_search_query(game_name, distinctive_keywords=distinctive_keywords)
+    # Post-fetch filter (2026-07-28 v2): when distinctive_keywords is
+    # available, require the body to contain at least one of them.
+    # This is the ONLY reliable way to filter posts for games with
+    # ambiguous titles (Docked, Inversion, Wick, TimeShift, MX Nitro,
+    # A Quiet Place, etc.) because the game title itself matches
+    # thousands of unrelated posts. Fallback to the old single-word
+    # extractor when distinctive_keywords is absent — kept for backward
+    # compatibility with games whose title is inherently distinctive
+    # (SnowRunner, Gloomhaven, Hellraiser, etc.).
+    filter_keywords: Optional[list[str]] = None
+    if distinctive_keywords:
+        filter_keywords = [
+            k.strip().lower() for k in distinctive_keywords
+            if isinstance(k, str) and k.strip()
+        ]
+    filter_query = _game_search_query(game_name)  # fallback
 
     cursor: Optional[str] = None
     remaining = limit
@@ -835,7 +874,18 @@ def fetch_bluesky_posts_for_game(
 
             for post in posts:
                 # Filter 1: must mention the game via a distinctive keyword.
-                if not _post_mentions_game(post, filter_query):
+                # When curated distinctive_keywords are available, require
+                # at least one to appear in title+body (case-insensitive).
+                # This is the strict-match path that fixes noise for
+                # ambiguous-title games. Fallback to _post_mentions_game
+                # (single-word heuristic) when no keywords curated.
+                if filter_keywords is not None:
+                    text = (
+                        (post.get("title") or "") + " " + (post.get("body") or "")
+                    ).lower()
+                    if not any(kw in text for kw in filter_keywords):
+                        continue
+                elif not _post_mentions_game(post, filter_query):
                     continue
 
                 # Filter 2: aggregator / promo-spam detector. Catches

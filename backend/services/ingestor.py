@@ -1049,7 +1049,16 @@ def _step4b_bluesky(
     and to trigger retry-with-backoff (parallel to Reddit) when the total is 0.
     """
     try:
-        posts = fetch_bluesky_posts_for_game(game.name, limit=100)
+        # Pass game.distinctive_keywords so Bluesky's query AND post-fetch
+        # filter use game-specific terms. Critical for games whose title
+        # is a common English word (Docked, Inversion, TimeShift) or a
+        # common phrase ("A Quiet Place"). Fallback to title-based when
+        # distinctive_keywords is empty/null.
+        posts = fetch_bluesky_posts_for_game(
+            game.name,
+            limit=100,
+            distinctive_keywords=game.distinctive_keywords,
+        )
         total_saved = _bulk_save_posts(
             db, game.id, SourceEnum.bluesky, posts, errors,
         )

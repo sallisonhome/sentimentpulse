@@ -130,3 +130,61 @@ def test_leading_generic_is_kept():
     # who use the full canonical name.
     result = _build_search_query("Ultimate Marvel vs Capcom 3")
     assert result == '"Ultimate Marvel vs Capcom 3"'
+
+
+# ── distinctive_keywords path (2026-07-28 quality fix) ─────────────────────
+
+def test_distinctive_keywords_overrides_name_based_query():
+    # For ambiguous single-word titles like Inversion, distinctive_keywords
+    # must be used as an OR of quoted phrases instead of the raw title.
+    result = _build_search_query(
+        "Inversion",
+        distinctive_keywords=["Inversion 2012", "Saber Inversion", "Airtight Games"],
+    )
+    # Order must be preserved (deterministic), each phrase quoted, joined with ' OR '.
+    assert result == '"Inversion 2012" OR "Saber Inversion" OR "Airtight Games"'
+
+
+def test_distinctive_keywords_single_entry_still_quoted():
+    # Even a single distinctive keyword must be quoted — the caller passed
+    # it as a distinct signal, not a fallback.
+    result = _build_search_query(
+        "Docked",
+        distinctive_keywords=["Docked Contraband"],
+    )
+    assert result == '"Docked Contraband"'
+
+
+def test_distinctive_keywords_caps_at_8():
+    # Bluesky's query string has an implicit ~500 char limit. Cap at 8
+    # keywords so a runaway keyword list can't hit that limit.
+    kws = [f"keyword{i}" for i in range(20)]
+    result = _build_search_query("Anything", distinctive_keywords=kws)
+    # Should contain exactly 8 quoted keywords
+    assert result.count(" OR ") == 7
+    assert '"keyword0"' in result
+    assert '"keyword7"' in result
+    assert '"keyword8"' not in result
+
+
+def test_empty_distinctive_keywords_falls_back_to_name():
+    # Empty list must fall back to name-based behavior, not crash and not
+    # return empty.
+    result = _build_search_query("Hellraiser", distinctive_keywords=[])
+    assert result == "Hellraiser"
+
+
+def test_none_distinctive_keywords_falls_back_to_name():
+    # None also falls back — same as not passing it at all.
+    result = _build_search_query("Hellraiser", distinctive_keywords=None)
+    assert result == "Hellraiser"
+
+
+def test_distinctive_keywords_ignores_blank_entries():
+    # Blank/whitespace entries must be silently skipped (defensive against
+    # sloppy operator input).
+    result = _build_search_query(
+        "Anything",
+        distinctive_keywords=["real keyword", "", "  ", "another one"],
+    )
+    assert result == '"real keyword" OR "another one"'
