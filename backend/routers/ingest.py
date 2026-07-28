@@ -208,6 +208,124 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
         _BACKFILL_RUNNING["running"] = False
 
 
+def _run_bluesky_backfill(game_ids: list[int], start_date: str) -> None:
+    """Background wrapper for Bluesky-only historical backfill (2026-07-28).
+
+    Same as _run_backfill but only calls backfill_bluesky_for_game per game.
+    Used to fill in past-N-day Bluesky coverage without re-running the
+    other sources (which don't need it). After fetching, runs Steps 5-7
+    so the newly-saved Bluesky posts get scored and rolled into
+    per-day summaries.
+    """
+    from datetime import datetime, timezone as _tz
+    from database import SessionLocal
+    from models import Game
+    from services.ingestor import (
+        _step5_classify_sentiment,
+        _step6_extract_topics,
+        _step7_daily_summary,
+    )
+    from scripts.historical_backfill import backfill_bluesky_for_game
+    from services.nlp_service import load_model
+
+    try:
+        _BACKFILL_RUNNING["running"] = True
+        start_dt = datetime.fromisoformat(start_date).replace(tzinfo=_tz.utc)
+        load_model()
+        db = SessionLocal()
+        result_lines: list[str] = []
+        try:
+            for gid in game_ids:
+                game = db.query(Game).filter_by(id=gid).first()
+                if not game:
+                    result_lines.append(f"game {gid}: not found")
+                    continue
+                errors: list[str] = []
+                b_saved = backfill_bluesky_for_game(db, game, start_dt, errors)
+                db.commit()
+
+                # Score + summarize the newly-saved posts. Steps 5-7
+                # are idempotent on already-scored posts, so re-running
+                # them for games with existing posts is a no-op.
+                log_lines: list[str] = []
+                step_errors: list[str] = []
+                _step5_classify_sentiment(db, game, log_lines, step_errors)
+                _step6_extract_topics(db, game, log_lines, step_errors)
+                _step7_daily_summary(db, game, log_lines, step_errors)
+                db.commit()
+
+                result_lines.append(
+                    f"#{gid} {game.name}: bluesky={b_saved} "
+                    f"fetch_errors={len(errors)} step_errors={len(step_errors)}"
+                )
+            _BACKFILL_RUNNING["last_result"] = result_lines
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.exception("bluesky-only backfill crashed: %s", exc)
+        _BACKFILL_RUNNING["last_result"] = [f"CRASHED: {exc}"]
+    finally:
+        _BACKFILL_RUNNING["running"] = False
+
+
+@router.post("/backfill/bluesky", status_code=202)
+def trigger_bluesky_backfill(
+    background_tasks: BackgroundTasks,
+    game_ids: str = Query(
+        ...,
+        description="Comma-separated game IDs, or 'all' for every active game.",
+    ),
+    start_date: str = Query(
+        ...,
+        description="ISO date (YYYY-MM-DD). Bluesky's search index has good "
+                    "coverage back ~30 days; older windows yield sparse results.",
+    ),
+):
+    """Trigger a Bluesky-only historical backfill for the specified games.
+
+    Complements POST /backfill (which handles Reddit + Steam Reviews +
+    Steam Forums + DTF). Useful after deploying a change that affects
+    Bluesky signal quality — e.g. the 2026-07-28 exact-phrase query
+    rewrite + aggregator/promo filter — without wasting quota re-fetching
+    unchanged sources.
+
+    Idempotent: _bulk_save_posts dedupes on external_id, so overlap with
+    existing Bluesky rows is free.
+    """
+    if _BACKFILL_RUNNING["running"]:
+        return {"status": "skipped", "reason": "backfill_already_running"}
+
+    # Resolve 'all' to the current active-game list.
+    if game_ids.strip().lower() == "all":
+        from database import SessionLocal
+        from models import Game
+        db = SessionLocal()
+        try:
+            resolved = [
+                g.id for g in db.query(Game).filter(Game.is_active == True).order_by(Game.id).all()  # noqa: E712
+            ]
+        finally:
+            db.close()
+    else:
+        try:
+            resolved = [int(x.strip()) for x in game_ids.split(",") if x.strip()]
+        except ValueError:
+            return {"status": "error", "reason": "game_ids must be integers or 'all'"}
+
+    if not resolved:
+        return {"status": "error", "reason": "no games resolved"}
+
+    _BACKFILL_RUNNING["last_started_at"] = start_date
+    _BACKFILL_RUNNING["last_result"] = None
+    background_tasks.add_task(_run_bluesky_backfill, resolved, start_date)
+    return {
+        "status": "started",
+        "scope": "bluesky_only",
+        "game_ids": resolved,
+        "start_date": start_date,
+    }
+
+
 @router.post("/backfill", status_code=202)
 def trigger_backfill(
     background_tasks: BackgroundTasks,

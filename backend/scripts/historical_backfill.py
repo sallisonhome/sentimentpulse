@@ -429,6 +429,63 @@ def backfill_steam_reviews_for_game(
     return total_saved
 
 
+def backfill_bluesky_for_game(
+    db, game: Game, start_dt: datetime, errors: list[str],
+) -> int:
+    """Bluesky historical backfill (added 2026-07-28).
+
+    Bluesky's app.bsky.feed.searchPosts supports RFC3339 since/until
+    filters, so we can bound the search window to the backfill range
+    and paginate deep into results. The service already handles auth,
+    401 retries, exact-phrase quoting, and the aggregator/promo filter
+    — we just call it with a much larger max_pages and the date
+    bounds, then bulk-save the results.
+
+    Bluesky's search index has spotty coverage beyond ~30 days; for
+    the requested "as far back as you can up to 30 days" window this
+    is expected to return good data but yield naturally trails off as
+    we get closer to the 30-day edge.
+
+    Idempotent — _bulk_save_posts dedupes on external_id.
+    """
+    from services.bluesky_service import fetch_bluesky_posts_for_game
+
+    # Convert start_dt to RFC3339 UTC. Bluesky requires the 'Z' suffix.
+    since_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # until = now, so we cover "since start_dt through the present".
+    until_dt = datetime.now(tz=timezone.utc)
+    until_iso = until_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 30 pages * 100 posts/page = 3000 posts max per game, which comfortably
+    # covers even the highest-volume portfolio games (Halloween: The Game
+    # averaged ~50 Bluesky posts/day in the 7d window, so 30 days ~= 1500
+    # posts). Well above expected yield, keeping cap as a runaway guard.
+    try:
+        posts = fetch_bluesky_posts_for_game(
+            game.name,
+            limit=5000,
+            since=since_iso,
+            until=until_iso,
+            max_pages=30,
+        )
+    except Exception as exc:
+        msg = f"Bluesky backfill fetch failed for {game.name}: {exc}"
+        logger.error(msg)
+        errors.append(msg)
+        return 0
+
+    if not posts:
+        logger.info("  Bluesky (%s): 0 posts in window", game.name)
+        return 0
+
+    saved = _bulk_save_posts(db, game.id, SourceEnum.bluesky, posts, errors)
+    logger.info(
+        "  Bluesky (%s): fetched %d, saved %d (window %s -> %s)",
+        game.name, len(posts), saved, since_iso, until_iso,
+    )
+    return saved
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--game-ids", type=int, nargs="+", required=True)

@@ -533,6 +533,94 @@ def test_empty_posts_array_returns_empty_list(monkeypatch):
     assert results == []
 
 
+# ── Backfill: since/until date filters + max_pages override ─────────────
+
+def test_since_until_are_passed_to_bluesky_search(monkeypatch):
+    """When since/until are provided, they must appear in the outgoing
+    query string exactly as passed. This is how the 30-day Bluesky
+    backfill bounds its search window."""
+    _set_credentials(monkeypatch)
+
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json={"posts": []})
+        fetch_bluesky_posts_for_game(
+            "Hellraiser",
+            limit=10,
+            since="2026-06-28T00:00:00Z",
+            until="2026-07-28T00:00:00Z",
+        )
+
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    assert len(search_calls) == 1
+    parsed = urlparse(search_calls[0].url)
+    qs = parse_qs(parsed.query)
+    assert qs.get("since", [""])[0] == "2026-06-28T00:00:00Z"
+    assert qs.get("until", [""])[0] == "2026-07-28T00:00:00Z"
+
+
+def test_since_until_default_absent_from_daily_run(monkeypatch):
+    """Without since/until, the outgoing query must NOT include them.
+    A stray empty since= could confuse Bluesky's search or bias results
+    away from the newest posts."""
+    _set_credentials(monkeypatch)
+
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json={"posts": []})
+        fetch_bluesky_posts_for_game("Hellraiser", limit=10)
+
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    parsed = urlparse(search_calls[0].url)
+    qs = parse_qs(parsed.query)
+    assert "since" not in qs, f"since must not be sent when not provided; qs={qs}"
+    assert "until" not in qs, f"until must not be sent when not provided; qs={qs}"
+
+
+def test_max_pages_override_extends_pagination(monkeypatch):
+    """max_pages=20 (backfill mode) must actually paginate up to 20 pages,
+    not the default BLUESKY_MAX_PAGES=3. If a future refactor accidentally
+    drops the override, backfills would silently cap at 300 posts per game."""
+    _set_credentials(monkeypatch)
+
+    # Return 50 posts per page, always with a cursor, so pagination keeps going
+    page_json = {
+        "posts": [_make_post(uri=f"at://did:x/app.bsky.feed.post/rkey{i}", text="Hellraiser rocks") for i in range(50)],
+        "cursor": "nextpage",
+    }
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=page_json)
+        fetch_bluesky_posts_for_game("Hellraiser", limit=10_000, max_pages=20)
+
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    assert len(search_calls) == 20, (
+        f"expected 20 pages with max_pages=20, got {len(search_calls)}"
+    )
+
+
+def test_default_max_pages_still_caps_at_three(monkeypatch):
+    """Guardrail: when max_pages is NOT provided, the daily incremental
+    ingest must still cap at BLUESKY_MAX_PAGES=3 so a normal run stays cheap."""
+    _set_credentials(monkeypatch)
+    page_json = {
+        "posts": [_make_post(uri=f"at://did:x/app.bsky.feed.post/rkey{i}", text="Hellraiser rocks") for i in range(50)],
+        "cursor": "nextpage",
+    }
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=page_json)
+        fetch_bluesky_posts_for_game("Hellraiser", limit=10_000)
+
+    search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
+    # BLUESKY_MAX_PAGES is 3 (module-level constant)
+    from services.bluesky_service import BLUESKY_MAX_PAGES
+    assert len(search_calls) == BLUESKY_MAX_PAGES, (
+        f"daily default must cap at BLUESKY_MAX_PAGES={BLUESKY_MAX_PAGES}, "
+        f"got {len(search_calls)}"
+    )
+
+
 # ── Test 10: Multi-word game name produces quoted exact-phrase query ───────────
 
 def test_multi_word_game_name_produces_quoted_query(monkeypatch):

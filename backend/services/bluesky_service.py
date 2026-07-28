@@ -610,8 +610,16 @@ def _fetch_page(
     limit: int,
     cursor: Optional[str],
     access_jwt: str,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
 ) -> tuple[list[dict], Optional[str], Optional[int]]:
     """Fetch one page of Bluesky search results using an authenticated request.
+
+    Args:
+        since: RFC3339 UTC timestamp; only return posts created at or after
+            this instant. Used by backfills to bound the search window.
+        until: RFC3339 UTC timestamp; only return posts created before this
+            instant. Used by backfills to bound the search window.
 
     Returns (posts, next_cursor, http_status) where:
     - next_cursor is None if there are no more pages or on any error.
@@ -626,6 +634,10 @@ def _fetch_page(
     }
     if cursor:
         params["cursor"] = cursor
+    if since:
+        params["since"] = since
+    if until:
+        params["until"] = until
 
     url = f"{BLUESKY_BASE}{BLUESKY_SEARCH_PATH}"
     # IMPORTANT: app.bsky.feed.searchPosts is an AppView query.  Calling it on
@@ -695,6 +707,9 @@ def _fetch_page(
 def fetch_bluesky_posts_for_game(
     game_name: str,
     limit: int = 100,
+    since: Optional[str] = None,
+    until: Optional[str] = None,
+    max_pages: Optional[int] = None,
 ) -> list[dict]:
     """Search Bluesky for recent posts mentioning a game.
 
@@ -757,9 +772,14 @@ def fetch_bluesky_posts_for_game(
     cursor: Optional[str] = None
     remaining = limit
     _401_retried = False  # only retry once per fetch_bluesky_posts_for_game call
+    # Effective pagination cap for THIS call. Defaults to the module-level
+    # BLUESKY_MAX_PAGES (3) for daily incremental ingest so a normal run stays
+    # cheap. Callers doing a bounded historical backfill pass a much larger
+    # value to reach deeper into the search index.
+    effective_max_pages = max_pages if max_pages is not None else BLUESKY_MAX_PAGES
 
     try:
-        for page_num in range(1, BLUESKY_MAX_PAGES + 1):
+        for page_num in range(1, effective_max_pages + 1):
             if remaining <= 0:
                 break
 
@@ -770,7 +790,8 @@ def fetch_bluesky_posts_for_game(
                 break
 
             posts, next_cursor, http_status = _fetch_page(
-                search_query, min(remaining, 100), cursor, access_jwt
+                search_query, min(remaining, 100), cursor, access_jwt,
+                since=since, until=until,
             )
             total_pages = page_num
             last_http_status = http_status
@@ -796,7 +817,8 @@ def fetch_bluesky_posts_for_game(
                     logger.warning("bluesky: still no access JWT after refresh")
                     return []
                 posts, next_cursor, http_status = _fetch_page(
-                    search_query, min(remaining, 100), cursor, access_jwt
+                    search_query, min(remaining, 100), cursor, access_jwt,
+                    since=since, until=until,
                 )
                 last_http_status = http_status
                 # If the retry recovered, clear the prior http_401 from status
