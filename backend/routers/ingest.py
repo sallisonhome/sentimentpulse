@@ -11,6 +11,7 @@ import logging
 import os
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.orm import Session
@@ -96,12 +97,28 @@ def get_ingest_status():
 
 
 @router.post("/run", response_model=IngestRunResponse, status_code=202)
-def trigger_ingestion(background_tasks: BackgroundTasks):
+def trigger_ingestion(
+    background_tasks: BackgroundTasks,
+    skip_sources: Optional[str] = Query(
+        None,
+        description=(
+            "Optional comma-separated list of sources to skip for this run "
+            "only. Valid names: reddit, bluesky, steam_review, steam_forum, "
+            "dtf. Does NOT affect the scheduled daily cron, which always runs "
+            "every source."
+        ),
+    ),
+):
     """
     Manually trigger the full ingestion pipeline in the background.
 
     Returns 202 Accepted immediately.  Poll GET /api/ingest/status to
     track progress.  Returns 'skipped' if a run is already in progress.
+
+    The optional `skip_sources` query param lets you skip specific
+    sources for THIS manual run only (e.g. after deploying a fix to
+    one source, re-ingest just that source without redundant fetches).
+    The scheduled daily cron is unaffected and always runs every source.
     """
     status = get_status()
     if status["is_running"]:
@@ -111,8 +128,16 @@ def trigger_ingestion(background_tasks: BackgroundTasks):
             errors=["An ingestion run is already in progress."],
         )
 
-    background_tasks.add_task(run_ingestion)
-    logger.info("Manual ingestion trigger accepted — queued as background task.")
+    skip_set: Optional[set[str]] = None
+    if skip_sources:
+        skip_set = {s.strip() for s in skip_sources.split(",") if s.strip()}
+
+    background_tasks.add_task(run_ingestion, skip_sources=skip_set)
+    logger.info(
+        "Manual ingestion trigger accepted — queued as background task "
+        "(skip_sources=%s).",
+        sorted(skip_set) if skip_set else None,
+    )
     return IngestRunResponse(status="started")
 
 

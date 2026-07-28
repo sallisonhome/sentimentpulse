@@ -79,6 +79,44 @@ def test_reclaim_clears_when_last_run_at_unparseable():
     assert ingestor._status["is_running"] is False
 
 
+def test_run_ingestion_default_skips_nothing():
+    """CRITICAL: the daily scheduled cron calls run_ingestion() with no
+    args — that path MUST run every source. If anyone ever changes the
+    default value of skip_sources from None to something non-empty,
+    this test catches it.
+
+    We prove it by inspecting the function signature rather than
+    executing (which needs DB / NLP / network).
+    """
+    import inspect
+    sig = inspect.signature(ingestor.run_ingestion)
+    param = sig.parameters.get("skip_sources")
+    assert param is not None, "skip_sources parameter must exist"
+    assert param.default is None, (
+        f"run_ingestion(skip_sources=...) default must be None so the daily "
+        f"cron runs every source. Current default: {param.default!r}"
+    )
+
+
+def test_scheduler_daily_job_passes_no_args():
+    """CRITICAL: verify the APScheduler daily entry point in scheduler.py
+    calls run_ingestion() with no arguments. If someone ever adds
+    skip_sources=... to that call site by accident, this test flags it.
+
+    We inspect the source of _ingest_job rather than executing it —
+    executing needs a full app context. Reading the source is
+    sufficient because the call signature IS the contract here.
+    """
+    import inspect
+    import scheduler  # will fail if module can't import
+    src = inspect.getsource(scheduler._ingest_job)
+    # Must contain a bare 'run_ingestion()' call — no args at all.
+    assert "run_ingestion()" in src, (
+        "Daily scheduler entry-point must call run_ingestion() with no "
+        "arguments so every source runs. Current source:\n" + src
+    )
+
+
 def test_stuck_threshold_is_greater_than_wallclock_budget():
     """Sanity: the stuck-lock threshold must exceed the run's own wallclock
     budget, or a healthy long run could accidentally trip the reclaim

@@ -184,7 +184,12 @@ def _reclaim_stuck_lock_if_needed() -> None:
         ]
 
 
-def run_ingestion() -> dict:
+# Canonical names for the per-source skip switch. Keep as a frozenset
+# so callers can validate input against a known-good set.
+_VALID_SKIP_SOURCES = frozenset({"reddit", "bluesky", "steam_review", "steam_forum", "dtf"})
+
+
+def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
     """
     Execute the full ingestion pipeline for all active games.
 
@@ -193,8 +198,30 @@ def run_ingestion() -> dict:
     locks are reclaimed automatically so daily ingest can survive a
     process crash without manual intervention.
 
+    Args:
+        skip_sources: Optional set of source names to skip for this run.
+            Valid names: 'reddit', 'bluesky', 'steam_review',
+            'steam_forum', 'dtf'. Unknown names are silently ignored
+            (logged as a warning). Sentiment / topics / summary phases
+            (Steps 5-7) always run on whatever was collected.
+
+            Use case: after deploying a fix to a single source, trigger
+            a fresh ingest of just that source without redundantly
+            re-fetching the others. Dedup handles overlap for free, but
+            skipping saves quota + wallclock.
+
     Returns a summary dict suitable for serialising as a JSON response.
     """
+    skip_sources = set(skip_sources or [])
+    unknown = skip_sources - _VALID_SKIP_SOURCES
+    if unknown:
+        logger.warning(
+            "run_ingestion: ignoring unknown skip_sources=%s (valid: %s)",
+            sorted(unknown), sorted(_VALID_SKIP_SOURCES),
+        )
+        skip_sources = skip_sources & _VALID_SKIP_SOURCES
+    if skip_sources:
+        logger.info("run_ingestion: skipping sources=%s this run", sorted(skip_sources))
     _reclaim_stuck_lock_if_needed()
 
     if _status["is_running"]:
@@ -272,18 +299,36 @@ def run_ingestion() -> dict:
             """
             game_posts_local = 0
 
-            sr_saved, sr_fetched = _step2_steam_reviews(db, game, log_lines, errors)
-            game_posts_local += sr_saved
+            # steam_review
+            sr_saved, sr_fetched = 0, 0
+            if "steam_review" in skip_sources:
+                log_lines.append(f"[Step 2] '{game.name}': steam_review skipped (skip_sources)")
+            else:
+                sr_saved, sr_fetched = _step2_steam_reviews(db, game, log_lines, errors)
+                game_posts_local += sr_saved
 
-            sf_saved, sf_fetched = _step3_steam_forums(db, game, log_lines, errors)
-            game_posts_local += sf_saved
+            # steam_forum
+            sf_saved, sf_fetched = 0, 0
+            if "steam_forum" in skip_sources:
+                log_lines.append(f"[Step 3] '{game.name}': steam_forum skipped (skip_sources)")
+            else:
+                sf_saved, sf_fetched = _step3_steam_forums(db, game, log_lines, errors)
+                game_posts_local += sf_saved
 
-            r_saved, r_fetched = _step4_reddit(db, game, log_lines, errors)
-            game_posts_local += r_saved
+            # reddit
+            r_saved, r_fetched = 0, 0
+            if "reddit" in skip_sources:
+                log_lines.append(f"[Step 4] '{game.name}': reddit skipped (skip_sources)")
+            else:
+                r_saved, r_fetched = _step4_reddit(db, game, log_lines, errors)
+                game_posts_local += r_saved
 
+            # bluesky
             b_saved = 0
             b_fetched = 0
-            if bsky_kill_switch:
+            if "bluesky" in skip_sources:
+                log_lines.append(f"[Step 4b] '{game.name}': bluesky skipped (skip_sources)")
+            elif bsky_kill_switch:
                 log_lines.append(
                     f"[Step 4b] '{game.name}': Bluesky disabled (BLUESKY_ENABLED=false)"
                 )
@@ -305,7 +350,9 @@ def run_ingestion() -> dict:
             # Disabled by default so existing pipelines aren't affected
             # until we're happy with the audit numbers (2026-07-26 launch).
             d_saved, d_fetched = 0, 0
-            if _dtf_enabled(db):
+            if "dtf" in skip_sources:
+                log_lines.append(f"[Step 4c] '{game.name}': dtf skipped (skip_sources)")
+            elif _dtf_enabled(db):
                 d_saved, d_fetched = _step4c_dtf(db, game, log_lines, errors)
                 game_posts_local += d_saved
             else:
