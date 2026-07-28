@@ -953,7 +953,19 @@ def _step4_reddit(
         if not sub_name:
             continue
         try:
-            submissions = fetch_subreddit_posts(sub_name, limit=25, game_name=game.name)
+            # limit=100 is Arctic Shift's hard ceiling per request (verified
+            # 2026-07-28 — 200+ returns 400 Bad Request). Was 25; bumped for
+            # two reasons:
+            #   1. Coverage. limit=25 on a busy general sub like r/pcgaming
+            #      only reaches ~10 hours back — leaving a hole if a daily
+            #      run is delayed. limit=100 covers ~38 hours on the same
+            #      sub, and multi-day windows on quieter game-specific
+            #      subs (SnowRunner ~3.7d, HalloweenTVG ~20d).
+            #   2. Cost is effectively identical (0.98s vs 0.79s per
+            #      request; parse+network dominates). _bulk_save_posts
+            #      dedupes on external_id so overlap with yesterday's
+            #      pull is free.
+            submissions = fetch_subreddit_posts(sub_name, limit=100, game_name=game.name)
             total_fetched += len(submissions)
             total_saved += _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
