@@ -1017,6 +1017,151 @@ def diag_keyword_dryrun(
         db.close()
 
 
+@router.get("/diag/neutral_audit")
+def diag_neutral_audit(
+    game_id: Optional[int] = Query(None, description="Optional game filter"),
+    source: Optional[str] = Query(None, description="Optional source filter (reddit|bluesky|steam_review|steam_forum|dtf)"),
+    days: int = Query(30, ge=1, le=180),
+    sample_n: int = Query(10, ge=0, le=50, description="Number of sample neutral posts to return per bucket"),
+):
+    """Read-only audit of neutral tagging (added 2026-07-29).
+
+    Answers three questions:
+      1. What % of tagged-neutral posts had an original_label of positive/negative
+         BEFORE the 0.70 confidence floor demoted them?
+      2. What's the distribution of signal_quality on tagged-neutral posts?
+      3. Sample bodies of the largest bucket so we can eyeball whether the
+         demotion was warranted.
+
+    This is the data needed to decide whether the 0.70 floor is too aggressive.
+    Nothing is written; safe to call anytime.
+    """
+    from datetime import date as _date, timedelta as _td
+    from database import SessionLocal
+    from models import Game, RawPost, SentimentRecord, SourceEnum
+    from sqlalchemy import func as sfunc
+
+    since = _date.today() - _td(days=days)
+    db = SessionLocal()
+    try:
+        q = (
+            db.query(SentimentRecord, RawPost)
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(sfunc.date(SentimentRecord.created_at) >= since)
+        )
+        if game_id is not None:
+            q = q.filter(RawPost.game_id == game_id)
+        if source is not None:
+            try:
+                q = q.filter(RawPost.source == SourceEnum[source])
+            except KeyError:
+                return {"status": "error", "reason": f"unknown source {source!r}"}
+
+        rows = q.limit(50000).all()  # cap to keep response bounded
+        total = len(rows)
+        if total == 0:
+            return {"status": "empty", "window_days": days, "total": 0}
+
+        # Overall label distribution
+        label_counts = {"positive": 0, "negative": 0, "neutral": 0}
+        # Neutral breakdown by original_label
+        neutral_by_original = {"positive": 0, "negative": 0, "neutral": 0, "none": 0}
+        # Signal quality distribution across ALL rows (for reference)
+        signal_dist = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+        # For neutrals only
+        neutral_signal = {"low": 0, "medium": 0, "high": 0, "unknown": 0}
+        # Language distribution on neutrals (non-English is a big neutral driver)
+        neutral_lang = {}
+
+        # Collect samples for the 3 biggest neutral buckets:
+        #   bucket A: was originally positive, demoted
+        #   bucket B: was originally negative, demoted
+        #   bucket C: genuinely neutral (never had a non-neutral label)
+        samples_orig_pos = []
+        samples_orig_neg = []
+        samples_true_neutral = []
+
+        for sr, rp in rows:
+            lbl = sr.label or "neutral"
+            label_counts[lbl] = label_counts.get(lbl, 0) + 1
+            sq = sr.signal_quality or "unknown"
+            signal_dist[sq] = signal_dist.get(sq, 0) + 1
+
+            if lbl == "neutral":
+                neutral_signal[sq] = neutral_signal.get(sq, 0) + 1
+                orig = sr.original_label
+                if orig == "positive":
+                    neutral_by_original["positive"] += 1
+                    if len(samples_orig_pos) < sample_n:
+                        samples_orig_pos.append({
+                            "post_id": rp.id,
+                            "source": str(rp.source).replace("SourceEnum.", ""),
+                            "signal_quality": sq,
+                            "title": (rp.title or "")[:200],
+                            "body": (rp.body or "")[:400],
+                        })
+                elif orig == "negative":
+                    neutral_by_original["negative"] += 1
+                    if len(samples_orig_neg) < sample_n:
+                        samples_orig_neg.append({
+                            "post_id": rp.id,
+                            "source": str(rp.source).replace("SourceEnum.", ""),
+                            "signal_quality": sq,
+                            "title": (rp.title or "")[:200],
+                            "body": (rp.body or "")[:400],
+                        })
+                elif orig is None:
+                    neutral_by_original["none"] += 1
+                    if len(samples_true_neutral) < sample_n:
+                        samples_true_neutral.append({
+                            "post_id": rp.id,
+                            "source": str(rp.source).replace("SourceEnum.", ""),
+                            "signal_quality": sq,
+                            "title": (rp.title or "")[:200],
+                            "body": (rp.body or "")[:400],
+                        })
+                else:
+                    neutral_by_original[orig] = neutral_by_original.get(orig, 0) + 1
+
+                lang = sr.language or "unknown"
+                neutral_lang[lang] = neutral_lang.get(lang, 0) + 1
+
+        # Percentages for easy reading
+        def pct(n, d): return round(100.0 * n / d, 1) if d else 0.0
+
+        neutral_total = label_counts["neutral"]
+        return {
+            "status": "ok",
+            "window_days": days,
+            "game_id_filter": game_id,
+            "source_filter": source,
+            "total_records": total,
+            "label_pct": {k: pct(v, total) for k, v in label_counts.items()},
+            "label_counts": label_counts,
+            "signal_quality_all_pct": {k: pct(v, total) for k, v in signal_dist.items()},
+            "neutral_breakdown": {
+                "total_neutral": neutral_total,
+                "by_original_label_pct": {
+                    k: pct(v, neutral_total) for k, v in neutral_by_original.items()
+                },
+                "by_original_label_counts": neutral_by_original,
+                "signal_quality_pct": {
+                    k: pct(v, neutral_total) for k, v in neutral_signal.items()
+                },
+                "language_top5": dict(
+                    sorted(neutral_lang.items(), key=lambda x: -x[1])[:5]
+                ),
+            },
+            "samples": {
+                "was_originally_positive_but_demoted": samples_orig_pos,
+                "was_originally_negative_but_demoted": samples_orig_neg,
+                "genuinely_neutral_never_had_signal": samples_true_neutral,
+            },
+        }
+    finally:
+        db.close()
+
+
 @router.get("/diag/game_records")
 def diag_game_records(
     game_id: int = Query(...),
