@@ -1047,7 +1047,7 @@ def diag_neutral_audit(
         q = (
             db.query(SentimentRecord, RawPost)
             .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
-            .filter(sfunc.date(SentimentRecord.created_at) >= since)
+            .filter(sfunc.date(SentimentRecord.processed_at) >= since)
         )
         if game_id is not None:
             q = q.filter(RawPost.game_id == game_id)
@@ -1082,7 +1082,8 @@ def diag_neutral_audit(
         samples_true_neutral = []
 
         for sr, rp in rows:
-            lbl = sr.label or "neutral"
+            # SentimentRecord.sentiment is an ENUM; unwrap to string value.
+            lbl = sr.sentiment.value if hasattr(sr.sentiment, "value") else str(sr.sentiment)
             label_counts[lbl] = label_counts.get(lbl, 0) + 1
             sq = sr.signal_quality or "unknown"
             signal_dist[sq] = signal_dist.get(sq, 0) + 1
