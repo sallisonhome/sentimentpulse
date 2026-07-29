@@ -180,6 +180,14 @@ class RawPost(Base):
     #   True  = passed the gate; a SentimentRecord was/will be created
     #   False = failed the gate; RawPost retained for audit, no SentimentRecord
     is_relevant: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=None)
+    # Steam Reviews ground-truth vote (added 2026-07-29, migration 0014).
+    # True  = reviewer clicked thumbs-up (recommended)
+    # False = reviewer clicked thumbs-down (not recommended)
+    # None  = not a Steam Review, OR ingested before migration 0014
+    # The classifier uses this as a HARD rule for Steam Reviews: positive
+    # when True, negative when False, never neutral (voted_up isn't
+    # ambiguous). See _classify_steam_review_from_vote() in nlp_service.
+    voted_up: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=None)
 
     game: Mapped["Game"] = relationship("Game", back_populates="raw_posts")
     # cascade="all, delete-orphan" (2026-07-24, competitor removal): deleting
@@ -215,6 +223,10 @@ class SentimentRecord(Base):
     language: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     # original_label: model's pre-floor label when demoted (set by PR #10)
     original_label: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # original_score: model's pre-floor score when demoted (added 2026-07-29
+    # by migration 0014). Companion to original_label so retroactive
+    # threshold changes can be applied without re-classifying every post.
+    original_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     # sentiment_conflict: True when title and body labels disagreed (set by PR #11)
     sentiment_conflict: Mapped[Optional[bool]] = mapped_column(
         Boolean, nullable=True, default=False

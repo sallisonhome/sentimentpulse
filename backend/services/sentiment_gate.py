@@ -13,7 +13,7 @@ detect_language(text)                  -> str   (ISO 639-1 or 'und')
 apply_signal_and_language_gate(...)    -> tuple[str, float, str]
 is_rhetorical_question(title, body)    -> bool
 combine_title_body(...)                -> tuple[str, float, bool]
-apply_confidence_floor(...)            -> tuple[str, float, str | None]
+apply_confidence_floor(...)            -> tuple[str, float, str | None, float | None]
 """
 import logging
 import re
@@ -220,7 +220,11 @@ def apply_signal_and_language_gate(
     token_count = count_substantive_tokens(text)
 
     # Determine signal quality
-    if token_count <= 2:
+    # 2026-07-29: low-threshold driven by settings.sentiment_low_signal_max_tokens
+    # (was hardcoded 2). Lowering to 1 lets clear-signal 2-token posts
+    # ("great trailer") flow through classification instead of auto-neutral.
+    from config import settings as _s  # noqa: PLC0415
+    if token_count <= _s.sentiment_low_signal_max_tokens:
         signal_quality = "low"
     elif token_count <= 6:
         signal_quality = "medium"
@@ -236,7 +240,11 @@ def apply_signal_and_language_gate(
         return ("neutral", 0.5, "low")
 
     if signal_quality == "medium":
-        return (raw_label, min(raw_score, 0.6), "medium")
+        # Cap driven by settings.sentiment_medium_signal_cap (2026-07-29).
+        # Was hardcoded 0.6, which automatically flunked the 0.70 floor.
+        # New default 0.68 clears the new 0.55 floor with room to spare.
+        from config import settings  # noqa: PLC0415
+        return (raw_label, min(raw_score, settings.sentiment_medium_signal_cap), "medium")
 
     # signal_quality == "high"
     return (raw_label, raw_score, "high")
@@ -311,28 +319,41 @@ def combine_title_body(
 def apply_confidence_floor(
     label: str,
     score: float,
-    threshold: float = 0.70,
-) -> tuple[str, float, str | None]:
+    threshold: float | None = None,
+) -> tuple[str, float, str | None, float | None]:
     """
     Demote any non-neutral label below the confidence threshold to 'neutral'.
 
-    Per §18 rule 4: after all prior steps, if final confidence < 0.70, the
-    label is demoted to 'neutral' and the original label is recorded for audit.
-    The threshold is non-negotiable (user chose strict 0.70 over 0.60/0.55).
+    Per §18 rule 4: after all prior steps, if final confidence < threshold,
+    the label is demoted to 'neutral' and BOTH the original label AND the
+    original score are returned for audit. Storing the original score means
+    future threshold changes can be applied retroactively without
+    re-classifying every post — the caller can simply compare the stored
+    original_score against the new threshold.
+
+    2026-07-29: threshold is now configurable via
+    settings.sentiment_confidence_floor (default 0.55, was hardcoded 0.70).
+    The old 0.70 value demoted 11,482 posts (25% of a 30-day corpus) that
+    the model correctly identified as pos/neg. See docs/sentiment-audit
+    for details.
 
     Parameters
     ----------
     label     : the label to evaluate ('positive' | 'negative' | 'neutral')
     score     : the confidence score [0, 1]
-    threshold : the confidence floor (default 0.70)
+    threshold : override the settings-driven threshold (unit tests)
 
     Returns
     -------
-    (final_label, final_score, original_label) where:
+    (final_label, final_score, original_label, original_score) where:
         final_label    — 'neutral' if demoted, else the original label
         final_score    — 0.5 if demoted, else the original score
         original_label — the pre-demotion label string if demoted, else None
+        original_score — the pre-demotion score if demoted, else None
     """
+    if threshold is None:
+        from config import settings  # noqa: PLC0415
+        threshold = settings.sentiment_confidence_floor
     if label != "neutral" and score < threshold:
-        return ("neutral", 0.5, label)
-    return (label, score, None)
+        return ("neutral", 0.5, label, float(score))
+    return (label, score, None, None)

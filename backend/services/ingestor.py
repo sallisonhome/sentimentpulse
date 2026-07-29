@@ -1231,9 +1231,38 @@ def _step5_classify_sentiment(
         logger.error(msg)
         return
 
+    # 2026-07-29: Steam Review hard rule (settings.sentiment_steam_use_voted_up).
+    # When a RawPost is a Steam Review AND has a non-null voted_up flag,
+    # its sentiment is set from the vote (positive/negative, never neutral)
+    # — the reviewer's own thumbs is ground truth, model output ignored.
+    # This dramatically improves Steam Review signal (audit showed 87.7%
+    # of reviews were mistakenly tagged neutral because they're
+    # short/medium-signal). We keep the audit fields to record what the
+    # model would have said, tagged with an applied_rule for traceability.
+    from config import settings as _settings  # noqa: PLC0415
     for post, result in zip(relevant_posts, results):
-        label = result["label"]
-        score = result["score"]
+        # Hard-rule override for Steam Reviews with known vote
+        if (
+            _settings.sentiment_steam_use_voted_up
+            and post.source == SourceEnum.steam_review
+            and post.voted_up is not None
+        ):
+            label = "positive" if post.voted_up else "negative"
+            # Confidence 1.0 — this is ground truth from the reviewer.
+            score = 1.0
+            # Preserve the model output in the audit columns so we can
+            # review agreement/disagreement rates later.
+            original_label = result["label"]
+            original_score = result["score"]
+            applied_rules = list(result.get("applied_rules") or [])
+            applied_rules.append("STEAM_REVIEW_VOTED_UP_HARD_RULE")
+        else:
+            label = result["label"]
+            score = result["score"]
+            original_label = result.get("original_label")
+            original_score = result.get("original_score")
+            applied_rules = result.get("applied_rules", [])
+
         post.is_relevant = True
         db.add(SentimentRecord(
             raw_post_id=post.id,
@@ -1243,9 +1272,10 @@ def _step5_classify_sentiment(
             # §18 audit columns — all populated by PR #10
             signal_quality=result["signal_quality"],
             language=result["language"],
-            original_label=result.get("original_label"),
+            original_label=original_label,
+            original_score=original_score,
             sentiment_conflict=result.get("sentiment_conflict", False),
-            applied_rules=result.get("applied_rules", []),   # §18 Layer 4 lexicon
+            applied_rules=applied_rules,
         ))
 
     try:
@@ -1718,6 +1748,9 @@ def _bulk_save_posts(
             url=pd.get("url"),
             upvotes=pd.get("upvotes", 0),
             post_date=pd.get("post_date"),
+            # Steam Reviews ground-truth vote (2026-07-29, migration 0014).
+            # None for all non-Steam-Review sources.
+            voted_up=pd.get("voted_up"),
         )
         db.add(row)
         try:

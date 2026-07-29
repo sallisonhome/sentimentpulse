@@ -77,5 +77,40 @@ class Settings(BaseSettings):
     # it's net-noisy) without touching any keyword lists.
     relevance_fuzzy_layer_enabled: bool = True
 
+    # ── §18 sentiment gate tuning knobs (added 2026-07-29) ─────────────────
+    # Confidence floor below which non-neutral labels get demoted to neutral.
+    # Was 0.70 (strict) — audit showed this demoted 11,482 posts (25% of
+    # corpus) that the model correctly identified as pos/neg. Lowered to 0.55.
+    # To revert to the strict floor, set SENTIMENT_CONFIDENCE_FLOOR=0.70
+    # in the environment.
+    sentiment_confidence_floor: float = 0.55
+
+    # Score cap applied when signal_quality == 'medium' (3-6 substantive
+    # tokens). Previously 0.60 — that automatically flunked the 0.70 floor,
+    # so a medium-signal 'This game rocks' got demoted every time. Lifted
+    # to 0.68 so the score can clear the 0.55 floor while still being
+    # conservative. To disable the cap entirely set to 1.0.
+    sentiment_medium_signal_cap: float = 0.68
+
+    # Steam Reviews come with an explicit voted_up flag (thumbs up/down)
+    # that is ground truth from the reviewer. When True, the classifier
+    # uses this to override the model output (subject to text sanity
+    # check). Requires migration 0014 to add voted_up column to raw_posts.
+    sentiment_steam_use_voted_up: bool = True
+
+    # Maximum number of substantive tokens for a post to be classified as
+    # 'low' signal and auto-demoted to neutral without any classification.
+    # Was 2 (posts with 0, 1, or 2 substantive tokens went straight to
+    # neutral). Lowered to 0 on 2026-07-29 so that ONLY posts with zero
+    # substantive tokens (pure links, pure emoji, pure punctuation) get
+    # auto-suppressed. Any 1-token or 2-token post ("great trailer",
+    # "trash", "masterpiece") is now classified through the model + cap.
+    #
+    # Tuning knob — revert options:
+    #   0 (current default): only zero-token posts auto-neutral
+    #   1: also auto-neutral for 1-token posts
+    #   2: restore pre-2026-07-29 behavior (0-2 tokens auto-neutral)
+    sentiment_low_signal_max_tokens: int = 0
+
 
 settings = Settings()

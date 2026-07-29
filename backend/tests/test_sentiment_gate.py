@@ -277,7 +277,7 @@ class TestApplySignalAndLanguageGate:
         assert quality == "low"
 
     def test_english_medium_signal_positive_high_score_capped(self):
-        """English + 5 tokens + positive 0.9 → capped at 0.6"""
+        """English + 5 tokens + positive 0.9 → capped at 0.68 (settings.sentiment_medium_signal_cap)"""
         from services.sentiment_gate import apply_signal_and_language_gate
         # 5 substantive tokens: "amazing", "combat", "system", "realistic", "enemies"
         text = "the amazing combat system with realistic enemies"
@@ -285,11 +285,11 @@ class TestApplySignalAndLanguageGate:
             text, "positive", 0.9, "en"
         )
         assert label == "positive"
-        assert score == 0.6  # capped
+        assert score == 0.68  # capped (2026-07-29: medium cap lifted 0.60 -> 0.68)
         assert quality == "medium"
 
     def test_english_medium_signal_positive_low_score_no_cap(self):
-        """English + 5 tokens + positive 0.5 → no cap needed (0.5 < 0.6)"""
+        """English + 5 tokens + positive 0.5 → no cap needed (0.5 < 0.68)"""
         from services.sentiment_gate import apply_signal_and_language_gate
         text = "the amazing combat system with realistic enemies"
         label, score, quality = apply_signal_and_language_gate(
@@ -300,14 +300,14 @@ class TestApplySignalAndLanguageGate:
         assert quality == "medium"
 
     def test_english_medium_signal_score_exactly_at_cap(self):
-        """Score exactly 0.6 with medium signal → stays at 0.6"""
+        """Score exactly 0.68 with medium signal → stays at 0.68"""
         from services.sentiment_gate import apply_signal_and_language_gate
         text = "the amazing combat system with realistic enemies"
         label, score, quality = apply_signal_and_language_gate(
-            text, "negative", 0.6, "en"
+            text, "negative", 0.68, "en"
         )
         assert label == "negative"
-        assert abs(score - 0.6) < 1e-9
+        assert abs(score - 0.68) < 1e-9  # 2026-07-29: cap lifted
         assert quality == "medium"
 
     def test_english_high_signal_negative_not_capped(self):
@@ -389,7 +389,7 @@ class TestApplySignalAndLanguageGate:
             text, "positive", 0.95, "en"
         )
         assert quality == "medium"
-        assert score == 0.6  # capped
+        assert score == 0.68  # capped (2026-07-29: medium cap lifted 0.60 -> 0.68)
 
     def test_high_boundary_7_tokens(self):
         """7 substantive tokens is the lower boundary of 'high'"""
@@ -877,7 +877,15 @@ class TestClassifyWithGateV2LexiconIntegration:
         """
         Even if body contains 'refund', low-signal gate fires first → neutral.
         The lexicon must NOT override the signal gate.
+
+        2026-07-29: default sentiment_low_signal_max_tokens is now 0, so
+        a 1-token 'refund' body no longer triggers low-signal path on its
+        own. Explicitly pin the setting to the old value (2) to preserve
+        this test's intent — it's verifying the interaction between the
+        signal gate and the lexicon, not the specific default threshold.
         """
+        from config import settings
+        monkeypatch.setattr(settings, "sentiment_low_signal_max_tokens", 2)
         self._mock_classify(monkeypatch, ("negative", 0.95))
 
         from services.nlp_service import classify_with_gate_v2

@@ -1017,6 +1017,184 @@ def diag_keyword_dryrun(
         db.close()
 
 
+@router.post("/reclassify_sentiments", status_code=202)
+def trigger_reclassify_sentiments(
+    background_tasks: BackgroundTasks,
+    game_id: Optional[int] = Query(None, description="Optional single-game scope"),
+    source: Optional[str] = Query(None, description="Optional source filter"),
+    days: int = Query(30, ge=1, le=365, description="Only reclassify records processed within this window"),
+    confirm: str = Query(..., description="Must equal 'YES_RECLASSIFY' to run"),
+):
+    """Reclassify existing SentimentRecords in place with the current rules.
+
+    Added 2026-07-29 for the sentiment-sharpening rollout. Applies the
+    NEW settings-driven thresholds to existing rows without re-fetching
+    posts — title+body are already in the DB. Also applies the Steam
+    Review voted_up hard rule where applicable.
+
+    Safe:
+      * Requires confirm='YES_RECLASSIFY'.
+      * Only touches SentimentRecord rows; RawPost is unchanged.
+      * Idempotent — running twice yields the same result.
+
+    Returns immediately (202). Poll GET /reclassify_sentiments/status for
+    progress.
+    """
+    if confirm != "YES_RECLASSIFY":
+        return {"status": "refused", "reason": "confirm must equal 'YES_RECLASSIFY'"}
+
+    if _RECLASSIFY_STATE["running"]:
+        return {"status": "skipped", "reason": "already_running"}
+
+    background_tasks.add_task(_run_reclassify, game_id, source, days)
+    return {
+        "status": "started",
+        "game_id": game_id,
+        "source": source,
+        "days": days,
+    }
+
+
+@router.get("/reclassify_sentiments/status")
+def reclassify_sentiments_status():
+    return dict(_RECLASSIFY_STATE)
+
+
+_RECLASSIFY_STATE = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "total_records": 0,
+    "processed": 0,
+    "label_flips": {"neutral_to_positive": 0, "neutral_to_negative": 0,
+                     "positive_to_neutral": 0, "negative_to_neutral": 0,
+                     "positive_to_negative": 0, "negative_to_positive": 0,
+                     "unchanged": 0},
+    "steam_hardrule_applied": 0,
+    "errors": [],
+}
+
+
+def _run_reclassify(game_id: Optional[int], source: Optional[str], days: int) -> None:
+    """Background worker: walk sentiment_records in chunks and re-classify each
+    RawPost using the current settings. Updates SentimentRecord in place."""
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    from database import SessionLocal
+    from models import Game, RawPost, SentimentRecord, SentimentEnum, SourceEnum
+    from services.nlp_service import classify_batch_with_gate_v2, load_model
+    from sqlalchemy import func as sfunc
+
+    _RECLASSIFY_STATE["running"] = True
+    _RECLASSIFY_STATE["started_at"] = _dt.utcnow().isoformat() + "Z"
+    _RECLASSIFY_STATE["finished_at"] = None
+    _RECLASSIFY_STATE["processed"] = 0
+    _RECLASSIFY_STATE["steam_hardrule_applied"] = 0
+    _RECLASSIFY_STATE["errors"] = []
+    for k in _RECLASSIFY_STATE["label_flips"]:
+        _RECLASSIFY_STATE["label_flips"][k] = 0
+
+    try:
+        load_model()
+        since = _date.today() - _td(days=days)
+        db = SessionLocal()
+        try:
+            q = (
+                db.query(SentimentRecord, RawPost)
+                .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+                .filter(sfunc.date(SentimentRecord.processed_at) >= since)
+            )
+            if game_id is not None:
+                q = q.filter(RawPost.game_id == game_id)
+            if source is not None:
+                try:
+                    q = q.filter(RawPost.source == SourceEnum[source])
+                except KeyError:
+                    _RECLASSIFY_STATE["errors"].append(f"unknown source {source!r}")
+                    return
+
+            all_pairs = q.all()
+            _RECLASSIFY_STATE["total_records"] = len(all_pairs)
+
+            from config import settings as _s
+            use_steam_hardrule = _s.sentiment_steam_use_voted_up
+
+            chunk_size = 200
+            for start in range(0, len(all_pairs), chunk_size):
+                batch = all_pairs[start:start + chunk_size]
+                items = [
+                    {"title": rp.title or "", "body": rp.body or ""}
+                    for _, rp in batch
+                ]
+                try:
+                    results = classify_batch_with_gate_v2(items)
+                except Exception as exc:
+                    _RECLASSIFY_STATE["errors"].append(
+                        f"batch {start} failed: {type(exc).__name__}: {str(exc)[:200]}"
+                    )
+                    continue
+
+                for (sr, rp), res in zip(batch, results):
+                    # Apply Steam hard rule
+                    if (
+                        use_steam_hardrule
+                        and rp.source == SourceEnum.steam_review
+                        and rp.voted_up is not None
+                    ):
+                        new_label = "positive" if rp.voted_up else "negative"
+                        new_score = 1.0
+                        new_original_label = res["label"]
+                        new_original_score = res["score"]
+                        applied_rules = list(res.get("applied_rules") or [])
+                        applied_rules.append("STEAM_REVIEW_VOTED_UP_HARD_RULE")
+                        _RECLASSIFY_STATE["steam_hardrule_applied"] += 1
+                    else:
+                        new_label = res["label"]
+                        new_score = res["score"]
+                        new_original_label = res.get("original_label")
+                        new_original_score = res.get("original_score")
+                        applied_rules = res.get("applied_rules", [])
+
+                    # Track the flip
+                    prev_label = sr.sentiment.value if hasattr(sr.sentiment, "value") else str(sr.sentiment)
+                    flip_key = f"{prev_label}_to_{new_label}" if prev_label != new_label else "unchanged"
+                    _RECLASSIFY_STATE["label_flips"][flip_key] = (
+                        _RECLASSIFY_STATE["label_flips"].get(flip_key, 0) + 1
+                    )
+
+                    # Update in place
+                    sr.sentiment = SentimentEnum(new_label)
+                    sr.sentiment_score = new_score
+                    sr.signal_quality = res["signal_quality"]
+                    sr.language = res["language"]
+                    sr.original_label = new_original_label
+                    sr.original_score = new_original_score
+                    sr.sentiment_conflict = res.get("sentiment_conflict", False)
+                    sr.applied_rules = applied_rules
+
+                try:
+                    db.commit()
+                    _RECLASSIFY_STATE["processed"] += len(batch)
+                except Exception as exc:
+                    db.rollback()
+                    _RECLASSIFY_STATE["errors"].append(
+                        f"commit batch {start} failed: {type(exc).__name__}: {str(exc)[:200]}"
+                    )
+
+            logger.info(
+                "Reclassify complete: processed=%d flips=%s",
+                _RECLASSIFY_STATE["processed"],
+                _RECLASSIFY_STATE["label_flips"],
+            )
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.exception("reclassify crashed: %s", exc)
+        _RECLASSIFY_STATE["errors"].append(f"CRASHED: {exc}")
+    finally:
+        _RECLASSIFY_STATE["running"] = False
+        _RECLASSIFY_STATE["finished_at"] = _dt.utcnow().isoformat() + "Z"
+
+
 @router.get("/diag/neutral_audit")
 def diag_neutral_audit(
     game_id: Optional[int] = Query(None, description="Optional game filter"),

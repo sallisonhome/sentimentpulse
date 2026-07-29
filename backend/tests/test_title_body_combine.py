@@ -231,7 +231,7 @@ class TestApplyConfidenceFloor:
     def test_positive_above_threshold_unchanged(self):
         """Positive with score ≥ 0.70 → unchanged, original_label=None."""
         from services.sentiment_gate import apply_confidence_floor
-        label, score, original = apply_confidence_floor("positive", 0.80)
+        label, score, original, orig_score = apply_confidence_floor("positive", 0.80)
         assert label == "positive"
         assert abs(score - 0.80) < 1e-9
         assert original is None
@@ -239,32 +239,43 @@ class TestApplyConfidenceFloor:
     def test_positive_at_exact_threshold_unchanged(self):
         """Score exactly 0.70 → NOT demoted (threshold is exclusive below)."""
         from services.sentiment_gate import apply_confidence_floor
-        label, score, original = apply_confidence_floor("positive", 0.70)
+        label, score, original, orig_score = apply_confidence_floor("positive", 0.70)
         assert label == "positive"
         assert abs(score - 0.70) < 1e-9
         assert original is None
 
     def test_positive_below_threshold_demoted_to_neutral(self):
-        """Positive with score < 0.70 → demoted to neutral, original_label recorded."""
+        """Positive with score < threshold → demoted to neutral, original_label recorded.
+
+        Passes threshold=0.70 explicitly so the test doesn't depend on
+        settings.sentiment_confidence_floor (default lowered to 0.55 on
+        2026-07-29).
+        """
         from services.sentiment_gate import apply_confidence_floor
-        label, score, original = apply_confidence_floor("positive", 0.65)
+        label, score, original, orig_score = apply_confidence_floor(
+            "positive", 0.65, threshold=0.70,
+        )
         assert label == "neutral"
         assert abs(score - 0.5) < 1e-9
         assert original == "positive"
+        assert abs(orig_score - 0.65) < 1e-9  # 2026-07-29: score preserved
 
     def test_negative_below_threshold_demoted(self):
-        """Negative with score < 0.70 → demoted to neutral."""
+        """Negative with score < threshold → demoted to neutral."""
         from services.sentiment_gate import apply_confidence_floor
-        label, score, original = apply_confidence_floor("negative", 0.60)
+        label, score, original, orig_score = apply_confidence_floor(
+            "negative", 0.60, threshold=0.70,
+        )
         assert label == "neutral"
         assert score == 0.5
         assert original == "negative"
+        assert abs(orig_score - 0.60) < 1e-9
 
     def test_neutral_input_never_demoted(self):
         """Neutral input with any score → never demoted (already neutral)."""
         from services.sentiment_gate import apply_confidence_floor
         # Even with a score below threshold, neutral stays neutral
-        label, score, original = apply_confidence_floor("neutral", 0.50)
+        label, score, original, orig_score = apply_confidence_floor("neutral", 0.50)
         assert label == "neutral"
         assert abs(score - 0.50) < 1e-9
         assert original is None
@@ -272,7 +283,7 @@ class TestApplyConfidenceFloor:
     def test_neutral_low_score_unchanged(self):
         """Neutral with score 0.1 → unchanged (rule only applies to non-neutral)."""
         from services.sentiment_gate import apply_confidence_floor
-        label, score, original = apply_confidence_floor("neutral", 0.10)
+        label, score, original, orig_score = apply_confidence_floor("neutral", 0.10)
         assert label == "neutral"
         assert original is None
 
@@ -280,31 +291,33 @@ class TestApplyConfidenceFloor:
         """Custom threshold parameter is used instead of default 0.70."""
         from services.sentiment_gate import apply_confidence_floor
         # With threshold=0.80, score=0.75 should be demoted
-        label, score, original = apply_confidence_floor("positive", 0.75, threshold=0.80)
+        label, score, original, orig_score = apply_confidence_floor("positive", 0.75, threshold=0.80)
         assert label == "neutral"
         assert original == "positive"
         # With threshold=0.60, score=0.65 should not be demoted
-        label2, score2, original2 = apply_confidence_floor("positive", 0.65, threshold=0.60)
+        label2, score2, original2, orig_score2 = apply_confidence_floor("positive", 0.65, threshold=0.60)
         assert label2 == "positive"
         assert original2 is None
 
     def test_returns_three_tuple(self):
-        """apply_confidence_floor always returns a 3-tuple."""
+        """apply_confidence_floor always returns a 4-tuple."""
         from services.sentiment_gate import apply_confidence_floor
         result = apply_confidence_floor("positive", 0.8)
         assert isinstance(result, tuple)
-        assert len(result) == 3
+        assert len(result) == 4
 
     def test_score_069_just_below_threshold_demoted(self):
-        """Score 0.699... is strictly below 0.70 → demoted."""
+        """Score 0.699... is strictly below 0.70 → demoted (when threshold=0.70)."""
         from services.sentiment_gate import apply_confidence_floor
-        label, score, original = apply_confidence_floor("negative", 0.699)
+        label, score, original, orig_score = apply_confidence_floor(
+            "negative", 0.699, threshold=0.70,
+        )
         assert label == "neutral"
         assert original == "negative"
 
     def test_score_071_just_above_threshold_not_demoted(self):
         """Score 0.701 is above 0.70 → not demoted."""
         from services.sentiment_gate import apply_confidence_floor
-        label, score, original = apply_confidence_floor("positive", 0.701)
+        label, score, original, orig_score = apply_confidence_floor("positive", 0.701)
         assert label == "positive"
         assert original is None

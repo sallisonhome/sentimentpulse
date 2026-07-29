@@ -268,6 +268,13 @@ def fetch_reviews(
                     ),
                     "upvotes": int(review.get("votes_up", 0)),
                     "post_date": post_date,
+                    # 2026-07-29: preserve the ground-truth vote from Steam.
+                    # voted_up is present on every real review; guard with
+                    # get() to be safe against schema drift. Persisted via
+                    # RawPost.voted_up (migration 0014) so the sentiment
+                    # classifier can use it as a hard rule.
+                    "voted_up": bool(review.get("voted_up", True))
+                                 if "voted_up" in review else None,
                 })
             except (KeyError, ValueError, OSError) as exc:
                 logger.warning("Skipping malformed review entry: %s", exc)

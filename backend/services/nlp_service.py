@@ -315,7 +315,9 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
 
     # ── (b) Signal quality from combined token count ──────────────────────────
     token_count = count_substantive_tokens(combined)
-    if token_count <= 2:
+    # 2026-07-29: low-threshold via settings.sentiment_low_signal_max_tokens.
+    from config import settings as _s  # noqa: PLC0415
+    if token_count <= _s.sentiment_low_signal_max_tokens:
         signal_quality = "low"
     elif token_count <= 6:
         signal_quality = "medium"
@@ -362,8 +364,10 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
 
     # ── (e) Apply medium signal cap ───────────────────────────────────────────
     if signal_quality == "medium":
-        raw_title_score = min(raw_title_score, 0.6)
-        raw_body_score = min(raw_body_score, 0.6)
+        # Cap driven by settings.sentiment_medium_signal_cap (2026-07-29).
+        from config import settings as _s  # noqa: PLC0415
+        raw_title_score = min(raw_title_score, _s.sentiment_medium_signal_cap)
+        raw_body_score = min(raw_body_score, _s.sentiment_medium_signal_cap)
 
     # ── (f) Combine title + body ──────────────────────────────────────────────
     if not body_text or len(body_text) < 30:
@@ -379,7 +383,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
         )
 
     # ── (g) Apply confidence floor ────────────────────────────────────────────
-    final_label, final_score, original_label = apply_confidence_floor(
+    final_label, final_score, original_label, original_score = apply_confidence_floor(
         final_label, final_score
     )
 
@@ -389,6 +393,7 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
         "signal_quality": signal_quality,
         "language": language,
         "original_label": original_label,
+        "original_score": original_score,
         "sentiment_conflict": sentiment_conflict,
     }
 
@@ -439,7 +444,9 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
         languages.append(lang)
 
         token_count = count_substantive_tokens(combined)
-        if token_count <= 2:
+        # 2026-07-29: low-threshold via settings.sentiment_low_signal_max_tokens.
+        from config import settings as _bs  # noqa: PLC0415
+        if token_count <= _bs.sentiment_low_signal_max_tokens:
             signal_qualities.append("low")
         elif token_count <= 6:
             signal_qualities.append("medium")
@@ -530,8 +537,10 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
 
         # Apply medium signal cap
         if sq == "medium":
-            raw_title_score = min(raw_title_score, 0.6)
-            raw_body_score = min(raw_body_score, 0.6)
+            # settings.sentiment_medium_signal_cap (2026-07-29, was 0.6)
+            from config import settings as _s  # noqa: PLC0415
+            raw_title_score = min(raw_title_score, _s.sentiment_medium_signal_cap)
+            raw_body_score = min(raw_body_score, _s.sentiment_medium_signal_cap)
 
         # Combine — body slot is "" if body short/absent
         body_text_raw = (item.get("body") or "").strip()
@@ -548,7 +557,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
             )
 
         # Confidence floor
-        final_label, final_score, original_label = apply_confidence_floor(
+        final_label, final_score, original_label, original_score = apply_confidence_floor(
             final_label, final_score
         )
 
@@ -558,6 +567,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
             "signal_quality": sq,
             "language": lang,
             "original_label": original_label,
+            "original_score": original_score,
             "sentiment_conflict": sentiment_conflict,
         }
 
