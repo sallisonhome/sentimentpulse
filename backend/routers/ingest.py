@@ -1017,6 +1017,215 @@ def diag_keyword_dryrun(
         db.close()
 
 
+# ── Steam voted_up backfill ──────────────────────────────────────────────────
+
+_STEAM_VOTED_UP_STATE = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "total_games": 0,
+    "games_processed": 0,
+    "reviews_matched": 0,
+    "reviews_updated": 0,
+    "per_game": {},   # game_name -> {fetched, updated, notes}
+    "errors": [],
+}
+
+
+@router.post("/backfill/steam_voted_up", status_code=202)
+def trigger_steam_voted_up_backfill(
+    background_tasks: BackgroundTasks,
+    game_ids: str = Query(
+        "all",
+        description="Comma-separated game IDs, or 'all' for every active game with a steam_app_id",
+    ),
+    max_pages: int = Query(
+        100,
+        ge=1, le=500,
+        description="Cap on review-listing pages per game. 100 pages * 100 reviews ≈ 10,000 reviews per game, which is what Steam's API practically returns before repeats. Higher wastes API calls.",
+    ),
+    confirm: str = Query(..., description="Must equal 'YES_BACKFILL_VOTED_UP' to run"),
+):
+    """Re-fetch reviews from Steam and populate the voted_up column on existing
+    RawPost rows (2026-07-29).
+
+    Motivation: RawPost.voted_up was added by migration 0014, but pre-migration
+    rows all have voted_up=NULL. The Steam Review hard rule (config flag
+    sentiment_steam_use_voted_up) is a no-op for those rows. This backfill
+    re-hits Steam's appreviews endpoint per game and does an UPDATE by
+    external_id (which is recommendationid) to fill in the missing votes.
+
+    Idempotent: rows already populated are re-written with the same value.
+    Only touches rows where source='steam_review'. Does NOT re-classify —
+    call /api/ingest/reclassify_sentiments afterwards to actually apply the
+    Steam hard rule to the newly-populated voted_up values.
+
+    Coverage limit: Steam's appreviews API returns at most ~10K reviews per
+    app via cursor pagination before the cursor stops advancing. Reviews
+    older than that ceiling can't be backfilled from the API; they will
+    remain voted_up=NULL and fall back to model+floor scoring.
+    """
+    if confirm != "YES_BACKFILL_VOTED_UP":
+        return {"status": "refused", "reason": "confirm must equal 'YES_BACKFILL_VOTED_UP'"}
+    if _STEAM_VOTED_UP_STATE["running"]:
+        return {"status": "skipped", "reason": "already_running"}
+
+    # Resolve game_ids
+    from database import SessionLocal
+    from models import Game
+    db = SessionLocal()
+    try:
+        if game_ids.strip().lower() == "all":
+            resolved = [
+                g.id for g in db.query(Game).filter(
+                    Game.is_active == True,  # noqa: E712
+                    Game.steam_app_id.isnot(None),
+                ).order_by(Game.id).all()
+            ]
+        else:
+            try:
+                resolved = [int(x.strip()) for x in game_ids.split(",") if x.strip()]
+            except ValueError:
+                return {"status": "error", "reason": "game_ids must be integers or 'all'"}
+    finally:
+        db.close()
+
+    if not resolved:
+        return {"status": "error", "reason": "no games resolved"}
+
+    background_tasks.add_task(_run_steam_voted_up_backfill, resolved, max_pages)
+    return {
+        "status": "started",
+        "game_ids": resolved,
+        "max_pages_per_game": max_pages,
+    }
+
+
+@router.get("/backfill/steam_voted_up/status")
+def steam_voted_up_status():
+    return dict(_STEAM_VOTED_UP_STATE)
+
+
+def _run_steam_voted_up_backfill(game_ids: list[int], max_pages: int) -> None:
+    """Background: re-fetch Steam reviews per game, UPDATE raw_posts.voted_up
+    by external_id. Uses the low-level Steam appreviews endpoint directly
+    (rather than fetch_reviews) because we only need recommendationid +
+    voted_up, and we want to paginate deep."""
+    from datetime import datetime as _dt
+    from database import SessionLocal
+    from models import Game, RawPost, SourceEnum
+    from services.steam_service import _get, STEAM_REVIEWS_URL
+
+    _STEAM_VOTED_UP_STATE["running"] = True
+    _STEAM_VOTED_UP_STATE["started_at"] = _dt.utcnow().isoformat() + "Z"
+    _STEAM_VOTED_UP_STATE["finished_at"] = None
+    _STEAM_VOTED_UP_STATE["total_games"] = len(game_ids)
+    _STEAM_VOTED_UP_STATE["games_processed"] = 0
+    _STEAM_VOTED_UP_STATE["reviews_matched"] = 0
+    _STEAM_VOTED_UP_STATE["reviews_updated"] = 0
+    _STEAM_VOTED_UP_STATE["per_game"] = {}
+    _STEAM_VOTED_UP_STATE["errors"] = []
+
+    try:
+        db = SessionLocal()
+        try:
+            for gid in game_ids:
+                game = db.query(Game).filter_by(id=gid).first()
+                if not game or not game.steam_app_id:
+                    _STEAM_VOTED_UP_STATE["per_game"][f"game_{gid}"] = {
+                        "fetched": 0, "updated": 0, "notes": "no steam_app_id",
+                    }
+                    _STEAM_VOTED_UP_STATE["games_processed"] += 1
+                    continue
+
+                # Walk Steam's appreviews API and collect {external_id: voted_up}.
+                # Uses filter=recent (newest-first) which is what our historical
+                # ingest also used, so the ID space overlaps deeply.
+                votes: dict[str, bool] = {}
+                cursor = "*"
+                pages_walked = 0
+                for _ in range(max_pages):
+                    resp = _get(
+                        STEAM_REVIEWS_URL.format(appid=game.steam_app_id),
+                        params={
+                            "json": "1",
+                            "filter": "recent",
+                            "language": "english",
+                            "review_type": "all",
+                            "purchase_type": "all",
+                            "num_per_page": 100,
+                            "cursor": cursor,
+                        },
+                    )
+                    if resp is None:
+                        break
+                    try:
+                        data = resp.json()
+                    except Exception as exc:
+                        _STEAM_VOTED_UP_STATE["errors"].append(
+                            f"{game.name}: parse fail page {pages_walked}: {exc}"
+                        )
+                        break
+                    reviews = data.get("reviews") or []
+                    if not reviews:
+                        break
+                    for r in reviews:
+                        rid = r.get("recommendationid")
+                        vu = r.get("voted_up")
+                        if rid is not None and vu is not None:
+                            votes[str(rid)] = bool(vu)
+                    next_cursor = data.get("cursor", "")
+                    if not next_cursor or next_cursor == cursor:
+                        break
+                    cursor = next_cursor
+                    pages_walked += 1
+
+                fetched = len(votes)
+
+                # UPDATE by external_id in chunks (SQLAlchemy IN-list caps).
+                updated = 0
+                if votes:
+                    ids = list(votes.keys())
+                    for i in range(0, len(ids), 500):
+                        chunk_ids = ids[i:i+500]
+                        rows = (
+                            db.query(RawPost)
+                            .filter(
+                                RawPost.source == SourceEnum.steam_review,
+                                RawPost.game_id == gid,
+                                RawPost.external_id.in_(chunk_ids),
+                            )
+                            .all()
+                        )
+                        for row in rows:
+                            new_val = votes.get(row.external_id)
+                            if new_val is not None and row.voted_up != new_val:
+                                row.voted_up = new_val
+                                updated += 1
+                        db.commit()
+
+                _STEAM_VOTED_UP_STATE["per_game"][f"{gid}:{game.name}"] = {
+                    "fetched": fetched,
+                    "updated": updated,
+                    "pages_walked": pages_walked,
+                }
+                _STEAM_VOTED_UP_STATE["reviews_matched"] += fetched
+                _STEAM_VOTED_UP_STATE["reviews_updated"] += updated
+                _STEAM_VOTED_UP_STATE["games_processed"] += 1
+                logger.info(
+                    "Steam voted_up backfill %s: fetched=%d updated=%d pages=%d",
+                    game.name, fetched, updated, pages_walked,
+                )
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.exception("steam voted_up backfill crashed: %s", exc)
+        _STEAM_VOTED_UP_STATE["errors"].append(f"CRASHED: {exc}")
+    finally:
+        _STEAM_VOTED_UP_STATE["running"] = False
+        _STEAM_VOTED_UP_STATE["finished_at"] = _dt.utcnow().isoformat() + "Z"
+
+
 @router.post("/reclassify_sentiments", status_code=202)
 def trigger_reclassify_sentiments(
     background_tasks: BackgroundTasks,
