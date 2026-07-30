@@ -64,11 +64,23 @@ def _period_start(period: PeriodEnum) -> Optional[date]:
     }[period]
 
 
-def _to_date(val) -> date:
-    """Normalise SQLite date strings or Python date objects to date."""
+def _to_date(val) -> Optional[date]:
+    """Normalise SQLite date strings or Python date objects to date.
+
+    Returns None when the value is null-like (SQLAlchemy/SQLite can return
+    None for grouped rows whose post_date is NULL). Callers must skip None
+    results — the previous implementation crashed with
+    `ValueError: Invalid isoformat string: 'None'` on the lifetime path
+    where NULL-post_date rows are not filtered out by the WHERE clause.
+    """
+    if val is None:
+        return None
     if isinstance(val, date):
         return val
-    return date.fromisoformat(str(val)[:10])
+    s = str(val)
+    if not s or s in {"None", "NULL"}:
+        return None
+    return date.fromisoformat(s[:10])
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -79,37 +91,6 @@ def get_dashboard(
     period: PeriodEnum = Query(PeriodEnum.weekly),
     db: Session = Depends(get_db),
 ):
-    try:
-        return _get_dashboard_impl(game_id, period, db)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        # 2026-07-30 diag: `period=lifetime` returns 500 for every game.
-        # Log the full traceback to the ingest log so we can inspect it
-        # via the existing GET /api/ingest/diag/log endpoint without SSH.
-        # This wrapper is temporary; remove once the root cause is fixed.
-        import traceback
-        from pathlib import Path as _Path
-        _log_dir = _Path(__file__).resolve().parent.parent / "logs"
-        _log_dir.mkdir(parents=True, exist_ok=True)
-        _log_file = _log_dir / f"ingest_{date.today().isoformat()}.log"
-        try:
-            with _log_file.open("a") as _f:
-                _f.write(
-                    f"\n[DASHBOARD_500] game_id={game_id} period={period.value}\n"
-                    f"{traceback.format_exc()}\n"
-                )
-        except Exception:
-            pass
-        logger.exception("dashboard 500 game_id=%s period=%s", game_id, period.value)
-        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
-
-
-def _get_dashboard_impl(
-    game_id: int,
-    period: PeriodEnum,
-    db: Session,
-) -> "DashboardResponse":
     game = db.query(Game).filter_by(id=game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found.")
@@ -142,10 +123,18 @@ def _get_dashboard_impl(
     # The corrupted RawPost rows stay in the DB for audit, but their
     # SentimentRecords no longer produce fake daily activity.
     effective_date_expr = RawPost.post_date
+    # Skip NULL-post_date rows in EVERY period. weekly/monthly/quarterly
+    # already exclude them via the `func.date(post_date) >= p_start`
+    # predicate below (SQL comparisons with NULL are FALSE), but `lifetime`
+    # doesn't apply that predicate and would otherwise (a) inflate KPI
+    # totals with legacy-scraper NULL rows and (b) crash the trend/volume
+    # loops downstream with `Invalid isoformat string: 'None'` when a
+    # NULL-day bucket comes back grouped.
     kpi_q = (
         db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id == game_id)
+        .filter(RawPost.post_date.isnot(None))
     )
     if p_start is not None:
         kpi_q = kpi_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -185,6 +174,7 @@ def _get_dashboard_impl(
         db.query(trend_day_expr, SentimentRecord.sentiment, func.count(SentimentRecord.id))
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id == game_id)
+        .filter(RawPost.post_date.isnot(None))
     )
     if p_start:
         trend_rows_q = trend_rows_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -193,6 +183,13 @@ def _get_dashboard_impl(
     trend_map: dict[date, dict[str, int]] = {}
     for day_val, sentiment_enum, cnt in trend_rows:
         d = _to_date(day_val)
+        # Skip NULL-post_date rows. They only survive to this loop on the
+        # `lifetime` path (weekly/monthly/quarterly filter them out via the
+        # `func.date(post_date) >= p_start` predicate, which is FALSE for
+        # NULL). Same intent as the block-level comment above about not
+        # bucketing NULL-date legacy-scraper rows into synthetic days.
+        if d is None:
+            continue
         entry = trend_map.setdefault(d, {"positive": 0, "negative": 0, "neutral": 0})
         v = sentiment_enum.value if hasattr(sentiment_enum, "value") else sentiment_enum
         entry[v] = int(cnt)
@@ -282,6 +279,7 @@ def _get_dashboard_impl(
             .filter(
                 RawPost.game_id == game_id,
                 SentimentRecord.sentiment == sentiment,
+                RawPost.post_date.isnot(None),
             )
         )
         if p_start is not None:
@@ -340,6 +338,7 @@ def _get_dashboard_impl(
         )
         .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id == game_id)
+        .filter(RawPost.post_date.isnot(None))
     )
     if p_start:
         vol_q = vol_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -354,6 +353,9 @@ def _get_dashboard_impl(
     vol_map: dict[date, dict[str, int]] = {}
     for row in vol_rows:
         d = _to_date(row.day)
+        # Skip NULL-post_date rows (see trend-map comment above).
+        if d is None:
+            continue
         vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "bluesky": 0, "dtf": 0})
         vol_map[d][row.source.value] = row.cnt
 
@@ -524,6 +526,7 @@ def get_competitor_timeseries(
         )
         .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id.in_(game_ids))
+        .filter(RawPost.post_date.isnot(None))
     )
     if p_start:
         ts_q = ts_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -535,6 +538,9 @@ def get_competitor_timeseries(
     day_map: dict[date, dict[int, int]] = {}
     for row in ts_rows:
         d = _to_date(row.day)
+        # Skip NULL-post_date rows (see main dashboard endpoint above).
+        if d is None:
+            continue
         day_map.setdefault(d, {gid: 0 for gid in game_ids})
         day_map[d][row.game_id] = row.cnt
 
