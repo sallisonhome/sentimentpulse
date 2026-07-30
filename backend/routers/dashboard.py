@@ -79,6 +79,37 @@ def get_dashboard(
     period: PeriodEnum = Query(PeriodEnum.weekly),
     db: Session = Depends(get_db),
 ):
+    try:
+        return _get_dashboard_impl(game_id, period, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # 2026-07-30 diag: `period=lifetime` returns 500 for every game.
+        # Log the full traceback to the ingest log so we can inspect it
+        # via the existing GET /api/ingest/diag/log endpoint without SSH.
+        # This wrapper is temporary; remove once the root cause is fixed.
+        import traceback
+        from pathlib import Path as _Path
+        _log_dir = _Path(__file__).resolve().parent.parent / "logs"
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _log_file = _log_dir / f"ingest_{date.today().isoformat()}.log"
+        try:
+            with _log_file.open("a") as _f:
+                _f.write(
+                    f"\n[DASHBOARD_500] game_id={game_id} period={period.value}\n"
+                    f"{traceback.format_exc()}\n"
+                )
+        except Exception:
+            pass
+        logger.exception("dashboard 500 game_id=%s period=%s", game_id, period.value)
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+def _get_dashboard_impl(
+    game_id: int,
+    period: PeriodEnum,
+    db: Session,
+) -> "DashboardResponse":
     game = db.query(Game).filter_by(id=game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found.")
