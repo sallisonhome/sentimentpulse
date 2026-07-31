@@ -1,0 +1,62 @@
+name: SP Restart Nginx
+
+# Force-restart the nginx service on the droplet. Use when external
+# HTTP requests return "Empty reply from server" (HTTP 000) even though
+# the FastAPI backend services report systemctl is-active. That
+# combination points to nginx being crashed or wedged.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Restart nginx
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+
+            echo "── BEFORE: nginx state ──"
+            systemctl is-active nginx || true
+            systemctl is-failed nginx || true
+            systemctl status nginx --no-pager -l | head -20 || true
+
+            echo ""
+            echo "── nginx -t (config valid?) ──"
+            nginx -t 2>&1 || echo "nginx config test FAILED"
+
+            echo ""
+            echo "── listening on :80 before? ──"
+            ss -tlnp 2>/dev/null | grep ':80 ' || echo "(nobody listening on :80)"
+
+            echo ""
+            echo "── Restart ──"
+            systemctl reset-failed nginx 2>/dev/null || true
+            systemctl restart nginx
+            sleep 3
+
+            echo ""
+            echo "── AFTER: nginx state ──"
+            systemctl is-active nginx
+            systemctl status nginx --no-pager -l | head -10
+
+            echo ""
+            echo "── listening on :80 after? ──"
+            ss -tlnp 2>/dev/null | grep ':80 ' || echo "(STILL nothing on :80)"
+
+            echo ""
+            echo "── Loopback smoke tests ──"
+            for path in "/" "/api/ingest/status" "/api/games/21/dashboard?period=lifetime"; do
+              CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 "http://127.0.0.1${path}" || echo "000")
+              echo "  127.0.0.1${path} -> ${CODE}"
+            done
+          EOF
