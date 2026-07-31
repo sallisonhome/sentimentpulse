@@ -1,0 +1,44 @@
+name: SP Nginx Inspect
+
+# Read-only. Dumps the sentimentpulse nginx config so we can see the
+# howmanyareplaying.com upstream block and design a targeted patch.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Inspect
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+
+            echo "── /etc/nginx/sites-enabled/ ──"
+            ls -la /etc/nginx/sites-enabled/
+
+            echo ""
+            echo "── /etc/nginx/sites-enabled/sentimentpulse (full) ──"
+            cat /etc/nginx/sites-enabled/sentimentpulse
+
+            echo ""
+            echo "── grep howmanyareplaying across nginx configs ──"
+            grep -rn "howmanyareplaying" /etc/nginx/ 2>/dev/null || echo "(no matches)"
+
+            echo ""
+            echo "── /etc/nginx/nginx.conf http block preview ──"
+            grep -nE "resolver|http \{|include" /etc/nginx/nginx.conf | head -20
+
+            echo ""
+            echo "── nginx -T grep resolver (any resolver directive anywhere) ──"
+            nginx -T 2>/dev/null | grep -n "resolver" || echo "(no resolver directive anywhere)"
+          EOF
