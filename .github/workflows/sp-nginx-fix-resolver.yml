@@ -11,10 +11,9 @@ name: SP Nginx Fix Resolver
 #   1. Insert a `resolver` directive at the top of the server block so
 #      nginx has a nameserver to defer-resolve against.
 #   2. Rewrite both `proxy_pass https://howmanyareplaying.com/...` lines
-#      to use a variable (`set $upstream_hmap ...; proxy_pass https://$upstream_hmap/...`).
-#      Once nginx sees a variable in proxy_pass it defers resolution to
-#      request time and gracefully returns a 502 on DNS failure instead
-#      of refusing to start.
+#      to use a variable. Once nginx sees a variable in proxy_pass it
+#      defers resolution to request time and gracefully returns a 502
+#      on DNS failure instead of refusing to start.
 #
 # Safe:
 #   * Idempotent — re-running is a no-op if the marker is already present.
@@ -36,119 +35,120 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Patch nginx config
+      - name: Write patcher script
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
-            set -euo pipefail
+          cat > /tmp/patch_nginx.py << 'PY'
+          import re, pathlib, sys
 
-            CONFIG=/etc/nginx/sites-available/sentimentpulse
-            MARKER="# SP-RESOLVER-FIX-2026-07-31"
+          MARKER = "# SP-RESOLVER-FIX-2026-07-31"
+          config_path = pathlib.Path("/etc/nginx/sites-available/sentimentpulse")
+          text = config_path.read_text()
 
-            echo "── Preflight: config exists ──"
-            [ -f "$CONFIG" ] || { echo "ERR: $CONFIG missing"; exit 1; }
+          # 1. Inject resolver directive at top of the FIRST `server {` block.
+          resolver_block = (
+              "\n"
+              "    " + MARKER + ": defer upstream DNS resolution to request time so a DNS blip\n"
+              "    # can't crash the whole vhost. Applies to the proxy_pass directives\n"
+              "    # for howmanyareplaying.com further down. See workflow sp-nginx-fix-resolver.\n"
+              "    resolver 1.1.1.1 8.8.8.8 valid=300s ipv6=off;\n"
+              "    resolver_timeout 5s;\n"
+              "\n"
+          )
+          new_text, n = re.subn(
+              r"(server\s*\{\s*\n)",
+              r"\1" + resolver_block,
+              text,
+              count=1,
+          )
+          if n != 1:
+              sys.exit("ERR: could not find a `server {` block to inject resolver into")
 
-            echo ""
-            echo "── Idempotency check ──"
-            if grep -q "$MARKER" "$CONFIG"; then
-              echo "Marker '$MARKER' already present — no-op."
-              nginx -t
-              exit 0
-            fi
+          # 2. Rewrite the two proxy_pass lines to use a variable so nginx
+          #    defers DNS resolution to request time.
+          def rewrite_proxy_pass(match):
+              indent = match.group(1)
+              path   = match.group(2)
+              return (
+                  indent + 'set $sp_upstream_hmap "howmanyareplaying.com";\n'
+                  + indent + 'proxy_pass https://$sp_upstream_hmap' + path + ';'
+              )
 
-            TS=$(date +%s)
-            BACKUP="${CONFIG}.bak.${TS}"
-            echo ""
-            echo "── Backup ──"
-            cp "$CONFIG" "$BACKUP"
-            echo "Wrote: $BACKUP"
+          new_text, m = re.subn(
+              r"^(\s*)proxy_pass\s+https://howmanyareplaying\.com(/[^;\s]*);",
+              rewrite_proxy_pass,
+              new_text,
+              flags=re.MULTILINE,
+          )
+          if m != 2:
+              sys.exit(f"ERR: expected exactly 2 proxy_pass rewrites, got {m}. "
+                       "Config drift — aborting so we don't half-patch.")
 
-            echo ""
-            echo "── Patch ──"
-            python3 << 'PY'
-import re, pathlib
-config_path = pathlib.Path("/etc/nginx/sites-available/sentimentpulse")
-text = config_path.read_text()
+          config_path.write_text(new_text)
+          print(f"Patched: injected 1 resolver block, rewrote {m} proxy_pass directives.")
+          PY
+          echo "patcher script written"
 
-MARKER = "# SP-RESOLVER-FIX-2026-07-31"
+      - name: Ship patcher + run
+        run: |
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              /tmp/patch_nginx.py root@104.236.239.46:/root/patch_nginx.py
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'EOF'
+          set -euo pipefail
 
-# 1. Inject a resolver directive at the top of the FIRST `server {` block.
-#    nginx allows `resolver` in server{} context. Cloudflare + Google DNS,
-#    5-minute cache, ipv6 off (the droplet is v4 only).
-resolver_block = f"""
-    {MARKER}: defer upstream DNS resolution to request time so a DNS blip
-    # can't crash the whole vhost. Applies to the proxy_pass directives
-    # for howmanyareplaying.com further down. See workflow sp-nginx-fix-resolver.
-    resolver 1.1.1.1 8.8.8.8 valid=300s ipv6=off;
-    resolver_timeout 5s;
-"""
+          CONFIG=/etc/nginx/sites-available/sentimentpulse
+          MARKER="# SP-RESOLVER-FIX-2026-07-31"
 
-# Insert after the first `server {` line
-new_text, n = re.subn(
-    r"(server\s*\{\s*\n)",
-    r"\1" + resolver_block + "\n",
-    text,
-    count=1,
-)
-if n != 1:
-    raise SystemExit("ERR: could not find a `server {` block to inject resolver into")
+          echo "── Preflight: config exists ──"
+          [ -f "$CONFIG" ] || { echo "ERR: $CONFIG missing"; exit 1; }
 
-# 2. Rewrite the two proxy_pass lines to use a variable.
-#    Before: proxy_pass https://howmanyareplaying.com/api/;
-#    After : set $sp_upstream_hmap "howmanyareplaying.com";
-#            proxy_pass https://$sp_upstream_hmap/api/;
-def rewrite_proxy_pass(match):
-    indent = match.group(1)
-    path   = match.group(2)  # e.g. "/api/" or "/api/platform-mix/"
-    return (
-        f"{indent}set $sp_upstream_hmap \"howmanyareplaying.com\";\n"
-        f"{indent}proxy_pass https://$sp_upstream_hmap{path};"
-    )
+          echo ""
+          echo "── Idempotency check ──"
+          if grep -q "$MARKER" "$CONFIG"; then
+            echo "Marker '$MARKER' already present — no-op."
+            nginx -t
+            exit 0
+          fi
 
-new_text, m = re.subn(
-    r"^(\s*)proxy_pass\s+https://howmanyareplaying\.com(/[^;\s]*);",
-    rewrite_proxy_pass,
-    new_text,
-    flags=re.MULTILINE,
-)
-if m != 2:
-    raise SystemExit(
-        f"ERR: expected exactly 2 proxy_pass rewrites, got {m}. "
-        "Config drift — aborting so we don't half-patch."
-    )
+          TS=$(date +%s)
+          BACKUP="${CONFIG}.bak.${TS}"
+          echo ""
+          echo "── Backup ──"
+          cp "$CONFIG" "$BACKUP"
+          echo "Wrote: $BACKUP"
 
-config_path.write_text(new_text)
-print(f"Patched: injected 1 resolver block, rewrote {m} proxy_pass directives.")
-PY
+          echo ""
+          echo "── Patch ──"
+          python3 /root/patch_nginx.py
 
-            echo ""
-            echo "── nginx -t (validate patched config) ──"
-            if ! nginx -t; then
-              echo "!!! nginx -t FAILED — restoring backup"
-              cp "$BACKUP" "$CONFIG"
-              nginx -t
-              exit 1
-            fi
+          echo ""
+          echo "── nginx -t (validate patched config) ──"
+          if ! nginx -t; then
+            echo "!!! nginx -t FAILED — restoring backup"
+            cp "$BACKUP" "$CONFIG"
+            nginx -t
+            exit 1
+          fi
 
-            echo ""
-            echo "── nginx -s reload (graceful) ──"
-            systemctl reload nginx
+          echo ""
+          echo "── nginx -s reload (graceful) ──"
+          systemctl reload nginx
 
-            echo ""
-            echo "── Verify: still active + still listening ──"
-            systemctl is-active nginx
-            ss -tlnp 2>/dev/null | grep ':80 ' || { echo "!!! nothing on :80 after reload"; exit 1; }
+          echo ""
+          echo "── Verify: still active + still listening ──"
+          systemctl is-active nginx
+          ss -tlnp 2>/dev/null | grep ':80 ' || { echo "!!! nothing on :80 after reload"; exit 1; }
 
-            echo ""
-            echo "── Loopback smoke: sentimentpulse API + the Genre Pulse proxy path ──"
-            for path in "/api/ingest/status" "/genrepulse/api/wishlist?limit=1"; do
-              CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 "http://127.0.0.1${path}" || echo "000")
-              echo "  127.0.0.1${path} -> ${CODE}"
-            done
+          echo ""
+          echo "── Loopback smoke: sentimentpulse API + Genre Pulse proxy path ──"
+          for path in "/api/ingest/status" "/genrepulse/api/wishlist?limit=1"; do
+            CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 "http://127.0.0.1${path}" || echo "000")
+            echo "  127.0.0.1${path} -> ${CODE}"
+          done
 
-            echo ""
-            echo "── Diff summary ──"
-            diff -u "$BACKUP" "$CONFIG" | head -60 || true
+          echo ""
+          echo "── Diff summary ──"
+          diff -u "$BACKUP" "$CONFIG" | head -60 || true
 
-            echo ""
-            echo "── DONE ──"
+          echo ""
+          echo "── DONE ──"
           EOF
