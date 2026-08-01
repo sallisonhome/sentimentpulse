@@ -373,14 +373,39 @@ def _build_search_query(
     # in double quotes for exact-phrase match, then ORs them together.
     # We cap at 8 keywords to keep the query string under Bluesky's
     # implicit ~500-char limit.
+    #
+    # 2026-07-31 fix: `OR` between quoted phrases is NOT a supported Bluesky
+    # search operator on app.bsky.feed.searchPosts. The endpoint treats the
+    # `OR` token as a literal word to match, so queries like
+    #   "Space Marine 2" OR "SM2" OR "WH40K Space Marine 2"
+    # return 0 results with HTTP 200 (a silent empty page). Every game in
+    # the portfolio with a distinctive_keywords list was hitting this and
+    # getting 0 posts across the daily cron for weeks. Only games where
+    # distinctive_keywords was NULL (Rideshare "Stimulator") were still
+    # working because they fell into the game-name path below.
+    #
+    # New behaviour: when distinctive_keywords is provided we use ONLY the
+    # first keyword as an exact-phrase Bluesky search query. All keywords
+    # continue to be used as the post-fetch strict filter in
+    # `fetch_bluesky_posts_for_game` (via `filter_keywords`) so ambiguous-
+    # title noise still gets rejected. The first keyword is by convention
+    # the strongest disambiguator ("Space Marine 2", "Docked Contraband",
+    # "Inversion 2012") — curated per-title, and the one most likely to
+    # produce real hits when quoted as a phrase.
     if distinctive_keywords:
         cleaned = [
             k.strip() for k in distinctive_keywords
             if isinstance(k, str) and k.strip()
-        ][:8]
+        ]
         if cleaned:
-            quoted = [f'"{k}"' for k in cleaned]
-            return " OR ".join(quoted)
+            first = cleaned[0]
+            # Single-token first keyword doesn't need quoting; a quoted
+            # single word makes the Bluesky parser fall into exact-word
+            # mode which is what we want anyway. Return quoted only when
+            # the phrase actually has whitespace.
+            if " " in first:
+                return f'"{first}"'
+            return first
 
     # Fallback: derive from game name (original behavior).
     # Strip possessive prefix

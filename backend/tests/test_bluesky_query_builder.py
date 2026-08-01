@@ -134,15 +134,20 @@ def test_leading_generic_is_kept():
 
 # ── distinctive_keywords path (2026-07-28 quality fix) ─────────────────────
 
-def test_distinctive_keywords_overrides_name_based_query():
-    # For ambiguous single-word titles like Inversion, distinctive_keywords
-    # must be used as an OR of quoted phrases instead of the raw title.
+def test_distinctive_keywords_uses_first_keyword_as_search_query():
+    # 2026-07-31: Bluesky's searchPosts endpoint doesn't parse `OR` as a
+    # boolean operator — it treats it as a literal word to match, which
+    # made the previous OR-joined query silently return zero results for
+    # every game with a distinctive_keywords list. The builder now uses
+    # ONLY the first keyword (curated to be the strongest disambiguator)
+    # as an exact-phrase search query. All keywords still run against
+    # post bodies via `filter_keywords` in fetch_bluesky_posts_for_game,
+    # so ambiguous-title noise is still rejected.
     result = _build_search_query(
         "Inversion",
         distinctive_keywords=["Inversion 2012", "Saber Inversion", "Airtight Games"],
     )
-    # Order must be preserved (deterministic), each phrase quoted, joined with ' OR '.
-    assert result == '"Inversion 2012" OR "Saber Inversion" OR "Airtight Games"'
+    assert result == '"Inversion 2012"'
 
 
 def test_distinctive_keywords_single_entry_still_quoted():
@@ -155,16 +160,26 @@ def test_distinctive_keywords_single_entry_still_quoted():
     assert result == '"Docked Contraband"'
 
 
-def test_distinctive_keywords_caps_at_8():
-    # Bluesky's query string has an implicit ~500 char limit. Cap at 8
-    # keywords so a runaway keyword list can't hit that limit.
+def test_distinctive_keywords_long_list_uses_only_first():
+    # A 20-item keyword list must not produce a 20-clause OR query — the
+    # OR-join was the exact 2026-07-31 bug. Only the first keyword is used
+    # for the search query; the rest still power post-fetch filtering.
     kws = [f"keyword{i}" for i in range(20)]
     result = _build_search_query("Anything", distinctive_keywords=kws)
-    # Should contain exactly 8 quoted keywords
-    assert result.count(" OR ") == 7
-    assert '"keyword0"' in result
-    assert '"keyword7"' in result
-    assert '"keyword8"' not in result
+    # First keyword is single-token — no quoting.
+    assert result == "keyword0"
+    assert " OR " not in result
+
+
+def test_distinctive_keywords_single_token_first_kw_not_quoted():
+    # A single-token first keyword doesn't need Bluesky exact-phrase
+    # quoting — bare words are already exact-match in Bluesky's parser,
+    # and quoting single tokens can sometimes yield 0 results.
+    result = _build_search_query(
+        "Inversion",
+        distinctive_keywords=["Inversion2012"],
+    )
+    assert result == "Inversion2012"
 
 
 def test_empty_distinctive_keywords_falls_back_to_name():
@@ -187,4 +202,5 @@ def test_distinctive_keywords_ignores_blank_entries():
         "Anything",
         distinctive_keywords=["real keyword", "", "  ", "another one"],
     )
-    assert result == '"real keyword" OR "another one"'
+    # First non-blank keyword only (blanks are still filtered out).
+    assert result == '"real keyword"'

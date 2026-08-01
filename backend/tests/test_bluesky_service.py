@@ -625,7 +625,15 @@ def test_default_max_pages_still_caps_at_three(monkeypatch):
 
 def test_distinctive_keywords_are_used_in_search_query(monkeypatch):
     """When distinctive_keywords is passed to fetch_bluesky_posts_for_game,
-    the outgoing q= must be the OR of quoted keywords, NOT the game name."""
+    the outgoing q= must be the FIRST keyword as an exact-phrase query.
+
+    2026-07-31: was previously the OR-join of every keyword. Bluesky's
+    searchPosts endpoint doesn't parse `OR` as a boolean operator (it
+    treats the literal token `OR` as a word to match), so OR-joined
+    queries returned zero results and every game with a curated
+    keyword list went silent on Bluesky ingest. The rest of the
+    keyword list still runs against post bodies inside
+    fetch_bluesky_posts_for_game via `filter_keywords`."""
     _set_credentials(monkeypatch)
     with requests_mock_module.Mocker() as m:
         m.post(CREATE_SESSION_URL, json=_session_ok_response())
@@ -639,8 +647,8 @@ def test_distinctive_keywords_are_used_in_search_query(monkeypatch):
     parsed = urlparse(search_calls[0].url)
     qs = parse_qs(parsed.query)
     q_value = qs.get("q", [""])[0]
-    assert q_value == '"Inversion 2012" OR "Saber Inversion"', (
-        f"expected OR of keywords, got: {q_value!r}"
+    assert q_value == '"Inversion 2012"', (
+        f"expected first keyword quoted, got: {q_value!r}"
     )
 
 
