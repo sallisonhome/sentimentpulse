@@ -43,8 +43,22 @@ jobs:
               root@104.236.239.46 DAYS="$DAYS" bash -s <<'REMOTEEOF'
           set -uo pipefail
 
+          # Discover the DB name from the running service's .env file.
+          if [ -f /opt/sentimentpulse/backend/.env ]; then
+            DBURL=$(grep -E '^DATABASE_URL=' /opt/sentimentpulse/backend/.env | head -1 | cut -d= -f2- | tr -d '"')
+          fi
+          if [ -z "${DBURL:-}" ]; then
+            DBURL=$(systemctl show -p Environment sentimentpulse.service --value 2>/dev/null | tr ' ' '\n' | grep '^DATABASE_URL=' | head -1 | cut -d= -f2- | tr -d '"')
+          fi
+          echo "discovered DATABASE_URL: ${DBURL:-<empty>}"
+          # Extract DB name from postgresql://user:pass@host:port/dbname[?...]
+          DBNAME=$(echo "$DBURL" | sed -E 's|.*/([^/?]+)(\?.*)?$|\1|')
+          echo "DB name for psql: $DBNAME"
+          export PGDBNAME="$DBNAME"
+
+          echo ""
           echo "── Ground truth: BEFORE ──"
-          sudo -u postgres psql -d sentimentpulse -c "
+          sudo -u postgres psql -d "$PGDBNAME" -c "
             SELECT
               (SELECT COUNT(*) FROM sentiment_records sr
                 JOIN raw_posts rp ON rp.id=sr.raw_post_id
@@ -72,7 +86,7 @@ jobs:
 
           echo ""
           echo "── Ground truth: AFTER ──"
-          sudo -u postgres psql -d sentimentpulse -c "
+          sudo -u postgres psql -d "$PGDBNAME" -c "
             SELECT
               (SELECT COUNT(*) FROM sentiment_records sr
                 JOIN raw_posts rp ON rp.id=sr.raw_post_id
@@ -89,7 +103,7 @@ jobs:
 
           echo ""
           echo "── Top 10 games by populated-topic count ──"
-          sudo -u postgres psql -d sentimentpulse -c "
+          sudo -u postgres psql -d "$PGDBNAME" -c "
             SELECT g.name, COUNT(DISTINCT sr.id) AS records_with_topics
             FROM sentiment_records sr
             JOIN raw_posts rp ON rp.id = sr.raw_post_id

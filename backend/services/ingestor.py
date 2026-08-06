@@ -1323,9 +1323,14 @@ def _step6_extract_topics(
     game: Game,
     log_lines: list,
     errors: list,
+    target_day: Optional[date] = None,
 ) -> None:
     """
     Cluster today's posts per sentiment group.
+
+    `target_day` defaults to today (normal daily-ingest behavior). The
+    topic-backfill script passes an explicit historical date so we can
+    rebuild topics for days that had the `_CM_MIN_DAYS=2` bug-suppressed.
 
     Now implements:
       §15 — Critical-mass gate: only surface clusters with ≥3 posts, ≥3 distinct
