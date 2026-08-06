@@ -153,6 +153,33 @@ class TopicItem(BaseModel):
     velocity: float
 
 
+# 2026-08-05 — Concise text-summary shape for the dashboard's Top Topics
+# widget. Replaces the metadata-badge TopicItem list on the dashboard
+# only; Summary page keeps the fuller TopicItem shape.
+class TopicSummary(BaseModel):
+    label: str
+    # One or two sentence supporting line. Keep it short (≤ ~140 chars).
+    detail: str
+    # Raw post volume for this topic across the selected period, used
+    # only for ordering and for the "expand to 2" heuristic. Not shown
+    # to end users.
+    volume: int
+
+
+class TopTopicsSummary(BaseModel):
+    """Top topics for the dashboard's selected period, ranked by raw
+    post-volume across the period.
+
+    Each sentiment returns 1 topic by default. The runner-up is included
+    only when its volume is ≥ 70% of the leader's — that heuristic keeps
+    the widget concise while still showing a genuinely close second.
+
+    Ordering: highest volume first."""
+    positive: List[TopicSummary]
+    negative: List[TopicSummary]
+    neutral: List[TopicSummary]
+
+
 class VolumePoint(BaseModel):
     day: date
     steam_review: int
@@ -177,9 +204,15 @@ class DashboardResponse(BaseModel):
     period: str
     sentiment_today: SentimentCounts
     net_sentiment_trend: List[NetSentimentPoint]
+    # 2026-08-05: kept for schema back-compat with older callers but
+    # emptied — the dashboard widget was rebuilt around a concise text
+    # summary (top_topics_summary below) instead of the metadata-badge
+    # TopicItem list.
     top_positive_topics: List[TopicItem]
     top_negative_topics: List[TopicItem]
     top_neutral_topics: List[TopicItem]
+    # New concise topic summary for the dashboard widget.
+    top_topics_summary: TopTopicsSummary
     volume_by_source: List[VolumePoint]
     sentiment_velocity: SentimentVelocity
 

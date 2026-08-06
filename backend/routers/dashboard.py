@@ -36,6 +36,8 @@ from schemas import (
     SentimentCounts,
     SentimentVelocity,
     TopicItem,
+    TopicSummary,
+    TopTopicsSummary,
     VolumePoint,
 )
 
@@ -315,6 +317,87 @@ def get_dashboard(
             for label, weight, _days in ranked[:limit]
         ]
 
+    # ── Concise topic summary for the dashboard widget (2026-08-05) ──────────
+    #
+    # Ranks topics by RAW POST VOLUME across the currently-selected period,
+    # not the rank-weighted DailySummary aggregate. This matches the widget
+    # spec: "Volume of conversation about a topic leads what gets selected."
+    #
+    # Behaviour:
+    #   * Empty when the period has no qualifying topics — the frontend
+    #     shows "No trending topics {period} yet".
+    #   * Top 1 by default; expand to top 2 when runner-up volume is
+    #     >= 70% of the leader.
+    #   * Detail line is short, describes the topic itself (not the period),
+    #     and reads naturally for the sentiment.
+
+    _RUNNER_UP_VOLUME_RATIO = 0.70
+
+    def _volume_ranked_topics(sentiment: SentimentEnum) -> list[tuple[str, int]]:
+        """Return [(label, volume), ...] sorted by volume desc across the
+        selected period. Volume = number of SentimentRecords whose topics
+        list contains that label AND whose sentiment matches. NULL
+        post_date rows are excluded (same rule as the rest of the endpoint).
+        """
+        q = (
+            db.query(SentimentRecord.topics)
+            .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(
+                RawPost.game_id == game_id,
+                SentimentRecord.sentiment == sentiment,
+                RawPost.post_date.isnot(None),
+            )
+        )
+        if p_start is not None:
+            q = q.filter(func.date(effective_date_expr) >= str(p_start))
+
+        freq: dict[str, int] = {}
+        for (topics,) in q.all():
+            # A SentimentRecord's `topics` is a small list of labels; each
+            # label counts once per post regardless of how many times the
+            # underlying post mentioned it. That's the intended semantic
+            # of "post volume for this topic".
+            for topic in (topics or []):
+                if not topic or not isinstance(topic, str):
+                    continue
+                freq[topic] = freq.get(topic, 0) + 1
+        return sorted(freq.items(), key=lambda x: -x[1])
+
+    def _sentiment_verb_phrase(sentiment: SentimentEnum) -> str:
+        """Sentiment-appropriate action verb for the detail line.
+        Kept short — the line reads: 'Players are <phrase> <topic>.'
+        """
+        return {
+            SentimentEnum.positive: "praising",
+            SentimentEnum.negative: "criticizing",
+            SentimentEnum.neutral:  "discussing",
+        }[sentiment]
+
+    def _topic_summary_for(sentiment: SentimentEnum) -> list[TopicSummary]:
+        ranked = _volume_ranked_topics(sentiment)
+        if not ranked:
+            return []
+
+        leader_label, leader_vol = ranked[0]
+        chosen: list[tuple[str, int]] = [(leader_label, leader_vol)]
+
+        # Include the runner-up ONLY if its volume is meaningfully close
+        # to the leader's. The 70% threshold matches the widget spec
+        # ("expand to 2 when the second is close in volume").
+        if len(ranked) >= 2:
+            ru_label, ru_vol = ranked[1]
+            if leader_vol > 0 and (ru_vol / leader_vol) >= _RUNNER_UP_VOLUME_RATIO:
+                chosen.append((ru_label, ru_vol))
+
+        verb = _sentiment_verb_phrase(sentiment)
+        out: list[TopicSummary] = []
+        for label, vol in chosen:
+            # Detail line intentionally omits the period — the filter chip
+            # above the widget already communicates the window.
+            detail = f"Players are {verb} {label}."
+            out.append(TopicSummary(label=label, detail=detail, volume=vol))
+        return out
+
     # ── 4. Volume by source per day ───────────────────────────────────────────
     # Use post_date (when the post was actually made) where available,
     # falling back to collected_at for sources without post_date.
@@ -447,14 +530,24 @@ def get_dashboard(
         delta_avg=round(avg_delta, 4) if avg_delta is not None else None,
     )
 
+    top_topics_summary = TopTopicsSummary(
+        positive=_topic_summary_for(SentimentEnum.positive),
+        negative=_topic_summary_for(SentimentEnum.negative),
+        neutral=_topic_summary_for(SentimentEnum.neutral),
+    )
+
     return DashboardResponse(
         game_id=game_id,
         period=period.value,
         sentiment_today=sentiment_today,
         net_sentiment_trend=trend,
-        top_positive_topics=_top_topics(SentimentEnum.positive),
-        top_negative_topics=_top_topics(SentimentEnum.negative),
-        top_neutral_topics=_top_topics(SentimentEnum.neutral),
+        # 2026-08-05: dashboard widget is now driven by top_topics_summary
+        # below. These arrays are emptied to keep the response schema
+        # stable for older clients but no longer inform any UI surface.
+        top_positive_topics=[],
+        top_negative_topics=[],
+        top_neutral_topics=[],
+        top_topics_summary=top_topics_summary,
         volume_by_source=volume_points,
         sentiment_velocity=velocity,
     )

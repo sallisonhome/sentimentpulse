@@ -145,6 +145,23 @@ export interface SentimentVelocity {
   delta_avg: number | null
 }
 
+// 2026-08-05: TopicSummary / TopTopicsSummary drive the redesigned
+// dashboard Top Topics widget (concise text summary ranked by post
+// volume across the selected period). The older TopicItem[] fields on
+// DashboardData are retained for schema stability but are always empty
+// arrays now — no UI reads them.
+export interface TopicSummary {
+  label:  string
+  detail: string
+  volume: number
+}
+
+export interface TopTopicsSummary {
+  positive: TopicSummary[]
+  negative: TopicSummary[]
+  neutral:  TopicSummary[]
+}
+
 export interface DashboardData {
   game_id: number
   period: string
@@ -153,6 +170,7 @@ export interface DashboardData {
   top_positive_topics: TopicItem[]
   top_negative_topics: TopicItem[]
   top_neutral_topics: TopicItem[]
+  top_topics_summary: TopTopicsSummary
   volume_by_source: VolumePoint[]
   sentiment_velocity: SentimentVelocity
 }

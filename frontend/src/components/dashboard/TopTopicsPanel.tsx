@@ -1,26 +1,77 @@
-import { ArrowUp, ArrowDown, Minus } from 'lucide-react'
+// 2026-08-05 rewrite:
+// The dashboard's Top Topics widget was previously a rank-with-badges list
+// (topic label + mention_count badge + trend arrow + mini bar chart) that
+// duplicated the Summary page's topic-metadata surface. Per spec, this
+// widget now shows a concise text summary — top 1 topic per sentiment,
+// with a runner-up when its volume is close to the leader. Ranking is by
+// raw post-volume for the selected period (the endpoint honors the
+// dashboard's `period` filter chip). Detail line describes the topic
+// itself, not the period.
+
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
-import { cn } from '../../lib/utils'
-import type { TopicItem, TrendDirection } from '../../types'
+import type { Period } from '../../types'
 
-const TREND_CONFIG: Record<TrendDirection, { icon: typeof ArrowUp; class: string; label: string }> = {
-  rising:  { icon: ArrowUp,   class: 'text-green-600',  label: 'Rising'  },
-  stable:  { icon: Minus,     class: 'text-slate-500',  label: 'Stable'  },
-  falling: { icon: ArrowDown, class: 'text-red-600',    label: 'Falling' },
+// Local alias so the rest of the file reads naturally. `Period` is the
+// canonical name in types/index.ts.
+type PeriodValue = Period
+
+// Backend response shape (matches backend/schemas.py TopicSummary).
+export interface TopicSummary {
+  label:   string
+  detail:  string
+  volume:  number
+}
+
+export interface TopTopicsSummary {
+  positive: TopicSummary[]
+  negative: TopicSummary[]
+  neutral:  TopicSummary[]
 }
 
 interface TopTopicsPanelProps {
-  positive: TopicItem[]
-  negative: TopicItem[]
-  neutral:  TopicItem[]
+  summary: TopTopicsSummary
+  period:  PeriodValue
 }
 
-export default function TopTopicsPanel({ positive, negative, neutral }: TopTopicsPanelProps) {
+// Human-friendly labels for the empty-state line. Mirrors the labels on
+// the period-filter chip so the two read as connected surfaces.
+function periodEmptyLabel(period: PeriodValue): string {
+  switch (period) {
+    case 'today':     return 'today'
+    case 'weekly':    return 'over the last 7 days'
+    case 'monthly':   return 'over the last 30 days'
+    case 'quarterly': return 'over the last 90 days'
+    case 'lifetime':  return 'yet'
+    default:          return 'yet'
+  }
+}
+
+// Header anchor label — short tag that snaps to whichever period chip is
+// selected. Deliberately minimal so it reads as a lightweight subtitle
+// under the card title, not descriptive prose.
+function periodAnchor(period: PeriodValue): string {
+  switch (period) {
+    case 'today':     return 'Today'
+    case 'weekly':    return 'Past 7 days'
+    case 'monthly':   return 'Past 30 days'
+    case 'quarterly': return 'Past 90 days'
+    case 'lifetime':  return 'All time'
+    default:          return 'Selected period'
+  }
+}
+
+export default function TopTopicsPanel({ summary, period }: TopTopicsPanelProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Top Topics</CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-base">Top Topics</CardTitle>
+          {/* Small anchor label — dynamically reflects the selected filter. */}
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
+            {periodAnchor(period)}
+          </span>
+        </div>
       </CardHeader>
       <CardContent>
         <Tabs defaultValue="negative">
@@ -29,52 +80,44 @@ export default function TopTopicsPanel({ positive, negative, neutral }: TopTopic
             <TabsTrigger value="negative">Negative</TabsTrigger>
             <TabsTrigger value="neutral">Neutral</TabsTrigger>
           </TabsList>
-          <TabsContent value="positive"><TopicList items={positive} /></TabsContent>
-          <TabsContent value="negative"><TopicList items={negative} /></TabsContent>
-          <TabsContent value="neutral"><TopicList items={neutral} /></TabsContent>
+          <TabsContent value="positive">
+            <TopicSummaryList items={summary.positive} period={period} />
+          </TabsContent>
+          <TabsContent value="negative">
+            <TopicSummaryList items={summary.negative} period={period} />
+          </TabsContent>
+          <TabsContent value="neutral">
+            <TopicSummaryList items={summary.neutral} period={period} />
+          </TabsContent>
         </Tabs>
       </CardContent>
     </Card>
   )
 }
 
-function TopicList({ items }: { items: TopicItem[] }) {
+function TopicSummaryList({
+  items,
+  period,
+}: {
+  items:  TopicSummary[]
+  period: PeriodValue
+}) {
   if (!items.length) {
-    return <p className="text-sm text-muted-foreground py-4 text-center">No topics found.</p>
+    return (
+      <p className="py-4 text-sm text-muted-foreground">
+        No trending topics {periodEmptyLabel(period)}.
+      </p>
+    )
   }
 
-  const max = Math.max(...items.map(i => i.mention_count), 1)
-
   return (
-    <ol className="space-y-2">
-      {items.map((item, idx) => {
-        const trend = TREND_CONFIG[item.trend_direction]
-        const TrendIcon = trend.icon
-        const barWidth = Math.round((item.mention_count / max) * 100)
-
-        return (
-          <li key={item.topic_label} className="flex items-center gap-3 text-sm">
-            <span className="w-5 text-right text-xs text-muted-foreground tabular-nums">{idx + 1}</span>
-
-            <div className="flex flex-1 flex-col gap-0.5">
-              <div className="flex items-center justify-between">
-                <span className="font-medium truncate">{item.topic_label}</span>
-                <span className="ml-2 flex items-center gap-1 text-xs text-muted-foreground tabular-nums whitespace-nowrap">
-                  <TrendIcon className={cn('h-3 w-3', trend.class)} />
-                  {item.mention_count.toLocaleString()}
-                </span>
-              </div>
-              {/* Mini bar */}
-              <div className="h-1 w-full rounded-full bg-muted">
-                <div
-                  className="h-1 rounded-full bg-primary/50"
-                  style={{ width: `${barWidth}%` }}
-                />
-              </div>
-            </div>
-          </li>
-        )
-      })}
-    </ol>
+    <ul className="space-y-3">
+      {items.map((item) => (
+        <li key={item.label} className="text-sm">
+          <div className="font-medium">{item.label}</div>
+          <div className="mt-0.5 text-muted-foreground">{item.detail}</div>
+        </li>
+      ))}
+    </ul>
   )
 }

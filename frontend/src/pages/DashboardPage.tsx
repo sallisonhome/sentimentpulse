@@ -117,9 +117,8 @@ export default function DashboardPage() {
             }
           </div>
           <TopTopicsPanel
-            positive={data.top_positive_topics}
-            negative={data.top_negative_topics}
-            neutral={data.top_neutral_topics}
+            summary={data.top_topics_summary}
+            period={period}
           />
         </div>
 
