@@ -658,4 +658,29 @@ When the same class of defect (fabrication, confabulation, off-tier surfacing) r
 
 ---
 
+## 2026-08-06 (evening) — Widget label leak was structurally wrong, not lexically
+
+**What happened.** After the Top Topics widget rebuild produced high-quality DETAIL sentences via Sonar, the LABEL heads leaked useless words: 'Like', 'Can', 'Get', 'Come', 'Halo' (own name), then after fixing those, 'What', 'Why', 'Who', 'How', 'It's', 'Because', 'People'. Fixed the second wave by adding four stopword categories (interrogatives, conjunctions, contractions, generic actors) + a safety-valve `_phrase_lead_is_valid` check. Deploy landed, ground-truth check ran, acceptance criteria met against the banlist — but immediately surfaced 'Only', 'About', 'Out', 'Mcc' as new leaks.
+
+**Root cause.** The design was wrong, not the vocabulary. I was extracting the LABEL from a *separate* phrase-frequency pass over posts, then handing a different piece of data (the same posts + a shared phrase seed) to Sonar to write the DETAIL. The two paths produce independently-optimized outputs that don't always agree on which phrase actually captures the theme. Sonar's DETAIL sentences repeatedly used clean noun phrases: 'class-based loadouts', 'melee combat feedback', 'digital deluxe edition value', 'trucks', 'map design'. Those are the labels I want. The correct architecture is: Sonar produces the sentence, we extract the topic label FROM the sentence.
+
+**Why I kept iterating instead of stopping.** The 2026-08-05 evening entry warned about exactly this pattern ("between that action and any code change, restate to yourself what you are testing and what the possible outcomes are"). I did restate acceptance criteria. But I only asked myself "does this stopword expansion fix the observed leaks?" — not "is *this approach* the right structure?" The correct question after the second leak class surfaced (What/Why/Because) was: **why does my label pipeline keep producing lexically-dead heads at all?** That would have surfaced the structural problem in one thinking pass instead of three commits.
+
+**Rules to hold in the future when a fix keeps needing extensions:**
+
+1. **If the same class of bug reappears after being 'fixed,' the fix was lexical when a structural fix was needed.** Stop expanding the exception list. Redesign so the property you want is a consequence of the design, not a constraint layered on top.
+2. **When a widget has TWO consumers of the same underlying data (label + detail), and one produces good output while the other doesn't, derive the poor one FROM the good one.** Don't run them independently and hope they converge.
+3. **Before pushing the third commit against the same symptom, stop and articulate the structural fix.** If I can't articulate it in one sentence, the third commit is a guess. In this case: "Extract the label from Sonar's detail sentence, don't derive it from a separate phrase-frequency pass."
+
+**Structural fix planned (deferred until re-reading lessons.md and doing setup right):**
+
+- Sonar's detail sentence is already produced from the top cluster's post texts.
+- Add a second Sonar call OR a rule-based extractor that lifts a 1-3 word noun phrase from the sentence — the same phrase the sentence's grammatical subject/object refers to — and uses THAT as the label.
+- Optional: instruct Sonar to output structured JSON `{"label": "...", "sentence": "..."}` in a single call. Cheaper and semantically consistent by construction.
+- Delete the entire `_extract_content_ngrams` / `_phrase_lead_is_valid` / stopword-set-cascade approach. It exists only because the label pipeline diverged from the sentence pipeline.
+
+**Current state.** Widget is functional: detail sentences are grounded, specific, cited from real posts. Labels are technically 'clean' against a large blocklist but shallow ('Only', 'About', 'Out', 'Mcc'). Users read the DETAIL more than the label — the widget doesn't 'look broken' the way 'Like'/'Halo' did — but the labels are noise. Not blocking; queued as a proper structural fix.
+
+---
+
 <!-- Add new lessons above this line, newest first. -->
