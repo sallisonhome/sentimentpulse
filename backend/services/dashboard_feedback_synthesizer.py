@@ -128,6 +128,31 @@ did no yes ok okay well maybe game games play playing player players
 one two three four five six seven eight nine ten first second third
 """.split())
 
+# 2026-08-06: block opinion-marker words from becoming cluster LABELS.
+#
+# The opinion+specificity filter admits a post only if it contains one of
+# these words — so by construction they appear in ~every survivor. If
+# they're eligible to be labels, they'll dominate the ngram count and
+# produce useless labels like "Like" or "Need" under a Negative bucket
+# (which is where the user caught this on 2026-08-06 morning). Add them
+# all to the stopword set BEFORE clustering so labels reflect specific
+# game aspects (matchmaking, prestige grind, krak grenades) instead.
+#
+# Kept as a separate list so future edits to _OPINION_MARKERS pattern
+# stay reviewed against this list — both must move together.
+_OPINION_MARKER_WORDS = set("""
+love loved loving amazing incredible great awesome fun enjoy enjoyed
+praise impressed solid nailed hooked addicted hyped best
+hate hated disappointed frustrating frustrated broken terrible awful
+unfair bad worst garbage trash nerf nerfed regret refund
+wish hope please need needs should pls plz fix fixed
+issue problem bug glitch crash crashes lag laggy
+good actually surprisingly underrated
+like liked liking had have has want wanted wants seem seems seemed
+would could should like
+""".split())
+_STOPWORDS.update(_OPINION_MARKER_WORDS)
+
 # Steam Community and Reddit boilerplate that appears verbatim across
 # thousands of posts and would otherwise dominate the cluster labels
 # (e.g. "originally posted by X", "edit:", "tl;dr"). Stripping these

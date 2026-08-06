@@ -285,6 +285,61 @@ class TestCacheTTL:
 
 # ── Boilerplate stripping (2026-08-05 followup) ─────────────────────────
 
+class TestOpinionMarkersBlockedFromLabels:
+    """2026-08-06: user caught 'Like' as a label under Negative bucket for SM2.
+
+    Opinion-marker words admit posts through the filter by construction, so
+    they trivially reach the ngram-counting step with maximum frequency
+    (they're in ~every survivor). They must be treated as stopwords
+    BEFORE cluster labels are extracted — otherwise a Negative bucket ends
+    up labelled 'Like', which reads as broken.
+    """
+
+    @pytest.mark.parametrize("forbidden", [
+        "like", "liked", "liking",
+        "love", "loved", "loving",
+        "hate", "hated",
+        "need", "needs",
+        "wish", "hope",
+        "had", "have", "has",
+        "actually", "broken", "fix", "fixed",
+        "problem", "issue", "bug",
+    ])
+    def test_opinion_marker_word_not_in_ngrams(self, forbidden):
+        from services.dashboard_feedback_synthesizer import _extract_content_ngrams
+        # A post that trivially contains the forbidden word AND a real
+        # feature word. Ngram extraction must return the feature but not
+        # the opinion marker.
+        text = f"i {forbidden} the matchmaking design in this patch"
+        ngrams = _extract_content_ngrams(text)
+        assert forbidden not in ngrams, (
+            f"opinion-marker word {forbidden!r} leaked into ngrams; it will "
+            f"become a cluster label. Add it to _OPINION_MARKER_WORDS."
+        )
+
+    def test_negative_cluster_labelled_by_feature_not_opinion(self):
+        """Given a set of negative posts about a specific mechanic, the
+        cluster label must reflect the mechanic, not the opinion word."""
+        from services.dashboard_feedback_synthesizer import (
+            _cluster_posts_by_shared_phrase,
+        )
+        posts = [
+            "I hate the matchmaking, keeps putting me with bots",
+            "Matchmaking is broken and needs a fix",
+            "Please fix the matchmaking, it's frustrating",
+            "The matchmaking system in ranked is really bad",
+        ]
+        clusters = _cluster_posts_by_shared_phrase(posts, min_posts_per_cluster=3)
+        assert clusters, "expected at least one cluster"
+        top_label, _ = clusters[0]
+        for banned in ("like", "hate", "broken", "fix", "needs", "bad",
+                       "please", "really", "frustrating"):
+            assert banned not in top_label.lower(), (
+                f"opinion word {banned!r} in label {top_label!r}"
+            )
+        assert "matchmaking" in top_label.lower(), top_label
+
+
 class TestBoilerplateStripping:
     def test_originally_posted_by_stripped(self):
         from services.dashboard_feedback_synthesizer import _strip_forum_boilerplate
@@ -315,11 +370,13 @@ class TestBoilerplateStripping:
 
     def test_ngram_extraction_ignores_boilerplate_tokens(self):
         from services.dashboard_feedback_synthesizer import _extract_content_ngrams
-        text = "Originally posted by SomeUser: matchmaking is broken"
+        text = "Originally posted by SomeUser: matchmaking issues here"
         ngrams = _extract_content_ngrams(text)
         # No "originally", "posted", or "someuser" tokens.
         for banned in ("originally", "posted", "originally posted"):
             assert banned not in ngrams
-        # But content phrases DO survive.
+        # Real content survives ("matchmaking" and "here"). Note that
+        # 2026-08-06 added opinion markers to the stopword set so words
+        # like "broken" no longer appear — that's by design (they'd
+        # become useless cluster labels).
         assert "matchmaking" in ngrams
-        assert "broken" in ngrams
