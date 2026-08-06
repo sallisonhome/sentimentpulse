@@ -1953,6 +1953,9 @@ def backfill_topics(
         total_days_processed = 0
         total_days_with_topics = 0
         total_errors = 0
+        # Collect first-N error records so the response is diagnosable
+        # when a bulk backfill goes sideways (as happened on 2026-08-05).
+        _err_records: list[dict] = []
 
         for g in games:
             per_game_days = 0
@@ -1978,6 +1981,14 @@ def backfill_topics(
                 except Exception as exc:
                     db.rollback()
                     total_errors += 1
+                    import traceback as _tb
+                    _err_records.append({
+                        "game_id": g.id,
+                        "day": str(cursor),
+                        "exc_type": type(exc).__name__,
+                        "message": str(exc)[:400],
+                        "traceback": _tb.format_exc()[:2000],
+                    })
                     logger.exception(
                         "backfill topics: game=%s day=%s failed: %s",
                         g.name, cursor, exc,
@@ -1999,6 +2010,9 @@ def backfill_topics(
             "total_days_with_topics": total_days_with_topics,
             "total_errors": total_errors,
             "per_game": results,
+            # First few full tracebacks for diagnosability. Trimmed to 5
+            # so a genuine large-error backfill doesn't blow the response.
+            "error_samples": _err_records[:5],
         }
     finally:
         db.close()
