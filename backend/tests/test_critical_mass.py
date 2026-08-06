@@ -30,8 +30,17 @@ class TestThresholdConstants:
     def test_min_authors_is_3(self):
         assert ingestor_module._CM_MIN_AUTHORS == 3
 
-    def test_min_days_is_2(self):
-        assert ingestor_module._CM_MIN_DAYS == 2
+    def test_min_days_is_1(self):
+        # 2026-08-05: was 2, but Step 6 only feeds 1 day of posts into
+        # `extract_topics_with_metadata`, making a >=2-day threshold
+        # mathematically unsatisfiable — every cluster was rejected and
+        # every dashboard rendered empty top-topics. The multi-day
+        # persistence semantic is now enforced at the ranking layer
+        # (dashboard's _weighted_daily_top aggregates DailySummary rows
+        # across the selected period). See
+        # tests/test_step6_critical_mass_gate.py for the regression
+        # guard that pins this to 1.
+        assert ingestor_module._CM_MIN_DAYS == 1
 
     def test_period_summary_min_posts_is_20(self):
         assert pss._MIN_SUBSTANTIVE_POSTS == 20
@@ -157,16 +166,32 @@ class TestCriticalMassGate:
             "5 posts from 1 author should fail the author-diversity threshold."
         )
 
-    def test_3_posts_3_authors_1_day_fails_spike(self):
-        """3 posts, 3 authors, but all on 1 day → single-day spike → fails."""
+    def test_3_posts_3_authors_1_day_now_passes(self):
+        """3 posts, 3 authors, 1 day → PASSES gate (2026-08-05 semantic fix).
+
+        Was: `test_3_posts_3_authors_1_day_fails_spike` (asserted single-day
+        clusters must be rejected at the Step 6 extraction gate). Rationale
+        was 'don't surface one-off single-day topic spikes as if they're
+        durable trends' — correct instinct, wrong layer.
+
+        Step 6 by design only ever sees one day of posts at a time, so a
+        >=2-day gate rejected 100% of clusters and NO topics were ever
+        written. The persistence semantic is now enforced at the ranking
+        layer instead (dashboards + Summary page aggregate DailySummary
+        rows over the selected period, weighting by rank-and-day count, so
+        single-day spikes naturally rank below multi-day sustained topics
+        without being suppressed entirely).
+        """
         cluster = {
             "label": "Launch Day Excitement",
             "post_count": 3,
             "author_ids": {"alice", "bob", "carol"},
             "day_set": {"2024-01-01"},  # only 1 day
         }
-        assert self._apply_gate(cluster) is False, (
-            "3 posts on 1 day should fail the multi-day threshold (spike rejection)."
+        assert self._apply_gate(cluster) is True, (
+            "3 posts + 3 distinct authors + 1 day should pass the gate. "
+            "Multi-day persistence is enforced by the ranking layer, not "
+            "by rejecting at extraction."
         )
 
     def test_2_posts_fails_post_count(self):

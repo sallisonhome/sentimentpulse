@@ -1896,6 +1896,114 @@ def diag_sr_topics(
         db.close()
 
 
+# ── Topic backfill (2026-08-05) ─────────────────────────────────────────
+#
+# The `_CM_MIN_DAYS=2` bug (fixed in the same push) rejected every topic
+# cluster produced by Step 6, so every historical SentimentRecord.topics
+# is [] and every DailySummary.top_*_topics is []. This endpoint re-runs
+# Step 6 across a historical window per game to backfill both.
+#
+# Safe:
+#   * Re-running is idempotent — Step 6 overwrites `sr.topics` and
+#     `DailySummary.top_*_topics` in place. No duplicate rows created.
+#   * Confirmation flag required to prevent an accidental hit turning
+#     into 3+ hours of DB work.
+#   * Reports per-day stats so we can see if the backfill produced
+#     anything or hit some other silent gate downstream.
+
+@router.post("/backfill/topics")
+def backfill_topics(
+    days: int = Query(30, ge=1, le=365, description="Look back N days."),
+    game_id: Optional[int] = Query(None, description="Restrict to one game_id, else all active games."),
+    confirm: str = Query(..., description="Must be 'YES_BACKFILL_TOPICS' to run."),
+):
+    """Re-run Step 6 (topic clustering + gate) for each active game and
+    each historical day, backfilling SentimentRecord.topics + DailySummary.
+
+    Fixes the 2026-08-05 top-topics-blank regression: the previous gate
+    of `_CM_MIN_DAYS=2` was mathematically unsatisfiable against Step 6's
+    single-day input window, so every dashboard rendered empty topic
+    lists. After the gate fix ships in the same push, this endpoint
+    replays extraction over the last N days so pre-fix history also
+    has topics populated.
+    """
+    if confirm != "YES_BACKFILL_TOPICS":
+        raise HTTPException(
+            status_code=400,
+            detail="Pass ?confirm=YES_BACKFILL_TOPICS to run this backfill.",
+        )
+
+    from datetime import date, timedelta
+    from models import Game
+    from database import SessionLocal
+    from services.ingestor import _step6_extract_topics
+
+    db = SessionLocal()
+    try:
+        q = db.query(Game).filter(Game.is_active.is_(True))
+        if game_id is not None:
+            q = q.filter(Game.id == game_id)
+        games = q.all()
+        if not games:
+            return {"error": "no matching active games", "count": 0}
+
+        end_day = date.today()
+        start_day = end_day - timedelta(days=days - 1)
+        results: list[dict] = []
+        total_days_processed = 0
+        total_days_with_topics = 0
+        total_errors = 0
+
+        for g in games:
+            per_game_days = 0
+            per_game_with_topics = 0
+            cursor = start_day
+            while cursor <= end_day:
+                log_lines: list = []
+                errors: list = []
+                try:
+                    _step6_extract_topics(db, g, log_lines, errors, target_day=cursor)
+                    per_game_days += 1
+                    total_days_processed += 1
+                    # Check whether ANY of the log lines say we passed the gate
+                    passed_gate = any(
+                        "no clusters passed" not in ln and "no posts" not in ln
+                        for ln in log_lines
+                    ) if log_lines else True
+                    if passed_gate and not errors:
+                        per_game_with_topics += 1
+                        total_days_with_topics += 1
+                    total_errors += len(errors)
+                    db.commit()
+                except Exception as exc:
+                    db.rollback()
+                    total_errors += 1
+                    logger.exception(
+                        "backfill topics: game=%s day=%s failed: %s",
+                        g.name, cursor, exc,
+                    )
+                cursor += timedelta(days=1)
+
+            results.append({
+                "game_id": g.id,
+                "game_name": g.name,
+                "days_processed": per_game_days,
+                "days_with_topics": per_game_with_topics,
+            })
+
+        return {
+            "window_start": str(start_day),
+            "window_end": str(end_day),
+            "games_processed": len(games),
+            "total_days_processed": total_days_processed,
+            "total_days_with_topics": total_days_with_topics,
+            "total_errors": total_errors,
+            "per_game": results,
+        }
+    finally:
+        db.close()
+
+
 # ── Reddit save-path probe ───────────────────────────────────────────
 
 @router.get("/diag/reddit_save")

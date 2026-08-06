@@ -1296,7 +1296,26 @@ def _step5_classify_sentiment(
 # Critical-mass thresholds (§15)
 _CM_MIN_POSTS = 3
 _CM_MIN_AUTHORS = 3
-_CM_MIN_DAYS = 2
+# _CM_MIN_DAYS is intentionally 1 for Step 6, not 2.
+#
+# Step 6 extracts topic clusters from ONLY today's posts (see the
+# day_start/day_end filter above). Every cluster produced here can, by
+# construction, appear on at most one distinct day — today. If we set
+# this to 2, the gate is mathematically unsatisfiable and NO topics
+# ever get written back to SentimentRecord.topics or DailySummary. That
+# was the 2026-08-05 top-topics-blank regression: every dashboard
+# showed empty topic lists because Step 6 was silently rejecting every
+# cluster it produced.
+#
+# The "topic must persist across multiple days to matter" semantic
+# still holds, but it's enforced at the ranking layer, not extraction.
+# The dashboard's _weighted_daily_top aggregates DailySummary rows
+# across the selected period and weights topics by rank-and-day
+# appearances — so a one-off single-day flash-in-the-pan cluster
+# naturally ranks below a topic that appears in the top-5 across many
+# consecutive days. The Summary page uses the same aggregation. Both
+# are period-scoped and multi-day by construction.
+_CM_MIN_DAYS = 1
 
 
 def _step6_extract_topics(
@@ -1320,7 +1339,10 @@ def _step6_extract_topics(
 
     Upserts results into topic_trends and back-fills SentimentRecord.topics.
     """
-    today = date.today()
+    # `target_day` defaults to today (normal daily-ingest behavior). The
+    # topic-backfill endpoint passes an explicit historical date so we can
+    # rebuild topics for days that had `_CM_MIN_DAYS=2` bug-suppressed.
+    today = target_day if target_day is not None else date.today()
     day_start = datetime.combine(today, datetime.min.time())
     day_end = day_start + timedelta(days=1)
 
