@@ -285,6 +285,96 @@ class TestCacheTTL:
 
 # ── Boilerplate stripping (2026-08-05 followup) ─────────────────────────
 
+class TestLightVerbsBlockedFromLabels:
+    """2026-08-06 (afternoon): user caught 'Can', 'Get', 'Come' as labels
+    on SnowRunner / Halloween in the portfolio check. Modal verbs and
+    light action verbs carry no semantic content but appear in most posts.
+    """
+
+    @pytest.mark.parametrize("forbidden", [
+        "can", "cant", "could", "may", "might", "must",
+        "get", "got", "getting", "give", "gives", "gave",
+        "go", "goes", "going", "come", "came", "coming",
+        "see", "seen", "know", "think", "thought",
+        "take", "took", "make", "made",
+        "say", "said", "tell", "told", "find", "found",
+        "now", "then", "here",
+    ])
+    def test_light_verb_not_in_ngrams(self, forbidden):
+        from services.dashboard_feedback_synthesizer import _extract_content_ngrams
+        text = f"you {forbidden} the matchmaking design in this patch update"
+        ngrams = _extract_content_ngrams(text)
+        assert forbidden not in ngrams, (
+            f"light-verb word {forbidden!r} leaked into ngrams; "
+            "add it to _LIGHT_VERBS."
+        )
+
+
+class TestGameNameStrippedFromLabels:
+    """2026-08-06 (afternoon): user caught 'Halo' / 'Hellraiser' as labels
+    on their own dashboards. The game's own title token is redundant —
+    the widget lives ON that game's dashboard, so labeling a cluster with
+    the game name conveys zero new information.
+    """
+
+    def test_single_word_title_stripped(self):
+        from services.dashboard_feedback_synthesizer import (
+            _extract_content_ngrams, _game_name_tokens,
+        )
+        gtokens = _game_name_tokens("Halo")
+        text = "Halo campaign story is emotional and jaw-dropping"
+        ngrams = _extract_content_ngrams(text, gtokens)
+        assert "halo" not in ngrams
+        # But real content survives.
+        assert "campaign" in ngrams
+        assert "story" in ngrams
+
+    def test_multi_word_title_individual_tokens_stripped(self):
+        """'Silent Hill Townfall' → individual tokens (silent, hill, townfall)
+        are stripped so they can't head labels. Whole-title trigram is
+        still findable if someone posts the exact title."""
+        from services.dashboard_feedback_synthesizer import (
+            _extract_content_ngrams, _game_name_tokens,
+        )
+        gtokens = _game_name_tokens("SILENT HILL: Townfall")
+        assert gtokens >= {"silent", "hill", "townfall"}
+        text = "Silent Hill Townfall first-person immersion is amazing"
+        ngrams = _extract_content_ngrams(text, gtokens)
+        for tok in ("silent", "hill", "townfall"):
+            assert tok not in ngrams, f"{tok!r} in {ngrams!r}"
+
+    def test_title_stopword_the_of_and_not_added(self):
+        """'The Master Chief Collection' → skip 'the' as a game-name stopword.
+        (It's already a real stopword too, but we should be safe.)"""
+        from services.dashboard_feedback_synthesizer import _game_name_tokens
+        tokens = _game_name_tokens("Halo: The Master Chief Collection")
+        assert "the" not in tokens
+
+    def test_end_to_end_cluster_label_not_game_name(self):
+        """When posts all mention the game title (as they will on a
+        game-specific dashboard), the cluster label should reflect the
+        specific aspect the posts are about, not the redundant title."""
+        from services.dashboard_feedback_synthesizer import (
+            _cluster_posts_by_shared_phrase,
+        )
+        posts = [
+            "Halo campaign story is emotional and peak stuff",
+            "The Halo campaign hit hard, especially with friends",
+            "Halo campaign music is jaw-dropping in the second act",
+            "Playing Halo campaign with family made me cry a lot",
+            "Halo campaign remains the best storytelling in gaming",
+        ]
+        clusters = _cluster_posts_by_shared_phrase(
+            posts, min_posts_per_cluster=3, game_name="Halo",
+        )
+        assert clusters
+        top_label, _ = clusters[0]
+        assert "halo" not in top_label.lower(), (
+            f"game name in label {top_label!r}"
+        )
+        assert "campaign" in top_label.lower()
+
+
 class TestOpinionMarkersBlockedFromLabels:
     """2026-08-06: user caught 'Like' as a label under Negative bucket for SM2.
 

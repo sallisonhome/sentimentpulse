@@ -128,6 +128,24 @@ did no yes ok okay well maybe game games play playing player players
 one two three four five six seven eight nine ten first second third
 """.split())
 
+# 2026-08-06 (afternoon): also block generic modals / light verbs / temporal
+# fillers that carry no semantic content but appear across many posts.
+# Without this, labels like "Can", "Get", "Come", "Now" leak through even
+# though they say nothing about a specific game aspect.
+_LIGHT_VERBS = set("""
+can cant can't cannot could couldnt couldn't may might must ought
+get got getting gets gotten give given giving gave gives
+go goes going went gone come came comes coming
+see saw seen seeing seem seems seemed
+know known knew knowing think thought thinking
+take took taken taking make made makes making
+say said says saying tell told telling
+find found finding
+now then here there always never sometimes often always today tomorrow
+someone anyone everyone nothing something anything everything
+""".split())
+_STOPWORDS.update(_LIGHT_VERBS)
+
 # 2026-08-06: block opinion-marker words from becoming cluster LABELS.
 #
 # The opinion+specificity filter admits a post only if it contains one of
@@ -180,7 +198,27 @@ def _strip_forum_boilerplate(text: str) -> str:
 _TOKEN = re.compile(r"[a-zA-Z][a-zA-Z\-']+")
 
 
-def _extract_content_ngrams(text: str) -> list[str]:
+def _game_name_tokens(game_name: str) -> set[str]:
+    """Tokens from a game's title that should NOT appear as label heads.
+
+    2026-08-06: labels like "Halo" or "Hellraiser" leaked through because
+    the game's own name appears in almost every post about it. That's
+    redundant — the widget lives on the game's own dashboard.
+    Multi-word titles produce multiple stopword tokens (e.g. "Silent Hill
+    Townfall" → {silent, hill, townfall}); we intentionally do NOT strip
+    combined bigrams because we still want "Silent Hill Townfall" as a
+    label when the whole title itself is what's being discussed (it's
+    rarer and more meaningful than the individual tokens).
+    """
+    if not game_name:
+        return set()
+    return {
+        w.lower() for w in _TOKEN.findall(game_name)
+        if len(w) >= 3 and w.lower() not in {"the", "and", "of"}
+    }
+
+
+def _extract_content_ngrams(text: str, game_name_tokens: set[str] = frozenset()) -> list[str]:
     """Extract 1-3 word content phrases, lowercase, minus stopwords.
     Used as clustering keys so posts that mention the same feature phrase
     end up in the same cluster.
@@ -188,10 +226,15 @@ def _extract_content_ngrams(text: str) -> list[str]:
     2026-08-05: strip Steam/Reddit boilerplate ("originally posted by X:",
     "edit:", "tl;dr:", quote-block ">", etc.) BEFORE tokenising so those
     tokens don't dominate labels for games with heavy Steam-forum volume.
+
+    2026-08-06: also strip individual game-name tokens ("halo", "hellraiser")
+    so labels reflect specific aspects, not the redundant title. Whole-title
+    bigrams/trigrams ("silent hill townfall") are preserved intentionally.
     """
     text = _strip_forum_boilerplate(text)
     words = [w.lower() for w in _TOKEN.findall(text)]
-    content = [w for w in words if w not in _STOPWORDS and len(w) >= 3]
+    _drop = _STOPWORDS | set(game_name_tokens)
+    content = [w for w in words if w not in _drop and len(w) >= 3]
     ngrams: list[str] = []
     ngrams.extend(content)
     for i in range(len(content) - 1):
@@ -205,15 +248,20 @@ def _cluster_posts_by_shared_phrase(
     posts: list[str],
     *,
     min_posts_per_cluster: int = 3,
+    game_name: str = "",
 ) -> list[tuple[str, list[int]]]:
     """Group posts by the most-frequent content phrase they share.
     Returns [(cluster_phrase, [post_indices]), ...] sorted by volume desc.
+
+    `game_name` is used to strip title tokens from label candidates so
+    the widget doesn't surface the game's own name as its top label.
     """
+    gtokens = _game_name_tokens(game_name)
     # For each n-gram, count how many DIFFERENT posts contain it.
     phrase_to_posts: dict[str, set[int]] = {}
     for i, text in enumerate(posts):
         seen: set[str] = set()
-        for ng in _extract_content_ngrams(text):
+        for ng in _extract_content_ngrams(text, gtokens):
             if ng in seen:
                 continue
             seen.add(ng)
@@ -390,8 +438,10 @@ def generate_feedback_summary(
         _cache_set(cache_key, [])
         return []
 
-    # 3. Cluster.
-    clusters = _cluster_posts_by_shared_phrase(survivors, min_posts_per_cluster=3)
+    # 3. Cluster (game_name passed so title tokens don't dominate labels).
+    clusters = _cluster_posts_by_shared_phrase(
+        survivors, min_posts_per_cluster=3, game_name=game_name,
+    )
     if not clusters:
         _cache_set(cache_key, [])
         return []
