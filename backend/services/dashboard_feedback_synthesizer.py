@@ -128,6 +128,30 @@ did no yes ok okay well maybe game games play playing player players
 one two three four five six seven eight nine ten first second third
 """.split())
 
+# Steam Community and Reddit boilerplate that appears verbatim across
+# thousands of posts and would otherwise dominate the cluster labels
+# (e.g. "originally posted by X", "edit:", "tl;dr"). Stripping these
+# before phrase extraction gives the clusterer a fair shot at real
+# content phrases.
+_BOILERPLATE_PATTERNS = [
+    re.compile(r"originally\s+posted\s+by[^:]{0,80}:", re.IGNORECASE),
+    re.compile(r"^\s*edit\s*[:\-]", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*tl;?dr\s*[:\-]", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^\s*update\s*[:\-]", re.IGNORECASE | re.MULTILINE),
+    # Discourse quote prefixes
+    re.compile(r"^>+\s*", re.MULTILINE),
+    # Bare "originally" as a leading marker
+    re.compile(r"\boriginally\s+posted\b", re.IGNORECASE),
+]
+
+
+def _strip_forum_boilerplate(text: str) -> str:
+    if not text:
+        return ""
+    for pat in _BOILERPLATE_PATTERNS:
+        text = pat.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
 _TOKEN = re.compile(r"[a-zA-Z][a-zA-Z\-']+")
 
 
@@ -135,7 +159,12 @@ def _extract_content_ngrams(text: str) -> list[str]:
     """Extract 1-3 word content phrases, lowercase, minus stopwords.
     Used as clustering keys so posts that mention the same feature phrase
     end up in the same cluster.
+
+    2026-08-05: strip Steam/Reddit boilerplate ("originally posted by X:",
+    "edit:", "tl;dr:", quote-block ">", etc.) BEFORE tokenising so those
+    tokens don't dominate labels for games with heavy Steam-forum volume.
     """
+    text = _strip_forum_boilerplate(text)
     words = [w.lower() for w in _TOKEN.findall(text)]
     content = [w for w in words if w not in _STOPWORDS and len(w) >= 3]
     ngrams: list[str] = []

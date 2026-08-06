@@ -281,3 +281,45 @@ class TestCacheTTL:
             )
         # Second call must be a cache hit \u2014 Sonar stub invoked exactly once.
         assert call_count["n"] == 1
+
+
+# ── Boilerplate stripping (2026-08-05 followup) ─────────────────────────
+
+class TestBoilerplateStripping:
+    def test_originally_posted_by_stripped(self):
+        from services.dashboard_feedback_synthesizer import _strip_forum_boilerplate
+        text = "Originally posted by SomePlayer: the prestige grind is too long"
+        out = _strip_forum_boilerplate(text)
+        assert "originally" not in out.lower()
+        assert "prestige grind" in out.lower()
+
+    def test_edit_prefix_stripped(self):
+        from services.dashboard_feedback_synthesizer import _strip_forum_boilerplate
+        text = "EDIT: I was wrong about the class balance being fine"
+        out = _strip_forum_boilerplate(text)
+        assert not out.lower().startswith("edit:")
+        assert "class balance" in out.lower()
+
+    def test_tldr_stripped(self):
+        from services.dashboard_feedback_synthesizer import _strip_forum_boilerplate
+        text = "TL;DR: matchmaking is broken and needs a fix"
+        out = _strip_forum_boilerplate(text)
+        assert "tl;dr" not in out.lower()
+        assert "matchmaking" in out.lower()
+
+    def test_quote_block_prefix_stripped(self):
+        from services.dashboard_feedback_synthesizer import _strip_forum_boilerplate
+        text = "> some quoted thing\nmy actual reply about the patch"
+        out = _strip_forum_boilerplate(text)
+        assert not out.startswith(">")
+
+    def test_ngram_extraction_ignores_boilerplate_tokens(self):
+        from services.dashboard_feedback_synthesizer import _extract_content_ngrams
+        text = "Originally posted by SomeUser: matchmaking is broken"
+        ngrams = _extract_content_ngrams(text)
+        # No "originally", "posted", or "someuser" tokens.
+        for banned in ("originally", "posted", "originally posted"):
+            assert banned not in ngrams
+        # But content phrases DO survive.
+        assert "matchmaking" in ngrams
+        assert "broken" in ngrams
