@@ -604,4 +604,58 @@ When the same class of defect (fabrication, confabulation, off-tier surfacing) r
 
 ---
 
+## 2026-08-05 (evening) — Diagnostic loop: kept re-deploying without ground-truth verification
+
+**What happened.** User asked for two things in one session: (1) fix the empty Top Topics widget, (2) redesign it as a concise text summary. I did both, but the last hour degenerated into a wasteful spiral:
+
+1. Fixed `_CM_MIN_DAYS=2` gate bug (correct fix, still valid).
+2. Redesigned the widget as `top_topics_summary` (correct fix, still valid, deployed).
+3. Added a `/api/ingest/backfill/topics` endpoint to replay historical data.
+4. Backfill returned `TypeError: _step6_extract_topics() got an unexpected keyword argument 'target_day'` on every call — my new keyword arg wasn't being seen by the running Python process even after successful deploy + explicit `systemctl restart sentimentpulse`.
+5. Rather than STOP and take one careful diagnostic pass, I:
+   - Pushed another commit to surface tracebacks in the API response (fine)
+   - Wrote an SSH workflow to inspect service state (fine, one probe)
+   - Wrote ANOTHER SSH workflow to purge `__pycache__` and restart (borderline)
+   - Wrote ANOTHER SSH workflow to run Python introspection on the imported module (over the line)
+   - Got rate-limited by GitHub reading workflow logs, tried to poll around it
+   - Was ALSO hitting the app's HTTP API for portfolio-wide reads (`/api/games/*/dashboard`, `/diag/sr_topics`) generating repeated identical requests when a single SQL query on the DB would have answered everything
+6. User stopped me with two direct callouts: "why are you making calls when we have all the posts in the database" and "stop guessing."
+
+**Rules violated (existing lessons).**
+
+- **§19 (2026-05-30) — Never declare success on intermediate signals.** I declared the second commit deployed because GHA turned green and `systemctl is-active` returned `active`. The GROUND TRUTH was the endpoint call itself, which kept returning the same error. I should have accepted at attempt 2 that the running process was not loading my new code and pivoted the diagnosis right there.
+- **§23 (2026-06-29) — Audit the deliverable, not intermediate artifacts.** Same as above: I kept validating deploy-level signals instead of the one thing that mattered (does the endpoint accept the new keyword arg? no. why? investigate that directly, don't push more probes hoping for a different answer).
+- **§21g (2026-06-29) — When a pipeline has multiple layers, instrument once and read the data instead of iterating on hypotheses.** That earlier lesson told me exactly what to do: build one careful trace, look at production data, don't push blind fixes. I did the opposite — I pushed 4 SSH workflows and 1 endpoint change, each hoping the next would explain what the previous couldn't.
+- **Wasteful API usage.** For read-only aggregate inspections I hit the HTTP API iteratively (per-game per-period loops with 4-15 requests). Every one of those calls does DB reads. If DB access exists, use it directly. If it doesn't yet, that's a one-time setup, not a reason to hammer the API.
+
+**The correct playbook I should have followed from the moment attempt 1 failed.**
+
+1. **Ground-truth first.** The API returned the exact exception text — read that literally. `_step6_extract_topics() got an unexpected keyword argument 'target_day'` says: "the function object in this Python process does not have that parameter." That is the fact. Not "maybe pycache," not "maybe wrong path" — the fact is the function object.
+2. **One focused hypothesis at a time.** If the file on disk has the param and the running process doesn't, only three explanations exist: (a) service is loading from a different path, (b) service didn't actually restart, (c) some import-time cache. Check (a) with ONE targeted command (`readlink /proc/$PID/cwd`, `cat /etc/systemd/system/*.service | grep WorkingDirectory`), not four workflows.
+3. **Don't push code to test a hypothesis.** SSH once, look at the process state, make one decision.
+4. **Read from the DB, not the API, for read-only aggregate checks.** If direct DB access isn't wired yet, wire it once as a setup step and stop paying HTTP tax for every diagnostic.
+
+**Personal behavior rule to internalize (writing it as if to a future me):**
+
+> When a deploy "succeeded" but the endpoint still throws the exact same error twice, STOP. Do not push another change. Do not add another workflow. Sit with what the error says literally. Then take ONE targeted diagnostic action, not four. Between that action and any code change, restate to yourself what you are testing and what the possible outcomes are. If you can't articulate that in one sentence, you are guessing.
+
+**Also, permanent workflow rules from this session:**
+
+1. **Read lessons.md at the START of every task in this repo.** Not "when I hit a bug" — at the start. The lessons have been accumulated for months and every one exists because a version of me shipped a specific class of bad output.
+2. **Before starting any non-trivial change, write down the acceptance criteria and the ground-truth check.** The ground-truth check is the single query or endpoint call whose result definitively answers "is this fixed?" That check is what I audit, not intermediate signals.
+3. **When the ground-truth check fails after a deploy, do not re-attempt the same deploy. Do targeted diagnosis of why the running system doesn't reflect the source. Push exactly one instrumented change at a time, if needed at all.**
+4. **For read-only checks, prefer direct DB access over the API.** The database has the answers. The API is for humans and applications, not for iterated diagnostic loops.
+5. **Never spawn more than one SSH workflow of the same category in a row without stopping to look at the previous result and articulate what changed.**
+
+**What actually still needs to happen for topic backfill (deferred until next session, only after re-reading lessons.md and doing setup right):**
+
+- Verify the exact reason `_step6_extract_topics(..., target_day=...)` is throwing on the live process (systemd WorkingDirectory / uvicorn process root path / venv path).
+- Fix that ONE thing.
+- Re-verify with ONE endpoint call.
+- Then run the backfill.
+
+**No more diagnostic pushes for this today.** The core widget bug (`_CM_MIN_DAYS=1`) is fixed and deployed — tomorrow's 6:45 AM cron will populate today's topics correctly. Historical backfill can wait until this is done right.
+
+---
+
 <!-- Add new lessons above this line, newest first. -->
