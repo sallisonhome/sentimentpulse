@@ -43,4 +43,21 @@ jobs:
             echo ""
             echo "── smoke test via loopback ──"
             curl -sS -o /dev/null -w "  api/ingest/status -> %{http_code}\n" --max-time 10 http://127.0.0.1:8000/api/ingest/status || true
+
+            echo ""
+            echo "── sentimentpulse.service unit file ──"
+            cat /etc/systemd/system/sentimentpulse.service
+
+            echo ""
+            echo "── DELETE __pycache__ and restart (nuclear option) ──"
+            find /opt/sentimentpulse/backend -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+            find /opt/sentimentpulse/backend -type d -name __pycache__ 2>/dev/null | head -3
+            systemctl restart sentimentpulse
+            sleep 5
+            systemctl is-active sentimentpulse
+
+            echo ""
+            echo "── Verify _step6 signature after pycache purge ──"
+            curl -sS -X POST 'http://127.0.0.1:8000/api/ingest/backfill/topics?days=1&game_id=24&confirm=YES_BACKFILL_TOPICS' --max-time 30 | head -c 800
+            echo
           EOF
