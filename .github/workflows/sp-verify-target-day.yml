@@ -1,0 +1,46 @@
+name: SP Verify target_day
+# Read-only diagnostic. Dumps the deployed _step6_extract_topics signature
+# so we can confirm whether the target_day param actually landed.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Inspect
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+
+            echo "── Version marker: which _step6 signature is on disk ──"
+            grep -n "def _step6_extract_topics" /opt/sentimentpulse/backend/services/ingestor.py
+            grep -n "target_day" /opt/sentimentpulse/backend/services/ingestor.py | head
+
+            echo ""
+            echo "── which .pyc might be stale ──"
+            find /opt/sentimentpulse/backend -name "ingestor.cpython*.pyc" -exec ls -la {} \;
+
+            echo ""
+            echo "── service running uvicorn PID ──"
+            systemctl status sentimentpulse --no-pager -l | head -8
+
+            echo ""
+            echo "── restart sentimentpulse to pick up the .py change ──"
+            systemctl restart sentimentpulse
+            sleep 5
+            systemctl is-active sentimentpulse
+
+            echo ""
+            echo "── smoke test via loopback ──"
+            curl -sS -o /dev/null -w "  api/ingest/status -> %{http_code}\n" --max-time 10 http://127.0.0.1:8000/api/ingest/status || true
+          EOF
