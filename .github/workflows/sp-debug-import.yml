@@ -1,0 +1,63 @@
+name: SP Debug Import
+# Introspect the LIVE process to see what module + version of _step6 is actually loaded.
+
+on: {workflow_dispatch:}
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Inspect
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+
+            echo "── on-disk source, first 5 lines of _step6 ──"
+            grep -A5 "^def _step6_extract_topics" /opt/sentimentpulse/backend/services/ingestor.py
+
+            echo ""
+            echo "── uvicorn PID + cwd + open ingestor.py file(s) ──"
+            PID=$(systemctl show -p MainPID --value sentimentpulse)
+            echo "PID=$PID"
+            ls -la /proc/$PID/cwd 2>/dev/null | head
+            ls -la /proc/$PID/exe 2>/dev/null | head
+            echo ""
+            echo "-- open FDs pointing at ingestor.py --"
+            ls -la /proc/$PID/fd 2>/dev/null | grep ingestor || echo "  none"
+            echo ""
+            echo "-- process env PYTHONPATH + working dir --"
+            cat /proc/$PID/environ 2>/dev/null | tr '\0' '\n' | grep -iE "PYTHON|PATH|WORK|VIRTUAL" | head
+
+            echo ""
+            echo "── which python is running? ──"
+            readlink /proc/$PID/exe
+
+            echo ""
+            echo "── introspect live signature via HTTP diagnostic ──"
+            # Ask the running process to inspect itself. If there is no such
+            # endpoint we'll just get a 404 and know we need to add one.
+            curl -sS -o /dev/null -w "  /api/ingest/diag/step6_signature -> %{http_code}\n" \
+              --max-time 5 http://127.0.0.1:8000/api/ingest/diag/step6_signature
+
+            echo ""
+            echo "── Python-side: does the module on disk match the imported one? ──"
+            /opt/sentimentpulse/backend/venv/bin/python -c '
+            import inspect, importlib.util, sys
+            spec = importlib.util.spec_from_file_location("_step6_check", "/opt/sentimentpulse/backend/services/ingestor.py")
+            mod = importlib.util.module_from_spec(spec)
+            sys.path.insert(0, "/opt/sentimentpulse/backend")
+            spec.loader.exec_module(mod)
+            sig = inspect.signature(mod._step6_extract_topics)
+            print("  loaded from:", inspect.getsourcefile(mod._step6_extract_topics))
+            print("  signature:", sig)
+            print("  has target_day param:", "target_day" in sig.parameters)
+            '
+          EOF
