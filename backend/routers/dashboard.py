@@ -374,29 +374,28 @@ def get_dashboard(
         }[sentiment]
 
     def _topic_summary_for(sentiment: SentimentEnum) -> list[TopicSummary]:
-        ranked = _volume_ranked_topics(sentiment)
-        if not ranked:
-            return []
-
-        leader_label, leader_vol = ranked[0]
-        chosen: list[tuple[str, int]] = [(leader_label, leader_vol)]
-
-        # Include the runner-up ONLY if its volume is meaningfully close
-        # to the leader's. The 70% threshold matches the widget spec
-        # ("expand to 2 when the second is close in volume").
-        if len(ranked) >= 2:
-            ru_label, ru_vol = ranked[1]
-            if leader_vol > 0 and (ru_vol / leader_vol) >= _RUNNER_UP_VOLUME_RATIO:
-                chosen.append((ru_label, ru_vol))
-
-        verb = _sentiment_verb_phrase(sentiment)
-        out: list[TopicSummary] = []
-        for label, vol in chosen:
-            # Detail line intentionally omits the period — the filter chip
-            # above the widget already communicates the window.
-            detail = f"Players are {verb} {label}."
-            out.append(TopicSummary(label=label, detail=detail, volume=vol))
-        return out
+        # 2026-08-05 rebuild per user spec (21:24 EDT):
+        # Read the actual post corpus, filter to genuine feedback (opinion +
+        # specificity), cluster the survivors, and synthesize a written
+        # sentence per cluster via Sonar. Bypasses SentimentRecord.topics
+        # entirely because the upstream clusterer surfaces uninformative
+        # "General Discussion" labels for most games, wrapping them in a
+        # template made the widget read like nonsense.
+        from services.dashboard_feedback_synthesizer import (
+            generate_feedback_summary,
+        )
+        results = generate_feedback_summary(
+            db=db,
+            game_id=game_id,
+            game_name=game.name,
+            sentiment=sentiment,
+            period_key=period.value,
+            period_start=p_start,
+        )
+        return [
+            TopicSummary(label=r.label, detail=r.detail, volume=r.volume)
+            for r in results
+        ]
 
     # ── 4. Volume by source per day ───────────────────────────────────────────
     # Use post_date (when the post was actually made) where available,

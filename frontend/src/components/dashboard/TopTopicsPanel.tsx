@@ -34,18 +34,11 @@ interface TopTopicsPanelProps {
   period:  PeriodValue
 }
 
-// Human-friendly labels for the empty-state line. Mirrors the labels on
-// the period-filter chip so the two read as connected surfaces.
-function periodEmptyLabel(period: PeriodValue): string {
-  switch (period) {
-    case 'today':     return 'today'
-    case 'weekly':    return 'over the last 7 days'
-    case 'monthly':   return 'over the last 30 days'
-    case 'quarterly': return 'over the last 90 days'
-    case 'lifetime':  return 'yet'
-    default:          return 'yet'
-  }
-}
+// Empty-state copy per 2026-08-05 spec: when there aren't enough posts
+// carrying definitive opinion + specificity signal to synthesize a
+// sentence, tell the user that directly. The widget honors the
+// selected filter strictly and does NOT relax the bar to fill space.
+const EMPTY_STATE_COPY = "Not enough posts with definitive signal to surface topics here."
 
 // Header anchor label — short tag that snaps to whichever period chip is
 // selected. Deliberately minimal so it reads as a lightweight subtitle
@@ -105,7 +98,7 @@ function TopicSummaryList({
   if (!items.length) {
     return (
       <p className="py-4 text-sm text-muted-foreground">
-        No trending topics {periodEmptyLabel(period)}.
+        {EMPTY_STATE_COPY}
       </p>
     )
   }
