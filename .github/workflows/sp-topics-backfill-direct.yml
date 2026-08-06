@@ -1,0 +1,103 @@
+name: SP Topics Backfill Direct
+
+# 2026-08-05 — Direct DB-backed topics backfill, run inline on the droplet.
+#
+# Why not the API endpoint: the deployed uvicorn process has a stale import
+# of _step6_extract_topics that predates the `target_day` kwarg, so every
+# API-call attempt throws TypeError. This runs backend/scripts/
+# backfill_topics_directly.py in a FRESH Python process using the droplet's
+# venv, which sees the current on-disk code.
+#
+# Acceptance criteria (per lessons.md 2026-08-05 evening):
+#   1. sentiment_records with topics != [] count > 0 within the N-day window
+#   2. daily_summaries with top_*_topics populated > 0 within the same window
+#
+# Ground-truth check:
+#   Reported directly in workflow output as psql COUNT(*) before + after.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Look-back window in days"
+        required: false
+        default: "30"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run inline backfill on droplet
+        env:
+          DAYS: ${{ inputs.days }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 DAYS="$DAYS" bash -s <<'REMOTEEOF'
+          set -uo pipefail
+
+          echo "── Ground truth: BEFORE ──"
+          sudo -u postgres psql -d sentimentpulse -c "
+            SELECT
+              (SELECT COUNT(*) FROM sentiment_records sr
+                JOIN raw_posts rp ON rp.id=sr.raw_post_id
+                WHERE jsonb_array_length(COALESCE(sr.topics,'[]'::jsonb)) > 0
+                  AND rp.post_date >= NOW() - ('${DAYS} days')::interval
+              ) AS sr_with_topics,
+              (SELECT COUNT(*) FROM daily_summaries
+                WHERE (COALESCE(array_length(top_positive_topics,1),0) > 0
+                    OR COALESCE(array_length(top_negative_topics,1),0) > 0
+                    OR COALESCE(array_length(top_neutral_topics,1),0) > 0)
+                  AND summary_date >= CURRENT_DATE - ${DAYS}
+              ) AS ds_with_topics;
+          "
+
+          echo ""
+          echo "── Pull latest script ──"
+          cd /opt/sentimentpulse
+          git pull --quiet origin main
+          ls -la backend/scripts/backfill_topics_directly.py
+
+          echo ""
+          echo "── Run the backfill (fresh Python, no uvicorn cache) ──"
+          cd /opt/sentimentpulse/backend
+          DAYS="$DAYS" .venv/bin/python scripts/backfill_topics_directly.py
+
+          echo ""
+          echo "── Ground truth: AFTER ──"
+          sudo -u postgres psql -d sentimentpulse -c "
+            SELECT
+              (SELECT COUNT(*) FROM sentiment_records sr
+                JOIN raw_posts rp ON rp.id=sr.raw_post_id
+                WHERE jsonb_array_length(COALESCE(sr.topics,'[]'::jsonb)) > 0
+                  AND rp.post_date >= NOW() - ('${DAYS} days')::interval
+              ) AS sr_with_topics,
+              (SELECT COUNT(*) FROM daily_summaries
+                WHERE (COALESCE(array_length(top_positive_topics,1),0) > 0
+                    OR COALESCE(array_length(top_negative_topics,1),0) > 0
+                    OR COALESCE(array_length(top_neutral_topics,1),0) > 0)
+                  AND summary_date >= CURRENT_DATE - ${DAYS}
+              ) AS ds_with_topics;
+          "
+
+          echo ""
+          echo "── Top 10 games by populated-topic count ──"
+          sudo -u postgres psql -d sentimentpulse -c "
+            SELECT g.name, COUNT(DISTINCT sr.id) AS records_with_topics
+            FROM sentiment_records sr
+            JOIN raw_posts rp ON rp.id = sr.raw_post_id
+            JOIN games g ON g.id = rp.game_id
+            WHERE jsonb_array_length(COALESCE(sr.topics,'[]'::jsonb)) > 0
+              AND rp.post_date >= NOW() - ('${DAYS} days')::interval
+            GROUP BY g.name
+            ORDER BY records_with_topics DESC
+            LIMIT 10;
+          "
+          REMOTEEOF
