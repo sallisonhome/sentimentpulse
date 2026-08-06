@@ -1,7 +1,8 @@
 name: SP Debug Import
 # Introspect the LIVE process to see what module + version of _step6 is actually loaded.
 
-on: {workflow_dispatch:}
+on:
+  workflow_dispatch:
 
 jobs:
   debug:
