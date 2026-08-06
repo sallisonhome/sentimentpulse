@@ -285,6 +285,117 @@ class TestCacheTTL:
 
 # ── Boilerplate stripping (2026-08-05 followup) ─────────────────────────
 
+class TestFollowUpLeaksBlocked:
+    """2026-08-06 (evening follow-up): after the light-verb + game-name pass,
+    ground-truth check surfaced new leak classes:
+      * Interrogatives: What, Why, Who, How, Where, When
+      * Conjunctions: Because, Since, Though, However, Actually
+      * Contractions: It's, That's, There's
+      * Generic actors: People, Everyone, Someone
+
+    All four are structural (whole-vocabulary-category present in nearly
+    every post) — same shape as the earlier leaks. Add each category to
+    the stopword set BEFORE clustering.
+    """
+
+    @pytest.mark.parametrize("forbidden", [
+        # Interrogatives
+        "what", "why", "who", "how", "where", "when", "which",
+        "whats", "what's",
+        # Conjunctions / discourse markers
+        "because", "since", "though", "although", "while", "whereas",
+        "however", "moreover", "therefore", "instead",
+        "btw", "tbh", "imo",
+        # Contractions
+        "its", "it's", "thats", "that's", "theres", "there's",
+        "theyre", "they're",
+        # Generic actors
+        "people", "person", "everyone", "everybody", "someone",
+        "folks", "guys", "dude", "family", "team",
+    ])
+    def test_new_leak_class_word_not_in_ngrams(self, forbidden):
+        from services.dashboard_feedback_synthesizer import _extract_content_ngrams
+        text = f"{forbidden} the matchmaking design in this patch update"
+        ngrams = _extract_content_ngrams(text)
+        assert forbidden not in ngrams, (
+            f"leak-class word {forbidden!r} still reaches ngrams; "
+            f"add it to the relevant _INTERROGATIVES / _CONJUNCTIONS / "
+            f"_CONTRACTIONS / _GENERIC_ACTORS set."
+        )
+
+    def test_end_to_end_cluster_label_not_interrogative(self):
+        """Even if 'What' is the most-frequent shared word across posts,
+        the cluster must fall through to the specific-aspect phrase."""
+        from services.dashboard_feedback_synthesizer import (
+            _cluster_posts_by_shared_phrase,
+        )
+        posts = [
+            "What is going on with the matchmaking, keeps giving me bots",
+            "What happened to matchmaking, it puts me with Prestige 5",
+            "What is wrong with the matchmaking today, terrible pairing",
+            "What the hell, matchmaking is broken again",
+        ]
+        clusters = _cluster_posts_by_shared_phrase(posts, min_posts_per_cluster=3)
+        assert clusters
+        top_label = clusters[0][0]
+        assert not top_label.lower().startswith("what"), (
+            f"interrogative-led label: {top_label!r}"
+        )
+        assert "matchmaking" in top_label.lower()
+
+    def test_end_to_end_cluster_label_not_contraction(self):
+        """Posts starting with contractions must not produce contraction labels."""
+        from services.dashboard_feedback_synthesizer import (
+            _cluster_posts_by_shared_phrase,
+        )
+        posts = [
+            "It's the campaign story that hooked me, honestly incredible",
+            "It's the campaign story pacing that impressed me the most",
+            "It's the campaign story emotional beats that hit hardest",
+            "It's the campaign story remaster quality that shines",
+        ]
+        clusters = _cluster_posts_by_shared_phrase(posts, min_posts_per_cluster=3)
+        assert clusters
+        top_label = clusters[0][0]
+        assert not top_label.lower().startswith("it"), (
+            f"contraction-led label: {top_label!r}"
+        )
+        assert "campaign" in top_label.lower() or "story" in top_label.lower()
+
+
+class TestPhraseLeadSafetyValve:
+    """The _phrase_lead_is_valid function is the last-line safety valve.
+    Even if a new leak class appears that isn't yet in any _STOPWORDS
+    subset, this function must catch it before it becomes a widget label.
+    """
+
+    def test_valid_lead_word_passes(self):
+        from services.dashboard_feedback_synthesizer import _phrase_lead_is_valid
+        assert _phrase_lead_is_valid("matchmaking issues", set()) is True
+        assert _phrase_lead_is_valid("prestige grind", set()) is True
+
+    def test_stopword_lead_rejected(self):
+        from services.dashboard_feedback_synthesizer import _phrase_lead_is_valid
+        # 'the' is a base stopword.
+        assert _phrase_lead_is_valid("the matchmaking", set()) is False
+
+    def test_interrogative_lead_rejected(self):
+        from services.dashboard_feedback_synthesizer import _phrase_lead_is_valid
+        assert _phrase_lead_is_valid("what the hell matchmaking", set()) is False
+
+    def test_game_name_lead_rejected(self):
+        from services.dashboard_feedback_synthesizer import _phrase_lead_is_valid
+        assert _phrase_lead_is_valid("halo campaign", {"halo"}) is False
+
+    def test_two_letter_lead_rejected(self):
+        from services.dashboard_feedback_synthesizer import _phrase_lead_is_valid
+        assert _phrase_lead_is_valid("lo settings", set()) is False
+
+    def test_empty_phrase_rejected(self):
+        from services.dashboard_feedback_synthesizer import _phrase_lead_is_valid
+        assert _phrase_lead_is_valid("", set()) is False
+
+
 class TestLightVerbsBlockedFromLabels:
     """2026-08-06 (afternoon): user caught 'Can', 'Get', 'Come' as labels
     on SnowRunner / Halloween in the portfolio check. Modal verbs and

@@ -146,6 +146,48 @@ someone anyone everyone nothing something anything everything
 """.split())
 _STOPWORDS.update(_LIGHT_VERBS)
 
+# 2026-08-06 (evening, follow-up): after the light-verb + game-name pass,
+# ground-truth audit showed labels still leading with interrogatives,
+# conjunctions, contractions, and generic actor nouns:
+#   SM2 positive:   "It's"       (contraction)
+#   SM2 negative:   "Because"    (conjunction)
+#   Halo MCC neu:   "What", "Why", "Mcc" (interrogatives + own-name)
+#   Halloween pos:  "People"     (generic actor)
+#   Halloween neu:  "Who"        (interrogative)
+#   SH Townfall:    "How"        (interrogative)
+#
+# Same structural class of bug as "Like/Can/Get": category-wide vocabulary
+# that carries no game-specific meaning but appears in nearly every post.
+# Add each category to the stopword set BEFORE clustering.
+_INTERROGATIVES = set("""
+what why who how where when which whose whom
+whats what's whys why's whos who's hows how's whats what's
+""".split())
+_CONJUNCTIONS = set("""
+because since though although while whereas however moreover furthermore
+nevertheless nonetheless therefore thus hence otherwise instead
+meanwhile similarly likewise conversely accordingly consequently
+btw fwiw imo imho tbh idk yea yeah nope nah
+""".split())
+_CONTRACTIONS = set("""
+its it's thats that's theres there's heres here's
+theyre they're were we're youre you're
+id i'd hed he'd shed she'd wed we'd theyd they'd
+ill i'll hell he'll shell she'll well we'll theyll they'll
+ive i've youve you've hes he's shes she's
+""".split())
+_GENERIC_ACTORS = set("""
+people person everybody everyone somebody someone anybody anyone
+nobody noone folks guys guy dude dudes friend friends man men
+woman women kid kids child children family families team teams
+""".split())
+# Note: some of these (someone, anyone, everyone, nothing, something) are
+# already in _LIGHT_VERBS — duplicates in set unions are harmless.
+_STOPWORDS.update(_INTERROGATIVES)
+_STOPWORDS.update(_CONJUNCTIONS)
+_STOPWORDS.update(_CONTRACTIONS)
+_STOPWORDS.update(_GENERIC_ACTORS)
+
 # 2026-08-06: block opinion-marker words from becoming cluster LABELS.
 #
 # The opinion+specificity filter admits a post only if it contains one of
@@ -244,6 +286,28 @@ def _extract_content_ngrams(text: str, game_name_tokens: set[str] = frozenset())
     return ngrams
 
 
+def _phrase_lead_is_valid(phrase: str, game_name_tokens: set[str]) -> bool:
+    """Belt-and-suspenders: a cluster phrase must not LEAD with a stopword,
+    a game-name token, or any word already banned above.
+
+    The ngram extractor already strips these before phrases are built, but
+    this guard exists so that a new leak class (whatever appears next in
+    the wild) doesn't produce a broken label until a second commit lands.
+    A phrase failing this check is simply skipped, and the clusterer falls
+    through to the next-most-frequent phrase.
+    """
+    if not phrase:
+        return False
+    head = phrase.split()[0].lower()
+    if head in _STOPWORDS or head in game_name_tokens:
+        return False
+    # Also require the head to be at least 3 chars — avoids weird 2-letter
+    # abbreviations creeping in as label heads.
+    if len(head) < 3:
+        return False
+    return True
+
+
 def _cluster_posts_by_shared_phrase(
     posts: list[str],
     *,
@@ -275,10 +339,14 @@ def _cluster_posts_by_shared_phrase(
     )
 
     # Greedy assignment: consume post indices; a post enters the first
-    # cluster whose phrase it contains.
+    # cluster whose phrase it contains. Phrases failing the lead-word
+    # guard are skipped entirely (their posts remain available for the
+    # next candidate phrase).
     used_posts: set[int] = set()
     clusters: list[tuple[str, list[int]]] = []
     for phrase, post_ids in ranked:
+        if not _phrase_lead_is_valid(phrase, gtokens):
+            continue
         available = [pid for pid in post_ids if pid not in used_posts]
         if len(available) < min_posts_per_cluster:
             continue
