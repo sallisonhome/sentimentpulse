@@ -188,6 +188,85 @@ jobs:
           probe "GetChangedDatesForPartner hwm=1" \
             "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}&highwatermark=1"
 
+          # ─── v7 (2026-08-11 evening): raw-headers dump ───────────────
+          # User says the key CAN see financial data in portal. Something
+          # about our request is being rejected silently. Dump the raw
+          # HTTP response headers (esp. x-eresult, x-error_message) which
+          # Valve uses to signal per-endpoint errors even under 200 OK.
+          echo ""
+          echo "── RAW HEADERS on GetDetailedSales (look for x-eresult, x-error_message) ──"
+          curl -sSD - -o /tmp/body_sales.txt --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=0&include_view_grants=true" \
+            | head -c 2000
+          echo ""
+          echo "  body: $(head -c 400 /tmp/body_sales.txt)"
+          echo
+
+          echo "── RAW HEADERS on GetAppWishlistReporting (CONTROL, works) ──"
+          curl -sSD - -o /tmp/body_wl.txt --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/?key=${KEY}&appid=${APPID}&date=${DATE}" \
+            | head -c 2000
+          echo ""
+          echo "  body: $(head -c 400 /tmp/body_wl.txt)"
+          echo
+
+          echo "── RAW HEADERS on GetChangedDatesForPartner (should list all dates ever) ──"
+          curl -sSD - -o /tmp/body_gcd.txt --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}&highwatermark=0" \
+            | head -c 2000
+          echo ""
+          echo "  body: $(head -c 400 /tmp/body_gcd.txt)"
+          echo
+
+          # Try with 'appid' param (which is not documented but wishlist requires it).
+          echo "── GetDetailedSales WITH appid=${APPID} (undocumented but try) ──"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&appid=${APPID}&date=2025-09-15&highwatermark_id=0" \
+            | head -c 800
+          echo
+          echo
+
+          # Try with 'partnerid' (docs example shows partnerid in response — maybe input too?)
+          echo "── GetDetailedSales WITH partnerid=10500 (test docs example value) ──"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&partnerid=10500&date=2025-09-15&highwatermark_id=0" \
+            | head -c 800
+          echo
+          echo
+
+          # x-webapi-key header instead of query param — docs say this works
+          echo "── GetDetailedSales via x-webapi-key HEADER (not query) ──"
+          curl -sS --max-time 15 \
+            -H "x-webapi-key: ${KEY}" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?date=2025-09-15&highwatermark_id=0" \
+            | head -c 800
+          echo
+          echo
+
+          # format=json param — check if response format is off
+          echo "── GetDetailedSales with format=json ──"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=0&format=json" \
+            | head -c 800
+          echo
+          echo
+
+          # POST body instead of query params
+          echo "── GetDetailedSales as POST with form body ──"
+          curl -sS -X POST --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/" \
+            -d "key=${KEY}&date=2025-09-15&highwatermark_id=0" \
+            | head -c 800
+          echo
+          echo
+
+          # GetPartnerAppListForWebAPIKey — tells us which apps the key sees
+          echo "── GetPartnerAppListForWebAPIKey (which apps does this key see?) ──"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/ISteamApps/GetPartnerAppListForWebAPIKey/v2/?key=${KEY}" \
+            | head -c 1500
+          echo
+
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
           echo ""
