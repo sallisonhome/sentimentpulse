@@ -32,6 +32,8 @@ interface TimeSeriesChartProps {
   milestones: MilestoneAnnotation[];
   title: string;
   color: string;
+  releaseDate?: string | null;   // v3.3: draw a distinct 'Release' marker
+  showsReleaseDate?: boolean;    // v3.3: gate the release marker (default false)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -177,7 +179,14 @@ function MilestoneHoverOverlay({
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function TimeSeriesChart({ data, milestones, title, color }: TimeSeriesChartProps) {
+export function TimeSeriesChart({
+  data,
+  milestones,
+  title,
+  color,
+  releaseDate,
+  showsReleaseDate = false,
+}: TimeSeriesChartProps) {
   const [range, setRange] = useState<DateRange>("all");
 
   // Filter data by date range
@@ -188,14 +197,28 @@ export function TimeSeriesChart({ data, milestones, title, color }: TimeSeriesCh
     return data.filter((d) => parseISO(d.date) >= cutoff);
   }, [data, range]);
 
-  // Format dates for display
+  // Format dates for display.
+  // v3.3 (2026-08-11): when the visible range spans more than one year (very
+  // common for post-launch titles + backfills), append the year so viewers
+  // don't have to guess which year each label refers to. Two rules:
+  //   - If the series crosses multiple calendar years — always show 'yy suffix
+  //   - Otherwise — keep the short 'MMM d' format
+  const spansMultipleYears = useMemo(() => {
+    if (filteredData.length === 0) return false;
+    const firstYear = filteredData[0].date.slice(0, 4);
+    const lastYear = filteredData[filteredData.length - 1].date.slice(0, 4);
+    return firstYear !== lastYear;
+  }, [filteredData]);
+
   const chartData = useMemo(
     () =>
       filteredData.map((d) => ({
         ...d,
-        displayDate: format(new Date(d.date + "T00:00:00"), "MMM d"),
+        displayDate: spansMultipleYears
+          ? format(new Date(d.date + "T00:00:00"), "MMM ''yy")
+          : format(new Date(d.date + "T00:00:00"), "MMM d"),
       })),
-    [filteredData]
+    [filteredData, spansMultipleYears]
   );
 
   // Only milestones with actualDate set
@@ -203,6 +226,51 @@ export function TimeSeriesChart({ data, milestones, title, color }: TimeSeriesCh
     () => milestones.filter((m) => m.actualDate != null),
     [milestones]
   );
+
+  // v3.3: find the chart-data point that matches (or is nearest to) the
+  // release date, so we can draw a distinct release-date reference line.
+  // Returns null when releaseDate is outside the currently-visible window.
+  const releaseDatePoint = useMemo(() => {
+    if (!showsReleaseDate || !releaseDate || chartData.length === 0) return null;
+    // Exact match first
+    const exact = chartData.find((d) => d.date === releaseDate);
+    if (exact) return exact;
+    // Nearest — useful when release day itself has no telemetry point
+    // (e.g. Steamworks reports weekly, or a portal monthly rollup lands on
+    // the last day of month rather than release day).
+    const rdMs = new Date(releaseDate + "T00:00:00").getTime();
+    let best: { date: string; displayDate: string } | null = null;
+    let bestDelta = Infinity;
+    for (const d of chartData) {
+      const delta = Math.abs(new Date(d.date + "T00:00:00").getTime() - rdMs);
+      if (delta < bestDelta) { bestDelta = delta; best = d; }
+    }
+    return best;
+  }, [showsReleaseDate, releaseDate, chartData]);
+
+  const RELEASE_COLOR = "#DC2626"; // red-600 — loud enough to stand out from milestone lines
+
+  // Custom SVG label for the release marker (mirrors MilestoneLabel style).
+  const ReleaseLabel = ({ viewBox }: { viewBox?: { x?: number; y?: number } }) => {
+    const x = viewBox?.x ?? 0;
+    const y = viewBox?.y ?? 0;
+    return (
+      <g>
+        <text
+          x={x}
+          y={y + 4}
+          fill={RELEASE_COLOR}
+          fontSize={10}
+          fontWeight={700}
+          textAnchor="start"
+          transform={`rotate(-45, ${x}, ${y + 4})`}
+          style={{ pointerEvents: "none" }}
+        >
+          Release
+        </text>
+      </g>
+    );
+  };
 
   // Find milestones within date range
   const visibleMilestones = useMemo(() => {
@@ -327,6 +395,16 @@ export function TimeSeriesChart({ data, milestones, title, color }: TimeSeriesCh
                       />
                     );
                   })}
+                  {releaseDatePoint && (
+                    <ReferenceLine
+                      key="release-cum"
+                      x={releaseDatePoint.displayDate}
+                      stroke={RELEASE_COLOR}
+                      strokeWidth={2}
+                      strokeOpacity={0.9}
+                      label={<ReleaseLabel />}
+                    />
+                  )}
                   <Area
                     type="monotone"
                     dataKey="cumulativeCount"
@@ -378,6 +456,15 @@ export function TimeSeriesChart({ data, milestones, title, color }: TimeSeriesCh
                     />
                   );
                 })}
+                {releaseDatePoint && (
+                  <ReferenceLine
+                    key="release-delta"
+                    x={releaseDatePoint.displayDate}
+                    stroke={RELEASE_COLOR}
+                    strokeWidth={2}
+                    strokeOpacity={0.9}
+                  />
+                )}
                 <Bar
                   dataKey="dailyDelta"
                   fill={color}

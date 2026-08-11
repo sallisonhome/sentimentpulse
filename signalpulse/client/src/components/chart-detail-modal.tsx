@@ -24,6 +24,7 @@ interface ChartDetailModalProps {
   productId: number;
   productTitle: string;
   dataType: ChartDataType;
+  releaseDate?: string | null; // v3.3: passed through to draw release marker
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ function getLabelForType(dataType: ChartDataType): { section: string; platform: 
     case "steamWishlist":
       return { section: "Wishlist", platform: "Steam", color: "#2563EB" };
     case "steamPrepurchase":
-      return { section: "Pre-Purchase", platform: "Steam", color: "#2563EB" };
+      return { section: "Pre-Purchase + Sales", platform: "Steam", color: "#2563EB" };
     case "ps5Wishlist":
       return { section: "Wishlist", platform: "PS5", color: "#6366F1" };
     case "ps5Prepurchase":
@@ -76,6 +77,7 @@ export function ChartDetailModal({
   productId,
   productTitle,
   dataType,
+  releaseDate,
 }: ChartDetailModalProps) {
   const label = getLabelForType(dataType);
   const endpoint = getEndpointForType(productId, dataType);
@@ -146,6 +148,8 @@ export function ChartDetailModal({
               milestones={milestones}
               title={chartTitle}
               color={label.color}
+              releaseDate={releaseDate ?? null}
+              showsReleaseDate={true}
             />
           )}
         </div>

@@ -591,23 +591,73 @@ export async function registerRoutes(
 
   // ─── Steam Prepurchases ──────────────────────────────────────────────────────
 
+  // v3.3 (2026-08-11): steam/prepurchases now returns a MERGED series:
+  //   pre-release: daily prepurchase cumulative rows (from Steamworks API)
+  //   post-release: monthly steam_sales_daily rows (base + dlc), converted
+  //                 into a running cumulative unit total that continues from
+  //                 the last prepurchase datapoint
+  //
+  // This lets the pre-purchase chart become a continuous 'Pre-Purchase +
+  // Post-Release Sales' timeline with the release date as an even reference
+  // line dividing the two segments.
   app.get("/api/products/:id/steam/prepurchases", (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      // Only return data from the prepurchase start date onward
       const plsMilestones = storage.getPlsMilestones(id);
       const prepurchaseStart = plsMilestones.find(m => m.name === "Prepurchase Start");
       const prepurchaseStartDate = prepurchaseStart?.actualDate ?? null;
+      const releaseDate = storage.getProductReleaseDate(id);
 
-      if (!prepurchaseStartDate) {
-        // Prepurchase hasn't started — return empty array
-        return res.json([]);
+      // --- Pre-release segment (daily prepurchases) ---
+      let preReleasePoints: { date: string; cumulativeCount: number; dailyDelta: number }[] = [];
+      if (prepurchaseStartDate) {
+        const allPrepurchase = storage.getSteamPrepurchases(id);
+        // Only rows from prepurchase start through release date. Post-release
+        // prepurchase rows are historical noise that gets superseded by the
+        // sales series.
+        preReleasePoints = allPrepurchase
+          .filter(d => d.date >= prepurchaseStartDate && (!releaseDate || d.date <= releaseDate))
+          .map(d => ({
+            date: d.date,
+            cumulativeCount: d.cumulativeCount,
+            dailyDelta: d.dailyDelta,
+          }));
       }
 
-      const allData = storage.getSteamPrepurchases(id);
-      // Filter to only data on or after prepurchase start date
-      const filtered = allData.filter(d => d.date >= prepurchaseStartDate);
-      res.json(filtered);
+      // --- Post-release segment (monthly sales rows) ---
+      // Only base + dlc net units are added to the cumulative running total;
+      // 'other' (soundtrack, artbook) is excluded.
+      let postReleasePoints: { date: string; cumulativeCount: number; dailyDelta: number }[] = [];
+      if (releaseDate) {
+        const salesRows = storage.getSteamSales(id, { since: releaseDate });
+
+        // Aggregate rows to (date -> net units) by summing base + dlc for that date.
+        const perDate = new Map<string, number>();
+        for (const r of salesRows) {
+          if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
+          perDate.set(r.date, (perDate.get(r.date) ?? 0) + r.netUnits);
+        }
+
+        // Starting cumulative: end of prepurchase segment (if any), else 0.
+        let running = preReleasePoints.length > 0
+          ? preReleasePoints[preReleasePoints.length - 1].cumulativeCount
+          : 0;
+
+        const sortedDates = Array.from(perDate.keys()).sort();
+        for (const date of sortedDates) {
+          const units = perDate.get(date)!;
+          running += units;
+          postReleasePoints.push({
+            date,
+            cumulativeCount: running,
+            dailyDelta: units,  // 'delta for the period' — the bar chart will render as monthly bar
+          });
+        }
+      }
+
+      // Merge — pre-release comes first, then post-release.
+      const merged = [...preReleasePoints, ...postReleasePoints];
+      res.json(merged);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

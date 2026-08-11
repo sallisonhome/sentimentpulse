@@ -532,6 +532,7 @@ export default function ProductDetail() {
           productId={productId}
           productTitle={product.title}
           dataType={chartModal.type}
+          releaseDate={product.releaseDate ?? null}
         />
       )}
     </div>
