@@ -210,16 +210,49 @@ export function TimeSeriesChart({
     return firstYear !== lastYear;
   }, [filteredData]);
 
-  const chartData = useMemo(
-    () =>
-      filteredData.map((d) => ({
-        ...d,
-        displayDate: spansMultipleYears
-          ? format(new Date(d.date + "T00:00:00"), "MMM ''yy")
-          : format(new Date(d.date + "T00:00:00"), "MMM d"),
-      })),
-    [filteredData, spansMultipleYears]
-  );
+  // v3.3.1 (2026-08-11): inject a synthetic datapoint at the release date if
+  // one doesn't already exist. This lets ReferenceLine anchor the marker at
+  // the true release day (e.g. Sept 9) even when the underlying series has
+  // gaps around that day (weekly telemetry, monthly rollups, etc.).
+  //
+  // The synthetic point has null values (so it doesn't affect the area/bar
+  // shapes when connectNulls is set to false — which is the default) and a
+  // unique displayDate that ReferenceLine can target.
+  const RELEASE_MARKER_KEY = "__release_marker__";
+
+  const chartData = useMemo(() => {
+    const dateFmt = (isoDate: string) => spansMultipleYears
+      ? format(new Date(isoDate + "T00:00:00"), "MMM ''yy")
+      : format(new Date(isoDate + "T00:00:00"), "MMM d");
+
+    const base = filteredData.map((d) => ({
+      ...d,
+      displayDate: dateFmt(d.date),
+      isReleaseMarker: false as boolean,
+    }));
+
+    if (!showsReleaseDate || !releaseDate || base.length === 0) return base;
+
+    // If any existing point already sits on the release date, don't inject.
+    const exact = base.find((d) => d.date === releaseDate);
+    if (exact) return base;
+
+    // Release date outside the visible window — leave the array alone.
+    if (releaseDate < base[0].date || releaseDate > base[base.length - 1].date) return base;
+
+    // Inject synthetic marker at the release date; sort by date so it lands
+    // in the right slot. Use `null as any` values so Recharts renders a gap
+    // rather than plotting a 0-value point that would drag the line down.
+    const marker = {
+      date: releaseDate,
+      cumulativeCount: null as any,
+      dailyDelta: null as any,
+      displayDate: RELEASE_MARKER_KEY, // unique category value for ReferenceLine
+      isReleaseMarker: true,
+    };
+    const merged = [...base, marker].sort((a, b) => a.date.localeCompare(b.date));
+    return merged;
+  }, [filteredData, spansMultipleYears, showsReleaseDate, releaseDate]);
 
   // Only milestones with actualDate set
   const activeMilestones = useMemo(
@@ -227,25 +260,14 @@ export function TimeSeriesChart({
     [milestones]
   );
 
-  // v3.3: find the chart-data point that matches (or is nearest to) the
-  // release date, so we can draw a distinct release-date reference line.
-  // Returns null when releaseDate is outside the currently-visible window.
+  // v3.3.1 (2026-08-11): resolve the ReferenceLine anchor — either the real
+  // datapoint's displayDate (if release day has telemetry) or the synthetic
+  // marker's displayDate (if we injected one above).
   const releaseDatePoint = useMemo(() => {
     if (!showsReleaseDate || !releaseDate || chartData.length === 0) return null;
-    // Exact match first
-    const exact = chartData.find((d) => d.date === releaseDate);
-    if (exact) return exact;
-    // Nearest — useful when release day itself has no telemetry point
-    // (e.g. Steamworks reports weekly, or a portal monthly rollup lands on
-    // the last day of month rather than release day).
-    const rdMs = new Date(releaseDate + "T00:00:00").getTime();
-    let best: { date: string; displayDate: string } | null = null;
-    let bestDelta = Infinity;
-    for (const d of chartData) {
-      const delta = Math.abs(new Date(d.date + "T00:00:00").getTime() - rdMs);
-      if (delta < bestDelta) { bestDelta = delta; best = d; }
-    }
-    return best;
+    const target = chartData.find((d) => d.date === releaseDate);
+    if (!target) return null;
+    return { displayDate: target.displayDate };
   }, [showsReleaseDate, releaseDate, chartData]);
 
   const RELEASE_COLOR = "#DC2626"; // red-600 — loud enough to stand out from milestone lines
@@ -320,6 +342,9 @@ export function TimeSeriesChart({
     tickLine: false,
     axisLine: false,
     interval: Math.max(0, Math.floor(chartData.length / 6) - 1),
+    // Hide the sentinel category value used by the release marker so it
+    // doesn't show up as an odd '__release_marker__' tick on the axis.
+    tickFormatter: (val: string) => (val === RELEASE_MARKER_KEY ? "" : val),
   };
 
   const yAxisProps = {
@@ -413,6 +438,7 @@ export function TimeSeriesChart({
                     fill={`url(#grad-${color.replace("#", "")})`}
                     dot={false}
                     activeDot={{ r: 4, fill: color, strokeWidth: 0 }}
+                    connectNulls  // bridge across the synthetic release-marker gap
                   />
                 </AreaChart>
               </ResponsiveContainer>
