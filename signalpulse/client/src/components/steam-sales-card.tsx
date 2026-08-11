@@ -89,7 +89,7 @@ export function SteamSalesCard({ productId }: Props) {
       const csv = await file.text();
       // POST as text/csv so express.text() picks it up. apiRequest defaults
       // to JSON — we need a hand-rolled fetch for raw body.
-      const url = `/api/products/${productId}/steam/sales-upload?filename=${encodeURIComponent(file.name)}`;
+      const url = `./api/products/${productId}/steam/sales-upload?filename=${encodeURIComponent(file.name)}`;
       const resp = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "text/csv" },
@@ -110,7 +110,7 @@ export function SteamSalesCard({ productId }: Props) {
 
   const deleteBatchMutation = useMutation({
     mutationFn: async (batchId: string) => {
-      const resp = await fetch(`/api/steam/sales-batch/${batchId}`, { method: "DELETE" });
+      const resp = await fetch(`./api/steam/sales-batch/${batchId}`, { method: "DELETE" });
       if (!resp.ok) throw new Error(`Failed to delete batch: ${resp.status}`);
       return (await resp.json()) as { batchId: string; rowsDeleted: number };
     },
@@ -125,7 +125,7 @@ export function SteamSalesCard({ productId }: Props) {
   // products whose CSV export is empty (e.g. Focus-published SM2).
   const portalFetchMutation = useMutation({
     mutationFn: async (params: { dateStart?: string; dateEnd?: string } = {}) => {
-      const resp = await fetch(`/api/products/${productId}/steam/portal-fetch`, {
+      const resp = await fetch(`./api/products/${productId}/steam/portal-fetch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),

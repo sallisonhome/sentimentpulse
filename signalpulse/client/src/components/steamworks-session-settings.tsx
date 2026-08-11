@@ -60,7 +60,7 @@ export function SteamworksSessionSettings() {
     mutationFn: async () => {
       const finalCookieValue = cookieMode === "fields" ? assembleCookieString() : cookieValue.trim();
       if (!finalCookieValue) throw new Error("Nothing to save");
-      const resp = await fetch("/api/steam/session", {
+      const resp = await fetch("./api/steam/session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cookieValue: finalCookieValue, loggedInAs: loggedInAs.trim() || null }),
@@ -80,7 +80,7 @@ export function SteamworksSessionSettings() {
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
-      const resp = await fetch("/api/steam/session", { method: "DELETE" });
+      const resp = await fetch("./api/steam/session", { method: "DELETE" });
       if (!resp.ok) throw new Error(await resp.text());
       return resp.json();
     },
@@ -94,13 +94,13 @@ export function SteamworksSessionSettings() {
       // Test with a 1-day window (yesterday) so it's a small fetch
       const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
       // Find product by steamAppId (naive — we don't have a lookup endpoint)
-      const productsResp = await fetch("/api/products");
+      const productsResp = await fetch("./api/products");
       const products = await productsResp.json();
       const targetAppId = Number(testAppId);
       const product = products.find((p: any) => Number(p.steamAppId) === targetAppId);
       if (!product) throw new Error(`No product found with steamAppId=${testAppId}`);
 
-      const resp = await fetch("/api/steam/portal/test-fetch", {
+      const resp = await fetch("./api/steam/portal/test-fetch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ productId: product.id, dateStart: yesterday, dateEnd: yesterday }),
