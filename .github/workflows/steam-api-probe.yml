@@ -267,6 +267,66 @@ jobs:
             | head -c 1500
           echo
 
+          # ─── v8 (2026-08-11 evening): Bus Bound vs SM2 side-by-side ───
+          # User confirmed CSV export DOES return real Bus Bound sales.
+          # Test whether GetDetailedSales also returns Bus Bound sales.
+          # If yes: our SM2 issue is publisher-scope; sales API works for
+          # titles Mad Dog owns.
+          # If no: sales API is broken for the whole key regardless of app,
+          # confirming Financial API Group needed.
+          echo ""
+          echo "── GetDetailedSales for Bus Bound (appid 2095420) launch dates ──"
+          # Bus Bound is currently in early access / launched — recent dates
+          # in the past week should have real sales per user's CSV.
+          for D in 2026-08-04 2026-08-07 2026-08-10; do
+            echo "[$D]"
+            curl -sS --max-time 15 \
+              "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${D}&highwatermark_id=0" \
+              | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    r = d.get('response', {})
+    results = r.get('results') or []
+    max_id = r.get('max_id')
+    print(f'  keys={sorted(r.keys())}, results_count={len(results)}, max_id={max_id}')
+    if results:
+        print(f'  first result: {json.dumps(results[0])[:300]}')
+        # count Bus Bound rows
+        bb_rows = [x for x in results if x.get('appid') == 2095420 or x.get('primary_appid') == 2095420]
+        sm_rows = [x for x in results if x.get('appid') == 2183900 or x.get('primary_appid') == 2183900]
+        print(f'  Bus Bound rows: {len(bb_rows)}, SM2 rows: {len(sm_rows)}')
+except Exception as e:
+    print(f'  parse err: {e}')
+"
+          done
+          echo
+
+          echo "── Bus Bound WISHLIST as control (should work) ──"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/?key=${KEY}&appid=2095420&date=2026-08-07" \
+            | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    s = (d.get('response') or {}).get('wishlist_summary')
+    if s:
+        print(f'  WORKS: adds={s.get(\"wishlist_adds\")}, deletes={s.get(\"wishlist_deletes\")}, purchases={s.get(\"wishlist_purchases\")}')
+    else:
+        print(f'  EMPTY response: {json.dumps(d)[:200]}')
+except Exception as e:
+    print(f'  parse err: {e}')
+"
+          echo
+
+          echo "── GetDetailedSales raw HEADERS for Bus Bound date 2026-08-07 ──"
+          curl -sSD - -o /tmp/body_bb.txt --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2026-08-07&highwatermark_id=0" \
+            | head -c 800
+          echo ""
+          echo "  body: $(head -c 400 /tmp/body_bb.txt)"
+          echo
+
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
           echo ""
