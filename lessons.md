@@ -6,6 +6,35 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-11 (signalpulse) — Wishlist card assumed products had a "Release" milestone; forecast multiplier scattered across files
+
+**What happened.** User asked to redesign the Steam Wishlist Count card in signalpulse's product-detail page to show pre-release + current counts side-by-side, with dynamic forecasts locked to the pre-release snapshot once a title has released. First deploy (v2.1) computed everything correctly on paper but the API returned `preLaunchNet=2,503,004, postLaunchNet=0` for Space Marine 2 (a title released 2024-09-09). Every wishlist row was being classified as pre-launch. Independent of that, the user then asked to raise the global first-month multiplier 0.20 → 0.27; grep found the number scattered in `forecast.ts` docstring, `forecast.ts` inline, `routes.ts` docstring, and `routes.ts` inline — 4 places, easy to skew.
+
+**Root cause of the classification bug.** `storage.getProductReleaseDate(id)` searched `plsMilestones` for a milestone named literally `"Release"` and returned `actualDate ?? null`. But the default PLS-milestone template ships only Announce / Product Page Live / Prepurchase Start / First Teaser / Official Trailer / Launch Trailer / Game Demo — no `"Release"` row. SM2's `products.release_date` column was set to `2024-09-09`, but the helper never looked there. Result: `releaseDate = null` → the summary computation's `if (releaseDate == null) { preLaunchNet = postLaunchNet; postLaunchNet = 0; }` fallback ran and misclassified every row.
+
+**Root cause of the multiplier sprawl.** `calculateDynamicForecastsFull` and `computeSteamFirstMonthForecast` each hard-coded `0.20` independently. Neither imported from the other. When the multiplier changed, two places had to be found and edited in sync — trivially skewable.
+
+**Additional issue found the same day.** SignalPulse's in-memory `backfillJobs = new Map<string, BackfillJob>()` registry does not survive process restarts. Every deploy today killed the SM2 backfill mid-run. The user's requests kept generating deploys, and the backfill never got a clean 22-minute window.
+
+**Fix.**
+- `storage.getProductReleaseDate` now: (1) check `plsMilestones.find(m => m.name === "Release")?.actualDate`; (2) fallback to `products.release_date` column. Documented precedence explicitly in the JSDoc.
+- `forecast.ts` now exports `const STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER = 0.27` at module scope. Both `calculateDynamicForecastsFull` (Steam first-month branch) and `routes.ts`'s `computeSteamFirstMonthForecast` import and use it. Single source of truth. Docstrings reference the constant name, not a hard-coded number.
+- New `getForecastingWishlistCount(summary, releaseDate)` helper in `routes.ts` returns `preLaunchNet` post-release (locked) or `lifetimeNet` pre-release (identical to pre-release by construction). Replaced ALL 5 call sites into `calculateDynamicForecasts` / `calculateDynamicForecastsFull` in `routes.ts` (list, detail, PATCH, GET /forecasts/dynamic, and the `steamWishlistCountUsed` stored-forecast field).
+- Card: pre-release + current counts always shown side-by-side; pre-release is the primary/larger metric because it drives forecasts; current has the day-over-day delta.
+- Dashboard card `Dyn.` columns broken into `Steam` + `All Platforms` sub-rows so viewers can see the WL → Steam Dyn (× 0.27) → All Platforms (via platform-mix expansion) chain.
+
+**Generalizable rules.**
+
+> **When adding a new value to a domain schema (e.g. a milestone template), any downstream helper that reads it MUST have a fallback for products created before the schema included that value.** The `"Release"` milestone isn't in the default PLS template; helpers that need a release date must fall back to `products.release_date`. Same rule applies to any new milestone name or column added later — check `getProduct*` helpers and audit them for null-fallbacks.
+>
+> **Any magic number that affects money or forecasts must live in ONE named constant.** If more than one file references the same multiplier / ratio / threshold, extract a `const` and import it. Tests should assert the constant is used, not the value. When a business rule changes (like 0.20 → 0.27), a single-file grep should surface the ONE line to change, not five.
+>
+> **In-memory job registries (`Map<jobId, Job>`) do not survive deploys.** For any backfill / long-running background job on this droplet, either (a) persist the job state to SQLite so it can resume after a restart, or (b) accept that any deploy during the run will lose the job and require a re-trigger, and never fire more than one deploy while a critical long-running job is active. The current signalpulse backfill route is category (b) — treat it that way and coordinate deploys accordingly.
+>
+> **Before assuming a per-product piece of data is missing, check ALL sources.** Products have both a `release_date` column AND a milestones table; audio/data ingestion tables have both `products.release_date` and per-day rows; product platform mix lives in both `products.platforms` and derived mix helpers. Grep the schema first, not just the primary source.
+
+---
+
 ## 2026-07-24 (evening) — Weak auto-generated keywords let franchise/word-collision noise corrupt ILL and Silent Hill: Townfall
 
 **What happened.** I added ILL (#138) and SILENT HILL: Townfall (#139) as competitors under Hellraiser, batch-added 22 and 25 subreddits, and ran an April→today backfill (14,805 raw Reddit posts). Post-backfill: ILL showed 15 posts monthly, Townfall showed 587. When the user asked "Are you sure ILL and game and ILL and Steam, Trailer and other game adjacent words didn’t get cut out by our rules," I audited via a new `/api/ingest/diag/game_records` endpoint and found the OPPOSITE problem: massive false-positive contamination.
