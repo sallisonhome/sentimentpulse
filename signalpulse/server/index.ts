@@ -17,10 +17,20 @@ app.use(
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
+    limit: "20mb", // large enough for wishlist backfill jobs
   }),
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// v3.0 (2026-08-11): accept raw CSV bodies for the Steam sales upload route.
+// Steamworks sales exports can grow large (years of daily-per-country rows),
+// so give this a generous limit. Both text/csv and text/plain are accepted
+// because browsers sometimes downgrade unknown MIME types.
+app.use(express.text({
+  type: ["text/csv", "text/plain", "application/vnd.ms-excel"],
+  limit: "50mb",
+}));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

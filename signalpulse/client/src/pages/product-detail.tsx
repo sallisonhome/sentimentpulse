@@ -12,7 +12,8 @@ import { Label } from "@/components/ui/label";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useState } from "react";
 import {
-  ArrowLeft, Edit2, ChevronDown, ChevronRight, Info, AlertTriangle, BarChart3, Plus, RefreshCw, Clock
+  ArrowLeft, Edit2, ChevronDown, ChevronRight, Info, AlertTriangle, BarChart3, Plus, RefreshCw, Clock,
+  Upload, DollarSign, Trash2
 } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
 import { AddProductDialog } from "@/components/add-product-dialog";
@@ -20,6 +21,7 @@ import { PLSSection } from "@/components/pls-section";
 import { DataInputDialog } from "@/components/data-input-dialog";
 import { ChartDetailModal, type ChartDataType } from "@/components/chart-detail-modal";
 import { SparklineChart, type TimeSeriesDataPoint } from "@/components/time-series-chart";
+import { SteamSalesCard } from "@/components/steam-sales-card";
 import { ALL_PLATFORMS } from "@shared/schema";
 import { useQuery as useChartQuery } from "@tanstack/react-query";
 
@@ -34,6 +36,7 @@ export default function ProductDetail() {
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     steamWishlist: true,
     steamPrepurchase: true,
+    steamSales: true,
     ps5Wishlist: true,
     ps5Prepurchase: true,
     ps5Forecast: true,
@@ -343,6 +346,18 @@ export default function ProductDetail() {
                 <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/prepurchases`} color="#2563EB" />
               </div>
             )}
+          </CollapsibleSection>
+        )}
+
+        {/* Steam Sales (CSV upload ingest v3.0) */}
+        {hasSteam && (
+          <CollapsibleSection
+            title="Steam Sales"
+            sectionKey="steamSales"
+            open={openSections.steamSales}
+            onToggle={toggleSection}
+          >
+            <SteamSalesCard productId={productId} />
           </CollapsibleSection>
         )}
 

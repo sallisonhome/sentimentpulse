@@ -4,6 +4,9 @@ import {
   type SteamWishlistDaily, type InsertSteamWishlist, steamWishlistDaily,
   type SteamWishlistReportingDaily, type InsertSteamWishlistReporting, steamWishlistReportingDaily,
   type SteamPrepurchaseDaily, type InsertSteamPrepurchase, steamPrepurchaseDaily,
+  type SteamSalesDaily, type InsertSteamSalesDaily, steamSalesDaily,
+  type SteamSalesUploadBatch, type InsertSteamSalesUploadBatch, steamSalesUploadBatches,
+  type SteamworksSession, type InsertSteamworksSession, steamworksSessions,
   type Ps5WishlistDaily, type InsertPs5Wishlist, ps5WishlistDaily,
   type Ps5PrepurchaseDaily, type InsertPs5Prepurchase, ps5PrepurchaseDaily,
   type DynamicForecastDaily, type InsertDynamicForecast, dynamicForecastsDaily,
@@ -100,6 +103,58 @@ function initializeDatabase() {
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS steam_prepurchase_unique ON steam_prepurchase_daily(product_id, date);
+
+    -- v3.0 (2026-08-11): Steam sales daily bucketed by SKU group.
+    -- Ingested via CSV upload (Saber-published) or portal fetch (Focus-
+    -- published like Space Marine 2). skuGroup ∈ {'base','dlc','other'}.
+    CREATE TABLE IF NOT EXISTS steam_sales_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      sku_group TEXT NOT NULL,
+      net_units INTEGER NOT NULL DEFAULT 0,
+      gross_units INTEGER NOT NULL DEFAULT 0,
+      returns INTEGER NOT NULL DEFAULT 0,
+      net_revenue_usd REAL NOT NULL DEFAULT 0,
+      gross_revenue_usd REAL NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'csv_upload',
+      batch_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS steam_sales_unique ON steam_sales_daily(product_id, date, sku_group);
+    CREATE INDEX IF NOT EXISTS steam_sales_batch_idx ON steam_sales_daily(batch_id);
+
+    -- Audit trail for each CSV upload; batch_id FK on steam_sales_daily.
+    CREATE TABLE IF NOT EXISTS steam_sales_upload_batches (
+      id TEXT PRIMARY KEY,
+      product_id INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      file_bytes INTEGER NOT NULL,
+      report_date_start TEXT,
+      report_date_end TEXT,
+      publisher_name TEXT,
+      rows_parsed INTEGER NOT NULL DEFAULT 0,
+      rows_ingested INTEGER NOT NULL DEFAULT 0,
+      rows_skipped INTEGER NOT NULL DEFAULT 0,
+      skipped_reason TEXT,
+      uploaded_by TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE INDEX IF NOT EXISTS steam_sales_batches_product_idx ON steam_sales_upload_batches(product_id, created_at DESC);
+
+    -- Steamworks session cookies for portal-page fetcher (Focus titles).
+    CREATE TABLE IF NOT EXISTS steamworks_sessions (
+      id TEXT PRIMARY KEY,
+      cookie_value TEXT NOT NULL,
+      logged_in_as TEXT,
+      last_verified_at TEXT,
+      last_verified_result TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS ps5_wishlist_daily (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,6 +284,26 @@ export interface SteamWishlistSummary {
   rowCount: number;
 }
 
+/**
+ * Rolled-up sales summary for a product. Splits base-game SKUs from DLCs
+ * per the user-locked rule 2026-08-11: 'main SKUs cumulative, DLCs not'.
+ * All numbers are lifetime totals across ingested rows.
+ */
+export interface SteamSalesSummary {
+  baseNetUnits: number;
+  baseGrossUnits: number;
+  baseReturns: number;
+  baseNetRevenueUsd: number;
+  dlcNetUnits: number;
+  dlcNetRevenueUsd: number;
+  otherNetUnits: number;
+  otherNetRevenueUsd: number;
+  firstDate: string | null;
+  latestDate: string | null;
+  rowCount: number;
+  sourceMix: Record<string, number>; // e.g. { csv_upload: 42, portal_fetch: 7 }
+}
+
 // ─── Storage Interface ───────────────────────────────────────────────────────
 
 export interface IStorage {
@@ -267,6 +342,22 @@ export interface IStorage {
   getSteamPrepurchases(productId: number): SteamPrepurchaseDaily[];
   getLatestSteamPrepurchase(productId: number): SteamPrepurchaseDaily | undefined;
   addSteamPrepurchase(data: InsertSteamPrepurchase): SteamPrepurchaseDaily;
+
+  // Steam Sales (v3.0 — CSV upload + portal fetch ingest)
+  getSteamSales(productId: number, opts?: { since?: string; until?: string }): SteamSalesDaily[];
+  getSteamSalesSummary(productId: number): SteamSalesSummary;
+  upsertSteamSalesRows(rows: InsertSteamSalesDaily[]): { inserted: number; updated: number };
+  deleteSteamSalesByBatch(batchId: string): number;
+
+  // Steam Sales upload batches (audit trail for CSV uploads)
+  createSteamSalesUploadBatch(data: InsertSteamSalesUploadBatch): SteamSalesUploadBatch;
+  getSteamSalesUploadBatches(productId: number): SteamSalesUploadBatch[];
+  getSteamSalesUploadBatch(id: string): SteamSalesUploadBatch | undefined;
+
+  // Steamworks session cookies (for Focus portal fetcher)
+  getSteamworksSession(id: string): SteamworksSession | undefined;
+  upsertSteamworksSession(data: InsertSteamworksSession): SteamworksSession;
+  deleteSteamworksSession(id: string): boolean;
 
   // PS5 Wishlists
   getPs5Wishlists(productId: number): Ps5WishlistDaily[];
@@ -621,6 +712,185 @@ export class DatabaseStorage implements IStorage {
       }
       throw err;
     }
+  }
+
+  // ─── Steam Sales (v3.0) ──────────────────────────────────────────────
+
+  getSteamSales(
+    productId: number,
+    opts?: { since?: string; until?: string },
+  ): SteamSalesDaily[] {
+    const conds = [eq(steamSalesDaily.productId, productId)];
+    if (opts?.since) conds.push(gte(steamSalesDaily.date, opts.since));
+    if (opts?.until) conds.push(lte(steamSalesDaily.date, opts.until));
+    return db.select().from(steamSalesDaily)
+      .where(and(...conds))
+      .orderBy(asc(steamSalesDaily.date), asc(steamSalesDaily.skuGroup)).all();
+  }
+
+  /**
+   * Aggregate lifetime totals split by SKU group. Cheap: one SELECT with
+   * GROUP BY. All-time totals — date filters would go on
+   * getSteamSales() and the caller sums manually.
+   */
+  getSteamSalesSummary(productId: number): SteamSalesSummary {
+    const rows = db.select().from(steamSalesDaily)
+      .where(eq(steamSalesDaily.productId, productId)).all();
+
+    const summary: SteamSalesSummary = {
+      baseNetUnits: 0,
+      baseGrossUnits: 0,
+      baseReturns: 0,
+      baseNetRevenueUsd: 0,
+      dlcNetUnits: 0,
+      dlcNetRevenueUsd: 0,
+      otherNetUnits: 0,
+      otherNetRevenueUsd: 0,
+      firstDate: null,
+      latestDate: null,
+      rowCount: rows.length,
+      sourceMix: {},
+    };
+
+    for (const r of rows) {
+      if (r.skuGroup === "base") {
+        summary.baseNetUnits += r.netUnits;
+        summary.baseGrossUnits += r.grossUnits;
+        summary.baseReturns += r.returns;
+        summary.baseNetRevenueUsd += r.netRevenueUsd;
+      } else if (r.skuGroup === "dlc") {
+        summary.dlcNetUnits += r.netUnits;
+        summary.dlcNetRevenueUsd += r.netRevenueUsd;
+      } else {
+        summary.otherNetUnits += r.netUnits;
+        summary.otherNetRevenueUsd += r.netRevenueUsd;
+      }
+      summary.sourceMix[r.source] = (summary.sourceMix[r.source] ?? 0) + 1;
+      if (!summary.firstDate || r.date < summary.firstDate) summary.firstDate = r.date;
+      if (!summary.latestDate || r.date > summary.latestDate) summary.latestDate = r.date;
+    }
+    // Round revenue to cents
+    summary.baseNetRevenueUsd = Math.round(summary.baseNetRevenueUsd * 100) / 100;
+    summary.dlcNetRevenueUsd = Math.round(summary.dlcNetRevenueUsd * 100) / 100;
+    summary.otherNetRevenueUsd = Math.round(summary.otherNetRevenueUsd * 100) / 100;
+    return summary;
+  }
+
+  /**
+   * Bulk upsert. Uses transaction + insert-or-update on the
+   * (product_id, date, sku_group) unique index. Returns count breakdown so
+   * the caller can surface it to the user.
+   */
+  upsertSteamSalesRows(rows: InsertSteamSalesDaily[]): { inserted: number; updated: number } {
+    const now = this.now();
+    let inserted = 0;
+    let updated = 0;
+    const runOne = (r: InsertSteamSalesDaily) => {
+      try {
+        db.insert(steamSalesDaily).values({
+          ...r,
+          createdAt: now,
+          updatedAt: now,
+        }).run();
+        inserted++;
+      } catch (err: any) {
+        if (err.code === "SQLITE_CONSTRAINT_UNIQUE") {
+          db.update(steamSalesDaily)
+            .set({
+              netUnits: r.netUnits,
+              grossUnits: r.grossUnits,
+              returns: r.returns,
+              netRevenueUsd: r.netRevenueUsd,
+              grossRevenueUsd: r.grossRevenueUsd,
+              source: r.source,
+              batchId: r.batchId,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(steamSalesDaily.productId, r.productId),
+              eq(steamSalesDaily.date, r.date),
+              eq(steamSalesDaily.skuGroup, r.skuGroup),
+            )).run();
+          updated++;
+        } else {
+          throw err;
+        }
+      }
+    };
+    const tx = sqlite.transaction(() => {
+      for (const r of rows) runOne(r);
+    });
+    tx();
+    return { inserted, updated };
+  }
+
+  /**
+   * Wipe all sales rows associated with an upload batch. Used when the
+   * user wants to undo an upload. Returns count deleted.
+   */
+  deleteSteamSalesByBatch(batchId: string): number {
+    const res = db.delete(steamSalesDaily)
+      .where(eq(steamSalesDaily.batchId, batchId)).run();
+    return res.changes as number;
+  }
+
+  // ─── Steam Sales Upload Batches ──────────────────────────────────────────
+
+  createSteamSalesUploadBatch(data: InsertSteamSalesUploadBatch): SteamSalesUploadBatch {
+    const now = this.now();
+    return db.insert(steamSalesUploadBatches).values({
+      ...data,
+      createdAt: now,
+    }).returning().get();
+  }
+
+  getSteamSalesUploadBatches(productId: number): SteamSalesUploadBatch[] {
+    return db.select().from(steamSalesUploadBatches)
+      .where(eq(steamSalesUploadBatches.productId, productId))
+      .orderBy(desc(steamSalesUploadBatches.createdAt)).all();
+  }
+
+  getSteamSalesUploadBatch(id: string): SteamSalesUploadBatch | undefined {
+    return db.select().from(steamSalesUploadBatches)
+      .where(eq(steamSalesUploadBatches.id, id)).get();
+  }
+
+  // ─── Steamworks Session Cookies ─────────────────────────────────────────
+
+  getSteamworksSession(id: string): SteamworksSession | undefined {
+    return db.select().from(steamworksSessions)
+      .where(eq(steamworksSessions.id, id)).get();
+  }
+
+  upsertSteamworksSession(data: InsertSteamworksSession): SteamworksSession {
+    const now = this.now();
+    try {
+      return db.insert(steamworksSessions).values({
+        ...data,
+        createdAt: now,
+        updatedAt: now,
+      }).returning().get();
+    } catch (err: any) {
+      if (err.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
+        return db.update(steamworksSessions)
+          .set({
+            cookieValue: data.cookieValue,
+            loggedInAs: data.loggedInAs,
+            lastVerifiedAt: data.lastVerifiedAt,
+            lastVerifiedResult: data.lastVerifiedResult,
+            updatedAt: now,
+          })
+          .where(eq(steamworksSessions.id, data.id))
+          .returning().get();
+      }
+      throw err;
+    }
+  }
+
+  deleteSteamworksSession(id: string): boolean {
+    const res = db.delete(steamworksSessions)
+      .where(eq(steamworksSessions.id, id)).run();
+    return (res.changes as number) > 0;
   }
 
   // ─── PS5 Wishlists ───────────────────────────────────────────────────────────

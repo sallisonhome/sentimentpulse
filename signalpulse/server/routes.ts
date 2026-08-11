@@ -794,6 +794,113 @@ export async function registerRoutes(
     res.json(job);
   });
 
+  // ─── Steam Sales CSV upload (v3.0, 2026-08-11) ──────────────────────
+  //
+  // Accepts a raw CSV body (text/csv or text/plain) and ingests it into
+  // steam_sales_daily aggregated per (date, sku_group). Creates an audit
+  // row in steam_sales_upload_batches. Response includes the parsed
+  // preview so the UI can show the user what got ingested.
+  app.post("/api/products/:id/steam/sales-upload", async (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const product = storage.getProduct(productId);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+
+      // Accept raw CSV in body. Express default json parser won't parse
+      // text/csv, so we ensure a text/* parser is registered for this route.
+      const rawCsv = typeof req.body === "string"
+        ? req.body
+        : (req.body && typeof req.body.csv === "string" ? req.body.csv : "");
+      if (!rawCsv || rawCsv.length < 20) {
+        return res.status(400).json({ error: "Empty or missing CSV body" });
+      }
+
+      const filename = typeof req.query.filename === "string" ? req.query.filename : "upload.csv";
+      const batchId = `sales-${productId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+      // Parse. Uses gameTitle from the product to classify SKUs into
+      // base/dlc/other buckets.
+      const { parseSteamSalesCsv } = await import("./steam-sales-csv");
+      const parsed = parseSteamSalesCsv(rawCsv, productId, product.title, () => new Date().toISOString(), batchId);
+
+      // Persist upload batch record BEFORE writing rows so we have a paper
+      // trail even if the sales insert fails partway.
+      storage.createSteamSalesUploadBatch({
+        id: batchId,
+        productId,
+        filename,
+        fileBytes: Buffer.byteLength(rawCsv, "utf8"),
+        reportDateStart: parsed.reportDateStart,
+        reportDateEnd: parsed.reportDateEnd,
+        publisherName: parsed.publisherName,
+        rowsParsed: parsed.totalRawRows,
+        rowsIngested: parsed.ingestedRows.length,
+        rowsSkipped: parsed.skipped.retail + parsed.skipped.zeroUnits + parsed.skipped.unclassified,
+        skippedReason: JSON.stringify(parsed.skipped),
+        uploadedBy: null,
+      });
+
+      const upsertResult = parsed.ingestedRows.length > 0
+        ? storage.upsertSteamSalesRows(parsed.ingestedRows)
+        : { inserted: 0, updated: 0 };
+
+      res.json({
+        batchId,
+        publisherName: parsed.publisherName,
+        reportDateStart: parsed.reportDateStart,
+        reportDateEnd: parsed.reportDateEnd,
+        rowsParsed: parsed.totalRawRows,
+        rowsIngested: parsed.ingestedRows.length,
+        rowsInserted: upsertResult.inserted,
+        rowsUpdated: upsertResult.updated,
+        skipped: parsed.skipped,
+        errors: parsed.errors,
+        perSkuBreakdown: parsed.perSkuBreakdown,
+      });
+    } catch (err: any) {
+      console.error(`[routes] sales-upload error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Read: daily sales rows for a product (used by the chart on the card).
+  app.get("/api/products/:id/steam/sales-daily", (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const since = typeof req.query.since === "string" ? req.query.since : undefined;
+      const until = typeof req.query.until === "string" ? req.query.until : undefined;
+      const rows = storage.getSteamSales(productId, { since, until });
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Read: rolled-up summary for the product-detail sales card.
+  app.get("/api/products/:id/steam/sales-summary", (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const summary = storage.getSteamSalesSummary(productId);
+      const batches = storage.getSteamSalesUploadBatches(productId);
+      res.json({ summary, recentBatches: batches.slice(0, 10) });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Undo an upload by deleting all rows it created.
+  app.delete("/api/steam/sales-batch/:batchId", (req, res) => {
+    try {
+      const batchId = req.params.batchId;
+      const batch = storage.getSteamSalesUploadBatch(batchId);
+      if (!batch) return res.status(404).json({ error: "Batch not found" });
+      const deleted = storage.deleteSteamSalesByBatch(batchId);
+      res.json({ batchId, rowsDeleted: deleted });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Daily wishlist-reporting rows (new table) with a computed running
   // cumulative per row, for optional from/to date filtering.
   app.get("/api/products/:id/steam-wishlist-daily", (req, res) => {

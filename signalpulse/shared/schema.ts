@@ -128,6 +128,105 @@ export const insertSteamPrepurchaseSchema = createInsertSchema(steamPrepurchaseD
 export type InsertSteamPrepurchase = z.infer<typeof insertSteamPrepurchaseSchema>;
 export type SteamPrepurchaseDaily = typeof steamPrepurchaseDaily.$inferSelect;
 
+// ─── Steam Sales Daily (Saber CSV + Focus portal ingest) ─────────────────
+//
+// v3.0 (2026-08-11): unified sales table for BOTH Steamworks CSV uploads
+// (Saber-published titles) and Focus portal-page ingest (Focus-published
+// titles like Space Marine 2). Stores one row per (productId, date, skuGroup)
+// where skuGroup partitions the product's SKUs into logical buckets:
+//
+//   - 'base'    → main game SKUs (base game + Deluxe/Anniversary editions).
+//                 Cumulative across all these SKUs per the rule established
+//                 for wishlists ('cumulative across main SKUs, not DLCs').
+//   - 'dlc'     → all DLC/season-pass/cosmetic-pack SKUs rolled up.
+//   - 'other'   → soundtrack, artbook, retail-key redemptions, misc.
+//
+// netUnits and netRevenueUsd are the ingest values; source tracks provenance.
+export const steamSalesDaily = sqliteTable("steam_sales_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  date: text("date").notNull(),
+  skuGroup: text("sku_group").notNull(), // 'base' | 'dlc' | 'other'
+  netUnits: integer("net_units").notNull().default(0),
+  grossUnits: integer("gross_units").notNull().default(0),
+  returns: integer("returns").notNull().default(0),
+  netRevenueUsd: real("net_revenue_usd").notNull().default(0),
+  grossRevenueUsd: real("gross_revenue_usd").notNull().default(0),
+  source: text("source").notNull().default("csv_upload"), // 'csv_upload' | 'portal_fetch' | 'manual'
+  batchId: text("batch_id"), // FK to steamSalesUploadBatches.id when source='csv_upload'
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  uniqueProductDateSku: uniqueIndex("steam_sales_unique").on(table.productId, table.date, table.skuGroup),
+}));
+
+export const insertSteamSalesSchema = createInsertSchema(steamSalesDaily).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertSteamSalesDaily = z.infer<typeof insertSteamSalesSchema>;
+export type SteamSalesDaily = typeof steamSalesDaily.$inferSelect;
+
+// ─── Steam Sales Upload Batches (audit trail for CSV uploads) ───────────────
+//
+// Each CSV upload creates one batch row. Lets us track which upload wrote
+// which sales rows (batchId FK on steam_sales_daily), and lets users see
+// upload history + roll back if needed.
+export const steamSalesUploadBatches = sqliteTable("steam_sales_upload_batches", {
+  id: text("id").primaryKey(), // uuid or timestamp-based, generated on upload
+  productId: integer("product_id").notNull(),
+  filename: text("filename").notNull(),
+  fileBytes: integer("file_bytes").notNull(),
+  reportDateStart: text("report_date_start"), // parsed from CSV header line 2
+  reportDateEnd: text("report_date_end"),
+  publisherName: text("publisher_name"), // e.g. "Mad Dog Games, LLC"
+  rowsParsed: integer("rows_parsed").notNull().default(0),
+  rowsIngested: integer("rows_ingested").notNull().default(0),
+  rowsSkipped: integer("rows_skipped").notNull().default(0),
+  skippedReason: text("skipped_reason"), // JSON breakdown
+  uploadedBy: text("uploaded_by"), // future: user id when auth exists
+  createdAt: text("created_at").notNull(),
+});
+
+export const insertSteamSalesUploadBatchSchema = createInsertSchema(steamSalesUploadBatches).omit({
+  createdAt: true,
+});
+
+export type InsertSteamSalesUploadBatch = z.infer<typeof insertSteamSalesUploadBatchSchema>;
+export type SteamSalesUploadBatch = typeof steamSalesUploadBatches.$inferSelect;
+
+// ─── Steamworks Session Cookies (for Focus portal-page fetcher) ─────────────
+//
+// v3.0 (2026-08-11): Stores the user's Steamworks session cookie so a
+// scheduled job on the droplet can fetch pages from Focus Entertainment's
+// (or any other) publisher scope that our API key can't reach.
+//
+// The cookie is user-scoped (typically one per Steamworks user), NOT
+// per-product. Products that need portal-page ingest reference this by
+// scope name (e.g. 'default').
+//
+// Cookies expire; last_verified_at tracks the last successful fetch so
+// we can proactively surface expiration in the UI.
+export const steamworksSessions = sqliteTable("steamworks_sessions", {
+  id: text("id").primaryKey(), // e.g. 'default'
+  cookieValue: text("cookie_value").notNull(), // raw Cookie: header value
+  loggedInAs: text("logged_in_as"), // Steamworks account/email if known
+  lastVerifiedAt: text("last_verified_at"),
+  lastVerifiedResult: text("last_verified_result"), // 'ok' | 'expired' | 'error: ...'
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const insertSteamworksSessionSchema = createInsertSchema(steamworksSessions).omit({
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type InsertSteamworksSession = z.infer<typeof insertSteamworksSessionSchema>;
+export type SteamworksSession = typeof steamworksSessions.$inferSelect;
+
 // ─── PS5 Wishlist Daily ──────────────────────────────────────────────────────
 
 export const ps5WishlistDaily = sqliteTable("ps5_wishlist_daily", {
