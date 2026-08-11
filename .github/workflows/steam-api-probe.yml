@@ -176,11 +176,17 @@ jobs:
             "https://partner.steam-api.com/IPublisherFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=0"
 
           # Variant I: totally bogus method to see what a REAL error looks like.
-          # If it 400s with something like 'invalid method' we know Valve
-          # DOES distinguish real endpoints — confirming the empty {response:{}}
-          # on real endpoints is a scope issue not a routing issue.
           probe "GARBAGE method (control: what does real 400 look like?)" \
             "https://partner.steam-api.com/IPartnerFinancialsService/ThisDoesNotExist/v001/?key=${KEY}"
+
+          # Variant J: sanity — try highwatermark=1 instead of 0. Docs say 0
+          # is correct as an initial cursor value, but confirming Valve isn't
+          # specifically treating 0 as 'send nothing'. Extremely unlikely to
+          # help but rules out one last possibility.
+          probe "GetDetailedSales hwm_id=1 (control: hwm=0 might be special?)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=1"
+          probe "GetChangedDatesForPartner hwm=1" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}&highwatermark=1"
 
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
