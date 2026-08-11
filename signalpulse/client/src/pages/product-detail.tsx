@@ -192,30 +192,53 @@ export default function ProductDetail() {
             }
           >
             <div className="space-y-3">
-              {/* Current wishlist count + day-over-day delta */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs text-muted-foreground">
-                    Current Wishlist Count
-                    {isStale && latestDate && (
-                      <span className="ml-1 text-amber-500" title={`Last updated ${latestDate} — data ingestion may be behind`}>
-                        ⚠
-                      </span>
-                    )}
+              {/* Two-cell headline row: Pre-Release (primary, drives forecast)
+                  + Current (secondary, with day-over-day delta).
+                  Before release they show the same number; after release
+                  Pre-Release is locked and Current updates daily. */}
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex-1 grid grid-cols-2 gap-4">
+                  {/* Pre-Release count (primary, larger). Always shown. */}
+                  <div>
+                    <div className="text-xs text-muted-foreground">
+                      Pre-Release Wishlist Count
+                      {hasReleased && (
+                        <span className="ml-1 text-[10px]">(locked at release {releaseDate})</span>
+                      )}
+                    </div>
+                    <div className="text-2xl font-semibold tabular-nums mt-0.5" data-testid="text-steam-wl-prerelease">
+                      {formatNumber(preLaunch ?? lifetime)}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground mt-0.5">
+                      Drives dynamic forecasts
+                    </div>
                   </div>
-                  <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-wl-current">
-                    {formatNumber(lifetime)}
+
+                  {/* Current count (secondary, smaller). Always shown. */}
+                  <div>
+                    <div className="text-xs text-muted-foreground">
+                      Current Wishlist Count
+                      {isStale && latestDate && (
+                        <span className="ml-1 text-amber-500" title={`Last updated ${latestDate} — data ingestion may be behind`}>
+                          ⚠
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-wl-current">
+                      {formatNumber(lifetime)}
+                    </div>
                     {deltaEl && (
-                      <span className="ml-2 text-sm font-medium">
+                      <div className="text-xs font-medium mt-0.5">
                         {deltaEl}
-                        <span className="ml-1 text-xs text-muted-foreground font-normal">
+                        <span className="ml-1 text-[10px] text-muted-foreground font-normal">
                           vs prior day
                         </span>
-                      </span>
+                      </div>
                     )}
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+
+                <div className="flex items-center gap-2 flex-shrink-0">
                   <Button
                     variant="outline"
                     size="sm"
@@ -237,28 +260,13 @@ export default function ProductDetail() {
                 </div>
               </div>
 
-              {/* Pre-launch snapshot (locked; only for released titles) */}
-              {showPreLaunchRow && (
-                <div className="flex items-center justify-between border-t pt-3">
-                  <div>
-                    <div className="text-xs text-muted-foreground">
-                      Pre-Launch Wishlist Count
-                      <span className="ml-1 text-[10px]">(locked at release {releaseDate})</span>
-                    </div>
-                    <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-wl-prelaunch">
-                      {formatNumber(preLaunch)}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* First Month Forecast */}
+              {/* First Month Forecast — always based on pre-release count */}
               <div className="flex items-center justify-between border-t pt-3">
                 <div>
                   <div className="text-xs text-muted-foreground">
                     First Month Forecast
                     <span className="ml-1 text-[10px]">
-                      ({hasReleased ? "Pre-Launch WL" : "WL"} × 0.20)
+                      (Pre-Release WL × 0.20{hasReleased ? " — locked" : ""})
                     </span>
                   </div>
                   <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-first-month">
@@ -271,11 +279,12 @@ export default function ProductDetail() {
               {/* Sparkline */}
               <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/wishlists`} color="#2563EB" />
               <InfoMessage>
-                Wishlist counts update daily via the Steamworks Partner API. First-month
-                forecast = 20% of {hasReleased ? "pre-launch" : "total"} wishlist count.
+                Wishlist counts update daily via the Steamworks Partner API. Dynamic
+                forecasts (first-month = 20% of pre-release count) are calculated ONLY
+                from the pre-release wishlist count.
                 {hasReleased
-                  ? " This forecast is locked to the pre-launch count as of release day — post-launch wishlists are a different signal and don't update the forecast."
-                  : " This number is not relevant for forecasting until 8 weeks prior to launch. Prior to 8 weeks this information is for reference only."}
+                  ? " Since this title has released, that count is locked to the value as of release day — post-release wishlist growth is informational and does not update the forecast."
+                  : " Before release the two counts are identical and the forecast updates daily."}
               </InfoMessage>
             </div>
           </CollapsibleSection>

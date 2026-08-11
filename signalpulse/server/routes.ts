@@ -8,6 +8,33 @@ import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
 import { runIngestion, fetchSteamWishlistReportingDay, persistSteamWishlistReportingDay, getYesterdayGmtDateString } from "./ingestion";
 
 /**
+ * Returns the wishlist count that should feed dynamic forecasts.
+ *
+ * Rule: dynamic forecasts are calculated only from PRE-RELEASE wishlist
+ * counts. Once a title has released, this returns the locked pre-release
+ * net count (never changes). Before release it returns the current lifetime
+ * count (which equals pre-release by definition when releaseDate is future).
+ *
+ * Falls back to null when there's no wishlist data at all.
+ */
+function getForecastingWishlistCount(
+  summary: SteamWishlistSummary,
+  releaseDate: string | null,
+): number | null {
+  if (summary.lifetimeNet == null) return null;
+
+  const today = new Date().toISOString().split("T")[0];
+  const hasReleased = releaseDate != null && releaseDate <= today;
+
+  if (hasReleased) {
+    // Post-release: locked to pre-release net. Never changes.
+    return summary.preLaunchNet;
+  }
+  // Pre-release: current lifetime (== pre-release count by construction).
+  return summary.lifetimeNet;
+}
+
+/**
  * First-month sales forecast for Steam titles using the WL x 0.20 rule.
  *
  * Rule (locked 2026-08-11): once a title has a Release milestone with an
@@ -25,20 +52,8 @@ function computeSteamFirstMonthForecast(
   summary: SteamWishlistSummary,
   releaseDate: string | null,
 ): number | null {
-  // No wishlist data yet → no forecast possible.
-  if (summary.lifetimeNet == null) return null;
-
-  const today = new Date().toISOString().split("T")[0];
-  const hasReleased = releaseDate != null && releaseDate <= today;
-
-  if (hasReleased) {
-    // Post-launch: forecast is LOCKED to pre-launch wishlists only.
-    if (summary.preLaunchNet == null) return null;
-    return Math.round(summary.preLaunchNet * 0.20);
-  } else {
-    // Pre-launch (or unreleased): use current lifetime (== preLaunch here).
-    return Math.round(summary.lifetimeNet * 0.20);
-  }
+  const wl = getForecastingWishlistCount(summary, releaseDate);
+  return wl != null ? Math.round(wl * 0.20) : null;
 }
 
 export async function registerRoutes(
@@ -115,11 +130,23 @@ export async function registerRoutes(
         const comps = storage.getCompForecasts(p.id);
         const compTotal = comps.reduce((sum, c) => sum + c.forecastUnits, 0);
 
-        // Calculate dynamic forecasts at all timeframes
+        // v2.1 (2026-08-11): compute wishlist summary FIRST so we can feed
+        // the pre-release-locked count into dynamic forecasts.
+        const releaseDate = storage.getProductReleaseDate(p.id);
+        const wishlistSummary = storage.getSteamWishlistSummary(p.id, releaseDate);
+        const forecastingWl = getForecastingWishlistCount(wishlistSummary, releaseDate);
+        const steamFirstMonthForecast = computeSteamFirstMonthForecast(
+          wishlistSummary,
+          releaseDate,
+        );
+
+        // Calculate dynamic forecasts at all timeframes.
+        // Post-release: forecastingWl is LOCKED to pre-release count so
+        // forecasts don't drift with post-release wishlist growth.
         const platforms = JSON.parse(p.platforms);
         const dynamicFull = calculateDynamicForecastsFull(
           platforms,
-          latestSteamWl?.cumulativeCount ?? null,
+          forecastingWl,
           latestPs5Pre?.cumulativeCount ?? null,
         );
         const dynamicFirstMonthTotal = dynamicFull.reduce((sum, d) => sum + d.firstMonth, 0);
@@ -128,16 +155,6 @@ export async function registerRoutes(
 
         // Get latest revision total if any
         const latestRevision = storage.getLatestRevisionTotal(p.id);
-
-        // v2.1 wishlist summary: pre-launch, post-launch, lifetime,
-        // day-over-day delta, and first-month forecast (locked to pre-launch
-        // count once released).
-        const releaseDate = storage.getProductReleaseDate(p.id);
-        const wishlistSummary = storage.getSteamWishlistSummary(p.id, releaseDate);
-        const steamFirstMonthForecast = computeSteamFirstMonthForecast(
-          wishlistSummary,
-          releaseDate,
-        );
 
         return {
           ...p,
@@ -216,13 +233,24 @@ export async function registerRoutes(
       const comps = storage.getCompForecasts(id);
       const dynamicForecasts = storage.getLatestDynamicForecasts(id);
 
-      // Calculate dynamic forecasts on-the-fly if no stored ones
+      // v2.1 (2026-08-11): compute wishlist summary FIRST so we can feed
+      // the pre-release-locked count into all dynamic-forecast call sites.
+      const releaseDateForSummary = storage.getProductReleaseDate(id);
+      const steamWishlistSummary = storage.getSteamWishlistSummary(id, releaseDateForSummary);
+      const forecastingWl = getForecastingWishlistCount(steamWishlistSummary, releaseDateForSummary);
+      const steamFirstMonthForecast = computeSteamFirstMonthForecast(
+        steamWishlistSummary,
+        releaseDateForSummary,
+      );
+
+      // Calculate dynamic forecasts on-the-fly if no stored ones.
+      // Uses forecastingWl (LOCKED to pre-release count once released).
       const platforms = JSON.parse(product.platforms);
       let dynamicData = dynamicForecasts;
       if (dynamicData.length === 0 && (latestSteamWl || latestPs5Pre)) {
         const calculated = calculateDynamicForecasts(
           platforms,
-          latestSteamWl?.cumulativeCount ?? null,
+          forecastingWl,
           latestPs5Pre?.cumulativeCount ?? null,
         );
         dynamicData = calculated.map(c => ({
@@ -231,7 +259,7 @@ export async function registerRoutes(
           date: new Date().toISOString().split("T")[0],
           platform: c.platform,
           forecastUnits: c.forecastUnits,
-          steamWishlistCountUsed: latestSteamWl?.cumulativeCount ?? null,
+          steamWishlistCountUsed: forecastingWl,
           ps5PrepurchaseCountUsed: latestPs5Pre?.cumulativeCount ?? null,
           createdAt: new Date().toISOString(),
         }));
@@ -258,20 +286,12 @@ export async function registerRoutes(
       }
       const forecastRevisions = Object.values(revisionGrouped).sort((a, b) => a.date.localeCompare(b.date));
 
-      // Calculate full per-platform forecasts (first month, 1yr, LT)
+      // Calculate full per-platform forecasts (first month, 1yr, LT).
+      // Uses forecastingWl (LOCKED to pre-release count once released).
       const dynamicFullForecasts = calculateDynamicForecastsFull(
         platforms,
-        latestSteamWl?.cumulativeCount ?? null,
+        forecastingWl,
         latestPs5Pre?.cumulativeCount ?? null,
-      );
-
-      // v2.1 wishlist summary: pre-launch, post-launch, lifetime,
-      // day-over-day delta, and locked-once-released first-month forecast.
-      const releaseDateForSummary = storage.getProductReleaseDate(id);
-      const steamWishlistSummary = storage.getSteamWishlistSummary(id, releaseDateForSummary);
-      const steamFirstMonthForecast = computeSteamFirstMonthForecast(
-        steamWishlistSummary,
-        releaseDateForSummary,
       );
 
       res.json({
@@ -352,13 +372,17 @@ export async function registerRoutes(
           ];
           storage.upsertCompForecasts(id, allForecasts);
 
-          // Recalculate dynamic forecasts with new platform mix
+          // Recalculate dynamic forecasts with new platform mix.
+          // v2.1: use pre-release-locked wishlist count once title has released.
           const latestSteamWl = storage.getLatestSteamWishlist(id);
           const latestPs5Pre = storage.getLatestPs5Prepurchase(id);
           if (latestSteamWl || latestPs5Pre) {
+            const releaseDateForForecast = storage.getProductReleaseDate(id);
+            const wlSummary = storage.getSteamWishlistSummary(id, releaseDateForForecast);
+            const forecastingWl = getForecastingWishlistCount(wlSummary, releaseDateForForecast);
             const dynamicForecasts = calculateDynamicForecasts(
               newPlatformsArray,
-              latestSteamWl?.cumulativeCount ?? null,
+              forecastingWl,
               latestPs5Pre?.cumulativeCount ?? null,
             );
             const today = new Date().toISOString().split("T")[0];
@@ -367,7 +391,7 @@ export async function registerRoutes(
               date: today,
               platform: d.platform,
               forecastUnits: d.forecastUnits,
-              steamWishlistCountUsed: latestSteamWl?.cumulativeCount ?? null,
+              steamWishlistCountUsed: forecastingWl,
               ps5PrepurchaseCountUsed: latestPs5Pre?.cumulativeCount ?? null,
             })));
           }
@@ -443,12 +467,16 @@ export async function registerRoutes(
       if (!product) return res.status(404).json({ error: "Product not found" });
 
       const platforms = JSON.parse(product.platforms);
-      const latestSteamWl = storage.getLatestSteamWishlist(id);
       const latestPs5Pre = storage.getLatestPs5Prepurchase(id);
+
+      // v2.1: use pre-release-locked wishlist count once title has released.
+      const releaseDateForForecast = storage.getProductReleaseDate(id);
+      const wlSummary = storage.getSteamWishlistSummary(id, releaseDateForForecast);
+      const forecastingWl = getForecastingWishlistCount(wlSummary, releaseDateForForecast);
 
       const forecasts = calculateDynamicForecasts(
         platforms,
-        latestSteamWl?.cumulativeCount ?? null,
+        forecastingWl,
         latestPs5Pre?.cumulativeCount ?? null,
       );
 
