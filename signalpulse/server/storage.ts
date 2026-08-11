@@ -202,6 +202,33 @@ function initializeDatabase() {
 
 initializeDatabase();
 
+/**
+ * Combined summary of wishlist state for a product (v2.1, 2026-08-11).
+ * Computed from steam_wishlist_reporting_daily rows on demand. All counts
+ * are NET (adds - deletes - purchases). Purchases represent wishlist -> buy
+ * conversions, which permanently remove the wishlist entry, so they
+ * subtract from the running total the same way deletes do.
+ *
+ * When releaseDate is null (product not yet released), preLaunchNet ==
+ * lifetimeNet and postLaunchNet == 0. When releaseDate is set,
+ * preLaunchNet is a LOCKED number that never changes with future data;
+ * postLaunchNet grows daily.
+ *
+ * dayOverDayDelta is the most recent day's net change; when there's a
+ * data gap the comparison date isn't literally yesterday, and isStale
+ * flags that so the UI can warn users.
+ */
+export interface SteamWishlistSummary {
+  preLaunchNet: number | null;
+  postLaunchNet: number | null;
+  lifetimeNet: number | null;
+  dayOverDayDelta: number | null;
+  latestDate: string | null;
+  dayOverDayComparisonDate: string | null;
+  isStale: boolean;
+  rowCount: number;
+}
+
 // ─── Storage Interface ───────────────────────────────────────────────────────
 
 export interface IStorage {
@@ -227,6 +254,14 @@ export interface IStorage {
   getLatestSteamWishlistReporting(productId: number): SteamWishlistReportingDaily | undefined;
   getEarliestSteamWishlistReporting(productId: number): SteamWishlistReportingDaily | undefined;
   upsertSteamWishlistReporting(data: InsertSteamWishlistReporting): SteamWishlistReportingDaily;
+
+  // v2.1 (2026-08-11): Aggregate summary that computes pre-launch,
+  // post-launch, and lifetime net wishlist counts plus day-over-day
+  // delta for the most recent row. Reads from steam_wishlist_reporting_daily
+  // (true daily deltas from Partner API), not the legacy cumulative table.
+  // Net = wishlist_adds - wishlist_deletes - wishlist_purchases.
+  // Returns null-filled struct if the product has no reporting rows yet.
+  getSteamWishlistSummary(productId: number, releaseDate: string | null): SteamWishlistSummary;
 
   // Steam Prepurchases
   getSteamPrepurchases(productId: number): SteamPrepurchaseDaily[];
@@ -464,6 +499,97 @@ export class DatabaseStorage implements IStorage {
     return db.insert(steamWishlistReportingDaily).values(data).returning().get();
   }
 
+  /**
+   * Aggregate summary of wishlist activity: pre-launch net, post-launch net,
+   * lifetime net, and day-over-day delta computed from the daily-delta table.
+   *
+   * Design choices:
+   *  - Uses one query to pull all rows then splits in JS. For SM2's ~815 rows
+   *    that's <2KB and negligible CPU. Splitting in SQL would need two
+   *    conditional-sum queries; not worth the complexity.
+   *  - dayOverDayDelta is computed from the single most-recent row's own
+   *    (adds - deletes - purchases). It is NOT (latestRow.net -
+   *    secondLatestRow.net) because rows already store the daily delta
+   *    directly. Using row-vs-row would double-count when rows have gaps
+   *    between them.
+   *  - isStale is true when the latest row is more than 2 days behind
+   *    'today' (GMT). Wishlist reporting is bounded to yesterday-GMT, so a
+   *    2-day slack is normal; anything larger signals ingestion has fallen
+   *    behind.
+   */
+  getSteamWishlistSummary(productId: number, releaseDate: string | null): SteamWishlistSummary {
+    const rows = this.getSteamWishlistReporting(productId);
+    if (rows.length === 0) {
+      return {
+        preLaunchNet: null,
+        postLaunchNet: null,
+        lifetimeNet: null,
+        dayOverDayDelta: null,
+        latestDate: null,
+        dayOverDayComparisonDate: null,
+        isStale: false,
+        rowCount: 0,
+      };
+    }
+
+    // Rows are already ordered by date ASC per getSteamWishlistReporting.
+    let preLaunchNet = 0;
+    let postLaunchNet = 0;
+    for (const r of rows) {
+      const delta = r.wishlistAdds - r.wishlistDeletes - r.wishlistPurchases;
+      // Compare using string comparison — dates are all YYYY-MM-DD, which
+      // is lexicographically sortable and matches actual date order.
+      if (releaseDate != null && r.date < releaseDate) {
+        preLaunchNet += delta;
+      } else {
+        postLaunchNet += delta;
+      }
+    }
+
+    // If releaseDate is null (unreleased product), everything is pre-launch.
+    // Wire that: postLaunchNet is 0 (by construction above; the else branch
+    // is skipped because releaseDate is null and the condition short-circuits
+    // to always take the else). Fix: when releaseDate is null the loop above
+    // classifies everything as post-launch (else branch); we want the opposite.
+    // Re-partition here rather than complicating the loop.
+    if (releaseDate == null) {
+      preLaunchNet = postLaunchNet;
+      postLaunchNet = 0;
+    }
+
+    const lifetimeNet = preLaunchNet + postLaunchNet;
+
+    // Day-over-day delta = the most recent row's own daily net.
+    const latest = rows[rows.length - 1];
+    const dayOverDayDelta =
+      latest.wishlistAdds - latest.wishlistDeletes - latest.wishlistPurchases;
+    const dayOverDayComparisonDate =
+      rows.length >= 2 ? rows[rows.length - 2].date : null;
+
+    // Staleness: today-GMT minus latest.date > 2 days => stale.
+    // Uses UTC math to match Steam's GMT bounding.
+    const todayUtcMs = Date.UTC(
+      new Date().getUTCFullYear(),
+      new Date().getUTCMonth(),
+      new Date().getUTCDate(),
+    );
+    const [ly, lm, ld] = latest.date.split("-").map(Number);
+    const latestUtcMs = Date.UTC(ly, lm - 1, ld);
+    const daysBehind = (todayUtcMs - latestUtcMs) / 86400000;
+    const isStale = daysBehind > 2;
+
+    return {
+      preLaunchNet,
+      postLaunchNet,
+      lifetimeNet,
+      dayOverDayDelta,
+      latestDate: latest.date,
+      dayOverDayComparisonDate,
+      isStale,
+      rowCount: rows.length,
+    };
+  }
+
   // ─── Steam Prepurchases ──────────────────────────────────────────────────────
 
   getSteamPrepurchases(productId: number): SteamPrepurchaseDaily[] {
@@ -620,6 +746,21 @@ export class DatabaseStorage implements IStorage {
         isNull(plsMilestones.deletedAt),
       ))
       .orderBy(asc(plsMilestones.sortOrder)).all();
+  }
+
+  /**
+   * Returns the product's Release milestone actualDate (YYYY-MM-DD) or null
+   * if the product has no Release milestone or the release hasn't happened.
+   * Used by phase-filtered read endpoints to partition pre-launch vs
+   * post-launch data by date comparison. Kept as a helper (rather than
+   * inlined) because the release-date resolution rule (Release milestone,
+   * actualDate field, not plannedDate) needs to be consistent across every
+   * consumer.
+   */
+  getProductReleaseDate(productId: number): string | null {
+    const milestones = this.getPlsMilestones(productId);
+    const release = milestones.find(m => m.name === "Release");
+    return release?.actualDate ?? null;
   }
 
   createPlsMilestone(data: InsertPlsMilestone): PlsMilestone {

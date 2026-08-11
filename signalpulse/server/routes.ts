@@ -1,11 +1,45 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage, type SteamWishlistSummary } from "./storage";
 import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForecastsFull, getAdjustedPlatformMix } from "./forecast";
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
 import { runIngestion, fetchSteamWishlistReportingDay, persistSteamWishlistReportingDay, getYesterdayGmtDateString } from "./ingestion";
+
+/**
+ * First-month sales forecast for Steam titles using the WL x 0.20 rule.
+ *
+ * Rule (locked 2026-08-11): once a title has a Release milestone with an
+ * actualDate in the past, the forecast is LOCKED to (preLaunchNet * 0.20)
+ * and never updates from post-launch wishlist activity. This preserves the
+ * industry-standard interpretation of first-month conversion, which is
+ * about pre-launch demand — post-launch wishlists represent 'saw the game,
+ * not ready to buy' users, a different signal.
+ *
+ * For unreleased titles (releaseDate null OR releaseDate > today) the
+ * forecast uses lifetimeNet (which equals preLaunchNet by construction
+ * before release) and updates daily as wishlists accumulate.
+ */
+function computeSteamFirstMonthForecast(
+  summary: SteamWishlistSummary,
+  releaseDate: string | null,
+): number | null {
+  // No wishlist data yet → no forecast possible.
+  if (summary.lifetimeNet == null) return null;
+
+  const today = new Date().toISOString().split("T")[0];
+  const hasReleased = releaseDate != null && releaseDate <= today;
+
+  if (hasReleased) {
+    // Post-launch: forecast is LOCKED to pre-launch wishlists only.
+    if (summary.preLaunchNet == null) return null;
+    return Math.round(summary.preLaunchNet * 0.20);
+  } else {
+    // Pre-launch (or unreleased): use current lifetime (== preLaunch here).
+    return Math.round(summary.lifetimeNet * 0.20);
+  }
+}
 
 export async function registerRoutes(
   httpServer: Server,
@@ -95,11 +129,21 @@ export async function registerRoutes(
         // Get latest revision total if any
         const latestRevision = storage.getLatestRevisionTotal(p.id);
 
+        // v2.1 wishlist summary: pre-launch, post-launch, lifetime,
+        // day-over-day delta, and first-month forecast (locked to pre-launch
+        // count once released).
+        const releaseDate = storage.getProductReleaseDate(p.id);
+        const wishlistSummary = storage.getSteamWishlistSummary(p.id, releaseDate);
+        const steamFirstMonthForecast = computeSteamFirstMonthForecast(
+          wishlistSummary,
+          releaseDate,
+        );
+
         return {
           ...p,
           platforms,
           perPlatformPricing: p.perPlatformPricing ? JSON.parse(p.perPlatformPricing) : null,
-          latestSteamWishlistCount: latestSteamWl?.cumulativeCount ?? null,
+          latestSteamWishlistCount: wishlistSummary.lifetimeNet ?? latestSteamWl?.cumulativeCount ?? null,
           latestPs5WishlistCount: latestPs5Wl?.cumulativeCount ?? null,
           latestPs5PrepurchaseCount: latestPs5Pre?.cumulativeCount ?? null,
           compsForecastTotal: compTotal,
@@ -108,6 +152,9 @@ export async function registerRoutes(
           dynamicFirstMonthTotal,
           dynamicFirstYearTotal,
           dynamicLtTotal,
+          // v2.1 fields
+          steamWishlistSummary: wishlistSummary,
+          steamFirstMonthForecast,
         };
       });
       res.json(enriched);
@@ -218,11 +265,20 @@ export async function registerRoutes(
         latestPs5Pre?.cumulativeCount ?? null,
       );
 
+      // v2.1 wishlist summary: pre-launch, post-launch, lifetime,
+      // day-over-day delta, and locked-once-released first-month forecast.
+      const releaseDateForSummary = storage.getProductReleaseDate(id);
+      const steamWishlistSummary = storage.getSteamWishlistSummary(id, releaseDateForSummary);
+      const steamFirstMonthForecast = computeSteamFirstMonthForecast(
+        steamWishlistSummary,
+        releaseDateForSummary,
+      );
+
       res.json({
         ...product,
         platforms,
         perPlatformPricing: product.perPlatformPricing ? JSON.parse(product.perPlatformPricing) : null,
-        latestSteamWishlistCount: latestSteamWl?.cumulativeCount ?? null,
+        latestSteamWishlistCount: steamWishlistSummary.lifetimeNet ?? latestSteamWl?.cumulativeCount ?? null,
         latestSteamPrepurchaseCount: latestSteamPre?.cumulativeCount ?? null,
         latestPs5WishlistCount: latestPs5Wl?.cumulativeCount ?? null,
         latestPs5PrepurchaseCount: latestPs5Pre?.cumulativeCount ?? null,
@@ -230,7 +286,11 @@ export async function registerRoutes(
         dynamicForecasts: dynamicData,
         dynamicFullForecasts,  // per-platform {firstMonth, firstYear, lifetime}
         forecastRevisions,
-        steamFirstMonthForecast: latestSteamWl ? Math.round(latestSteamWl.cumulativeCount * 0.20) : null,
+        steamFirstMonthForecast,
+        // v2.1 fields: full wishlist summary object with pre-launch,
+        // post-launch, lifetime, day-over-day delta, and staleness flag.
+        // See SteamWishlistSummary type in storage.ts for field docs.
+        steamWishlistSummary,
         ps5FirstMonthForecast: latestPs5Pre ? Math.round(latestPs5Pre.cumulativeCount * 8) : null,
         prepurchaseStartDate,
         prepurchaseTargetDate,

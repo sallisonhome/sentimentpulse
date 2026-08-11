@@ -134,7 +134,52 @@ export default function ProductDetail() {
 
       <div className="space-y-3">
         {/* ─── Steam Wishlist Count ───────────────────────────────────── */}
-        {hasSteam && (
+        {hasSteam && (() => {
+          // v2.1 (2026-08-11): show current count, day-over-day delta,
+          // pre-launch snapshot (locked at release), and first-month
+          // forecast (locked to pre-launch × 0.20 once released).
+          const summary = product.steamWishlistSummary as {
+            preLaunchNet: number | null;
+            postLaunchNet: number | null;
+            lifetimeNet: number | null;
+            dayOverDayDelta: number | null;
+            latestDate: string | null;
+            dayOverDayComparisonDate: string | null;
+            isStale: boolean;
+            rowCount: number;
+          } | null | undefined;
+
+          const lifetime = summary?.lifetimeNet ?? product.latestSteamWishlistCount;
+          const delta = summary?.dayOverDayDelta ?? null;
+          const preLaunch = summary?.preLaunchNet ?? null;
+          const isStale = summary?.isStale ?? false;
+          const latestDate = summary?.latestDate ?? null;
+
+          // Only show pre-launch section if the game has released AND we have
+          // pre-launch data to show. Pre-release products don't need this row
+          // (their pre-launch total == lifetime count already shown above).
+          const today = new Date().toISOString().split("T")[0];
+          const releaseDate = product.releaseDate as string | null | undefined;
+          const hasReleased = !!releaseDate && releaseDate <= today;
+          const showPreLaunchRow = hasReleased && preLaunch != null;
+
+          // Format the day-over-day delta with sign + color.
+          const deltaEl = delta != null ? (
+            <span
+              className={
+                delta > 0
+                  ? "text-emerald-500"
+                  : delta < 0
+                    ? "text-red-500"
+                    : "text-muted-foreground"
+              }
+              data-testid="text-steam-wl-delta"
+            >
+              {delta > 0 ? "+" : delta < 0 ? "" : "±"}{formatNumber(delta)}
+            </span>
+          ) : null;
+
+          return (
           <CollapsibleSection
             title="Steam Wishlist Count"
             sectionKey="steamWishlist"
@@ -142,16 +187,32 @@ export default function ProductDetail() {
             onToggle={toggleSection}
             rightContent={
               <span className="text-sm font-semibold tabular-nums" data-testid="text-steam-wl-ltd">
-                LTD: {formatNumber(product.latestSteamWishlistCount)}
+                LTD: {formatNumber(lifetime)}
               </span>
             }
           >
             <div className="space-y-3">
+              {/* Current wishlist count + day-over-day delta */}
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-xs text-muted-foreground">First Month Forecast (WL × 0.20)</div>
-                  <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-first-month">
-                    {formatNumber(product.steamFirstMonthForecast)} <span className="text-xs font-normal text-muted-foreground">units</span>
+                  <div className="text-xs text-muted-foreground">
+                    Current Wishlist Count
+                    {isStale && latestDate && (
+                      <span className="ml-1 text-amber-500" title={`Last updated ${latestDate} — data ingestion may be behind`}>
+                        ⚠
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-wl-current">
+                    {formatNumber(lifetime)}
+                    {deltaEl && (
+                      <span className="ml-2 text-sm font-medium">
+                        {deltaEl}
+                        <span className="ml-1 text-xs text-muted-foreground font-normal">
+                          vs prior day
+                        </span>
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -175,14 +236,51 @@ export default function ProductDetail() {
                   </Button>
                 </div>
               </div>
+
+              {/* Pre-launch snapshot (locked; only for released titles) */}
+              {showPreLaunchRow && (
+                <div className="flex items-center justify-between border-t pt-3">
+                  <div>
+                    <div className="text-xs text-muted-foreground">
+                      Pre-Launch Wishlist Count
+                      <span className="ml-1 text-[10px]">(locked at release {releaseDate})</span>
+                    </div>
+                    <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-wl-prelaunch">
+                      {formatNumber(preLaunch)}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* First Month Forecast */}
+              <div className="flex items-center justify-between border-t pt-3">
+                <div>
+                  <div className="text-xs text-muted-foreground">
+                    First Month Forecast
+                    <span className="ml-1 text-[10px]">
+                      ({hasReleased ? "Pre-Launch WL" : "WL"} × 0.20)
+                    </span>
+                  </div>
+                  <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-first-month">
+                    {formatNumber(product.steamFirstMonthForecast)}{" "}
+                    <span className="text-xs font-normal text-muted-foreground">units</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Sparkline */}
               <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/wishlists`} color="#2563EB" />
               <InfoMessage>
-                Wishlist counts updated daily, first month forecast = 20% of Total Wishlist Count. This number is not relevant for forecasting until 8 weeks prior to launch. Prior to 8 weeks this information is for reference only.
+                Wishlist counts update daily via the Steamworks Partner API. First-month
+                forecast = 20% of {hasReleased ? "pre-launch" : "total"} wishlist count.
+                {hasReleased
+                  ? " This forecast is locked to the pre-launch count as of release day — post-launch wishlists are a different signal and don't update the forecast."
+                  : " This number is not relevant for forecasting until 8 weeks prior to launch. Prior to 8 weeks this information is for reference only."}
               </InfoMessage>
             </div>
           </CollapsibleSection>
-        )}
+          );
+        })()}
 
         {/* ─── Steam Pre-Purchase Count ──────────────────────────────── */}
         {hasSteam && (
