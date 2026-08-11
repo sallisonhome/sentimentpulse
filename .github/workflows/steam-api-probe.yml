@@ -102,19 +102,20 @@ jobs:
           probe "GetAppWishlistReporting (adds/deletes/purchases/gifts)" \
             "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/?key=${KEY}&appid=${APPID}&date=${DATE}"
 
-          # GetDetailedSales requires highwatermark_id (per Valve docs); missing
-          # it silently returns empty. Date should be Pacific Time (not GMT).
-          # Compute yesterday-PT as well as passing GMT-yesterday for comparison.
+          # GetDetailedSales requires highwatermark_id and date in Pacific Time.
+          # Also try with include_view_grants=true to unlock apps the key's user
+          # can view via delegation (not just direct ownership).
           YESTERDAY_PT=$(TZ=America/Los_Angeles date -d "yesterday" +%Y-%m-%d)
-          probe "GetDetailedSales (date=GMT-yesterday, highwatermark_id=0)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${DATE}&highwatermark_id=0"
+          probe "GetDetailedSales (PT=${YESTERDAY_PT}, hwm=0, view_grants=true)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${YESTERDAY_PT}&highwatermark_id=0&include_view_grants=true"
 
-          probe "GetDetailedSales (date=PT-yesterday=${YESTERDAY_PT}, highwatermark_id=0)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${YESTERDAY_PT}&highwatermark_id=0"
+          probe "GetChangedDatesForPartner (hwm=0, view_grants=true)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}&highwatermark=0&include_view_grants=true"
 
-          # GetChangedDatesForPartner needs highwatermark to return anything.
-          probe "GetChangedDatesForPartner (highwatermark=0 to see all history)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}&highwatermark=0"
+          # Try an older PT date in case yesterday-PT is still being finalized.
+          # SM2 launched 2025-09-15 — sales certainly exist for 2025-12-15.
+          probe "GetDetailedSales (PT=2025-12-15, hwm=0, view_grants=true)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-12-15&highwatermark_id=0&include_view_grants=true"
 
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
