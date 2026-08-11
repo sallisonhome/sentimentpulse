@@ -749,18 +749,29 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * Returns the product's Release milestone actualDate (YYYY-MM-DD) or null
-   * if the product has no Release milestone or the release hasn't happened.
-   * Used by phase-filtered read endpoints to partition pre-launch vs
-   * post-launch data by date comparison. Kept as a helper (rather than
-   * inlined) because the release-date resolution rule (Release milestone,
-   * actualDate field, not plannedDate) needs to be consistent across every
-   * consumer.
+   * Returns the product's release date (YYYY-MM-DD) or null if unknown.
+   *
+   * Resolution order (2026-08-11 fix):
+   *   1. Release milestone's actualDate (most authoritative when the game
+   *      has actually shipped and someone recorded the real date).
+   *   2. Fall back to the products.release_date column, which is required
+   *      on every product and set to the target/actual release date.
+   *
+   * The milestone check comes first because a game that slipped will have
+   * an OLDER products.release_date than reality; the milestone's
+   * actualDate captures the true shipped date. But most Saber products
+   * don't have a 'Release' milestone in the default template (they have
+   * 'Launch Trailer', 'Prepurchase Start', etc.), so the fallback is
+   * required for those.
    */
   getProductReleaseDate(productId: number): string | null {
     const milestones = this.getPlsMilestones(productId);
     const release = milestones.find(m => m.name === "Release");
-    return release?.actualDate ?? null;
+    if (release?.actualDate) return release.actualDate;
+
+    // Fallback: products.release_date column.
+    const product = this.getProduct(productId);
+    return product?.releaseDate ?? null;
   }
 
   createPlsMilestone(data: InsertPlsMilestone): PlsMilestone {
