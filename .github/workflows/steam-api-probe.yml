@@ -80,16 +80,23 @@ jobs:
           echo "Date:  $DATE"
           echo "=========================================="
 
+          # SIGPIPE-tolerant: `head -c 400` in a pipeline can close the
+          # upstream write end early, which with set -euo pipefail would
+          # kill the whole probe function on exit 141. Use bash string
+          # slicing on the FULL response instead of piping through head.
           probe() {
             local label="$1"
             local url="$2"
             local resp code body
             resp=$(curl -sS -w "\n---HTTP:%{http_code}---" --max-time 15 "$url" 2>&1 || true)
-            code=$(echo "$resp" | grep -oP "(?<=---HTTP:)\d+" | tail -1)
-            body=$(echo "$resp" | sed 's/---HTTP:.*---//' | tr -d '\n' | head -c 400)
+            code=$(echo "$resp" | grep -oP "(?<=---HTTP:)\d+" | tail -1 || echo "???")
+            body=$(echo "$resp" | sed 's/---HTTP:.*---//' | tr -d '\n')
+            # Truncate to 400 chars using bash param expansion (no pipe).
+            body="${body:0:400}"
             printf "[%s] %s\n" "${code:-???}" "$label"
             printf "    host: %s\n" "$(echo "$url" | sed 's|https\?://||' | cut -d/ -f1)"
             printf "    body: %s\n\n" "$body"
+            return 0
           }
 
           echo ""
