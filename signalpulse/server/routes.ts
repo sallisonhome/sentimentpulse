@@ -164,6 +164,10 @@ export async function registerRoutes(
         // Get latest revision total if any
         const latestRevision = storage.getLatestRevisionTotal(p.id);
 
+        // v3.2 (2026-08-11): Steam Revenue split by release date. Feeds the
+        // dashboard card 'Steam Revenue' triad (Pre-Release / Post-Release / Total).
+        const steamRevenueSplit = storage.getSteamRevenueByReleaseSplit(p.id, releaseDate);
+
         return {
           ...p,
           platforms,
@@ -184,6 +188,8 @@ export async function registerRoutes(
           steamDynamicFirstMonth,
           steamDynamicFirstYear,
           steamDynamicLt,
+          // v3.2 fields: Steam Revenue split (Pre-Release / Post-Release / Total)
+          steamRevenueSplit,
         };
       });
       res.json(enriched);

@@ -203,6 +203,65 @@ export default function Dashboard() {
                     );
                   })()}
 
+                  {/* v3.2 (2026-08-11): Steam Revenue row — Pre-Release /
+                      Post-Release / Total. Only shown when there's ingested
+                      sales data (base + dlc rows). Tagged 'Steam Revenue' so
+                      other platforms can be added as separate rows later. */}
+                  {(() => {
+                    const rev = product.steamRevenueSplit as {
+                      preReleaseRevenueUsd: number;
+                      postReleaseRevenueUsd: number;
+                      totalRevenueUsd: number;
+                      preReleaseRowCount: number;
+                      postReleaseRowCount: number;
+                      releaseDate: string | null;
+                    } | null | undefined;
+                    if (!rev || rev.totalRevenueUsd <= 0) return null;
+                    const hasPre = rev.preReleaseRevenueUsd > 0;
+                    return (
+                      <div className="grid grid-cols-3 gap-x-3 gap-y-2 pt-3 mt-2 border-t">
+                        <div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Revenue · Pre-Release</div>
+                          <div
+                            className={`text-sm font-semibold tabular-nums mt-0.5 ${hasPre ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/60"}`}
+                            data-testid={`text-steam-rev-prerelease-${product.id}`}
+                          >
+                            {formatCurrency(rev.preReleaseRevenueUsd)}
+                          </div>
+                          {hasPre && (
+                            <div className="text-[9px] text-muted-foreground">
+                              Pre-order fulfillment
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Revenue · Post-Release</div>
+                          <div
+                            className="text-sm font-semibold tabular-nums mt-0.5 text-emerald-600 dark:text-emerald-400"
+                            data-testid={`text-steam-rev-postrelease-${product.id}`}
+                          >
+                            {formatCurrency(rev.postReleaseRevenueUsd)}
+                          </div>
+                          <div className="text-[9px] text-muted-foreground">
+                            {rev.postReleaseRowCount} months live
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Revenue · Total</div>
+                          <div
+                            className="text-sm font-semibold tabular-nums mt-0.5 text-emerald-700 dark:text-emerald-300"
+                            data-testid={`text-steam-rev-total-${product.id}`}
+                          >
+                            {formatCurrency(rev.totalRevenueUsd)}
+                          </div>
+                          <div className="text-[9px] text-muted-foreground">
+                            Base + paid DLC
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* v2.5 (2026-08-11): each Dyn column now shows two tiers —
                       Steam-only units on top (source-of-truth from Steam WL),
                       then 'All Platforms' units + revenue below (broken out

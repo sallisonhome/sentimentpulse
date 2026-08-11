@@ -304,6 +304,28 @@ export interface SteamSalesSummary {
   sourceMix: Record<string, number>; // e.g. { csv_upload: 42, portal_fetch: 7 }
 }
 
+/**
+ * Steam sales revenue split by release date — used on the dashboard
+ * product card to show Pre-Release / Post-Release / Total 'Steam Revenue'.
+ * When product release date is null (unshipped titles that never had a
+ * release recorded), everything falls under postRelease as a conservative
+ * default. When a row's date < releaseDate it counts as pre-release
+ * (pre-order fulfillment revenue), otherwise post-release.
+ *
+ * Revenue values sum base + dlc; retail activations are excluded at parse
+ * time already so they don't enter these totals.
+ */
+export interface SteamRevenueByReleaseSplit {
+  preReleaseRevenueUsd: number;   // sum of base + dlc net revenue, rows dated < releaseDate
+  postReleaseRevenueUsd: number;  // sum of base + dlc net revenue, rows dated >= releaseDate (or all rows if releaseDate is null)
+  totalRevenueUsd: number;
+  preReleaseRowCount: number;
+  postReleaseRowCount: number;
+  releaseDate: string | null;     // echoed for downstream reference
+  firstDate: string | null;
+  latestDate: string | null;
+}
+
 // ─── Storage Interface ───────────────────────────────────────────────────────
 
 export interface IStorage {
@@ -346,6 +368,7 @@ export interface IStorage {
   // Steam Sales (v3.0 — CSV upload + portal fetch ingest)
   getSteamSales(productId: number, opts?: { since?: string; until?: string }): SteamSalesDaily[];
   getSteamSalesSummary(productId: number): SteamSalesSummary;
+  getSteamRevenueByReleaseSplit(productId: number, releaseDate: string | null): SteamRevenueByReleaseSplit;
   upsertSteamSalesRows(rows: InsertSteamSalesDaily[]): { inserted: number; updated: number };
   deleteSteamSalesByBatch(batchId: string): number;
 
@@ -774,6 +797,51 @@ export class DatabaseStorage implements IStorage {
     summary.dlcNetRevenueUsd = Math.round(summary.dlcNetRevenueUsd * 100) / 100;
     summary.otherNetRevenueUsd = Math.round(summary.otherNetRevenueUsd * 100) / 100;
     return summary;
+  }
+
+  /**
+   * Steam revenue split by release date. Uses SUM aggregation server-side
+   * to keep the dashboard-list enrichment cheap (one query per product).
+   * Rows dated strictly before releaseDate count as pre-release (pre-order
+   * fulfillment); rows dated on or after releaseDate count as post-release.
+   * If releaseDate is null, everything counts as post-release.
+   */
+  getSteamRevenueByReleaseSplit(productId: number, releaseDate: string | null): SteamRevenueByReleaseSplit {
+    const rows = db.select().from(steamSalesDaily)
+      .where(eq(steamSalesDaily.productId, productId)).all();
+
+    const result: SteamRevenueByReleaseSplit = {
+      preReleaseRevenueUsd: 0,
+      postReleaseRevenueUsd: 0,
+      totalRevenueUsd: 0,
+      preReleaseRowCount: 0,
+      postReleaseRowCount: 0,
+      releaseDate,
+      firstDate: null,
+      latestDate: null,
+    };
+
+    for (const r of rows) {
+      // Only count base + dlc; 'other' (soundtrack, artbook) is excluded
+      // from revenue tracking on the dashboard.
+      if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
+
+      const rev = r.netRevenueUsd;
+      if (releaseDate && r.date < releaseDate) {
+        result.preReleaseRevenueUsd += rev;
+        result.preReleaseRowCount++;
+      } else {
+        result.postReleaseRevenueUsd += rev;
+        result.postReleaseRowCount++;
+      }
+      if (!result.firstDate || r.date < result.firstDate) result.firstDate = r.date;
+      if (!result.latestDate || r.date > result.latestDate) result.latestDate = r.date;
+    }
+
+    result.preReleaseRevenueUsd = Math.round(result.preReleaseRevenueUsd * 100) / 100;
+    result.postReleaseRevenueUsd = Math.round(result.postReleaseRevenueUsd * 100) / 100;
+    result.totalRevenueUsd = Math.round((result.preReleaseRevenueUsd + result.postReleaseRevenueUsd) * 100) / 100;
+    return result;
   }
 
   /**
