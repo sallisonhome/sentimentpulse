@@ -30,6 +30,15 @@ name: Deploy to Droplet
 on:
   push:
     branches: [main]
+    # 2026-08-11: signalpulse has its own workflow (signalpulse-deploy.yml)
+    # that fires only on signalpulse/** changes. Skip the big deploy when
+    # a push touches nothing outside signalpulse/ so single-line
+    # signalpulse fixes don't rebuild sentimentpulse+gtmstudio+triptracker.
+    # If a push touches signalpulse AND another app, THIS workflow still
+    # fires (because non-signalpulse files match), and signalpulse-deploy
+    # also fires — concurrency group 'deploy-droplet' serializes them.
+    paths-ignore:
+      - 'signalpulse/**'
   workflow_dispatch:
 
 concurrency:

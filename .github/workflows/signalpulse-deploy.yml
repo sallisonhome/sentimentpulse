@@ -1,0 +1,138 @@
+name: Deploy SignalPulse
+
+# Signalpulse-only deploy (2026-08-11).
+#
+# Signalpulse lives inside the sentimentpulse monorepo at signalpulse/, but
+# it's an independent Node app with its own service unit. Before this
+# workflow, signalpulse's rebuild was bundled into the main sentimentpulse
+# deploy.yml, so a single-line signalpulse fix triggered a full
+# sentimentpulse+gtmstudio+triptracker+signalpulse deploy (5–10 min).
+#
+# This workflow triggers only when files under signalpulse/ change, pulls
+# main, npm install + build INSIDE signalpulse/, touches its index.html
+# for cache-busting, and restarts signalpulse.service only. Total runtime
+# ~90s.
+#
+# Concurrency: shares the 'deploy-droplet' group with deploy.yml so if
+# both trigger (a push that touches signalpulse/ AND another app), they
+# serialize instead of racing npm installs on the shared filesystem.
+#
+# Required secrets (already configured on the sentimentpulse repo):
+#   DROPLET_SSH_KEY — ed25519 private key whose pubkey is in
+#                     /root/.ssh/authorized_keys on the droplet.
+#
+# Also: deploy.yml adds paths-ignore: ['signalpulse/**'] so a
+# signalpulse-only push doesn't fire the big deploy anymore. When a PR
+# touches signalpulse AND something else, both workflows fire; the
+# concurrency group serializes them (signalpulse first, main second, or
+# vice versa depending on queue order).
+
+"on":
+  push:
+    branches: [main]
+    paths:
+      - 'signalpulse/**'
+      - '.github/workflows/signalpulse-deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull, build, restart signalpulse on droplet
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -euo pipefail
+
+          REPO_DIR=/opt/sentimentpulse
+          SIGNALPULSE_DIR="${REPO_DIR}/signalpulse"
+
+          echo "== Preflight =="
+          [ -d "$SIGNALPULSE_DIR" ] || { echo "ERR: $SIGNALPULSE_DIR missing"; exit 1; }
+          [ -f "$SIGNALPULSE_DIR/package.json" ] || { echo "ERR: signalpulse/package.json missing"; exit 1; }
+
+          echo ""
+          echo "== HEAD before pull =="
+          cd "$REPO_DIR"
+          git log --oneline -1
+
+          echo ""
+          echo "== git pull =="
+          git fetch --quiet origin main
+          git reset --hard origin/main
+          echo "HEAD now: $(git log --oneline -1)"
+
+          echo ""
+          echo "== npm install (signalpulse) =="
+          cd "$SIGNALPULSE_DIR"
+          npm install --no-audit --no-fund
+
+          echo ""
+          echo "== npm run build =="
+          npm run build
+
+          echo ""
+          echo "== Cache-bust: touch dist/public/index.html =="
+          # Match the same cache-bust the main deploy does. If the SPA
+          # index moves in a future signalpulse version, this becomes a
+          # no-op (touch failure is not fatal).
+          for html in "${SIGNALPULSE_DIR}/dist/public/index.html"; do
+            if [ -f "$html" ]; then
+              touch "$html" && echo "touched $html"
+            else
+              echo "skip (missing): $html"
+            fi
+          done
+
+          echo ""
+          echo "== Restart signalpulse.service =="
+          installed_units=$(systemctl list-unit-files --type=service --no-legend | awk '{print $1}')
+          if echo "$installed_units" | grep -qx "signalpulse.service"; then
+            systemctl restart signalpulse
+            sleep 3
+            if systemctl is-active --quiet signalpulse; then
+              echo "signalpulse: active"
+            else
+              echo "signalpulse: FAILED"
+              systemctl status signalpulse --no-pager -n 30 || true
+              exit 1
+            fi
+          else
+            echo "ERR: signalpulse.service not installed on this droplet"
+            exit 1
+          fi
+
+          echo ""
+          echo "== Loopback smoke test =="
+          # signalpulse listens on 5000 per the nginx proxy config.
+          CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
+              http://127.0.0.1:5000/api/settings || echo "000")
+          echo "127.0.0.1:5000/api/settings -> ${CODE}"
+          if [ "$CODE" = "000" ]; then
+            echo "ERR: signalpulse not responding on :5000 after restart"
+            exit 1
+          fi
+
+          echo ""
+          echo "== External smoke test =="
+          # Via nginx (public path /signal/api/settings). Should 200 too.
+          EXTCODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
+              http://127.0.0.1/signal/api/settings || echo "000")
+          echo "nginx /signal/api/settings -> ${EXTCODE}"
+
+          echo ""
+          echo "== DONE =="
+          REMOTEEOF
