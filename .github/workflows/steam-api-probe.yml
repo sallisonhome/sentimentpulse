@@ -92,7 +92,7 @@ jobs:
             code=$(echo "$resp" | grep -oP "(?<=---HTTP:)\d+" | tail -1 || echo "???")
             body=$(echo "$resp" | sed 's/---HTTP:.*---//' | tr -d '\n')
             # Truncate to 400 chars using bash param expansion (no pipe).
-            body="${body:0:800}"
+            body="${body:0:1200}"
             printf "[%s] %s\n" "${code:-???}" "$label"
             printf "    host: %s\n" "$(echo "$url" | sed 's|https\?://||' | cut -d/ -f1)"
             printf "    body: %s\n\n" "$body"
@@ -109,33 +109,43 @@ jobs:
           probe "GetAppWishlistReporting (adds/deletes/purchases/gifts)" \
             "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/?key=${KEY}&appid=${APPID}&date=${DATE}"
 
-          # GetDetailedSales requires: key, date (PT), highwatermark_id.
-          # include_view_grants=true unlocks view-granted (delegated) data.
+          # v6 (2026-08-11): permissions confirmed granted per admin screenshot.
+          # Adding endpoint-variant tests to distinguish 'permission gap' from
+          # 'wrong endpoint' as cause of empty responses.
           YESTERDAY_PT=$(TZ=America/Los_Angeles date -d "yesterday" +%Y-%m-%d)
-          THREEDAYSAGO_PT=$(TZ=America/Los_Angeles date -d "3 days ago" +%Y-%m-%d)
 
-          echo "# Test matrix: hwm=0 with/without view_grants across multiple dates"
-          echo
+          # Variant A: GetDetailedSales (key-based, no partnerid)
+          probe "GetDetailedSales key+date only (PT=2025-12-15, hwm=0)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-12-15&highwatermark_id=0"
 
+          probe "GetDetailedSales key+date+view_grants (PT=2025-12-15)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-12-15&highwatermark_id=0&include_view_grants=true"
+
+          # Variant B: GetChangedDatesForPartner — tells us all dates with any
+          # data ever (highwatermark=0). Empty here = key sees no dates ever.
           probe "GetChangedDatesForPartner (hwm=0, view_grants=true)" \
             "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}&highwatermark=0&include_view_grants=true"
 
-          probe "GetDetailedSales (PT=${YESTERDAY_PT}, hwm=0, view_grants=true)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${YESTERDAY_PT}&highwatermark_id=0&include_view_grants=true"
+          # Variant C: try the api.steampowered.com host instead of partner.
+          # xpaw.me API browser (unofficial but usually accurate) lists
+          # GetDetailedSales at api.steampowered.com/.../v1/ (note: v1 not v001).
+          probe "GetDetailedSales v1 (PUBLIC HOST, PT=2025-12-15)" \
+            "https://api.steampowered.com/IPartnerFinancialsService/GetDetailedSales/v1/?key=${KEY}&date=2025-12-15&highwatermark_id=0"
 
-          probe "GetDetailedSales (PT=${THREEDAYSAGO_PT}, hwm=0, view_grants=true)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${THREEDAYSAGO_PT}&highwatermark_id=0&include_view_grants=true"
+          probe "GetDetailedSales v1 (PUBLIC HOST, PT=${YESTERDAY_PT})" \
+            "https://api.steampowered.com/IPartnerFinancialsService/GetDetailedSales/v1/?key=${KEY}&date=${YESTERDAY_PT}&highwatermark_id=0"
 
-          probe "GetDetailedSales (PT=2025-12-15 post-launch date, hwm=0, view_grants=true)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-12-15&highwatermark_id=0&include_view_grants=true"
+          # Variant D: GetDetailedSalesForDate — legacy variant that needs
+          # partnerid. If this works and GetDetailedSales doesn't, canonical
+          # endpoint may have moved. Trying without partnerid to see if the
+          # error hints at what value to use.
+          probe "GetDetailedSalesForDate WITHOUT partnerid (PT=2025-12-15)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSalesForDate/v001/?key=${KEY}&date=2025-12-15"
 
-          probe "GetDetailedSales (PT=2025-09-15 launch day, hwm=0, view_grants=true)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=0&include_view_grants=true"
-
-          # Sanity: same call without view_grants (should behave same if the
-          # key OWNS the app, differ if it only VIEWS via delegation)
-          probe "GetDetailedSales (PT=2025-12-15, hwm=0, NO view_grants)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-12-15&highwatermark_id=0"
+          # Variant E: GetSupportedAPIList — tells us what endpoints Valve
+          # thinks this key is authorized for. Very useful when auth is opaque.
+          probe "GetSupportedAPIList (what endpoints does Valve say we can call?)" \
+            "https://partner.steam-api.com/ISteamWebAPIUtil/GetSupportedAPIList/v1/?key=${KEY}"
 
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
