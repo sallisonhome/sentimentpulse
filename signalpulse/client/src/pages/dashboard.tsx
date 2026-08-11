@@ -171,13 +171,13 @@ export default function Dashboard() {
                     return (
                       <div className="grid grid-cols-3 gap-x-3 gap-y-2 pt-3 border-t">
                         <div>
-                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Pre-Release WL</div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Pre-Release WL</div>
                           <div className="text-sm font-semibold tabular-nums mt-0.5" data-testid={`text-steam-wl-prerelease-${product.id}`}>
                             {formatNumber(preRelease)}
                           </div>
                         </div>
                         <div>
-                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Current WL</div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Current WL</div>
                           <div className="text-sm font-semibold tabular-nums mt-0.5" data-testid={`text-steam-wl-current-${product.id}`}>
                             {formatNumber(current)}
                           </div>

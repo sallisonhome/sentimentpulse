@@ -201,7 +201,7 @@ export default function ProductDetail() {
                   {/* Pre-Release count (primary, larger). Always shown. */}
                   <div>
                     <div className="text-xs text-muted-foreground">
-                      Pre-Release Wishlist Count
+                      Steam Pre-Release Wishlist Count
                       {hasReleased && (
                         <span className="ml-1 text-[10px]">(locked at release {releaseDate})</span>
                       )}
@@ -217,7 +217,7 @@ export default function ProductDetail() {
                   {/* Current count (secondary, smaller). Always shown. */}
                   <div>
                     <div className="text-xs text-muted-foreground">
-                      Current Wishlist Count
+                      Steam Current Wishlist Count
                       {isStale && latestDate && (
                         <span className="ml-1 text-amber-500" title={`Last updated ${latestDate} — data ingestion may be behind`}>
                           ⚠
@@ -264,9 +264,9 @@ export default function ProductDetail() {
               <div className="flex items-center justify-between border-t pt-3">
                 <div>
                   <div className="text-xs text-muted-foreground">
-                    First Month Forecast
+                    Steam First Month Forecast
                     <span className="ml-1 text-[10px]">
-                      (Pre-Release WL × 0.27{hasReleased ? " — locked" : ""})
+                      (Steam Pre-Release WL × 0.27{hasReleased ? " — locked" : ""})
                     </span>
                   </div>
                   <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-first-month">
