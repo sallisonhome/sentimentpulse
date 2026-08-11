@@ -142,15 +142,45 @@ jobs:
           probe "GetDetailedSalesForDate WITHOUT partnerid (PT=2025-12-15)" \
             "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSalesForDate/v001/?key=${KEY}&date=2025-12-15"
 
-          # Variant E: GetSupportedAPIList — tells us what endpoints Valve
-          # thinks this key is authorized for. Grep just the interface names
-          # so we see the full list without hitting the 1200-char body cap.
-          echo "[GetSupportedAPIList] Full list of authorized interfaces:"
-          curl -sS --max-time 20 \
-            "https://partner.steam-api.com/ISteamWebAPIUtil/GetSupportedAPIList/v1/?key=${KEY}" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(chr(10).join(sorted([i['name'] for i in d['apilist']['interfaces']])))" \
-            2>&1 | sed 's/^/    /'
-          echo
+          # Variant E: GetSupportedAPIList — confirmed empty (only public
+          # interfaces listed; IPartnerFinancialsService doesn't appear even
+          # though wishlist calls succeed. GetSupportedAPIList is unreliable
+          # for partner-only interfaces).
+
+          # Variant F: sanity — hit GetAppWishlistReporting alongside
+          # GetDetailedSales in the SAME curl session against SAME host with
+          # SAME auth path. Rules out any per-endpoint routing weirdness.
+          echo "[BACK-TO-BACK] wishlist THEN sales for same day/appid/key:"
+          echo "  wishlist yesterday-GMT ($DATE):"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/?key=${KEY}&appid=${APPID}&date=${DATE}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('response',{}); s=r.get('wishlist_summary'); print(f'    HAS DATA: adds={s.get(\"wishlist_adds\")}, deletes={s.get(\"wishlist_deletes\")}, purchases={s.get(\"wishlist_purchases\")}' if s else '    EMPTY response')" 2>&1
+          echo "  sales yesterday-PT ($YESTERDAY_PT):"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${YESTERDAY_PT}&highwatermark_id=0" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('response',{}); items=r.get('results') or r.get('items') or []; print(f'    HAS DATA: {len(items)} results, max_id={r.get(\"max_id\")}' if r else '    EMPTY response'); print(f'    keys present in response: {sorted(r.keys())}')" 2>&1
+          echo "  sales 2025-09-15 (launch day):"
+          curl -sS --max-time 15 \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=0" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('response',{}); print(f'    top-level keys: {sorted(d.keys())}, response keys: {sorted(r.keys())}')" 2>&1
+
+          # Variant G: try v2 endpoint (in case Valve migrated)
+          probe "GetDetailedSales v002 (2025-09-15)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v002/?key=${KEY}&date=2025-09-15&highwatermark_id=0"
+
+          # Variant H: try IPublisherFinancials (alternative service name)
+          probe "IPublisherFinancials/GetDetailedSales v001 (2025-09-15)" \
+            "https://partner.steam-api.com/IPublisherFinancials/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=0"
+
+          probe "IPublisherFinancialsService/GetDetailedSales v001 (2025-09-15)" \
+            "https://partner.steam-api.com/IPublisherFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=2025-09-15&highwatermark_id=0"
+
+          # Variant I: totally bogus method to see what a REAL error looks like.
+          # If it 400s with something like 'invalid method' we know Valve
+          # DOES distinguish real endpoints — confirming the empty {response:{}}
+          # on real endpoints is a scope issue not a routing issue.
+          probe "GARBAGE method (control: what does real 400 look like?)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/ThisDoesNotExist/v001/?key=${KEY}"
 
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
