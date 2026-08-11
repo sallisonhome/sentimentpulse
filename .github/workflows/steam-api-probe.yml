@@ -143,9 +143,14 @@ jobs:
             "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSalesForDate/v001/?key=${KEY}&date=2025-12-15"
 
           # Variant E: GetSupportedAPIList — tells us what endpoints Valve
-          # thinks this key is authorized for. Very useful when auth is opaque.
-          probe "GetSupportedAPIList (what endpoints does Valve say we can call?)" \
-            "https://partner.steam-api.com/ISteamWebAPIUtil/GetSupportedAPIList/v1/?key=${KEY}"
+          # thinks this key is authorized for. Grep just the interface names
+          # so we see the full list without hitting the 1200-char body cap.
+          echo "[GetSupportedAPIList] Full list of authorized interfaces:"
+          curl -sS --max-time 20 \
+            "https://partner.steam-api.com/ISteamWebAPIUtil/GetSupportedAPIList/v1/?key=${KEY}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(chr(10).join(sorted([i['name'] for i in d['apilist']['interfaces']])))" \
+            2>&1 | sed 's/^/    /'
+          echo
 
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
