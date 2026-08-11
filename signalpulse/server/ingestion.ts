@@ -44,6 +44,7 @@ interface IngestionRunResult {
 // always request YESTERDAY's date, never today's.
 
 export const STEAM_PARTNER_FINANCIALS_BASE = "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/";
+export const STEAM_PARTNER_DETAILED_SALES_BASE = "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/";
 
 export interface SteamWishlistReportingApiResponse {
   response: {
@@ -67,6 +68,128 @@ export interface SteamWishlistReportingApiResponse {
 /** Returns YYYY-MM-DD for "yesterday" in GMT, matching Steam's date-bounding. */
 export function getYesterdayGmtDateString(): string {
   return new Date(Date.now() - 86400000).toISOString().split("T")[0];
+}
+
+/**
+ * Returns YYYY-MM-DD for "yesterday" in Pacific Time. GetDetailedSales is
+ * date-bounded in PT (unlike GetAppWishlistReporting which uses GMT). We
+ * use Intl.DateTimeFormat with the America/Los_Angeles zone rather than
+ * a hardcoded offset so DST is handled correctly year-round.
+ */
+export function getYesterdayPtDateString(): string {
+  const yesterdayUtc = new Date(Date.now() - 86400000);
+  // en-CA locale outputs YYYY-MM-DD.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(yesterdayUtc);
+}
+
+// ─── Steam Detailed Sales ────────────────────────────────────────────────────
+//
+// A row from IPartnerFinancialsService/GetDetailedSales. See:
+//   https://partner.steamgames.com/doc/webapi/IPartnerFinancialsService
+//
+// Only the fields signalpulse currently consumes are typed here. Full field
+// list per Valve docs is much larger (country_code, currency, base_price,
+// combined_discount_id, net_tax_usd, etc.) — extend as needed.
+export interface SteamDetailedSalesResultItem {
+  partnerid: number;
+  date: string;
+  /** "Package" (for package sales / CD-key activations) or "MicroTxn" (in-game). */
+  line_item_type: string;
+  /** "Steam" for direct Steam sales, "Retail" for CD-key activations. */
+  package_sale_type?: string;
+  packageid?: number;
+  appid?: number;
+  primary_appid?: number;
+  net_units_sold?: number;
+  gross_units_sold?: number;
+  gross_units_activated?: number;
+}
+
+export interface SteamDetailedSalesApiResponse {
+  response?: {
+    results?: SteamDetailedSalesResultItem[];
+    /** Max id in returned batch; use as next highwatermark_id until it == input. */
+    max_id?: string | number;
+  };
+}
+
+/**
+ * Fetches one PT day of detailed-sales data from GetDetailedSales,
+ * paginating with highwatermark_id until Valve reports no more records.
+ * Returns the concatenated list of line items.
+ *
+ * Pagination protocol (per Valve docs):
+ *   - Start with highwatermark_id=0.
+ *   - On each response, if max_id > input hwm, use max_id as next hwm.
+ *   - When max_id == input hwm, no more records.
+ *
+ * Failure modes:
+ *   - HTTP error → returns { ok:false, error }
+ *   - 200 with empty response → returns { ok:true, items:[] } (common
+ *     when key lacks Sales scope; caller decides how to surface that)
+ *   - Loop safety cap at 100 iterations to prevent infinite loops if
+ *     Valve regresses the protocol.
+ */
+export async function fetchSteamDetailedSalesDay(
+  apiKey: string,
+  datePt: string,
+): Promise<
+  | { ok: true; items: SteamDetailedSalesResultItem[] }
+  | { ok: false; error: string }
+> {
+  const items: SteamDetailedSalesResultItem[] = [];
+  let hwm = "0";
+  const maxIterations = 100;
+  for (let i = 0; i < maxIterations; i++) {
+    const url = `${STEAM_PARTNER_DETAILED_SALES_BASE}?key=${apiKey}&date=${datePt}&highwatermark_id=${hwm}&include_view_grants=true`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const bodyText = await resp.text().catch(() => "");
+      return { ok: false, error: `HTTP ${resp.status} — ${bodyText.slice(0, 200)}` };
+    }
+    const data = (await resp.json()) as SteamDetailedSalesApiResponse;
+    const pageItems = data?.response?.results ?? [];
+    items.push(...pageItems);
+
+    const maxId = String(data?.response?.max_id ?? "0");
+    if (maxId === hwm) {
+      // No more records available for this date.
+      break;
+    }
+    hwm = maxId;
+  }
+  return { ok: true, items };
+}
+
+/**
+ * Sums up prepurchase units for a single app from a bag of GetDetailedSales
+ * line items. A prepurchase is any Package sale (line_item_type="Package",
+ * package_sale_type="Steam") whose primary_appid matches. Uses net_units_sold
+ * (gross minus returns) as the counted quantity — matches how signalpulse's
+ * cumulativeCount is meant to track "net units in customers' hands".
+ *
+ * Note: We do NOT filter by date-vs-release-date here; the calling code is
+ * expected to only invoke this for dates BEFORE the product's release date.
+ * That keeps this helper single-purpose and testable.
+ */
+export function countAppPrepurchaseUnits(
+  items: SteamDetailedSalesResultItem[],
+  appId: number,
+): number {
+  let total = 0;
+  for (const item of items) {
+    if (item.line_item_type !== "Package") continue;
+    if (item.package_sale_type !== "Steam") continue;
+    if (item.primary_appid !== appId) continue;
+    const n = Number(item.net_units_sold ?? 0);
+    if (Number.isFinite(n)) total += n;
+  }
+  return total;
 }
 
 /**
@@ -187,34 +310,81 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
         dataPoints++;
       }
 
-      // Steam prepurchase data — only ingest if prepurchase period has started
-      // Check the Prepurchase Start milestone for an actual date
+      // Steam prepurchase data — v2.0 (2026-08-11): rebuilt against the
+      // *correct* Steamworks endpoint.
+      //
+      // The old code called ISteamUserStats/GetAppPrepurchaseReporting/v1/
+      // — that endpoint does not exist. There is no dedicated prepurchase
+      // reporting endpoint in the current Steamworks Web API.
+      //
+      // Prepurchases flow through IPartnerFinancialsService/GetDetailedSales
+      // as ordinary Package sales (line_item_type = "Package",
+      // package_sale_type = "Steam") that occur BEFORE the product's release
+      // date. To reproduce a "prepurchase count" you must:
+      //   1. Call GetDetailedSales for every date between prepurchase start
+      //      and the target date (paginating with highwatermark_id).
+      //   2. Filter results by primary_appid = product.steamAppId AND
+      //      line_item_type = "Package" AND package_sale_type = "Steam".
+      //   3. Sum net_units_sold across matched line items.
+      //
+      // For daily ingestion (this cron), we only need to pull ONE day's
+      // sales and store its contribution. Cumulative rolls forward from
+      // the previous day's stored value + today's daily delta.
+      //
+      // NOTE 1: Sales data requires the "Sales & Activations Reporting"
+      // sub-permission on the API key, which is a DIFFERENT scope than
+      // wishlist reporting. As of 2026-08-11, the configured key has
+      // wishlist scope but not sales scope, so this block returns 0 units
+      // with a clear "scope not granted" error until sales scope is added.
+      // Verified via steam-api-probe.yml workflow.
+      //
+      // NOTE 2: Dates for GetDetailedSales are Pacific Time, not GMT
+      // (wishlist reporting uses GMT — different conventions per endpoint).
+      // We use yesterday-PT here, matching Valve's convention.
       const plsMilestones = storage.getPlsMilestones(product.id);
       const prepurchaseStart = plsMilestones.find(m => m.name === "Prepurchase Start");
       const prepurchaseActive = !!prepurchaseStart?.actualDate;
 
       if (prepurchaseActive) {
-        // NOTE: GetAppPrepurchaseReporting is a separate, still-unverified
-        // legacy endpoint. Left untouched per task scope (only the wishlist
-        // endpoint was confirmed broken/fixed here) — kept best-effort.
-        const prepurchaseUrl = `https://partner.steam-api.com/ISteamUserStats/GetAppPrepurchaseReporting/v1/?key=${apiKey}&appid=${product.steamAppId}`;
+        // Only ingest prepurchases for dates AFTER prepurchase start and
+        // BEFORE the release date. Dates on/after release are regular sales.
+        const releaseMilestone = plsMilestones.find(m => m.name === "Release");
+        const releaseDate = releaseMilestone?.actualDate ?? null;
+        const targetIsBeforeRelease = releaseDate == null || targetDate < releaseDate;
 
-        const preResponse = await fetch(prepurchaseUrl);
-        if (preResponse.ok) {
-          const preData = await preResponse.json();
-          const totalPrepurchases = preData?.response?.total_prepurchases;
-          if (totalPrepurchases != null) {
+        if (!targetIsBeforeRelease) {
+          log(`Steam prepurchase skipped for ${product.title}: target date ${targetDate} is on/after release ${releaseDate}`, "ingestion");
+        } else {
+          // Use yesterday-PT (Steam sales are date-bounded in PT).
+          const targetDatePt = getYesterdayPtDateString();
+
+          const salesResult = await fetchSteamDetailedSalesDay(apiKey, targetDatePt);
+          if (!salesResult.ok) {
+            productErrors.push({
+              productId: product.id,
+              title: product.title,
+              error: `prepurchase (sales): ${salesResult.error}`,
+            });
+            log(`Steam sales fetch failed for ${product.title}: ${salesResult.error}`, "ingestion");
+          } else {
+            const appIdNum = Number(product.steamAppId);
+            const prepurchaseUnitsToday = countAppPrepurchaseUnits(salesResult.items, appIdNum);
+
             const latest = storage.getLatestSteamPrepurchase(product.id);
-            const prevCount = latest?.cumulativeCount ?? 0;
-            const delta = totalPrepurchases - prevCount;
+            const prevCumulative = latest?.cumulativeCount ?? 0;
+            const newCumulative = prevCumulative + prepurchaseUnitsToday;
 
             storage.addSteamPrepurchase({
               productId: product.id,
               date: targetDate,
-              cumulativeCount: totalPrepurchases,
-              dailyDelta: Math.max(0, delta),
+              cumulativeCount: newCumulative,
+              dailyDelta: prepurchaseUnitsToday,
               source: "api",
             });
+
+            if (prepurchaseUnitsToday === 0 && salesResult.items.length === 0) {
+              log(`Steam prepurchase for ${product.title}: 0 line items returned (likely missing Sales scope on API key)`, "ingestion");
+            }
             dataPoints++;
           }
         }
