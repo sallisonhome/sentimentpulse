@@ -73,38 +73,40 @@ export function classifySku(productName: string, gameTitle: string): "base" | "d
     return "other";
   }
 
-  // Rule 1: exact or base-variant match
+  // Rule 1: exact match
   if (p === g) return "base";
 
-  // Common base variant patterns (case-insensitive)
-  const baseVariantSuffixes = [
-    /\s-\s+deluxe\s+edition\b/i,
-    /\s-\s+standard\s+edition\b/i,
-    /\s-\s+gold\s+edition\b/i,
-    /\s-\s+premium\s+edition\b/i,
-    /\s-\s+ultimate\s+edition\b/i,
-    /\s-\s+collector'?s\s+edition\b/i,
-    /\s-\s+\d+-year\s+anniversary\s+edition\b/i,
-    /\s-\s+anniversary\s+edition\b/i,
-    /\s-\s+goty\s+edition\b/i,
-    /\s-\s+game\s+of\s+the\s+year\b/i,
-  ];
-  for (const rx of baseVariantSuffixes) {
-    if (rx.test(p)) return "base";
-  }
+  // Base variant suffixes only count if the product name starts with the
+  // game title. Without that prefix check, "X - Deluxe Edition" would
+  // match for any unrelated X (real bug from earlier iteration).
+  const startsWithGameTitle =
+    p.startsWith(g + " - ") || p.startsWith(g + " -") || p.startsWith(g + ": ");
+  if (startsWithGameTitle) {
+    const baseVariantSuffixes = [
+      /\s-\s+deluxe\s+edition\b/i,
+      /\s-\s+standard\s+edition\b/i,
+      /\s-\s+gold\s+edition\b/i,
+      /\s-\s+premium\s+edition\b/i,
+      /\s-\s+ultimate\s+edition\b/i,
+      /\s-\s+collector'?s\s+edition\b/i,
+      /\s-\s+\d+-year\s+anniversary\s+edition\b/i,
+      /\s-\s+anniversary\s+edition\b/i,
+      /\s-\s+goty\s+edition\b/i,
+      /\s-\s+game\s+of\s+the\s+year\b/i,
+    ];
+    for (const rx of baseVariantSuffixes) {
+      if (rx.test(p)) return "base";
+    }
 
-  // Rule 3: has a suffix beyond the game title → DLC
-  if (p.startsWith(g + " - ") || p.startsWith(g + " -")) {
+    // Rule 3: game title prefix + any other suffix → DLC.
+    // (Only reached when none of the base-variant regexes matched.)
     return "dlc";
   }
 
-  // Rule 4: fallback. If the product name doesn't reference the game title
-  // at all, that's suspicious — it might be a bundle or unrelated product.
-  // Mark as 'other' so we don't accidentally inflate base-game counts.
-  if (!p.toLowerCase().includes(g.toLowerCase())) {
-    return "other";
-  }
-  return "base";
+  // Rule 4: product name doesn't reference the game title at all.
+  // Mark as 'other' so we don't inflate base-game counts with bundles
+  // or unrelated products that landed in the same CSV.
+  return "other";
 }
 
 /**
