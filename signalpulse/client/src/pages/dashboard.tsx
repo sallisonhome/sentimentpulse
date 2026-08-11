@@ -60,6 +60,12 @@ export default function Dashboard() {
             const dynYearUnits = product.dynamicFirstYearTotal;
             const dynLtUnits = product.dynamicLtTotal;
 
+            // v2.5: Steam-only dynamic forecast (from PC (Steam) row only)
+            const steamDynFirstUnits = product.steamDynamicFirstMonth;
+            const steamDynYearUnits = product.steamDynamicFirstYear;
+            const steamDynLtUnits = product.steamDynamicLt;
+            const hasSteamDyn = steamDynFirstUnits != null;
+
             // Financial: GMV = units × price × 0.66, Net = GMV × 0.70
             const originalGmv = Math.round(originalUnits * price * 0.66);
             const originalNet = Math.round(originalGmv * 0.70);
@@ -197,15 +203,29 @@ export default function Dashboard() {
                     );
                   })()}
 
-                  {/* v1.1: Forecast data grid — 6 columns when a revision
-                      exists (Original + Revised as separate cols), else 5 cols
-                      (Original only). */}
+                  {/* v2.5 (2026-08-11): each Dyn column now shows two tiers —
+                      Steam-only units on top (source-of-truth from Steam WL),
+                      then 'All Platforms' units + revenue below (broken out
+                      via platform mix). Helps viewers connect Steam WL to the
+                      per-platform expansion. Financial figures live under the
+                      All Platforms tier since revenue is combined. */}
                   <div className={`grid ${hasRevision ? "grid-cols-6" : "grid-cols-5"} gap-x-2 pt-3 mt-2 border-t`}>
                     {/* Dynamic First Month */}
                     <div>
                       <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Dyn. 1st Mo</div>
-                      <div className="text-sm font-semibold tabular-nums mt-0.5 text-blue-600 dark:text-blue-400">
-                        {formatNumber(dynFirstUnits)}
+                      {hasSteamDyn && (
+                        <div className="mt-0.5">
+                          <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">Steam</div>
+                          <div className="text-xs font-semibold tabular-nums text-blue-600/70 dark:text-blue-400/70">
+                            {formatNumber(steamDynFirstUnits!)}
+                          </div>
+                        </div>
+                      )}
+                      <div className="mt-1">
+                        <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">All Platforms</div>
+                        <div className="text-sm font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                          {formatNumber(dynFirstUnits)}
+                        </div>
                       </div>
                       {hasPrice && (
                         <div className="mt-1 space-y-0">
@@ -221,8 +241,19 @@ export default function Dashboard() {
                     {/* Dynamic 1 Year */}
                     <div>
                       <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Dyn. 1 Yr</div>
-                      <div className="text-sm font-semibold tabular-nums mt-0.5 text-blue-600 dark:text-blue-400">
-                        {formatNumber(dynYearUnits)}
+                      {hasSteamDyn && (
+                        <div className="mt-0.5">
+                          <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">Steam</div>
+                          <div className="text-xs font-semibold tabular-nums text-blue-600/70 dark:text-blue-400/70">
+                            {formatNumber(steamDynYearUnits!)}
+                          </div>
+                        </div>
+                      )}
+                      <div className="mt-1">
+                        <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">All Platforms</div>
+                        <div className="text-sm font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                          {formatNumber(dynYearUnits)}
+                        </div>
                       </div>
                       {hasPrice && (
                         <div className="mt-1 space-y-0">
@@ -238,8 +269,19 @@ export default function Dashboard() {
                     {/* Dynamic LT Forecast */}
                     <div>
                       <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Dyn. LT</div>
-                      <div className="text-sm font-semibold tabular-nums mt-0.5 text-blue-600 dark:text-blue-400">
-                        {formatNumber(dynLtUnits)}
+                      {hasSteamDyn && (
+                        <div className="mt-0.5">
+                          <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">Steam</div>
+                          <div className="text-xs font-semibold tabular-nums text-blue-600/70 dark:text-blue-400/70">
+                            {formatNumber(steamDynLtUnits!)}
+                          </div>
+                        </div>
+                      )}
+                      <div className="mt-1">
+                        <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">All Platforms</div>
+                        <div className="text-sm font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                          {formatNumber(dynLtUnits)}
+                        </div>
                       </div>
                       {hasPrice && (
                         <div className="mt-1 space-y-0">

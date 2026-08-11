@@ -154,6 +154,13 @@ export async function registerRoutes(
         const dynamicFirstYearTotal = dynamicFull.reduce((sum, d) => sum + d.firstYear, 0);
         const dynamicLtTotal = dynamicFull.reduce((sum, d) => sum + d.lifetime, 0);
 
+        // v2.5 (2026-08-11): expose Steam-only forecast track so the summary
+        // card can display 'Steam Dyn' rows separately from 'All Platforms'.
+        const steamRow = dynamicFull.find(d => d.platform === "PC (Steam)");
+        const steamDynamicFirstMonth = steamRow?.firstMonth ?? null;
+        const steamDynamicFirstYear = steamRow?.firstYear ?? null;
+        const steamDynamicLt = steamRow?.lifetime ?? null;
+
         // Get latest revision total if any
         const latestRevision = storage.getLatestRevisionTotal(p.id);
 
@@ -173,6 +180,10 @@ export async function registerRoutes(
           // v2.1 fields
           steamWishlistSummary: wishlistSummary,
           steamFirstMonthForecast,
+          // v2.5 fields: Steam-only forecast track (for 'Steam Dyn' rows)
+          steamDynamicFirstMonth,
+          steamDynamicFirstYear,
+          steamDynamicLt,
         };
       });
       res.json(enriched);
