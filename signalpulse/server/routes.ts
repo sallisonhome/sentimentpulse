@@ -888,6 +888,280 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Steamworks Portal Fetcher (v3.1, 2026-08-11) ─────────────────
+  //
+  // For products where the CSV export path is empty (e.g. Space Marine 2
+  // whose sales record lives under Focus Entertainment's publisher account,
+  // not Mad Dog Games'). Uses the user's logged-in Steamworks session
+  // cookie to fetch the app-details page HTML and parse the rendered
+  // numbers.
+
+  // GET session cookie metadata (never returns the raw value).
+  app.get("/api/steam/session", (_req, res) => {
+    const session = storage.getSteamworksSession("default");
+    if (!session) {
+      return res.json({ configured: false });
+    }
+    res.json({
+      configured: true,
+      loggedInAs: session.loggedInAs,
+      lastVerifiedAt: session.lastVerifiedAt,
+      lastVerifiedResult: session.lastVerifiedResult,
+      cookiePreview: session.cookieValue.slice(0, 30) + "...",
+      cookieByteLength: session.cookieValue.length,
+      updatedAt: session.updatedAt,
+    });
+  });
+
+  // POST/PUT: upsert session cookie. Body: { cookieValue: string, loggedInAs?: string }
+  app.post("/api/steam/session", (req, res) => {
+    try {
+      const cookieValue = String(req.body?.cookieValue ?? "").trim();
+      if (!cookieValue || cookieValue.length < 20) {
+        return res.status(400).json({ error: "cookieValue is required (min 20 chars)" });
+      }
+      const loggedInAs = typeof req.body?.loggedInAs === "string" ? req.body.loggedInAs.trim() : null;
+      const session = storage.upsertSteamworksSession({
+        id: "default",
+        cookieValue,
+        loggedInAs,
+        lastVerifiedAt: null,
+        lastVerifiedResult: null,
+      });
+      res.json({
+        configured: true,
+        loggedInAs: session.loggedInAs,
+        cookieByteLength: session.cookieValue.length,
+        updatedAt: session.updatedAt,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/steam/session", (_req, res) => {
+    const removed = storage.deleteSteamworksSession("default");
+    res.json({ removed });
+  });
+
+  // POST: test-fetch endpoint. Verifies the session cookie works and
+  // returns the parsed page for one product/date range without writing
+  // anything to the sales table. Used by the settings UI to sanity-check
+  // before enabling the recurring monthly cron.
+  app.post("/api/steam/portal/test-fetch", async (req, res) => {
+    try {
+      const productId = parseInt(String(req.body?.productId ?? "0"));
+      const product = storage.getProduct(productId);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      if (!product.steamAppId) return res.status(400).json({ error: "Product has no steamAppId" });
+
+      const session = storage.getSteamworksSession("default");
+      if (!session) return res.status(400).json({ error: "No Steamworks session cookie configured" });
+
+      const dateStart = String(req.body?.dateStart ?? "").trim();
+      const dateEnd = String(req.body?.dateEnd ?? "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStart) || !/^\d{4}-\d{2}-\d{2}$/.test(dateEnd)) {
+        return res.status(400).json({ error: "dateStart and dateEnd required (YYYY-MM-DD)" });
+      }
+
+      const { fetchPortalPage } = await import("./steamworks-portal");
+      const result = await fetchPortalPage({
+        appId: Number(product.steamAppId),
+        dateStart,
+        dateEnd,
+        cookieHeader: session.cookieValue,
+      });
+
+      // Update session verification status based on the fetch result.
+      const nowIso = new Date().toISOString();
+      storage.upsertSteamworksSession({
+        id: "default",
+        cookieValue: session.cookieValue,
+        loggedInAs: session.loggedInAs,
+        lastVerifiedAt: nowIso,
+        lastVerifiedResult: result.ok ? "ok" : `error: ${(result.error ?? "unknown").slice(0, 200)}`,
+      });
+
+      res.json(result);
+    } catch (err: any) {
+      console.error(`[routes] portal test-fetch error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST: monthly ingest for one product. Fetches the previous full month
+  // (or a custom range) and writes to steam_sales_daily as source=portal_fetch.
+  // Idempotent — uses the same upsert path as CSV uploads.
+  app.post("/api/products/:id/steam/portal-fetch", async (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const product = storage.getProduct(productId);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      if (!product.steamAppId) return res.status(400).json({ error: "Product has no steamAppId" });
+
+      const session = storage.getSteamworksSession("default");
+      if (!session) return res.status(400).json({ error: "No Steamworks session cookie configured" });
+
+      // Default range: previous full month. Overridable via body.
+      const now = new Date();
+      const lastDayPrev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+      const firstDayPrev = new Date(Date.UTC(lastDayPrev.getUTCFullYear(), lastDayPrev.getUTCMonth(), 1));
+      const defaultStart = firstDayPrev.toISOString().slice(0, 10);
+      const defaultEnd = lastDayPrev.toISOString().slice(0, 10);
+      const dateStart = String(req.body?.dateStart ?? defaultStart);
+      const dateEnd = String(req.body?.dateEnd ?? defaultEnd);
+
+      const { fetchPortalPage, portalToSalesRows } = await import("./steamworks-portal");
+      const result = await fetchPortalPage({
+        appId: Number(product.steamAppId),
+        dateStart,
+        dateEnd,
+        cookieHeader: session.cookieValue,
+      });
+
+      if (!result.ok || !result.parsed) {
+        // Record the failed verification
+        const nowIso = new Date().toISOString();
+        storage.upsertSteamworksSession({
+          id: "default",
+          cookieValue: session.cookieValue,
+          loggedInAs: session.loggedInAs,
+          lastVerifiedAt: nowIso,
+          lastVerifiedResult: `error: ${(result.error ?? "unknown").slice(0, 200)}`,
+        });
+        return res.status(502).json({ ok: false, error: result.error, httpStatus: result.httpStatus });
+      }
+
+      const batchId = `portal-${productId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const rows = portalToSalesRows(result.parsed, productId, dateEnd, batchId);
+
+      storage.createSteamSalesUploadBatch({
+        id: batchId,
+        productId,
+        filename: `portal-fetch-${dateStart}-to-${dateEnd}.html`,
+        fileBytes: result.htmlBytes ?? 0,
+        reportDateStart: dateStart,
+        reportDateEnd: dateEnd,
+        publisherName: null, // portal source; unknown at fetch time
+        rowsParsed: 1,
+        rowsIngested: rows.length,
+        rowsSkipped: 0,
+        skippedReason: null,
+        uploadedBy: "portal-fetcher",
+      });
+
+      const upsertResult = rows.length > 0
+        ? storage.upsertSteamSalesRows(rows)
+        : { inserted: 0, updated: 0 };
+
+      // Record successful verification
+      const nowIso = new Date().toISOString();
+      storage.upsertSteamworksSession({
+        id: "default",
+        cookieValue: session.cookieValue,
+        loggedInAs: session.loggedInAs,
+        lastVerifiedAt: nowIso,
+        lastVerifiedResult: "ok",
+      });
+
+      res.json({
+        ok: true,
+        batchId,
+        dateStart,
+        dateEnd,
+        rowsIngested: rows.length,
+        rowsInserted: upsertResult.inserted,
+        rowsUpdated: upsertResult.updated,
+        parsed: result.parsed,
+      });
+    } catch (err: any) {
+      console.error(`[routes] portal-fetch error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST: bulk monthly ingest for every product with a steamAppId.
+  // Used by the recurring cron (see cron config) but also invokable
+  // manually for testing.
+  app.post("/api/steam/portal/monthly-run", async (req, res) => {
+    try {
+      const session = storage.getSteamworksSession("default");
+      if (!session) return res.status(400).json({ error: "No session cookie configured" });
+
+      // Default range: previous full month (UTC).
+      const now = new Date();
+      const lastDayPrev = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 0));
+      const firstDayPrev = new Date(Date.UTC(lastDayPrev.getUTCFullYear(), lastDayPrev.getUTCMonth(), 1));
+      const dateStart = String(req.body?.dateStart ?? firstDayPrev.toISOString().slice(0, 10));
+      const dateEnd = String(req.body?.dateEnd ?? lastDayPrev.toISOString().slice(0, 10));
+
+      const products = storage.getAllProducts().filter(p => p.steamAppId);
+      const results: Array<{ productId: number; title: string; ok: boolean; rowsIngested?: number; error?: string }> = [];
+
+      const { fetchPortalPage, portalToSalesRows } = await import("./steamworks-portal");
+
+      for (const product of products) {
+        try {
+          const result = await fetchPortalPage({
+            appId: Number(product.steamAppId),
+            dateStart,
+            dateEnd,
+            cookieHeader: session.cookieValue,
+          });
+          if (!result.ok || !result.parsed) {
+            results.push({ productId: product.id, title: product.title, ok: false, error: result.error });
+            continue;
+          }
+          const batchId = `portal-${product.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+          const rows = portalToSalesRows(result.parsed, product.id, dateEnd, batchId);
+          storage.createSteamSalesUploadBatch({
+            id: batchId,
+            productId: product.id,
+            filename: `monthly-portal-${dateStart}-to-${dateEnd}.html`,
+            fileBytes: result.htmlBytes ?? 0,
+            reportDateStart: dateStart,
+            reportDateEnd: dateEnd,
+            publisherName: null,
+            rowsParsed: 1,
+            rowsIngested: rows.length,
+            rowsSkipped: 0,
+            skippedReason: null,
+            uploadedBy: "monthly-cron",
+          });
+          if (rows.length > 0) storage.upsertSteamSalesRows(rows);
+          results.push({ productId: product.id, title: product.title, ok: true, rowsIngested: rows.length });
+
+          // Be gentle on Steamworks — sleep 2s between products.
+          await new Promise(r => setTimeout(r, 2000));
+        } catch (err: any) {
+          results.push({ productId: product.id, title: product.title, ok: false, error: err.message });
+        }
+      }
+
+      // Track overall session status
+      const allFailed = results.every(r => !r.ok);
+      storage.upsertSteamworksSession({
+        id: "default",
+        cookieValue: session.cookieValue,
+        loggedInAs: session.loggedInAs,
+        lastVerifiedAt: new Date().toISOString(),
+        lastVerifiedResult: allFailed ? "error: all products failed" : "ok",
+      });
+
+      res.json({
+        dateStart,
+        dateEnd,
+        productsAttempted: products.length,
+        productsOk: results.filter(r => r.ok).length,
+        productsFailed: results.filter(r => !r.ok).length,
+        results,
+      });
+    } catch (err: any) {
+      console.error(`[routes] monthly-run error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Undo an upload by deleting all rows it created.
   app.delete("/api/steam/sales-batch/:batchId", (req, res) => {
     try {

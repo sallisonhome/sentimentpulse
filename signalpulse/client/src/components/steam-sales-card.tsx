@@ -120,6 +120,26 @@ export function SteamSalesCard({ productId }: Props) {
     },
   });
 
+  // Portal fetch — pulls sales data for this product directly from the
+  // Steamworks partner page using the stored session cookie. Used for
+  // products whose CSV export is empty (e.g. Focus-published SM2).
+  const portalFetchMutation = useMutation({
+    mutationFn: async (params: { dateStart?: string; dateEnd?: string } = {}) => {
+      const resp = await fetch(`/api/products/${productId}/steam/portal-fetch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: [`/api/products/${productId}/steam/sales-summary`] });
+      queryClient.invalidateQueries({ queryKey: [`/api/products/${productId}/steam/sales-daily`] });
+    },
+  });
+
   const onFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const file = files[0];
@@ -202,6 +222,50 @@ export function SteamSalesCard({ productId }: Props) {
       {hasSales && summary && (
         <div className="text-[10px] text-muted-foreground">
           Coverage: {summary.firstDate} → {summary.latestDate} · {summary.rowCount} daily rows ingested
+        </div>
+      )}
+
+      {/* Portal fetch button (uses stored session cookie) */}
+      <div className="flex items-center justify-between border rounded p-3 bg-muted/20">
+        <div className="text-xs">
+          <div className="font-medium">Fetch from Steamworks portal</div>
+          <div className="text-muted-foreground text-[10px] mt-0.5">
+            Pulls previous full month from the app-details page. Requires
+            a saved session cookie (Settings page).
+          </div>
+        </div>
+        <Button
+          onClick={() => portalFetchMutation.mutate({})}
+          disabled={portalFetchMutation.isPending}
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs"
+          data-testid="button-portal-fetch"
+        >
+          {portalFetchMutation.isPending ? "Fetching..." : "Fetch previous month"}
+        </Button>
+      </div>
+      {portalFetchMutation.isError && (
+        <div className="text-xs text-red-600 border border-red-500/50 bg-red-500/5 rounded p-2">
+          Portal fetch failed: {(portalFetchMutation.error as any)?.message}
+        </div>
+      )}
+      {portalFetchMutation.isSuccess && portalFetchMutation.data && (
+        <div className="text-xs text-emerald-700 dark:text-emerald-400 border border-emerald-500/50 bg-emerald-500/5 rounded p-2 space-y-0.5">
+          <div className="font-medium">
+            Portal fetch OK · {portalFetchMutation.data.dateStart} → {portalFetchMutation.data.dateEnd}
+          </div>
+          <div className="text-[10px]">
+            {portalFetchMutation.data.rowsIngested} row(s) written
+            ({portalFetchMutation.data.rowsInserted} inserted, {portalFetchMutation.data.rowsUpdated} updated)
+          </div>
+          {portalFetchMutation.data.parsed && (
+            <div className="text-[10px] pt-1 space-y-0.5">
+              <div>Lifetime Steam units (parsed): {portalFetchMutation.data.parsed.lifetimeSteamUnits?.toLocaleString() ?? "?"}</div>
+              <div>Lifetime DLC units (parsed): {portalFetchMutation.data.parsed.lifetimeTotalDlcUnits?.toLocaleString() ?? "?"}</div>
+              <div>Period Steam units (parsed): {portalFetchMutation.data.parsed.periodSteamUnits?.toLocaleString() ?? "?"}</div>
+            </div>
+          )}
         </div>
       )}
 

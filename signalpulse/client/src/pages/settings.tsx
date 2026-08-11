@@ -10,6 +10,7 @@ import { apiRequest } from "@/lib/queryClient";
 import {
   Eye, EyeOff, Save, Check, KeyRound, Server, Shield, Youtube, Trash2, Gamepad2, AlertTriangle,
 } from "lucide-react";
+import { SteamworksSessionSettings } from "@/components/steamworks-session-settings";
 
 interface SettingRow {
   id: number;
@@ -259,6 +260,8 @@ export default function Settings() {
           </Card>
         );
       })}
+
+      <SteamworksSessionSettings />
 
       <ManageProducts />
     </div>
