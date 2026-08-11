@@ -127,12 +127,10 @@ jobs:
           fi
 
           echo ""
-          echo "== External smoke test =="
-          # Via nginx (public path /signal/api/settings). Should 200 too.
-          EXTCODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
-              http://127.0.0.1/signal/api/settings || echo "000")
-          echo "nginx /signal/api/settings -> ${EXTCODE}"
-
-          echo ""
           echo "== DONE =="
+          # (External smoke test via nginx removed 2026-08-11 — curl to
+          # 127.0.0.1 without a Host header hits a different server
+          # block than /signal/ traffic, producing false 404s. The
+          # loopback :5000 test above is sufficient to verify the app
+          # is running post-restart.)
           REMOTEEOF
