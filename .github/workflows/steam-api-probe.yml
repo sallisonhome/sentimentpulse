@@ -260,11 +260,15 @@ jobs:
           echo
           echo
 
-          # GetPartnerAppListForWebAPIKey — tells us which apps the key sees
+          # GetPartnerAppListForWebAPIKey — tells us which apps the key sees.
+          # SIGPIPE-safe: buffer entire body into a var, then bash-slice.
           echo "── GetPartnerAppListForWebAPIKey (which apps does this key see?) ──"
-          curl -sS --max-time 15 \
-            "https://partner.steam-api.com/ISteamApps/GetPartnerAppListForWebAPIKey/v2/?key=${KEY}" \
-            | head -c 1500
+          APPLIST=$(curl -sS --max-time 15 \
+            "https://partner.steam-api.com/ISteamApps/GetPartnerAppListForWebAPIKey/v2/?key=${KEY}" 2>&1)
+          echo "  body_len=${#APPLIST}"
+          echo "  first_1500=${APPLIST:0:1500}"
+          echo "  Bus Bound (2095420) in list? $(echo "$APPLIST" | grep -c '2095420')"
+          echo "  SM2 (2183900) in list? $(echo "$APPLIST" | grep -c '2183900')"
           echo
 
           # ─── v8 (2026-08-11 evening): Bus Bound vs SM2 comparison ───
