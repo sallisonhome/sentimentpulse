@@ -310,86 +310,92 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
         dataPoints++;
       }
 
-      // Steam prepurchase data — v2.0 (2026-08-11): rebuilt against the
-      // *correct* Steamworks endpoint.
+      // Steam sales/prepurchase data — v2.1 (2026-08-11): daily unit sales
+      // for ALL Saber products, not just pre-release ones.
       //
-      // The old code called ISteamUserStats/GetAppPrepurchaseReporting/v1/
-      // — that endpoint does not exist. There is no dedicated prepurchase
-      // reporting endpoint in the current Steamworks Web API.
+      // The old code (v1) called ISteamUserStats/GetAppPrepurchaseReporting/v1/,
+      // which does not exist. v2.0 fixed the endpoint but only ran for dates
+      // before the product's release milestone — which meant SM2 (and every
+      // other launched title) never had unit sales ingested.
       //
-      // Prepurchases flow through IPartnerFinancialsService/GetDetailedSales
-      // as ordinary Package sales (line_item_type = "Package",
-      // package_sale_type = "Steam") that occur BEFORE the product's release
-      // date. To reproduce a "prepurchase count" you must:
-      //   1. Call GetDetailedSales for every date between prepurchase start
-      //      and the target date (paginating with highwatermark_id).
-      //   2. Filter results by primary_appid = product.steamAppId AND
-      //      line_item_type = "Package" AND package_sale_type = "Steam".
-      //   3. Sum net_units_sold across matched line items.
+      // v2.1 fetches daily sales for EVERY Saber product regardless of
+      // release state. The current `steam_prepurchase_daily` table is
+      // repurposed as a general "units sold" tracker. Pre-launch rows
+      // represent prepurchases; post-launch rows represent regular sales.
+      // Both are net_units_sold from GetDetailedSales filtered by
+      // primary_appid.
       //
-      // For daily ingestion (this cron), we only need to pull ONE day's
-      // sales and store its contribution. Cumulative rolls forward from
-      // the previous day's stored value + today's daily delta.
+      // Prepurchase Start milestone is now used only as a lower bound to
+      // avoid ingesting for products that haven't opened for purchase yet.
+      // If a product has no Prepurchase Start milestone AND no Release
+      // milestone, we still attempt — GetDetailedSales returning empty is
+      // a safe outcome.
+      //
+      // OPTIMIZATION: In this loop we fetch sales per-product. Since
+      // GetDetailedSales returns ALL Saber sales for the day (not scoped
+      // to a single appid), this is O(products) duplicate API calls per
+      // ingestion run. Acceptable for the current 3-product portfolio,
+      // but should be hoisted OUTSIDE the loop once >5 products or when
+      // rate limits become a concern. See TODO below.
       //
       // NOTE 1: Sales data requires the "Sales & Activations Reporting"
       // sub-permission on the API key, which is a DIFFERENT scope than
       // wishlist reporting. As of 2026-08-11, the configured key has
-      // wishlist scope but not sales scope, so this block returns 0 units
-      // with a clear "scope not granted" error until sales scope is added.
-      // Verified via steam-api-probe.yml workflow.
+      // wishlist scope but not sales scope, so all sales calls return
+      // empty {response:{}}. Once scope is added, this code starts
+      // filling data automatically with zero further changes.
+      // Verified via steam-api-probe.yml workflow across multiple dates.
       //
       // NOTE 2: Dates for GetDetailedSales are Pacific Time, not GMT
       // (wishlist reporting uses GMT — different conventions per endpoint).
-      // We use yesterday-PT here, matching Valve's convention.
       const plsMilestones = storage.getPlsMilestones(product.id);
       const prepurchaseStart = plsMilestones.find(m => m.name === "Prepurchase Start");
       const prepurchaseActive = !!prepurchaseStart?.actualDate;
 
-      if (prepurchaseActive) {
-        // Only ingest prepurchases for dates AFTER prepurchase start and
-        // BEFORE the release date. Dates on/after release are regular sales.
-        const releaseMilestone = plsMilestones.find(m => m.name === "Release");
-        const releaseDate = releaseMilestone?.actualDate ?? null;
-        const targetIsBeforeRelease = releaseDate == null || targetDate < releaseDate;
+      // Only attempt sales if the product has been opened for purchase
+      // (prepurchase start OR release has actually happened). Products in
+      // pre-announcement have no sales endpoint data by definition.
+      const releaseMilestone = plsMilestones.find(m => m.name === "Release");
+      const releaseHappened = !!releaseMilestone?.actualDate;
+      const purchasableAtSomePoint = prepurchaseActive || releaseHappened;
 
-        if (!targetIsBeforeRelease) {
-          log(`Steam prepurchase skipped for ${product.title}: target date ${targetDate} is on/after release ${releaseDate}`, "ingestion");
+      if (purchasableAtSomePoint) {
+        // TODO(perf): hoist this fetch out of the per-product loop; sales
+        // response is portfolio-wide, so calling per-product duplicates work.
+        const targetDatePt = getYesterdayPtDateString();
+        const salesResult = await fetchSteamDetailedSalesDay(apiKey, targetDatePt);
+        if (!salesResult.ok) {
+          productErrors.push({
+            productId: product.id,
+            title: product.title,
+            error: `sales: ${salesResult.error}`,
+          });
+          log(`Steam sales fetch failed for ${product.title}: ${salesResult.error}`, "ingestion");
         } else {
-          // Use yesterday-PT (Steam sales are date-bounded in PT).
-          const targetDatePt = getYesterdayPtDateString();
+          const appIdNum = Number(product.steamAppId);
+          const unitsToday = countAppPrepurchaseUnits(salesResult.items, appIdNum);
 
-          const salesResult = await fetchSteamDetailedSalesDay(apiKey, targetDatePt);
-          if (!salesResult.ok) {
-            productErrors.push({
-              productId: product.id,
-              title: product.title,
-              error: `prepurchase (sales): ${salesResult.error}`,
-            });
-            log(`Steam sales fetch failed for ${product.title}: ${salesResult.error}`, "ingestion");
-          } else {
-            const appIdNum = Number(product.steamAppId);
-            const prepurchaseUnitsToday = countAppPrepurchaseUnits(salesResult.items, appIdNum);
+          const latest = storage.getLatestSteamPrepurchase(product.id);
+          const prevCumulative = latest?.cumulativeCount ?? 0;
+          const newCumulative = prevCumulative + unitsToday;
 
-            const latest = storage.getLatestSteamPrepurchase(product.id);
-            const prevCumulative = latest?.cumulativeCount ?? 0;
-            const newCumulative = prevCumulative + prepurchaseUnitsToday;
+          storage.addSteamPrepurchase({
+            productId: product.id,
+            date: targetDate,
+            cumulativeCount: newCumulative,
+            dailyDelta: unitsToday,
+            source: "api",
+          });
 
-            storage.addSteamPrepurchase({
-              productId: product.id,
-              date: targetDate,
-              cumulativeCount: newCumulative,
-              dailyDelta: prepurchaseUnitsToday,
-              source: "api",
-            });
-
-            if (prepurchaseUnitsToday === 0 && salesResult.items.length === 0) {
-              log(`Steam prepurchase for ${product.title}: 0 line items returned (likely missing Sales scope on API key)`, "ingestion");
-            }
-            dataPoints++;
+          if (unitsToday === 0 && salesResult.items.length === 0) {
+            log(`Steam sales for ${product.title}: 0 line items returned (likely missing Sales scope on API key)`, "ingestion");
+          } else if (unitsToday === 0 && salesResult.items.length > 0) {
+            log(`Steam sales for ${product.title}: ${salesResult.items.length} line items in response but 0 matched appid=${appIdNum}`, "ingestion");
           }
+          dataPoints++;
         }
       } else {
-        log(`Steam prepurchase skipped for ${product.title}: prepurchase period not started`, "ingestion");
+        log(`Steam sales skipped for ${product.title}: neither prepurchase nor release has happened`, "ingestion");
       }
     } catch (err) {
       productErrors.push({ productId: product.id, title: product.title, error: `wishlist: ${String(err)}` });
