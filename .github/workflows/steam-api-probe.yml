@@ -102,11 +102,19 @@ jobs:
           probe "GetAppWishlistReporting (adds/deletes/purchases/gifts)" \
             "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/?key=${KEY}&appid=${APPID}&date=${DATE}"
 
-          probe "GetDetailedSales (line items incl. prepurchases, refunds)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&appid=${APPID}&date=${DATE}"
+          # GetDetailedSales requires highwatermark_id (per Valve docs); missing
+          # it silently returns empty. Date should be Pacific Time (not GMT).
+          # Compute yesterday-PT as well as passing GMT-yesterday for comparison.
+          YESTERDAY_PT=$(TZ=America/Los_Angeles date -d "yesterday" +%Y-%m-%d)
+          probe "GetDetailedSales (date=GMT-yesterday, highwatermark_id=0)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${DATE}&highwatermark_id=0"
 
-          probe "GetGrossPaymentsForPartnerReport (settlements)" \
-            "https://partner.steam-api.com/IPartnerFinancialsService/GetGrossPaymentsForPartnerReport/v001/?key=${KEY}"
+          probe "GetDetailedSales (date=PT-yesterday=${YESTERDAY_PT}, highwatermark_id=0)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&date=${YESTERDAY_PT}&highwatermark_id=0"
+
+          # GetChangedDatesForPartner needs highwatermark to return anything.
+          probe "GetChangedDatesForPartner (highwatermark=0 to see all history)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}&highwatermark=0"
 
           echo ""
           echo "── PARTNER STATS (may or may not be scoped in) ──"
