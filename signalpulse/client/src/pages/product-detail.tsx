@@ -137,7 +137,7 @@ export default function ProductDetail() {
         {hasSteam && (() => {
           // v2.1 (2026-08-11): show current count, day-over-day delta,
           // pre-launch snapshot (locked at release), and first-month
-          // forecast (locked to pre-launch × 0.20 once released).
+          // forecast (locked to pre-launch × 0.27 once released).
           const summary = product.steamWishlistSummary as {
             preLaunchNet: number | null;
             postLaunchNet: number | null;
@@ -266,7 +266,7 @@ export default function ProductDetail() {
                   <div className="text-xs text-muted-foreground">
                     First Month Forecast
                     <span className="ml-1 text-[10px]">
-                      (Pre-Release WL × 0.20{hasReleased ? " — locked" : ""})
+                      (Pre-Release WL × 0.27{hasReleased ? " — locked" : ""})
                     </span>
                   </div>
                   <div className="text-lg font-semibold tabular-nums mt-0.5" data-testid="text-steam-first-month">
@@ -280,7 +280,7 @@ export default function ProductDetail() {
               <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/wishlists`} color="#2563EB" />
               <InfoMessage>
                 Wishlist counts update daily via the Steamworks Partner API. Dynamic
-                forecasts (first-month = 20% of pre-release count) are calculated ONLY
+                forecasts (first-month = 27% of pre-release count) are calculated ONLY
                 from the pre-release wishlist count.
                 {hasReleased
                   ? " Since this title has released, that count is locked to the value as of release day — post-release wishlist growth is informational and does not update the forecast."

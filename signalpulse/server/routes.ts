@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, type SteamWishlistSummary } from "./storage";
-import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForecastsFull, getAdjustedPlatformMix } from "./forecast";
+import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForecastsFull, getAdjustedPlatformMix, STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER } from "./forecast";
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
@@ -35,11 +35,12 @@ function getForecastingWishlistCount(
 }
 
 /**
- * First-month sales forecast for Steam titles using the WL x 0.20 rule.
+ * First-month sales forecast for Steam titles using the pre-release-locked WL rule.
  *
  * Rule (locked 2026-08-11): once a title has a Release milestone with an
- * actualDate in the past, the forecast is LOCKED to (preLaunchNet * 0.20)
- * and never updates from post-launch wishlist activity. This preserves the
+ * actualDate in the past, the forecast is LOCKED to
+ * (preLaunchNet * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER) and never updates
+ * from post-launch wishlist activity. This preserves the
  * industry-standard interpretation of first-month conversion, which is
  * about pre-launch demand — post-launch wishlists represent 'saw the game,
  * not ready to buy' users, a different signal.
@@ -53,7 +54,7 @@ function computeSteamFirstMonthForecast(
   releaseDate: string | null,
 ): number | null {
   const wl = getForecastingWishlistCount(summary, releaseDate);
-  return wl != null ? Math.round(wl * 0.20) : null;
+  return wl != null ? Math.round(wl * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER) : null;
 }
 
 export async function registerRoutes(

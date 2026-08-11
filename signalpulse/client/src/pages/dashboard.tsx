@@ -149,21 +149,53 @@ export default function Dashboard() {
                     </div>
                   </div>
 
-                  {/* Wishlist row */}
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 pt-3 border-t">
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam WL</div>
-                      <div className="text-sm font-semibold tabular-nums mt-0.5" data-testid={`text-steam-wl-${product.id}`}>
-                        {formatNumber(product.latestSteamWishlistCount)}
+                  {/* Wishlist row — Pre-Release WL (primary, drives forecasts)
+                      + Current WL (with day-over-day delta) + PS5 WL. */}
+                  {(() => {
+                    const summary = product.steamWishlistSummary as {
+                      preLaunchNet: number | null;
+                      lifetimeNet: number | null;
+                      dayOverDayDelta: number | null;
+                      isStale: boolean;
+                    } | null | undefined;
+                    const preRelease = summary?.preLaunchNet ?? product.latestSteamWishlistCount;
+                    const current = summary?.lifetimeNet ?? product.latestSteamWishlistCount;
+                    const delta = summary?.dayOverDayDelta ?? null;
+                    const deltaCls = delta == null
+                      ? ""
+                      : delta > 0
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : delta < 0
+                          ? "text-red-600 dark:text-red-400"
+                          : "text-muted-foreground";
+                    return (
+                      <div className="grid grid-cols-3 gap-x-3 gap-y-2 pt-3 border-t">
+                        <div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Pre-Release WL</div>
+                          <div className="text-sm font-semibold tabular-nums mt-0.5" data-testid={`text-steam-wl-prerelease-${product.id}`}>
+                            {formatNumber(preRelease)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Current WL</div>
+                          <div className="text-sm font-semibold tabular-nums mt-0.5" data-testid={`text-steam-wl-current-${product.id}`}>
+                            {formatNumber(current)}
+                          </div>
+                          {delta != null && (
+                            <div className={`text-[10px] font-medium tabular-nums ${deltaCls}`}>
+                              {delta > 0 ? "+" : delta < 0 ? "" : "±"}{formatNumber(delta)}
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">PS5 WL</div>
+                          <div className="text-sm font-semibold tabular-nums mt-0.5" data-testid={`text-ps5-wl-${product.id}`}>
+                            {formatNumber(product.latestPs5WishlistCount)}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">PS5 WL</div>
-                      <div className="text-sm font-semibold tabular-nums mt-0.5" data-testid={`text-ps5-wl-${product.id}`}>
-                        {formatNumber(product.latestPs5WishlistCount)}
-                      </div>
-                    </div>
-                  </div>
+                    );
+                  })()}
 
                   {/* v1.1: Forecast data grid — 6 columns when a revision
                       exists (Original + Revised as separate cols), else 5 cols

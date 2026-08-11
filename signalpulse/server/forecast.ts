@@ -72,10 +72,22 @@ export interface DynamicForecastResult {
 }
 
 /**
+ * Global first-month conversion multiplier for PRE-RELEASE Steam wishlist
+ * counts. First-month unit forecast = pre-release wishlist ×
+ * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER.
+ *
+ * 2026-08-11: Raised from 0.20 → 0.27 based on updated Saber cohort
+ * conversion data. Once a title has released, the wishlist count fed to
+ * this formula is LOCKED at the pre-release snapshot (see
+ * getForecastingWishlistCount in routes.ts).
+ */
+export const STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER = 0.27;
+
+/**
  * Calculate dynamic forecasts from current wishlist/prepurchase counts.
  *
  * PC (Steam): Always driven by wishlist data
- *   - First Month = wishlist × 0.20
+ *   - First Month = wishlist × STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER (0.27)
  *   - 1 Year = First Month × 2
  *   - LT = 1 Year × 2
  *
@@ -101,7 +113,7 @@ export function calculateDynamicForecastsFull(
 
   // ── PC (Steam): always wishlist-driven ─────────────────────────────────────
   const steamFirstMonth = hasSteam && steamWishlistCount != null
-    ? Math.round(steamWishlistCount * 0.20)
+    ? Math.round(steamWishlistCount * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER)
     : null;
 
   // ── PS5 with prepurchase: LT-first approach ────────────────────────────────
