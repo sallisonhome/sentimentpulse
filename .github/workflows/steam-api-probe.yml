@@ -1,0 +1,142 @@
+name: Steam Partner API Probe
+
+# Diagnostic-only workflow (2026-08-11). Reads the Steam Web API key from
+# signalpulse's app_settings and probes the full set of Steamworks
+# endpoints (Partner Financial + Partner Stats + Public) to see exactly
+# which ones the current key can hit and what data comes back.
+#
+# Trigger: workflow_dispatch only. Nothing runs on push.
+#
+# Safety:
+#   - The key is never echoed to logs (only first-4 / last-4 chars).
+#   - The URLs are constructed on the droplet, not on the runner, so the
+#     key never touches GitHub-side infrastructure or logs.
+#   - Responses may include Valve error messages that reference the key
+#     ID; response bodies are truncated to 400 chars to bound exposure.
+#
+# Inputs:
+#   appid  — Steam AppID to probe. Defaults to 2183900 (Space Marine 2).
+#   date   — YYYY-MM-DD in GMT for date-bounded endpoints. Defaults to
+#            yesterday-GMT (computed on the droplet).
+
+"on":
+  workflow_dispatch:
+    inputs:
+      appid:
+        description: 'Steam AppID (default 2183900 = Space Marine 2)'
+        required: false
+        default: '2183900'
+      date:
+        description: 'Report date YYYY-MM-DD in GMT (blank = yesterday)'
+        required: false
+        default: ''
+
+concurrency:
+  # Share the droplet concurrency group so a probe never races a deploy.
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Probe Steam API endpoints
+        env:
+          PROBE_APPID: ${{ inputs.appid }}
+          PROBE_DATE: ${{ inputs.date }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              PROBE_APPID="${PROBE_APPID}" PROBE_DATE="${PROBE_DATE}" \
+              bash -s <<'REMOTEEOF'
+          set -euo pipefail
+
+          KEY=$(sqlite3 /opt/sentimentpulse/signalpulse/data.db \
+              "SELECT value FROM app_settings WHERE key='steam_api_key';" 2>/dev/null || true)
+
+          if [ -z "${KEY:-}" ]; then
+            echo "ERROR: no steam_api_key in signalpulse's app_settings"
+            exit 1
+          fi
+
+          APPID="${PROBE_APPID:-2183900}"
+          DATE="${PROBE_DATE:-}"
+          if [ -z "$DATE" ]; then
+            DATE=$(date -u -d "yesterday" +%Y-%m-%d)
+          fi
+
+          echo "=========================================="
+          echo "Steam Partner API probe"
+          echo "Key:   ${KEY:0:4}...${KEY: -4}  (${#KEY} chars)"
+          echo "AppID: $APPID"
+          echo "Date:  $DATE"
+          echo "=========================================="
+
+          probe() {
+            local label="$1"
+            local url="$2"
+            local resp code body
+            resp=$(curl -sS -w "\n---HTTP:%{http_code}---" --max-time 15 "$url" 2>&1 || true)
+            code=$(echo "$resp" | grep -oP "(?<=---HTTP:)\d+" | tail -1)
+            body=$(echo "$resp" | sed 's/---HTTP:.*---//' | tr -d '\n' | head -c 400)
+            printf "[%s] %s\n" "${code:-???}" "$label"
+            printf "    host: %s\n" "$(echo "$url" | sed 's|https\?://||' | cut -d/ -f1)"
+            printf "    body: %s\n\n" "$body"
+          }
+
+          echo ""
+          echo "── PARTNER FINANCIAL (Financial group required) ──"
+          echo ""
+
+          probe "GetChangedDatesForPartner (tests Financial access at all)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetChangedDatesForPartner/v001/?key=${KEY}"
+
+          probe "GetAppWishlistReporting (adds/deletes/purchases/gifts)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/?key=${KEY}&appid=${APPID}&date=${DATE}"
+
+          probe "GetDetailedSales (line items incl. prepurchases, refunds)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetDetailedSales/v001/?key=${KEY}&appid=${APPID}&date=${DATE}"
+
+          probe "GetGrossPaymentsForPartnerReport (settlements)" \
+            "https://partner.steam-api.com/IPartnerFinancialsService/GetGrossPaymentsForPartnerReport/v001/?key=${KEY}"
+
+          echo ""
+          echo "── PARTNER STATS (may or may not be scoped in) ──"
+          echo ""
+
+          probe "GetNumberOfCurrentPlayers (Partner host)" \
+            "https://partner.steam-api.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?key=${KEY}&appid=${APPID}"
+
+          probe "GetGlobalAchievementPercentagesForApp (Partner host)" \
+            "https://partner.steam-api.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/?key=${KEY}&gameid=${APPID}"
+
+          probe "GetGlobalStatsForGame (Partner host, needs name whitelist)" \
+            "https://partner.steam-api.com/ISteamUserStats/GetGlobalStatsForGame/v1/?key=${KEY}&appid=${APPID}&count=1&name%5B0%5D=games_played"
+
+          probe "GetSchemaForGame (Partner host)" \
+            "https://partner.steam-api.com/ISteamUserStats/GetSchemaForGame/v2/?key=${KEY}&appid=${APPID}"
+
+          echo ""
+          echo "── PUBLIC (should always work if key is valid) ──"
+          echo ""
+
+          probe "News (api.steampowered.com)" \
+            "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?key=${KEY}&appid=${APPID}&count=1"
+
+          probe "GetNumberOfCurrentPlayers (public host, no key needed)" \
+            "https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/?appid=${APPID}"
+
+          probe "News (partner.steam-api.com) — same key, Partner host" \
+            "https://partner.steam-api.com/ISteamNews/GetNewsForApp/v2/?key=${KEY}&appid=${APPID}&count=1"
+
+          echo ""
+          echo "── DONE ──"
+          REMOTEEOF
