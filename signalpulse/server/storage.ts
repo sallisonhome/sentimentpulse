@@ -393,6 +393,15 @@ export interface IStorage {
     releaseDate: string | null,
     windowDays?: number,
   ): number | null;
+  /**
+   * v3.8 (2026-08-12): Steam cumulative BASE net units to-date (post-release only).
+   * Returns null when unreleased. Sums base skuGroup net units on
+   * every date >= releaseDate. Used to feed Steam LT projection.
+   */
+  getSteamActualCumulativeBaseUnits(
+    productId: number,
+    releaseDate: string | null,
+  ): number | null;
   upsertSteamSalesRows(rows: InsertSteamSalesDaily[]): { inserted: number; updated: number };
   deleteSteamSalesByBatch(batchId: string): number;
 
@@ -947,6 +956,29 @@ export class DatabaseStorage implements IStorage {
     for (const r of rows) {
       if (r.date < windowEndDate) total += r.netUnits;
     }
+    return total > 0 ? total : null;
+  }
+
+  /**
+   * v3.8 (2026-08-12): Steam cumulative BASE net units to-date, post-release.
+   * Sums base skuGroup rows where date >= releaseDate. Returns null when
+   * releaseDate is null (unreleased title) or no rows exist.
+   */
+  getSteamActualCumulativeBaseUnits(
+    productId: number,
+    releaseDate: string | null,
+  ): number | null {
+    if (!releaseDate) return null;
+    const rows = db.select().from(steamSalesDaily)
+      .where(and(
+        eq(steamSalesDaily.productId, productId),
+        gte(steamSalesDaily.date, releaseDate),
+        eq(steamSalesDaily.skuGroup, "base"),
+      ))
+      .all();
+    if (rows.length === 0) return null;
+    let total = 0;
+    for (const r of rows) total += r.netUnits;
     return total > 0 ? total : null;
   }
 

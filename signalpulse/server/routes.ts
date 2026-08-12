@@ -150,11 +150,15 @@ export async function registerRoutes(
         const steamActualFirstMonth = storage.getSteamActualFirstMonthBaseUnits(
           p.id, releaseDate,
         );
+        const steamActualCumulative = storage.getSteamActualCumulativeBaseUnits(
+          p.id, releaseDate,
+        );
         const dynamicFull = calculateDynamicForecastsFull(
           platforms,
           forecastingWl,
           latestPs5Pre?.cumulativeCount ?? null,
           steamActualFirstMonth,
+          steamActualCumulative,
         );
         const dynamicFirstMonthTotal = dynamicFull.reduce((sum, d) => sum + d.firstMonth, 0);
         const dynamicFirstYearTotal = dynamicFull.reduce((sum, d) => sum + d.firstYear, 0);
@@ -342,11 +346,15 @@ export async function registerRoutes(
       const steamActualFirstMonthUnits = storage.getSteamActualFirstMonthBaseUnits(
         id, releaseDateForSummary,
       );
+      const steamActualCumulativeUnits = storage.getSteamActualCumulativeBaseUnits(
+        id, releaseDateForSummary,
+      );
       const dynamicFullForecasts = calculateDynamicForecastsFull(
         platforms,
         forecastingWl,
         latestPs5Pre?.cumulativeCount ?? null,
         steamActualFirstMonthUnits,
+        steamActualCumulativeUnits,
       );
 
       res.json({

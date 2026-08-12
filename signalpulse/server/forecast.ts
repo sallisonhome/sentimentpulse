@@ -130,6 +130,14 @@ export function calculateDynamicForecastsFull(
    * or when actuals are insufficient (<30 days post-release).
    */
   steamActualFirstMonthUnits?: number | null,
+  /**
+   * v3.8 (2026-08-12): Steam cumulative BASE units to-date. When provided,
+   * used as the Steam LT projection (not steamFirstMonth * 4). Steam 1st
+   * Yr is interpolated between 1st Mo and LT (70% of remaining tail).
+   * Pass null pre-release. Console dampening (v3.7) is UNCHANGED — only
+   * the Steam side benefits from observed cumulative.
+   */
+  steamActualCumulativeUnits?: number | null,
 ): DynamicForecastResult[] {
   const mix = getAdjustedPlatformMix(selectedPlatforms);
   const hasSteam = selectedPlatforms.includes("PC (Steam)");
@@ -160,6 +168,22 @@ export function calculateDynamicForecastsFull(
     : 1;
   const consoleLift = 1 + CONSOLE_LIFT_DAMPENING * (steamLift - 1);
 
+  // v3.8: When Steam cumulative actuals are provided, use them as the
+  // Steam LT projection (not first-month * 4). Steam 1st Yr = 1st Mo +
+  // 70% of the tail between 1st Mo and LT — heuristic for how much of
+  // remaining lifetime lands inside year 1. Falls back to 1st Mo * 2/4
+  // when cumulative isn't provided (pre-release or no data).
+  const useCumulative = hasSteam
+    && steamActualCumulativeUnits != null
+    && steamActualCumulativeUnits > 0
+    && steamFirstMonth != null;
+  const steamLifetime = useCumulative
+    ? Math.max(steamActualCumulativeUnits!, steamFirstMonth!)
+    : (steamFirstMonth != null ? steamFirstMonth * 4 : null);
+  const steamFirstYear = useCumulative && steamLifetime != null
+    ? Math.round(steamFirstMonth! + (steamLifetime - steamFirstMonth!) * 0.7)
+    : (steamFirstMonth != null ? steamFirstMonth * 2 : null);
+
   // ── PS5 with prepurchase: LT-first approach ────────────────────────────────
   // prepurchase × 8 = LT forecast, then work backwards
   const ps5Lt = hasPs5Prepurchase ? Math.round(ps5PrepurchaseCount! * 8) : null;
@@ -182,12 +206,13 @@ export function calculateDynamicForecastsFull(
 
     return selectedPlatforms.map(p => {
       if (p === "PC (Steam)" && steamFirstMonth != null) {
-        // PC: independently driven by wishlists
+        // PC: driven by Steam signals. v3.8: cumulative actuals set LT,
+        // 1st Yr interpolates between 1st Mo and LT.
         return {
           platform: p,
           firstMonth: steamFirstMonth,
-          firstYear: steamFirstMonth * 2,
-          lifetime: steamFirstMonth * 4,
+          firstYear: steamFirstYear ?? steamFirstMonth * 2,
+          lifetime: steamLifetime ?? steamFirstMonth * 4,
         };
       }
       if (p === "PS5") {
@@ -224,12 +249,13 @@ export function calculateDynamicForecastsFull(
 
   return selectedPlatforms.map(p => {
     if (p === "PC (Steam)" && steamDynamic != null) {
-      // Steam uses its own value (actuals when available, else wishlist).
+      // v3.8: Steam uses its own values. LT and 1st Yr use cumulative-
+      // aware projections when actuals present; else fall back to *4/*2.
       return {
         platform: p,
         firstMonth: steamDynamic,
-        firstYear: steamDynamic * 2,
-        lifetime: steamDynamic * 4,
+        firstYear: steamFirstYear ?? steamDynamic * 2,
+        lifetime: steamLifetime ?? steamDynamic * 4,
       };
     }
     // Non-Steam platforms: base off wishlist-implied total then apply
