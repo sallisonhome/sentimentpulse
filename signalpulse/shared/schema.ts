@@ -16,6 +16,13 @@ export const products = sqliteTable("products", {
   targetRetailPriceUsd: real("target_retail_price_usd"),
   perPlatformPricing: text("per_platform_pricing"), // JSON: {"PS5": 69.99, "Steam": 59.99}
   steamAppId: text("steam_app_id"),
+  // v3.14 (2026-08-12): cached from Steam's public appdetails API
+  // (header_image field) so the leaderboard doesn't rely on the fragile
+  // synthesized cdn.cloudflare.steamstatic.com path, which 404s for
+  // titles Steam migrated to hashed Akamai asset paths (see
+  // server/steam-header-image.ts). Null until the first ingestion run
+  // populates it; leaderboards.ts falls back to the synthesized URL.
+  steamHeaderImageUrl: text("steam_header_image_url"),
   forecastMode: text("forecast_mode").notNull().default("manual"), // manual | auto_generate
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

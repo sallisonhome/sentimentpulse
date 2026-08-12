@@ -37,14 +37,22 @@ export interface WishlistLeaderboardRow {
 }
 
 /**
- * headerImage is synthesized from the well-known Cloudflare CDN path
- * rather than fetched via appdetails. Steam has moved some assets to
- * hashed paths, so this can 404 for a subset of unreleased titles — the
- * client handles that with an <img onError> fallback (see leaderboards.tsx)
- * rather than paying the latency of a live appdetails call per row here.
+ * v3.14 (2026-08-12): headerImage now prefers the REAL URL cached from
+ * Steam's appdetails API (products.steam_header_image_url, populated by
+ * ingestHeaderImages in ingestion.ts) and only falls back to the
+ * synthesized Cloudflare CDN path when nothing has been cached yet (e.g.
+ * a brand-new title before its first ingestion run). The synthesized path
+ * 404s for titles Steam has moved to hashed Akamai asset paths — that's
+ * exactly the bug this cache fixes for Rideshare Stimulator and Jurassic
+ * Park: Survival. The client's <img onError> fallback (leaderboards.tsx)
+ * still stays as a last-resort safety net either way.
  */
 function synthesizeHeaderImage(steamAppId: string): string {
   return `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/header.jpg`;
+}
+
+function resolveHeaderImage(steamAppId: string, cachedUrl: string | null): string {
+  return cachedUrl ?? synthesizeHeaderImage(steamAppId);
 }
 
 export function getWishlistLeaderboardRows(): WishlistLeaderboardRow[] {
@@ -69,7 +77,7 @@ export function getWishlistLeaderboardRows(): WishlistLeaderboardRow[] {
       productId: p.id,
       title: p.title,
       steamAppId: p.steamAppId!,
-      headerImage: synthesizeHeaderImage(p.steamAppId!),
+      headerImage: resolveHeaderImage(p.steamAppId!, p.steamHeaderImageUrl ?? null),
       wishlistTotal: wishlistSummary.lifetimeNet,
       wishlistDelta1d: wishlistSummary.dayOverDayDelta,
       followersTotal: followersLatest?.followerCount ?? null,

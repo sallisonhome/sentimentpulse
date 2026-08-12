@@ -11,6 +11,7 @@ import { storage } from "./storage";
 import { fetchVideoData, fetchViewCountPublic } from "./youtube-fetcher";
 import { calculateDynamicForecasts } from "./forecast";
 import { fetchFollowerCount } from "./steam-followers";
+import { fetchHeaderImage } from "./steam-header-image";
 import { fetchIgdbHypesBySteamAppids } from "./igdb";
 import { log } from "./index";
 
@@ -438,6 +439,145 @@ const WISHLIST_PAGE_SIZE = 25;
 const WISHLIST_MAX_PAGES = 12; // safety cap: 12 * 25 = 300 raw fetches worst case
 const WISHLIST_TARGET = 200;
 
+// v3.14 (2026-08-12): extended rank lookup for titles outside the top-200
+// fast path above. Same Steam Store endpoint/filter (filter=popularwishlist)
+// — it's the public, unauthenticated listing the storefront's own "Popular
+// Upcoming" chart is built from, confirmed to return an exact global rank
+// (not just top-200) via `start`/`count` pagination up to `total_count`
+// (~5,100 titles as of 2026-08-12). We use a bigger page size here (100 vs
+// the 25 used above) since we may need many pages for a low-ranked title.
+//
+// Strategy per unmatched title:
+//   1. If we have yesterday's rank, seed the scan at max(WISHLIST_TARGET,
+//      lastRank - EXTENDED_WINDOW_BEFORE) — day-to-day rank movement is
+//      usually small, so this normally finds the title in 1-2 requests.
+//   2. Scan forward up to EXTENDED_WINDOW_PAGES pages from the seed. If not
+//      found (a big jump, or first-time lookup with no seed), fall back to
+//      a full scan from WISHLIST_TARGET up to FULL_SCAN_MAX_PAGES pages.
+//   3. Still not found after the full scan → rank stays null ("unranked"),
+//      same as today; this only happens for titles ranked below ~6,000 or
+//      delisted from the chart entirely.
+const EXTENDED_PAGE_SIZE = 100;
+const EXTENDED_WINDOW_BEFORE = 150;
+const EXTENDED_WINDOW_PAGES = 8; // 8 * 100 = 800 items scanned around the seed
+const FULL_SCAN_MAX_PAGES = 60; // 60 * 100 = 6000 items, covers full chart (~5100) with margin
+const EXTENDED_REQUEST_DELAY_MS = 400;
+
+function extendedWishlistUrl(start: number): string {
+  return `https://store.steampowered.com/search/results/?query&start=${start}&count=${EXTENDED_PAGE_SIZE}&dynamic_data=&sort_by=_ASC&supportedlang=english&filter=popularwishlist&infinite=1`;
+}
+
+/**
+ * Fetch one page of the extended popularwishlist listing and return the
+ * appids found on it, in rank order, along with the total_count Steam
+ * reports for the whole chart (so callers know when to stop paginating).
+ */
+async function fetchExtendedWishlistPage(
+  start: number,
+  { attempts = 4 }: { attempts?: number } = {},
+): Promise<{ appids: number[]; totalCount: number }> {
+  let lastErr: Error | null = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(extendedWishlistUrl(start), {
+        headers: { "User-Agent": "signalpulse.saber/wishlist-rank-extended" },
+      });
+      if (res.status === 429 || res.status >= 500) {
+        lastErr = new Error(`Steam extended wishlist search responded ${res.status} at start=${start}`);
+        // fall through to retry with backoff, same pattern as steam-followers.ts
+      } else if (!res.ok) {
+        throw new Error(`Steam extended wishlist search responded ${res.status} at start=${start}`);
+      } else {
+        const json = await res.json();
+        const html: string = json?.results_html ?? "";
+        const totalCount: number = json?.total_count ?? 0;
+        const appids = Array.from(html.matchAll(/data-ds-appid="(\d+)"/g)).map((m) => parseInt(m[1], 10));
+        return { appids, totalCount };
+      }
+    } catch (err: any) {
+      lastErr = err;
+    }
+    if (i < attempts - 1) {
+      const wait = 5000 + Math.floor(Math.random() * 10000) + i * 5000;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw lastErr ?? new Error(`Steam extended wishlist search failed at start=${start}`);
+}
+
+/**
+ * Scan a range of the extended popularwishlist listing looking for
+ * `targetAppids`. Stops as soon as every target is found, the chart is
+ * exhausted, or `maxPages` is reached. Returns rank (1-based, global) per
+ * found appid. Paces requests at EXTENDED_REQUEST_DELAY_MS apart.
+ */
+async function scanExtendedWishlistRange(
+  targetAppids: Set<number>,
+  startOffset: number,
+  maxPages: number,
+): Promise<Map<number, number>> {
+  const found = new Map<number, number>();
+  let offset = startOffset;
+  for (let page = 0; page < maxPages && found.size < targetAppids.size; page++) {
+    const { appids, totalCount } = await fetchExtendedWishlistPage(offset);
+    if (appids.length === 0) break; // end of chart
+    appids.forEach((appid, i) => {
+      if (targetAppids.has(appid) && !found.has(appid)) {
+        found.set(appid, offset + i + 1); // 1-based global rank
+      }
+    });
+    offset += appids.length;
+    if (offset >= totalCount) break;
+    if (found.size < targetAppids.size) {
+      await new Promise((r) => setTimeout(r, EXTENDED_REQUEST_DELAY_MS));
+    }
+  }
+  return found;
+}
+
+/**
+ * Resolve ranks for titles the top-200 fast path didn't match, using the
+ * seeded-window-then-full-scan strategy described above. `unmatched` is
+ * the list of {appid, productId} pairs still needing a rank.
+ */
+async function resolveExtendedWishlistRanks(
+  unmatched: Array<{ appid: number; productId: number }>,
+): Promise<Map<number, number>> {
+  const result = new Map<number, number>();
+  if (unmatched.length === 0) return result;
+
+  // Seed each title's window from yesterday's known rank, if any.
+  const seeded: Array<{ appid: number; seed: number | null }> = unmatched.map((t) => {
+    const last = storage.getLatestSteamWishlistRank(t.productId);
+    return { appid: t.appid, seed: last?.rank ?? null };
+  });
+
+  // Group into: has-seed (windowed scan) vs no-seed (needs full scan).
+  const withSeed = seeded.filter((s) => s.seed != null) as Array<{ appid: number; seed: number }>;
+  const withoutSeed = seeded.filter((s) => s.seed == null);
+
+  // Windowed scans, one seed-window at a time (windows can overlap targets,
+  // so just run each title's own window — cheap since these are rare).
+  for (const { appid, seed } of withSeed) {
+    const windowStart = Math.max(WISHLIST_TARGET, seed - EXTENDED_WINDOW_BEFORE);
+    const hit = await scanExtendedWishlistRange(new Set([appid]), windowStart, EXTENDED_WINDOW_PAGES);
+    if (hit.has(appid)) result.set(appid, hit.get(appid)!);
+  }
+
+  // Anything still missing (no seed, or seed window missed a big jump)
+  // shares one full scan from WISHLIST_TARGET onward.
+  const stillMissing = new Set<number>([
+    ...withoutSeed.map((s) => s.appid),
+    ...withSeed.filter((s) => !result.has(s.appid)).map((s) => s.appid),
+  ]);
+  if (stillMissing.size > 0) {
+    const hits = await scanExtendedWishlistRange(stillMissing, WISHLIST_TARGET, FULL_SCAN_MAX_PAGES);
+    hits.forEach((rank, appid) => result.set(appid, rank));
+  }
+
+  return result;
+}
+
 /** Returns YYYY-MM-DD for "today" in UTC — the ingestion-run date used across all three Steam Leaderboards tables. */
 function getTodayDateString(): string {
   return new Date().toISOString().split("T")[0];
@@ -552,15 +692,81 @@ async function ingestSteamFollowers(): Promise<IngestionResult> {
 }
 
 /**
+ * Header Images (key art) — caches the REAL Steam appdetails header_image
+ * URL on products.steam_header_image_url so the leaderboard doesn't rely
+ * on the fragile synthesized cdn.cloudflare.steamstatic.com path (see
+ * server/steam-header-image.ts header comment for the full story). Same
+ * staleness-ordering + 1 req/sec pacing as ingestSteamFollowers above,
+ * since appdetails shares Steam's store-side rate limiting.
+ *
+ * A failed fetch leaves the existing cached URL untouched (does NOT null
+ * it out) — a transient appdetails hiccup should never regress a title
+ * that already has a working image back to the broken synthesized one.
+ */
+async function ingestHeaderImages(): Promise<IngestionResult> {
+  const titles = getPreReleaseSaberSteamTitles();
+  if (titles.length === 0) {
+    return { source: "steam_header_image", status: "skipped", message: "No pre-release Saber titles with Steam App IDs" };
+  }
+
+  // Titles with no cached image yet go first, then by staleness isn't
+  // tracked per-row here (no daily table for this — it's a cache column),
+  // so we just prioritize "never fetched" over "already has something".
+  const ordered = [...titles].sort((a, b) => {
+    const aMissing = a.steamHeaderImageUrl ? 1 : 0;
+    const bMissing = b.steamHeaderImageUrl ? 1 : 0;
+    return aMissing - bMissing;
+  });
+
+  let dataPoints = 0;
+  let failures = 0;
+
+  for (let i = 0; i < ordered.length; i++) {
+    const product = ordered[i];
+    if (i > 0) await new Promise((r) => setTimeout(r, 1000)); // 1 req/sec between titles
+
+    try {
+      const url = await fetchHeaderImage(Number(product.steamAppId));
+      if (url == null) {
+        failures++;
+        log(`Steam header image: fetch failed for ${product.title} (appid=${product.steamAppId}), keeping existing cached value`, "ingestion");
+        continue;
+      }
+      if (url !== product.steamHeaderImageUrl) {
+        storage.updateProductHeaderImage(product.id, url);
+      }
+      dataPoints++;
+    } catch (err) {
+      failures++;
+      log(`Steam header image ingestion error for ${product.title}: ${err}`, "ingestion");
+    }
+  }
+
+  return {
+    source: "steam_header_image",
+    status: failures > 0 && dataPoints === 0 ? "error" : "success",
+    message: `Refreshed header images for ${dataPoints}/${ordered.length} pre-release titles${failures > 0 ? ` (${failures} failed, kept existing cached value)` : ""}`,
+    productsProcessed: ordered.length,
+    dataPointsAdded: dataPoints,
+  };
+}
+
+/**
  * Steam Wishlist Rank — one paginated fetch of Steam's public
  * "popularwishlist" listing (top ~200 upcoming titles by wishlist count),
  * then a single in-memory lookup per pre-release Saber title. Matches
  * howmanyareplaying's fetchWishlistedGames constants exactly (PAGE_SIZE=25,
  * MAX_PAGES=12, TARGET=200) — see CLAUDE_STEAM_LEADERBOARDS.md §9.5.
  *
- * A pre-release title outside the top-200 that day gets rank=null
- * ("unranked"), not an error. The 7-day rank delta is computed at READ
- * time (storage.getSteamWishlistRankDaysAgo), not stored here.
+ * v3.14 (2026-08-12): titles NOT found in that top-200 fast path no longer
+ * get stuck at rank=null indefinitely. We fall through to
+ * resolveExtendedWishlistRanks(), which pages further into the SAME public
+ * Steam endpoint (filter=popularwishlist) — it covers the entire chart
+ * (~5,100 titles as of this writing), not just the top 200. A title only
+ * stays "unranked" now if it's genuinely off the bottom of the chart or
+ * the extended scan errors out (logged, non-fatal to the rest of the run).
+ * The 7-day rank delta is computed at READ time
+ * (storage.getSteamWishlistRankDaysAgo), not stored here.
  */
 async function ingestSteamWishlistRank(): Promise<IngestionResult> {
   const titles = getPreReleaseSaberSteamTitles();
@@ -601,6 +807,26 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
     };
   }
 
+  // Anything not in the top-200 fast path gets a shot at the extended scan.
+  const unmatched = titles
+    .filter((p) => !rankByAppid.has(Number(p.steamAppId)))
+    .map((p) => ({ appid: Number(p.steamAppId), productId: p.id }));
+
+  let extendedCount = 0;
+  let extendedError: string | null = null;
+  if (unmatched.length > 0) {
+    try {
+      const extended = await resolveExtendedWishlistRanks(unmatched);
+      extended.forEach((rank, appid) => rankByAppid.set(appid, rank));
+      extendedCount = extended.size;
+    } catch (err) {
+      // Non-fatal: fast-path ranks (if any) still get persisted below, and
+      // these titles simply keep yesterday's null/rank until the next run.
+      extendedError = String(err);
+      log(`Steam extended wishlist rank scan error: ${err}`, "ingestion");
+    }
+  }
+
   const today = getTodayDateString();
   let dataPoints = 0;
   for (const product of titles) {
@@ -609,10 +835,14 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
     dataPoints++;
   }
 
+  const extendedNote = unmatched.length > 0
+    ? ` (extended scan resolved ${extendedCount}/${unmatched.length} titles outside top ${WISHLIST_TARGET}${extendedError ? `; scan error: ${extendedError}` : ""})`
+    : "";
+
   return {
     source: "steam_wishlist_rank",
     status: "success",
-    message: `Matched ${rankByAppid.size} ranked appids against ${titles.length} pre-release Saber titles`,
+    message: `Matched ${rankByAppid.size} ranked appids against ${titles.length} pre-release Saber titles${extendedNote}`,
     productsProcessed: titles.length,
     dataPointsAdded: dataPoints,
   };
@@ -906,6 +1136,10 @@ export async function runIngestion(): Promise<IngestionRunResult> {
   const followersResult = await ingestSteamFollowers();
   results.push(followersResult);
   log(`Steam followers: ${followersResult.message}`, "ingestion");
+
+  const headerImageResult = await ingestHeaderImages();
+  results.push(headerImageResult);
+  log(`Steam header images: ${headerImageResult.message}`, "ingestion");
 
   const wishlistRankResult = await ingestSteamWishlistRank();
   results.push(wishlistRankResult);

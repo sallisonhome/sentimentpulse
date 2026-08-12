@@ -45,6 +45,7 @@ function initializeDatabase() {
       target_retail_price_usd REAL,
       per_platform_pricing TEXT,
       steam_app_id TEXT,
+      steam_header_image_url TEXT,
       forecast_mode TEXT NOT NULL DEFAULT 'manual',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -291,7 +292,23 @@ function initializeDatabase() {
   `);
 }
 
+// v3.14 (2026-08-12): `CREATE TABLE IF NOT EXISTS` above only creates the
+// column on a fresh DB — an existing products table (prod already has
+// rows) needs an explicit ALTER TABLE to pick up new columns. SQLite has
+// no `ADD COLUMN IF NOT EXISTS`, so check pragma_table_info first.
+function migrateAddColumnIfMissing(table: string, column: string, ddl: string) {
+  const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === column)) {
+    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+
+function runMigrations() {
+  migrateAddColumnIfMissing("products", "steam_header_image_url", "steam_header_image_url TEXT");
+}
+
 initializeDatabase();
+runMigrations();
 
 /**
  * Combined summary of wishlist state for a product (v2.1, 2026-08-11).
@@ -384,6 +401,8 @@ export interface IStorage {
   getProduct(id: number): Product | undefined;
   createProduct(product: InsertProduct): Product;
   updateProduct(id: number, data: Partial<InsertProduct>): Product | undefined;
+  /** Cache-only write — does not bump updatedAt, since this is background ingestion, not a user edit. */
+  updateProductHeaderImage(id: number, url: string | null): void;
   deleteProduct(id: number): void;
 
   // Forecasts (Comps)
@@ -552,6 +571,13 @@ export class DatabaseStorage implements IStorage {
       .set({ ...data, updatedAt: now })
       .where(eq(products.id, id))
       .returning().get();
+  }
+
+  updateProductHeaderImage(id: number, url: string | null): void {
+    db.update(products)
+      .set({ steamHeaderImageUrl: url })
+      .where(eq(products.id, id))
+      .run();
   }
 
   deleteProduct(id: number): void {
