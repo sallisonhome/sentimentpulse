@@ -66,16 +66,19 @@ export default function Dashboard() {
             const steamDynLtUnits = product.steamDynamicLt;
             const hasSteamDyn = steamDynFirstUnits != null;
 
-            // Financial: GMV = units × price × 0.66, Net = GMV × 0.70
-            const originalGmv = Math.round(originalUnits * price * 0.66);
+            // v3.9 (2026-08-12): blended GMV factor. Server computes it as
+            // 0.5 × observedSteamAspRatio + 0.5 × 0.66 when Steam actuals
+            // exist. Pre-release or no actuals falls back to 0.66.
+            const gmvFactor = product.gmvFactor ?? 0.66;
+            const originalGmv = Math.round(originalUnits * price * gmvFactor);
             const originalNet = Math.round(originalGmv * 0.70);
-            const revisedGmv = revisedUnits != null ? Math.round(revisedUnits * price * 0.66) : null;
+            const revisedGmv = revisedUnits != null ? Math.round(revisedUnits * price * gmvFactor) : null;
             const revisedNet = revisedGmv != null ? Math.round(revisedGmv * 0.70) : null;
-            const dynFirstGmv = Math.round(dynFirstUnits * price * 0.66);
+            const dynFirstGmv = Math.round(dynFirstUnits * price * gmvFactor);
             const dynFirstNet = Math.round(dynFirstGmv * 0.70);
-            const dynYearGmv = Math.round(dynYearUnits * price * 0.66);
+            const dynYearGmv = Math.round(dynYearUnits * price * gmvFactor);
             const dynYearNet = Math.round(dynYearGmv * 0.70);
-            const dynLtGmv = Math.round(dynLtUnits * price * 0.66);
+            const dynLtGmv = Math.round(dynLtUnits * price * gmvFactor);
             const dynLtNet = Math.round(dynLtGmv * 0.70);
 
             // Delta: Dyn LT vs Revised (if revised exists) else vs Original

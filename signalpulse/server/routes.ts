@@ -194,6 +194,22 @@ export async function registerRoutes(
         // dashboard card 'Steam Revenue' triad (Pre-Release / Post-Release / Total).
         const steamRevenueSplit = storage.getSteamRevenueByReleaseSplit(p.id, releaseDate);
 
+        // v3.9 (2026-08-12): blended GMV factor. Default is 0.66 (accounts
+        // for regional discounting, store cuts before storefront splits,
+        // long-tail discount waves). When we have Steam actuals we blend
+        // 50/50 with the observed list-price-to-base-ASP ratio so titles
+        // like SM2 (observed ratio ~0.77) shift toward reality without
+        // over-committing to what may still be a partial sales window.
+        const listPrice = p.targetRetailPriceUsd ?? 59.99;
+        let gmvFactor = 0.66;
+        let observedSteamAspRatio: number | null = null;
+        if (steamRevenueSplit?.totalBaseAspUsd != null
+            && steamRevenueSplit.totalBaseAspUsd > 0
+            && listPrice > 0) {
+          observedSteamAspRatio = steamRevenueSplit.totalBaseAspUsd / listPrice;
+          gmvFactor = 0.5 * observedSteamAspRatio + 0.5 * 0.66;
+        }
+
         return {
           ...p,
           platforms,
@@ -226,6 +242,10 @@ export async function registerRoutes(
           steamActualFirstMonthUnits: steamActualFirstMonth,
           wishlistBasedSteamFirstMonth: wishlistBasedSteamForecast,
           consoleLiftFactor,
+          // v3.9 fields: blended GMV factor so the card revenue tiles can
+          // use observed Steam ASP/list-price ratio when available.
+          gmvFactor,
+          observedSteamAspRatio,
         };
       });
       res.json(enriched);
@@ -357,8 +377,23 @@ export async function registerRoutes(
         steamActualCumulativeUnits,
       );
 
+      // v3.9 (2026-08-12): compute blended GMV factor for revenue tiles.
+      // Mirrors the same math the list endpoint uses.
+      const pdpSteamRev = storage.getSteamRevenueByReleaseSplit(id, releaseDateForSummary);
+      const pdpListPrice = product.targetRetailPriceUsd ?? 59.99;
+      let pdpGmvFactor = 0.66;
+      let pdpObservedSteamAspRatio: number | null = null;
+      if (pdpSteamRev?.totalBaseAspUsd != null
+          && pdpSteamRev.totalBaseAspUsd > 0
+          && pdpListPrice > 0) {
+        pdpObservedSteamAspRatio = pdpSteamRev.totalBaseAspUsd / pdpListPrice;
+        pdpGmvFactor = 0.5 * pdpObservedSteamAspRatio + 0.5 * 0.66;
+      }
+
       res.json({
         ...product,
+        gmvFactor: pdpGmvFactor,
+        observedSteamAspRatio: pdpObservedSteamAspRatio,
         platforms,
         perPlatformPricing: product.perPlatformPricing ? JSON.parse(product.perPlatformPricing) : null,
         latestSteamWishlistCount: steamWishlistSummary.lifetimeNet ?? latestSteamWl?.cumulativeCount ?? null,

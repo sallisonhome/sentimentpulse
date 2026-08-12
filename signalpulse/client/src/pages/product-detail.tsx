@@ -564,6 +564,7 @@ export default function ProductDetail() {
             productId={productId}
             targetRetailPriceUsd={product.targetRetailPriceUsd}
             perPlatformPricing={product.perPlatformPricing}
+            gmvFactor={product.gmvFactor ?? 0.66}
           />
         </CollapsibleSection>
 
@@ -737,6 +738,7 @@ function ForecastTable({
   productId,
   targetRetailPriceUsd,
   perPlatformPricing,
+  gmvFactor,
 }: {
   compsForecasts: any[];
   dynamicForecasts: any[];
@@ -746,6 +748,8 @@ function ForecastTable({
   productId: number;
   targetRetailPriceUsd: number | null;
   perPlatformPricing: Record<string, number> | null;
+  // v3.9 (2026-08-12): blended GMV factor. Server-provided; 0.66 default.
+  gmvFactor: number;
 }) {
   const [reviseOpen, setReviseOpen] = useState(false);
 
@@ -780,9 +784,12 @@ function ForecastTable({
   const hasRevisions = revisions.length > 0;
 
   // ─── Financial Calculations ─────────────────────────────────────────────────
-  // GMV (Gross Sales) = Units × Full USD Price × 0.66
-  // Net Revenue       = Units × Full USD Price × 0.66 × 0.70
+  // GMV (Gross Sales) = Units × Full USD Price × gmvFactor
+  // Net Revenue       = GMV × 0.70
+  // v3.9 (2026-08-12): gmvFactor is blended — 0.5 × observed Steam
+  // ASP/list ratio + 0.5 × 0.66 when Steam actuals exist; else 0.66.
   const price = targetRetailPriceUsd ?? 0;
+  // gmvFactor comes in as a prop (v3.9)
 
   // Helper: calculate weighted GMV across platforms using per-platform pricing if available
   function calcGmv(unitsByPlatform: Record<string, number>): number {
@@ -790,14 +797,14 @@ function ForecastTable({
     for (const p of platforms) {
       const units = unitsByPlatform[p] ?? 0;
       const pPrice = perPlatformPricing?.[p] ?? price;
-      gmv += units * pPrice * 0.66;
+      gmv += units * pPrice * gmvFactor;
     }
     return Math.round(gmv);
   }
 
   function calcGmvFromTotal(totalUnits: number): number {
     // When we only have a total (e.g. revision totals), use the base price
-    return Math.round(totalUnits * price * 0.66);
+    return Math.round(totalUnits * price * gmvFactor);
   }
 
   function calcNetFromGmv(gmv: number): number {
