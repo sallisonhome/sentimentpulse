@@ -923,7 +923,7 @@ function ForecastTable({
         <div className="mt-2 flex gap-2 p-2 rounded-md bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/60 dark:border-emerald-800/30">
           <Info className="h-3 w-3 text-emerald-500 shrink-0 mt-0.5" />
           <p className="text-[10px] text-emerald-700 dark:text-emerald-400 leading-relaxed">
-            <strong>Gross Sales</strong> = Units × ${price.toFixed(2)} × 0.66 — accounts for regional pricing and normal Pulse pricing.
+            <strong>Gross Sales</strong> = Units (all platforms) × ${price.toFixed(2)} × {gmvFactor.toFixed(3)} — {gmvFactor !== 0.66 ? "blended factor (50% observed Steam ASP ratio + 50% standard 0.66 regional/Pulse-pricing discount)" : "accounts for regional pricing and normal Pulse pricing"}.
             <strong className="ml-2">Net Revenue</strong> = Gross Sales × 0.70 — accounts for platform fees and distribution.
             {perPlatformPricing && " Per-platform pricing applied where set."}
           </p>
