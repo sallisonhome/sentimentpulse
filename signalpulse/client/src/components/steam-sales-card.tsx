@@ -248,6 +248,7 @@ export function SteamSalesCard({ productId, productTitle, releaseDate }: Props) 
             endpoint={`/api/products/${productId}/steam/prepurchases`}
             color="#2563EB"
             accent="blue"
+            sparklineMode="delta"
             onOpenChart={() => setChartModal({ type: "steamPrepurchase", open: true })}
             testIdPrefix="chart-card-steam-units"
           />
@@ -263,6 +264,7 @@ export function SteamSalesCard({ productId, productTitle, releaseDate }: Props) 
             endpoint={`/api/products/${productId}/steam/revenue-daily`}
             color="#10B981"
             accent="green"
+            sparklineMode="delta"
             onOpenChart={() => setChartModal({ type: "steamRevenueDaily", open: true })}
             testIdPrefix="chart-card-steam-revenue"
           />

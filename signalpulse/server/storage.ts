@@ -1039,10 +1039,24 @@ export class DatabaseStorage implements IStorage {
   /**
    * Wipe all sales rows associated with an upload batch. Used when the
    * user wants to undo an upload. Returns count deleted.
+   *
+   * v3.13 (2026-08-12) BUGFIX: this previously deleted only the
+   * steam_sales_daily rows, leaving the steam_sales_upload_batches metadata
+   * row behind. Any re-run of a job that reuses the same deterministic
+   * batchId (e.g. portal-daily-backfill's `portal-daily-{productId}-{date}`)
+   * would then have createSteamSalesUploadBatch() throw a UNIQUE constraint
+   * error on re-insert -- which happened *after* the sales rows were already
+   * deleted, so the day's real Steam actuals were wiped and never restored.
+   * This silently destroyed production sales-daily history for Space Marine 2
+   * (1342 -> 652 rows) and caused ~40% day failures on Toxic Commando's
+   * backfill. Now also deletes the stale batch metadata row so re-inserts
+   * succeed and the delete+recreate is truly idempotent.
    */
   deleteSteamSalesByBatch(batchId: string): number {
     const res = db.delete(steamSalesDaily)
       .where(eq(steamSalesDaily.batchId, batchId)).run();
+    db.delete(steamSalesUploadBatches)
+      .where(eq(steamSalesUploadBatches.id, batchId)).run();
     return res.changes as number;
   }
 

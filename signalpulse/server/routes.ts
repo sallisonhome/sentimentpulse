@@ -268,6 +268,40 @@ export async function registerRoutes(
       // Auto-generate PLS milestones
       generateDefaultMilestones(product.id, product.releaseDate, product.playerFormat);
 
+      // v3.9 (2026-08-12): Auto-trigger a Steam wishlist backfill immediately
+      // whenever a new product is created with a steamAppId, so wishlist
+      // counts (and the dynamic-forecast console rows that depend on them)
+      // are populated without a manual step. Fire-and-forget — client can
+      // poll GET /api/steam/backfill/:jobId if it wants progress, but the
+      // dashboard doesn't need to wait on it.
+      if (product.steamAppId) {
+        const apiKeySetting = storage.getSetting("steam_api_key");
+        const apiKey = apiKeySetting?.value;
+        if (apiKey && apiKey.trim().length > 0) {
+          const wlJob: BackfillJob = {
+            id: makeJobId(),
+            productId: product.id,
+            status: "running",
+            startedAt: new Date().toISOString(),
+            completedAt: null,
+            fromDate: null,
+            toDate: null,
+            totalDays: 0,
+            daysProcessed: 0,
+            daysSucceeded: 0,
+            daysFailed: 0,
+            errors: [],
+            message: "Auto-triggered on product creation",
+          };
+          backfillJobs.set(wlJob.id, wlJob);
+          runBackfillJob(wlJob, apiKey, product.steamAppId).catch((err: any) => {
+            wlJob.status = "failed";
+            wlJob.completedAt = new Date().toISOString();
+            wlJob.message = `Unhandled backfill error: ${err?.message || String(err)}`;
+          });
+        }
+      }
+
       // If auto_generate mode with comps data, generate forecasts
       if (body.forecastMode === "auto_generate" && body.steamForecast != null && body.ps5Forecast != null) {
         const platforms = JSON.parse(product.platforms);

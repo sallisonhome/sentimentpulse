@@ -657,15 +657,23 @@ export function TimeSeriesChart({
 interface SparklineProps {
   data: TimeSeriesDataPoint[];
   color: string;
+  /**
+   * v3.12 (2026-08-12): 'cumulative' (default) plots the running total, which
+   * over a 30-day slice reads as a smooth all-time-style ramp. 'delta' plots
+   * day-over-day movement so the preview actually looks like a fluctuating
+   * chart — used on the Steam Sales by Units/Revenue cards so the sparkline
+   * signals "click for a real chart" rather than looking like a static ramp.
+   */
+  mode?: "cumulative" | "delta";
 }
 
-export function SparklineChart({ data, color }: SparklineProps) {
+export function SparklineChart({ data, color, mode = "cumulative" }: SparklineProps) {
   const last30 = useMemo(() => {
     if (!data?.length) return [];
     return data.slice(-30).map((d) => ({
-      v: d.cumulativeCount,
+      v: mode === "delta" ? d.dailyDelta : d.cumulativeCount,
     }));
-  }, [data]);
+  }, [data, mode]);
 
   if (last30.length < 2) return null;
 
@@ -704,10 +712,12 @@ export function SectionSparkline({
   productId: _productId,
   endpoint,
   color,
+  mode = "cumulative",
 }: {
   productId: number;
   endpoint: string;
   color: string;
+  mode?: "cumulative" | "delta";
 }) {
   const { data } = useSectionQuery<TimeSeriesDataPoint[]>({
     queryKey: [endpoint],
@@ -716,7 +726,7 @@ export function SectionSparkline({
   if (!data || data.length < 3) return null;
   return (
     <div className="h-[60px] w-full -mx-0">
-      <SparklineChart data={data} color={color} />
+      <SparklineChart data={data} color={color} mode={mode} />
     </div>
   );
 }

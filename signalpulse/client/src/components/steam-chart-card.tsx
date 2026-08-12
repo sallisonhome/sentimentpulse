@@ -40,6 +40,13 @@ interface SteamChartCardProps {
    * the QA pass as 'Variant B' — subtle color-tinting per meaning.
    */
   accent?: "blue" | "green";
+  /**
+   * v3.12 (2026-08-12): sparkline preview mode. 'delta' (used for Steam
+   * Sales by Units/Revenue) plots day-over-day movement instead of the
+   * running cumulative total, so the mini-chart actually looks like a
+   * fluctuating chart rather than an all-time-cumulative ramp.
+   */
+  sparklineMode?: "cumulative" | "delta";
 }
 
 export function SteamChartCard({
@@ -52,6 +59,7 @@ export function SteamChartCard({
   onOpenChart,
   testIdPrefix,
   accent,
+  sparklineMode = "cumulative",
 }: SteamChartCardProps) {
   // v3.11 accent tinting. Same alpha values as the QA mockup Variant B.
   const cardStyle =
@@ -100,6 +108,7 @@ export function SteamChartCard({
           productId={productId}
           endpoint={endpoint}
           color={color}
+          mode={sparklineMode}
         />
       </ClickablePreview>
     </div>
