@@ -486,7 +486,7 @@ def fetch_post_comments(
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-def _game_search_query(game_name: str) -> str:
+def _game_search_query(game_name: str, game=None) -> str:
     """
     Extract the most distinctive search term from a game name.
 
@@ -502,10 +502,39 @@ def _game_search_query(game_name: str) -> str:
     more relevant posts. The downstream Step 5 relevance gate then
     disambiguates game-vs-IP (see is_post_relevant_to_game).
 
+    v3 (2026-08-12): if the single-word fallback would return a common
+    English word (e.g. Rideshare 'Stimulator' → 'Rideshare' which matches
+    thousands of ride-share industry posts), prefer a two-word phrase
+    from distinctive_keywords instead. Two-word AND-match on Reddit is
+    stricter than a single generic term. The AND-match trade-off is
+    reversed for these titles: strict is BETTER because the generic
+    word is worse than useless.
+
     Heuristic for picking the distinctive word: strip stopwords /
     generic gaming vocab / short words, prefer the longest remaining
     proper-noun-looking token.
     """
+    # v3 (2026-08-12): games whose fallback keyword collides with a common
+    # English word (Rideshare 'Stimulator' → 'Rideshare' matching ride-share
+    # industry posts, not the game) can opt into a multi-word AND-matched
+    # phrase from distinctive_keywords. Applied ONLY when the single-word
+    # fallback would be a generic-English collision — games with clean proper
+    # nouns (Hellraiser, Turok, SnowRunner) keep their current permissive
+    # single-word behavior.
+    _AMBIGUOUS_FALLBACKS = {"rideshare", "docked", "gloomhaven", "halloween"}
+    if game is not None:
+        keywords = getattr(game, "distinctive_keywords", None) or []
+        # Only try to override if the name's single-word fallback is a known
+        # collision. We check by re-running the algorithm below — for now, do
+        # a coarse check on the raw name tokens.
+        _lower_tokens = {t.lower() for t in game_name.split()}
+        if _lower_tokens & _AMBIGUOUS_FALLBACKS:
+            for k in keywords:
+                if isinstance(k, str) and " " in k and len(k) >= 8:
+                    # First multi-word keyword — use it as the phrase query.
+                    # Strip quote chars (the config might have '"Stimulator"'
+                    # in the keyword; Reddit search doesn't want literal quotes).
+                    return k.replace('"', '').strip()
     # Strip "Studio's " / "Director's " possessive prefix
     if "'s " in game_name:
         game_name = game_name.split("'s ", 1)[1]

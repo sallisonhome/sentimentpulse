@@ -202,7 +202,7 @@ def backfill_reddit_for_game(
             continue
 
         is_general = sub_name.lower() in general_lower
-        query = _game_search_query(game.name) if is_general else None
+        query = _game_search_query(game.name, game=game) if is_general else None
 
         # For general subs, we need to make TWO parallel walks (title +
         # selftext) exactly like arctic_shift_service does, then merge.
