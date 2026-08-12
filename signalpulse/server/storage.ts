@@ -7,6 +7,9 @@ import {
   type SteamSalesDaily, type InsertSteamSalesDaily, steamSalesDaily,
   type SteamSalesUploadBatch, type InsertSteamSalesUploadBatch, steamSalesUploadBatches,
   type SteamworksSession, type InsertSteamworksSession, steamworksSessions,
+  type SteamFollowersDaily, type InsertSteamFollowers, steamFollowersDaily,
+  type SteamWishlistRankDaily, type InsertSteamWishlistRank, steamWishlistRankDaily,
+  type IgdbHypeDaily, type InsertIgdbHype, igdbHypeDaily,
   type Ps5WishlistDaily, type InsertPs5Wishlist, ps5WishlistDaily,
   type Ps5PrepurchaseDaily, type InsertPs5Prepurchase, ps5PrepurchaseDaily,
   type DynamicForecastDaily, type InsertDynamicForecast, dynamicForecastsDaily,
@@ -155,6 +158,39 @@ function initializeDatabase() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS steam_followers_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      follower_count INTEGER,
+      daily_delta INTEGER,
+      source TEXT NOT NULL DEFAULT 'public_scrape',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS steam_followers_unique ON steam_followers_daily(product_id, date);
+
+    CREATE TABLE IF NOT EXISTS steam_wishlist_rank_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      rank INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS steam_wishlist_rank_unique ON steam_wishlist_rank_daily(product_id, date);
+
+    CREATE TABLE IF NOT EXISTS igdb_hype_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      igdb_id INTEGER,
+      hype_score INTEGER,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS igdb_hype_unique ON igdb_hype_daily(product_id, date);
 
     CREATE TABLE IF NOT EXISTS ps5_wishlist_daily (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -414,6 +450,23 @@ export interface IStorage {
   getSteamworksSession(id: string): SteamworksSession | undefined;
   upsertSteamworksSession(data: InsertSteamworksSession): SteamworksSession;
   deleteSteamworksSession(id: string): boolean;
+
+  // Steam Followers (Steam Leaderboards — Wishlist board, public-scrape only)
+  getSteamFollowers(productId: number): SteamFollowersDaily[];
+  getLatestSteamFollowers(productId: number): SteamFollowersDaily | undefined;
+  upsertSteamFollowers(data: InsertSteamFollowers): SteamFollowersDaily;
+
+  // Steam Wishlist Rank (Steam Leaderboards — Wishlist board, top-200 public listing)
+  getSteamWishlistRanks(productId: number): SteamWishlistRankDaily[];
+  getLatestSteamWishlistRank(productId: number): SteamWishlistRankDaily | undefined;
+  /** Returns the row exactly `daysAgo` calendar days before the latest row's date, or undefined if none. */
+  getSteamWishlistRankDaysAgo(productId: number, daysAgo: number): SteamWishlistRankDaily | undefined;
+  upsertSteamWishlistRank(data: InsertSteamWishlistRank): SteamWishlistRankDaily;
+
+  // IGDB Hype (Steam Leaderboards — Wishlist board)
+  getIgdbHypeHistory(productId: number): IgdbHypeDaily[];
+  getLatestIgdbHype(productId: number): IgdbHypeDaily | undefined;
+  upsertIgdbHype(data: InsertIgdbHype): IgdbHypeDaily;
 
   // PS5 Wishlists
   getPs5Wishlists(productId: number): Ps5WishlistDaily[];
@@ -1119,6 +1172,122 @@ export class DatabaseStorage implements IStorage {
     return (res.changes as number) > 0;
   }
 
+  // ─── Steam Followers (Steam Leaderboards — Wishlist board) ─────────────
+  // Public-scrape-only source (steamcommunity.com memberslistxml) — see
+  // schema.ts comment and CLAUDE_STEAM_LEADERBOARDS.md §9.2. dailyDelta is
+  // signed and intentionally NOT clamped to >= 0 (a title can lose followers).
+
+  getSteamFollowers(productId: number): SteamFollowersDaily[] {
+    return db.select().from(steamFollowersDaily)
+      .where(eq(steamFollowersDaily.productId, productId))
+      .orderBy(asc(steamFollowersDaily.date)).all();
+  }
+
+  getLatestSteamFollowers(productId: number): SteamFollowersDaily | undefined {
+    return db.select().from(steamFollowersDaily)
+      .where(eq(steamFollowersDaily.productId, productId))
+      .orderBy(desc(steamFollowersDaily.date))
+      .limit(1).get();
+  }
+
+  upsertSteamFollowers(data: InsertSteamFollowers): SteamFollowersDaily {
+    const existing = db.select().from(steamFollowersDaily)
+      .where(and(eq(steamFollowersDaily.productId, data.productId), eq(steamFollowersDaily.date, data.date)))
+      .get();
+    if (existing) {
+      return db.update(steamFollowersDaily)
+        .set({ followerCount: data.followerCount, dailyDelta: data.dailyDelta, source: data.source })
+        .where(eq(steamFollowersDaily.id, existing.id))
+        .returning().get();
+    }
+    return db.insert(steamFollowersDaily).values({
+      ...data,
+      createdAt: this.now(),
+    }).returning().get();
+  }
+
+  // ─── Steam Wishlist Rank (Steam Leaderboards — Wishlist board) ───────────
+  // Top-200 public "popularwishlist" listing — see schema.ts comment and
+  // CLAUDE_STEAM_LEADERBOARDS.md §9.5. rank is null when outside top-200.
+
+  getSteamWishlistRanks(productId: number): SteamWishlistRankDaily[] {
+    return db.select().from(steamWishlistRankDaily)
+      .where(eq(steamWishlistRankDaily.productId, productId))
+      .orderBy(asc(steamWishlistRankDaily.date)).all();
+  }
+
+  getLatestSteamWishlistRank(productId: number): SteamWishlistRankDaily | undefined {
+    return db.select().from(steamWishlistRankDaily)
+      .where(eq(steamWishlistRankDaily.productId, productId))
+      .orderBy(desc(steamWishlistRankDaily.date))
+      .limit(1).get();
+  }
+
+  // Finds the row closest to (latest row's date - daysAgo), never a row
+  // AFTER that target date. Mirrors the "latest known value strictly
+  // before X" pattern used elsewhere in this file, so a missed ingestion
+  // day doesn't break the 7-day delta — it just uses the closest available
+  // prior snapshot.
+  getSteamWishlistRankDaysAgo(productId: number, daysAgo: number): SteamWishlistRankDaily | undefined {
+    const rows = this.getSteamWishlistRanks(productId); // ascending by date
+    if (rows.length === 0) return undefined;
+    const latestDate = rows[rows.length - 1].date;
+    const target = new Date(`${latestDate}T00:00:00Z`);
+    target.setUTCDate(target.getUTCDate() - daysAgo);
+    const targetStr = target.toISOString().split("T")[0];
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i].date <= targetStr) return rows[i];
+    }
+    return undefined;
+  }
+
+  upsertSteamWishlistRank(data: InsertSteamWishlistRank): SteamWishlistRankDaily {
+    const existing = db.select().from(steamWishlistRankDaily)
+      .where(and(eq(steamWishlistRankDaily.productId, data.productId), eq(steamWishlistRankDaily.date, data.date)))
+      .get();
+    if (existing) {
+      return db.update(steamWishlistRankDaily)
+        .set({ rank: data.rank })
+        .where(eq(steamWishlistRankDaily.id, existing.id))
+        .returning().get();
+    }
+    return db.insert(steamWishlistRankDaily).values({
+      ...data,
+      createdAt: this.now(),
+    }).returning().get();
+  }
+
+  // ─── IGDB Hype (Steam Leaderboards — Wishlist board) ─────────────────
+
+  getIgdbHypeHistory(productId: number): IgdbHypeDaily[] {
+    return db.select().from(igdbHypeDaily)
+      .where(eq(igdbHypeDaily.productId, productId))
+      .orderBy(asc(igdbHypeDaily.date)).all();
+  }
+
+  getLatestIgdbHype(productId: number): IgdbHypeDaily | undefined {
+    return db.select().from(igdbHypeDaily)
+      .where(eq(igdbHypeDaily.productId, productId))
+      .orderBy(desc(igdbHypeDaily.date))
+      .limit(1).get();
+  }
+
+  upsertIgdbHype(data: InsertIgdbHype): IgdbHypeDaily {
+    const existing = db.select().from(igdbHypeDaily)
+      .where(and(eq(igdbHypeDaily.productId, data.productId), eq(igdbHypeDaily.date, data.date)))
+      .get();
+    if (existing) {
+      return db.update(igdbHypeDaily)
+        .set({ igdbId: data.igdbId, hypeScore: data.hypeScore })
+        .where(eq(igdbHypeDaily.id, existing.id))
+        .returning().get();
+    }
+    return db.insert(igdbHypeDaily).values({
+      ...data,
+      createdAt: this.now(),
+    }).returning().get();
+  }
+
   // ─── PS5 Wishlists ───────────────────────────────────────────────────────────
 
   getPs5Wishlists(productId: number): Ps5WishlistDaily[] {
@@ -1511,6 +1680,13 @@ export class DatabaseStorage implements IStorage {
       { key: "sony_api_key", label: "Sony Partner Portal API Key", category: "api_keys", isSecret: true },
       { key: "sony_partner_id", label: "Sony Partner ID", category: "api_keys", isSecret: false },
       { key: "youtube_api_key", label: "YouTube Data API Key", category: "api_keys", isSecret: true },
+      // v1.0 (2026-08-12): Twitch app credentials, used by server/igdb.ts to
+      // mint a Client Credentials OAuth token for pulling IGDB Hype scores
+      // on the Steam Wishlist Leaderboard. Create a Twitch app at
+      // dev.twitch.tv/console/apps to get these — IGDB auth piggybacks on
+      // Twitch's identity platform.
+      { key: "igdb_client_id", label: "IGDB / Twitch Client ID", category: "api_keys", isSecret: false },
+      { key: "igdb_client_secret", label: "IGDB / Twitch Client Secret", category: "api_keys", isSecret: true },
       { key: "app_password", label: "App Password", category: "general", isSecret: true },
     ];
 

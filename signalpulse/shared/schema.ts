@@ -227,6 +227,97 @@ export const insertSteamworksSessionSchema = createInsertSchema(steamworksSessio
 export type InsertSteamworksSession = z.infer<typeof insertSteamworksSessionSchema>;
 export type SteamworksSession = typeof steamworksSessions.$inferSelect;
 
+// ─── Steam Followers Daily (Steam Leaderboards — Wishlist board) ───────────
+//
+// v1.0 (2026-08-12): supports the Saber Pre-Release Steam Wishlist
+// Leaderboard. Sourced EXCLUSIVELY from the public
+// steamcommunity.com/games/<appid>/memberslistxml scrape, ported verbatim
+// from howmanyareplaying/backend/src/services/steamApi.js::fetchFollowerCount
+// (see CLAUDE_STEAM_LEADERBOARDS.md §9.2) — there is no Steamworks Partner
+// API endpoint for follower counts, confirmed against Valve's own docs.
+// `source` is always "public_scrape"; kept as a column (rather than a
+// hardcoded constant) only so a future alternate source doesn't require a
+// migration.
+//
+// followerCount/dailyDelta are NULLABLE: on a fetch failure (429 exhausted,
+// 404/403, parse miss) ingestSteamFollowers() still writes a row for
+// today's date with both null, so the title doesn't get retried again
+// until tomorrow's run — see server/ingestion.ts::ingestSteamFollowers.
+// The UI renders null as "—", never 0.
+export const steamFollowersDaily = sqliteTable("steam_followers_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  date: text("date").notNull(), // YYYY-MM-DD, local ingestion-run date
+  followerCount: integer("follower_count"), // null = fetch failed today
+  dailyDelta: integer("daily_delta"), // signed; NOT clamped to >= 0; null when followerCount is null
+  source: text("source").notNull().default("public_scrape"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueProductDate: uniqueIndex("steam_followers_unique").on(table.productId, table.date),
+}));
+
+export const insertSteamFollowersSchema = createInsertSchema(steamFollowersDaily).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertSteamFollowers = z.infer<typeof insertSteamFollowersSchema>;
+export type SteamFollowersDaily = typeof steamFollowersDaily.$inferSelect;
+
+// ─── Steam Wishlist Rank Daily (Steam Leaderboards — Wishlist board) ───────
+//
+// v1.0 (2026-08-12): current position (1-based) on Steam's public
+// "popularwishlist" upcoming-titles listing, ported from
+// howmanyareplaying/backend/src/services/steamApi.js::fetchWishlistedGames
+// with the SAME constants (PAGE_SIZE=25, MAX_PAGES=12, TARGET=200) — see
+// CLAUDE_STEAM_LEADERBOARDS.md §9.5. `rank` is null when a tracked title is
+// outside the top-200 that day ("unranked"), NOT an error state. No SteamDB
+// fallback — howmanyareplaying never needed one in production.
+export const steamWishlistRankDaily = sqliteTable("steam_wishlist_rank_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  date: text("date").notNull(),
+  rank: integer("rank"), // null = outside top-200 that day
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueProductDate: uniqueIndex("steam_wishlist_rank_unique").on(table.productId, table.date),
+}));
+
+export const insertSteamWishlistRankSchema = createInsertSchema(steamWishlistRankDaily).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertSteamWishlistRank = z.infer<typeof insertSteamWishlistRankSchema>;
+export type SteamWishlistRankDaily = typeof steamWishlistRankDaily.$inferSelect;
+
+// ─── IGDB Hype Daily (Steam Leaderboards — Wishlist board) ─────────────────
+//
+// v1.0 (2026-08-12): IGDB's `hypes` field (pre-release follower count on
+// IGDB itself), ported from howmanyareplaying's igdbApi.js batched-POST
+// pattern (Twitch OAuth client-credentials, external_games Steam-appid
+// match, up to 200 appids/request). `igdbId` is persisted so future PDP
+// surfaces don't need a second lookup; `hypeScore` is null when IGDB has no
+// matching record for the title's steamAppId (rendered as —, never 0).
+export const igdbHypeDaily = sqliteTable("igdb_hype_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  date: text("date").notNull(),
+  igdbId: integer("igdb_id"), // null when IGDB has no match for this title
+  hypeScore: integer("hype_score"), // null, never 0-as-placeholder
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueProductDate: uniqueIndex("igdb_hype_unique").on(table.productId, table.date),
+}));
+
+export const insertIgdbHypeSchema = createInsertSchema(igdbHypeDaily).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertIgdbHype = z.infer<typeof insertIgdbHypeSchema>;
+export type IgdbHypeDaily = typeof igdbHypeDaily.$inferSelect;
+
 // ─── PS5 Wishlist Daily ──────────────────────────────────────────────────────
 
 export const ps5WishlistDaily = sqliteTable("ps5_wishlist_daily", {

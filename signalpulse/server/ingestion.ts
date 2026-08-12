@@ -10,6 +10,8 @@
 import { storage } from "./storage";
 import { fetchVideoData, fetchViewCountPublic } from "./youtube-fetcher";
 import { calculateDynamicForecasts } from "./forecast";
+import { fetchFollowerCount } from "./steam-followers";
+import { fetchIgdbHypesBySteamAppids } from "./igdb";
 import { log } from "./index";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -419,6 +421,253 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
   };
 }
 
+// ─── Steam Leaderboards Ingestion (Wishlist board) ─────────────────
+//
+// Three independent, always-attempted ingestors backing the Saber
+// Pre-Release Steam Wishlist Leaderboard (CLAUDE_STEAM_LEADERBOARDS.md).
+// None of these require the Steamworks Partner API key that gates
+// ingestSteamData()/ingestSonyData() above — they hit public Steam
+// endpoints (followers, wishlist rank) or IGDB (hype), so they run
+// unconditionally from runIngestion() and self-report skip/error status
+// per-source instead of being gated behind an `if (apiKey)` check.
+
+const WISHLIST_BASE =
+  "https://store.steampowered.com/search/results/?filter=popularwishlist&json=1&count=25&ndl=1";
+const APPID_FROM_LOGO = /steam\/apps\/(\d+)\//;
+const WISHLIST_PAGE_SIZE = 25;
+const WISHLIST_MAX_PAGES = 12; // safety cap: 12 * 25 = 300 raw fetches worst case
+const WISHLIST_TARGET = 200;
+
+/** Returns YYYY-MM-DD for "today" in UTC — the ingestion-run date used across all three Steam Leaderboards tables. */
+function getTodayDateString(): string {
+  return new Date().toISOString().split("T")[0];
+}
+
+/**
+ * Returns pre-release Saber-published titles with a Steam App ID —
+ * "pre-release" = releaseDate is set AND strictly after today. A title
+ * with no releaseDate (TBD) is treated as pre-release (it hasn't released).
+ */
+function getPreReleaseSaberSteamTitles() {
+  const today = getTodayDateString();
+  return storage.getAllProducts().filter(
+    (p) => p.isSaberPublished && p.steamAppId && (!p.releaseDate || p.releaseDate > today),
+  );
+}
+
+/**
+ * Follower counts (public steamcommunity.com scrape — see server/steam-
+ * followers.ts for why there's no Steamworks API path). Runs 1 req/sec
+ * between titles, staleness-ordered (oldest/never-fetched first) so a
+ * transient failure on one title doesn't starve the rest of their daily
+ * refresh — a title stuck on an old date sorts to the front next run.
+ *
+ * On a failed fetch we STILL upsert a row for today with followerCount=
+ * null, dailyDelta=null — this marks the title as "attempted today" so
+ * it doesn't get re-picked to the front of the staleness order on the
+ * next run (which would otherwise starve titles behind it every day the
+ * community endpoint happens to be down for one appid).
+ */
+async function ingestSteamFollowers(): Promise<IngestionResult> {
+  const titles = getPreReleaseSaberSteamTitles();
+  if (titles.length === 0) {
+    return { source: "steam_followers", status: "skipped", message: "No pre-release Saber titles with Steam App IDs" };
+  }
+
+  // Staleness order: titles with the oldest (or no) getLatestSteamFollowers
+  // date go first, so a slow/throttled run still refreshes the most
+  // overdue titles before it might get cut short.
+  const ordered = [...titles].sort((a, b) => {
+    const aDate = storage.getLatestSteamFollowers(a.id)?.date ?? "";
+    const bDate = storage.getLatestSteamFollowers(b.id)?.date ?? "";
+    return aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
+  });
+
+  const today = getTodayDateString();
+  let dataPoints = 0;
+  let failures = 0;
+
+  for (let i = 0; i < ordered.length; i++) {
+    const product = ordered[i];
+    if (i > 0) await new Promise((r) => setTimeout(r, 1000)); // 1 req/sec between titles
+
+    // Baseline for the delta must be the latest row STRICTLY BEFORE today,
+    // never today's own row — otherwise a second run on the same day (a
+    // manual re-trigger, a retry after a partial failure) would diff
+    // today's count against itself and silently collapse a real delta to
+    // zero/null. getSteamFollowers() returns ascending history for this
+    // exact reason: we can walk it backwards and skip today's date.
+    const priorRows = storage.getSteamFollowers(product.id).filter((r) => r.date < today);
+    const prev = priorRows.length > 0 ? priorRows[priorRows.length - 1] : undefined;
+
+    const existingToday = storage.getLatestSteamFollowers(product.id);
+    const hasGoodDataToday = existingToday?.date === today && existingToday.followerCount != null;
+
+    try {
+      const count = await fetchFollowerCount(Number(product.steamAppId));
+      if (count == null) {
+        failures++;
+        if (!hasGoodDataToday) {
+          // Only write the null "attempted" marker if we don't already have
+          // a good value for today — a later same-day retry failing must
+          // never clobber an earlier same-day success.
+          storage.upsertSteamFollowers({
+            productId: product.id,
+            date: today,
+            followerCount: null,
+            dailyDelta: null,
+            source: "public_scrape",
+          });
+        }
+        log(`Steam followers: fetch failed for ${product.title} (appid=${product.steamAppId})`, "ingestion");
+        continue;
+      }
+
+      // No prior-day baseline (first-ever fetch, or every earlier row was a
+      // failed-attempt null) — persist delta as null, not 0, so the UI can
+      // render "—" instead of fabricating "no change".
+      const delta = prev?.followerCount != null ? count - prev.followerCount : null;
+
+      storage.upsertSteamFollowers({
+        productId: product.id,
+        date: today,
+        followerCount: count,
+        dailyDelta: delta,
+        source: "public_scrape",
+      });
+      dataPoints++;
+    } catch (err) {
+      failures++;
+      log(`Steam followers ingestion error for ${product.title}: ${err}`, "ingestion");
+    }
+  }
+
+  return {
+    source: "steam_followers",
+    status: failures > 0 && dataPoints === 0 ? "error" : "success",
+    message: `Refreshed followers for ${dataPoints}/${ordered.length} pre-release titles${failures > 0 ? ` (${failures} failed)` : ""}`,
+    productsProcessed: ordered.length,
+    dataPointsAdded: dataPoints,
+  };
+}
+
+/**
+ * Steam Wishlist Rank — one paginated fetch of Steam's public
+ * "popularwishlist" listing (top ~200 upcoming titles by wishlist count),
+ * then a single in-memory lookup per pre-release Saber title. Matches
+ * howmanyareplaying's fetchWishlistedGames constants exactly (PAGE_SIZE=25,
+ * MAX_PAGES=12, TARGET=200) — see CLAUDE_STEAM_LEADERBOARDS.md §9.5.
+ *
+ * A pre-release title outside the top-200 that day gets rank=null
+ * ("unranked"), not an error. The 7-day rank delta is computed at READ
+ * time (storage.getSteamWishlistRankDaysAgo), not stored here.
+ */
+async function ingestSteamWishlistRank(): Promise<IngestionResult> {
+  const titles = getPreReleaseSaberSteamTitles();
+  if (titles.length === 0) {
+    return { source: "steam_wishlist_rank", status: "skipped", message: "No pre-release Saber titles with Steam App IDs" };
+  }
+
+  const rankByAppid = new Map<number, number>();
+  try {
+    const seen = new Set<number>();
+    for (let page = 0; page < WISHLIST_MAX_PAGES; page++) {
+      if (seen.size >= WISHLIST_TARGET) break;
+      const start = page * WISHLIST_PAGE_SIZE;
+      const res = await fetch(`${WISHLIST_BASE}&start=${start}`, {
+        headers: { "User-Agent": "signalpulse.saber/wishlist-rank" },
+      });
+      if (!res.ok) throw new Error(`Steam wishlist API responded ${res.status} at start=${start}`);
+      const json = await res.json();
+      const items = json?.items;
+      if (!Array.isArray(items)) throw new Error(`Unexpected wishlist response shape at start=${start}`);
+      if (items.length === 0) break; // end of list
+      for (const item of items) {
+        const match = item.logo?.match(APPID_FROM_LOGO);
+        if (!match || !item.name) continue;
+        const appid = parseInt(match[1], 10);
+        if (seen.has(appid)) continue;
+        seen.add(appid);
+        rankByAppid.set(appid, seen.size); // 1-based rank in discovery order
+        if (seen.size >= WISHLIST_TARGET) break;
+      }
+    }
+  } catch (err) {
+    log(`Steam wishlist rank ingestion error: ${err}`, "ingestion");
+    return {
+      source: "steam_wishlist_rank",
+      status: "error",
+      message: `Failed to fetch Steam popularwishlist listing: ${err}`,
+    };
+  }
+
+  const today = getTodayDateString();
+  let dataPoints = 0;
+  for (const product of titles) {
+    const rank = rankByAppid.get(Number(product.steamAppId)) ?? null;
+    storage.upsertSteamWishlistRank({ productId: product.id, date: today, rank });
+    dataPoints++;
+  }
+
+  return {
+    source: "steam_wishlist_rank",
+    status: "success",
+    message: `Matched ${rankByAppid.size} ranked appids against ${titles.length} pre-release Saber titles`,
+    productsProcessed: titles.length,
+    dataPointsAdded: dataPoints,
+  };
+}
+
+/**
+ * IGDB Hype Score — one batched POST across ALL Saber titles with a Steam
+ * App ID (not pre-release only — hype is meaningful pre- and post-release
+ * as a cross-platform interest signal). Gated on both igdb_client_id and
+ * igdb_client_secret being set in Settings; skips (not errors) when either
+ * is missing so ingestion doesn't spam errors before the user configures
+ * IGDB credentials.
+ */
+async function ingestIgdbHype(): Promise<IngestionResult> {
+  const clientId = storage.getSetting("igdb_client_id")?.value;
+  const clientSecret = storage.getSetting("igdb_client_secret")?.value;
+  if (!clientId || !clientSecret) {
+    return { source: "igdb_hype", status: "skipped", message: "IGDB / Twitch credentials not configured in Settings" };
+  }
+
+  const titles = storage.getAllProducts().filter((p) => p.isSaberPublished && p.steamAppId);
+  if (titles.length === 0) {
+    return { source: "igdb_hype", status: "skipped", message: "No Saber titles with Steam App IDs" };
+  }
+
+  const today = getTodayDateString();
+  try {
+    const appids = titles.map((p) => Number(p.steamAppId));
+    const hypeMap = await fetchIgdbHypesBySteamAppids(appids);
+
+    let dataPoints = 0;
+    for (const product of titles) {
+      const match = hypeMap.get(Number(product.steamAppId));
+      storage.upsertIgdbHype({
+        productId: product.id,
+        date: today,
+        igdbId: match?.igdbId ?? null,
+        hypeScore: match?.hypeScore ?? null,
+      });
+      dataPoints++;
+    }
+
+    return {
+      source: "igdb_hype",
+      status: "success",
+      message: `Matched ${hypeMap.size}/${titles.length} Saber titles to IGDB records`,
+      productsProcessed: titles.length,
+      dataPointsAdded: dataPoints,
+    };
+  } catch (err) {
+    log(`IGDB hype ingestion error: ${err}`, "ingestion");
+    return { source: "igdb_hype", status: "error", message: `Failed to fetch IGDB hype scores: ${err}` };
+  }
+}
+
 // ─── Sony / PlayStation Ingestion ────────────────────────────────────────────
 
 async function ingestSonyData(apiKey: string, partnerId: string): Promise<IngestionResult> {
@@ -653,6 +902,25 @@ export async function runIngestion(): Promise<IngestionRunResult> {
     results.push({ source: "steam", status: "skipped", message: "No Steam API key configured" });
     log("Steam: skipped (no API key)", "ingestion");
   }
+
+  // 2b. Steam Leaderboards ingestion (Wishlist board) — followers, wishlist
+  // rank, and IGDB hype. Unlike Steam/Sony above, these never gate on the
+  // Steamworks Partner API key: followers + rank hit public Steam
+  // endpoints, and hype hits IGDB. Always attempted; each self-reports
+  // skipped/error status if its own precondition (titles present, IGDB
+  // creds configured) isn't met.
+  log("Ingesting Steam Leaderboards data (followers, wishlist rank, IGDB hype)...", "ingestion");
+  const followersResult = await ingestSteamFollowers();
+  results.push(followersResult);
+  log(`Steam followers: ${followersResult.message}`, "ingestion");
+
+  const wishlistRankResult = await ingestSteamWishlistRank();
+  results.push(wishlistRankResult);
+  log(`Steam wishlist rank: ${wishlistRankResult.message}`, "ingestion");
+
+  const igdbHypeResult = await ingestIgdbHype();
+  results.push(igdbHypeResult);
+  log(`IGDB hype: ${igdbHypeResult.message}`, "ingestion");
 
   // 3. Sony ingestion
   if (sonyApiKey && sonyApiKey.trim().length > 0) {

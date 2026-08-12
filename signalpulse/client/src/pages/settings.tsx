@@ -46,6 +46,13 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     settingKeys: ["youtube_api_key"],
   },
   {
+    key: "igdb",
+    label: "IGDB / Twitch",
+    description: "Twitch app credentials for pulling IGDB Hype scores (create at dev.twitch.tv).",
+    icon: <Gamepad2 className="h-5 w-5" />,
+    settingKeys: ["igdb_client_id", "igdb_client_secret"],
+  },
+  {
     key: "security",
     label: "App Security",
     description: "Password required to access the application.",
