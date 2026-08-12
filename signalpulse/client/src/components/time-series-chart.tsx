@@ -386,7 +386,7 @@ export function TimeSeriesChart({
           {/* ── Cumulative Area Chart ── */}
           <div className="relative">
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5 font-medium">
-              Cumulative Total
+              Cumulative Units
             </div>
             <div className="relative">
               <ResponsiveContainer width="100%" height={180}>
@@ -456,7 +456,7 @@ export function TimeSeriesChart({
           {/* ── Daily Delta Bar Chart ── */}
           <div>
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5 font-medium">
-              Daily Change
+              Daily Units
             </div>
             <ResponsiveContainer width="100%" height={140}>
               <BarChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>

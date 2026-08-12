@@ -612,15 +612,51 @@ export async function registerRoutes(
       const prepurchaseStartDate = prepurchaseStart?.actualDate ?? null;
       const releaseDate = storage.getProductReleaseDate(id);
 
-      // --- Pre-release segment (daily prepurchases) ---
-      let preReleasePoints: { date: string; cumulativeCount: number; dailyDelta: number }[] = [];
-      if (prepurchaseStartDate) {
+      // v3.5 (2026-08-11): merged series now includes BASE units only, and
+      // covers both pre-release and post-release from steam_sales_daily as a
+      // single series. Previous version only pulled pre-purchase telemetry
+      // for the pre-release segment — which dropped pre-release SALES rows
+      // for titles like SM2 that have portal sales data but no Saber pre-
+      // purchase feed. DLC is excluded from this chart because DLC unit
+      // counts distort the base-game purchase narrative (some 'DLC' rows in
+      // pre-release windows are bundle/pre-order artifacts).
+      //
+      // The result is: one cumulative curve of BASE game units across the
+      // entire period, from first available data through the latest ingest.
+      // The release-date marker splits the visual into pre / post regions.
+
+      // Prefer sales data (source of truth) when we have ANY. Fall back to
+      // pre-purchase telemetry only when no sales rows exist for the product.
+      const salesRows = storage.getSteamSales(id);
+      const hasSalesData = salesRows.length > 0;
+
+      let merged: { date: string; cumulativeCount: number; dailyDelta: number }[] = [];
+
+      if (hasSalesData) {
+        // Aggregate to (date -> base net units) — base only, dlc excluded.
+        const perDate = new Map<string, number>();
+        for (const r of salesRows) {
+          if (r.skuGroup !== "base") continue;
+          perDate.set(r.date, (perDate.get(r.date) ?? 0) + r.netUnits);
+        }
+
+        let running = 0;
+        const sortedDates = Array.from(perDate.keys()).sort();
+        for (const date of sortedDates) {
+          const units = perDate.get(date)!;
+          running += units;
+          merged.push({
+            date,
+            cumulativeCount: running,
+            dailyDelta: units,
+          });
+        }
+      } else if (prepurchaseStartDate) {
+        // Fall back to pre-purchase telemetry for Saber titles that don't have
+        // sales data yet (pre-launch state).
         const allPrepurchase = storage.getSteamPrepurchases(id);
-        // Only rows from prepurchase start through release date. Post-release
-        // prepurchase rows are historical noise that gets superseded by the
-        // sales series.
-        preReleasePoints = allPrepurchase
-          .filter(d => d.date >= prepurchaseStartDate && (!releaseDate || d.date <= releaseDate))
+        merged = allPrepurchase
+          .filter(d => d.date >= prepurchaseStartDate)
           .map(d => ({
             date: d.date,
             cumulativeCount: d.cumulativeCount,
@@ -628,39 +664,6 @@ export async function registerRoutes(
           }));
       }
 
-      // --- Post-release segment (monthly sales rows) ---
-      // Only base + dlc net units are added to the cumulative running total;
-      // 'other' (soundtrack, artbook) is excluded.
-      let postReleasePoints: { date: string; cumulativeCount: number; dailyDelta: number }[] = [];
-      if (releaseDate) {
-        const salesRows = storage.getSteamSales(id, { since: releaseDate });
-
-        // Aggregate rows to (date -> net units) by summing base + dlc for that date.
-        const perDate = new Map<string, number>();
-        for (const r of salesRows) {
-          if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
-          perDate.set(r.date, (perDate.get(r.date) ?? 0) + r.netUnits);
-        }
-
-        // Starting cumulative: end of prepurchase segment (if any), else 0.
-        let running = preReleasePoints.length > 0
-          ? preReleasePoints[preReleasePoints.length - 1].cumulativeCount
-          : 0;
-
-        const sortedDates = Array.from(perDate.keys()).sort();
-        for (const date of sortedDates) {
-          const units = perDate.get(date)!;
-          running += units;
-          postReleasePoints.push({
-            date,
-            cumulativeCount: running,
-            dailyDelta: units,  // 'delta for the period' — the bar chart will render as monthly bar
-          });
-        }
-      }
-
-      // Merge — pre-release comes first, then post-release.
-      const merged = [...preReleasePoints, ...postReleasePoints];
       res.json(merged);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
