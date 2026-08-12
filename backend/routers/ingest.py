@@ -2409,7 +2409,12 @@ def reddit_comments_backfill(
             raise HTTPException(status_code=404, detail="Game not found.")
         target_ids = [game_id]
     else:
-        target_ids = [g.id for g in db.query(_Game.id).all()]
+        # v0016.5 (2026-08-12): portfolio-wide runs only walk active-toggled
+        # games. Retired titles have their tracking flag off and shouldn't
+        # cost Arctic Shift API calls on every backfill run.
+        target_ids = [
+            g.id for g in db.query(_Game.id).filter(_Game.is_active.is_(True)).all()
+        ]
 
     background_tasks.add_task(
         _run_reddit_comments_backfill,
