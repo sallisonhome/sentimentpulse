@@ -2572,6 +2572,93 @@ def classify_topics_run(
     }
 
 
+@router.post("/reset-tier-relevance/{game_id}", status_code=202)
+def reset_tier_relevance(
+    game_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    v0016.6 remediation (2026-08-12): reset is_relevant=NULL on any RawPost
+    for this game whose relevance_tier is signal or dedicated_sub but was
+    previously marked is_relevant=False by the old Step 5 keyword gate.
+
+    After reset, run Step 5 + Step 6 + Step 7 so the newly-admitted rows
+    get sentiment records and surface on the dashboard.
+
+    This is the fix for the SM2 bug where 5,639/5,784 reddit submissions in
+    r/Spacemarine were rejected because the body text didn't restate the
+    game name.
+    """
+    from models import Game as _Game
+    target_game = db.query(_Game).filter_by(id=game_id).first()
+    if not target_game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+
+    background_tasks.add_task(
+        _run_reset_tier_relevance,
+        game_id=game_id,
+    )
+    return {"status": "started", "game_id": game_id}
+
+
+def _run_reset_tier_relevance(game_id: int) -> None:
+    from database import SessionLocal
+    from models import RawPost as _RawPost, Game as _Game
+    from services.ingestor import (
+        _step5_classify_sentiment,
+        _step6_extract_topics,
+        _step7_daily_summary,
+    )
+    from services.nlp_service import load_model
+    from sqlalchemy import or_ as _or_
+
+    load_model()
+    db = SessionLocal()
+    try:
+        game = db.query(_Game).filter_by(id=game_id).first()
+        if not game:
+            logger.warning("reset_tier_relevance: game_id=%s not found", game_id)
+            return
+
+        # Reset is_relevant to NULL for signal/dedicated_sub posts that were
+        # previously marked False by the old strict keyword gate.
+        updated = (
+            db.query(_RawPost)
+            .filter(
+                _RawPost.game_id == game_id,
+                _RawPost.relevance_tier.in_(("signal", "dedicated_sub")),
+                _RawPost.is_relevant.is_(False),
+            )
+            .update({_RawPost.is_relevant: None}, synchronize_session=False)
+        )
+        db.commit()
+        logger.info(
+            "reset_tier_relevance: game_id=%s reset %d rows to is_relevant=NULL",
+            game_id, updated,
+        )
+
+        log_lines: list[str] = []
+        errors: list[str] = []
+        _step5_classify_sentiment(db, game, log_lines, errors)
+        db.commit()
+        _step6_extract_topics(db, game, log_lines, errors)
+        db.commit()
+        _step7_daily_summary(db, game, log_lines, errors)
+        db.commit()
+
+        logger.info(
+            "reset_tier_relevance complete: game_id=%s reset=%d log_lines=%s errors=%s",
+            game_id, updated, len(log_lines), len(errors),
+        )
+    except Exception as exc:
+        logger.exception(
+            "reset_tier_relevance failed: game_id=%s exc=%s", game_id, exc,
+        )
+    finally:
+        db.close()
+
+
 def _run_classify_topics_scoped(
     game_id: int,
     include_daily_summary: bool,

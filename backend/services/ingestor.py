@@ -1314,6 +1314,22 @@ def _step5_classify_sentiment(
         if post.source in _AUTO_ADMIT_SOURCES:
             relevant_posts.append(post)
             continue
+        # v0016.6 (2026-08-12, Steve backfill investigation): trust the v3
+        # relevance tagger's per-row verdict. Any RawPost the tagger marked
+        # 'signal' (bluesky/dtf query hit, reddit general-sub keyword match)
+        # or 'dedicated_sub' (reddit post from a game-specific subreddit) is
+        # already known to be on-topic — the tagger has full context Step 5's
+        # is_post_relevant_to_game() gate can't see (subreddit identity,
+        # parent thread linkage, source-search intent). Only 'noise' (broad
+        # general-sub post that didn't match any keyword) still runs through
+        # the keyword-gate as a second safety net.
+        #
+        # Before this fix, Step 5 was throwing out ~97% of SM2's Reddit
+        # submissions from r/Spacemarine because the body text didn't
+        # restate 'space marine 2' — defeating the tier system.
+        if post.relevance_tier in ("signal", "dedicated_sub"):
+            relevant_posts.append(post)
+            continue
         if is_post_relevant_to_game(post.title or "", post.body or "", game):
             relevant_posts.append(post)
         else:
