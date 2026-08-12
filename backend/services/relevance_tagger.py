@@ -41,7 +41,12 @@ GENERAL_SUBS: frozenset[str] = frozenset({
     "xbox", "xboxseriesx", "steam", "steamdeck",
     # Discovery / discussion
     "patientgamers", "shouldibuythisgame", "truegaming",
-    "gamingleaksandrumors", "gamingnews",
+    # v0016.9 (2026-08-12): British/US 'u' spelling. The actual subreddit is
+    # r/GamingLeaksAndRumours (with 'u'). Without both spellings in the set,
+    # r/GamingLeaksAndRumours posts get tagged as dedicated_sub for whichever
+    # game happens to fetch them first — polluting priority games' data with
+    # unrelated gaming news (Elder Scrolls, etc).
+    "gamingleaksandrumors", "gamingleaksandrumours", "gamingnews",
     "shootergames", "thirdpersonshooter", "fps", "coopgaming",
     # Genre umbrellas (produce a lot of unrelated posts)
     "horror", "horrorgaming", "horrorgames",

@@ -368,6 +368,7 @@ def fetch_subreddit_posts(
     subreddit_name: str,
     limit: int = 25,
     game_name: str = "",
+    game=None,
 ) -> list[dict]:
     """
     Fetch posts from a subreddit, trying Arctic Shift first.
@@ -396,6 +397,7 @@ def fetch_subreddit_posts(
             limit=limit,
             game_name=game_name,
             is_general_sub=is_general,
+            game=game,
         )
         if posts:
             logger.info(

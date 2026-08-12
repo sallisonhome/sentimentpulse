@@ -200,6 +200,7 @@ def fetch_arctic_shift_subreddit_posts(
     limit: int = 100,
     game_name: str = "",
     is_general_sub: bool = False,
+    game=None,
 ) -> list[dict]:
     """
     Fetch posts from a single subreddit via Arctic Shift.
@@ -229,7 +230,11 @@ def fetch_arctic_shift_subreddit_posts(
 
         if use_search:
             # Two-request path: search title then selftext, then merge + filter
-            query = _game_search_query(game_name)
+            # v0016.8 (2026-08-12): pass game through so ambiguous-fallback
+            # games like Rideshare Stimulator use their multi-word phrase
+            # query from distinctive_keywords instead of the generic single
+            # word (which would match unrelated ride-share industry posts).
+            query = _game_search_query(game_name, game=game)
             seen: dict[str, dict] = {}
 
             for field in ("title", "selftext"):
