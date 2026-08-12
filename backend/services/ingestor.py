@@ -323,6 +323,22 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 r_saved, r_fetched = _step4_reddit(db, game, log_lines, errors)
                 game_posts_local += r_saved
 
+            # reddit comments (v0016, 2026-08-12): fetch top-N comments on
+            # any newly-saved signal/dedicated Reddit submissions. Each
+            # comment inherits the parent's tier via override_tier so a
+            # comment on a keyword-verified thread is 'signal' even without
+            # restating the game name. Scoped narrowly to avoid pulling
+            # thousands of comments from noise threads.
+            if "reddit_comments" in skip_sources or "reddit" in skip_sources:
+                log_lines.append(
+                    f"[Step 4a] '{game.name}': reddit_comments skipped (skip_sources)"
+                )
+            else:
+                rc_saved, rc_fetched = _step4a_reddit_comments(
+                    db, game, log_lines, errors,
+                )
+                game_posts_local += rc_saved
+
             # bluesky
             b_saved = 0
             b_fetched = 0
@@ -1030,6 +1046,100 @@ def _step4_reddit(
     log_lines.append(
         f"[Step 4] '{game.name}': {total_saved} new Reddit post(s) "
         f"(fetched {total_fetched})."
+    )
+    return total_saved, total_fetched
+
+
+# ── Step 4a: Reddit Comments (v0016, 2026-08-12) ─────────────────────────
+#
+# Fetches top comments on any newly-ingested Reddit submissions that were
+# tagged 'signal' or 'dedicated_sub'. Each comment inherits the parent
+# thread's relevance_tier + matched_keywords — solving the case where
+# comment sentiment on a game-relevant thread is invisible because the
+# comment text doesn't restate the game name (e.g. 'the puzzle box is
+# sick' on a Hellraiser Revival gameplay thread on r/PS5).
+#
+# Scoping decisions:
+#   * Only fetch comments for signal + dedicated_sub parents. Noise threads
+#     don't earn comment ingestion — keeps cost + noise low.
+#   * Only fetch for parents from the LAST 3 DAYS. Older threads generally
+#     have stable comment counts; we optimize for recency and compounding.
+#   * Cap comments per parent at 100 (Arctic Shift's limit ceiling).
+
+def _step4a_reddit_comments(
+    db: Session,
+    game: Game,
+    log_lines: list,
+    errors: list,
+) -> tuple[int, int]:
+    """Fetch and store Reddit comments for recent signal/dedicated parents.
+
+    Returns:
+        (saved, fetched) — saved is new comment rows inserted;
+        fetched is total comments returned by Arctic Shift across all parents.
+    """
+    from datetime import datetime, timezone, timedelta
+    from services.arctic_shift_service import fetch_arctic_shift_comments
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    parents = (
+        db.query(RawPost)
+        .filter(
+            RawPost.game_id == game.id,
+            RawPost.source == SourceEnum.reddit,
+            RawPost.relevance_tier.in_(("signal", "dedicated_sub")),
+            RawPost.collected_at >= cutoff,
+        )
+        .order_by(RawPost.collected_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    if not parents:
+        log_lines.append(
+            f"[Step 4a] '{game.name}': no signal/dedicated parents in last 3 days — skipping."
+        )
+        return 0, 0
+
+    total_saved = 0
+    total_fetched = 0
+    for parent in parents:
+        permalink = None
+        if parent.url and "reddit.com" in parent.url:
+            try:
+                permalink = "/" + parent.url.split("reddit.com/", 1)[1]
+            except IndexError:
+                permalink = None
+
+        try:
+            comments = fetch_arctic_shift_comments(
+                parent_external_id=parent.external_id,
+                parent_permalink=permalink,
+                limit=100,
+            )
+        except Exception as exc:
+            msg = f"[Step 4a] fetch failed for parent={parent.external_id}: {exc}"
+            errors.append(msg)
+            logger.warning(msg)
+            continue
+
+        if not comments:
+            continue
+        total_fetched += len(comments)
+
+        for c in comments:
+            c["parent_external_id"] = parent.external_id
+            c["override_tier"] = parent.relevance_tier
+            c["override_matched_keywords"] = parent.matched_keywords or []
+
+        saved = _bulk_save_posts(
+            db, game.id, SourceEnum.reddit_comment, comments, errors,
+        )
+        total_saved += saved
+
+    log_lines.append(
+        f"[Step 4a] '{game.name}': {total_saved} new comment(s) across "
+        f"{len(parents)} parent thread(s) (fetched {total_fetched})."
     )
     return total_saved, total_fetched
 
@@ -1778,13 +1888,23 @@ def _bulk_save_posts(
     for pd in post_data_list:
         if pd["external_id"] in known:
             continue
-        relevance_tier, matched_keywords = tag_post(
-            source=source,
-            url=pd.get("url"),
-            title=pd.get("title"),
-            body=pd.get("body"),
-            keywords=keywords,
-        )
+        # v0016 (2026-08-12): callers can pre-compute relevance for a row and
+        # pass it via 'override_tier' + 'override_matched_keywords'. Used by
+        # the reddit_comment step to inherit the parent thread's tier so a
+        # comment on a signal Hellraiser thread is signal even if the comment
+        # text doesn't repeat the game name. Falls back to tag_post() when
+        # not overridden.
+        if "override_tier" in pd:
+            relevance_tier = pd["override_tier"]
+            matched_keywords = pd.get("override_matched_keywords") or []
+        else:
+            relevance_tier, matched_keywords = tag_post(
+                source=source,
+                url=pd.get("url"),
+                title=pd.get("title"),
+                body=pd.get("body"),
+                keywords=keywords,
+            )
         row = RawPost(
             game_id=game_id,
             source=source,
@@ -1801,6 +1921,8 @@ def _bulk_save_posts(
             # v3 relevance tagging (2026-08-12, migration 0015).
             relevance_tier=relevance_tier,
             matched_keywords=matched_keywords,
+            # v0016 (2026-08-12): parent thread linkage for reddit_comment.
+            parent_external_id=pd.get("parent_external_id"),
         )
         db.add(row)
         try:

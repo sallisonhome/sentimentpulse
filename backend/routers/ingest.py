@@ -2358,3 +2358,155 @@ def _run_relevance_backfill(
         "relevance_backfill complete: games=%s posts_tagged=%s",
         stats["games"], stats["posts_tagged"],
     )
+
+
+# ─── Reddit Comments Backfill (v0016, 2026-08-12) ─────────────────────────
+#
+# Retroactively fetches Reddit comments for parent submissions that were
+# already ingested as 'signal' or 'dedicated_sub'. Useful after shipping
+# comment support to catch up on existing threads without waiting for the
+# next full ingestion run to happen to re-visit them.
+
+@router.post("/reddit-comments/backfill", status_code=202)
+def reddit_comments_backfill(
+    background_tasks: BackgroundTasks,
+    game_id: Optional[int] = Query(
+        None,
+        description=(
+            "Optional. Backfill only this game's parents. When omitted, walks "
+            "every game with signal/dedicated Reddit parents in the last 30 days."
+        ),
+    ),
+    days: int = Query(
+        7,
+        description=(
+            "How far back to look for parent submissions. Default 7 days — "
+            "covers a full week's worth of recent Reddit activity."
+        ),
+    ),
+    max_parents_per_game: int = Query(
+        50,
+        description=(
+            "Upper bound on parent threads to fetch per game. Keeps runaway "
+            "portfolio-wide backfills bounded."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """Retroactive Reddit comment fetch for existing signal/dedicated parents.
+
+    Runs in the background. Returns 202 immediately with a queue summary.
+
+    Uses services.arctic_shift_service.fetch_arctic_shift_comments + the
+    ingestor's _bulk_save_posts, so retroactive results are guaranteed
+    identical to what a live ingestion run would produce.
+    """
+    from models import Game as _Game
+
+    if game_id is not None:
+        target_game = db.query(_Game).filter_by(id=game_id).first()
+        if not target_game:
+            raise HTTPException(status_code=404, detail="Game not found.")
+        target_ids = [game_id]
+    else:
+        target_ids = [g.id for g in db.query(_Game.id).all()]
+
+    background_tasks.add_task(
+        _run_reddit_comments_backfill,
+        target_ids=target_ids,
+        days=days,
+        max_parents_per_game=max_parents_per_game,
+    )
+    return {
+        "status": "started",
+        "games_queued": len(target_ids),
+        "days": days,
+        "max_parents_per_game": max_parents_per_game,
+    }
+
+
+def _run_reddit_comments_backfill(
+    target_ids: list[int],
+    days: int,
+    max_parents_per_game: int,
+) -> None:
+    """Background: fetch comments for recent signal/dedicated parents."""
+    from database import SessionLocal
+    from datetime import datetime, timezone, timedelta
+    from services.arctic_shift_service import fetch_arctic_shift_comments
+    from services.ingestor import _bulk_save_posts
+    from models import RawPost as _RP, Game as _Game, SourceEnum as _SE
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    stats = {"games": 0, "parents_checked": 0, "comments_saved": 0}
+    errors: list = []
+
+    for gid in target_ids:
+        db = SessionLocal()
+        try:
+            game = db.query(_Game).filter_by(id=gid).first()
+            if not game:
+                continue
+            parents = (
+                db.query(_RP)
+                .filter(
+                    _RP.game_id == gid,
+                    _RP.source == _SE.reddit,
+                    _RP.relevance_tier.in_(("signal", "dedicated_sub")),
+                    _RP.collected_at >= cutoff,
+                )
+                .order_by(_RP.collected_at.desc())
+                .limit(max_parents_per_game)
+                .all()
+            )
+            if not parents:
+                continue
+
+            for parent in parents:
+                stats["parents_checked"] += 1
+                permalink = None
+                if parent.url and "reddit.com" in parent.url:
+                    try:
+                        permalink = "/" + parent.url.split("reddit.com/", 1)[1]
+                    except IndexError:
+                        permalink = None
+                try:
+                    comments = fetch_arctic_shift_comments(
+                        parent_external_id=parent.external_id,
+                        parent_permalink=permalink,
+                        limit=100,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "reddit_comments_backfill: fetch failed parent=%s — %s",
+                        parent.external_id, exc,
+                    )
+                    continue
+                if not comments:
+                    continue
+                for c in comments:
+                    c["parent_external_id"] = parent.external_id
+                    c["override_tier"] = parent.relevance_tier
+                    c["override_matched_keywords"] = parent.matched_keywords or []
+                saved = _bulk_save_posts(
+                    db, gid, _SE.reddit_comment, comments, errors,
+                )
+                stats["comments_saved"] += saved
+
+            stats["games"] += 1
+            logger.info(
+                "reddit_comments_backfill: game_id=%s '%s' parents=%s saved=%s (running total=%s)",
+                gid, game.name, len(parents), stats["comments_saved"],
+                stats["comments_saved"],
+            )
+        except Exception as exc:
+            logger.exception(
+                "reddit_comments_backfill: failed for game_id=%s: %s", gid, exc,
+            )
+        finally:
+            db.close()
+
+    logger.info(
+        "reddit_comments_backfill complete: games=%s parents_checked=%s comments_saved=%s",
+        stats["games"], stats["parents_checked"], stats["comments_saved"],
+    )

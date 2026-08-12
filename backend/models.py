@@ -17,6 +17,13 @@ class SourceEnum(str, enum.Enum):
     steam_review = "steam_review"
     steam_forum = "steam_forum"
     reddit = "reddit"
+    # v0016 (2026-08-12): Reddit comments stored separately from submissions
+    # so we can (a) query them independently and (b) inherit relevance from
+    # parent thread via raw_posts.parent_external_id. Fixes the gap where
+    # sentiment inside comments was invisible to the tagger because comments
+    # rarely repeat the game name (they say 'the puzzle box is sick' on a
+    # Hellraiser thread instead of 'Hellraiser: Revival is great').
+    reddit_comment = "reddit_comment"
     bluesky = "bluesky"
     # DTF.ru — Russian-language gaming forum. Added 2026-07-26 to capture
     # Russian-language discussion of Team Clout's ILL (developer is Russian
@@ -200,6 +207,14 @@ class RawPost(Base):
     # noise, populated for signal, null when unclassified.
     matched_keywords: Mapped[Optional[list]] = mapped_column(
         JSON, nullable=True, default=None,
+    )
+
+    # v0016 (2026-08-12): parent thread external_id for reddit_comment rows.
+    # Lets a comment inherit its parent submission's relevance_tier and
+    # matched_keywords when the comment's own text doesn't restate the game
+    # name. NULL for submissions (source='reddit') and non-Reddit sources.
+    parent_external_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, default=None, index=True,
     )
 
     game: Mapped["Game"] = relationship("Game", back_populates="raw_posts")

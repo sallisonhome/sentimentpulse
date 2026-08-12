@@ -281,3 +281,137 @@ def fetch_arctic_shift_subreddit_posts(
             posts_returned,
             status,
         )
+
+
+# ─── Comment fetching (v0016, 2026-08-12) ───────────────────────────────────
+#
+# Arctic Shift exposes /api/comments/search with a link_id filter that returns
+# comments attached to a specific submission. Reddit's own JSON endpoint is
+# blocked from datacenter IPs, so this is our only path to comment content.
+# Response shape mirrors /api/posts/search: {"data": [ {...}, ... ]}.
+#
+# Rate limiting: same _REQUEST_DELAY applies. One comment fetch per parent
+# submission per ingestion run — total additional load per game is bounded
+# by the number of new "signal" or "dedicated_sub" reddit rows added that
+# run (usually well under 30).
+
+ARCTIC_SHIFT_COMMENTS_BASE = "https://arctic-shift.photon-reddit.com/api/comments/search"
+
+
+def _convert_comment(raw: dict, parent_permalink: Optional[str]) -> Optional[dict]:
+    """
+    Convert an Arctic Shift comment dict to the shape _bulk_save_posts expects.
+
+    - Skips deleted/removed comments (body == '[deleted]' or '[removed]')
+      to avoid ingesting empty rows with no analyzable text.
+    - Skips comments with no id or empty body.
+    - Uses the parent's permalink + comment id to synthesise a stable url.
+    """
+    external_id = raw.get("id", "")
+    body = (raw.get("body") or "").strip()
+    if not external_id or not body:
+        return None
+    if body in ("[deleted]", "[removed]"):
+        return None
+
+    post_date: Optional[datetime] = None
+    created = raw.get("created_utc")
+    if created is not None:
+        try:
+            post_date = datetime.fromtimestamp(
+                float(created), tz=timezone.utc
+            )
+        except (ValueError, TypeError, OSError):
+            post_date = None
+
+    # Reddit permalinks look like /r/PS5/comments/1vknbt9/.../k9xxx/
+    # Arctic Shift usually returns a `permalink` field on comments too.
+    permalink = raw.get("permalink") or ""
+    if permalink:
+        url = f"https://www.reddit.com{permalink}"
+    elif parent_permalink:
+        url = f"https://www.reddit.com{parent_permalink.rstrip('/')}/{external_id}/"
+    else:
+        url = ""
+
+    return {
+        "external_id": external_id,
+        "author": raw.get("author") or "[deleted]",
+        "title": "",  # comments have no title; keep empty so tagger looks at body
+        "body": body[:4000],  # cap for DB storage; most Reddit comments are <1000 chars
+        "url": url,
+        "upvotes": max(0, int(raw.get("score", 0) or 0)),
+        "post_date": post_date,
+    }
+
+
+def fetch_arctic_shift_comments(
+    parent_external_id: str,
+    parent_permalink: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict]:
+    """
+    Fetch comments attached to a Reddit submission via Arctic Shift.
+
+    Args:
+        parent_external_id: Reddit submission id (e.g. '1vknbt9') — the fragment
+                            between '/comments/' and the slug in the URL.
+        parent_permalink:   Submission permalink so we can build absolute urls
+                            for comments when the API omits per-comment permalink.
+                            Optional; when None the comment's own permalink field
+                            is used, and comments without one get an empty url.
+        limit:              Max comments to return per submission. Cap at 100
+                            since Arctic Shift enforces that ceiling and comment
+                            volume beyond top-100 is usually low-signal.
+
+    Returns:
+        List of comment dicts ready to hand to _bulk_save_posts. Empty list on
+        any error, network failure, or when the parent has no comments.
+    """
+    params = {
+        "link_id": f"t3_{parent_external_id}",
+        "limit": min(int(limit), 100),
+        "sort": "desc",
+    }
+    try:
+        resp = requests.get(
+            ARCTIC_SHIFT_COMMENTS_BASE,
+            params=params,
+            timeout=_TIMEOUT,
+            headers=_HEADERS,
+        )
+    except requests.RequestException as exc:
+        logger.warning(
+            "arctic_shift comments: request failed parent=%s — %s",
+            parent_external_id, exc,
+        )
+        return []
+
+    if resp.status_code != 200:
+        logger.warning(
+            "arctic_shift comments: HTTP %d parent=%s",
+            resp.status_code, parent_external_id,
+        )
+        return []
+
+    try:
+        data = resp.json()
+    except Exception as exc:
+        logger.warning(
+            "arctic_shift comments: bad JSON parent=%s — %s",
+            parent_external_id, exc,
+        )
+        return []
+
+    items = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return []
+
+    converted: list[dict] = []
+    for raw in items:
+        c = _convert_comment(raw, parent_permalink)
+        if c is not None:
+            converted.append(c)
+
+    time.sleep(_REQUEST_DELAY)
+    return converted
