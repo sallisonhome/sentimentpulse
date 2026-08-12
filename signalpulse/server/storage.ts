@@ -319,6 +319,20 @@ export interface SteamRevenueByReleaseSplit {
   preReleaseRevenueUsd: number;   // sum of base + dlc net revenue, rows dated < releaseDate
   postReleaseRevenueUsd: number;  // sum of base + dlc net revenue, rows dated >= releaseDate (or all rows if releaseDate is null)
   totalRevenueUsd: number;
+
+  // v3.4 (2026-08-11): units alongside revenue so we can compute ASP.
+  // 'base' only — DLC ASP is a different narrative (much lower per-unit,
+  // priced differently) so we keep those separate. If you later want DLC ASP
+  // we can add another triple.
+  preReleaseBaseNetUnits: number;
+  postReleaseBaseNetUnits: number;
+  totalBaseNetUnits: number;
+
+  // Convenience — base ASP = base revenue / base units (only when units > 0).
+  preReleaseBaseAspUsd: number | null;
+  postReleaseBaseAspUsd: number | null;
+  totalBaseAspUsd: number | null;
+
   preReleaseRowCount: number;
   postReleaseRowCount: number;
   releaseDate: string | null;     // echoed for downstream reference
@@ -814,12 +828,25 @@ export class DatabaseStorage implements IStorage {
       preReleaseRevenueUsd: 0,
       postReleaseRevenueUsd: 0,
       totalRevenueUsd: 0,
+      preReleaseBaseNetUnits: 0,
+      postReleaseBaseNetUnits: 0,
+      totalBaseNetUnits: 0,
+      preReleaseBaseAspUsd: null,
+      postReleaseBaseAspUsd: null,
+      totalBaseAspUsd: null,
       preReleaseRowCount: 0,
       postReleaseRowCount: 0,
       releaseDate,
       firstDate: null,
       latestDate: null,
     };
+
+    // v3.4 (2026-08-11): base-only units are needed for ASP; base+dlc revenue
+    // still flows into the total. We track a base-revenue running total
+    // separately so ASP = baseRev / baseUnits is precise (mixing dlc in would
+    // make ASP artificially high due to DLC's lower price point).
+    let preReleaseBaseRevUsd = 0;
+    let postReleaseBaseRevUsd = 0;
 
     for (const r of rows) {
       // Only count base + dlc; 'other' (soundtrack, artbook) is excluded
@@ -830,9 +857,17 @@ export class DatabaseStorage implements IStorage {
       if (releaseDate && r.date < releaseDate) {
         result.preReleaseRevenueUsd += rev;
         result.preReleaseRowCount++;
+        if (r.skuGroup === "base") {
+          result.preReleaseBaseNetUnits += r.netUnits;
+          preReleaseBaseRevUsd += rev;
+        }
       } else {
         result.postReleaseRevenueUsd += rev;
         result.postReleaseRowCount++;
+        if (r.skuGroup === "base") {
+          result.postReleaseBaseNetUnits += r.netUnits;
+          postReleaseBaseRevUsd += rev;
+        }
       }
       if (!result.firstDate || r.date < result.firstDate) result.firstDate = r.date;
       if (!result.latestDate || r.date > result.latestDate) result.latestDate = r.date;
@@ -841,6 +876,19 @@ export class DatabaseStorage implements IStorage {
     result.preReleaseRevenueUsd = Math.round(result.preReleaseRevenueUsd * 100) / 100;
     result.postReleaseRevenueUsd = Math.round(result.postReleaseRevenueUsd * 100) / 100;
     result.totalRevenueUsd = Math.round((result.preReleaseRevenueUsd + result.postReleaseRevenueUsd) * 100) / 100;
+    result.totalBaseNetUnits = result.preReleaseBaseNetUnits + result.postReleaseBaseNetUnits;
+
+    result.preReleaseBaseAspUsd = result.preReleaseBaseNetUnits > 0
+      ? Math.round((preReleaseBaseRevUsd / result.preReleaseBaseNetUnits) * 100) / 100
+      : null;
+    result.postReleaseBaseAspUsd = result.postReleaseBaseNetUnits > 0
+      ? Math.round((postReleaseBaseRevUsd / result.postReleaseBaseNetUnits) * 100) / 100
+      : null;
+    const totalBaseRev = preReleaseBaseRevUsd + postReleaseBaseRevUsd;
+    result.totalBaseAspUsd = result.totalBaseNetUnits > 0
+      ? Math.round((totalBaseRev / result.totalBaseNetUnits) * 100) / 100
+      : null;
+
     return result;
   }
 

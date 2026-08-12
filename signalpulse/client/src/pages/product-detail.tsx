@@ -297,7 +297,7 @@ export default function ProductDetail() {
         {/* ─── Steam Pre-Purchase Count ──────────────────────────────── */}
         {hasSteam && (
           <CollapsibleSection
-            title="Steam Pre-Purchase Count"
+            title="Steam Purchases (Pre-Release + Post-Release Sales)"
             sectionKey="steamPrepurchase"
             open={openSections.steamPrepurchase}
             onToggle={toggleSection}

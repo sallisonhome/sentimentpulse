@@ -203,204 +203,256 @@ export default function Dashboard() {
                     );
                   })()}
 
-                  {/* v3.2 (2026-08-11): Steam Revenue row — Pre-Release /
-                      Post-Release / Total. Only shown when there's ingested
-                      sales data (base + dlc rows). Tagged 'Steam Revenue' so
-                      other platforms can be added as separate rows later. */}
+                  {/* v3.4 (2026-08-11): 'Steam — Actuals' section. Shows only
+                      when there's ingested sales data. Two subrows:
+                        1. Revenue triad (Pre / Post / Total)
+                        2. Units triad (Pre / Post / Total) with base ASP
+                      Tagged 'Steam' explicitly so other platforms can slot in
+                      later as parallel sections (Xbox — Actuals, PSN — Actuals). */}
                   {(() => {
                     const rev = product.steamRevenueSplit as {
                       preReleaseRevenueUsd: number;
                       postReleaseRevenueUsd: number;
                       totalRevenueUsd: number;
+                      preReleaseBaseNetUnits: number;
+                      postReleaseBaseNetUnits: number;
+                      totalBaseNetUnits: number;
+                      preReleaseBaseAspUsd: number | null;
+                      postReleaseBaseAspUsd: number | null;
+                      totalBaseAspUsd: number | null;
                       preReleaseRowCount: number;
                       postReleaseRowCount: number;
                       releaseDate: string | null;
+                      latestDate: string | null;
                     } | null | undefined;
                     if (!rev || rev.totalRevenueUsd <= 0) return null;
                     const hasPre = rev.preReleaseRevenueUsd > 0;
                     return (
-                      <div className="grid grid-cols-3 gap-x-3 gap-y-2 pt-3 mt-2 border-t">
-                        <div>
-                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Revenue · Pre-Release</div>
-                          <div
-                            className={`text-sm font-semibold tabular-nums mt-0.5 ${hasPre ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/60"}`}
-                            data-testid={`text-steam-rev-prerelease-${product.id}`}
-                          >
-                            {formatCurrency(rev.preReleaseRevenueUsd)}
+                      <div className="pt-3 mt-3 border-t">
+                        <div className="flex items-baseline justify-between mb-2">
+                          <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400">
+                            Steam — Actuals
                           </div>
-                          {hasPre && (
-                            <div className="text-[9px] text-muted-foreground">
-                              Pre-order fulfillment
+                          <div className="text-[9px] text-muted-foreground">
+                            Through {rev.latestDate ?? "—"}
+                          </div>
+                        </div>
+                        {/* Revenue row */}
+                        <div className="grid grid-cols-3 gap-x-3 gap-y-1 mb-2">
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Pre-Release Revenue</div>
+                            <div className={`text-sm font-semibold tabular-nums ${hasPre ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/50"}`}
+                              data-testid={`text-steam-rev-prerelease-${product.id}`}>
+                              {formatCurrency(rev.preReleaseRevenueUsd)}
                             </div>
-                          )}
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Post-Release Revenue</div>
+                            <div className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
+                              data-testid={`text-steam-rev-postrelease-${product.id}`}>
+                              {formatCurrency(rev.postReleaseRevenueUsd)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Total Revenue</div>
+                            <div className="text-sm font-bold tabular-nums text-emerald-700 dark:text-emerald-300"
+                              data-testid={`text-steam-rev-total-${product.id}`}>
+                              {formatCurrency(rev.totalRevenueUsd)}
+                            </div>
+                          </div>
                         </div>
-                        <div>
-                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Revenue · Post-Release</div>
-                          <div
-                            className="text-sm font-semibold tabular-nums mt-0.5 text-emerald-600 dark:text-emerald-400"
-                            data-testid={`text-steam-rev-postrelease-${product.id}`}
-                          >
-                            {formatCurrency(rev.postReleaseRevenueUsd)}
+                        {/* Units + ASP row */}
+                        <div className="grid grid-cols-3 gap-x-3 gap-y-1">
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Pre-Release Units · ASP</div>
+                            <div className="text-sm font-semibold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-prerelease-${product.id}`}>
+                              {formatNumber(rev.preReleaseBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.preReleaseBaseAspUsd != null ? `\$${rev.preReleaseBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
                           </div>
-                          <div className="text-[9px] text-muted-foreground">
-                            {rev.postReleaseRowCount} months live
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Post-Release Units · ASP</div>
+                            <div className="text-sm font-semibold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-postrelease-${product.id}`}>
+                              {formatNumber(rev.postReleaseBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.postReleaseBaseAspUsd != null ? `\$${rev.postReleaseBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Total Units · ASP</div>
+                            <div className="text-sm font-bold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-total-${product.id}`}>
+                              {formatNumber(rev.totalBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.totalBaseAspUsd != null ? `\$${rev.totalBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
                           </div>
                         </div>
-                        <div>
-                          <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Steam Revenue · Total</div>
-                          <div
-                            className="text-sm font-semibold tabular-nums mt-0.5 text-emerald-700 dark:text-emerald-300"
-                            data-testid={`text-steam-rev-total-${product.id}`}
-                          >
-                            {formatCurrency(rev.totalRevenueUsd)}
-                          </div>
-                          <div className="text-[9px] text-muted-foreground">
-                            Base + paid DLC
-                          </div>
+                        <div className="text-[9px] text-muted-foreground mt-1.5">
+                          Base game only for ASP · revenue includes base + paid DLC
                         </div>
                       </div>
                     );
                   })()}
 
-                  {/* v2.5 (2026-08-11): each Dyn column now shows two tiers —
-                      Steam-only units on top (source-of-truth from Steam WL),
-                      then 'All Platforms' units + revenue below (broken out
-                      via platform mix). Helps viewers connect Steam WL to the
-                      per-platform expansion. Financial figures live under the
-                      All Platforms tier since revenue is combined. */}
-                  <div className={`grid ${hasRevision ? "grid-cols-6" : "grid-cols-5"} gap-x-2 pt-3 mt-2 border-t`}>
-                    {/* Dynamic First Month */}
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Dyn. 1st Mo</div>
-                      {hasSteamDyn && (
-                        <div className="mt-0.5">
-                          <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">Steam</div>
-                          <div className="text-xs font-semibold tabular-nums text-blue-600/70 dark:text-blue-400/70">
-                            {formatNumber(steamDynFirstUnits!)}
-                          </div>
-                        </div>
-                      )}
-                      <div className="mt-1">
-                        <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">All Platforms</div>
-                        <div className="text-sm font-semibold tabular-nums text-blue-600 dark:text-blue-400">
-                          {formatNumber(dynFirstUnits)}
-                        </div>
-                      </div>
-                      {hasPrice && (
-                        <div className="mt-1 space-y-0">
-                          <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                            {formatCurrency(dynFirstGmv)} <span className="text-muted-foreground font-normal">g</span>
-                          </div>
-                          <div className="text-[10px] tabular-nums text-emerald-600/80 dark:text-emerald-500 font-medium">
-                            {formatCurrency(dynFirstNet)} <span className="text-muted-foreground font-normal">n</span>
-                          </div>
-                        </div>
-                      )}
+                  {/* v3.4 (2026-08-11): Dynamic Forecasts, redesigned for clarity.
+                      Split into two visually distinct blocks:
+                        A. Units block — 1st Month / 1st Year / Lifetime, with
+                           Steam-only inline underneath each All-Platforms total.
+                        B. Revenue block — GMV + Net at each timeframe.
+                      Followed by a per-platform breakdown table showing how the
+                      All-Platforms total splits by platform. */}
+                  <div className="pt-3 mt-3 border-t">
+                    <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 mb-2">
+                      Dynamic Forecasts
                     </div>
-                    {/* Dynamic 1 Year */}
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Dyn. 1 Yr</div>
-                      {hasSteamDyn && (
-                        <div className="mt-0.5">
-                          <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">Steam</div>
-                          <div className="text-xs font-semibold tabular-nums text-blue-600/70 dark:text-blue-400/70">
-                            {formatNumber(steamDynYearUnits!)}
-                          </div>
-                        </div>
-                      )}
-                      <div className="mt-1">
-                        <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">All Platforms</div>
-                        <div className="text-sm font-semibold tabular-nums text-blue-600 dark:text-blue-400">
-                          {formatNumber(dynYearUnits)}
-                        </div>
+
+                    {/* Block A — Units */}
+                    <div className="mb-3">
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5 font-medium">
+                        Units
                       </div>
-                      {hasPrice && (
-                        <div className="mt-1 space-y-0">
-                          <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                            {formatCurrency(dynYearGmv)} <span className="text-muted-foreground font-normal">g</span>
+                      <div className="grid grid-cols-3 gap-x-3">
+                        {[
+                          { label: "1st Month", allUnits: dynFirstUnits, steamUnits: steamDynFirstUnits },
+                          { label: "1st Year", allUnits: dynYearUnits, steamUnits: steamDynYearUnits },
+                          { label: "Lifetime", allUnits: dynLtUnits, steamUnits: steamDynLtUnits },
+                        ].map((col) => (
+                          <div key={col.label} className="rounded-md border bg-blue-500/5 dark:bg-blue-500/10 p-2">
+                            <div className="text-[10px] text-muted-foreground">{col.label}</div>
+                            <div className="text-base font-bold tabular-nums text-blue-700 dark:text-blue-300 leading-tight">
+                              {formatNumber(col.allUnits)}
+                            </div>
+                            <div className="text-[9px] text-muted-foreground">All Platforms</div>
+                            {hasSteamDyn && col.steamUnits != null && (
+                              <div className="mt-1 pt-1 border-t border-blue-500/20">
+                                <div className="text-[10px] tabular-nums text-blue-600/80 dark:text-blue-400/80">
+                                  {formatNumber(col.steamUnits)}
+                                </div>
+                                <div className="text-[9px] text-muted-foreground">Steam only</div>
+                              </div>
+                            )}
                           </div>
-                          <div className="text-[10px] tabular-nums text-emerald-600/80 dark:text-emerald-500 font-medium">
-                            {formatCurrency(dynYearNet)} <span className="text-muted-foreground font-normal">n</span>
-                          </div>
-                        </div>
-                      )}
+                        ))}
+                      </div>
                     </div>
-                    {/* Dynamic LT Forecast */}
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Dyn. LT</div>
-                      {hasSteamDyn && (
-                        <div className="mt-0.5">
-                          <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">Steam</div>
-                          <div className="text-xs font-semibold tabular-nums text-blue-600/70 dark:text-blue-400/70">
-                            {formatNumber(steamDynLtUnits!)}
-                          </div>
+
+                    {/* Block B — Revenue */}
+                    {hasPrice && (
+                      <div className="mb-3">
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5 font-medium">
+                          Revenue (All Platforms) · GMV → Net
                         </div>
-                      )}
-                      <div className="mt-1">
-                        <div className="text-[9px] text-muted-foreground uppercase tracking-wide leading-none">All Platforms</div>
-                        <div className="text-sm font-semibold tabular-nums text-blue-600 dark:text-blue-400">
-                          {formatNumber(dynLtUnits)}
+                        <div className="grid grid-cols-3 gap-x-3">
+                          {[
+                            { label: "1st Month", gmv: dynFirstGmv, net: dynFirstNet },
+                            { label: "1st Year", gmv: dynYearGmv, net: dynYearNet },
+                            { label: "Lifetime", gmv: dynLtGmv, net: dynLtNet },
+                          ].map((col) => (
+                            <div key={col.label} className="rounded-md border bg-emerald-500/5 dark:bg-emerald-500/10 p-2">
+                              <div className="text-[10px] text-muted-foreground">{col.label}</div>
+                              <div className="text-sm font-semibold tabular-nums text-emerald-700 dark:text-emerald-300 leading-tight">
+                                {formatCurrency(col.gmv)}
+                              </div>
+                              <div className="text-[9px] text-muted-foreground">GMV (gross)</div>
+                              <div className="mt-1 pt-1 border-t border-emerald-500/20">
+                                <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400">
+                                  {formatCurrency(col.net)}
+                                </div>
+                                <div className="text-[9px] text-muted-foreground">Net (after Steam+dev cuts)</div>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
-                      {hasPrice && (
-                        <div className="mt-1 space-y-0">
-                          <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                            {formatCurrency(dynLtGmv)} <span className="text-muted-foreground font-normal">g</span>
-                          </div>
-                          <div className="text-[10px] tabular-nums text-emerald-600/80 dark:text-emerald-500 font-medium">
-                            {formatCurrency(dynLtNet)} <span className="text-muted-foreground font-normal">n</span>
-                          </div>
+                    )}
+
+                    {/* Per-platform breakdown — shows how All-Platforms rolls up */}
+                    {product.dynamicPerPlatform && product.dynamicPerPlatform.length > 0 && (
+                      <details className="group" onClick={(e) => e.stopPropagation()}>
+                        <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground select-none list-none flex items-center gap-1">
+                          <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
+                          Per-Platform Split (rolls up into All Platforms above)
+                        </summary>
+                        <div className="mt-2 border rounded-md overflow-hidden">
+                          <table className="w-full text-[11px] tabular-nums">
+                            <thead className="bg-muted/50">
+                              <tr className="text-left">
+                                <th className="px-2 py-1 font-medium text-muted-foreground text-[10px] uppercase tracking-wide">Platform</th>
+                                <th className="px-2 py-1 font-medium text-muted-foreground text-[10px] uppercase tracking-wide text-right">1st Month</th>
+                                <th className="px-2 py-1 font-medium text-muted-foreground text-[10px] uppercase tracking-wide text-right">1st Year</th>
+                                <th className="px-2 py-1 font-medium text-muted-foreground text-[10px] uppercase tracking-wide text-right">Lifetime</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {product.dynamicPerPlatform.map((row: any) => (
+                                <tr key={row.platform} className="border-t">
+                                  <td className="px-2 py-1 text-foreground">
+                                    <span className={`inline-flex items-center px-1.5 py-0 rounded text-[9px] font-medium border ${getPlatformClass(row.platform)}`}>
+                                      {row.platform}
+                                    </span>
+                                  </td>
+                                  <td className="px-2 py-1 text-right text-blue-700 dark:text-blue-300">{formatNumber(row.firstMonth)}</td>
+                                  <td className="px-2 py-1 text-right text-blue-700 dark:text-blue-300">{formatNumber(row.firstYear)}</td>
+                                  <td className="px-2 py-1 text-right text-blue-700 dark:text-blue-300">{formatNumber(row.lifetime)}</td>
+                                </tr>
+                              ))}
+                              <tr className="border-t bg-muted/30 font-semibold">
+                                <td className="px-2 py-1 text-muted-foreground text-[10px] uppercase tracking-wide">Total</td>
+                                <td className="px-2 py-1 text-right">{formatNumber(dynFirstUnits)}</td>
+                                <td className="px-2 py-1 text-right">{formatNumber(dynYearUnits)}</td>
+                                <td className="px-2 py-1 text-right">{formatNumber(dynLtUnits)}</td>
+                              </tr>
+                            </tbody>
+                          </table>
                         </div>
-                      )}
-                    </div>
-                    {/* Original LT Biz Forecast (always shown) */}
+                      </details>
+                    )}
+                  </div>
+
+                  {/* v3.4: Business Case row (Original + Revised + Trend) — kept
+                      compact at the bottom since it's the reference-point row. */}
+                  <div className={`grid ${hasRevision ? "grid-cols-3" : "grid-cols-2"} gap-x-3 pt-3 mt-3 border-t`}>
                     <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">
-                        Original LT Biz Forecast
-                      </div>
-                      <div className="text-sm font-semibold tabular-nums mt-0.5">
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Original LT Biz Case</div>
+                      <div className="text-sm font-semibold tabular-nums text-foreground">
                         {formatNumber(originalUnits)}
                       </div>
                       {hasPrice && (
-                        <div className="mt-1 space-y-0">
-                          <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                            {formatCurrency(originalGmv)} <span className="text-muted-foreground font-normal">g</span>
-                          </div>
-                          <div className="text-[10px] tabular-nums text-emerald-600/80 dark:text-emerald-500 font-medium">
-                            {formatCurrency(originalNet)} <span className="text-muted-foreground font-normal">n</span>
-                          </div>
+                        <div className="text-[10px] tabular-nums text-muted-foreground">
+                          {formatCurrency(originalNet)} net
                         </div>
                       )}
                     </div>
-                    {/* Revised LT Biz Forecast (only when a revision exists) */}
                     {hasRevision && (
                       <div>
-                        <div className="text-[10px] text-primary uppercase tracking-wide leading-tight font-semibold">
+                        <div className="text-[10px] text-primary uppercase tracking-wide font-semibold">
                           {revisedLabel}
                         </div>
-                        <div className="text-sm font-semibold tabular-nums mt-0.5 flex items-center gap-1 text-primary" data-testid={`text-forecast-${product.id}`}>
+                        <div className="text-sm font-semibold tabular-nums text-primary flex items-center gap-1"
+                          data-testid={`text-forecast-${product.id}`}>
                           <TrendingUp className="h-3 w-3" />
                           {formatNumber(revisedUnits!)}
                         </div>
                         {hasPrice && (
-                          <div className="mt-1 space-y-0">
-                            <div className="text-[10px] tabular-nums text-emerald-600 dark:text-emerald-400 font-medium">
-                              {formatCurrency(revisedGmv!)} <span className="text-muted-foreground font-normal">g</span>
-                            </div>
-                            <div className="text-[10px] tabular-nums text-emerald-600/80 dark:text-emerald-500 font-medium">
-                              {formatCurrency(revisedNet!)} <span className="text-muted-foreground font-normal">n</span>
-                            </div>
+                          <div className="text-[10px] tabular-nums text-muted-foreground">
+                            {formatCurrency(revisedNet!)} net
                           </div>
                         )}
                       </div>
                     )}
-                    {/* +/-% Delta (far right) */}
                     <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide leading-tight">Trend +/- %</div>
-                      <div className={`text-sm font-bold tabular-nums mt-0.5 ${deltaColor}`}>
+                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Dyn LT vs Biz Case</div>
+                      <div className={`text-sm font-bold tabular-nums ${deltaColor}`}>
                         {deltaStr}
                       </div>
-                      <div className="text-[10px] text-muted-foreground mt-1">{deltaSub}</div>
+                      <div className="text-[10px] text-muted-foreground">{deltaSub}</div>
                     </div>
                   </div>
                 </Card>

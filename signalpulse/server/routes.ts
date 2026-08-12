@@ -190,6 +190,10 @@ export async function registerRoutes(
           steamDynamicLt,
           // v3.2 fields: Steam Revenue split (Pre-Release / Post-Release / Total)
           steamRevenueSplit,
+          // v3.4 fields: per-platform dynamic forecast rows so the dashboard
+          // card can show the split that rolls up into 'All Platforms'.
+          // Each row is { platform, firstMonth, firstYear, lifetime }.
+          dynamicPerPlatform: dynamicFull,
         };
       });
       res.json(enriched);
@@ -1139,6 +1143,188 @@ export async function registerRoutes(
   // POST: bulk monthly ingest for every product with a steamAppId.
   // Used by the recurring cron (see cron config) but also invokable
   // manually for testing.
+  // ─── Portal DAILY backfill (v3.4, 2026-08-11) ────────────────────────────
+  //
+  // Kicks off an async job that walks a date range one day at a time, fetching
+  // portal single-day snapshots. Also purges the coarser monthly-rollup rows
+  // for the same window so the new daily rows replace them cleanly. Job is
+  // pollable and stored in-memory.
+
+  interface PortalDailyJob {
+    id: string;
+    productId: number;
+    productTitle: string;
+    status: "running" | "completed" | "failed";
+    startedAt: string;
+    completedAt: string | null;
+    fromDate: string;
+    toDate: string;
+    totalDays: number;
+    daysProcessed: number;
+    daysSucceeded: number;
+    daysFailed: number;
+    errors: Array<{ date: string; error: string }>;
+    message: string;
+    batchesPurged: number;
+  }
+
+  const portalDailyJobs = new Map<string, PortalDailyJob>();
+  const PORTAL_DAILY_DELAY_MS = 1800; // ~2s stagger — gentle on Steamworks
+
+  function makePortalDailyJobId(): string {
+    return `portal-daily-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  async function runPortalDailyJob(job: PortalDailyJob) {
+    try {
+      const product = storage.getProduct(job.productId);
+      const session = storage.getSteamworksSession("default");
+      if (!product || !product.steamAppId) {
+        job.status = "failed";
+        job.message = "Product not found or has no steamAppId";
+        job.completedAt = new Date().toISOString();
+        return;
+      }
+      if (!session) {
+        job.status = "failed";
+        job.message = "No Steamworks session cookie configured";
+        job.completedAt = new Date().toISOString();
+        return;
+      }
+
+      // Purge existing portal_fetch batches for this product that fall inside
+      // the requested window. Monthly rollup batches will have filenames like
+      // 'monthly-portal-YYYY-MM-DD-to-YYYY-MM-DD.html' or 'portal-fetch-...'.
+      // We only delete batches whose entire window is inside job.fromDate/toDate.
+      const existingBatches = storage.getSteamSalesUploadBatches(job.productId);
+      for (const b of existingBatches) {
+        const overlapsWindow = b.reportDateStart && b.reportDateEnd
+          && b.reportDateStart >= job.fromDate && b.reportDateEnd <= job.toDate;
+        const isPortalRollup = (b.filename || "").includes("portal")
+          && (b.reportDateStart !== b.reportDateEnd);
+        if (overlapsWindow && isPortalRollup) {
+          storage.deleteSteamSalesByBatch(b.id);
+          job.batchesPurged++;
+        }
+      }
+
+      // Walk day by day.
+      const { fetchPortalPage, portalToSalesRows } = await import("./steamworks-portal");
+      const startMs = new Date(job.fromDate + "T00:00:00Z").getTime();
+      const endMs = new Date(job.toDate + "T00:00:00Z").getTime();
+      const dates: string[] = [];
+      for (let ms = startMs; ms <= endMs; ms += 86400000) {
+        dates.push(new Date(ms).toISOString().slice(0, 10));
+      }
+      job.totalDays = dates.length;
+
+      for (const dt of dates) {
+        try {
+          const result = await fetchPortalPage({
+            appId: Number(product.steamAppId),
+            dateStart: dt,
+            dateEnd: dt,
+            cookieHeader: session.cookieValue,
+          });
+          if (result.ok && result.parsed) {
+            const batchId = `portal-daily-${job.productId}-${dt}`;
+            // Delete any prior batch for the same date (idempotent re-runs).
+            storage.deleteSteamSalesByBatch(batchId);
+            const rows = portalToSalesRows(result.parsed, job.productId, dt, batchId);
+            if (rows.length > 0) {
+              storage.createSteamSalesUploadBatch({
+                id: batchId,
+                productId: job.productId,
+                filename: `portal-daily-${dt}.html`,
+                fileBytes: result.htmlBytes ?? 0,
+                reportDateStart: dt,
+                reportDateEnd: dt,
+                publisherName: null,
+                rowsParsed: 1,
+                rowsIngested: rows.length,
+                rowsSkipped: 0,
+                skippedReason: null,
+                uploadedBy: "portal-daily-job",
+              });
+              storage.upsertSteamSalesRows(rows);
+            }
+            job.daysSucceeded++;
+          } else {
+            job.daysFailed++;
+            job.errors.push({ date: dt, error: (result.error ?? "unknown").slice(0, 200) });
+          }
+        } catch (err: any) {
+          job.daysFailed++;
+          job.errors.push({ date: dt, error: err?.message?.slice(0, 200) || String(err) });
+        }
+        job.daysProcessed++;
+        await new Promise((r) => setTimeout(r, PORTAL_DAILY_DELAY_MS));
+      }
+
+      job.status = "completed";
+      job.completedAt = new Date().toISOString();
+      job.message = `Daily backfill: ${job.daysSucceeded}/${job.totalDays} succeeded, ${job.daysFailed} failed, ${job.batchesPurged} monthly batches purged`;
+    } catch (err: any) {
+      job.status = "failed";
+      job.completedAt = new Date().toISOString();
+      job.message = `Job crashed: ${err?.message || String(err)}`;
+    }
+  }
+
+  app.post("/api/products/:id/steam/portal-daily-backfill", async (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const product = storage.getProduct(productId);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      if (!product.steamAppId) return res.status(400).json({ error: "Product has no steamAppId" });
+
+      const fromDate = String(req.body?.fromDate ?? "").trim();
+      const toDate = String(req.body?.toDate ?? "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/.test(toDate)) {
+        return res.status(400).json({ error: "fromDate and toDate required (YYYY-MM-DD)" });
+      }
+      if (fromDate > toDate) return res.status(400).json({ error: "fromDate must be <= toDate" });
+
+      const job: PortalDailyJob = {
+        id: makePortalDailyJobId(),
+        productId,
+        productTitle: product.title,
+        status: "running",
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        fromDate,
+        toDate,
+        totalDays: 0,
+        daysProcessed: 0,
+        daysSucceeded: 0,
+        daysFailed: 0,
+        errors: [],
+        message: "Job started",
+        batchesPurged: 0,
+      };
+      portalDailyJobs.set(job.id, job);
+      // Fire and forget — the async loop runs in the Node event loop.
+      runPortalDailyJob(job).catch((err) => {
+        job.status = "failed";
+        job.completedAt = new Date().toISOString();
+        job.message = `Unhandled: ${err?.message || String(err)}`;
+      });
+      res.json({ jobId: job.id, status: job.status, fromDate, toDate });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/steam/portal-daily-backfill/:jobId", (req, res) => {
+    const job = portalDailyJobs.get(req.params.jobId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    res.json({
+      ...job,
+      errors: job.errors.slice(0, 20), // trim for response size
+      errorCount: job.errors.length,
+    });
+  });
+
   app.post("/api/steam/portal/monthly-run", async (req, res) => {
     try {
       const session = storage.getSteamworksSession("default");

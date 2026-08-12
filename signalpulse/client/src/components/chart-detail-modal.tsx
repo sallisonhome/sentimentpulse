@@ -47,7 +47,10 @@ function getLabelForType(dataType: ChartDataType): { section: string; platform: 
     case "steamWishlist":
       return { section: "Wishlist", platform: "Steam", color: "#2563EB" };
     case "steamPrepurchase":
-      return { section: "Pre-Purchase + Sales", platform: "Steam", color: "#2563EB" };
+      // v3.4 (2026-08-11): renamed to 'Purchases' since the series now spans
+      // pre-purchase (before release) and post-release sales as one continuous
+      // timeline with the release date as the boundary marker.
+      return { section: "Purchases", platform: "Steam", color: "#2563EB" };
     case "ps5Wishlist":
       return { section: "Wishlist", platform: "PS5", color: "#6366F1" };
     case "ps5Prepurchase":
