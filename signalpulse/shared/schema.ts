@@ -299,7 +299,7 @@ export type DynamicForecastDaily = typeof dynamicForecastsDaily.$inferSelect;
 export const plsMilestones = sqliteTable("pls_milestones", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   productId: integer("product_id").notNull(),
-  category: text("category").notNull(), // core | video | press_coverage | demo_beta
+  category: text("category").notNull(), // core | video | press_coverage | demo_beta | promotion
   name: text("name").notNull(),
   targetDate: text("target_date"),
   actualDate: text("actual_date"),

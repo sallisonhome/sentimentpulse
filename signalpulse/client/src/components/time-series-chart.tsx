@@ -65,6 +65,9 @@ function getMilestoneColor(category: string): string {
     case "videos": return "#3B82F6";
     case "press_coverage": return "#22C55E";
     case "demos_betas": return "#F97316";
+    // v3.13 (2026-08-12): Steam Sales / promo events get their own color so
+    // they're visually distinct from core/video/press/demo reference lines.
+    case "promotion": return "#EAB308";
     default: return "#6B7280";
   }
 }

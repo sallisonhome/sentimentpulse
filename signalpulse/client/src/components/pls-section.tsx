@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2, CalendarIcon, Video, Newspaper, Gamepad, Target, CheckCircle2, ChevronDown, ChevronRight, Youtube } from "lucide-react";
+import { Plus, Trash2, CalendarIcon, Video, Newspaper, Gamepad, Target, CheckCircle2, ChevronDown, ChevronRight, Youtube, Percent } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 import { format } from "date-fns";
 import { useState } from "react";
@@ -73,6 +73,9 @@ export function PLSSection({ productId, playerFormat }: PLSSectionProps) {
   const videoMilestones = milestones?.filter(m => m.category === "video") ?? [];
   const pressMilestones = milestones?.filter(m => m.category === "press_coverage") ?? [];
   const demoBetaMilestones = milestones?.filter(m => m.category === "demo_beta") ?? [];
+  // v3.13 (2026-08-12): Steam Sales / promotional events (e.g. Steam seasonal
+  // sales) get their own category so they're distinct from core milestones.
+  const promotionMilestones = milestones?.filter(m => m.category === "promotion") ?? [];
 
   const handleSetActualDate = (milestoneId: number, date: Date | undefined) => {
     if (!date) return;
@@ -111,6 +114,7 @@ export function PLSSection({ productId, playerFormat }: PLSSectionProps) {
       case "video": return <Video className="h-3.5 w-3.5" />;
       case "press_coverage": return <Newspaper className="h-3.5 w-3.5" />;
       case "demo_beta": return <Gamepad className="h-3.5 w-3.5" />;
+      case "promotion": return <Percent className="h-3.5 w-3.5" />;
       default: return <Target className="h-3.5 w-3.5" />;
     }
   };
@@ -203,12 +207,34 @@ export function PLSSection({ productId, playerFormat }: PLSSectionProps) {
         }
       />
 
+      {/* Promotions (Steam Sales, etc.) */}
+      <MilestoneGroup
+        title="Promotions"
+        icon={<Percent className="h-3.5 w-3.5 text-yellow-500" />}
+        milestones={promotionMilestones}
+        onSetActualDate={handleSetActualDate}
+        onClearActualDate={handleClearActualDate}
+        onDelete={deleteMutation.mutate}
+        addButton={
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => openAddDialog("promotion")}
+            className="h-7 text-[10px] gap-1"
+            data-testid="button-add-promotion"
+          >
+            <Plus className="h-3 w-3" /> Add Promotion
+          </Button>
+        }
+        emptyMessage="No promotions added yet."
+      />
+
       {/* Add Milestone Dialog */}
       <Dialog open={addDialog.open} onOpenChange={(o) => setAddDialog({ ...addDialog, open: o })}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="text-sm">
-              Add {addDialog.category === "core" ? "Core Milestone" : addDialog.category === "video" ? "Video" : addDialog.category === "press_coverage" ? "Coverage Beat" : "Beta/Demo"}
+              Add {addDialog.category === "core" ? "Core Milestone" : addDialog.category === "video" ? "Video" : addDialog.category === "press_coverage" ? "Coverage Beat" : addDialog.category === "promotion" ? "Promotion" : "Beta/Demo"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 mt-2">
@@ -221,6 +247,7 @@ export function PLSSection({ productId, playerFormat }: PLSSectionProps) {
                   addDialog.category === "core" ? "e.g., Key Art Approved, Localization Complete" :
                   addDialog.category === "video" ? "e.g., Gameplay Reveal" :
                   addDialog.category === "press_coverage" ? "e.g., IGN Exclusive Preview" :
+                  addDialog.category === "promotion" ? "e.g., Steam Summer Sale 2026 — Start" :
                   "e.g., Technical Beta"
                 }
                 className="h-8 text-sm"
