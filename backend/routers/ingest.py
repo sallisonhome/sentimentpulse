@@ -2572,6 +2572,125 @@ def classify_topics_run(
     }
 
 
+@router.post("/curated-reddit-threads/{game_id}", status_code=202)
+def curated_reddit_threads(
+    game_id: int,
+    background_tasks: BackgroundTasks,
+    thread_ids: str = Query(
+        ...,
+        description="Comma-separated Reddit submission IDs (t3 base36, e.g. '1vmhbzo,1vllop4')",
+    ),
+    tier: str = Query(
+        "signal",
+        description="Relevance tier to assign to these parents ('signal' or 'dedicated_sub').",
+    ),
+    fetch_comments: bool = Query(
+        True,
+        description="After landing the parents, also fetch their comments via _step4a_reddit_comments.",
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    v0016.7 (2026-08-12): manually curate Reddit parent threads for a game
+    where automated search misses key discussion (e.g. announcement-week
+    titles with generic names). Fetches each thread's metadata via Arctic
+    Shift, stores it as a RawPost with override_tier so the tagger doesn't
+    downgrade it, then triggers the reddit_comment step which will fetch
+    all comments on each thread.
+
+    Idempotent — threads already in the DB are skipped by _bulk_save_posts.
+    """
+    from models import Game as _Game
+    target = db.query(_Game).filter_by(id=game_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Game not found.")
+    ids = [t.strip() for t in thread_ids.split(",") if t.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="thread_ids empty.")
+    if tier not in ("signal", "dedicated_sub"):
+        raise HTTPException(status_code=400, detail="tier must be signal or dedicated_sub.")
+
+    background_tasks.add_task(
+        _run_curated_reddit_threads,
+        game_id=game_id,
+        thread_ids=ids,
+        tier=tier,
+        fetch_comments=fetch_comments,
+    )
+    return {"status": "started", "game_id": game_id, "thread_ids_queued": len(ids)}
+
+
+def _run_curated_reddit_threads(
+    game_id: int,
+    thread_ids: list[str],
+    tier: str,
+    fetch_comments: bool,
+) -> None:
+    from database import SessionLocal
+    from models import Game as _Game, SourceEnum as _SE
+    from services.ingestor import _bulk_save_posts, _step4a_reddit_comments
+    from services.arctic_shift_service import _fetch_one
+    from services.nlp_service import load_model
+
+    load_model()
+    db = SessionLocal()
+    try:
+        game = db.query(_Game).filter_by(id=game_id).first()
+        if not game:
+            logger.warning("curated_reddit_threads: game_id=%s not found", game_id)
+            return
+
+        # Arctic Shift's /api/posts/search supports ids=<comma-list>. Batch
+        # in chunks of 25 to stay well below any URL length limit.
+        posts_by_id: dict = {}
+        for chunk_start in range(0, len(thread_ids), 25):
+            chunk = thread_ids[chunk_start:chunk_start + 25]
+            fetched = _fetch_one({"ids": ",".join(chunk), "limit": 100})
+            for p in fetched:
+                if p.get("external_id"):
+                    posts_by_id[p["external_id"]] = p
+            logger.info(
+                "curated_reddit_threads: fetched %d/%d for chunk starting at %s",
+                len(fetched), len(chunk), chunk_start,
+            )
+
+        if not posts_by_id:
+            logger.warning("curated_reddit_threads: 0 posts fetched from Arctic Shift for %s", thread_ids)
+            return
+
+        # Assign override_tier so the tagger honors our curated tier verdict.
+        to_save = []
+        for pid, pdict in posts_by_id.items():
+            pdict["override_tier"] = tier
+            pdict["override_matched_keywords"] = []
+            to_save.append(pdict)
+
+        errors: list[str] = []
+        saved = _bulk_save_posts(db, game_id, _SE.reddit, to_save, errors)
+        db.commit()
+        logger.info(
+            "curated_reddit_threads: saved %d parent(s) for game_id=%s tier=%s. errors=%d",
+            saved, game_id, tier, len(errors),
+        )
+
+        if fetch_comments and saved > 0:
+            log_lines: list[str] = []
+            step_errors: list[str] = []
+            rc_saved, rc_fetched = _step4a_reddit_comments(
+                db, game, log_lines, step_errors,
+            )
+            db.commit()
+            logger.info(
+                "curated_reddit_threads: comment step saved=%d fetched=%d errors=%d",
+                rc_saved, rc_fetched, len(step_errors),
+            )
+
+    except Exception as exc:
+        logger.exception("curated_reddit_threads failed: %s", exc)
+    finally:
+        db.close()
+
+
 @router.post("/reset-tier-relevance/{game_id}", status_code=202)
 def reset_tier_relevance(
     game_id: int,
