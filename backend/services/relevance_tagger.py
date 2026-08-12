@@ -135,8 +135,38 @@ def tag_post(
         record matched_keywords when any keyword happens to match).
     """
     keywords_list = [k for k in keywords if k]
-    text = ((title or "") + " " + (body or "")).lower()
-    matched = [k for k in keywords_list if k in text]
+    # v3.1 (2026-08-12): punctuation-normalize both keyword and text before
+    # substring match so keywords like 'hellraiser revival' correctly match
+    # post titles like 'Hellraiser: Revival Gameplay'. Collapse any run of
+    # punctuation/whitespace into a single space. Without this, colons,
+    # dashes, em-dashes and slashes silently prevent matches on subtitled
+    # game names — the exact failure mode that caused the r/PS5 Hellraiser
+    # Revival 14-minute preview thread (2026-08-10) to sit in 'noise' tier.
+    def _normalize(s: str) -> str:
+        # Replace anything that's not a letter/digit with a single space,
+        # then collapse whitespace. Cheap alternative to regex import overhead.
+        out = []
+        prev_space = False
+        for ch in s.lower():
+            if ch.isalnum():
+                out.append(ch)
+                prev_space = False
+            else:
+                if not prev_space:
+                    out.append(" ")
+                prev_space = True
+        return "".join(out).strip()
+
+    text_raw = ((title or "") + " " + (body or "")).lower()
+    text_norm = _normalize(text_raw)
+    # Match against BOTH the raw lowercased text and the normalized text,
+    # so a keyword that legitimately contains punctuation (e.g. 'hellraiser:revival'
+    # from the seeded list) still matches when the text has it verbatim.
+    matched = []
+    for k in keywords_list:
+        k_norm = _normalize(k)
+        if k in text_raw or (k_norm and k_norm in text_norm):
+            matched.append(k)
 
     # Steam surface: source is per-appid, so always dedicated.
     if source in (SourceEnum.steam_review, SourceEnum.steam_forum):
