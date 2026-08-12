@@ -891,6 +891,156 @@ async function ingestIgdbHype(): Promise<IngestionResult> {
   }
 }
 
+/**
+ * Returns Saber-published titles eligible for the Revenue Leaderboard —
+ * distinct from getPreReleaseSaberSteamTitles() (Wishlist board), since
+ * revenue tracking starts as soon as prepurchases open, not just at
+ * release. Per plan §1.4: has a steamAppId AND (Prepurchase Start
+ * milestone has fired OR the title has released).
+ */
+function getRevenueEligibleSaberSteamTitles() {
+  const today = getTodayDateString();
+  return storage.getAllProducts().filter((p) => {
+    if (!p.isSaberPublished || !p.steamAppId) return false;
+    const milestones = storage.getPlsMilestones(p.id);
+    const prepurchaseActive = !!milestones.find((m) => m.name === "Prepurchase Start")?.actualDate;
+    const releaseDate = storage.getProductReleaseDate(p.id);
+    const released = !!releaseDate && releaseDate <= today;
+    return prepurchaseActive || released;
+  });
+}
+
+const PORTAL_FETCH_DELAY_MS = 2000; // ~2s stagger between titles, gentle on Steamworks
+
+/**
+ * Daily Steam sales ingestion via the Steamworks partner portal (single-
+ * cookie session, shared across all titles). Fetches a one-day snapshot
+ * for "yesterday" for every Revenue-Leaderboard-eligible title and
+ * upserts into steam_sales_daily with source='portal_fetch'.
+ *
+ * Idempotent: batchId is deterministic (`daily-cron-{productId}-{date}`),
+ * and any existing rows for that batch are purged via
+ * storage.deleteSteamSalesByBatch() before re-inserting — NEVER a raw
+ * DELETE FROM steam_sales_daily (see v3.13 incident: a raw delete once
+ * wiped Space Marine 2's sales history from 1342 to 652 rows).
+ *
+ * The Steamworks session cookie is shared (id='default'), not per-title —
+ * if the first fetch comes back with an expired/redirected session, every
+ * subsequent title would fail identically, so we stop iterating early
+ * rather than burning ~2s/title on guaranteed failures. The Settings page
+ * already surfaces session.lastVerifiedResult as a warning banner, so no
+ * separate UI work is needed here.
+ */
+async function ingestSteamSales(): Promise<IngestionResult> {
+  const titles = getRevenueEligibleSaberSteamTitles();
+  if (titles.length === 0) {
+    return {
+      source: "steam_sales",
+      status: "skipped",
+      message: "No Saber titles eligible for revenue ingestion yet (no prepurchase started or release reached)",
+    };
+  }
+
+  const session = storage.getSteamworksSession("default");
+  if (!session) {
+    return { source: "steam_sales", status: "skipped", message: "No Steamworks session cookie configured" };
+  }
+
+  const { fetchPortalPage, portalToSalesRows } = await import("./steamworks-portal");
+  const targetDate = getYesterdayGmtDateString();
+
+  let dataPoints = 0;
+  let sessionExpired = false;
+  const errors: Array<{ title: string; error: string }> = [];
+
+  for (let i = 0; i < titles.length; i++) {
+    const product = titles[i];
+    if (i > 0) await new Promise((r) => setTimeout(r, PORTAL_FETCH_DELAY_MS));
+
+    try {
+      const result = await fetchPortalPage({
+        appId: Number(product.steamAppId),
+        dateStart: targetDate,
+        dateEnd: targetDate,
+        cookieHeader: session.cookieValue,
+      });
+
+      const nowIso = new Date().toISOString();
+      if (!result.ok || !result.parsed) {
+        const errMsg = (result.error ?? "unknown error").slice(0, 200);
+        errors.push({ title: product.title, error: errMsg });
+        storage.upsertSteamworksSession({
+          id: "default",
+          cookieValue: session.cookieValue,
+          loggedInAs: session.loggedInAs,
+          lastVerifiedAt: nowIso,
+          lastVerifiedResult: `error: ${errMsg}`,
+        });
+        log(`Steam sales portal-fetch failed for ${product.title}: ${errMsg}`, "ingestion");
+        if (/session expired/i.test(errMsg)) {
+          sessionExpired = true;
+          break; // shared cookie — every remaining title would fail the same way
+        }
+        continue;
+      }
+
+      // Deterministic + idempotent: purge any existing rows for today's
+      // batch before re-inserting, so re-running the same day never
+      // double-counts (matches the portal-daily-backfill convention).
+      const batchId = `daily-cron-${product.id}-${targetDate}`;
+      storage.deleteSteamSalesByBatch(batchId);
+      const rows = portalToSalesRows(result.parsed, product.id, targetDate, batchId);
+
+      storage.createSteamSalesUploadBatch({
+        id: batchId,
+        productId: product.id,
+        filename: `daily-cron-${targetDate}.html`,
+        fileBytes: result.htmlBytes ?? 0,
+        reportDateStart: targetDate,
+        reportDateEnd: targetDate,
+        publisherName: null,
+        rowsParsed: 1,
+        rowsIngested: rows.length,
+        rowsSkipped: 0,
+        skippedReason: null,
+        uploadedBy: "daily-cron",
+      });
+
+      if (rows.length > 0) {
+        storage.upsertSteamSalesRows(rows);
+      }
+
+      storage.upsertSteamworksSession({
+        id: "default",
+        cookieValue: session.cookieValue,
+        loggedInAs: session.loggedInAs,
+        lastVerifiedAt: nowIso,
+        lastVerifiedResult: "ok",
+      });
+
+      dataPoints++;
+    } catch (err: any) {
+      errors.push({ title: product.title, error: String(err?.message || err) });
+      log(`Steam sales ingestion error for ${product.title}: ${err}`, "ingestion");
+    }
+  }
+
+  const errorSummary = errors.length > 0
+    ? ` — ${errors.length} error${errors.length === 1 ? "" : "s"}: ${errors.map((e) => `[${e.title}] ${e.error}`).join("; ")}`
+    : "";
+  const expiredNote = sessionExpired
+    ? " (Steamworks session appears expired — remaining titles skipped; reconnect the cookie in Settings)"
+    : "";
+
+  return {
+    source: "steam_sales",
+    status: dataPoints === 0 && errors.length > 0 ? "error" : "success",
+    message: `Ingested daily portal sales for ${dataPoints}/${titles.length} revenue-eligible titles for ${targetDate}${errorSummary}${expiredNote}`,
+    productsProcessed: titles.length,
+    dataPointsAdded: dataPoints,
+  };
+}
+
 // ─── Sony / PlayStation Ingestion ────────────────────────────────────────────
 
 async function ingestSonyData(apiKey: string, partnerId: string): Promise<IngestionResult> {
@@ -1148,6 +1298,10 @@ export async function runIngestion(): Promise<IngestionRunResult> {
   const igdbHypeResult = await ingestIgdbHype();
   results.push(igdbHypeResult);
   log(`IGDB hype: ${igdbHypeResult.message}`, "ingestion");
+
+  const steamSalesResult = await ingestSteamSales();
+  results.push(steamSalesResult);
+  log(`Steam sales (portal): ${steamSalesResult.message}`, "ingestion");
 
   // 3. Sony ingestion
   if (sonyApiKey && sonyApiKey.trim().length > 0) {

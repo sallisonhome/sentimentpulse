@@ -6,7 +6,12 @@ import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
 import { runIngestion, fetchSteamWishlistReportingDay, persistSteamWishlistReportingDay, getYesterdayGmtDateString } from "./ingestion";
-import { getWishlistLeaderboardRows, getWishlistLeaderboardKpis } from "./leaderboards";
+import {
+  getWishlistLeaderboardRows,
+  getWishlistLeaderboardKpis,
+  getRevenueLeaderboardRows,
+  getRevenueLeaderboardKpis,
+} from "./leaderboards";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -1894,6 +1899,28 @@ export async function registerRoutes(
     try {
       const rows = getWishlistLeaderboardRows();
       const kpis = getWishlistLeaderboardKpis(rows);
+      res.json(kpis);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Saber Steam Revenue Leaderboard (Phase 4). Same no-pagination convention
+  // as the wishlist board — at most a handful of prepurchasing/released
+  // Saber titles, so all sorting happens client-side against this payload.
+  app.get("/api/leaderboards/revenue", (_req, res) => {
+    try {
+      const rows = getRevenueLeaderboardRows();
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/leaderboards/revenue/kpis", (_req, res) => {
+    try {
+      const rows = getRevenueLeaderboardRows();
+      const kpis = getRevenueLeaderboardKpis(rows);
       res.json(kpis);
     } catch (err: any) {
       res.status(500).json({ error: err.message });

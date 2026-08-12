@@ -26,7 +26,7 @@ import {
 } from "lucide-react";
 import { LeaderboardBanner } from "@/components/leaderboard-banner";
 import { ChartDetailModal } from "@/components/chart-detail-modal";
-import { formatNumber } from "@/lib/utils";
+import { formatNumber, formatCurrency } from "@/lib/utils";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,6 +58,38 @@ interface WishlistLeaderboardKpis {
   biggest24hFollowerMover: LeaderboardMover | null;
 }
 
+interface RevenueLeaderboardRow {
+  productId: number;
+  title: string;
+  steamAppId: string;
+  headerImage: string;
+  units24h: number | null;
+  unitsDeltaPct24h: number | null;
+  revenue24hUsd: number | null;
+  revenueDeltaPct24h: number | null;
+  dlcUnits24h: number | null;
+  dlcRevenue24h: number | null;
+  ltdRevenueUsd: number | null;
+  revenue30d: number | null;
+  revenueDelta30dUsd: number | null;
+  revenueDelta30dPct: number | null;
+}
+
+interface RevenueLeaderboardMover {
+  productId: number;
+  title: string;
+  headerImage: string;
+  delta: number;
+  direction: "up" | "down";
+  isPercent?: boolean;
+}
+
+interface RevenueLeaderboardKpis {
+  biggest24hUnitsMover: RevenueLeaderboardMover | null;
+  biggest24hRevenueMover: RevenueLeaderboardMover | null;
+  biggest30dRevenueLift: RevenueLeaderboardMover | null;
+}
+
 type SortKey =
   | "wishlistTotal"
   | "wishlistDelta1d"
@@ -66,6 +98,18 @@ type SortKey =
   | "rankCurrent"
   | "rankDelta7d"
   | "igdbHype";
+
+type RevenueSortKey =
+  | "units24h"
+  | "unitsDeltaPct24h"
+  | "revenue24hUsd"
+  | "revenueDeltaPct24h"
+  | "dlcUnits24h"
+  | "dlcRevenue24h"
+  | "ltdRevenueUsd"
+  | "revenue30d"
+  | "revenueDelta30dUsd"
+  | "revenueDelta30dPct";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -80,6 +124,30 @@ function DeltaValue({ value, invert = false }: { value: number | null; invert?: 
     <span className={`inline-flex items-center gap-1 tabular-nums font-medium ${isUp ? "text-emerald-500" : "text-red-500"}`}>
       {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
       {formatNumber(displayValue)}
+    </span>
+  );
+}
+
+function PercentDeltaValue({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-muted-foreground">—</span>;
+  if (value === 0) return <span className="text-muted-foreground tabular-nums">0%</span>;
+  const isUp = value > 0;
+  return (
+    <span className={`inline-flex items-center gap-1 tabular-nums font-medium ${isUp ? "text-emerald-500" : "text-red-500"}`}>
+      {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+      {Math.abs(value)}%
+    </span>
+  );
+}
+
+function CurrencyDeltaValue({ value }: { value: number | null }) {
+  if (value == null) return <span className="text-muted-foreground">—</span>;
+  if (value === 0) return <span className="text-muted-foreground tabular-nums">$0</span>;
+  const isUp = value > 0;
+  return (
+    <span className={`inline-flex items-center gap-1 tabular-nums font-medium ${isUp ? "text-emerald-500" : "text-red-500"}`}>
+      {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+      {formatCurrency(Math.abs(value))}
     </span>
   );
 }
@@ -103,16 +171,16 @@ function GameKeyart({ headerImage, title }: { headerImage: string; title: string
   );
 }
 
-function SortableHead({
+function SortableHead<K extends string>({
   label,
   sortKey,
   activeSort,
   onSort,
 }: {
   label: string;
-  sortKey: SortKey;
-  activeSort: { key: SortKey; dir: "asc" | "desc" } | null;
-  onSort: (key: SortKey) => void;
+  sortKey: K;
+  activeSort: { key: K; dir: "asc" | "desc" } | null;
+  onSort: (key: K) => void;
 }) {
   const isActive = activeSort?.key === sortKey;
   return (
@@ -137,11 +205,21 @@ function MoverKpiCard({
   label,
   mover,
   onOpenChart,
+  valueType = "number",
 }: {
   label: string;
-  mover: LeaderboardMover | null;
+  mover: LeaderboardMover | RevenueLeaderboardMover | null;
   onOpenChart: (row: { productId: number; title: string }) => void;
+  valueType?: "number" | "currency" | "percent";
 }) {
+  const formattedDelta =
+    mover == null
+      ? ""
+      : valueType === "currency"
+        ? formatCurrency(Math.abs(mover.delta))
+        : valueType === "percent"
+          ? `${Math.abs(mover.delta)}%`
+          : formatNumber(Math.abs(mover.delta));
   return (
     <Card className="p-4">
       <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-3">
@@ -160,7 +238,7 @@ function MoverKpiCard({
             <div className="text-sm font-medium truncate group-hover:underline">{mover.title}</div>
             <div className={`inline-flex items-center gap-1 text-xl font-bold tabular-nums ${mover.direction === "up" ? "text-emerald-500" : "text-red-500"}`}>
               {mover.direction === "up" ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
-              {formatNumber(Math.abs(mover.delta))}
+              {formattedDelta}
             </div>
           </div>
         </button>
@@ -181,7 +259,11 @@ export default function Leaderboards() {
     key: "wishlistTotal",
     dir: "desc",
   });
-  const [chartModal, setChartModal] = useState<{ productId: number; title: string } | null>(null);
+  const [revenueSort, setRevenueSort] = useState<{ key: RevenueSortKey; dir: "asc" | "desc" }>({
+    key: "revenue30d",
+    dir: "desc",
+  });
+  const [chartModal, setChartModal] = useState<{ productId: number; title: string; dataType: "steamWishlist" | "steamRevenueDaily" } | null>(null);
 
   const { data: rows, isLoading: rowsLoading } = useQuery<WishlistLeaderboardRow[]>({
     queryKey: ["/api/leaderboards/wishlist"],
@@ -191,6 +273,16 @@ export default function Leaderboards() {
   const { data: kpis, isLoading: kpisLoading } = useQuery<WishlistLeaderboardKpis>({
     queryKey: ["/api/leaderboards/wishlist/kpis"],
     enabled: board === "wishlist",
+  });
+
+  const { data: revenueRows, isLoading: revenueRowsLoading } = useQuery<RevenueLeaderboardRow[]>({
+    queryKey: ["/api/leaderboards/revenue"],
+    enabled: board === "revenue",
+  });
+
+  const { data: revenueKpis, isLoading: revenueKpisLoading } = useQuery<RevenueLeaderboardKpis>({
+    queryKey: ["/api/leaderboards/revenue/kpis"],
+    enabled: board === "revenue",
   });
 
   const sortedRows = useMemo(() => {
@@ -209,8 +301,30 @@ export default function Leaderboards() {
     return copy;
   }, [rows, sort]);
 
+  const sortedRevenueRows = useMemo(() => {
+    if (!revenueRows) return [];
+    const copy = [...revenueRows];
+    copy.sort((a, b) => {
+      const av = a[revenueSort.key];
+      const bv = b[revenueSort.key];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return revenueSort.dir === "desc" ? bv - av : av - bv;
+    });
+    return copy;
+  }, [revenueRows, revenueSort]);
+
   function handleSort(key: SortKey) {
     setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "desc" ? "asc" : "desc" }
+        : { key, dir: "desc" },
+    );
+  }
+
+  function handleRevenueSort(key: RevenueSortKey) {
+    setRevenueSort((prev) =>
       prev.key === key
         ? { key, dir: prev.dir === "desc" ? "asc" : "desc" }
         : { key, dir: "desc" },
@@ -246,13 +360,103 @@ export default function Leaderboards() {
       </Tabs>
 
       {board === "revenue" ? (
-        <Card className="p-12 flex flex-col items-center justify-center text-center">
-          <BarChart3 className="h-10 w-10 text-muted-foreground/40 mb-3" />
-          <h2 className="text-sm font-medium text-muted-foreground">Coming soon</h2>
-          <p className="text-xs text-muted-foreground/70 mt-1">
-            The Saber Steam Revenue Leaderboard is next up in Phase 4.
-          </p>
-        </Card>
+        revenueRowsLoading ? (
+          <div className="space-y-3">
+            <Skeleton className="h-64 w-full rounded-xl" />
+            <div className="grid grid-cols-3 gap-4">
+              {[1, 2, 3].map((i) => (
+                <Skeleton key={i} className="h-24 rounded-xl" />
+              ))}
+            </div>
+          </div>
+        ) : !revenueRows || revenueRows.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <BarChart3 className="h-12 w-12 text-muted-foreground/40 mb-4" />
+            <h2 className="text-sm font-medium text-muted-foreground">No revenue-eligible titles yet</h2>
+            <p className="text-xs text-muted-foreground/70 mt-1">
+              Titles start tracking here once prepurchases open or the title releases on Steam.
+            </p>
+          </div>
+        ) : (
+          <>
+            <Card className="overflow-hidden mb-6">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[220px]">Game Title</TableHead>
+                    <SortableHead label="24h Units" sortKey="units24h" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="24h Units Δ%" sortKey="unitsDeltaPct24h" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="24h Revenue" sortKey="revenue24hUsd" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="24h Rev Δ%" sortKey="revenueDeltaPct24h" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="24h DLC Units" sortKey="dlcUnits24h" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="24h DLC Revenue" sortKey="dlcRevenue24h" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="LTD Revenue" sortKey="ltdRevenueUsd" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="30d Revenue" sortKey="revenue30d" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="30d Rev Δ$" sortKey="revenueDelta30dUsd" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="30d Rev Δ%" sortKey="revenueDelta30dPct" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <TableHead className="text-right">Chart</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {sortedRevenueRows.map((row) => (
+                    <TableRow key={row.productId} data-testid={`row-revenue-leaderboard-${row.productId}`}>
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <GameKeyart headerImage={row.headerImage} title={row.title} />
+                          <span className="font-medium text-sm truncate">{row.title}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="tabular-nums">{formatNumber(row.units24h)}</TableCell>
+                      <TableCell><PercentDeltaValue value={row.unitsDeltaPct24h} /></TableCell>
+                      <TableCell className="tabular-nums">{formatCurrency(row.revenue24hUsd)}</TableCell>
+                      <TableCell><PercentDeltaValue value={row.revenueDeltaPct24h} /></TableCell>
+                      <TableCell className="tabular-nums">{formatNumber(row.dlcUnits24h)}</TableCell>
+                      <TableCell className="tabular-nums">{formatCurrency(row.dlcRevenue24h)}</TableCell>
+                      <TableCell className="tabular-nums">{formatCurrency(row.ltdRevenueUsd)}</TableCell>
+                      <TableCell className="tabular-nums">{formatCurrency(row.revenue30d)}</TableCell>
+                      <TableCell><CurrencyDeltaValue value={row.revenueDelta30dUsd} /></TableCell>
+                      <TableCell><PercentDeltaValue value={row.revenueDelta30dPct} /></TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 text-[11px] gap-1.5"
+                          onClick={() => setChartModal({ productId: row.productId, title: row.title, dataType: "steamRevenueDaily" })}
+                          data-testid={`button-chart-revenue-${row.productId}`}
+                        >
+                          <BarChart3 className="h-3 w-3" />
+                          View Chart
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Card>
+
+            {!revenueKpisLoading && revenueKpis && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <MoverKpiCard
+                  label="Biggest 24hr Mover — Units"
+                  mover={revenueKpis.biggest24hUnitsMover}
+                  onOpenChart={(row) => setChartModal({ ...row, dataType: "steamRevenueDaily" })}
+                />
+                <MoverKpiCard
+                  label="Biggest 24hr Mover — $"
+                  mover={revenueKpis.biggest24hRevenueMover}
+                  onOpenChart={(row) => setChartModal({ ...row, dataType: "steamRevenueDaily" })}
+                  valueType="currency"
+                />
+                <MoverKpiCard
+                  label="Biggest % Revenue Lift vs Prior 30 Days"
+                  mover={revenueKpis.biggest30dRevenueLift}
+                  onOpenChart={(row) => setChartModal({ ...row, dataType: "steamRevenueDaily" })}
+                  valueType="percent"
+                />
+              </div>
+            )}
+          </>
+        )
       ) : rowsLoading ? (
         <div className="space-y-3">
           <Skeleton className="h-64 w-full rounded-xl" />
@@ -310,7 +514,7 @@ export default function Leaderboards() {
                         variant="outline"
                         size="sm"
                         className="h-7 text-[11px] gap-1.5"
-                        onClick={() => setChartModal({ productId: row.productId, title: row.title })}
+                        onClick={() => setChartModal({ productId: row.productId, title: row.title, dataType: "steamWishlist" })}
                         data-testid={`button-chart-${row.productId}`}
                       >
                         <BarChart3 className="h-3 w-3" />
@@ -328,17 +532,17 @@ export default function Leaderboards() {
               <MoverKpiCard
                 label="Biggest 24hr Mover — Wishlist"
                 mover={kpis.biggest24hWishlistMover}
-                onOpenChart={setChartModal}
+                onOpenChart={(row) => setChartModal({ ...row, dataType: "steamWishlist" })}
               />
               <MoverKpiCard
                 label="Biggest Mover — 7 Day Rank"
                 mover={kpis.biggest7dRankMover}
-                onOpenChart={setChartModal}
+                onOpenChart={(row) => setChartModal({ ...row, dataType: "steamWishlist" })}
               />
               <MoverKpiCard
                 label="Biggest 24hr Mover — Followers"
                 mover={kpis.biggest24hFollowerMover}
-                onOpenChart={setChartModal}
+                onOpenChart={(row) => setChartModal({ ...row, dataType: "steamWishlist" })}
               />
             </div>
           )}
@@ -351,7 +555,7 @@ export default function Leaderboards() {
           onOpenChange={(open) => setChartModal(open ? chartModal : null)}
           productId={chartModal.productId}
           productTitle={chartModal.title}
-          dataType="steamWishlist"
+          dataType={chartModal.dataType}
           releaseDate={null}
         />
       )}
