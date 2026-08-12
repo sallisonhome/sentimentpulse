@@ -3,7 +3,7 @@ import { Link } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Calendar, Users, Gamepad2, TrendingUp, DollarSign } from "lucide-react";
+import { Calendar, Users, Gamepad2, TrendingUp, DollarSign, ExternalLink } from "lucide-react";
 import { format } from "date-fns";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
 
@@ -230,8 +230,11 @@ export default function Dashboard() {
                     return (
                       <div className="pt-3 mt-3 border-t">
                         <div className="flex items-baseline justify-between mb-2">
-                          <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400">
+                          <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
                             Steam — Actuals
+                            <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
+                              click card for daily chart →
+                            </span>
                           </div>
                           <div className="text-[9px] text-muted-foreground">
                             Through {rev.latestDate ?? "—"}
@@ -309,8 +312,13 @@ export default function Dashboard() {
                       Followed by a per-platform breakdown table showing how the
                       All-Platforms total splits by platform. */}
                   <div className="pt-3 mt-3 border-t">
-                    <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 mb-2">
-                      Dynamic Forecasts
+                    <div className="flex items-baseline justify-between mb-2">
+                      <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                        Dynamic Forecasts
+                        <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
+                          click card for methodology →
+                        </span>
+                      </div>
                     </div>
 
                     {/* Block A — Units */}
@@ -414,6 +422,18 @@ export default function Dashboard() {
                         </div>
                       </details>
                     )}
+                  </div>
+
+                  {/* v3.6 (2026-08-12): Bottom affordance strip so users always
+                      know the whole card is clickable to open the full PDP. */}
+                  <div className="flex items-center justify-between pt-3 mt-3 border-t">
+                    <div className="text-[10px] text-muted-foreground uppercase tracking-wide">
+                      Click card to open full product details, PLS milestones, and interactive charts
+                    </div>
+                    <div className="flex items-center gap-1 text-[11px] font-medium text-primary">
+                      <span>Open detail page</span>
+                      <ExternalLink className="h-3 w-3" />
+                    </div>
                   </div>
 
                   {/* v3.4: Business Case row (Original + Revised + Trend) — kept

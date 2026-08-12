@@ -22,6 +22,7 @@ import { DataInputDialog } from "@/components/data-input-dialog";
 import { ChartDetailModal, type ChartDataType } from "@/components/chart-detail-modal";
 import { SparklineChart, type TimeSeriesDataPoint } from "@/components/time-series-chart";
 import { SteamSalesCard } from "@/components/steam-sales-card";
+import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
 import { ALL_PLATFORMS } from "@shared/schema";
 import { useQuery as useChartQuery } from "@tanstack/react-query";
 
@@ -265,19 +266,22 @@ export default function ProductDetail() {
                     variant="outline"
                     size="sm"
                     onClick={() => setChartModal({ type: "steamWishlist", open: true })}
-                    className="h-7 text-[10px] gap-1"
+                    className="h-7 text-[11px] gap-1.5"
                     data-testid="button-chart-steam-wl"
                   >
-                    <BarChart3 className="h-3 w-3" /> View Charts
+                    <BarChart3 className="h-3 w-3" />
+                    View chart with PLS events
+                    <span className="text-primary">→</span>
                   </Button>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => setInputDialog({ type: "steamWishlist", open: true })}
-                    className="h-7 text-[10px]"
+                    className="h-7 text-[11px] gap-1"
                     data-testid="button-input-steam-wl"
                   >
-                    + Input Data
+                    <span>+</span>
+                    Input data
                   </Button>
                 </div>
               </div>
@@ -298,8 +302,15 @@ export default function ProductDetail() {
                 </div>
               </div>
 
-              {/* Sparkline */}
-              <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/wishlists`} color="#2563EB" />
+              {/* Sparkline wrapped in ClickablePreview so clicking anywhere
+                  opens the detail chart (which includes PLS event overlays). */}
+              <ClickablePreview
+                onClick={() => setChartModal({ type: "steamWishlist", open: true })}
+                testIdPrefix="clickable-steam-wl"
+                affordanceLabel="Click for full chart with PLS event overlays →"
+              >
+                <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/wishlists`} color="#2563EB" />
+              </ClickablePreview>
               <InfoMessage>
                 Wishlist counts update daily via the Steamworks Partner API. Dynamic
                 forecasts (first-month = 27% of pre-release count) are calculated ONLY
@@ -367,40 +378,34 @@ export default function ProductDetail() {
                   </div>
                 </div>
               )}
-              <div className="flex items-center justify-between">
-                <div className="text-xs text-muted-foreground">
-                  {isSaber && prepurchaseActive && (
-                    <>Updated daily via Steamworks API · Pre-purchase started {formatDate(prepurchaseStartDate)}</>
-                  )}
-                  {(!isSaber || !prepurchaseActive) && hasSteamSalesData && (
-                    <>Sales via Steamworks portal fetch · Through {steamRev!.latestDate ?? "—"}</>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setChartModal({ type: "steamPrepurchase", open: true })}
-                    className="h-7 text-[10px] gap-1"
-                    data-testid="button-chart-steam-pre"
-                  >
-                    <BarChart3 className="h-3 w-3" /> View Charts
-                  </Button>
-                  {isSaber && prepurchaseActive && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setInputDialog({ type: "steamPrepurchase", open: true })}
-                      className="h-7 text-[10px]"
-                      data-testid="button-input-steam-pre"
-                    >
-                      + Input Data
-                    </Button>
-                  )}
-                </div>
-              </div>
-              {/* Sparkline reads from the same merged endpoint the modal chart uses. */}
-              <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/prepurchases`} color="#2563EB" />
+              <SectionActions
+                contextText={
+                  isSaber && prepurchaseActive
+                    ? `Updated daily via Steamworks API · Pre-purchase started ${formatDate(prepurchaseStartDate)}`
+                    : hasSteamSalesData
+                      ? `Sales via Steamworks portal fetch · Through ${steamRev!.latestDate ?? "—"}`
+                      : undefined
+                }
+                onOpenChart={() => setChartModal({ type: "steamPrepurchase", open: true })}
+                chartLabel="View full chart with PLS events"
+                chartTestId="button-chart-steam-pre"
+                onInputData={
+                  isSaber && prepurchaseActive
+                    ? () => setInputDialog({ type: "steamPrepurchase", open: true })
+                    : undefined
+                }
+                inputTestId="button-input-steam-pre"
+              />
+              {/* Sparkline reads from the same merged endpoint the modal chart uses.
+                  Wrapped in ClickablePreview so clicking anywhere in it opens
+                  the detail modal with PLS event overlays. */}
+              <ClickablePreview
+                onClick={() => setChartModal({ type: "steamPrepurchase", open: true })}
+                testIdPrefix="clickable-steam-pre"
+                affordanceLabel="Click for full chart with PLS event overlays →"
+              >
+                <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/prepurchases`} color="#2563EB" />
+              </ClickablePreview>
             </div>
           </CollapsibleSection>
         )}
@@ -458,7 +463,13 @@ export default function ProductDetail() {
                   </div>
                 </div>
                 {/* Sparkline */}
-                <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/ps5/wishlists`} color="#6366F1" />
+                <ClickablePreview
+                  onClick={() => setChartModal({ type: "ps5Wishlist", open: true })}
+                  testIdPrefix="clickable-ps5-wl"
+                  affordanceLabel="Click for full chart with PLS event overlays →"
+                >
+                  <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/ps5/wishlists`} color="#6366F1" />
+                </ClickablePreview>
                 <InfoMessage>
                   PS5 forecasts do not take into account Wishlist counts due to the omission of the KPI from the PS Store algorithm.
                 </InfoMessage>
@@ -522,7 +533,13 @@ export default function ProductDetail() {
                   </div>
                 </div>
                 {/* Sparkline */}
-                <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/ps5/prepurchases`} color="#6366F1" />
+                <ClickablePreview
+                  onClick={() => setChartModal({ type: "ps5Prepurchase", open: true })}
+                  testIdPrefix="clickable-ps5-pre"
+                  affordanceLabel="Click for full chart with PLS event overlays →"
+                >
+                  <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/ps5/prepurchases`} color="#6366F1" />
+                </ClickablePreview>
                 <InfoMessage>
                   PS5 Pre-Purchase counts updated daily. Dynamic LT Forecast = 8× PS5 Prepurchase Count. Dynamic 1 Year = LT ÷ 2. Dynamic 1st Month = 1 Year ÷ 2. Other console platforms (Xbox, Switch) are proportioned from PS5 based on platform mix. This number is not relevant for forecasting until 8 weeks prior to launch. Prior to 8 weeks this information is for reference only.
                 </InfoMessage>
