@@ -18,11 +18,9 @@ const SOURCE_COLORS = {
   steam_review: '#3b82f6',
   steam_forum:  '#a855f7',
   reddit:       '#f97316',
-  // v0016.2 (2026-08-12): Reddit comments as a paler-orange fill so the
-  // comment engagement stacks visibly above the submission bar without
-  // being mistaken for a different source family.
-  reddit_comment: '#fdba74',
-  bluesky:      '#0085ff',
+  bluesky:      '#0085ff',  // Bluesky brand blue
+  // DTF.ru — use their brand red so it's visually distinct from all
+  // other sources in the stacked bar (added 2026-07-27).
   dtf:          '#e33e3e',
 }
 
@@ -63,12 +61,11 @@ export default function VolumeBySourceChart({ data }: VolumeBySourceChartProps) 
               iconSize={10}
               wrapperStyle={{ fontSize: 11 }}
             />
-            <Bar dataKey="steam_review"   stackId="a" fill={SOURCE_COLORS.steam_review}   radius={[0, 0, 0, 0]} />
-            <Bar dataKey="steam_forum"    stackId="a" fill={SOURCE_COLORS.steam_forum}    radius={[0, 0, 0, 0]} />
-            <Bar dataKey="reddit"         stackId="a" fill={SOURCE_COLORS.reddit}         radius={[0, 0, 0, 0]} />
-            <Bar dataKey="reddit_comment" stackId="a" fill={SOURCE_COLORS.reddit_comment} radius={[0, 0, 0, 0]} />
-            <Bar dataKey="bluesky"        stackId="a" fill={SOURCE_COLORS.bluesky}        radius={[0, 0, 0, 0]} />
-            <Bar dataKey="dtf"            stackId="a" fill={SOURCE_COLORS.dtf}            radius={[3, 3, 0, 0]} />
+            <Bar dataKey="steam_review" stackId="a" fill={SOURCE_COLORS.steam_review} radius={[0, 0, 0, 0]} />
+            <Bar dataKey="steam_forum"  stackId="a" fill={SOURCE_COLORS.steam_forum}  radius={[0, 0, 0, 0]} />
+            <Bar dataKey="reddit"       stackId="a" fill={SOURCE_COLORS.reddit}       radius={[0, 0, 0, 0]} />
+            <Bar dataKey="bluesky"      stackId="a" fill={SOURCE_COLORS.bluesky}      radius={[0, 0, 0, 0]} />
+            <Bar dataKey="dtf"          stackId="a" fill={SOURCE_COLORS.dtf}          radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </CardContent>

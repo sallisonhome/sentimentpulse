@@ -439,7 +439,17 @@ def get_dashboard(
         if d is None:
             continue
         vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "reddit_comment": 0, "bluesky": 0, "dtf": 0})
-        vol_map[d][row.source.value] = row.cnt
+        # v0016.3 (2026-08-12): fold reddit_comment counts into the reddit
+        # bar so the chart shows real Reddit engagement in one series (per
+        # user directive "just need the posts actually coming in and being
+        # counted"). We still expose reddit_comment in the response so
+        # analytics can distinguish submission vs comment counts if needed.
+        src_key = row.source.value
+        if src_key == "reddit_comment":
+            vol_map[d]["reddit"] += row.cnt
+            vol_map[d]["reddit_comment"] = row.cnt
+        else:
+            vol_map[d][src_key] = row.cnt
 
     # Same zero-fill treatment as the trend chart above — sparse titles
     # otherwise render a handful of disconnected bars across a wide
@@ -456,11 +466,22 @@ def get_dashboard(
             day=d,
             steam_review=counts.get("steam_review", 0),
             steam_forum=counts.get("steam_forum", 0),
+            # reddit here already includes reddit_comment (folded above).
             reddit=counts.get("reddit", 0),
+            # Kept separately for callers that want to distinguish
+            # submissions from comments; never re-added to the total.
             reddit_comment=counts.get("reddit_comment", 0),
             bluesky=counts.get("bluesky", 0),
             dtf=counts.get("dtf", 0),
-            total=sum(counts.values()),
+            # Total sums the display axes only — reddit_comment is already
+            # inside 'reddit', so exclude it here to avoid double counting.
+            total=(
+                counts.get("steam_review", 0)
+                + counts.get("steam_forum", 0)
+                + counts.get("reddit", 0)
+                + counts.get("bluesky", 0)
+                + counts.get("dtf", 0)
+            ),
         )
         for d, counts in sorted(vol_map.items())
     ]
