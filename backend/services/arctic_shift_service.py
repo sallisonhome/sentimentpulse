@@ -40,34 +40,18 @@ _TIMEOUT = 15  # seconds per request
 # (2 000 requests/hour is visible in response headers).
 _REQUEST_DELAY = 1.0  # seconds
 
-# Large general subreddits where posts must be filtered by game name.
-# Mirrors the _GENERAL_SUBREDDITS constant in reddit_service.py.
-# Kept as a standalone copy here so callers only need to import one module.
+# Large general subreddits where posts must be filtered by game name at
+# fetch time (title/selftext search + _post_mentions_game post-filter).
 #
-# 2026-08-12: Expanded to include horror-genre and console-generic subs that
-# were being pulled wholesale for the Hellraiser: Revival game. Audit of 3-day
-# posts showed 1,058 out of 1,082 noise posts came from r/horror (449), r/
-# residentevil (344), r/playstation (101), r/HorrorGaming (91), r/HorrorGames
-# (50), r/survivalhorror (22). These are all genre/console subs where a title
-# is a small fraction of daily traffic — must be filtered by game name.
-#
-# Match is case-insensitive (via sub_lower in fetch_arctic_shift_subreddit_posts),
-# so keep the canonical case used in subreddit URLs where possible.
+# 2026-08-12 revert: audit-first workflow now applied downstream via
+# raw_posts.relevance_tier tagging. Only include subs where the search-
+# path is genuinely necessary because unfiltered fetches would exceed
+# Arctic Shift's per-request post cap. Everything else uses full fetch
+# and gets tagged (never dropped) at ingest.
 ARCTIC_SHIFT_GENERAL_SUBS: frozenset[str] = frozenset({
-    # Console + PC platform subs (always general — any game gets a small share)
-    "gaming", "games", "pcgaming", "ps5", "playstation", "xbox", "XboxSeriesX",
-    "steam", "SteamDeck",
-    # Broad discovery / discussion subs
-    "patientgamers", "ShouldIbuythisgame", "truegaming",
-    "GamingLeaksAndRumors", "gamingleaksandrumors", "GamingNews",
-    "ShooterGames", "thirdpersonshooter", "FPS", "CoopGaming",
-    # IP / genre subs — include the ones we've observed producing noise
+    "gaming", "games", "pcgaming", "ps5", "xbox", "steam",
     "halo", "ghostbusters", "JurassicPark", "hellraiser", "JohnWick",
-    "horror", "HorrorGaming", "HorrorGames", "survivalhorror", "SurvivalHorror",
-    "residentevil", "ResidentEvil",
-    "Spacemarine", "Saberinteractive", "BossTeamGames",
-    # Publisher / dev subs where posts span the studio's full catalog
-    "GearsOfWar", "XboxGamePass",
+    "patientgamers", "ShouldIbuythisgame",
 })
 
 

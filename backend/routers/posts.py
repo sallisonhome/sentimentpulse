@@ -32,6 +32,15 @@ def get_posts(
     source: Optional[str] = Query(
         None, description="steam_review | steam_forum | reddit | bluesky"
     ),
+    relevance: Optional[str] = Query(
+        None,
+        description=(
+            "Filter by relevance_tier. Values: 'signal' (dedicated_sub + "
+            "keyword matches), 'noise' (broad-sub no-match), 'dedicated_sub' "
+            "(dedicated-source only), 'keyword_match' (broad-sub match only), "
+            "'unclassified' (untagged). Default None returns everything."
+        ),
+    ),
     date_from: Optional[str] = Query(
         None, description="ISO date string, e.g. 2024-01-15"
     ),
@@ -84,6 +93,24 @@ def get_posts(
                        f"Valid values: steam_review, steam_forum, reddit, bluesky",
             )
         q = q.filter(RawPost.source == src)
+
+    if relevance:
+        # 'signal' is a convenience alias meaning "anything we'd surface
+        # to analytics": dedicated_sub OR keyword-matched broad-sub post.
+        if relevance == "signal":
+            q = q.filter(RawPost.relevance_tier.in_(("dedicated_sub", "signal")))
+        elif relevance == "keyword_match":
+            q = q.filter(RawPost.relevance_tier == "signal")
+        elif relevance in ("dedicated_sub", "noise", "unclassified"):
+            q = q.filter(RawPost.relevance_tier == relevance)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Invalid relevance '{relevance}'. Valid values: "
+                    "signal, keyword_match, dedicated_sub, noise, unclassified"
+                ),
+            )
 
     if date_from:
         try:
@@ -147,6 +174,8 @@ def get_posts(
             collected_at=post.collected_at,
             post_date=post.post_date,
             sentiment_info=sentiment_info,
+            relevance_tier=post.relevance_tier,
+            matched_keywords=post.matched_keywords,
         ))
 
     return PostsPageResponse(
@@ -156,3 +185,83 @@ def get_posts(
         page_size=page_size,
         total_pages=total_pages,
     )
+
+
+# ─── Relevance audit summary ────────────────────────────────────────────
+
+@router.get("/{game_id}/audit")
+def get_relevance_audit(
+    game_id: int,
+    days: int = Query(30, ge=1, le=365, description="Rolling window in days"),
+    db: Session = Depends(get_db),
+):
+    """
+    Return a summary of the relevance-tier distribution for this game's
+    posts over the last N days. Fields:
+
+      - total: total posts in window
+      - by_tier: {'signal': N, 'noise': N, 'dedicated_sub': N, ...}
+      - by_source_and_tier: {'reddit': {'signal': N, 'noise': N, ...}, ...}
+      - top_noise_subreddits: [{subreddit, count}, ...] top 20
+      - keywords_used: the keyword list applied for this game
+      - unclassified_pct: fraction of rows not yet tagged (informational)
+
+    Used by the operator UI + morning-scan job to decide whether the
+    tagger is behaving as expected and whether the keyword list needs
+    tuning.
+    """
+    import re
+    from collections import Counter, defaultdict
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import func as _func
+
+    game = db.query(Game).filter_by(id=game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+
+    from services.relevance_tagger import build_keywords_for_game
+    keywords = build_keywords_for_game(game)
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    rows = (
+        db.query(RawPost.id, RawPost.source, RawPost.url,
+                 RawPost.relevance_tier)
+        .filter(RawPost.game_id == game_id)
+        .filter(_func.coalesce(RawPost.post_date, RawPost.collected_at) >= cutoff)
+        .all()
+    )
+    total = len(rows)
+    by_tier = Counter(r.relevance_tier or "unclassified" for r in rows)
+    by_source_and_tier: defaultdict[str, Counter] = defaultdict(Counter)
+    noise_subs: Counter = Counter()
+    sub_re = re.compile(r"/r/([^/]+)/", re.IGNORECASE)
+
+    for r in rows:
+        source_str = r.source.value if r.source else "unknown"
+        tier = r.relevance_tier or "unclassified"
+        by_source_and_tier[source_str][tier] += 1
+        if tier == "noise" and source_str == "reddit" and r.url:
+            m = sub_re.search(r.url)
+            if m:
+                noise_subs[m.group(1)] += 1
+
+    return {
+        "game_id": game_id,
+        "game_name": game.name,
+        "window_days": days,
+        "cutoff": cutoff.isoformat(),
+        "total": total,
+        "by_tier": dict(by_tier),
+        "by_source_and_tier": {
+            src: dict(counts) for src, counts in by_source_and_tier.items()
+        },
+        "top_noise_subreddits": [
+            {"subreddit": sub, "count": n}
+            for sub, n in noise_subs.most_common(20)
+        ],
+        "keywords_used": keywords,
+        "unclassified_pct": (
+            round(100 * by_tier.get("unclassified", 0) / total, 2)
+            if total else 0.0
+        ),
+    }

@@ -164,11 +164,22 @@ def _detect_hot_threads(
     since_24h = now - timedelta(days=1)
     since_7d = now - timedelta(days=7)
 
+    # v3 (2026-08-12): counts filter to signal-only. Noise from broad-genre
+    # subs is excluded so it doesn't inflate the numbers or drown the
+    # baseline. Untagged rows ('unclassified') are permissively included —
+    # avoids blackout during the retroactive-tagging window.
+    from sqlalchemy import or_
+    _relevance_ok = or_(
+        RawPost.relevance_tier.in_(("dedicated_sub", "signal")),
+        RawPost.relevance_tier.is_(None),
+    )
+
     # 24h post counts per game (across all sources — Steam Forum,
     # Reddit, Bluesky, Steam Review — since a spike anywhere counts).
     per_game_24h = dict(
         db.query(RawPost.game_id, func.count(RawPost.id))
         .filter(RawPost.collected_at >= since_24h)
+        .filter(_relevance_ok)
         .group_by(RawPost.game_id)
         .all()
     )
@@ -177,6 +188,7 @@ def _detect_hot_threads(
     per_game_7d_total = dict(
         db.query(RawPost.game_id, func.count(RawPost.id))
         .filter(RawPost.collected_at >= since_7d)
+        .filter(_relevance_ok)
         .group_by(RawPost.game_id)
         .all()
     )

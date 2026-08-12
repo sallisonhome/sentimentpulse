@@ -254,6 +254,9 @@ class RawPostResponse(BaseModel):
     collected_at: datetime
     post_date: Optional[datetime] = None
     sentiment_info: Optional[PostSentimentInfo] = None
+    # v3 relevance audit (2026-08-12).
+    relevance_tier: Optional[str] = None
+    matched_keywords: Optional[list] = None
 
 
 class PostsPageResponse(BaseModel):

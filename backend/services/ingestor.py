@@ -1744,6 +1744,12 @@ def _bulk_save_posts(
     handle Reddit posts shared across multiple games' subreddits.
     Inserts one-by-one to avoid a single duplicate killing the whole batch.
 
+    v3 relevance tagging (2026-08-12): every row is tagged with
+    relevance_tier + matched_keywords via services.relevance_tagger. Posts
+    from broad-genre subs that don't mention the game's keywords are saved
+    as relevance_tier='noise' so analytics can exclude them while auditors
+    can still inspect the full stream.
+
     Returns the count of newly inserted rows.
     """
     if not post_data_list:
@@ -1759,12 +1765,26 @@ def _bulk_save_posts(
         )
     }
 
+    # Load the game once so we can build the keyword list a single time
+    # per batch (not per-post). Safe to defer import to keep module
+    # top-level lightweight.
+    from services.relevance_tagger import build_keywords_for_game, tag_post
+    game = db.query(Game).filter(Game.id == game_id).first()
+    keywords = build_keywords_for_game(game) if game else []
+
     saved = 0
     skipped_due_to_error = 0
     first_error_logged = False
     for pd in post_data_list:
         if pd["external_id"] in known:
             continue
+        relevance_tier, matched_keywords = tag_post(
+            source=source,
+            url=pd.get("url"),
+            title=pd.get("title"),
+            body=pd.get("body"),
+            keywords=keywords,
+        )
         row = RawPost(
             game_id=game_id,
             source=source,
@@ -1778,6 +1798,9 @@ def _bulk_save_posts(
             # Steam Reviews ground-truth vote (2026-07-29, migration 0014).
             # None for all non-Steam-Review sources.
             voted_up=pd.get("voted_up"),
+            # v3 relevance tagging (2026-08-12, migration 0015).
+            relevance_tier=relevance_tier,
+            matched_keywords=matched_keywords,
         )
         db.add(row)
         try:

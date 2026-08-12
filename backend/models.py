@@ -189,6 +189,19 @@ class RawPost(Base):
     # ambiguous). See _classify_steam_review_from_vote() in nlp_service.
     voted_up: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True, default=None)
 
+    # v3 relevance audit (2026-08-12, migration 0015). Post-ingest tagging
+    # that lets analytics/spike detection separate signal from noise without
+    # dropping any posts. See migration 0015 for the value taxonomy.
+    #   'dedicated_sub' | 'signal' | 'noise' | 'unclassified'
+    relevance_tier: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, default=None, index=True,
+    )
+    # Actual keywords that matched (JSON list). Empty list for dedicated_sub /
+    # noise, populated for signal, null when unclassified.
+    matched_keywords: Mapped[Optional[list]] = mapped_column(
+        JSON, nullable=True, default=None,
+    )
+
     game: Mapped["Game"] = relationship("Game", back_populates="raw_posts")
     # cascade="all, delete-orphan" (2026-07-24, competitor removal): deleting
     # a RawPost (e.g. via a cascaded Game delete) must also delete its

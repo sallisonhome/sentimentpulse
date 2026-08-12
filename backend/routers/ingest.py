@@ -2246,3 +2246,115 @@ def diag_smoke_test_run():
     """
     from services.source_smoke_test import run_smoke_test
     return run_smoke_test()
+
+
+# ─── Relevance tagger backfill (v3, 2026-08-12) ───────────────────────────
+
+@router.post("/relevance/backfill", status_code=202)
+def relevance_backfill(
+    background_tasks: BackgroundTasks,
+    game_id: Optional[int] = Query(
+        None,
+        description=(
+            "Optional. Backfill only this game's posts. When omitted, "
+            "walks every game in the portfolio."
+        ),
+    ),
+    only_unclassified: bool = Query(
+        True,
+        description=(
+            "When true (default), only tag rows where relevance_tier IS "
+            "NULL. Set to false to force re-tagging of everything (e.g. "
+            "after tuning keywords_used or the general-subs list)."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Populate raw_posts.relevance_tier + matched_keywords for existing rows
+    that predate the v3 tagger, or force-retag when the taxonomy changes.
+
+    Runs in the background. Returns 202 immediately with a status URL.
+
+    Uses services.relevance_tagger.tag_post — same code path as new-post
+    ingest — so retroactive results are guaranteed identical to what a
+    live ingest would produce today.
+    """
+    from models import Game as _Game
+
+    if game_id is not None:
+        target_game = db.query(_Game).filter_by(id=game_id).first()
+        if not target_game:
+            raise HTTPException(status_code=404, detail="Game not found.")
+        target_ids = [game_id]
+    else:
+        target_ids = [g.id for g in db.query(_Game.id).all()]
+
+    background_tasks.add_task(
+        _run_relevance_backfill,
+        target_ids=target_ids,
+        only_unclassified=only_unclassified,
+    )
+    return {
+        "status": "started",
+        "games_queued": len(target_ids),
+        "only_unclassified": only_unclassified,
+    }
+
+
+def _run_relevance_backfill(
+    target_ids: list[int],
+    only_unclassified: bool,
+) -> None:
+    """Background: walk each game's raw_posts and tag them."""
+    from database import SessionLocal
+    from services.relevance_tagger import build_keywords_for_game, tag_post
+    from models import RawPost as _RP, Game as _Game
+
+    stats = {"games": 0, "posts_tagged": 0, "posts_skipped_ok": 0}
+    for gid in target_ids:
+        db = SessionLocal()
+        try:
+            game = db.query(_Game).filter_by(id=gid).first()
+            if not game:
+                continue
+            keywords = build_keywords_for_game(game)
+
+            q = db.query(_RP).filter(_RP.game_id == gid)
+            if only_unclassified:
+                q = q.filter(_RP.relevance_tier.is_(None))
+
+            batch = 500
+            offset = 0
+            while True:
+                rows = q.order_by(_RP.id.asc()).offset(offset).limit(batch).all()
+                if not rows:
+                    break
+                for row in rows:
+                    tier, matched = tag_post(
+                        source=row.source,
+                        url=row.url,
+                        title=row.title,
+                        body=row.body,
+                        keywords=keywords,
+                    )
+                    row.relevance_tier = tier
+                    row.matched_keywords = matched
+                    stats["posts_tagged"] += 1
+                db.commit()
+                offset += batch
+
+            stats["games"] += 1
+            logger.info(
+                "relevance_backfill: game_id=%s '%s' tagged=%s (running total=%s)",
+                gid, game.name, offset, stats["posts_tagged"],
+            )
+        except Exception as exc:
+            logger.exception("relevance_backfill: failed for game_id=%s: %s", gid, exc)
+        finally:
+            db.close()
+
+    logger.info(
+        "relevance_backfill complete: games=%s posts_tagged=%s",
+        stats["games"], stats["posts_tagged"],
+    )
