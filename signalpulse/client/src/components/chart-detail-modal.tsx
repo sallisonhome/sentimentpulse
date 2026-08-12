@@ -17,7 +17,8 @@ export type ChartDataType =
   | "steamPrepurchase"
   | "steamRevenueDaily"
   | "ps5Wishlist"
-  | "ps5Prepurchase";
+  | "ps5Prepurchase"
+  | "steamFollowers";
 
 interface ChartDetailModalProps {
   open: boolean;
@@ -43,6 +44,8 @@ function getEndpointForType(productId: number, dataType: ChartDataType): string 
       return `/api/products/${productId}/ps5/wishlists`;
     case "ps5Prepurchase":
       return `/api/products/${productId}/ps5/prepurchases`;
+    case "steamFollowers":
+      return `/api/products/${productId}/steam/followers`;
   }
 }
 
@@ -62,6 +65,8 @@ function getLabelForType(dataType: ChartDataType): { section: string; platform: 
       return { section: "Wishlist", platform: "PS5", color: "#6366F1" };
     case "ps5Prepurchase":
       return { section: "Pre-Purchase", platform: "PS5", color: "#6366F1" };
+    case "steamFollowers":
+      return { section: "Followers", platform: "Steam", color: "#2563EB" };
   }
 }
 

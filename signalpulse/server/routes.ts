@@ -6,6 +6,7 @@ import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
 import { runIngestion, fetchSteamWishlistReportingDay, persistSteamWishlistReportingDay, getYesterdayGmtDateString } from "./ingestion";
+import { getWishlistLeaderboardRows, getWishlistLeaderboardKpis } from "./leaderboards";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -1870,6 +1871,53 @@ export async function registerRoutes(
       const milestoneId = parseInt(req.params.milestoneId);
       const aggregate = storage.getAggregateYoutubeViews(milestoneId);
       res.json(aggregate);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Steam Leaderboards ─────────────────────────────────────────────────────
+
+  // Pre-Release Steam Wishlist Leaderboard (Phase 2). Never more than ~20
+  // rows (pre-release Saber titles with a steamAppId), so all sorting
+  // happens client-side against this single payload — no server pagination.
+  app.get("/api/leaderboards/wishlist", (_req, res) => {
+    try {
+      const rows = getWishlistLeaderboardRows();
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/leaderboards/wishlist/kpis", (_req, res) => {
+    try {
+      const rows = getWishlistLeaderboardRows();
+      const kpis = getWishlistLeaderboardKpis(rows);
+      res.json(kpis);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Steam followers time series — feeds the leaderboard row's "View chart"
+  // modal (ChartDetailModal dataType="steamFollowers"). Mapped to the shared
+  // TimeSeriesDataPoint shape (cumulativeCount/dailyDelta) since the
+  // steam_followers_daily table stores followerCount instead. Rows with a
+  // null followerCount (failed-fetch marker day) are dropped rather than
+  // charted as 0.
+  app.get("/api/products/:id/steam/followers", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const rows = storage.getSteamFollowers(id);
+      const data = rows
+        .filter((r) => r.followerCount != null)
+        .map((r) => ({
+          date: r.date,
+          cumulativeCount: r.followerCount as number,
+          dailyDelta: r.dailyDelta ?? 0,
+        }));
+      res.json(data);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

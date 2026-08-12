@@ -7,6 +7,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Layout } from "@/components/layout";
 import Dashboard from "@/pages/dashboard";
+import Leaderboards from "@/pages/leaderboards";
 import ProductDetail from "@/pages/product-detail";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
@@ -19,7 +20,8 @@ function AppRouter() {
   return (
     <Layout onAddProduct={() => setAddProductOpen(true)}>
       <Switch>
-        <Route path="/" component={Dashboard} />
+        <Route path="/" component={Leaderboards} />
+        <Route path="/dashboard" component={Dashboard} />
         <Route path="/products/:id" component={ProductDetail} />
         <Route path="/settings" component={Settings} />
         <Route component={NotFound} />
