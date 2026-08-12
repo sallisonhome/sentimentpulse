@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { format, subDays, parseISO } from "date-fns";
+import type { DateRange as DayPickerRange } from "react-day-picker";
 import {
   ResponsiveContainer,
   AreaChart,
@@ -12,6 +13,10 @@ import {
   Tooltip,
   ReferenceLine,
 } from "recharts";
+import { CalendarIcon } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Calendar } from "@/components/ui/calendar";
+import { Button } from "@/components/ui/button";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -64,7 +69,10 @@ function getMilestoneColor(category: string): string {
   }
 }
 
-type DateRange = "30" | "90" | "all";
+// v3.12 (2026-08-12): added "custom" alongside the fixed presets so any
+// PDP chart (this component is shared across every product) can filter to
+// an arbitrary date window.
+type DateRange = "30" | "90" | "all" | "custom";
 
 // ─── Custom Tooltip ──────────────────────────────────────────────────────────
 
@@ -84,9 +92,14 @@ function ChartTooltip({
 }) {
   if (!active || !payload?.length) return null;
   const fmt = valueUnit === "usd" ? formatYAxisCurrency : formatYAxis;
+  // v3.12 (2026-08-12): `label` is now the raw ISO date (XAxis dataKey is
+  // "date", not the collision-prone formatted "displayDate" — see bug fix
+  // note below). Always show the full unambiguous date here regardless of
+  // the axis tick's abbreviated format.
+  const displayLabel = label ? format(new Date(label + "T00:00:00"), "MMM d, yyyy") : label;
   return (
     <div className="bg-popover text-popover-foreground border border-border rounded-md shadow-md px-3 py-2 text-xs">
-      <div className="font-medium mb-1">{label}</div>
+      <div className="font-medium mb-1">{displayLabel}</div>
       {payload.map((p, i) => (
         <div key={i} className="flex items-center gap-2">
           <span style={{ color: p.color || p.fill }} className="font-semibold">
@@ -148,7 +161,7 @@ function MilestoneHoverOverlay({
   milestones: MilestoneHoverInfo[];
   chartDataLength: number;
   visibleMilestones: MilestoneAnnotation[];
-  chartData: { date: string; displayDate: string }[];
+  chartData: { date: string }[];
 }) {
   const [hovered, setHovered] = useState<MilestoneHoverInfo | null>(null);
 
@@ -207,13 +220,26 @@ export function TimeSeriesChart({
   const yFormatter = valueUnit === "usd" ? formatYAxisCurrency : formatYAxis;
   const [range, setRange] = useState<DateRange>("all");
 
+  // v3.12 (2026-08-12): custom date-range picker state. `customRange` holds
+  // the in-progress/selected picker value; `appliedCustomRange` is what the
+  // chart actually filters by (only set once the user has picked both ends).
+  const [customRange, setCustomRange] = useState<DayPickerRange | undefined>(undefined);
+  const [appliedCustomRange, setAppliedCustomRange] = useState<DayPickerRange | undefined>(undefined);
+  const [customPickerOpen, setCustomPickerOpen] = useState(false);
+
   // Filter data by date range
   const filteredData = useMemo(() => {
     if (!data?.length) return [];
+    if (range === "custom") {
+      if (!appliedCustomRange?.from) return data;
+      const fromIso = format(appliedCustomRange.from, "yyyy-MM-dd");
+      const toIso = format(appliedCustomRange.to ?? appliedCustomRange.from, "yyyy-MM-dd");
+      return data.filter((d) => d.date >= fromIso && d.date <= toIso);
+    }
     if (range === "all") return data;
     const cutoff = subDays(new Date(), range === "30" ? 30 : 90);
     return data.filter((d) => parseISO(d.date) >= cutoff);
-  }, [data, range]);
+  }, [data, range, appliedCustomRange]);
 
   // Format dates for display.
   // v3.3 (2026-08-11): when the visible range spans more than one year (very
@@ -234,18 +260,25 @@ export function TimeSeriesChart({
   // gaps around that day (weekly telemetry, monthly rollups, etc.).
   //
   // The synthetic point has null values (so it doesn't affect the area/bar
-  // shapes when connectNulls is set to false — which is the default) and a
-  // unique displayDate that ReferenceLine can target.
-  const RELEASE_MARKER_KEY = "__release_marker__";
-
+  // shapes when connectNulls is set to false — which is the default). It
+  // gets a real, always-unique ISO `date` (the release date itself, which by
+  // construction never collides with an existing row — see the `exact`
+  // check below), so no separate sentinel key is needed.
+  //
+  // v3.12 (2026-08-12) BUG FIX: XAxis/ReferenceLine used to key off a
+  // formatted `displayDate` string (e.g. "May '24") instead of the raw ISO
+  // `date`. When a range spans multiple years, `displayDate` intentionally
+  // drops the day ("MMM ''yy") for readability — which means every day in
+  // the same month collapsed onto the same category value. Recharts'
+  // categorical axis can't disambiguate duplicate category values, so on
+  // "All Time" (which always spans multiple years for a title this old)
+  // every `ReferenceLine x={displayDate}` silently failed to render. Fix:
+  // the chart now keys XAxis/ReferenceLine off the always-unique raw `date`,
+  // and only uses the formatted string for tick labels / tooltip (see
+  // `dateTickFmt` below and the labelFormatter usage in ChartTooltip).
   const chartData = useMemo(() => {
-    const dateFmt = (isoDate: string) => spansMultipleYears
-      ? format(new Date(isoDate + "T00:00:00"), "MMM ''yy")
-      : format(new Date(isoDate + "T00:00:00"), "MMM d");
-
     const base = filteredData.map((d) => ({
       ...d,
-      displayDate: dateFmt(d.date),
       isReleaseMarker: false as boolean,
     }));
 
@@ -265,12 +298,22 @@ export function TimeSeriesChart({
       date: releaseDate,
       cumulativeCount: null as any,
       dailyDelta: null as any,
-      displayDate: RELEASE_MARKER_KEY, // unique category value for ReferenceLine
       isReleaseMarker: true,
     };
     const merged = [...base, marker].sort((a, b) => a.date.localeCompare(b.date));
     return merged;
-  }, [filteredData, spansMultipleYears, showsReleaseDate, releaseDate]);
+  }, [filteredData, showsReleaseDate, releaseDate]);
+
+  // Tick/tooltip-only formatter (NOT used as an axis/ReferenceLine key —
+  // see bug-fix note above). Same abbreviation rule as before: drop the day
+  // when the visible range spans multiple years, to keep tick labels short.
+  const dateTickFmt = useCallback(
+    (isoDate: string) =>
+      spansMultipleYears
+        ? format(new Date(isoDate + "T00:00:00"), "MMM ''yy")
+        : format(new Date(isoDate + "T00:00:00"), "MMM d"),
+    [spansMultipleYears]
+  );
 
   // Only milestones with actualDate set
   const activeMilestones = useMemo(
@@ -279,13 +322,14 @@ export function TimeSeriesChart({
   );
 
   // v3.3.1 (2026-08-11): resolve the ReferenceLine anchor — either the real
-  // datapoint's displayDate (if release day has telemetry) or the synthetic
-  // marker's displayDate (if we injected one above).
+  // datapoint's date (if release day has telemetry) or the synthetic
+  // marker's date (if we injected one above). v3.12: anchor on the raw ISO
+  // date, not the formatted display string (see bug-fix note above).
   const releaseDatePoint = useMemo(() => {
     if (!showsReleaseDate || !releaseDate || chartData.length === 0) return null;
     const target = chartData.find((d) => d.date === releaseDate);
     if (!target) return null;
-    return { displayDate: target.displayDate };
+    return { date: target.date };
   }, [showsReleaseDate, releaseDate, chartData]);
 
   const RELEASE_COLOR = "#DC2626"; // red-600 — loud enough to stand out from milestone lines
@@ -355,14 +399,14 @@ export function TimeSeriesChart({
   const gridStyle = { stroke: "currentColor", opacity: 0.08 };
 
   const xAxisProps = {
-    dataKey: "displayDate",
+    // v3.12: raw ISO date — always unique, so ReferenceLine matching works
+    // regardless of range. Display formatting happens only in tickFormatter.
+    dataKey: "date",
     tick: { fontSize: 10, fill: "currentColor", opacity: 0.55 },
     tickLine: false,
     axisLine: false,
     interval: Math.max(0, Math.floor(chartData.length / 6) - 1),
-    // Hide the sentinel category value used by the release marker so it
-    // doesn't show up as an odd '__release_marker__' tick on the axis.
-    tickFormatter: (val: string) => (val === RELEASE_MARKER_KEY ? "" : val),
+    tickFormatter: (val: string) => dateTickFmt(val),
   };
 
   const yAxisProps = {
@@ -392,6 +436,61 @@ export function TimeSeriesChart({
               {r === "all" ? "All Time" : `${r} Days`}
             </button>
           ))}
+          {/* v3.12 (2026-08-12): custom date-range filter, shared across every
+              PDP chart (this component is used for every product's Steam
+              wishlist/prepurchase/revenue and PS5 charts). */}
+          <Popover open={customPickerOpen} onOpenChange={setCustomPickerOpen}>
+            <PopoverTrigger asChild>
+              <button
+                onClick={() => setCustomRange(appliedCustomRange)}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-medium transition-colors ${
+                  range === "custom"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                }`}
+              >
+                <CalendarIcon className="h-3 w-3" />
+                {range === "custom" && appliedCustomRange?.from
+                  ? `${format(appliedCustomRange.from, "MMM d")}${
+                      appliedCustomRange.to ? ` – ${format(appliedCustomRange.to, "MMM d")}` : ""
+                    }`
+                  : "Custom"}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent className="w-auto p-0" align="end">
+              <Calendar
+                mode="range"
+                selected={customRange}
+                onSelect={setCustomRange}
+                numberOfMonths={2}
+                defaultMonth={customRange?.from ?? subDays(new Date(), 60)}
+                disabled={{ after: new Date() }}
+                initialFocus
+              />
+              <div className="flex items-center justify-end gap-2 border-t border-border p-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  onClick={() => setCustomPickerOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7 text-[11px]"
+                  disabled={!customRange?.from}
+                  onClick={() => {
+                    setAppliedCustomRange(customRange);
+                    setRange("custom");
+                    setCustomPickerOpen(false);
+                  }}
+                >
+                  Apply
+                </Button>
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
@@ -429,7 +528,7 @@ export function TimeSeriesChart({
                     return (
                       <ReferenceLine
                         key={`${m.name}-cum`}
-                        x={point.displayDate}
+                        x={point.date}
                         stroke={mColor}
                         strokeDasharray="4 3"
                         strokeWidth={1.5}
@@ -441,7 +540,7 @@ export function TimeSeriesChart({
                   {releaseDatePoint && (
                     <ReferenceLine
                       key="release-cum"
-                      x={releaseDatePoint.displayDate}
+                      x={releaseDatePoint.date}
                       stroke={RELEASE_COLOR}
                       strokeWidth={2}
                       strokeOpacity={0.9}
@@ -492,7 +591,7 @@ export function TimeSeriesChart({
                   return (
                     <ReferenceLine
                       key={`${m.name}-delta`}
-                      x={point.displayDate}
+                      x={point.date}
                       stroke={mColor}
                       strokeDasharray="4 3"
                       strokeWidth={1.5}
@@ -503,7 +602,7 @@ export function TimeSeriesChart({
                 {releaseDatePoint && (
                   <ReferenceLine
                     key="release-delta"
-                    x={releaseDatePoint.displayDate}
+                    x={releaseDatePoint.date}
                     stroke={RELEASE_COLOR}
                     strokeWidth={2}
                     strokeOpacity={0.9}
