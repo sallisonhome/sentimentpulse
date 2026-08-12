@@ -2520,3 +2520,95 @@ def _run_reddit_comments_backfill(
         "reddit_comments_backfill complete: games=%s parents_checked=%s comments_saved=%s",
         stats["games"], stats["parents_checked"], stats["comments_saved"],
     )
+
+
+# ─── Scoped classify + topics reprocessor (v0016.2, 2026-08-12) ───────────
+#
+# Runs Step 5 (sentiment classification) + Step 6 (topic extraction) for
+# unprocessed raw_posts on a single game, without re-fetching from any
+# source. Used after backfilling comments to make them visible in the
+# dashboard without waiting for the daily cron.
+
+@router.post("/classify-topics/run", status_code=202)
+def classify_topics_run(
+    background_tasks: BackgroundTasks,
+    game_id: int = Query(..., description="Required. Game id to reprocess."),
+    include_daily_summary: bool = Query(
+        True,
+        description=(
+            "When true (default), also runs Step 7 (daily summary) so the "
+            "newly-classified posts appear in today's aggregate."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """Reprocess Step 5 + Step 6 for a single game.
+
+    Runs in the background. Returns 202 immediately.
+
+    Only picks up raw_posts that don't yet have a SentimentRecord and haven't
+    been marked is_relevant=False. Safe to run repeatedly — idempotent.
+    """
+    from models import Game as _Game
+
+    target_game = db.query(_Game).filter_by(id=game_id).first()
+    if not target_game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+
+    background_tasks.add_task(
+        _run_classify_topics_scoped,
+        game_id=game_id,
+        include_daily_summary=include_daily_summary,
+    )
+    return {
+        "status": "started",
+        "game_id": game_id,
+        "include_daily_summary": include_daily_summary,
+    }
+
+
+def _run_classify_topics_scoped(
+    game_id: int,
+    include_daily_summary: bool,
+) -> None:
+    """Background: run Step 5 + Step 6 + optionally Step 7 for one game."""
+    from database import SessionLocal
+    from services.ingestor import (
+        _step5_classify_sentiment,
+        _step6_extract_topics,
+        _step7_daily_summary,
+    )
+    from services.nlp_service import load_model
+    from models import Game as _Game
+
+    load_model()  # ensure classifier is warm
+    db = SessionLocal()
+    try:
+        game = db.query(_Game).filter_by(id=game_id).first()
+        if not game:
+            logger.warning("classify_topics_run: game_id=%s not found", game_id)
+            return
+        log_lines: list[str] = []
+        errors: list[str] = []
+        _step5_classify_sentiment(db, game, log_lines, errors)
+        db.commit()
+        _step6_extract_topics(db, game, log_lines, errors)
+        db.commit()
+        if include_daily_summary:
+            _step7_daily_summary(db, game, log_lines, errors)
+            db.commit()
+
+        logger.info(
+            "classify_topics_run complete: game_id=%s '%s' log_lines=%s errors=%s",
+            game_id, game.name, len(log_lines), len(errors),
+        )
+        for line in log_lines:
+            logger.info("  %s", line)
+        for err in errors:
+            logger.warning("  %s", err)
+    except Exception as exc:
+        logger.exception(
+            "classify_topics_run: crashed for game_id=%s: %s", game_id, exc,
+        )
+    finally:
+        db.close()

@@ -1296,7 +1296,18 @@ def _step5_classify_sentiment(
     # bypass the relevance gate (2026-07-25 rule) and are auto-admitted.
     # Reddit and Bluesky still run through the full keyword + fast-path +
     # fuzzy layer.
-    _AUTO_ADMIT_SOURCES = {SourceEnum.steam_review, SourceEnum.steam_forum}
+    #
+    # v0016.2 (2026-08-12): Reddit COMMENTS are also auto-admitted. Comments
+    # on a keyword-verified parent thread are by construction on-topic — the
+    # parent already matched game keywords, and comments discuss that same
+    # thread. Applying the §14 title/body keyword gate to comments would
+    # filter out 90%+ (comments say 'looks great' or 'RE vibes' without
+    # restating the game name), which is the exact bug Steve flagged.
+    _AUTO_ADMIT_SOURCES = {
+        SourceEnum.steam_review,
+        SourceEnum.steam_forum,
+        SourceEnum.reddit_comment,
+    }
     relevant_posts: list[RawPost] = []
     irrelevant_posts: list[RawPost] = []
     for post in unprocessed:
