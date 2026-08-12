@@ -960,19 +960,25 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
-   * v3.8 (2026-08-12): Steam cumulative BASE net units to-date, post-release.
-   * Sums base skuGroup rows where date >= releaseDate. Returns null when
-   * releaseDate is null (unreleased title) or no rows exist.
+   * v3.8 (2026-08-12): Steam cumulative BASE net units to-date, INCLUSIVE
+   * of pre-release pre-purchase units + post-release sales. Returns the
+   * same number that appears in the Steam Sales card 'Steam Base Game
+   * Units' tile (totalBaseNetUnits). Returns null pre-release only when
+   * there's no data at all.
+   *
+   * Fix (v3.8.1, 2026-08-12): earlier drafts filtered to date >= releaseDate
+   * which excluded pre-order units. Pre-order units are real sales and
+   * belong in the LT projection.
    */
   getSteamActualCumulativeBaseUnits(
     productId: number,
-    releaseDate: string | null,
+    _releaseDate: string | null,
   ): number | null {
-    if (!releaseDate) return null;
+    // Sum all base skuGroup rows for the product regardless of release date.
+    // (releaseDate arg kept for API symmetry with getSteamActualFirstMonthBaseUnits.)
     const rows = db.select().from(steamSalesDaily)
       .where(and(
         eq(steamSalesDaily.productId, productId),
-        gte(steamSalesDaily.date, releaseDate),
         eq(steamSalesDaily.skuGroup, "base"),
       ))
       .all();
