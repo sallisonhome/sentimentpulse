@@ -101,7 +101,10 @@ def get_posts(
             q = q.filter(RawPost.relevance_tier.in_(("dedicated_sub", "signal")))
         elif relevance == "keyword_match":
             q = q.filter(RawPost.relevance_tier == "signal")
-        elif relevance in ("dedicated_sub", "noise", "unclassified"):
+        elif relevance == "unclassified":
+            # NULL matches nothing under '=', so use IS NULL.
+            q = q.filter(RawPost.relevance_tier.is_(None))
+        elif relevance in ("dedicated_sub", "noise"):
             q = q.filter(RawPost.relevance_tier == relevance)
         else:
             raise HTTPException(
