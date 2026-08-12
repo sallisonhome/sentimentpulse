@@ -325,90 +325,11 @@ export default function ProductDetail() {
         })()}
 
         {/* ─── Steam Pre-Purchase Count ──────────────────────────────── */}
-        {showSteamPurchasesSection && (
-          <CollapsibleSection
-            title="Steam Purchases (Pre-Release + Post-Release Sales)"
-            sectionKey="steamPrepurchase"
-            open={openSections.steamPrepurchase}
-            onToggle={toggleSection}
-            rightContent={
-              hasSteamSalesData ? (
-                <span className="text-sm font-semibold tabular-nums">
-                  LTD: {formatNumber(steamRev!.totalBaseNetUnits)} units
-                </span>
-              ) : isSaber && prepurchaseActive ? (
-                <span className="text-sm font-semibold tabular-nums">
-                  LTD: {formatNumber(product.latestSteamPrepurchaseCount)}
-                </span>
-              ) : null
-            }
-          >
-            <div className="space-y-3">
-              {/* v3.5 (2026-08-11): Actuals summary strip — shows base units +
-                  revenue split by release date. Renders whenever we have any
-                  ingested sales rows (portal or CSV), regardless of publisher. */}
-              {hasSteamSalesData && (
-                <div className="grid grid-cols-3 gap-3 p-3 rounded-md border bg-muted/20">
-                  <div>
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Pre-Release</div>
-                    <div className="text-sm font-semibold tabular-nums">
-                      {formatNumber(steamRev!.preReleaseBaseNetUnits)} units
-                    </div>
-                    <div className="text-[10px] text-emerald-600 dark:text-emerald-400 tabular-nums">
-                      {formatCurrency(steamRev!.preReleaseRevenueUsd)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Post-Release</div>
-                    <div className="text-sm font-semibold tabular-nums">
-                      {formatNumber(steamRev!.postReleaseBaseNetUnits)} units
-                    </div>
-                    <div className="text-[10px] text-emerald-600 dark:text-emerald-400 tabular-nums">
-                      {formatCurrency(steamRev!.postReleaseRevenueUsd)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Total · ASP</div>
-                    <div className="text-sm font-semibold tabular-nums">
-                      {formatNumber(steamRev!.totalBaseNetUnits)} units
-                    </div>
-                    <div className="text-[10px] text-emerald-600 dark:text-emerald-400 tabular-nums">
-                      {formatCurrency(steamRev!.totalRevenueUsd)} · ASP {steamRev!.totalBaseAspUsd != null ? `\$${steamRev!.totalBaseAspUsd.toFixed(2)}` : "—"}
-                    </div>
-                  </div>
-                </div>
-              )}
-              <SectionActions
-                contextText={
-                  isSaber && prepurchaseActive
-                    ? `Updated daily via Steamworks API · Pre-purchase started ${formatDate(prepurchaseStartDate)}`
-                    : hasSteamSalesData
-                      ? `Sales via Steamworks portal fetch · Through ${steamRev!.latestDate ?? "—"}`
-                      : undefined
-                }
-                onOpenChart={() => setChartModal({ type: "steamPrepurchase", open: true })}
-                chartLabel="View full chart with PLS events"
-                chartTestId="button-chart-steam-pre"
-                onInputData={
-                  isSaber && prepurchaseActive
-                    ? () => setInputDialog({ type: "steamPrepurchase", open: true })
-                    : undefined
-                }
-                inputTestId="button-input-steam-pre"
-              />
-              {/* Sparkline reads from the same merged endpoint the modal chart uses.
-                  Wrapped in ClickablePreview so clicking anywhere in it opens
-                  the detail modal with PLS event overlays. */}
-              <ClickablePreview
-                onClick={() => setChartModal({ type: "steamPrepurchase", open: true })}
-                testIdPrefix="clickable-steam-pre"
-                affordanceLabel="Click for full chart with PLS event overlays →"
-              >
-                <SectionSparkline productId={productId} endpoint={`/api/products/${productId}/steam/prepurchases`} color="#2563EB" />
-              </ClickablePreview>
-            </div>
-          </CollapsibleSection>
-        )}
+        {/* Steam Purchases (Pre-Release + Post-Release Sales) removed v3.11 (2026-08-12).
+            The click-to-chart affordance moved into the Steam Sales section
+            below as two side-by-side chart cards (Sales by Units + Sales
+            by Revenue). Input Data for pre-purchase is still accessible
+            through the pre-release wishlist section flow. */}
 
         {/* Steam Sales (CSV upload ingest v3.0) */}
         {hasSteam && (

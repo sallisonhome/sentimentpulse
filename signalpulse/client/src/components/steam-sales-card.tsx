@@ -17,8 +17,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Upload, DollarSign, Trash2, AlertTriangle } from "lucide-react";
 import { formatNumber, formatCurrency } from "@/lib/utils";
-import { SectionSparkline } from "@/components/time-series-chart";
-import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
+import { SteamChartCard } from "@/components/steam-chart-card";
 import { ChartDetailModal, type ChartDataType } from "@/components/chart-detail-modal";
 
 interface Props {
@@ -233,37 +232,40 @@ export function SteamSalesCard({ productId, productTitle, releaseDate }: Props) 
         </div>
       )}
 
-      {/* v3.10 (2026-08-12): Steam Revenue per day chart section.
-          Same format as Steam Wishlist per day + Steam Units per day —
-          SectionActions toolbar (opens the modal with PLS event overlays)
-          plus a ClickablePreview sparkline. */}
+      {/* v3.11 (2026-08-12): two side-by-side click-for-chart cards —
+          Steam Sales by Units (blue, /steam/prepurchases endpoint) and
+          Steam Sales by Revenue (green, /steam/revenue-daily endpoint).
+          Replaces the removed top-level Steam Purchases collapsible
+          section and the earlier single revenue strip. Both open the
+          full modal with PLS event overlays and share identical layout. */}
       {hasSales && summary && (
-        <div className="space-y-2 border-t pt-3">
-          <div className="flex items-baseline justify-between">
-            <div className="text-xs text-muted-foreground uppercase tracking-wide">
-              Steam Revenue per day (base + DLC)
-            </div>
-            <div className="text-[10px] text-muted-foreground">
-              Cumulative through {summary.latestDate ?? "—"}
-            </div>
-          </div>
-          <SectionActions
-            contextText={<span>Daily revenue rollup · same date-range controls as the wishlist chart.</span>}
-            onOpenChart={() => setChartModal({ type: "steamRevenueDaily", open: true })}
-            chartLabel="View chart with PLS events"
-            chartTestId="button-chart-steam-revenue"
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 border-t pt-3">
+          <SteamChartCard
+            title="Steam Sales by Units"
+            rightStat={<>LTD: {formatNumber(summary.baseNetUnits)} units</>}
+            contextText={<>Cumulative through {summary.latestDate ?? "—"}</>}
+            productId={productId}
+            endpoint={`/api/products/${productId}/steam/prepurchases`}
+            color="#2563EB"
+            accent="blue"
+            onOpenChart={() => setChartModal({ type: "steamPrepurchase", open: true })}
+            testIdPrefix="chart-card-steam-units"
           />
-          <ClickablePreview
-            onClick={() => setChartModal({ type: "steamRevenueDaily", open: true })}
-            testIdPrefix="clickable-steam-revenue"
-            affordanceLabel="Click for full chart with PLS event overlays →"
-          >
-            <SectionSparkline
-              productId={productId}
-              endpoint={`/api/products/${productId}/steam/revenue-daily`}
-              color="#10B981"
-            />
-          </ClickablePreview>
+          <SteamChartCard
+            title="Steam Sales by Revenue"
+            rightStat={
+              <span className="text-emerald-600 dark:text-emerald-400">
+                LTD: {formatCurrency(summary.baseNetRevenueUsd + (summary.dlcNetRevenueUsd ?? 0))}
+              </span>
+            }
+            contextText={<>Daily rollup (base + DLC) through {summary.latestDate ?? "—"}</>}
+            productId={productId}
+            endpoint={`/api/products/${productId}/steam/revenue-daily`}
+            color="#10B981"
+            accent="green"
+            onOpenChart={() => setChartModal({ type: "steamRevenueDaily", open: true })}
+            testIdPrefix="chart-card-steam-revenue"
+          />
         </div>
       )}
 
