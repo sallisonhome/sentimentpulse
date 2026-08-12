@@ -43,10 +43,31 @@ _REQUEST_DELAY = 1.0  # seconds
 # Large general subreddits where posts must be filtered by game name.
 # Mirrors the _GENERAL_SUBREDDITS constant in reddit_service.py.
 # Kept as a standalone copy here so callers only need to import one module.
+#
+# 2026-08-12: Expanded to include horror-genre and console-generic subs that
+# were being pulled wholesale for the Hellraiser: Revival game. Audit of 3-day
+# posts showed 1,058 out of 1,082 noise posts came from r/horror (449), r/
+# residentevil (344), r/playstation (101), r/HorrorGaming (91), r/HorrorGames
+# (50), r/survivalhorror (22). These are all genre/console subs where a title
+# is a small fraction of daily traffic — must be filtered by game name.
+#
+# Match is case-insensitive (via sub_lower in fetch_arctic_shift_subreddit_posts),
+# so keep the canonical case used in subreddit URLs where possible.
 ARCTIC_SHIFT_GENERAL_SUBS: frozenset[str] = frozenset({
-    "gaming", "games", "pcgaming", "ps5", "xbox", "steam",
+    # Console + PC platform subs (always general — any game gets a small share)
+    "gaming", "games", "pcgaming", "ps5", "playstation", "xbox", "XboxSeriesX",
+    "steam", "SteamDeck",
+    # Broad discovery / discussion subs
+    "patientgamers", "ShouldIbuythisgame", "truegaming",
+    "GamingLeaksAndRumors", "gamingleaksandrumors", "GamingNews",
+    "ShooterGames", "thirdpersonshooter", "FPS", "CoopGaming",
+    # IP / genre subs — include the ones we've observed producing noise
     "halo", "ghostbusters", "JurassicPark", "hellraiser", "JohnWick",
-    "patientgamers", "ShouldIbuythisgame",
+    "horror", "HorrorGaming", "HorrorGames", "survivalhorror", "SurvivalHorror",
+    "residentevil", "ResidentEvil",
+    "Spacemarine", "Saberinteractive", "BossTeamGames",
+    # Publisher / dev subs where posts span the studio's full catalog
+    "GearsOfWar", "XboxGamePass",
 })
 
 
