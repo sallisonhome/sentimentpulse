@@ -133,6 +133,9 @@ export interface VolumePoint {
   steam_review: number
   steam_forum: number
   reddit: number
+  /** v0016.2 (2026-08-12): Reddit comments ingested via Arctic Shift.
+   *  Older responses may omit this field, so treat as optional client-side. */
+  reddit_comment?: number
   bluesky: number
   /** DTF.ru — Russian-language gaming forum. Added 2026-07-27; older
    *  responses may omit this field, so treat as optional client-side. */

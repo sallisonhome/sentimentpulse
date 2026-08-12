@@ -34,12 +34,16 @@ export function relativeTime(isoString: string | null | undefined): string {
 /** Map a source string to a display label */
 export function sourceLabel(source: string): string {
   return {
-    steam_review: 'Steam Review',
-    steam_forum:  'Steam Forum',
-    reddit:       'Reddit',
-    bluesky:      'Bluesky',
+    steam_review:  'Steam Review',
+    steam_forum:   'Steam Forum',
+    reddit:        'Reddit',
+    // v0016.2 (2026-08-12): Reddit comments as a separate axis. Shows up
+    // in Volume by Source as 'Reddit Comments' so it's obvious this is
+    // comment-level engagement inheriting a parent-thread's topic match.
+    reddit_comment: 'Reddit Comments',
+    bluesky:       'Bluesky',
     // DTF.ru — Russian-language gaming forum. Added 2026-07-27.
-    dtf:          'DTF',
+    dtf:           'DTF',
   }[source] ?? source
 }
 
