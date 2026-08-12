@@ -177,6 +177,7 @@ export function ChartDetailModal({
                 { label: "Press Coverage", color: "#22C55E" },
                 { label: "Demos / Betas", color: "#F97316" },
                 { label: "Core Milestones", color: "#6B7280" },
+                { label: "Promotions", color: "#EAB308" },
               ].map((item) => (
                 <span key={item.label} className="flex items-center gap-1 text-[10px] text-muted-foreground">
                   <span
