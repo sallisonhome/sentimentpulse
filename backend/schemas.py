@@ -185,6 +185,11 @@ class VolumePoint(BaseModel):
     steam_review: int
     steam_forum: int
     reddit: int
+    # v0016.2 (2026-08-12): reddit_comment as a separate axis. Comments
+    # inherit their parent thread's relevance_tier via arctic-shift comment
+    # ingestion. Default 0 so old rows and JSON payloads from before this
+    # field existed deserialize cleanly.
+    reddit_comment: int = 0
     bluesky: int = 0
     # DTF.ru (Russian-language gaming forum) — added 2026-07-27 after the
     # source itself was wired into the ingestor a day earlier. Default 0
