@@ -619,20 +619,13 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
 }
 
 /**
- * IGDB Hype Score — one batched POST across ALL Saber titles with a Steam
- * App ID (not pre-release only — hype is meaningful pre- and post-release
- * as a cross-platform interest signal). Gated on both igdb_client_id and
- * igdb_client_secret being set in Settings; skips (not errors) when either
- * is missing so ingestion doesn't spam errors before the user configures
- * IGDB credentials.
+ * IGDB Hype Score — one fetch of howmanyareplaying.com's public Top 200
+ * upcoming-wishlisted list across ALL Saber titles with a Steam App ID
+ * (not pre-release only — hype is meaningful pre- and post-release as a
+ * cross-platform interest signal). No credentials required — see
+ * server/igdb.ts header for the known Top-200-only coverage limitation.
  */
 async function ingestIgdbHype(): Promise<IngestionResult> {
-  const clientId = storage.getSetting("igdb_client_id")?.value;
-  const clientSecret = storage.getSetting("igdb_client_secret")?.value;
-  if (!clientId || !clientSecret) {
-    return { source: "igdb_hype", status: "skipped", message: "IGDB / Twitch credentials not configured in Settings" };
-  }
-
   const titles = storage.getAllProducts().filter((p) => p.isSaberPublished && p.steamAppId);
   if (titles.length === 0) {
     return { source: "igdb_hype", status: "skipped", message: "No Saber titles with Steam App IDs" };

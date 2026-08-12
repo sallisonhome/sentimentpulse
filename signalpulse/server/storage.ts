@@ -1680,13 +1680,6 @@ export class DatabaseStorage implements IStorage {
       { key: "sony_api_key", label: "Sony Partner Portal API Key", category: "api_keys", isSecret: true },
       { key: "sony_partner_id", label: "Sony Partner ID", category: "api_keys", isSecret: false },
       { key: "youtube_api_key", label: "YouTube Data API Key", category: "api_keys", isSecret: true },
-      // v1.0 (2026-08-12): Twitch app credentials, used by server/igdb.ts to
-      // mint a Client Credentials OAuth token for pulling IGDB Hype scores
-      // on the Steam Wishlist Leaderboard. Create a Twitch app at
-      // dev.twitch.tv/console/apps to get these — IGDB auth piggybacks on
-      // Twitch's identity platform.
-      { key: "igdb_client_id", label: "IGDB / Twitch Client ID", category: "api_keys", isSecret: false },
-      { key: "igdb_client_secret", label: "IGDB / Twitch Client Secret", category: "api_keys", isSecret: true },
       { key: "app_password", label: "App Password", category: "general", isSecret: true },
     ];
 
