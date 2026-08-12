@@ -1082,6 +1082,10 @@ def _step4a_reddit_comments(
     from services.arctic_shift_service import fetch_arctic_shift_comments
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    # v0016.1 (2026-08-12): order by post_date so recent Reddit discussion
+    # ranks above recently-ingested-but-older archive imports. Fall back to
+    # collected_at when a row is missing post_date.
+    from sqlalchemy import func as _func, desc as _desc
     parents = (
         db.query(RawPost)
         .filter(
@@ -1090,7 +1094,7 @@ def _step4a_reddit_comments(
             RawPost.relevance_tier.in_(("signal", "dedicated_sub")),
             RawPost.collected_at >= cutoff,
         )
-        .order_by(RawPost.collected_at.desc())
+        .order_by(_desc(_func.coalesce(RawPost.post_date, RawPost.collected_at)))
         .limit(50)
         .all()
     )

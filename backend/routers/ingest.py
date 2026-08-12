@@ -2447,6 +2447,14 @@ def _run_reddit_comments_backfill(
             game = db.query(_Game).filter_by(id=gid).first()
             if not game:
                 continue
+            # v0016.1 fix (2026-08-12): order by post_date so recent Reddit
+            # discussion wins over recently-ingested-but-older archive posts.
+            # Earlier bug: SM2 r/PS5 gameplay thread 1vknbt9 (posted 08-10)
+            # sat at rank 63 in collected_at.desc() ordering because Arctic
+            # Shift had just re-imported thousands of older archive posts,
+            # so the 50-parent cap missed it. Falls back to collected_at for
+            # rows with null post_date.
+            from sqlalchemy import func as _func, desc as _desc
             parents = (
                 db.query(_RP)
                 .filter(
@@ -2455,7 +2463,9 @@ def _run_reddit_comments_backfill(
                     _RP.relevance_tier.in_(("signal", "dedicated_sub")),
                     _RP.collected_at >= cutoff,
                 )
-                .order_by(_RP.collected_at.desc())
+                .order_by(
+                    _desc(_func.coalesce(_RP.post_date, _RP.collected_at))
+                )
                 .limit(max_parents_per_game)
                 .all()
             )
