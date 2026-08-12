@@ -268,3 +268,69 @@ def get_relevance_audit(
             if total else 0.0
         ),
     }
+
+
+@router.get("/{game_id}/classifier-audit")
+def get_classifier_audit(
+    game_id: int,
+    days: int = Query(30, ge=1, le=365, description="Rolling window in days"),
+    db: Session = Depends(get_db),
+):
+    """
+    Diagnostic endpoint (2026-08-12, Steve backfill investigation): report,
+    per source, how many rows have vs lack a SentimentRecord. Splits by
+    is_relevant status so we can see if Step 5's relevance gate ate rows.
+
+    Answers: 'how many landed rows never got classified and why?'
+    """
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import func as _func
+    from models import SentimentRecord as _SR
+
+    game = db.query(Game).filter_by(id=game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+    rows = (
+        db.query(
+            RawPost.source,
+            RawPost.is_relevant,
+            _SR.id.label("sr_id"),
+        )
+        .outerjoin(_SR, _SR.raw_post_id == RawPost.id)
+        .filter(RawPost.game_id == game_id)
+        .filter(_func.coalesce(RawPost.post_date, RawPost.collected_at) >= cutoff)
+        .all()
+    )
+
+    result: dict[str, dict[str, int]] = {}
+    for r in rows:
+        src = r.source.value if r.source else "unknown"
+        if src not in result:
+            result[src] = {
+                "total": 0,
+                "has_sentiment": 0,
+                "no_sentiment_is_relevant_null": 0,
+                "no_sentiment_is_relevant_true": 0,
+                "no_sentiment_is_relevant_false": 0,
+            }
+        result[src]["total"] += 1
+        if r.sr_id is not None:
+            result[src]["has_sentiment"] += 1
+        else:
+            if r.is_relevant is None:
+                result[src]["no_sentiment_is_relevant_null"] += 1
+            elif r.is_relevant is True:
+                result[src]["no_sentiment_is_relevant_true"] += 1
+            else:
+                result[src]["no_sentiment_is_relevant_false"] += 1
+
+    return {
+        "game_id": game_id,
+        "game_name": game.name,
+        "window_days": days,
+        "cutoff": cutoff.isoformat(),
+        "by_source": result,
+    }
