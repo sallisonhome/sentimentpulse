@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 export type ChartDataType =
   | "steamWishlist"
   | "steamPrepurchase"
+  | "steamRevenueDaily"
   | "ps5Wishlist"
   | "ps5Prepurchase";
 
@@ -35,6 +36,9 @@ function getEndpointForType(productId: number, dataType: ChartDataType): string 
       return `/api/products/${productId}/steam/wishlists`;
     case "steamPrepurchase":
       return `/api/products/${productId}/steam/prepurchases`;
+    case "steamRevenueDaily":
+      // v3.10 (2026-08-12): daily Steam base+dlc USD revenue time-series
+      return `/api/products/${productId}/steam/revenue-daily`;
     case "ps5Wishlist":
       return `/api/products/${productId}/ps5/wishlists`;
     case "ps5Prepurchase":
@@ -42,7 +46,7 @@ function getEndpointForType(productId: number, dataType: ChartDataType): string 
   }
 }
 
-function getLabelForType(dataType: ChartDataType): { section: string; platform: string; color: string } {
+function getLabelForType(dataType: ChartDataType): { section: string; platform: string; color: string; valueUnit?: "usd" | "units" } {
   switch (dataType) {
     case "steamWishlist":
       return { section: "Wishlist", platform: "Steam", color: "#2563EB" };
@@ -51,6 +55,9 @@ function getLabelForType(dataType: ChartDataType): { section: string; platform: 
       // pre-purchase (before release) and post-release sales as one continuous
       // timeline with the release date as the boundary marker.
       return { section: "Purchases", platform: "Steam", color: "#2563EB" };
+    case "steamRevenueDaily":
+      // v3.10 (2026-08-12): green to mirror the revenue tiles' color scheme
+      return { section: "Revenue", platform: "Steam", color: "#10B981", valueUnit: "usd" };
     case "ps5Wishlist":
       return { section: "Wishlist", platform: "PS5", color: "#6366F1" };
     case "ps5Prepurchase":
@@ -153,6 +160,7 @@ export function ChartDetailModal({
               color={label.color}
               releaseDate={releaseDate ?? null}
               showsReleaseDate={true}
+              valueUnit={label.valueUnit ?? "units"}
             />
           )}
         </div>

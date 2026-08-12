@@ -17,9 +17,15 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Upload, DollarSign, Trash2, AlertTriangle } from "lucide-react";
 import { formatNumber, formatCurrency } from "@/lib/utils";
+import { SectionSparkline } from "@/components/time-series-chart";
+import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
+import { ChartDetailModal, type ChartDataType } from "@/components/chart-detail-modal";
 
 interface Props {
   productId: number;
+  /** v3.10 (2026-08-12): product title + release date for the revenue chart modal. */
+  productTitle?: string;
+  releaseDate?: string | null;
 }
 
 interface SalesSummary {
@@ -75,9 +81,11 @@ interface UploadResponse {
   }>;
 }
 
-export function SteamSalesCard({ productId }: Props) {
+export function SteamSalesCard({ productId, productTitle, releaseDate }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [lastUpload, setLastUpload] = useState<UploadResponse | null>(null);
+  // v3.10 (2026-08-12): revenue-per-day chart modal state
+  const [chartModal, setChartModal] = useState<{ type: ChartDataType; open: boolean } | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data, isLoading } = useQuery<SummaryResponse>({
@@ -222,6 +230,40 @@ export function SteamSalesCard({ productId }: Props) {
       {hasSales && summary && (
         <div className="text-[10px] text-muted-foreground">
           Coverage: {summary.firstDate} → {summary.latestDate} · {summary.rowCount} daily rows ingested
+        </div>
+      )}
+
+      {/* v3.10 (2026-08-12): Steam Revenue per day chart section.
+          Same format as Steam Wishlist per day + Steam Units per day —
+          SectionActions toolbar (opens the modal with PLS event overlays)
+          plus a ClickablePreview sparkline. */}
+      {hasSales && summary && (
+        <div className="space-y-2 border-t pt-3">
+          <div className="flex items-baseline justify-between">
+            <div className="text-xs text-muted-foreground uppercase tracking-wide">
+              Steam Revenue per day (base + DLC)
+            </div>
+            <div className="text-[10px] text-muted-foreground">
+              Cumulative through {summary.latestDate ?? "—"}
+            </div>
+          </div>
+          <SectionActions
+            contextText={<span>Daily revenue rollup · same date-range controls as the wishlist chart.</span>}
+            onOpenChart={() => setChartModal({ type: "steamRevenueDaily", open: true })}
+            chartLabel="View chart with PLS events"
+            chartTestId="button-chart-steam-revenue"
+          />
+          <ClickablePreview
+            onClick={() => setChartModal({ type: "steamRevenueDaily", open: true })}
+            testIdPrefix="clickable-steam-revenue"
+            affordanceLabel="Click for full chart with PLS event overlays →"
+          >
+            <SectionSparkline
+              productId={productId}
+              endpoint={`/api/products/${productId}/steam/revenue-daily`}
+              color="#10B981"
+            />
+          </ClickablePreview>
         </div>
       )}
 
@@ -381,6 +423,19 @@ export function SteamSalesCard({ productId }: Props) {
           <DollarSign className="w-4 h-4 mx-auto mb-1 opacity-50" />
           No sales data yet. Upload a Steamworks CSV export to populate this section.
         </div>
+      )}
+
+      {/* v3.10 (2026-08-12): revenue-per-day detail modal. Renders on top
+          of the PDP when the user clicks the sparkline or the toolbar. */}
+      {chartModal && (
+        <ChartDetailModal
+          open={chartModal.open}
+          onOpenChange={(open) => setChartModal(open ? chartModal : null)}
+          productId={productId}
+          productTitle={productTitle ?? "Product"}
+          dataType={chartModal.type}
+          releaseDate={releaseDate ?? null}
+        />
       )}
     </div>
   );

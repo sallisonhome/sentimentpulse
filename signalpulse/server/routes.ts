@@ -1015,6 +1015,43 @@ export async function registerRoutes(
     }
   });
 
+  // v3.10 (2026-08-12): daily Steam BASE + DLC revenue (USD) as a
+  // time-series ready for the chart modal / sparkline. Same response
+  // shape as /steam/wishlists and /steam/prepurchases so the existing
+  // TimeSeriesChart component can render it without changes.
+  //
+  // dailyDelta = revenue on that calendar day (base + dlc SKUs summed).
+  // cumulativeCount = running-total revenue from first row through that day.
+  //
+  // Excludes 'other' skuGroup (soundtrack/artbook) so the number aligns with
+  // the Steam Sales card's tracked revenue.
+  app.get("/api/products/:id/steam/revenue-daily", (req, res) => {
+    try {
+      const productId = parseInt(req.params.id);
+      const since = typeof req.query.since === "string" ? req.query.since : undefined;
+      const until = typeof req.query.until === "string" ? req.query.until : undefined;
+      const rows = storage.getSteamSales(productId, { since, until });
+
+      // Roll up daily revenue (base + dlc). Multiple rows can share a date
+      // when both base and dlc SKUs sold that day.
+      const byDate = new Map<string, number>();
+      for (const r of rows) {
+        if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
+        byDate.set(r.date, (byDate.get(r.date) ?? 0) + r.netRevenueUsd);
+      }
+      const dates = Array.from(byDate.keys()).sort();
+      let running = 0;
+      const out = dates.map((date) => {
+        const dailyDelta = Math.round(byDate.get(date)! * 100) / 100;
+        running = Math.round((running + dailyDelta) * 100) / 100;
+        return { date, cumulativeCount: running, dailyDelta };
+      });
+      res.json(out);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Read: rolled-up summary for the product-detail sales card.
   app.get("/api/products/:id/steam/sales-summary", (req, res) => {
     try {

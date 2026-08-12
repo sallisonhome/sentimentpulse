@@ -20,7 +20,7 @@ import { AddProductDialog } from "@/components/add-product-dialog";
 import { PLSSection } from "@/components/pls-section";
 import { DataInputDialog } from "@/components/data-input-dialog";
 import { ChartDetailModal, type ChartDataType } from "@/components/chart-detail-modal";
-import { SparklineChart, type TimeSeriesDataPoint } from "@/components/time-series-chart";
+import { SparklineChart, type TimeSeriesDataPoint, SectionSparkline } from "@/components/time-series-chart";
 import { SteamSalesCard } from "@/components/steam-sales-card";
 import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
 import { ALL_PLATFORMS } from "@shared/schema";
@@ -418,7 +418,11 @@ export default function ProductDetail() {
             open={openSections.steamSales}
             onToggle={toggleSection}
           >
-            <SteamSalesCard productId={productId} />
+            <SteamSalesCard
+              productId={productId}
+              productTitle={product.title}
+              releaseDate={product.releaseDate ?? null}
+            />
           </CollapsibleSection>
         )}
 
@@ -615,28 +619,8 @@ export default function ProductDetail() {
 
 // ─── Section Sparkline ───────────────────────────────────────────────────────
 
-function SectionSparkline({
-  productId,
-  endpoint,
-  color,
-}: {
-  productId: number;
-  endpoint: string;
-  color: string;
-}) {
-  const { data } = useChartQuery<TimeSeriesDataPoint[]>({
-    queryKey: [endpoint],
-    staleTime: 60_000,
-  });
-
-  if (!data || data.length < 3) return null;
-
-  return (
-    <div className="h-[60px] w-full -mx-0">
-      <SparklineChart data={data} color={color} />
-    </div>
-  );
-}
+// SectionSparkline moved to components/time-series-chart.tsx (v3.10) so
+// steam-sales-card.tsx can reuse it. Import above.
 
 // ─── Collapsible Section Component ──────────────────────────────────────────
 

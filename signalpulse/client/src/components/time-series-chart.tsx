@@ -34,6 +34,8 @@ interface TimeSeriesChartProps {
   color: string;
   releaseDate?: string | null;   // v3.3: draw a distinct 'Release' marker
   showsReleaseDate?: boolean;    // v3.3: gate the release marker (default false)
+  /** v3.10 (2026-08-12): 'usd' formats Y-axis + tooltip with $ prefix. Default 'units'. */
+  valueUnit?: "usd" | "units";
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -42,6 +44,15 @@ function formatYAxis(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(0)}K`;
   return String(value);
+}
+
+// v3.10 (2026-08-12): currency-aware formatter. Same K/M/B scale as units
+// but with a $ prefix. Used when TimeSeriesChart's valueUnit prop === 'usd'.
+function formatYAxisCurrency(value: number): string {
+  if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}B`;
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(0)}K`;
+  return `$${Math.round(value)}`;
 }
 
 function getMilestoneColor(category: string): string {
@@ -62,20 +73,24 @@ function ChartTooltip({
   payload,
   label,
   valueLabel,
+  valueUnit,
 }: {
   active?: boolean;
   payload?: any[];
   label?: string;
   valueLabel: string;
+  /** v3.10: 'usd' formats the number as currency. Default 'units'. */
+  valueUnit?: "usd" | "units";
 }) {
   if (!active || !payload?.length) return null;
+  const fmt = valueUnit === "usd" ? formatYAxisCurrency : formatYAxis;
   return (
     <div className="bg-popover text-popover-foreground border border-border rounded-md shadow-md px-3 py-2 text-xs">
       <div className="font-medium mb-1">{label}</div>
       {payload.map((p, i) => (
         <div key={i} className="flex items-center gap-2">
           <span style={{ color: p.color || p.fill }} className="font-semibold">
-            {valueLabel}: {formatYAxis(p.value)}
+            {valueLabel}: {fmt(p.value)}
           </span>
         </div>
       ))}
@@ -186,7 +201,10 @@ export function TimeSeriesChart({
   color,
   releaseDate,
   showsReleaseDate = false,
+  valueUnit = "units",
 }: TimeSeriesChartProps) {
+  // v3.10 (2026-08-12): pick formatter once so Y-axis + tooltip agree.
+  const yFormatter = valueUnit === "usd" ? formatYAxisCurrency : formatYAxis;
   const [range, setRange] = useState<DateRange>("all");
 
   // Filter data by date range
@@ -348,7 +366,7 @@ export function TimeSeriesChart({
   };
 
   const yAxisProps = {
-    tickFormatter: formatYAxis,
+    tickFormatter: yFormatter,
     tick: { fontSize: 10, fill: "currentColor", opacity: 0.55 },
     tickLine: false,
     axisLine: false,
@@ -401,7 +419,7 @@ export function TimeSeriesChart({
                   <XAxis {...xAxisProps} />
                   <YAxis {...yAxisProps} />
                   <Tooltip
-                    content={<ChartTooltip valueLabel="Count" />}
+                    content={<ChartTooltip valueLabel={valueUnit === "usd" ? "Cumulative" : "Count"} valueUnit={valueUnit} />}
                     cursor={{ stroke: color, strokeWidth: 1, strokeOpacity: 0.4 }}
                   />
                   {visibleMilestones.map((m) => {
@@ -464,7 +482,7 @@ export function TimeSeriesChart({
                 <XAxis {...xAxisProps} />
                 <YAxis {...yAxisProps} />
                 <Tooltip
-                  content={<ChartTooltip valueLabel="Daily" />}
+                  content={<ChartTooltip valueLabel="Daily" valueUnit={valueUnit} />}
                   cursor={{ fill: color, fillOpacity: 0.06 }}
                 />
                 {visibleMilestones.map((m) => {
@@ -569,5 +587,34 @@ export function SparklineChart({ data, color }: SparklineProps) {
         />
       </AreaChart>
     </ResponsiveContainer>
+  );
+}
+
+// ─── SectionSparkline (v3.10, 2026-08-12) ─────────────────────────────────
+//
+// Wraps SparklineChart with a react-query fetch so it can be dropped into
+// any collapsible section on a product card. Was previously defined inline
+// in product-detail.tsx; moved here so steam-sales-card.tsx can reuse it.
+
+import { useQuery as useSectionQuery } from "@tanstack/react-query";
+
+export function SectionSparkline({
+  productId: _productId,
+  endpoint,
+  color,
+}: {
+  productId: number;
+  endpoint: string;
+  color: string;
+}) {
+  const { data } = useSectionQuery<TimeSeriesDataPoint[]>({
+    queryKey: [endpoint],
+    staleTime: 60_000,
+  });
+  if (!data || data.length < 3) return null;
+  return (
+    <div className="h-[60px] w-full -mx-0">
+      <SparklineChart data={data} color={color} />
+    </div>
   );
 }
