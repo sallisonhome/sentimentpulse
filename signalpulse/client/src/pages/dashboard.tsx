@@ -206,107 +206,6 @@ export default function Dashboard() {
                     );
                   })()}
 
-                  {/* v3.4 (2026-08-11): 'Steam — Actuals' section. Shows only
-                      when there's ingested sales data. Two subrows:
-                        1. Revenue triad (Pre / Post / Total)
-                        2. Units triad (Pre / Post / Total) with base ASP
-                      Tagged 'Steam' explicitly so other platforms can slot in
-                      later as parallel sections (Xbox — Actuals, PSN — Actuals). */}
-                  {(() => {
-                    const rev = product.steamRevenueSplit as {
-                      preReleaseRevenueUsd: number;
-                      postReleaseRevenueUsd: number;
-                      totalRevenueUsd: number;
-                      preReleaseBaseNetUnits: number;
-                      postReleaseBaseNetUnits: number;
-                      totalBaseNetUnits: number;
-                      preReleaseBaseAspUsd: number | null;
-                      postReleaseBaseAspUsd: number | null;
-                      totalBaseAspUsd: number | null;
-                      preReleaseRowCount: number;
-                      postReleaseRowCount: number;
-                      releaseDate: string | null;
-                      latestDate: string | null;
-                    } | null | undefined;
-                    if (!rev || rev.totalRevenueUsd <= 0) return null;
-                    const hasPre = rev.preReleaseRevenueUsd > 0;
-                    return (
-                      <div className="pt-3 mt-3 border-t">
-                        <div className="flex items-baseline justify-between mb-2">
-                          <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                            Steam — Actuals
-                            <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
-                              click card for daily chart →
-                            </span>
-                          </div>
-                          <div className="text-[9px] text-muted-foreground">
-                            Through {rev.latestDate ?? "—"}
-                          </div>
-                        </div>
-                        {/* Revenue row */}
-                        <div className="grid grid-cols-3 gap-x-3 gap-y-1 mb-2">
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Pre-Release Revenue</div>
-                            <div className={`text-sm font-semibold tabular-nums ${hasPre ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/50"}`}
-                              data-testid={`text-steam-rev-prerelease-${product.id}`}>
-                              {formatCurrency(rev.preReleaseRevenueUsd)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Post-Release Revenue</div>
-                            <div className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
-                              data-testid={`text-steam-rev-postrelease-${product.id}`}>
-                              {formatCurrency(rev.postReleaseRevenueUsd)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Total Revenue</div>
-                            <div className="text-sm font-bold tabular-nums text-emerald-700 dark:text-emerald-300"
-                              data-testid={`text-steam-rev-total-${product.id}`}>
-                              {formatCurrency(rev.totalRevenueUsd)}
-                            </div>
-                          </div>
-                        </div>
-                        {/* Units + ASP row */}
-                        <div className="grid grid-cols-3 gap-x-3 gap-y-1">
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Pre-Release Units · ASP</div>
-                            <div className="text-sm font-semibold tabular-nums text-foreground"
-                              data-testid={`text-steam-units-prerelease-${product.id}`}>
-                              {formatNumber(rev.preReleaseBaseNetUnits)}
-                            </div>
-                            <div className="text-[10px] tabular-nums text-muted-foreground">
-                              ASP {rev.preReleaseBaseAspUsd != null ? `\$${rev.preReleaseBaseAspUsd.toFixed(2)}` : "—"}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Post-Release Units · ASP</div>
-                            <div className="text-sm font-semibold tabular-nums text-foreground"
-                              data-testid={`text-steam-units-postrelease-${product.id}`}>
-                              {formatNumber(rev.postReleaseBaseNetUnits)}
-                            </div>
-                            <div className="text-[10px] tabular-nums text-muted-foreground">
-                              ASP {rev.postReleaseBaseAspUsd != null ? `\$${rev.postReleaseBaseAspUsd.toFixed(2)}` : "—"}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Total Units · ASP</div>
-                            <div className="text-sm font-bold tabular-nums text-foreground"
-                              data-testid={`text-steam-units-total-${product.id}`}>
-                              {formatNumber(rev.totalBaseNetUnits)}
-                            </div>
-                            <div className="text-[10px] tabular-nums text-muted-foreground">
-                              ASP {rev.totalBaseAspUsd != null ? `\$${rev.totalBaseAspUsd.toFixed(2)}` : "—"}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="text-[9px] text-muted-foreground mt-1.5">
-                          Base game only for ASP · revenue includes base + paid DLC
-                        </div>
-                      </div>
-                    );
-                  })()}
-
                   {/* v3.4 (2026-08-11): Dynamic Forecasts, redesigned for clarity.
                       Split into two visually distinct blocks:
                         A. Units block — 1st Month / 1st Year / Lifetime, with
@@ -443,6 +342,107 @@ export default function Dashboard() {
                       </details>
                     )}
                   </div>
+
+                  {/* v3.4 (2026-08-11): 'Steam — Actuals' section. Shows only
+                      when there's ingested sales data. Two subrows:
+                        1. Revenue triad (Pre / Post / Total)
+                        2. Units triad (Pre / Post / Total) with base ASP
+                      Tagged 'Steam' explicitly so other platforms can slot in
+                      later as parallel sections (Xbox — Actuals, PSN — Actuals). */}
+                  {(() => {
+                    const rev = product.steamRevenueSplit as {
+                      preReleaseRevenueUsd: number;
+                      postReleaseRevenueUsd: number;
+                      totalRevenueUsd: number;
+                      preReleaseBaseNetUnits: number;
+                      postReleaseBaseNetUnits: number;
+                      totalBaseNetUnits: number;
+                      preReleaseBaseAspUsd: number | null;
+                      postReleaseBaseAspUsd: number | null;
+                      totalBaseAspUsd: number | null;
+                      preReleaseRowCount: number;
+                      postReleaseRowCount: number;
+                      releaseDate: string | null;
+                      latestDate: string | null;
+                    } | null | undefined;
+                    if (!rev || rev.totalRevenueUsd <= 0) return null;
+                    const hasPre = rev.preReleaseRevenueUsd > 0;
+                    return (
+                      <div className="pt-3 mt-3 border-t">
+                        <div className="flex items-baseline justify-between mb-2">
+                          <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                            Steam — Actuals
+                            <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
+                              click card for daily chart →
+                            </span>
+                          </div>
+                          <div className="text-[9px] text-muted-foreground">
+                            Through {rev.latestDate ?? "—"}
+                          </div>
+                        </div>
+                        {/* Revenue row */}
+                        <div className="grid grid-cols-3 gap-x-3 gap-y-1 mb-2">
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Pre-Release Revenue</div>
+                            <div className={`text-sm font-semibold tabular-nums ${hasPre ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/50"}`}
+                              data-testid={`text-steam-rev-prerelease-${product.id}`}>
+                              {formatCurrency(rev.preReleaseRevenueUsd)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Post-Release Revenue</div>
+                            <div className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
+                              data-testid={`text-steam-rev-postrelease-${product.id}`}>
+                              {formatCurrency(rev.postReleaseRevenueUsd)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Total Revenue</div>
+                            <div className="text-sm font-bold tabular-nums text-emerald-700 dark:text-emerald-300"
+                              data-testid={`text-steam-rev-total-${product.id}`}>
+                              {formatCurrency(rev.totalRevenueUsd)}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Units + ASP row */}
+                        <div className="grid grid-cols-3 gap-x-3 gap-y-1">
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Pre-Release Units · ASP</div>
+                            <div className="text-sm font-semibold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-prerelease-${product.id}`}>
+                              {formatNumber(rev.preReleaseBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.preReleaseBaseAspUsd != null ? `\$${rev.preReleaseBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Post-Release Units · ASP</div>
+                            <div className="text-sm font-semibold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-postrelease-${product.id}`}>
+                              {formatNumber(rev.postReleaseBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.postReleaseBaseAspUsd != null ? `\$${rev.postReleaseBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Total Units · ASP</div>
+                            <div className="text-sm font-bold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-total-${product.id}`}>
+                              {formatNumber(rev.totalBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.totalBaseAspUsd != null ? `\$${rev.totalBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-[9px] text-muted-foreground mt-1.5">
+                          Base game only for ASP · revenue includes base + paid DLC
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* v3.6 (2026-08-12): Bottom affordance strip so users always
                       know the whole card is clickable to open the full PDP. */}
