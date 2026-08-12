@@ -383,6 +383,16 @@ export interface IStorage {
   getSteamSales(productId: number, opts?: { since?: string; until?: string }): SteamSalesDaily[];
   getSteamSalesSummary(productId: number): SteamSalesSummary;
   getSteamRevenueByReleaseSplit(productId: number, releaseDate: string | null): SteamRevenueByReleaseSplit;
+  /**
+   * v3.7 (2026-08-12): Steam actual first-N-days base net units post-release.
+   * Returns null when the title is unreleased or has < windowDays coverage
+   * post-release (so we don't feed a partial signal into the dynamic forecast).
+   */
+  getSteamActualFirstMonthBaseUnits(
+    productId: number,
+    releaseDate: string | null,
+    windowDays?: number,
+  ): number | null;
   upsertSteamSalesRows(rows: InsertSteamSalesDaily[]): { inserted: number; updated: number };
   deleteSteamSalesByBatch(batchId: string): number;
 
@@ -890,6 +900,54 @@ export class DatabaseStorage implements IStorage {
       : null;
 
     return result;
+  }
+
+  /**
+   * v3.7 (2026-08-12): Steam actual first-N-days base net units.
+   *
+   * Rules:
+   *   - Returns null if the product has no releaseDate.
+   *   - Returns null if today < releaseDate + windowDays (partial window).
+   *   - Otherwise sums base skuGroup net units on dates in
+   *     [releaseDate, releaseDate + windowDays).
+   *
+   * Default windowDays = 30 (first month).
+   */
+  getSteamActualFirstMonthBaseUnits(
+    productId: number,
+    releaseDate: string | null,
+    windowDays: number = 30,
+  ): number | null {
+    if (!releaseDate) return null;
+
+    // Compute release + windowDays as YYYY-MM-DD.
+    const relEpochMs = Date.parse(releaseDate + "T00:00:00Z");
+    if (Number.isNaN(relEpochMs)) return null;
+    const windowEndMs = relEpochMs + windowDays * 86400_000;
+    const windowEndDate = new Date(windowEndMs).toISOString().split("T")[0];
+
+    // Reject if today hasn't reached the end of the window yet.
+    const todayDate = new Date().toISOString().split("T")[0];
+    if (todayDate < windowEndDate) return null;
+
+    // Sum base netUnits in [releaseDate, windowEndDate)
+    const rows = db.select().from(steamSalesDaily)
+      .where(and(
+        eq(steamSalesDaily.productId, productId),
+        gte(steamSalesDaily.date, releaseDate),
+        lte(steamSalesDaily.date, windowEndDate), // inclusive of last day
+        eq(steamSalesDaily.skuGroup, "base"),
+      ))
+      .all();
+
+    if (rows.length === 0) return null;
+
+    // Only count rows strictly before the windowEnd calendar day
+    let total = 0;
+    for (const r of rows) {
+      if (r.date < windowEndDate) total += r.netUnits;
+    }
+    return total > 0 ? total : null;
   }
 
   /**

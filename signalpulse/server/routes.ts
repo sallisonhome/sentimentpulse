@@ -143,12 +143,18 @@ export async function registerRoutes(
 
         // Calculate dynamic forecasts at all timeframes.
         // Post-release: forecastingWl is LOCKED to pre-release count so
-        // forecasts don't drift with post-release wishlist growth.
+        // forecasts don't drift with post-release wishlist growth. If we
+        // have >=30 days of Steam actuals, the calculator uses them as the
+        // Steam Dyn 1st-Mo track AND dampen-propagates the lift to consoles.
         const platforms = JSON.parse(p.platforms);
+        const steamActualFirstMonth = storage.getSteamActualFirstMonthBaseUnits(
+          p.id, releaseDate,
+        );
         const dynamicFull = calculateDynamicForecastsFull(
           platforms,
           forecastingWl,
           latestPs5Pre?.cumulativeCount ?? null,
+          steamActualFirstMonth,
         );
         const dynamicFirstMonthTotal = dynamicFull.reduce((sum, d) => sum + d.firstMonth, 0);
         const dynamicFirstYearTotal = dynamicFull.reduce((sum, d) => sum + d.firstYear, 0);
@@ -160,6 +166,22 @@ export async function registerRoutes(
         const steamDynamicFirstMonth = steamRow?.firstMonth ?? null;
         const steamDynamicFirstYear = steamRow?.firstYear ?? null;
         const steamDynamicLt = steamRow?.lifetime ?? null;
+
+        // v3.7 (2026-08-12): flag whether the Steam Dyn track was driven by
+        // actuals or wishlist. Also expose the raw actual and the console
+        // lift factor so the UI can annotate the tiles.
+        const wishlistBasedSteamForecast = forecastingWl != null
+          ? Math.round(forecastingWl * 0.27)
+          : null;
+        const forecastMode: "actuals" | "wishlist" | "none" =
+          steamActualFirstMonth != null && steamActualFirstMonth > 0
+            ? "actuals"
+            : forecastingWl != null ? "wishlist" : "none";
+        const consoleLiftFactor = (forecastMode === "actuals"
+            && wishlistBasedSteamForecast != null
+            && wishlistBasedSteamForecast > 0)
+          ? 1 + 0.5 * ((steamActualFirstMonth! / wishlistBasedSteamForecast) - 1)
+          : 1;
 
         // Get latest revision total if any
         const latestRevision = storage.getLatestRevisionTotal(p.id);
@@ -194,6 +216,12 @@ export async function registerRoutes(
           // card can show the split that rolls up into 'All Platforms'.
           // Each row is { platform, firstMonth, firstYear, lifetime }.
           dynamicPerPlatform: dynamicFull,
+          // v3.7 fields: forecast provenance so the UI can label whether Dyn
+          // came from actuals vs wishlist, and by how much consoles lifted.
+          forecastMode,
+          steamActualFirstMonthUnits: steamActualFirstMonth,
+          wishlistBasedSteamFirstMonth: wishlistBasedSteamForecast,
+          consoleLiftFactor,
         };
       });
       res.json(enriched);
@@ -309,11 +337,16 @@ export async function registerRoutes(
       const forecastRevisions = Object.values(revisionGrouped).sort((a, b) => a.date.localeCompare(b.date));
 
       // Calculate full per-platform forecasts (first month, 1yr, LT).
-      // Uses forecastingWl (LOCKED to pre-release count once released).
+      // v3.7: pass Steam actual first-month post-release when available so
+      // the Dyn track is actuals-driven and console lift is dampen-propagated.
+      const steamActualFirstMonthUnits = storage.getSteamActualFirstMonthBaseUnits(
+        id, releaseDateForSummary,
+      );
       const dynamicFullForecasts = calculateDynamicForecastsFull(
         platforms,
         forecastingWl,
         latestPs5Pre?.cumulativeCount ?? null,
+        steamActualFirstMonthUnits,
       );
 
       res.json({

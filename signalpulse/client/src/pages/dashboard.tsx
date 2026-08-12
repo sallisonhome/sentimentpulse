@@ -319,6 +319,23 @@ export default function Dashboard() {
                           click card for methodology →
                         </span>
                       </div>
+                      {/* v3.7: forecast provenance badge */}
+                      {product.forecastMode === "actuals" && (
+                        <span
+                          title={`Actuals-driven: Steam 1st-Mo = ${formatNumber(product.steamActualFirstMonthUnits)} observed base units. Wishlist forecast was ${formatNumber(product.wishlistBasedSteamFirstMonth)} — lift ${(product.steamActualFirstMonthUnits / product.wishlistBasedSteamFirstMonth).toFixed(2)}x. Consoles receive dampened lift of ${product.consoleLiftFactor.toFixed(2)}x (50% of Steam lift).`}
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold uppercase tracking-wide"
+                        >
+                          Actuals-driven
+                        </span>
+                      )}
+                      {product.forecastMode === "wishlist" && (
+                        <span
+                          title="Wishlist-based forecast: Steam 1st-Mo = pre-release wishlist × 27%. Consoles derived from platform mix. Switches to actuals-driven 30 days after release."
+                          className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-semibold uppercase tracking-wide"
+                        >
+                          Wishlist-based
+                        </span>
+                      )}
                     </div>
 
                     {/* Block A — Units */}

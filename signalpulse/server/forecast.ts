@@ -84,6 +84,23 @@ export interface DynamicForecastResult {
 export const STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER = 0.27;
 
 /**
+ * Console propagation dampening factor (v3.7, 2026-08-12).
+ *
+ * When Steam actuals reveal that a title over/underperformed its
+ * wishlist-based forecast, PS5/Xbox/Switch forecasts get a partial share
+ * of that lift. Cross-platform demand curves aren't identical, so we
+ * halve the observed Steam lift by default until we have console-specific
+ * actuals to confirm.
+ *
+ * Formula: consoleLift = 1 + CONSOLE_LIFT_DAMPENING * (steamLift - 1)
+ * where steamLift = actualFirstMonth / wishlistBasedForecast.
+ *
+ * Example: Steam actual = 4x wishlist forecast -> steamLift = 4.
+ * Console lift = 1 + 0.5 * (4 - 1) = 2.5.
+ */
+export const CONSOLE_LIFT_DAMPENING = 0.5;
+
+/**
  * Calculate dynamic forecasts from current wishlist/prepurchase counts.
  *
  * PC (Steam): Always driven by wishlist data
@@ -104,17 +121,44 @@ export const STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER = 0.27;
 export function calculateDynamicForecastsFull(
   selectedPlatforms: string[],
   steamWishlistCount: number | null,
-  ps5PrepurchaseCount: number | null
+  ps5PrepurchaseCount: number | null,
+  /**
+   * v3.7 (2026-08-12): post-release Steam actuals — observed first-month
+   * base units. When provided and > 0, we use this instead of the wishlist
+   * multiplier for the Steam Dyn track, AND apply a dampened lift to
+   * console platforms via CONSOLE_LIFT_DAMPENING. Pass null pre-release
+   * or when actuals are insufficient (<30 days post-release).
+   */
+  steamActualFirstMonthUnits?: number | null,
 ): DynamicForecastResult[] {
   const mix = getAdjustedPlatformMix(selectedPlatforms);
   const hasSteam = selectedPlatforms.includes("PC (Steam)");
   const hasPs5 = selectedPlatforms.includes("PS5");
   const hasPs5Prepurchase = hasPs5 && ps5PrepurchaseCount != null && ps5PrepurchaseCount > 0;
 
-  // ── PC (Steam): always wishlist-driven ─────────────────────────────────────
-  const steamFirstMonth = hasSteam && steamWishlistCount != null
+  // ── PC (Steam): actuals-first, wishlist-fallback (v3.7) ────────────────────
+  // When post-release Steam actuals are available, they drive the Steam
+  // 1st-Mo track. Otherwise fall back to wishlist × multiplier.
+  const wishlistBasedSteamFirstMonth = hasSteam && steamWishlistCount != null
     ? Math.round(steamWishlistCount * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER)
     : null;
+
+  const useActuals = hasSteam
+    && steamActualFirstMonthUnits != null
+    && steamActualFirstMonthUnits > 0;
+
+  const steamFirstMonth = useActuals
+    ? steamActualFirstMonthUnits!
+    : wishlistBasedSteamFirstMonth;
+
+  // Steam lift ratio (actual vs wishlist-based). Used to dampen-propagate
+  // to console platforms. No lift when no actuals OR baseline was zero.
+  const steamLift = (useActuals
+      && wishlistBasedSteamFirstMonth != null
+      && wishlistBasedSteamFirstMonth > 0)
+    ? (steamActualFirstMonthUnits! / wishlistBasedSteamFirstMonth)
+    : 1;
+  const consoleLift = 1 + CONSOLE_LIFT_DAMPENING * (steamLift - 1);
 
   // ── PS5 with prepurchase: LT-first approach ────────────────────────────────
   // prepurchase × 8 = LT forecast, then work backwards
@@ -147,39 +191,52 @@ export function calculateDynamicForecastsFull(
         };
       }
       if (p === "PS5") {
+        // PS5 prepurchase is its own signal, but if Steam actuals imply the
+        // whole title over/underperformed, apply the dampened lift.
         return {
           platform: p,
-          firstMonth: ps5FirstMonth!,
-          firstYear: ps5FirstYear!,
-          lifetime: ps5Lt!,
+          firstMonth: Math.round(ps5FirstMonth! * consoleLift),
+          firstYear: Math.round(ps5FirstYear! * consoleLift),
+          lifetime: Math.round(ps5Lt! * consoleLift),
         };
       }
-      // Other consoles: proportional to PS5 based on console mix
+      // Other consoles: proportional to PS5 by console mix, dampened lift on top.
       const thisPct = consoleMix[p] || 0;
       const ratio = ps5ConsolePct > 0 ? thisPct / ps5ConsolePct : 0;
       return {
         platform: p,
-        firstMonth: Math.round((ps5FirstMonth ?? 0) * ratio),
-        firstYear: Math.round((ps5FirstYear ?? 0) * ratio),
-        lifetime: Math.round((ps5Lt ?? 0) * ratio),
+        firstMonth: Math.round((ps5FirstMonth ?? 0) * ratio * consoleLift),
+        firstYear: Math.round((ps5FirstYear ?? 0) * ratio * consoleLift),
+        lifetime: Math.round((ps5Lt ?? 0) * ratio * consoleLift),
       };
     });
   }
 
-  // ── Fallback: no PS5 prepurchase — use global platform mix approach ────────
-  // This is the original formula: implied total from available signals,
-  // then distribute by platform mix percentages
+  // ── Fallback: no PS5 prepurchase — global platform mix approach ───────────
+  // v3.7 dampening: consoles derive from the WISHLIST implied total
+  // (not the actuals-inflated Steam number), then get the dampened lift
+  // on top. This way Steam +300% doesn't automatically become PS5 +300%.
   const steamDynamic = steamFirstMonth;
-  let impliedTotal = 0;
-
-  if (steamDynamic != null) {
-    impliedTotal = mix["PC (Steam)"] > 0 ? steamDynamic / mix["PC (Steam)"] : 0;
-  }
+  const wishlistImpliedTotal = (wishlistBasedSteamFirstMonth != null
+      && mix["PC (Steam)"] > 0)
+    ? wishlistBasedSteamFirstMonth / mix["PC (Steam)"]
+    : 0;
 
   return selectedPlatforms.map(p => {
-    const firstMonth = p === "PC (Steam)" && steamDynamic != null
-      ? steamDynamic
-      : Math.round(impliedTotal * mix[p]);
+    if (p === "PC (Steam)" && steamDynamic != null) {
+      // Steam uses its own value (actuals when available, else wishlist).
+      return {
+        platform: p,
+        firstMonth: steamDynamic,
+        firstYear: steamDynamic * 2,
+        lifetime: steamDynamic * 4,
+      };
+    }
+    // Non-Steam platforms: base off wishlist-implied total then apply
+    // dampened lift (consoleLift = 1 when no actuals, so behavior is
+    // identical to legacy path pre-release).
+    const platformBase = Math.round(wishlistImpliedTotal * mix[p]);
+    const firstMonth = Math.round(platformBase * consoleLift);
     return {
       platform: p,
       firstMonth,
