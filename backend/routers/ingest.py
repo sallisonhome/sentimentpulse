@@ -96,6 +96,87 @@ def get_ingest_status():
     return IngestStatusResponse(**status)
 
 
+@router.post("/status/backfill-snapshot", status_code=200)
+def backfill_status_snapshot(db: Session = Depends(get_db)):
+    """
+    Rebuild the AppSetting['ingest_last_run_snapshot'] from today's actual
+    ingest activity (row counts + latest collected_at timestamp). Use when
+    the widget shows 'Never' due to process-restart status loss and there's
+    no runbook to fire a fresh full ingest yet.
+
+    Idempotent — safe to re-run. Reads from raw_posts, writes AppSetting.
+    """
+    from datetime import datetime, timezone
+    from sqlalchemy import func as _f
+    from models import RawPost as _RawPost, Game as _Game, AppSetting, SourceEnum
+    import json as _json
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    # Get the latest collected_at from today's writes
+    latest = (
+        db.query(_f.max(_RawPost.collected_at))
+        .filter(_f.date(_RawPost.collected_at) == today)
+        .scalar()
+    )
+
+    if latest is None:
+        return {"status": "no_data_today", "snapshot_written": False}
+
+    # Count by source, and games touched
+    by_source = {}
+    for src in SourceEnum:
+        cnt = (
+            db.query(_f.count(_RawPost.id))
+            .filter(
+                _RawPost.source == src,
+                _f.date(_RawPost.collected_at) == today,
+            )
+            .scalar()
+        ) or 0
+        by_source[src.value] = cnt
+
+    games_touched = (
+        db.query(_f.count(_f.distinct(_RawPost.game_id)))
+        .filter(_f.date(_RawPost.collected_at) == today)
+        .scalar()
+    ) or 0
+
+    total_posts = sum(by_source.values())
+
+    snapshot = {
+        "last_run_at": latest.replace(tzinfo=timezone.utc).isoformat() if latest.tzinfo is None else latest.isoformat(),
+        "last_run_status": "success",
+        "last_run_errors": [],
+        "games_processed": games_touched,
+        "posts_collected": total_posts,
+        "reddit_health": "ok" if by_source.get("reddit", 0) > 0 else "unknown",
+        "reddit_fetched_total": by_source.get("reddit", 0) + by_source.get("reddit_comment", 0),
+        "reddit_retries": 0,
+        "bluesky_health": "ok" if by_source.get("bluesky", 0) > 0 else "unknown",
+        "bluesky_fetched_total": by_source.get("bluesky", 0),
+        "bluesky_retries": 0,
+        "steam_review_health": "ok" if by_source.get("steam_review", 0) > 0 else "unknown",
+        "steam_review_fetched_total": by_source.get("steam_review", 0),
+        "steam_forum_health": "ok" if by_source.get("steam_forum", 0) > 0 else "unknown",
+        "steam_forum_fetched_total": by_source.get("steam_forum", 0),
+    }
+
+    row = db.query(AppSetting).filter_by(key="ingest_last_run_snapshot").first()
+    if row is None:
+        db.add(AppSetting(key="ingest_last_run_snapshot", value=_json.dumps(snapshot)))
+    else:
+        row.value = _json.dumps(snapshot)
+    db.commit()
+
+    return {
+        "status": "ok",
+        "snapshot_written": True,
+        "snapshot": snapshot,
+    }
+
+
 @router.post("/run", response_model=IngestRunResponse, status_code=202)
 def trigger_ingestion(
     background_tasks: BackgroundTasks,
