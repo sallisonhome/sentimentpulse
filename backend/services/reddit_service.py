@@ -107,16 +107,18 @@ def _get(url: str, params: Optional[dict] = None) -> Optional[dict]:
 # disambiguation belongs (see is_post_relevant_to_game).
 _GENERAL_SUBREDDITS = {
     # Console/platform subs
-    "gaming", "games", "pcgaming", "ps5", "playstation", "xbox",
-    "xboxseriesx", "steam", "steamdeck", "nintendoswitch",
+    "gaming", "games", "pcgaming", "pcmasterrace",
+    "ps5", "playstation", "xbox", "xboxseriesx", "xboxone",
+    "steam", "steamdeck", "nintendoswitch", "nintendo",
     # Meta / discovery subs
     "patientgamers", "shouldibuythisgame", "gamingsuggestions",
     "truegaming", "gamedeals", "gamingleaksandrumours",
-    "gamingnews", "gamingnews", "gamedev", "retrogaming",
-    "cozygamers", "gamecollecting",
+    "gamingnews", "gamedev", "retrogaming",
+    "cozygamers", "gamecollecting", "gamingcirclejerk",
     # Genre subs (broad enough to need filtering)
     "fps", "shootergames", "thirdpersonshooter", "coopgaming",
-    "simracing", "tycoon", "movies",
+    "simracing", "simulators", "drivingsimulators",
+    "tycoon", "movies",
 }
 
 
