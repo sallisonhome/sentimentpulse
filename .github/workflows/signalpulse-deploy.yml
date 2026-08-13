@@ -109,15 +109,24 @@ jobs:
             echo "created /etc/signalpulse/env (AUTH_MODE=both)"
           fi
           # Copy JWT_SECRET from saber-auth if not already present here.
+          # saber-auth stores its env at /opt/saber-auth/.env (per its
+          # deploy/saber-auth.service unit, EnvironmentFile=/opt/saber-auth/.env).
           if ! grep -q '^SABER_AUTH_JWT_SECRET=' /etc/signalpulse/env; then
-            if [ -f /etc/saber-auth/env ] && grep -q '^JWT_SECRET=' /etc/saber-auth/env; then
-              SECRET=$(grep '^JWT_SECRET=' /etc/saber-auth/env | head -1 | cut -d= -f2-)
+            SABER_ENV=""
+            for candidate in /opt/saber-auth/.env /etc/saber-auth/env; do
+              if [ -f "$candidate" ] && grep -q '^JWT_SECRET=' "$candidate"; then
+                SABER_ENV="$candidate"; break
+              fi
+            done
+            if [ -n "$SABER_ENV" ]; then
+              SECRET=$(grep '^JWT_SECRET=' "$SABER_ENV" | head -1 | cut -d= -f2-)
               echo "SABER_AUTH_JWT_SECRET=${SECRET}" >> /etc/signalpulse/env
               chmod 600 /etc/signalpulse/env
-              echo "copied SABER_AUTH_JWT_SECRET from /etc/saber-auth/env"
+              echo "copied SABER_AUTH_JWT_SECRET from ${SABER_ENV}"
             else
-              echo "WARN: /etc/saber-auth/env not found or missing JWT_SECRET \
-                   — signalpulse will start in advisory-only mode (no session validation)."
+              echo "WARN: no saber-auth env file with JWT_SECRET found in \
+                   /opt/saber-auth/.env or /etc/saber-auth/env — signalpulse \
+                   will start in advisory-only mode (no session validation)."
             fi
           else
             echo "SABER_AUTH_JWT_SECRET already present in /etc/signalpulse/env"
@@ -183,6 +192,12 @@ jobs:
           if [ "$MODE_ENV" != "$MODE_RUN" ]; then
             echo "ERR: AUTH_MODE env (${MODE_ENV}) does not match runtime (${MODE_RUN})"
             exit 1
+          fi
+          READY=$(curl -sS --max-time 5 http://127.0.0.1:5000/api/config \
+            | grep -o '"authReady":[a-z]*' | cut -d: -f2 || echo unknown)
+          echo "authReady=${READY} (true means SABER_AUTH_JWT_SECRET is loaded)"
+          if [ "$READY" != "true" ] && [ "$MODE_ENV" != "legacy" ]; then
+            echo "WARN: authReady=false — sessions cannot be validated. Check /etc/signalpulse/env."
           fi
 
           echo ""
