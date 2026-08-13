@@ -111,8 +111,39 @@ _status: dict = {
 
 
 def get_status() -> dict:
-    """Return a snapshot of the current ingestion status."""
-    return dict(_status)
+    """Return a snapshot of the current ingestion status.
+
+    v0016.13 (2026-08-13): if the in-memory _status was reset by a process
+    restart, hydrate the durable fields (last_run_at, last_run_status,
+    games_processed, posts_collected) from AppSetting so the UI doesn't
+    show 'Never' when the cron actually ran successfully yesterday.
+    """
+    snapshot = dict(_status)
+    if snapshot.get("last_run_at") is None:
+        try:
+            from database import SessionLocal
+            from models import AppSetting
+            db = SessionLocal()
+            try:
+                row = db.query(AppSetting).filter_by(key="ingest_last_run_snapshot").first()
+                if row and row.value:
+                    import json as _json
+                    persisted = _json.loads(row.value)
+                    # Only overlay durable fields; live-run fields (is_running,
+                    # next_run_at) stay from in-memory.
+                    for k in ("last_run_at", "last_run_status", "last_run_errors",
+                             "games_processed", "posts_collected",
+                             "reddit_health", "reddit_fetched_total", "reddit_retries",
+                             "bluesky_health", "bluesky_fetched_total", "bluesky_retries",
+                             "steam_review_health", "steam_review_fetched_total",
+                             "steam_forum_health", "steam_forum_fetched_total"):
+                        if k in persisted:
+                            snapshot[k] = persisted[k]
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("get_status: failed to hydrate from AppSetting: %s", exc)
+    return snapshot
 
 
 def set_next_run(dt: Optional[datetime]) -> None:
@@ -722,6 +753,45 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         _status["steam_review_fetched_total"] = steam_review_fetched_total
         _status["steam_forum_health"] = steam_forum_health
         _status["steam_forum_fetched_total"] = steam_forum_fetched_total
+
+        # v0016.13 (2026-08-13): persist the snapshot to AppSetting so it
+        # survives process restarts. Without this, the UI shows 'Never /
+        # Last run: Never' whenever the droplet restarts after the daily
+        # cron completed — which happens frequently during deploys.
+        try:
+            from database import SessionLocal
+            from models import AppSetting
+            import json as _json
+            snapshot_json = _json.dumps({
+                "last_run_at": _status.get("last_run_at"),
+                "last_run_status": _status.get("last_run_status"),
+                "last_run_errors": _status.get("last_run_errors") or [],
+                "games_processed": _status.get("games_processed"),
+                "posts_collected": _status.get("posts_collected"),
+                "reddit_health": _status.get("reddit_health"),
+                "reddit_fetched_total": _status.get("reddit_fetched_total"),
+                "reddit_retries": _status.get("reddit_retries"),
+                "bluesky_health": _status.get("bluesky_health"),
+                "bluesky_fetched_total": _status.get("bluesky_fetched_total"),
+                "bluesky_retries": _status.get("bluesky_retries"),
+                "steam_review_health": _status.get("steam_review_health"),
+                "steam_review_fetched_total": _status.get("steam_review_fetched_total"),
+                "steam_forum_health": _status.get("steam_forum_health"),
+                "steam_forum_fetched_total": _status.get("steam_forum_fetched_total"),
+            })
+            db_snap = SessionLocal()
+            try:
+                row = db_snap.query(AppSetting).filter_by(key="ingest_last_run_snapshot").first()
+                if row is None:
+                    row = AppSetting(key="ingest_last_run_snapshot", value=snapshot_json)
+                    db_snap.add(row)
+                else:
+                    row.value = snapshot_json
+                db_snap.commit()
+            finally:
+                db_snap.close()
+        except Exception as exc:
+            logger.warning("failed to persist ingest status snapshot: %s", exc)
 
     return {
         "status": final_status,
