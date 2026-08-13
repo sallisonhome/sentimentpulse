@@ -44,7 +44,7 @@ jobs:
           const spDb = new Database('/opt/sentimentpulse/signalpulse/data.db', { readonly: true });
           let rk;
           try {
-            rk = spDb.prepare("SELECT value FROM settings WHERE key = 'resend_api_key'").get();
+            rk = spDb.prepare("SELECT value FROM app_settings WHERE key = 'resend_api_key'").get();
           } catch (e) {
             console.error('DB read failed:', e.message);
             process.exit(1);
