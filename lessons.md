@@ -744,3 +744,47 @@ When the same class of defect (fabrication, confabulation, off-tier surfacing) r
 ---
 
 <!-- Add new lessons above this line, newest first. -->
+
+---
+
+## 2026-08-13 (sentimentpulse) — daily cron classified 0 reddit_comments for later games in the list because concurrent deploys wiped in-memory work; UI showed "Last run: Never" for the same reason
+
+**What Steve reported.** Two symptoms surfaced within the same morning:
+
+1. Settings page cron-status widget showed "Never / Last run: Never · Games processed: 0" despite the morning cron obviously firing (5,490 new posts landed today across 24 games).
+2. Rideshare's dashboard showed reddit=1 today when Arctic Shift had clearly-visible parent threads with 10-40 comments each that should have flowed through the parent-conversation-inherit-tier rule.
+
+**Root cause #1: `_status` is in-memory only.** `services/ingestor._status` is a module-level dict. Every deploy restarts the FastAPI process, which resets `_status` back to `{"last_run_at": None, "last_run_status": "never", ...}`. On a normal day this is invisible because the next cron fires at 06:45 ET and populates `_status`. On 2026-08-13 there were **7 concurrent deploys between 11:29 and 12:32 UTC** (multiple agents/threads pushing simultaneously to sentimentpulse/signalpulse for revenue leaderboard, weekly digest, signalpulse cron wiring, etc.), each of which restarted the process, each of which wiped the in-memory status. The UI reads `GET /api/ingest/status` which returns the raw dict — so it shows "Never" whenever the process is fresh, even if the cron already ran that morning.
+
+**Root cause #2: Step 5 didn't classify reddit_comments for later games.** The daily-cron loop had this shape:
+
+    Phase A: for each active game: Steps 3+4+4a+4b+4c (fetch)
+    Phase C: for each active game: Steps 5+6+7 (classify + topics + summary)
+    (single db.commit at end of run)
+
+When the process died mid-Phase-C (e.g., because a deploy restart fired at 11:29 UTC while the cron was still working through the 34-game Step 5 loop), **all Step 5 classifications made so far were rolled back** — SQLAlchemy holds the ORM changes in the session, and the process kill happens before `db.commit()`. Games later in the ID-descending order (Rideshare id=144, Gears E-Day id=145, ILL id=138, Halloween id=140, Silent Hill id=139, Bus Bound id=134) never got their Step 5 run at all. Games earlier in the loop (SM2 id=24, JP:S id=22) got Step 5 up to the point of the crash but the results were rolled back, so they also showed as `is_relevant=NULL, has_sentiment=0` for the newly-arrived comments. Portfolio-wide audit at 12:52 ET showed 5,000+ unclassified reddit_comments across the 10 priority games.
+
+The reddit_comment tier system itself was working — the parent-conversation rule set `relevance_tier=signal` on 229 Rideshare comments across 7 parent threads. But the dashboard reads sentiment records, not raw_posts, so unclassified comments never surface as bar-chart volume no matter what tier they have.
+
+**Fix.**
+
+- `services/ingestor.py`: persist status snapshot to `AppSetting['ingest_last_run_snapshot']` at the end of every `run_ingestion` (last_run_at, last_run_status, games_processed, posts_collected, per-source health/counts). `get_status()` hydrates from AppSetting when in-memory last_run_at is None, so the UI shows real data after a process restart. Live-run fields (`is_running`, `next_run_at`) stay in-memory since they track current process state.
+- `services/ingestor.py`: commit after **each game's** Step 5-7 completes in Phase C, not once at the end of the whole run. A mid-run process kill now loses at most one game's classification work instead of all 34.
+- `services/ingestor.py`: added a second Step 5 sweep at the end of Phase C to catch any RawPost that's still `is_relevant=NULL` (from a classifier exception mid-batch). Cheap because Step 5 exits early on an empty unprocessed list.
+- Remediation: fired `POST /api/ingest/reset-tier-relevance/{id}` for all 34 active games to reclassify the backlog. Verified all 10 priority games back to 100% reddit_comment classified.
+
+**Verification (Rideshare, 2026-08-13 09:00 ET):**
+- Before: dashboard 7d total=134, reddit=1 today (137 unclassified comments hidden).
+- After: dashboard 7d total=330, reddit=139 today (137 comments now folded into the reddit bar, real 34.5%/36.7%/28.8% pos/neg/neu split).
+
+**Generalizable rules.**
+
+> **In-memory Python module state does not survive process restarts. If the UI depends on it, it must be persisted.** For SentimentPulse specifically: `_status`, `_BACKFILL_RUNNING`, `_last_smoke_test_result`, and every other module-level dict that FastAPI routers read from directly needs an AppSetting-backed hydration path, or the UI will show "Never / Idle / Unknown" any time a deploy fires between the last write and the next read. This is not a "rare edge case" — SentimentPulse and SignalPulse share a droplet with multiple agents deploying concurrently; the process gets restarted several times per active-development day.
+
+> **Every long per-entity loop in a background job must commit after each entity, not at the end.** The pattern `for game in active_games: do_expensive_work(game); (no commit)` followed by a single outer `db.commit()` at run end means a process kill loses all prior entities' work. Commit after each entity so the next run's audit query (`SELECT ... WHERE is_relevant IS NULL`) reflects only the truly-unprocessed rows, not "everything from this run + everything from the interrupted previous run."
+
+> **When multiple agents share a droplet, every long-running task must be interruption-tolerant.** SentimentPulse's daily cron takes 30-75 minutes; SignalPulse portal backfills take 20-60 minutes per product. Any of them can be killed by a `sentimentpulse: <anything>` push from a different session at any moment. Interruption-tolerance means: (1) checkpoint after each unit of work, (2) audit endpoints exist so the next run can identify and re-process leftover work, (3) never rely on "the process will still be alive in N minutes" for anything expensive.
+
+> **UI-visible status widgets must fail loudly when their data source is stale, not silently show `Never`.** "Last run: Never" is ambiguous — it could mean the cron literally never ran, OR the process just restarted and lost its cache. The frontend should either (a) always show the most recent last_run_at from durable storage, or (b) explicitly render "Status unknown (process just started)" when the durable snapshot is absent. Showing "Never" when the reality is "just restarted at 12:32 UTC after a successful 07:00 UTC run" is a bug even if the backend is technically returning what it was designed to return.
+
+> **When multiple agents/humans are pushing to the same shared droplet, expect concurrent deploys during any dev day.** Before assuming "the cron just didn't fire," check `gh run list` for the workflow, correlate deploy timestamps with the expected fire window, and be ready to prove the cron *did* fire via post/collected_at row-write timestamps (which are the ground truth) even when in-memory status says otherwise. Today's proof: the fact that 34 games' worth of posts all had `collected_at=2026-08-13T10:59:52 → 11:00:16 UTC` — a 24-second write window — was the definitive evidence the daily cron ran successfully, independent of what the status endpoint reported.

@@ -668,17 +668,44 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         # Phase C: per-game analysis (Steps 5 -> 7)
         # Runs AFTER any retries so today's summary includes all data that
         # landed today — not just the first-pass results.
+        #
+        # v0016.14 (2026-08-13): commit after EACH game's Step 5-7 completes
+        # so a mid-run process kill (deploy, OOM, SIGKILL) doesn't lose the
+        # classification work done for earlier games. Before this change,
+        # if the process died at game #15/34, all 15 games' Step 5 work
+        # was pending on the outer db.commit at run end and lost. Now each
+        # game's classifications persist as soon as they're computed —
+        # verified after Steve reported 5,000+ unclassified reddit_comments
+        # across 10 priority games on 2026-08-13 following a burst of
+        # concurrent deploys mid-cron.
         for game in active_games:
             try:
                 _step5_classify_sentiment(db, game, log_lines, errors)
                 _step6_extract_topics(db, game, log_lines, errors)
                 _step7_daily_summary(db, game, log_lines, errors)
+                db.commit()  # persist this game's work before moving to next
                 games_processed += 1
                 posts_collected += per_game_posts.get(game.id, 0)
             except Exception as exc:
+                db.rollback()
                 msg = f"Steps 5-7 error for '{game.name}': {exc}"
                 errors.append(msg)
                 logger.exception(msg)
+
+        # v0016.14 safety net (2026-08-13): after all games finish, do ONE
+        # more sweep across active_games for any RawPost that's still
+        # is_relevant=NULL. This catches the case where a game's Step 5
+        # was interrupted mid-batch by an exception in the classifier.
+        # It's cheap — Step 5 exits early if unprocessed is empty.
+        for game in active_games:
+            try:
+                _step5_classify_sentiment(db, game, log_lines, errors)
+                db.commit()
+            except Exception as exc:
+                db.rollback()
+                logger.warning(
+                    "Step 5 sweep for '%s' raised — %s", game.name, exc,
+                )
 
         # Step 9: Monthly summaries on 1st of month
         _step9_monthly_summaries(db, active_games, log_lines, errors)
