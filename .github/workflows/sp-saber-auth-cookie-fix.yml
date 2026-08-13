@@ -1,107 +1,100 @@
 name: sp-saber-auth-cookie-fix
-# One-off: patch saber-auth so it stops issuing Secure cookies on plain-HTTP.
-# NODE_ENV=production forced secure:true; browsers then never sent the cookie
-# back over http://104.236.239.46, so /auth/api/me returned 401 and the launcher
-# fell back to the shared-password gate even after a successful login.
-#
-# This workflow:
-#   1) Rewrites the two setSessionCookie/clearSessionCookie functions in-place
-#      on the droplet at /opt/saber-auth/server/routes/auth.js so they read
-#      COOKIE_SECURE from env instead of NODE_ENV.
-#   2) Appends COOKIE_SECURE=false to /opt/saber-auth/.env if absent.
-#   3) Restarts saber-auth and confirms /auth/api/me still returns 401
-#      (as it should with no session).
 on: workflow_dispatch
 jobs:
   patch:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: SSH patch + restart
+      - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
-          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 << 'REMOTE'
-            set -e
-            AUTH=/opt/saber-auth/server/routes/auth.js
-            ENV=/opt/saber-auth/.env
 
-            echo "=== Backing up auth.js ==="
-            cp $AUTH $AUTH.bak.$(date +%s)
+      - name: Write local patch script
+        run: |
+          cat > /tmp/patch_auth.py << 'PYEOF'
+          import re, sys
+          path = '/opt/saber-auth/server/routes/auth.js'
+          with open(path) as f:
+              src = f.read()
+          new_block = '''// Set COOKIE_SECURE=true only when the site is served over HTTPS. On plain
+          // HTTP, secure cookies are never sent back by the browser, so login would
+          // appear to succeed but the session cookie would silently drop.
+          function cookieSecure() {
+            return String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true';
+          }
 
-            echo "=== Patching setSessionCookie/clearSessionCookie ==="
-            # Use python for reliable multi-line replace
-            python3 << 'PY'
-import re, io
-path = '/opt/saber-auth/server/routes/auth.js'
-with open(path) as f:
-    src = f.read()
+          function setSessionCookie(res, token) {
+            res.cookie(COOKIE_NAME, token, {
+              httpOnly: true,
+              secure: cookieSecure(),
+              sameSite: 'lax',
+              domain: process.env.COOKIE_DOMAIN || undefined,
+              path: '/',
+              maxAge: 30 * 24 * 60 * 60 * 1000,
+            });
+          }
 
-new_block = '''// Set COOKIE_SECURE=true only when the site is served over HTTPS. On plain
-// HTTP, secure cookies are never sent back by the browser, so login would
-// appear to succeed but the session cookie would silently drop.
-function cookieSecure() {
-  return String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true';
-}
+          function clearSessionCookie(res) {
+            res.clearCookie(COOKIE_NAME, {
+              httpOnly: true,
+              secure: cookieSecure(),
+              sameSite: 'lax',
+              domain: process.env.COOKIE_DOMAIN || undefined,
+              path: '/',
+            });
+          }'''
+          # strip the indentation the heredoc added
+          new_block = '\n'.join(line[10:] if line.startswith('          ') else line for line in new_block.split('\n'))
+          pattern = re.compile(
+              r"function setSessionCookie\(res, token\) \{[\s\S]*?\}\s*\nfunction clearSessionCookie\(res\) \{[\s\S]*?\}",
+              re.MULTILINE,
+          )
+          new_src, n = pattern.subn(new_block, src, count=1)
+          if n != 1:
+              print(f"Patch failed: matched {n} blocks, expected 1", file=sys.stderr)
+              sys.exit(1)
+          with open(path, 'w') as f:
+              f.write(new_src)
+          print(f"Patched {path}")
+          PYEOF
+          echo "Local patch script bytes: $(wc -c < /tmp/patch_auth.py)"
 
-function setSessionCookie(res, token) {
-  res.cookie(COOKIE_NAME, token, {
-    httpOnly: true,
-    secure: cookieSecure(),
-    sameSite: 'lax',
-    domain: process.env.COOKIE_DOMAIN || undefined,
-    path: '/',
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-  });
-}
+      - name: Upload patch script + apply
+        run: |
+          scp -i ~/.ssh/id_ed25519 /tmp/patch_auth.py root@104.236.239.46:/tmp/patch_auth.py
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'bash -s' << 'REMOTE'
+          set -e
+          AUTH=/opt/saber-auth/server/routes/auth.js
+          ENV=/opt/saber-auth/.env
 
-function clearSessionCookie(res) {
-  res.clearCookie(COOKIE_NAME, {
-    httpOnly: true,
-    secure: cookieSecure(),
-    sameSite: 'lax',
-    domain: process.env.COOKIE_DOMAIN || undefined,
-    path: '/',
-  });
-}'''
+          echo "=== Backing up auth.js ==="
+          cp $AUTH $AUTH.bak.$(date +%s)
 
-pattern = re.compile(
-    r"function setSessionCookie\(res, token\) \{[\s\S]*?\}\s*\nfunction clearSessionCookie\(res\) \{[\s\S]*?\}",
-    re.MULTILINE,
-)
-new_src, n = pattern.subn(new_block, src, count=1)
-if n != 1:
-    raise SystemExit(f"Patch failed: matched {n} blocks, expected 1")
+          echo "=== Applying patch ==="
+          python3 /tmp/patch_auth.py
 
-with open(path, 'w') as f:
-    f.write(new_src)
-print(f"Patched {path}")
-PY
+          echo "=== Confirming patch ==="
+          grep -n "cookieSecure()" $AUTH | head -5
 
-            echo "=== Confirming patch landed ==="
-            grep -n "cookieSecure()" $AUTH | head -5
+          echo "=== Ensuring COOKIE_SECURE=false in .env ==="
+          if grep -q '^COOKIE_SECURE=' $ENV; then
+            sed -i 's|^COOKIE_SECURE=.*|COOKIE_SECURE=false|' $ENV
+          else
+            echo "COOKIE_SECURE=false" >> $ENV
+          fi
+          grep '^COOKIE_SECURE=' $ENV
 
-            echo "=== Ensuring COOKIE_SECURE=false in .env ==="
-            if grep -q '^COOKIE_SECURE=' $ENV; then
-              sed -i 's|^COOKIE_SECURE=.*|COOKIE_SECURE=false|' $ENV
-              echo "Updated existing COOKIE_SECURE line"
-            else
-              echo "COOKIE_SECURE=false" >> $ENV
-              echo "Appended COOKIE_SECURE=false"
-            fi
-            grep '^COOKIE_SECURE=' $ENV
+          echo "=== Restarting saber-auth ==="
+          systemctl restart saber-auth
+          sleep 2
+          systemctl is-active saber-auth
 
-            echo "=== Restarting saber-auth ==="
-            systemctl restart saber-auth
-            sleep 2
-            systemctl is-active saber-auth
+          echo "=== Health check ==="
+          curl -sS -o /dev/null -w "GET /api/me (no cookie): %{http_code}\n" http://127.0.0.1:5100/api/me
 
-            echo "=== Health checks ==="
-            curl -sS -o /dev/null -w "GET /auth/api/me (no cookie): %{http_code}\n" http://127.0.0.1:5100/api/me || true
-            curl -sS -o /dev/null -w "GET /auth/login.html: %{http_code}\n" http://127.0.0.1:5100/login.html || true
-
-            echo "=== Recent logs ==="
-            journalctl -u saber-auth -n 10 --no-pager | tail -10
+          echo "=== Recent logs ==="
+          journalctl -u saber-auth -n 5 --no-pager
           REMOTE
