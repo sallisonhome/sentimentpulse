@@ -1,0 +1,32 @@
+name: One-off — verify saber-auth via nginx
+on:
+  workflow_dispatch: {}
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Verify /auth/ routing
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'bash -s' <<'REMOTE'
+          echo "=== curl -v http://127.0.0.1/auth/login.html (via nginx) ==="
+          curl -sv http://127.0.0.1/auth/login.html 2>&1 | head -25
+          echo ""
+          echo "=== curl -v http://127.0.0.1:5100/auth/login.html (direct) ==="
+          curl -sv http://127.0.0.1:5100/auth/login.html 2>&1 | head -20
+          echo ""
+          echo "=== nginx error log tail ==="
+          tail -20 /var/log/nginx/error.log
+          echo ""
+          echo "=== nginx access log tail ==="
+          tail -10 /var/log/nginx/access.log
+          REMOTE
