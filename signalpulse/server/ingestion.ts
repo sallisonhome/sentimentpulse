@@ -17,7 +17,7 @@ import { log } from "./index";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface IngestionResult {
+export interface IngestionResult {
   source: string;
   status: "success" | "skipped" | "error";
   message: string;
@@ -25,7 +25,7 @@ interface IngestionResult {
   dataPointsAdded?: number;
 }
 
-interface IngestionRunResult {
+export interface IngestionRunResult {
   startedAt: string;
   completedAt: string;
   results: IngestionResult[];
@@ -1379,29 +1379,150 @@ export async function runIngestion(): Promise<IngestionRunResult> {
   };
 }
 
+// ─── Manual Per-Source Ingestion Triggers (Settings UI buttons) ────────────
+//
+// Wrap distinct slices of the pipeline above so operators can force a
+// refresh of a single data path from Settings without waiting on/running
+// everything runIngestion() does. Each persists its own
+// `ingestion_last_run_<source>` setting so the UI can show "last run" after
+// a page reload (mirrors the `ingestion_last_run` convention used by the
+// full pipeline).
+//
+// The three paths map 1:1 onto Steamworks' three distinct auth mechanisms:
+//   1. Sales Leaderboard   — Steamworks Partner PORTAL SESSION COOKIE
+//   2. Wishlist Leaderboard (public parts) — no auth, public Steam endpoints
+//   3. Wishlist Leaderboard (actual counts) — Steamworks Partner API KEY
+
+function persistManualIngestionRun(settingKey: string, result: IngestionRunResult): void {
+  storage.upsertSetting(settingKey, JSON.stringify(result));
+}
+
+/**
+ * Sales Leaderboard — Steamworks Partner PORTAL SESSION COOKIE.
+ * Same `ingestSteamSales()` used by the full daily pipeline, just invoked
+ * on demand. Settings UI: "Steamworks Session Cookie" card.
+ */
+export async function runSalesIngestionNow(): Promise<IngestionRunResult> {
+  const startedAt = new Date().toISOString();
+  log("Manual trigger: Sales Leaderboard ingestion (Steamworks cookie)...", "ingestion");
+  const result = await ingestSteamSales();
+  const completedAt = new Date().toISOString();
+  const out: IngestionRunResult = {
+    startedAt,
+    completedAt,
+    results: [result],
+    totalProductsProcessed: result.productsProcessed || 0,
+    totalDataPointsAdded: result.dataPointsAdded || 0,
+  };
+  persistManualIngestionRun("ingestion_last_run_sales", out);
+  log(`Manual sales ingestion complete: ${result.message}`, "ingestion");
+  return out;
+}
+
+/**
+ * Wishlist Leaderboard, public-data half — no key/cookie required.
+ * Follower counts + header art + "Popular Upcoming" wishlist chart rank,
+ * all from unauthenticated public Steam endpoints. Settings UI: dedicated
+ * "Manual Ingestion" card (no credential to attach it to).
+ */
+export async function runPublicWishlistIngestionNow(): Promise<IngestionRunResult> {
+  const startedAt = new Date().toISOString();
+  log("Manual trigger: Wishlist Leaderboard public-API ingestion (followers, rank, header art)...", "ingestion");
+  const results: IngestionResult[] = [];
+  results.push(await ingestSteamFollowers());
+  results.push(await ingestHeaderImages());
+  results.push(await ingestSteamWishlistRank());
+  const completedAt = new Date().toISOString();
+  const out: IngestionRunResult = {
+    startedAt,
+    completedAt,
+    results,
+    totalProductsProcessed: results.reduce((sum, r) => sum + (r.productsProcessed || 0), 0),
+    totalDataPointsAdded: results.reduce((sum, r) => sum + (r.dataPointsAdded || 0), 0),
+  };
+  persistManualIngestionRun("ingestion_last_run_public", out);
+  log(`Manual public-API wishlist ingestion complete: ${results.map(r => r.message).join(" | ")}`, "ingestion");
+  return out;
+}
+
+/**
+ * Wishlist Leaderboard, actual-counts half — Steamworks Partner API KEY.
+ * Pulls Saber/Mad Dog titles' real daily wishlist adds/deletes/purchases via
+ * IPartnerFinancialsService (`ingestSteamData`). Note: this same call also
+ * attempts a GetDetailedSales unit-sales fetch as a side effect — as of
+ * 2026-08-11 that sub-call returns empty because the configured key lacks
+ * the "Sales & Activations Reporting" scope (see NOTE 1 in ingestSteamData
+ * above), so it's a harmless no-op today, not a second sales path. Settings
+ * UI: "Steam / Steamworks" card (same key used to read wishlist counts).
+ */
+export async function runPartnerWishlistIngestionNow(): Promise<IngestionRunResult> {
+  const startedAt = new Date().toISOString();
+  log("Manual trigger: Wishlist Leaderboard partner-API-key ingestion (actual wishlist counts)...", "ingestion");
+  const apiKey = storage.getSetting("steam_api_key")?.value;
+  const partnerId = storage.getSetting("steam_partner_id")?.value;
+  let result: IngestionResult;
+  if (!apiKey || apiKey.trim().length === 0) {
+    result = { source: "steam", status: "skipped", message: "No Steam Partner API key configured in Settings" };
+  } else {
+    result = await ingestSteamData(apiKey, partnerId || "");
+  }
+  const completedAt = new Date().toISOString();
+  const out: IngestionRunResult = {
+    startedAt,
+    completedAt,
+    results: [result],
+    totalProductsProcessed: result.productsProcessed || 0,
+    totalDataPointsAdded: result.dataPointsAdded || 0,
+  };
+  persistManualIngestionRun("ingestion_last_run_partner", out);
+  log(`Manual partner-key wishlist ingestion complete: ${result.message}`, "ingestion");
+  return out;
+}
+
 // ─── Cron Scheduler ──────────────────────────────────────────────────────────
+//
+// Daily at 3:00 AM America/New_York, covering the full runIngestion()
+// pipeline (both leaderboards + everything else it feeds). Uses
+// Intl.DateTimeFormat with an explicit America/New_York timeZone rather than
+// a fixed UTC hour so the run time doesn't drift across the DST transition
+// (03:00 ET is 07:00 UTC in EDT, 08:00 UTC in EST) — same pattern as
+// `startWeeklyDigestCron` in leaderboard-digest.ts.
+//
+// Replaces the old fixed-02:00-UTC version, which was also dead code: it was
+// exported but never invoked from anywhere in the codebase (confirmed by a
+// repo-wide grep during the 2026-08-13 cron investigation) — so no daily
+// ingestion was actually running on any schedule prior to this.
 
 let cronInterval: ReturnType<typeof setInterval> | null = null;
+let ingestionCronLastRunDate = "";
+
+function getEasternHourMinute(now: Date): { hour: number; minute: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+  const get = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+  const hour = parseInt(get("hour"), 10) % 24; // "24" at midnight with hour12:false
+  const minute = parseInt(get("minute"), 10);
+  return { hour, minute };
+}
 
 export function startIngestionCron(): void {
-  // Run daily at 2:00 AM UTC
-  // We use setInterval with 1-minute checks to hit the target time
-  const TARGET_HOUR = 2;
-  const TARGET_MINUTE = 0;
-  let lastRunDate = "";
-
-  log("Ingestion cron scheduler started (daily at 02:00 UTC)", "ingestion");
+  if (cronInterval) return; // idempotent
+  log("Ingestion cron scheduler started (daily at 03:00 America/New_York)", "ingestion");
 
   cronInterval = setInterval(() => {
     const now = new Date();
-    const todayStr = now.toISOString().split("T")[0];
-    
-    if (
-      now.getUTCHours() === TARGET_HOUR &&
-      now.getUTCMinutes() === TARGET_MINUTE &&
-      lastRunDate !== todayStr
-    ) {
-      lastRunDate = todayStr;
+    const { hour, minute } = getEasternHourMinute(now);
+    // Use the Eastern calendar date (not UTC) for the once-per-day guard, so
+    // the 03:00 ET firing always lands on "today" in the timezone that
+    // actually matters here.
+    const todayStr = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(now); // YYYY-MM-DD
+
+    if (hour === 3 && minute === 0 && ingestionCronLastRunDate !== todayStr) {
+      ingestionCronLastRunDate = todayStr;
       runIngestion().catch(err => {
         log(`Ingestion cron error: ${err}`, "ingestion");
       });

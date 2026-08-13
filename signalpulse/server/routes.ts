@@ -5,7 +5,15 @@ import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForec
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
-import { runIngestion, fetchSteamWishlistReportingDay, persistSteamWishlistReportingDay, getYesterdayGmtDateString } from "./ingestion";
+import {
+  runIngestion,
+  fetchSteamWishlistReportingDay,
+  persistSteamWishlistReportingDay,
+  getYesterdayGmtDateString,
+  runSalesIngestionNow,
+  runPublicWishlistIngestionNow,
+  runPartnerWishlistIngestionNow,
+} from "./ingestion";
 import {
   getWishlistLeaderboardRows,
   getWishlistLeaderboardKpis,
@@ -2092,6 +2100,86 @@ export async function registerRoutes(
       inFlight: ingestionInFlight,
       status: ingestionInFlight ? "running" : "success",
     });
+  });
+
+  // ─── Manual Per-Source Ingestion Triggers (Settings UI buttons) ─────────────
+  //
+  // Three distinct auth paths behind the Wishlist + Sales Leaderboards.
+  // Share the same `ingestionInFlight` guard as the full run above so a
+  // manual single-source trigger can't race a full pipeline run (or another
+  // single-source trigger) touching overlapping tables/settings.
+
+  function readManualIngestionSetting(key: string) {
+    const raw = storage.getSetting(key)?.value;
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  app.get("/api/ingestion/manual-status", (_req, res) => {
+    res.json({
+      inFlight: ingestionInFlight,
+      sales: readManualIngestionSetting("ingestion_last_run_sales"),
+      public: readManualIngestionSetting("ingestion_last_run_public"),
+      partner: readManualIngestionSetting("ingestion_last_run_partner"),
+    });
+  });
+
+  app.post("/api/ingestion/run-sales", async (_req, res) => {
+    if (ingestionInFlight) {
+      return res.status(409).json({
+        error: "Ingestion already in progress",
+        message: "Another ingestion run is currently executing. Retry in a moment.",
+      });
+    }
+    ingestionInFlight = true;
+    try {
+      const result = await runSalesIngestionNow();
+      res.json({ message: "Sales Leaderboard ingestion completed", ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    } finally {
+      ingestionInFlight = false;
+    }
+  });
+
+  app.post("/api/ingestion/run-public-wishlist", async (_req, res) => {
+    if (ingestionInFlight) {
+      return res.status(409).json({
+        error: "Ingestion already in progress",
+        message: "Another ingestion run is currently executing. Retry in a moment.",
+      });
+    }
+    ingestionInFlight = true;
+    try {
+      const result = await runPublicWishlistIngestionNow();
+      res.json({ message: "Wishlist Leaderboard public-API ingestion completed", ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    } finally {
+      ingestionInFlight = false;
+    }
+  });
+
+  app.post("/api/ingestion/run-partner-wishlist", async (_req, res) => {
+    if (ingestionInFlight) {
+      return res.status(409).json({
+        error: "Ingestion already in progress",
+        message: "Another ingestion run is currently executing. Retry in a moment.",
+      });
+    }
+    ingestionInFlight = true;
+    try {
+      const result = await runPartnerWishlistIngestionNow();
+      res.json({ message: "Wishlist Leaderboard partner-API-key ingestion completed", ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    } finally {
+      ingestionInFlight = false;
+    }
   });
 
   return httpServer;

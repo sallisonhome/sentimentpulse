@@ -3,6 +3,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWeeklyDigestCron } from "./leaderboard-digest";
+import { startIngestionCron } from "./ingestion";
 
 const app = express();
 const httpServer = createServer(app);
@@ -77,6 +78,13 @@ app.use((req, res, next) => {
   // Started after registerRoutes so seedDefaultSettings() has already run and the
   // resend_api_key/resend_from/recipients tables exist by the time it could fire.
   startWeeklyDigestCron();
+
+  // Daily ingestion (Wishlist + Sales Leaderboards, both auth paths, plus
+  // followers/header art/IGDB hype/forecasts): 03:00 America/New_York.
+  // This scheduler existed in ingestion.ts but was never invoked anywhere in
+  // the codebase prior to 2026-08-13 (confirmed dead code via repo-wide
+  // grep) -- there was no automated daily ingestion running at all.
+  startIngestionCron();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
