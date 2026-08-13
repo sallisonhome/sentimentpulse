@@ -147,11 +147,16 @@ function dayOffsetDateString(baseDate: string, offsetDays: number): string {
  * released)) but is not imported from there — ingestion.ts's copy is
  * private (cron-internal) and this one serves read-only API requests, same
  * duplication convention already used for getPreReleaseSaberSteamTitles().
+ *
+ * v3.17: dropped the isSaberPublished filter so Focus-published titles
+ * with real Steam sales (Space Marine 2, Tempest Rising, World War Z,
+ * John Carpenter's Toxic Commando) also appear on this board — keep this
+ * in sync with ingestion.ts's copy of the same filter.
  */
-function getRevenueEligibleSaberSteamTitles() {
+function getRevenueEligibleSteamTitles() {
   const today = getTodayDateString();
   return storage.getAllProducts().filter((p) => {
-    if (!p.isSaberPublished || !p.steamAppId) return false;
+    if (!p.steamAppId) return false;
     const milestones = storage.getPlsMilestones(p.id);
     const prepurchaseActive = !!milestones.find((m) => m.name === "Prepurchase Start")?.actualDate;
     const releaseDate = storage.getProductReleaseDate(p.id);
@@ -195,7 +200,7 @@ function round2(n: number): number {
 }
 
 export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
-  const titles = getRevenueEligibleSaberSteamTitles();
+  const titles = getRevenueEligibleSteamTitles();
   // Anchor every row to the same "yesterday" the cron ingests into, so the
   // board never shows blanks around midnight UTC while today's row is
   // still pending its nightly fetch.

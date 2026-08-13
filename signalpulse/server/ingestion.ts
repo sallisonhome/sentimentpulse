@@ -596,6 +596,24 @@ function getPreReleaseSaberSteamTitles() {
 }
 
 /**
+ * ALL titles with a Steam App ID, regardless of isSaberPublished or release
+ * status — the full surface that can ever appear on either leaderboard
+ * (Wishlist = pre-release Saber subset, Revenue = prepurchase-active-or-
+ * released subset, which since v3.17 also includes Focus-published titles
+ * like Space Marine 2/Tempest Rising/WWZ/Toxic Commando). Used by
+ * ingestHeaderImages() so key art stays cached for a title even after it
+ * releases and drops out of getPreReleaseSaberSteamTitles() — the exact gap
+ * that left BusBound's header image uncached (falling back to the fragile
+ * synthesized Cloudflare path, which 404s for it) after it released and
+ * rolled off the pre-release list. v3.17 dropped the isSaberPublished
+ * filter here too, since non-Saber-published titles now need cached key
+ * art for the Revenue Leaderboard as well.
+ */
+function getAllSteamTitlesWithAppId() {
+  return storage.getAllProducts().filter((p) => !!p.steamAppId);
+}
+
+/**
  * Follower counts (public steamcommunity.com scrape — see server/steam-
  * followers.ts for why there's no Steamworks API path). Runs 1 req/sec
  * between titles, staleness-ordered (oldest/never-fetched first) so a
@@ -704,9 +722,9 @@ async function ingestSteamFollowers(): Promise<IngestionResult> {
  * that already has a working image back to the broken synthesized one.
  */
 async function ingestHeaderImages(): Promise<IngestionResult> {
-  const titles = getPreReleaseSaberSteamTitles();
+  const titles = getAllSteamTitlesWithAppId();
   if (titles.length === 0) {
-    return { source: "steam_header_image", status: "skipped", message: "No pre-release Saber titles with Steam App IDs" };
+    return { source: "steam_header_image", status: "skipped", message: "No titles with Steam App IDs" };
   }
 
   // Titles with no cached image yet go first, then by staleness isn't
@@ -892,16 +910,26 @@ async function ingestIgdbHype(): Promise<IngestionResult> {
 }
 
 /**
- * Returns Saber-published titles eligible for the Revenue Leaderboard —
- * distinct from getPreReleaseSaberSteamTitles() (Wishlist board), since
- * revenue tracking starts as soon as prepurchases open, not just at
- * release. Per plan §1.4: has a steamAppId AND (Prepurchase Start
- * milestone has fired OR the title has released).
+ * Returns ALL titles (Saber-published or not — v3.17 dropped the
+ * isSaberPublished gate so Focus-published titles like Space Marine 2,
+ * Tempest Rising, World War Z, and Toxic Commando are included) eligible
+ * for the Revenue Leaderboard — distinct from getPreReleaseSaberSteamTitles()
+ * (Wishlist board, still Saber-only), since revenue tracking starts as soon
+ * as prepurchases open, not just at release. Per plan §1.4 (as extended):
+ * has a steamAppId AND (Prepurchase Start milestone has fired OR the title
+ * has released).
+ *
+ * Safe to overlap with the pre-existing manual portal-daily-backfill /
+ * portal-fetch admin routes in routes.ts: steam_sales_daily has a unique
+ * index on (productId, date, skuGroup) and upsertSteamSalesRows() does
+ * insert-or-update on that key regardless of batchId, so a title ingested
+ * by both this cron and a manual backfill for the same date just gets its
+ * row overwritten, never duplicated.
  */
-function getRevenueEligibleSaberSteamTitles() {
+function getRevenueEligibleSteamTitles() {
   const today = getTodayDateString();
   return storage.getAllProducts().filter((p) => {
-    if (!p.isSaberPublished || !p.steamAppId) return false;
+    if (!p.steamAppId) return false;
     const milestones = storage.getPlsMilestones(p.id);
     const prepurchaseActive = !!milestones.find((m) => m.name === "Prepurchase Start")?.actualDate;
     const releaseDate = storage.getProductReleaseDate(p.id);
@@ -932,12 +960,12 @@ const PORTAL_FETCH_DELAY_MS = 2000; // ~2s stagger between titles, gentle on Ste
  * separate UI work is needed here.
  */
 async function ingestSteamSales(): Promise<IngestionResult> {
-  const titles = getRevenueEligibleSaberSteamTitles();
+  const titles = getRevenueEligibleSteamTitles();
   if (titles.length === 0) {
     return {
       source: "steam_sales",
       status: "skipped",
-      message: "No Saber titles eligible for revenue ingestion yet (no prepurchase started or release reached)",
+      message: "No titles eligible for revenue ingestion yet (no prepurchase started or release reached)",
     };
   }
 

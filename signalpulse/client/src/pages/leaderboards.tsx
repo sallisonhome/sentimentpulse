@@ -187,14 +187,14 @@ function SortableHead<K extends string>({
     <TableHead className="p-0">
       <button
         onClick={() => onSort(sortKey)}
-        className="flex items-center gap-1 w-full h-12 px-4 text-left font-medium text-muted-foreground hover:text-foreground transition-colors"
+        className="flex items-center gap-1.5 w-full h-12 px-4 text-left whitespace-nowrap font-medium text-muted-foreground hover:text-foreground transition-colors"
         data-testid={`button-sort-${sortKey}`}
       >
         {label}
         {isActive ? (
-          activeSort!.dir === "desc" ? <ChevronDown className="h-3 w-3" /> : <ChevronUp className="h-3 w-3" />
+          activeSort!.dir === "desc" ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronUp className="h-3 w-3 shrink-0" />
         ) : (
-          <ChevronsUpDown className="h-3 w-3 opacity-30" />
+          <ChevronsUpDown className="h-3 w-3 shrink-0 opacity-30" />
         )}
       </button>
     </TableHead>
