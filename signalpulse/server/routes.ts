@@ -2020,7 +2020,11 @@ export async function registerRoutes(
 
   // Manual "Send test digest now" trigger (Settings) — lets Phase 5 be
   // verified end-to-end without waiting for the real Monday 07:00 ET send.
-  // Targets only active recipients, same as the real weekly send.
+  // Defaults to active recipients, same as the real weekly send, but accepts
+  // an optional ?to=/body.to override (comma-separated) to target a single
+  // verified test address instead — useful while resend_from is on an
+  // unverified sending domain and Resend rejects sends to anyone but the
+  // account owner's own email.
   app.post("/api/leaderboards/email-recipients/test-send", async (req, res) => {
     try {
       // Optional override so a test send can target a single address (e.g.
