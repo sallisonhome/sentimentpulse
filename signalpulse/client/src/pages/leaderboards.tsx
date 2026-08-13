@@ -88,6 +88,7 @@ interface RevenueLeaderboardKpis {
   biggest24hUnitsMover: RevenueLeaderboardMover | null;
   biggest24hRevenueMover: RevenueLeaderboardMover | null;
   biggest30dRevenueLift: RevenueLeaderboardMover | null;
+  biggestPositive30dRevenueLift: RevenueLeaderboardMover | null;
 }
 
 type SortKey =
@@ -206,11 +207,13 @@ function MoverKpiCard({
   mover,
   onOpenChart,
   valueType = "number",
+  emptyMessage = "No movement yet",
 }: {
   label: string;
   mover: LeaderboardMover | RevenueLeaderboardMover | null;
   onOpenChart: (row: { productId: number; title: string }) => void;
   valueType?: "number" | "currency" | "percent";
+  emptyMessage?: string;
 }) {
   const formattedDelta =
     mover == null
@@ -226,7 +229,7 @@ function MoverKpiCard({
         {label}
       </div>
       {mover == null ? (
-        <div className="text-sm text-muted-foreground">No movement yet</div>
+        <div className="text-sm text-muted-foreground">{emptyMessage}</div>
       ) : (
         <button
           onClick={() => onOpenChart({ productId: mover.productId, title: mover.title })}
@@ -435,7 +438,7 @@ export default function Leaderboards() {
             </Card>
 
             {!revenueKpisLoading && revenueKpis && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <MoverKpiCard
                   label="Biggest 24hr Mover — Units"
                   mover={revenueKpis.biggest24hUnitsMover}
@@ -456,6 +459,13 @@ export default function Leaderboards() {
                   mover={revenueKpis.biggest30dRevenueLift}
                   onOpenChart={(row) => setChartModal({ ...row, dataType: "steamRevenueDaily" })}
                   valueType="percent"
+                />
+                <MoverKpiCard
+                  label="Biggest % Revenue Lift (Positive Only)"
+                  mover={revenueKpis.biggestPositive30dRevenueLift}
+                  onOpenChart={(row) => setChartModal({ ...row, dataType: "steamRevenueDaily" })}
+                  valueType="percent"
+                  emptyMessage="N/A — no positive revenue lift in period"
                 />
               </div>
             )}

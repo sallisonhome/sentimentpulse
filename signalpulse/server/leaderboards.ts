@@ -318,10 +318,36 @@ function pickBiggestRevenueMover(
   return best;
 }
 
+/**
+ * Like `pickBiggestRevenueMover` for the 30d % delta, but restricted to
+ * strictly positive movers — used for a dedicated "Lift" KPI card that
+ * should never surface a decline. Returns null when no title had a
+ * positive 30-day revenue delta in the period (caller renders an N/A state).
+ */
+function pickBiggestPositiveRevenueLift(rows: RevenueLeaderboardRow[]): RevenueLeaderboardMover | null {
+  let best: RevenueLeaderboardMover | null = null;
+  for (const row of rows) {
+    const raw = row.revenueDelta30dPct;
+    if (raw == null || raw <= 0) continue;
+    if (best == null || raw > best.delta) {
+      best = {
+        productId: row.productId,
+        title: row.title,
+        headerImage: row.headerImage,
+        delta: raw,
+        direction: "up",
+        isPercent: true,
+      };
+    }
+  }
+  return best;
+}
+
 export interface RevenueLeaderboardKpis {
   biggest24hUnitsMover: RevenueLeaderboardMover | null;
   biggest24hRevenueMover: RevenueLeaderboardMover | null;
   biggest30dRevenueLift: RevenueLeaderboardMover | null;
+  biggestPositive30dRevenueLift: RevenueLeaderboardMover | null;
 }
 
 export function getRevenueLeaderboardKpis(rows: RevenueLeaderboardRow[]): RevenueLeaderboardKpis {
@@ -329,5 +355,6 @@ export function getRevenueLeaderboardKpis(rows: RevenueLeaderboardRow[]): Revenu
     biggest24hUnitsMover: pickBiggestRevenueMover(rows, "units24h"),
     biggest24hRevenueMover: pickBiggestRevenueMover(rows, "revenue24hUsd"),
     biggest30dRevenueLift: pickBiggestRevenueMover(rows, "revenueDelta30dPct"),
+    biggestPositive30dRevenueLift: pickBiggestPositiveRevenueLift(rows),
   };
 }

@@ -69,16 +69,21 @@ function colorFor(direction: "up" | "down"): string {
   return direction === "up" ? POSITIVE : NEGATIVE;
 }
 
-function moverCard(label: string, mover: LeaderboardMover | RevenueLeaderboardMover | null): string {
+function moverCard(
+  label: string,
+  mover: LeaderboardMover | RevenueLeaderboardMover | null,
+  opts?: { widthPct?: number; emptyMessage?: string },
+): string {
+  const widthPct = opts?.widthPct ?? 33.33;
   if (mover == null) {
     return `
-    <td style="width:33.33%; padding:6px;" valign="top">
+    <td style="width:${widthPct}%; padding:6px;" valign="top">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
              style="background:${BG_CARD}; border:1px solid ${BORDER}; border-radius:8px;">
         <tr><td style="padding:16px;">
           <div style="font-size:11px; font-weight:700; letter-spacing:.06em; color:${TEXT_MUTED};
                       text-transform:uppercase; margin-bottom:8px; font-family:${FONT};">${esc(label)}</div>
-          <div style="font-size:14px; color:${TEXT_MUTED}; font-style:italic; font-family:${FONT};">Not enough history yet</div>
+          <div style="font-size:14px; color:${TEXT_MUTED}; font-style:italic; font-family:${FONT};">${esc(opts?.emptyMessage ?? "Not enough history yet")}</div>
         </td></tr>
       </table>
     </td>`;
@@ -87,7 +92,7 @@ function moverCard(label: string, mover: LeaderboardMover | RevenueLeaderboardMo
   const deltaDisplay = isPercent ? fmtPct(mover.delta) : fmtSigned(mover.delta);
   const c = colorFor(mover.direction);
   return `
-    <td style="width:33.33%; padding:6px;" valign="top">
+    <td style="width:${widthPct}%; padding:6px;" valign="top">
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
              style="background:${BG_CARD}; border:1px solid ${BORDER}; border-radius:8px;">
         <tr><td style="padding:16px;">
@@ -239,11 +244,19 @@ export function renderWeeklyDigestHtml(now: Date = new Date()): { subject: strin
     Saber Steam Revenue Leaderboard</div>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-    ${moverCard("Biggest 24hr Mover, Units", revKpis.biggest24hUnitsMover)}
-    ${moverCard("Biggest 24hr Mover, $", revKpis.biggest24hRevenueMover)}
+    ${moverCard("Biggest 24hr Mover, Units", revKpis.biggest24hUnitsMover, { widthPct: 50 })}
+    ${moverCard("Biggest 24hr Mover, $", revKpis.biggest24hRevenueMover, { widthPct: 50 })}
+  </tr></table>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:4px;"><tr>
     ${moverCard(
       revKpis.biggest30dRevenueLift?.direction === "down" ? "Biggest % Revenue Drop vs Prior 30d" : "Biggest % Revenue Lift vs Prior 30d",
-      revKpis.biggest30dRevenueLift
+      revKpis.biggest30dRevenueLift,
+      { widthPct: 50 }
+    )}
+    ${moverCard(
+      "Biggest % Revenue Lift (Positive Only)",
+      revKpis.biggestPositive30dRevenueLift,
+      { widthPct: 50, emptyMessage: "N/A — no positive revenue lift in period" }
     )}
   </tr></table>
 
