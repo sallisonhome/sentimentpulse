@@ -41,7 +41,7 @@ jobs:
 
           // Get Resend key from SignalPulse settings SQLite DB
           const Database = require('/opt/sentimentpulse/signalpulse/node_modules/better-sqlite3');
-          const spDb = new Database('/opt/sentimentpulse/signalpulse/data/sqlite.db', { readonly: true });
+          const spDb = new Database('/opt/sentimentpulse/signalpulse/data.db', { readonly: true });
           let rk;
           try {
             rk = spDb.prepare("SELECT value FROM settings WHERE key = 'resend_api_key'").get();
@@ -195,20 +195,9 @@ jobs:
             rm -f /tmp/onboard-emails.js
 
             echo ""
-            echo "=== Restoring saber-auth RESEND_API_KEY ==="
+            echo "=== saber-auth RESEND_API_KEY status (should already be restored) ==="
             ENV=/opt/saber-auth/.env
-            if [ -f /root/.saber-auth-resend-key.bak ]; then
-              # Replace the blank line with the saved line
-              sed -i -E "s|^RESEND_API_KEY=.*|$(cat /root/.saber-auth-resend-key.bak)|" $ENV
-              rm /root/.saber-auth-resend-key.bak
-              systemctl restart saber-auth
-              sleep 2
-              systemctl is-active saber-auth
-              echo "Restored + restarted."
-              grep '^RESEND_API_KEY=' $ENV | sed -E 's/(RESEND_API_KEY=)([^=]{4}).*/\1\2..REDACTED/'
-            else
-              echo "WARN: no backup at /root/.saber-auth-resend-key.bak"
-            fi
+            grep '^RESEND_API_KEY=' $ENV | sed -E 's/(RESEND_API_KEY=)([^=]{4}).*/\1\2..REDACTED/'
 
             exit $EXIT_CODE
           REMOTE
