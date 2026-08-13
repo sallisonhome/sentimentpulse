@@ -134,6 +134,22 @@ WantedBy=multi-user.target
 EOF
 
 # SignalPulse (Node.js/Express on port 5000)
+# Phase 2 (2026-08-13): reads /etc/signalpulse/env for saber-auth vars
+# (SABER_AUTH_JWT_SECRET, AUTH_MODE). The env file is provisioned by
+# .github/workflows/signalpulse-deploy.yml (copies the JWT secret from
+# /etc/saber-auth/env). If /etc/signalpulse/env is missing, systemd
+# tolerates it (EnvironmentFile=-) and the service comes up in "legacy"
+# behavior because AUTH_MODE defaults to "both" but without the secret
+# the middleware falls back to advisory-with-warnings.
+mkdir -p /etc/signalpulse
+if [ ! -f /etc/signalpulse/env ]; then
+  cat > /etc/signalpulse/env << 'ENVEOF'
+# SignalPulse env — populated by signalpulse-deploy.yml on next deploy.
+AUTH_MODE=both
+ENVEOF
+  chmod 600 /etc/signalpulse/env
+fi
+
 cat > /etc/systemd/system/signalpulse.service << 'EOF'
 [Unit]
 Description=SignalPulse API
@@ -144,6 +160,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/sentimentpulse/signalpulse
 Environment="NODE_ENV=production"
+EnvironmentFile=-/etc/signalpulse/env
 ExecStart=/usr/bin/node dist/index.cjs
 Restart=always
 RestartSec=5

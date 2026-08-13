@@ -228,8 +228,21 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
             </div>
           </Link>
           <button
-            onClick={() => {
+            onClick={async () => {
+              // Phase 2 (2026-08-13): also revoke the saber-auth session if
+              // present, so signing out here signs out of the whole suite
+              // (not just this app's client-side gate).
+              try {
+                const cfg = (window as unknown as {
+                  __saberAuth?: { config?: { logoutUrl?: string } };
+                }).__saberAuth?.config;
+                const url = cfg?.logoutUrl || "/auth/api/logout";
+                await fetch(url, { method: "POST", credentials: "include" });
+              } catch {
+                // best-effort; legacy sign-out still applies below
+              }
               sessionStorage.removeItem("sp_authenticated");
+              try { localStorage.removeItem("suite_authenticated"); } catch {}
               window.location.reload();
             }}
             className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors w-full text-left text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"

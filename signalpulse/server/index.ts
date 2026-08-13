@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWeeklyDigestCron } from "./leaderboard-digest";
 import { startIngestionCron } from "./ingestion";
+import { createSaberAuthMiddleware } from "./saber-auth";
 
 const app = express();
 const httpServer = createServer(app);
@@ -69,6 +70,32 @@ app.use((req, res, next) => {
   });
 
   next();
+});
+
+// ─── Saber-auth (Phase 2 cutover, 2026-08-13) ───────────────────────────────
+// Installed BEFORE registerRoutes so every /api/* request is inspected.
+// In AUTH_MODE=both (default), this is advisory: it tags req.saberUser when
+// a session is present but never rejects a request. In AUTH_MODE=saber it
+// enforces. AUTH_MODE=legacy disables it entirely (rollback escape hatch).
+const saberAuth = createSaberAuthMiddleware();
+app.use(saberAuth.middleware);
+
+// Cheap unauthenticated liveness probe — used by nginx / deploy smoke tests.
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true, service: "signalpulse", ts: Date.now() });
+});
+
+// Client-visible config: tells the SPA which auth mode is active so it can
+// decide whether to redirect unauthenticated users to /auth/login.html.
+app.get("/api/config", (_req, res) => {
+  res.json({
+    authMode: saberAuth.context.mode,
+    authReady: saberAuth.context.ready,
+    authScope: saberAuth.context.scope,
+    loginUrl: "/auth/login.html",
+    logoutUrl: "/auth/api/logout",
+    meUrl: "/auth/api/me",
+  });
 });
 
 (async () => {

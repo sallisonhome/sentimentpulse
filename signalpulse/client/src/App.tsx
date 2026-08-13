@@ -11,8 +11,9 @@ import Leaderboards from "@/pages/leaderboards";
 import ProductDetail from "@/pages/product-detail";
 import Settings from "@/pages/settings";
 import NotFound from "@/pages/not-found";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AddProductDialog } from "@/components/add-product-dialog";
+import { bootstrapAuth, type AuthBootstrap } from "@/lib/saber-auth";
 
 function AppRouter() {
   const [addProductOpen, setAddProductOpen] = useState(false);
@@ -32,6 +33,32 @@ function AppRouter() {
 }
 
 function App() {
+  // Phase 2 (2026-08-13): saber-auth bootstrap. In AUTH_MODE=saber this may
+  // redirect to /auth/login.html before we ever render. In "both" and
+  // "legacy" modes we render regardless; the returned user (if any) is
+  // stashed on window.__saberAuth for the layout header.
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    bootstrapAuth().then((b: AuthBootstrap) => {
+      if (cancelled) return;
+      // Expose for the layout / settings pages without threading context
+      // through every component.
+      (window as unknown as { __saberAuth?: AuthBootstrap }).__saberAuth = b;
+      setReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!ready) {
+    // Render nothing (not even a spinner) while auth bootstraps — this is
+    // typically <100ms and prevents a UI flash before a possible redirect.
+    return null;
+  }
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

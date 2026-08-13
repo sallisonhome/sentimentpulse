@@ -98,6 +98,47 @@ jobs:
           done
 
           echo ""
+          echo "== Ensure /etc/signalpulse/env has saber-auth vars =="
+          # Phase 2 (2026-08-13): SignalPulse now reads SABER_AUTH_JWT_SECRET
+          # and AUTH_MODE from /etc/signalpulse/env. We reuse the JWT_SECRET
+          # from /etc/saber-auth/env so both services agree.
+          mkdir -p /etc/signalpulse
+          if [ ! -f /etc/signalpulse/env ]; then
+            echo "AUTH_MODE=both" > /etc/signalpulse/env
+            chmod 600 /etc/signalpulse/env
+            echo "created /etc/signalpulse/env (AUTH_MODE=both)"
+          fi
+          # Copy JWT_SECRET from saber-auth if not already present here.
+          if ! grep -q '^SABER_AUTH_JWT_SECRET=' /etc/signalpulse/env; then
+            if [ -f /etc/saber-auth/env ] && grep -q '^JWT_SECRET=' /etc/saber-auth/env; then
+              SECRET=$(grep '^JWT_SECRET=' /etc/saber-auth/env | head -1 | cut -d= -f2-)
+              echo "SABER_AUTH_JWT_SECRET=${SECRET}" >> /etc/signalpulse/env
+              chmod 600 /etc/signalpulse/env
+              echo "copied SABER_AUTH_JWT_SECRET from /etc/saber-auth/env"
+            else
+              echo "WARN: /etc/saber-auth/env not found or missing JWT_SECRET \
+                   — signalpulse will start in advisory-only mode (no session validation)."
+            fi
+          else
+            echo "SABER_AUTH_JWT_SECRET already present in /etc/signalpulse/env"
+          fi
+          # Show non-secret vars for debugging (mask the JWT).
+          echo "env contents (JWT masked):"
+          sed 's/^\(SABER_AUTH_JWT_SECRET=\).*/\1***MASKED***/' /etc/signalpulse/env
+
+          echo ""
+          echo "== Ensure signalpulse.service reads /etc/signalpulse/env =="
+          UNIT=/etc/systemd/system/signalpulse.service
+          if [ -f "$UNIT" ] && ! grep -q '^EnvironmentFile=-/etc/signalpulse/env' "$UNIT"; then
+            # Insert EnvironmentFile line right after the existing Environment= line.
+            sed -i '/^Environment="NODE_ENV=production"/a EnvironmentFile=-/etc/signalpulse/env' "$UNIT"
+            systemctl daemon-reload
+            echo "patched signalpulse.service to load /etc/signalpulse/env"
+          else
+            echo "signalpulse.service already loads /etc/signalpulse/env (or unit missing)"
+          fi
+
+          echo ""
           echo "== Restart signalpulse.service =="
           installed_units=$(systemctl list-unit-files --type=service --no-legend | awk '{print $1}')
           if echo "$installed_units" | grep -qx "signalpulse.service"; then
@@ -123,6 +164,24 @@ jobs:
           echo "127.0.0.1:5000/api/settings -> ${CODE}"
           if [ "$CODE" = "000" ]; then
             echo "ERR: signalpulse not responding on :5000 after restart"
+            exit 1
+          fi
+
+          echo ""
+          echo "== Phase 2 saber-auth smoke tests =="
+          echo "-- /api/health (must be 200 JSON):"
+          curl -sS --max-time 5 http://127.0.0.1:5000/api/health || echo "HEALTH ERR"
+          echo ""
+          echo "-- /api/config (must include authMode, authReady):"
+          curl -sS --max-time 5 http://127.0.0.1:5000/api/config || echo "CONFIG ERR"
+          echo ""
+          echo "-- confirm AUTH_MODE in effect matches env file:"
+          MODE_ENV=$(grep '^AUTH_MODE=' /etc/signalpulse/env | cut -d= -f2- || echo 'both')
+          MODE_RUN=$(curl -sS --max-time 5 http://127.0.0.1:5000/api/config \
+            | grep -o '"authMode":"[^"]*"' | cut -d'"' -f4 || echo unknown)
+          echo "env AUTH_MODE=${MODE_ENV}   runtime authMode=${MODE_RUN}"
+          if [ "$MODE_ENV" != "$MODE_RUN" ]; then
+            echo "ERR: AUTH_MODE env (${MODE_ENV}) does not match runtime (${MODE_RUN})"
             exit 1
           fi
 
