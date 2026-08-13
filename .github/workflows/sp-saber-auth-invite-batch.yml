@@ -27,10 +27,10 @@ jobs:
           const path = require('path');
           const crypto = require('crypto');
 
-          // Load saber-auth internals
-          process.chdir('/opt/saber-auth');
-          const { getDb } = require('./server/db/schema');
-          const { INVITE_EXPIRY_DAYS, KNOWN_SCOPES } = require('./server/constants');
+          // Load saber-auth internals (absolute paths so this works from /tmp)
+          const SABER = '/opt/saber-auth';
+          const { getDb } = require(SABER + '/server/db/schema');
+          const { INVITE_EXPIRY_DAYS, KNOWN_SCOPES } = require(SABER + '/server/constants');
 
           const RECIPIENTS = [
             'steve.allison.home@gmail.com',
@@ -116,5 +116,6 @@ jobs:
           console.log(`Successful invites: ${okCount}/${RECIPIENTS.length}`);
           JS
 
-          scp -i ~/.ssh/id_ed25519 /tmp/invite-batch.js root@104.236.239.46:/tmp/invite-batch.js
-          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'cd /opt/saber-auth && node /tmp/invite-batch.js && rm /tmp/invite-batch.js'
+          # Put the script INSIDE /opt/saber-auth so require() resolves node_modules there
+          scp -i ~/.ssh/id_ed25519 /tmp/invite-batch.js root@104.236.239.46:/opt/saber-auth/invite-batch.js
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'cd /opt/saber-auth && node invite-batch.js && rm invite-batch.js'
