@@ -1,0 +1,35 @@
+name: One-off — verify saber-auth with correct Host header
+on:
+  workflow_dispatch: {}
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Test with Host header
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'bash -s' <<'REMOTE'
+          echo "=== curl with Host: 104.236.239.46 ==="
+          curl -si -H "Host: 104.236.239.46" http://127.0.0.1/auth/login.html | head -10
+          echo ""
+          echo "=== curl /health (via sentimentpulse server block) ==="
+          curl -si -H "Host: 104.236.239.46" http://127.0.0.1/health | head -3
+          echo ""
+          echo "=== nginx dump - all server blocks that listen 80 ==="
+          grep -B1 -A5 "listen 80" /etc/nginx/sites-enabled/*
+          echo ""
+          echo "=== default sites-enabled ==="
+          ls -la /etc/nginx/sites-enabled/
+          echo ""
+          echo "=== is default enabled? ==="
+          [ -e /etc/nginx/sites-enabled/default ] && cat /etc/nginx/sites-enabled/default || echo "no default"
+          REMOTE
