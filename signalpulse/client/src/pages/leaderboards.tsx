@@ -37,6 +37,7 @@ interface WishlistLeaderboardRow {
   headerImage: string;
   wishlistTotal: number | null;
   wishlistDelta1d: number | null;
+  wishlistAdds7d: number | null;
   followersTotal: number | null;
   followersDelta1d: number | null;
   rankCurrent: number | null;
@@ -96,6 +97,7 @@ interface RevenueLeaderboardKpis {
 type SortKey =
   | "wishlistTotal"
   | "wishlistDelta1d"
+  | "wishlistAdds7d"
   | "followersTotal"
   | "followersDelta1d"
   | "rankCurrent"
@@ -506,6 +508,7 @@ export default function Leaderboards() {
                   <TableHead className="w-[240px]">Game Title</TableHead>
                   <SortableHead label="Total WL" sortKey="wishlistTotal" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="1D WL Δ" sortKey="wishlistDelta1d" activeSort={sort} onSort={handleSort} />
+                  <SortableHead label="7D WL Adds" sortKey="wishlistAdds7d" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="Total Followers" sortKey="followersTotal" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="1D Follower Δ" sortKey="followersDelta1d" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="Rank" sortKey="rankCurrent" activeSort={sort} onSort={handleSort} />
@@ -525,6 +528,7 @@ export default function Leaderboards() {
                     </TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.wishlistTotal)}</TableCell>
                     <TableCell><DeltaValue value={row.wishlistDelta1d} /></TableCell>
+                    <TableCell className="tabular-nums">{formatNumber(row.wishlistAdds7d)}</TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.followersTotal)}</TableCell>
                     <TableCell><DeltaValue value={row.followersDelta1d} /></TableCell>
                     <TableCell className="tabular-nums">

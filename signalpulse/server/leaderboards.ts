@@ -30,6 +30,7 @@ export interface WishlistLeaderboardRow {
   headerImage: string;
   wishlistTotal: number | null;
   wishlistDelta1d: number | null;
+  wishlistAdds7d: number | null;
   followersTotal: number | null;
   followersDelta1d: number | null;
   rankCurrent: number | null;
@@ -81,6 +82,7 @@ export function getWishlistLeaderboardRows(): WishlistLeaderboardRow[] {
       headerImage: resolveHeaderImage(p.steamAppId!, p.steamHeaderImageUrl ?? null),
       wishlistTotal: wishlistSummary.lifetimeNet,
       wishlistDelta1d: wishlistSummary.dayOverDayDelta,
+      wishlistAdds7d: storage.getSteamWishlistAdds7dTotal(p.id),
       followersTotal: followersLatest?.followerCount ?? null,
       followersDelta1d: followersLatest?.dailyDelta ?? null,
       rankCurrent,

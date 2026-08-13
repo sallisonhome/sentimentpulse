@@ -440,6 +440,14 @@ export interface IStorage {
   // Returns null-filled struct if the product has no reporting rows yet.
   getSteamWishlistSummary(productId: number, releaseDate: string | null): SteamWishlistSummary;
 
+  // v3.18 (2026-08-13): Gross "wishlist adds" (not net) totalled over the
+  // trailing 7-day window ending on the latest available reporting date for
+  // that product (mirrors the anchor-on-latest-row pattern used by
+  // getSteamWishlistRankDaysAgo, so a lagging ingest day doesn't shift the
+  // window to a date with no data at all). Returns null when the product has
+  // no reporting rows yet.
+  getSteamWishlistAdds7dTotal(productId: number): number | null;
+
   // Steam Prepurchases
   getSteamPrepurchases(productId: number): SteamPrepurchaseDaily[];
   getLatestSteamPrepurchase(productId: number): SteamPrepurchaseDaily | undefined;
@@ -836,6 +844,30 @@ export class DatabaseStorage implements IStorage {
       isStale,
       rowCount: rows.length,
     };
+  }
+
+  /**
+   * Sum of gross `wishlistAdds` (not net — deletes/purchases excluded) over
+   * the trailing 7-day window ending on the latest available reporting date
+   * for this product. Anchored on the latest row's own date rather than
+   * literal "today" so a day or two of ingestion lag doesn't just return 0 —
+   * same pattern as getSteamWishlistRankDaysAgo. Returns null when the
+   * product has no reporting rows at all.
+   */
+  getSteamWishlistAdds7dTotal(productId: number): number | null {
+    const rows = this.getSteamWishlistReporting(productId); // ascending by date
+    if (rows.length === 0) return null;
+    const latestDate = rows[rows.length - 1].date;
+    const windowStart = new Date(`${latestDate}T00:00:00Z`);
+    windowStart.setUTCDate(windowStart.getUTCDate() - 6); // 7-day window inclusive of latestDate
+    const windowStartStr = windowStart.toISOString().split("T")[0];
+    let total = 0;
+    for (const r of rows) {
+      if (r.date >= windowStartStr && r.date <= latestDate) {
+        total += r.wishlistAdds;
+      }
+    }
+    return total;
   }
 
   // ─── Steam Prepurchases ──────────────────────────────────────────────────────

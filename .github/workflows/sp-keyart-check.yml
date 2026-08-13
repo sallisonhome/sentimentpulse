@@ -1,0 +1,38 @@
+name: SP Diagnostic - Key Art Health Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Check header image URLs for all leaderboard products
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            DB=/opt/sentimentpulse/signalpulse/data.db
+
+            echo "-- Products + cached header image URL --"
+            sqlite3 -header -column "$DB" "SELECT id, title, steam_app_id, steam_header_image_url FROM products WHERE id IN (3,4,5,6,7,8,9,10,11,12);"
+
+            echo ""
+            echo "-- HTTP status for each resolved image URL --"
+            sqlite3 "$DB" "SELECT id||'|'||title||'|'||steam_app_id||'|'||COALESCE(steam_header_image_url,'') FROM products WHERE id IN (3,4,5,6,7,8,9,10,11,12);" | while IFS='|' read -r id title appid cached; do
+              if [ -n "$cached" ]; then
+                url="$cached"
+              else
+                url="https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/header.jpg"
+              fi
+              code=$(curl -s -o /dev/null -w '%{http_code}' -A "Mozilla/5.0" "$url" || echo "ERR")
+              echo "id=$id title=$title code=$code url=$url"
+            done
+          EOF
