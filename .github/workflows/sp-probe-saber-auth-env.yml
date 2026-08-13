@@ -1,0 +1,28 @@
+name: sp-probe-saber-auth-env
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: SSH probe
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 << 'REMOTE'
+            set +e
+            echo "=== /opt/saber-auth/.env (redacted values) ==="
+            if [ -f /opt/saber-auth/.env ]; then
+              sed -E 's/(=)([^=]{4}).*/\1\2..REDACTED/' /opt/saber-auth/.env
+            else
+              echo "MISSING /opt/saber-auth/.env"
+            fi
+            echo ""
+            echo "=== saber-auth systemd status ==="
+            systemctl is-active saber-auth
+            echo ""
+            echo "=== recent saber-auth email log lines ==="
+            journalctl -u saber-auth --since '1 hour ago' | grep -Ei 'email|resend|from' | tail -20 || echo "(no email log lines)"
+          REMOTE
