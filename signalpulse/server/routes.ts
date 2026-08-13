@@ -2021,9 +2021,18 @@ export async function registerRoutes(
   // Manual "Send test digest now" trigger (Settings) — lets Phase 5 be
   // verified end-to-end without waiting for the real Monday 07:00 ET send.
   // Targets only active recipients, same as the real weekly send.
-  app.post("/api/leaderboards/email-recipients/test-send", async (_req, res) => {
+  app.post("/api/leaderboards/email-recipients/test-send", async (req, res) => {
     try {
-      const result = await sendWeeklyLeaderboardDigest();
+      // Optional override so a test send can target a single address (e.g.
+      // the Resend account owner's own inbox) instead of blasting the full
+      // production distribution list — required while resend_from is on an
+      // unverified sending domain, since Resend rejects sends to anyone
+      // other than the account owner's email in that state.
+      const toParam = (req.body?.to ?? req.query?.to) as string | undefined;
+      const overrideRecipients = toParam
+        ? toParam.split(",").map((e) => e.trim()).filter(Boolean)
+        : undefined;
+      const result = await sendWeeklyLeaderboardDigest(new Date(), overrideRecipients);
       if (!result.sent) {
         return res.status(422).json(result);
       }

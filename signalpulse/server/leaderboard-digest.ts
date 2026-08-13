@@ -382,10 +382,15 @@ async function sendViaResend(subject: string, recipients: string[], htmlBody: st
   return { sent: false, reason: `resend_failed_after_retry_${second.kind}`, detail };
 }
 
-/** Send the weekly digest to every active recipient. Used by both the
- * Monday cron and the manual "Send test digest now" trigger. */
-export async function sendWeeklyLeaderboardDigest(now: Date = new Date()): Promise<DigestSendResult & { subject: string }> {
-  const recipients = storage.getActiveLeaderboardEmailRecipients().map((r) => r.email);
+/** Send the weekly digest to every active recipient, or to `overrideRecipients`
+ * when provided (used by the manual "Send test digest now" trigger to target a
+ * single verified test address instead of the full production distribution
+ * list, e.g. while the Resend sending domain is still unverified). Used by
+ * both the Monday cron (no override) and the manual test-send route. */
+export async function sendWeeklyLeaderboardDigest(now: Date = new Date(), overrideRecipients?: string[]): Promise<DigestSendResult & { subject: string }> {
+  const recipients = overrideRecipients && overrideRecipients.length > 0
+    ? overrideRecipients
+    : storage.getActiveLeaderboardEmailRecipients().map((r) => r.email);
   const { subject, html } = renderWeeklyDigestHtml(now);
 
   if (recipients.length === 0) {
