@@ -108,7 +108,10 @@ def _arctic_shift_page(
     # and stops walking the sub entirely — missing all subsequent posts.
     # Rideshare backfill demonstrated: 5 of 6 subs hit exactly this,
     # dropping 10 known threads to 1 saved post.
-    _TIMEOUT_RETRY_DELAYS = [3, 8, 20]  # seconds between attempts
+    # v0016.11 (2026-08-12): Arctic Shift's rate limiter is per-sub sticky
+    # — once GamingLeaksAndRumours-style subs time out, they need a longer
+    # cool-down. Bumped 3s to 8s to give the first retry a real chance.
+    _TIMEOUT_RETRY_DELAYS = [8, 20, 40]  # seconds between attempts
     _RETRY_ERROR_SIGNATURES = ("timeout", "slow down", "too many", "rate")
 
     for attempt, backoff in enumerate([0] + _TIMEOUT_RETRY_DELAYS):
