@@ -1127,11 +1127,19 @@ export async function registerRoutes(
     if (!session) {
       return res.json({ configured: false });
     }
+    // Proactive expiry detection: `lastVerifiedResult` carries the literal
+    // "Session expired (redirected to ...)" string from ingestSteamSales()
+    // when the /session expired/i pattern matches. Surfaced here as a
+    // computed boolean so the frontend (Settings card + app-wide layout
+    // banner) doesn't have to duplicate that regex.
+    const isExpired = !!(session.lastVerifiedResult && /session expired/i.test(session.lastVerifiedResult));
     res.json({
       configured: true,
       loggedInAs: session.loggedInAs,
       lastVerifiedAt: session.lastVerifiedAt,
       lastVerifiedResult: session.lastVerifiedResult,
+      alertSentAt: session.alertSentAt,
+      isExpired,
       cookiePreview: session.cookieValue.slice(0, 30) + "...",
       cookieByteLength: session.cookieValue.length,
       updatedAt: session.updatedAt,
@@ -1153,6 +1161,10 @@ export async function registerRoutes(
         lastVerifiedAt: null,
         lastVerifiedResult: null,
       });
+      // Fresh cookie pasted in — reset the expiry-alert cooldown so the
+      // next failure (a new episode) alerts immediately rather than
+      // inheriting a stale cooldown from before this save.
+      storage.setSteamworksSessionAlertSent("default", null);
       res.json({
         configured: true,
         loggedInAs: session.loggedInAs,

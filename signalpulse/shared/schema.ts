@@ -222,6 +222,11 @@ export const steamworksSessions = sqliteTable("steamworks_sessions", {
   loggedInAs: text("logged_in_as"), // Steamworks account/email if known
   lastVerifiedAt: text("last_verified_at"),
   lastVerifiedResult: text("last_verified_result"), // 'ok' | 'expired' | 'error: ...'
+  // Set when a proactive expiry-alert email has been sent for the CURRENT
+  // failure episode; cleared back to null on the next successful verify
+  // (or on a fresh cookie save) so the next expiry re-alerts immediately
+  // instead of staying silent forever. See server/ingestion.ts ingestSteamSales().
+  alertSentAt: text("alert_sent_at"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

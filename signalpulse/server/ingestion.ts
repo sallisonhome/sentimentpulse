@@ -13,6 +13,7 @@ import { calculateDynamicForecasts } from "./forecast";
 import { fetchFollowerCount } from "./steam-followers";
 import { fetchHeaderImage } from "./steam-header-image";
 import { fetchIgdbHypesBySteamAppids } from "./igdb";
+import { sendSteamCookieExpiryAlert } from "./leaderboard-digest";
 import { log } from "./index";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -974,6 +975,11 @@ function getRevenueEligibleSteamTitles() {
 }
 
 const PORTAL_FETCH_DELAY_MS = 2000; // ~2s stagger between titles, gentle on Steamworks
+// Minimum gap between proactive cookie-expiry alert emails for the SAME
+// unresolved failure episode. Daily cron + any manual re-runs while the
+// cookie stays broken would otherwise re-send every time; 20h means at
+// most ~1 email/day until someone actually fixes the cookie.
+const STEAM_COOKIE_ALERT_COOLDOWN_MS = 20 * 60 * 60 * 1000;
 
 /**
  * Daily Steam sales ingestion via the Steamworks partner portal (single-
@@ -991,8 +997,10 @@ const PORTAL_FETCH_DELAY_MS = 2000; // ~2s stagger between titles, gentle on Ste
  * if the first fetch comes back with an expired/redirected session, every
  * subsequent title would fail identically, so we stop iterating early
  * rather than burning ~2s/title on guaranteed failures. The Settings page
- * already surfaces session.lastVerifiedResult as a warning banner, so no
- * separate UI work is needed here.
+ * surfaces session.lastVerifiedResult as a passive warning banner, and on
+ * top of that a proactive Resend alert email + an app-wide layout banner
+ * fire on detected expiry (see the /session expired/i branch below,
+ * client/src/components/layout.tsx, and GET /api/steam/session).
  */
 async function ingestSteamSales(): Promise<IngestionResult> {
   const titles = getRevenueEligibleSteamTitles();
@@ -1042,6 +1050,19 @@ async function ingestSteamSales(): Promise<IngestionResult> {
         log(`Steam sales portal-fetch failed for ${product.title}: ${errMsg}`, "ingestion");
         if (/session expired/i.test(errMsg)) {
           sessionExpired = true;
+          // Proactive alert: only fire once per failure episode, not on every
+          // cron/manual run while the cookie stays broken. `session` was
+          // fetched once at the top of this function, before this run's
+          // writes, so it still reflects the alert state from the LAST
+          // episode — exactly what the cooldown needs to compare against.
+          const lastAlertMs = session.alertSentAt ? new Date(session.alertSentAt).getTime() : 0;
+          if (Date.now() - lastAlertMs > STEAM_COOKIE_ALERT_COOLDOWN_MS) {
+            storage.setSteamworksSessionAlertSent("default", nowIso);
+            sendSteamCookieExpiryAlert(errMsg).catch((e) =>
+              log(`Failed to send Steam cookie-expiry alert: ${e}`, "ingestion"));
+          } else {
+            log("Steam cookie-expiry alert suppressed (within cooldown window)", "ingestion");
+          }
           break; // shared cookie — every remaining title would fail the same way
         }
         continue;
@@ -1080,6 +1101,12 @@ async function ingestSteamSales(): Promise<IngestionResult> {
         lastVerifiedAt: nowIso,
         lastVerifiedResult: "ok",
       });
+      // Cookie is verifiably working again — clear any pending alert
+      // cooldown so the NEXT expiry (a fresh episode) alerts right away
+      // instead of staying silent until the old cooldown window lapses.
+      if (session.alertSentAt) {
+        storage.setSteamworksSessionAlertSent("default", null);
+      }
 
       dataPoints++;
     } catch (err: any) {

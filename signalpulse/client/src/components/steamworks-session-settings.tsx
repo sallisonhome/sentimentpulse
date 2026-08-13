@@ -11,13 +11,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Cookie, CheckCircle2, XCircle, Trash2, Beaker } from "lucide-react";
+import { Cookie, CheckCircle2, XCircle, Trash2, Beaker, AlertTriangle } from "lucide-react";
 
 interface SessionInfo {
   configured: boolean;
   loggedInAs?: string | null;
   lastVerifiedAt?: string | null;
   lastVerifiedResult?: string | null;
+  alertSentAt?: string | null;
+  isExpired?: boolean;
   cookiePreview?: string;
   cookieByteLength?: number;
   updatedAt?: string;
@@ -134,6 +136,23 @@ export function SteamworksSessionSettings() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        {/* Proactive expiry banner — elevated above the passive status card
+            below, matching the app-wide layout banner (see layout.tsx). */}
+        {session?.isExpired && (
+          <div className="rounded border border-red-500/50 bg-red-500/10 p-3 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 mt-0.5 shrink-0" />
+            <div className="text-xs text-red-700 dark:text-red-400">
+              <div className="font-semibold">Session expired — sales data has stopped updating</div>
+              <div className="mt-0.5">
+                Paste a fresh Steamworks cookie below to resume daily sales ingestion.
+                {session.alertSentAt && (
+                  <> An alert email was sent {new Date(session.alertSentAt).toLocaleString()}.</>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Current status */}
         {session?.configured && (
           <div className="rounded border p-3 bg-muted/30 space-y-1">

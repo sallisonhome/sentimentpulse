@@ -315,6 +315,7 @@ function migrateAddColumnIfMissing(table: string, column: string, ddl: string) {
 
 function runMigrations() {
   migrateAddColumnIfMissing("products", "steam_header_image_url", "steam_header_image_url TEXT");
+  migrateAddColumnIfMissing("steamworks_sessions", "alert_sent_at", "alert_sent_at TEXT");
 }
 
 initializeDatabase();
@@ -479,6 +480,10 @@ export interface IStorage {
   getSteamworksSession(id: string): SteamworksSession | undefined;
   upsertSteamworksSession(data: InsertSteamworksSession): SteamworksSession;
   deleteSteamworksSession(id: string): boolean;
+  // Proactive cookie-expiry alerting: tracks when we last sent an expiry
+  // email for the CURRENT failure episode, separate from upsertSteamworksSession
+  // so unrelated callers (cookie save, verify-ok) can't accidentally clobber it.
+  setSteamworksSessionAlertSent(id: string, alertSentAt: string | null): void;
 
   // Steam Followers (Steam Leaderboards — Wishlist board, public-scrape only)
   getSteamFollowers(productId: number): SteamFollowersDaily[];
@@ -1213,6 +1218,13 @@ export class DatabaseStorage implements IStorage {
     const res = db.delete(steamworksSessions)
       .where(eq(steamworksSessions.id, id)).run();
     return (res.changes as number) > 0;
+  }
+
+  setSteamworksSessionAlertSent(id: string, alertSentAt: string | null): void {
+    db.update(steamworksSessions)
+      .set({ alertSentAt, updatedAt: this.now() })
+      .where(eq(steamworksSessions.id, id))
+      .run();
   }
 
   // ─── Steam Followers (Steam Leaderboards — Wishlist board) ─────────────

@@ -402,13 +402,51 @@ export async function sendWeeklyLeaderboardDigest(now: Date = new Date()): Promi
   return { ...result, subject };
 }
 
+/** Proactive alert for a failed/expired Steamworks cookie session, sent from
+ * `ingestSteamSales()` in ingestion.ts when the session-expired pattern is
+ * detected. Reuses the same Resend infra and recipient list as the weekly
+ * leaderboard digest — same audience needs to know sales data has stopped
+ * updating. Caller is responsible for its own send cooldown (via
+ * storage.setSteamworksSessionAlertSent) so this isn't fired on every cron
+ * run while the cookie stays broken. */
+export async function sendSteamCookieExpiryAlert(detail: string): Promise<DigestSendResult> {
+  const recipients = storage.getActiveLeaderboardEmailRecipients().map((r) => r.email);
+  if (recipients.length === 0) {
+    log("Steam cookie-expiry alert: no active recipients, skipping send", "leaderboard-digest");
+    return { sent: false, reason: "no_active_recipients" };
+  }
+
+  const subject = "SignalPulse alert: Steamworks cookie expired — sales data will stop updating";
+  const html = `
+    <div style="font-family:${FONT};max-width:560px;margin:0 auto;padding:24px;background:${BG_PAGE};">
+      <div style="background:${BG_CARD};border:1px solid ${BORDER};border-radius:8px;padding:24px;">
+        <h2 style="color:${NEGATIVE};margin:0 0 12px;font-size:18px;">Steamworks session cookie expired</h2>
+        <p style="color:${TEXT_PRIMARY};line-height:1.5;font-size:14px;margin:0 0 12px;">
+          The daily sales ingestion just failed because the Steamworks session cookie has expired.
+          Revenue leaderboard sales data will stop updating until it's refreshed.
+        </p>
+        <p style="color:${TEXT_MUTED};font-size:12px;line-height:1.5;margin:0 0 20px;">${esc(detail)}</p>
+        <a href="${BASE_URL}/settings#/settings" style="display:inline-block;background:${BRAND_ACCENT};color:#ffffff;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">
+          Reconnect cookie in Settings
+        </a>
+      </div>
+    </div>`;
+
+  const result = await sendViaResend(subject, recipients, html);
+  if (result.sent) {
+    log(`Steam cookie-expiry alert sent to ${result.recipients} recipient(s)`, "leaderboard-digest");
+  } else {
+    log(`Steam cookie-expiry alert NOT sent: ${result.reason}${result.detail ? " — " + result.detail : ""}`, "leaderboard-digest");
+  }
+  return result;
+}
+
 // ─── Weekly Cron Scheduler ──────────────────────────────────────────────────
 // Self-contained interval scheduler. `server/ingestion.ts` exports
-// `startIngestionCron`/`stopIngestionCron` but — confirmed by repo-wide grep —
-// neither is ever called anywhere in this codebase, so there is no existing
-// in-process daily cron to piggyback on. Daily ingestion on the droplet is
-// triggered externally (not by this Node process). This scheduler is
-// independent of that and is explicitly started from `server/index.ts`.
+// `startIngestionCron`/`stopIngestionCron` — confirmed live in production,
+// firing daily at 03:00 America/New_York for Steam sales/wishlist ingestion.
+// This scheduler is independent of that and is explicitly started from
+// `server/index.ts`.
 //
 // Cadence: Monday 07:00 America/New_York, matching SentimentPulse's existing
 // `_weekly_digest_job` precedent (CLAUDE_STEAM_LEADERBOARDS.md §8).
