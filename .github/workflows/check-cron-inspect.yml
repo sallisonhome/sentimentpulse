@@ -1,0 +1,47 @@
+name: Check Cron Schedule
+on:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Inspect crontab and systemd timers
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -euo pipefail
+          echo "== root crontab =="
+          crontab -l 2>&1 || echo "(no crontab for root or error)"
+          echo ""
+          echo "== /etc/cron.d =="
+          ls -la /etc/cron.d/ 2>&1 || true
+          for f in /etc/cron.d/*; do
+            [ -f "$f" ] && echo "--- $f ---" && cat "$f"
+          done
+          echo ""
+          echo "== /etc/crontab =="
+          cat /etc/crontab 2>&1 || true
+          echo ""
+          echo "== systemd timers =="
+          systemctl list-timers --all --no-pager 2>&1 || true
+          echo ""
+          echo "== any user crontabs (other users) =="
+          for u in $(cut -f1 -d: /etc/passwd); do
+            out=$(crontab -l -u "$u" 2>/dev/null || true)
+            if [ -n "$out" ]; then
+              echo "--- crontab for $u ---"
+              echo "$out"
+            fi
+          done
+          echo ""
+          echo "== grep for ingestion/run curl calls anywhere in common script locations =="
+          grep -rn "ingestion/run" /root /opt /etc 2>/dev/null | grep -v "Binary file" || echo "(no matches)"
+          REMOTEEOF
