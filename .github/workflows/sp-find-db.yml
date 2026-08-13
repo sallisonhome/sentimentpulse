@@ -1,0 +1,25 @@
+name: sp-find-db
+on: workflow_dispatch
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 << 'REMOTE'
+            echo "=== signalpulse DB files ==="
+            find /opt/sentimentpulse/signalpulse -name '*.db' -o -name '*.sqlite*' 2>/dev/null | head -10
+            echo "=== signalpulse systemd env ==="
+            systemctl cat signalpulse 2>/dev/null | grep -E 'WorkingDirectory|EnvironmentFile|Environment=' | head -10
+            echo "=== resolve DB path via env ==="
+            grep -E 'DB|SQLITE|DATABASE' /etc/signalpulse/env 2>/dev/null || echo "(no DB var in /etc/signalpulse/env)"
+            echo "=== try common paths ==="
+            for p in /opt/sentimentpulse/signalpulse/data.db /opt/sentimentpulse/signalpulse/sqlite.db /opt/sentimentpulse/signalpulse/data/*.db /var/lib/signalpulse/*.db /opt/signalpulse-data/*.db; do
+              [ -f "$p" ] && ls -la "$p"
+            done
+          REMOTE
