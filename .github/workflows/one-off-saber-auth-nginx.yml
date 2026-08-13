@@ -21,7 +21,7 @@ jobs:
 
       - name: Copy nginx-installer script, run, reload nginx
         run: |
-          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=no /dev/stdin root@104.236.239.46:/tmp/install-saber-nginx.py <<'PY'
+          cat > /tmp/install-saber-nginx.py <<'PY'
           #!/usr/bin/env python3
           import os, re, sys, shutil, subprocess, time
           CONF = None
@@ -64,5 +64,5 @@ jobs:
           subprocess.run(['systemctl', 'reload', 'nginx'], check=True)
           print("nginx reloaded")
           PY
-          
+          scp -i ~/.ssh/id_ed25519 /tmp/install-saber-nginx.py root@104.236.239.46:/tmp/install-saber-nginx.py
           ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'python3 /tmp/install-saber-nginx.py && curl -sf -o /dev/null -w "auth login via nginx: HTTP %{http_code}\n" http://127.0.0.1/auth/login.html && curl -sf -o /dev/null -w "sentimentpulse still ok: HTTP %{http_code}\n" http://127.0.0.1/health && rm /tmp/install-saber-nginx.py'
