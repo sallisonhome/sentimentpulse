@@ -1,0 +1,46 @@
+name: Deploy saber-auth
+# Deploys the sallisonhome/saber-auth repo to /opt/saber-auth on the droplet.
+# Lives here (not in saber-auth repo) because DROPLET_SSH_KEY is set on this
+# repo only. Trigger via workflow_dispatch after pushing to saber-auth main.
+on: workflow_dispatch
+concurrency:
+  group: saber-auth-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull + restart on droplet
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'bash -s' << 'REMOTE'
+          set -e
+          cd /opt/saber-auth
+          echo "=== git fetch + reset to origin/main ==="
+          git fetch origin main
+          git reset --hard origin/main
+          echo "=== npm ci (prod only) ==="
+          npm ci --omit=dev --silent
+          echo "=== ensure COOKIE_SECURE=false (http-only site) ==="
+          ENV=/opt/saber-auth/.env
+          if grep -q '^COOKIE_SECURE=' $ENV; then
+            sed -i 's|^COOKIE_SECURE=.*|COOKIE_SECURE=false|' $ENV
+          else
+            echo "COOKIE_SECURE=false" >> $ENV
+          fi
+          grep '^COOKIE_SECURE=' $ENV
+          echo "=== restart ==="
+          systemctl restart saber-auth
+          sleep 3
+          systemctl is-active saber-auth
+          echo "=== health ==="
+          curl -sS -o /dev/null -w "GET /api/me:     %{http_code}\n" http://127.0.0.1:5100/api/me
+          curl -sS -o /dev/null -w "GET /login.html: %{http_code}\n" http://127.0.0.1:5100/login.html
+          REMOTE
