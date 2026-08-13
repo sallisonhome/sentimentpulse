@@ -73,6 +73,8 @@ interface RevenueLeaderboardRow {
   revenue30d: number | null;
   revenueDelta30dUsd: number | null;
   revenueDelta30dPct: number | null;
+  asOfDate: string | null;
+  isStale: boolean;
 }
 
 interface RevenueLeaderboardMover {
@@ -407,6 +409,13 @@ export default function Leaderboards() {
                         <div className="flex items-center gap-3">
                           <GameKeyart headerImage={row.headerImage} title={row.title} />
                           <span className="font-medium text-sm truncate">{row.title}</span>
+                          {row.isStale && (
+                            <span
+                              className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0"
+                              title={`24h/30d figures as of ${row.asOfDate} — ingestion is running behind (check the Steam cookie)`}
+                              data-testid={`indicator-stale-${row.productId}`}
+                            />
+                          )}
                         </div>
                       </TableCell>
                       <TableCell className="tabular-nums">{formatNumber(row.units24h)}</TableCell>

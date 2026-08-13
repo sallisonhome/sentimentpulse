@@ -180,6 +180,14 @@ export interface RevenueLeaderboardRow {
   revenue30d: number | null;
   revenueDelta30dUsd: number | null;
   revenueDelta30dPct: number | null;
+  /** Date (YYYY-MM-DD) the 24h/30d columns are anchored to — the latest
+   * actually-ingested 'base' sales row, capped at GMT-yesterday. Null only
+   * when there's no sales history at all yet. */
+  asOfDate: string | null;
+  /** True when `asOfDate` trails GMT-yesterday, i.e. ingestion (cron or
+   * cookie-based portal fetch) hasn't caught up yet for this title — a
+   * stuck/expired Steam cookie is the usual cause. See getRevenueLeaderboardRows. */
+  isStale: boolean;
 }
 
 /**
@@ -201,23 +209,51 @@ function round2(n: number): number {
 
 export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
   const titles = getRevenueEligibleSteamTitles();
-  // Anchor every row to the same "yesterday" the cron ingests into, so the
-  // board never shows blanks around midnight UTC while today's row is
-  // still pending its nightly fetch.
-  const yesterday = getYesterdayGmtDateString();
-  const dayBefore = dayOffsetDateString(yesterday, -1);
-  const trailing30Start = dayOffsetDateString(yesterday, -29); // 30 days incl. yesterday
-  const prior30Start = dayOffsetDateString(yesterday, -59);
-  const prior30End = dayOffsetDateString(yesterday, -30);
+  // `boundary` is the latest day the nightly cron COULD have ingested by now
+  // (GMT-yesterday). It is only an upper bound, not a guarantee — ingestion
+  // can run late or fail outright (e.g. an expired Steam cookie, as happened
+  // 2026-08-12/13), so a given product's actual latest 'base' sales row can
+  // trail `boundary` by a day or more. Bug found 2026-08-13: this function
+  // used to anchor 24h/30d math directly to `boundary` and treat a missing
+  // "yesterday" row as a confirmed zero (per the absent-row-means-zero
+  // convention below) — but that convention only holds for days ingestion
+  // has actually run for. Applied to a not-yet-ingested day it silently
+  // reported a false revenue24hUsd=$0 / revenueDeltaPct24h=-100% collapse
+  // for every product on the board until the cron (or a manual re-run)
+  // caught up. Fix: each product anchors to its OWN latest available 'base'
+  // row on/before `boundary` (mirrors the isStale/latestDate fallback
+  // pattern already used by getSteamWishlistSummary in storage.ts), and
+  // reports `isStale` so a lagging title is distinguishable from a title
+  // that genuinely sold nothing.
+  const boundary = getYesterdayGmtDateString();
 
   return titles.map((p) => {
     const allRows = storage.getSteamSales(p.id);
     const summary = storage.getSteamSalesSummary(p.id);
 
+    // Latest 'base' row dated on/before `boundary`. Rows are date-ascending
+    // (see storage.getSteamSales), but we scan explicitly rather than trust
+    // array order since skuGroup is the secondary sort key.
+    let latestBaseDate: string | null = null;
+    for (const r of allRows) {
+      if (r.skuGroup !== "base" || r.date > boundary) continue;
+      if (latestBaseDate === null || r.date > latestBaseDate) latestBaseDate = r.date;
+    }
+    const anchor = latestBaseDate ?? boundary;
+    const isStale = latestBaseDate !== null && latestBaseDate < boundary;
+
+    const dayBefore = dayOffsetDateString(anchor, -1);
+    const trailing30Start = dayOffsetDateString(anchor, -29); // 30 days incl. anchor
+    const prior30Start = dayOffsetDateString(anchor, -59);
+    const prior30End = dayOffsetDateString(anchor, -30);
+
     // Absent-row-means-zero: default every bucket to 0, then accumulate
     // whatever rows exist. Never treat a missing row as null/unknown —
     // only the final delta computation distinguishes "no baseline" (null)
-    // from "confirmed zero" (0).
+    // from "confirmed zero" (0). This is now safe because `anchor` is
+    // guaranteed to be an actually-ingested day (or `boundary` when there's
+    // no history at all, in which case hasAnyHistory gates everything to
+    // null anyway).
     let baseUnitsYesterday = 0;
     let baseRevYesterday = 0;
     let baseUnitsDayBefore = 0;
@@ -232,7 +268,7 @@ export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
     for (const r of allRows) {
       if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue; // exclude 'other' per plan §1.4 revenue rule
 
-      if (r.date === yesterday) {
+      if (r.date === anchor) {
         if (r.skuGroup === "base") {
           baseUnitsYesterday += r.netUnits;
           baseRevYesterday += r.netRevenueUsd;
@@ -245,7 +281,7 @@ export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
         baseUnitsDayBefore += r.netUnits;
         baseRevDayBefore += r.netRevenueUsd;
       }
-      if (r.date >= trailing30Start && r.date <= yesterday) {
+      if (r.date >= trailing30Start && r.date <= anchor) {
         revenue30d += r.netRevenueUsd;
         any30dRow = true;
       }
@@ -275,6 +311,8 @@ export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
       revenue30d: any30dRow ? round2(revenue30d) : hasAnyHistory ? 0 : null,
       revenueDelta30dUsd: any30dRow || anyPrior30dRow ? round2(revenue30d - revenuePrior30d) : null,
       revenueDelta30dPct: any30dRow || anyPrior30dRow ? pctChange(revenue30d, revenuePrior30d) : null,
+      asOfDate: hasAnyHistory ? anchor : null,
+      isStale: hasAnyHistory ? isStale : false,
     };
   });
 }
