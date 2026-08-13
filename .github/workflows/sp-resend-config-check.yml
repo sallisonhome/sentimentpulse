@@ -1,0 +1,47 @@
+name: SP Resend Config Check (SentimentPulse vs SignalPulse)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Compare Resend config across apps (no secret values printed)
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+
+            echo "── 1. Shared /opt/sentimentpulse/.env — RESEND_FROM value (not secret) ──"
+            grep -E '^RESEND_FROM=' /opt/sentimentpulse/.env || echo "RESEND_FROM not set in .env"
+
+            echo ""
+            echo "── 2. Shared .env — is RESEND_API_KEY set? (length + prefix only, no value) ──"
+            if grep -qE '^RESEND_API_KEY=' /opt/sentimentpulse/.env; then
+              val=$(grep -E '^RESEND_API_KEY=' /opt/sentimentpulse/.env | head -1 | cut -d'=' -f2-)
+              echo "present=true length=${#val} starts_with_re_=$( [[ \"$val\" == re_* ]] && echo true || echo false )"
+            else
+              echo "present=false"
+            fi
+
+            echo ""
+            echo "── 3. Does SignalPulse's SQLite settings table have its OWN separate resend_api_key (independent of .env)? ──"
+            sqlite3 /opt/sentimentpulse/signalpulse/*.db "SELECT key, isSecret, length(value) as val_len, updatedAt FROM app_settings WHERE key LIKE 'resend%';" 2>&1 || \
+            find /opt/sentimentpulse/signalpulse -maxdepth 2 -iname '*.db' 2>&1
+
+            echo ""
+            echo "── 4. Recent SentimentPulse backend logs mentioning resend/digest sends (success/fail only, no payloads) ──"
+            journalctl -u sentimentpulse --no-pager -n 4000 2>&1 | grep -iE 'resend|digest.*sent|digest.*fail' | tail -40 || echo "no matching log lines in recent history"
+
+            echo ""
+            echo "── 5. Does backend/services/digest_service.py get invoked by a live scheduler? ──"
+            grep -n "digest" /opt/sentimentpulse/backend/scheduler.py | head -20 || true
+          EOF
