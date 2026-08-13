@@ -523,20 +523,15 @@ def _game_search_query(game_name: str, game=None) -> str:
     # fallback would be a generic-English collision — games with clean proper
     # nouns (Hellraiser, Turok, SnowRunner) keep their current permissive
     # single-word behavior.
-    _AMBIGUOUS_FALLBACKS = {"rideshare", "docked", "gloomhaven", "halloween"}
-    if game is not None:
-        keywords = getattr(game, "distinctive_keywords", None) or []
-        # Only try to override if the name's single-word fallback is a known
-        # collision. We check by re-running the algorithm below — for now, do
-        # a coarse check on the raw name tokens.
-        _lower_tokens = {t.lower() for t in game_name.split()}
-        if _lower_tokens & _AMBIGUOUS_FALLBACKS:
-            for k in keywords:
-                if isinstance(k, str) and " " in k and len(k) >= 8:
-                    # First multi-word keyword — use it as the phrase query.
-                    # Strip quote chars (the config might have '"Stimulator"'
-                    # in the keyword; Reddit search doesn't want literal quotes).
-                    return k.replace('"', '').strip()
+    # v3.1 (2026-08-12) REVERTED the v3 multi-word override. It missed too
+    # many variant-spelling posts (Rideshare threads titled 'Simulator' with
+    # 'i' or 'ridesharing' don't AND-match 'rideshare stimulator').
+    # Single-word search + tagger's noise-tier verdict on non-matching
+    # general-sub posts correctly rejects ride-share industry pollution
+    # without dropping variant-spelling signal posts.
+    # (Code kept commented for reference — don't reactivate without
+    # multi-query fan-out to catch variant spellings.)
+    pass  # multi-word override disabled
     # Strip "Studio's " / "Director's " possessive prefix
     if "'s " in game_name:
         game_name = game_name.split("'s ", 1)[1]
