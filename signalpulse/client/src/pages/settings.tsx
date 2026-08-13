@@ -9,7 +9,9 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import {
   Eye, EyeOff, Save, Check, KeyRound, Server, Shield, Youtube, Trash2, Gamepad2, AlertTriangle,
+  Mail, Plus, Send, Loader2,
 } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
 import { SteamworksSessionSettings } from "@/components/steamworks-session-settings";
 
 interface SettingRow {
@@ -51,6 +53,13 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     description: "Password required to access the application.",
     icon: <Shield className="h-5 w-5" />,
     settingKeys: ["app_password"],
+  },
+  {
+    key: "email",
+    label: "Weekly Digest (Resend)",
+    description: "Resend API credentials used to send the weekly Steam Leaderboard digest email. Manage who receives it below.",
+    icon: <Mail className="h-5 w-5" />,
+    settingKeys: ["resend_api_key", "resend_from"],
   },
 ];
 
@@ -261,6 +270,8 @@ export default function Settings() {
         );
       })}
 
+      <RecipientsManager />
+
       <SteamworksSessionSettings />
 
       <ManageProducts />
@@ -424,5 +435,212 @@ function ManageProducts() {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+// ─── Weekly Digest Recipients (Phase 5 / §8.1) ──────────────────────────────
+// Managed add/toggle/delete list for who receives the weekly Steam Leaderboard
+// digest email, plus a manual "send test digest now" trigger so the whole
+// pipeline can be verified without waiting for the real Monday 07:00 ET send.
+
+interface LeaderboardEmailRecipient {
+  id: number;
+  email: string;
+  label: string | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
+function RecipientsManager() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [newEmail, setNewEmail] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+
+  const { data: recipients, isLoading } = useQuery<LeaderboardEmailRecipient[]>({
+    queryKey: ["/api/leaderboards/email-recipients"],
+  });
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["/api/leaderboards/email-recipients"] });
+
+  const addMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/leaderboards/email-recipients", {
+        email: newEmail.trim(),
+        label: newLabel.trim() || undefined,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Recipient added", description: `${newEmail.trim()} will receive the weekly digest.` });
+      setNewEmail("");
+      setNewLabel("");
+      invalidate();
+    },
+    onError: (err: any) => {
+      toast({ title: "Failed to add recipient", description: err?.message || "Could not add recipient.", variant: "destructive" });
+    },
+  });
+
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, isActive }: { id: number; isActive: boolean }) => {
+      await apiRequest("PATCH", `/api/leaderboards/email-recipients/${id}`, { isActive });
+    },
+    onSuccess: invalidate,
+    onError: (err: any) => {
+      toast({ title: "Failed to update recipient", description: err?.message || "Could not update recipient.", variant: "destructive" });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/leaderboards/email-recipients/${id}`, undefined);
+    },
+    onSuccess: () => {
+      toast({ title: "Recipient removed" });
+      invalidate();
+    },
+    onError: (err: any) => {
+      toast({ title: "Failed to remove recipient", description: err?.message || "Could not remove recipient.", variant: "destructive" });
+    },
+  });
+
+  const testSendMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("./api/leaderboards/email-recipients/test-send", { method: "POST" });
+      let body: any = null;
+      try {
+        body = await res.json();
+      } catch {
+        // no body
+      }
+      if (!res.ok) {
+        throw new Error(body?.reason || body?.error || `HTTP ${res.status}`);
+      }
+      return body;
+    },
+    onSuccess: (result: any) => {
+      toast({
+        title: "Test digest sent",
+        description: result?.recipients
+          ? `Sent to ${result.recipients} active recipient${result.recipients === 1 ? "" : "s"}.`
+          : "Digest send completed.",
+      });
+    },
+    onError: (err: any) => {
+      toast({
+        title: "Test digest not sent",
+        description: err?.message || "Check that resend_api_key is set and at least one recipient is active.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleAdd = () => {
+    if (!newEmail.trim()) return;
+    addMutation.mutate();
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center justify-center w-9 h-9 rounded-lg bg-primary/10 text-primary">
+              <Mail className="h-5 w-5" />
+            </div>
+            <div>
+              <CardTitle className="text-base">Weekly Digest Recipients</CardTitle>
+              <CardDescription className="text-xs mt-0.5">
+                Who receives the weekly Steam Leaderboard digest email (Mondays 07:00 America/New_York). Inactive recipients are skipped.
+              </CardDescription>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => testSendMutation.mutate()}
+            disabled={testSendMutation.isPending}
+            className="gap-1.5 shrink-0"
+          >
+            {testSendMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Send className="h-3.5 w-3.5" />
+            )}
+            Send test digest now
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center gap-2 pb-4">
+          <Input
+            type="email"
+            placeholder="name@example.com"
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            className="h-9 text-sm max-w-xs"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleAdd();
+            }}
+          />
+          <Input
+            type="text"
+            placeholder="Label (optional)"
+            value={newLabel}
+            onChange={(e) => setNewLabel(e.target.value)}
+            className="h-9 text-sm max-w-[10rem]"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleAdd();
+            }}
+          />
+          <Button
+            size="sm"
+            onClick={handleAdd}
+            disabled={!newEmail.trim() || addMutation.isPending}
+            className="gap-1 shrink-0"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add
+          </Button>
+        </div>
+
+        {isLoading ? (
+          <p className="text-xs text-muted-foreground py-2">Loading recipients...</p>
+        ) : !recipients || recipients.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-2">No recipients yet — add one above.</p>
+        ) : (
+          <div className="divide-y">
+            {recipients.map((r) => (
+              <div key={r.id} className="flex items-center justify-between py-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium truncate">{r.email}</div>
+                  {r.label && <div className="text-xs text-muted-foreground">{r.label}</div>}
+                </div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={r.isActive}
+                      onCheckedChange={(checked) => toggleMutation.mutate({ id: r.id, isActive: checked })}
+                      disabled={toggleMutation.isPending}
+                    />
+                    <span className="text-xs text-muted-foreground w-12">{r.isActive ? "Active" : "Paused"}</span>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => deleteMutation.mutate(r.id)}
+                    disabled={deleteMutation.isPending}
+                    className="h-7 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 border-destructive/30"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

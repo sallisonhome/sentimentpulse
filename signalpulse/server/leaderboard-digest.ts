@@ -401,3 +401,64 @@ export async function sendWeeklyLeaderboardDigest(now: Date = new Date()): Promi
   }
   return { ...result, subject };
 }
+
+// ─── Weekly Cron Scheduler ──────────────────────────────────────────────────
+// Self-contained interval scheduler. `server/ingestion.ts` exports
+// `startIngestionCron`/`stopIngestionCron` but — confirmed by repo-wide grep —
+// neither is ever called anywhere in this codebase, so there is no existing
+// in-process daily cron to piggyback on. Daily ingestion on the droplet is
+// triggered externally (not by this Node process). This scheduler is
+// independent of that and is explicitly started from `server/index.ts`.
+//
+// Cadence: Monday 07:00 America/New_York, matching SentimentPulse's existing
+// `_weekly_digest_job` precedent (CLAUDE_STEAM_LEADERBOARDS.md §8).
+//
+// Uses Intl.DateTimeFormat with an explicit America/New_York timeZone rather
+// than a fixed UTC hour so the send time doesn't drift across the DST
+// transition (07:00 ET is 11:00 UTC in EDT, 12:00 UTC in EST).
+
+let weeklyDigestCronInterval: ReturnType<typeof setInterval> | null = null;
+let weeklyDigestLastRunDate = "";
+
+function getEasternHourMinuteWeekday(now: Date): { hour: number; minute: number; weekday: string } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "numeric",
+    hour12: false,
+    weekday: "short",
+  }).formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  const hour = parseInt(get("hour"), 10) % 24; // "24" at midnight with hour12:false
+  const minute = parseInt(get("minute"), 10);
+  const weekday = get("weekday"); // "Mon", "Tue", ...
+  return { hour, minute, weekday };
+}
+
+/** Start the in-process weekly digest scheduler (checks every minute, same
+ * pacing style as the existing daily ingestion scheduler in ingestion.ts). */
+export function startWeeklyDigestCron(): void {
+  if (weeklyDigestCronInterval) return; // idempotent
+  log("Weekly leaderboard digest cron scheduler started (Mondays 07:00 America/New_York)", "leaderboard-digest");
+
+  weeklyDigestCronInterval = setInterval(() => {
+    const now = new Date();
+    const { hour, minute, weekday } = getEasternHourMinuteWeekday(now);
+    const todayStr = now.toISOString().split("T")[0];
+
+    if (weekday === "Mon" && hour === 7 && minute === 0 && weeklyDigestLastRunDate !== todayStr) {
+      weeklyDigestLastRunDate = todayStr;
+      sendWeeklyLeaderboardDigest(now).catch((err) => {
+        log(`Weekly leaderboard digest cron error: ${err}`, "leaderboard-digest");
+      });
+    }
+  }, 60_000);
+}
+
+export function stopWeeklyDigestCron(): void {
+  if (weeklyDigestCronInterval) {
+    clearInterval(weeklyDigestCronInterval);
+    weeklyDigestCronInterval = null;
+    log("Weekly leaderboard digest cron scheduler stopped", "leaderboard-digest");
+  }
+}

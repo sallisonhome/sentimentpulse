@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import { startWeeklyDigestCron } from "./leaderboard-digest";
 
 const app = express();
 const httpServer = createServer(app);
@@ -71,6 +72,11 @@ app.use((req, res, next) => {
 
 (async () => {
   await registerRoutes(httpServer, app);
+
+  // Phase 5: weekly Steam Leaderboard digest email (Mondays 07:00 America/New_York).
+  // Started after registerRoutes so seedDefaultSettings() has already run and the
+  // resend_api_key/resend_from/recipients tables exist by the time it could fire.
+  startWeeklyDigestCron();
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
