@@ -88,6 +88,56 @@
     }
     .error-msg.visible { display: flex; }
 
+    /* Grace-week warning banner */
+    .grace-banner {
+      display: none;
+      max-width: 720px;
+      margin: 0 auto 1.25rem;
+      padding: 0.75rem 1rem;
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.25);
+      border-radius: 10px;
+      color: #fbbf24;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+    .grace-banner.visible { display: block; }
+    .grace-banner a { color: #fcd34d; text-decoration: underline; }
+
+    /* Divider + secondary button on gate */
+    .divider {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin: 1rem 0; color: var(--text-dim); font-size: 0.75rem;
+    }
+    .divider::before, .divider::after {
+      content: ''; flex: 1; height: 1px; background: var(--border);
+    }
+    .btn-secondary {
+      background: var(--surface); color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { background: var(--surface-hover); border-color: var(--primary); }
+    .legacy-note {
+      margin-top: 1rem;
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Session chip (top-right on app selector) */
+    .session-chip {
+      position: absolute; top: 1.25rem; right: 1.5rem;
+      display: flex; align-items: center; gap: 0.5rem;
+      padding: 0.5rem 0.875rem;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 999px; font-size: 0.75rem; color: var(--text-muted);
+    }
+    .session-chip button {
+      background: none; border: none; color: var(--primary);
+      cursor: pointer; font-size: 0.75rem; font-weight: 600;
+    }
+    .session-chip button:hover { text-decoration: underline; }
+
     .btn {
       width: 100%; padding: 0.75rem; border: none; border-radius: 10px;
       font-size: 0.875rem; font-weight: 600; cursor: pointer;
@@ -194,28 +244,48 @@
         </div>
         <div class="brand-name">Saber Interactive</div>
         <div class="suite-name">Intelligence Suite</div>
-        <div class="subtitle">Enter password to continue</div>
+        <div class="subtitle">Sign in to continue</div>
       </div>
+
+      <button type="button" class="btn btn-primary" id="saber-login-btn">Sign in with your Saber account</button>
+
+      <div class="divider" id="legacy-divider">or use the temporary shared password</div>
 
       <form id="login-form">
         <div class="form-group">
           <svg class="form-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
           </svg>
-          <input type="password" id="password-input" class="form-input" placeholder="Password" autofocus autocomplete="off">
+          <input type="password" id="password-input" class="form-input" placeholder="Shared password" autocomplete="off">
         </div>
         <div id="error-msg" class="error-msg">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
           </svg>
-          <span>Incorrect password. Please try again.</span>
+          <span id="error-msg-text">Incorrect password. Please try again.</span>
         </div>
-        <button type="submit" class="btn btn-primary" id="login-btn">Sign In</button>
+        <button type="submit" class="btn btn-secondary" id="login-btn">Continue with shared password</button>
+        <div class="legacy-note" id="legacy-note">
+          The shared <code>SABER</code> password stops working on <strong>Thursday, August 20, 2026</strong>.
+          After that, sign in with your personal account above.
+        </div>
       </form>
     </div>
 
     <!-- App Selector (shown after auth) -->
     <div id="app-selector">
+      <div class="session-chip" id="session-chip" style="display:none;">
+        <span id="session-email"></span>
+        <button type="button" id="sign-out-btn">Sign out</button>
+      </div>
+
+      <div class="grace-banner" id="grace-banner">
+        <strong>Heads up:</strong> you signed in with the temporary shared password.
+        This stops working on <strong>Thursday, August 20, 2026</strong>.
+        Check your inbox for your personal Saber Suite invite, or
+        <a href="/auth/login.html?return=/">sign in with your account now</a>.
+      </div>
+
       <div class="logo-area">
         <div class="logo-icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -301,30 +371,123 @@
   </div>
 
   <script>
-    const PASSWORD = 'SABER';
+    // ---------------------------------------------------------------------
+    // Saber Suite launcher — Phase 3 auth (grace-week hybrid)
+    // ---------------------------------------------------------------------
+    // Preferred:  saber-auth session cookie (per-person login).
+    // Fallback:   legacy shared password 'SABER', accepted only until
+    //             LEGACY_UNTIL (Thu Aug 20 2026 00:00 America/New_York = 04:00 UTC).
+    //             After that timestamp the legacy path is silently disabled
+    //             client-side and users must use the saber-auth login.
+    //
+    // No re-deploy is required to end the grace week — the browser will
+    // simply stop honoring the legacy password once the clock passes
+    // LEGACY_UNTIL_MS.
+    // ---------------------------------------------------------------------
+    const LEGACY_PASSWORD = 'SABER';
+    const LEGACY_UNTIL_MS = Date.parse('2026-08-20T04:00:00Z'); // 00:00 ET
     const SESSION_KEY = 'suite_authenticated';
+    const LEGACY_KEY  = 'suite_authenticated_legacy';
 
-    // Check if already authenticated
-    if (sessionStorage.getItem(SESSION_KEY) === 'true') {
-      document.getElementById('password-gate').style.display = 'none';
-      document.getElementById('app-selector').style.display = 'block';
+    const gateEl     = document.getElementById('password-gate');
+    const selectorEl = document.getElementById('app-selector');
+    const chipEl     = document.getElementById('session-chip');
+    const chipEmail  = document.getElementById('session-email');
+    const bannerEl   = document.getElementById('grace-banner');
+    const errorEl    = document.getElementById('error-msg');
+    const errorText  = document.getElementById('error-msg-text');
+    const legacyDivider = document.getElementById('legacy-divider');
+    const legacyForm    = document.getElementById('login-form');
+    const legacyNote    = document.getElementById('legacy-note');
+
+    const legacyAllowed = Date.now() < LEGACY_UNTIL_MS;
+    if (!legacyAllowed) {
+      // Grace week is over — hide the fallback entirely.
+      if (legacyDivider) legacyDivider.style.display = 'none';
+      if (legacyForm)    legacyForm.style.display    = 'none';
+      if (legacyNote)    legacyNote.style.display    = 'none';
     }
 
-    document.getElementById('login-form').addEventListener('submit', function(e) {
+    function showApps({ email, viaLegacy }) {
+      gateEl.style.display     = 'none';
+      selectorEl.style.display = 'block';
+      if (email) {
+        chipEmail.textContent = email;
+        chipEl.style.display  = 'flex';
+      } else {
+        chipEl.style.display = 'none';
+      }
+      if (viaLegacy && legacyAllowed) {
+        bannerEl.classList.add('visible');
+      }
+    }
+
+    async function checkSaberSession() {
+      try {
+        const r = await fetch('/auth/api/me', { credentials: 'same-origin' });
+        if (r.ok) {
+          const me = await r.json();
+          return me;
+        }
+      } catch (_) { /* offline / network */ }
+      return null;
+    }
+
+    // --- Boot: prefer saber-auth session, then legacy session, else show gate
+    (async () => {
+      const me = await checkSaberSession();
+      if (me) {
+        // Real per-person session takes precedence and clears any legacy flag.
+        sessionStorage.removeItem(LEGACY_KEY);
+        sessionStorage.setItem(SESSION_KEY, 'true');
+        showApps({ email: me.email, viaLegacy: false });
+        return;
+      }
+      if (legacyAllowed && sessionStorage.getItem(LEGACY_KEY) === 'true') {
+        showApps({ email: null, viaLegacy: true });
+        return;
+      }
+      // Not signed in — show gate. Auto-focus the primary button.
+      document.getElementById('saber-login-btn').focus();
+    })();
+
+    // --- Primary CTA: send user to saber-auth login, return here after
+    document.getElementById('saber-login-btn').addEventListener('click', function() {
+      window.location.href = '/auth/login.html?return=' + encodeURIComponent(window.location.pathname);
+    });
+
+    // --- Fallback: legacy shared password (grace week only)
+    legacyForm.addEventListener('submit', function(e) {
       e.preventDefault();
       const input = document.getElementById('password-input');
-      const errorEl = document.getElementById('error-msg');
 
-      if (input.value.trim().toUpperCase() === PASSWORD) {
+      if (!legacyAllowed) {
+        errorText.textContent = 'The shared password no longer works. Please sign in with your Saber account above.';
+        errorEl.classList.add('visible');
+        return;
+      }
+
+      if (input.value.trim().toUpperCase() === LEGACY_PASSWORD) {
         sessionStorage.setItem(SESSION_KEY, 'true');
-        document.getElementById('password-gate').style.display = 'none';
-        document.getElementById('app-selector').style.display = 'block';
+        sessionStorage.setItem(LEGACY_KEY, 'true');
         errorEl.classList.remove('visible');
+        showApps({ email: null, viaLegacy: true });
       } else {
+        errorText.textContent = 'Incorrect password. Please try again.';
         errorEl.classList.add('visible');
         input.value = '';
         input.focus();
       }
+    });
+
+    // --- Sign out (suite-wide): clears saber-auth cookie + local flags
+    document.getElementById('sign-out-btn').addEventListener('click', async function() {
+      sessionStorage.removeItem(SESSION_KEY);
+      sessionStorage.removeItem(LEGACY_KEY);
+      try {
+        await fetch('/auth/api/logout', { method: 'POST', credentials: 'same-origin' });
+      } catch (_) { /* best effort */ }
+      window.location.reload();
     });
   </script>
 </body>
