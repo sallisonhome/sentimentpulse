@@ -37,17 +37,24 @@ from models import RawPost, Game, SourceEnum
 # Case-insensitive match against the subreddit name extracted from the URL.
 GENERAL_SUBS: frozenset[str] = frozenset({
     # Platform / console
-    "gaming", "games", "pcgaming", "ps5", "playstation",
-    "xbox", "xboxseriesx", "steam", "steamdeck",
+    "gaming", "games", "pcgaming", "pcmasterrace", "ps5", "playstation",
+    "xbox", "xboxseriesx", "xboxone", "steam", "steamdeck",
+    "nintendoswitch", "nintendo",
     # Discovery / discussion
     "patientgamers", "shouldibuythisgame", "truegaming",
+    "gamedeals", "lowspecgamer", "gamingsuggestions",
+    # News/leaks
     # v0016.9 (2026-08-12): British/US 'u' spelling. The actual subreddit is
     # r/GamingLeaksAndRumours (with 'u'). Without both spellings in the set,
     # r/GamingLeaksAndRumours posts get tagged as dedicated_sub for whichever
     # game happens to fetch them first — polluting priority games' data with
     # unrelated gaming news (Elder Scrolls, etc).
     "gamingleaksandrumors", "gamingleaksandrumours", "gamingnews",
+    "gamingcirclejerk",
+    # Genre discussion
     "shootergames", "thirdpersonshooter", "fps", "coopgaming",
+    "simracing", "simulators", "drivingsimulators",
+    "gamingphotography", "gamingaccessibility",
     # Genre umbrellas (produce a lot of unrelated posts)
     "horror", "horrorgaming", "horrorgames",
     "survivalhorror", "residentevil",
