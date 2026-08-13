@@ -1,0 +1,62 @@
+name: One-off — deploy saber-auth to droplet
+
+# Ships sallisonhome/saber-auth to /opt/saber-auth on the droplet.
+# Uses the tarball staged at .deploy-oneoff/saber-auth.tar.gz.
+# Delete this workflow and .deploy-oneoff/ after a successful run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      admin_email:
+        description: 'Bootstrap admin email (invite link printed in job log)'
+        required: true
+        default: 'sallisonhome@yahoo.com'
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout sentimentpulse
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Generate JWT secret and env file
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ADMIN_EMAIL: ${{ github.event.inputs.admin_email }}
+        run: |
+          JWT=$(node -e "console.log(require('crypto').randomBytes(48).toString('hex'))")
+          cat > /tmp/saber-auth.env <<EOF
+          PORT=5100
+          BASE_URL=http://104.236.239.46
+          JWT_SECRET=$JWT
+          COOKIE_DOMAIN=
+          RESEND_API_KEY=$RESEND_API_KEY
+          RESEND_FROM=Saber Suite <onboarding@resend.dev>
+          BOOTSTRAP_ADMIN_EMAIL=$ADMIN_EMAIL
+          BOOTSTRAP_ADMIN_PASSWORD=
+          DB_PATH=/opt/saber-auth/data/saber-auth.db
+          NODE_ENV=production
+          EOF
+          chmod 600 /tmp/saber-auth.env
+
+      - name: Ship tarball + env
+        run: |
+          scp -i ~/.ssh/id_ed25519 .deploy-oneoff/saber-auth.tar.gz root@104.236.239.46:/tmp/saber-auth.tar.gz
+          scp -i ~/.ssh/id_ed25519 /tmp/saber-auth.env root@104.236.239.46:/tmp/saber-auth.env
+
+      - name: Run install script on droplet
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
+            'tar -xzf /tmp/saber-auth.tar.gz -C /tmp/ deploy/install-on-droplet.sh && bash /tmp/deploy/install-on-droplet.sh'
