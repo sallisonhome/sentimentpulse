@@ -1,0 +1,105 @@
+name: sp-saber-auth-cookie-fix2
+on: workflow_dispatch
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Write patch script
+        run: |
+          cat > /tmp/patch2.py << 'PYEOF'
+          import re, sys, glob, os
+          path = '/opt/saber-auth/server/routes/auth.js'
+          # Restore from newest backup first
+          bak = sorted(glob.glob(path + '.bak.*'))[-1] if glob.glob(path + '.bak.*') else None
+          if bak:
+              import shutil
+              shutil.copyfile(bak, path)
+              print(f"Restored from {bak}")
+          with open(path) as f:
+              src = f.read()
+          new_block = '''// Set COOKIE_SECURE=true only when the site is served over HTTPS. On plain
+          // HTTP, secure cookies are never sent back by the browser, so login would
+          // appear to succeed but the session cookie would silently drop.
+          function cookieSecure() {
+            return String(process.env.COOKIE_SECURE || '').toLowerCase() === 'true';
+          }
+
+          function setSessionCookie(res, token) {
+            res.cookie(COOKIE_NAME, token, {
+              httpOnly: true,
+              secure: cookieSecure(),
+              sameSite: 'lax',
+              domain: process.env.COOKIE_DOMAIN || undefined,
+              path: '/',
+              maxAge: 30 * 24 * 60 * 60 * 1000,
+            });
+          }
+
+          function clearSessionCookie(res) {
+            res.clearCookie(COOKIE_NAME, {
+              httpOnly: true,
+              secure: cookieSecure(),
+              sameSite: 'lax',
+              domain: process.env.COOKIE_DOMAIN || undefined,
+              path: '/',
+            });
+          }'''
+          new_block = '\n'.join(line[10:] if line.startswith('          ') else line for line in new_block.split('\n'))
+          # Match from "function setSessionCookie" up through the closing brace of clearSessionCookie.
+          # The pattern anchors on the two function names in sequence to be precise.
+          pattern = re.compile(
+              r"function setSessionCookie\(res, token\) \{"
+              r"[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"
+              r"\s*\n\s*"
+              r"function clearSessionCookie\(res\) \{"
+              r"[^{}]*(?:\{[^{}]*\}[^{}]*)*\}",
+              re.MULTILINE,
+          )
+          m = pattern.search(src)
+          if not m:
+              print("Could not find setSessionCookie+clearSessionCookie block", file=sys.stderr)
+              sys.exit(1)
+          new_src = src[:m.start()] + new_block + src[m.end():]
+          with open(path, 'w') as f:
+              f.write(new_src)
+          print(f"Patched {path}, replaced bytes {m.start()}..{m.end()}")
+          # Syntax check via node
+          import subprocess
+          r = subprocess.run(['node', '--check', path], capture_output=True, text=True)
+          print("node --check stdout:", r.stdout)
+          print("node --check stderr:", r.stderr)
+          if r.returncode != 0:
+              sys.exit(1)
+          print("Syntax OK")
+          PYEOF
+          echo "Patch script bytes: $(wc -c < /tmp/patch2.py)"
+
+      - name: Upload + apply
+        run: |
+          scp -i ~/.ssh/id_ed25519 /tmp/patch2.py root@104.236.239.46:/tmp/patch2.py
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'bash -s' << 'REMOTE'
+          set -e
+          echo "=== Applying restore + clean patch ==="
+          python3 /tmp/patch2.py
+
+          echo "=== Restarting saber-auth ==="
+          systemctl restart saber-auth
+          sleep 3
+          systemctl is-active saber-auth && echo "ACTIVE" || (echo "FAILED"; journalctl -u saber-auth -n 30 --no-pager; exit 1)
+
+          echo "=== Health checks ==="
+          curl -sS -o /dev/null -w "GET /api/me (127.0.0.1 no cookie): %{http_code}\n" http://127.0.0.1:5100/api/me
+          curl -sS -o /dev/null -w "GET /login.html (127.0.0.1):        %{http_code}\n" http://127.0.0.1:5100/login.html
+          echo ""
+          echo "=== From public IP ==="
+          curl -sS -o /dev/null -w "GET /auth/api/me (public):  %{http_code}\n" http://104.236.239.46/auth/api/me
+          curl -sS -o /dev/null -w "GET /auth/login.html:       %{http_code}\n" http://104.236.239.46/auth/login.html
+          REMOTE
