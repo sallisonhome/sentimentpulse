@@ -1,10 +1,10 @@
-name: SP Resend Config Check (SentimentPulse vs SignalPulse)
+name: SP Resend - Align SignalPulse with SentimentPulse config
 
 on:
   workflow_dispatch:
 
 jobs:
-  check:
+  fix:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -15,33 +15,43 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Compare Resend config across apps (no secret values printed)
+      - name: Copy working Resend key + verified domain into SignalPulse settings
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
             set -euo pipefail
 
-            echo "── 1. Shared /opt/sentimentpulse/.env — RESEND_FROM value (not secret) ──"
-            grep -E '^RESEND_FROM=' /opt/sentimentpulse/.env || echo "RESEND_FROM not set in .env"
-
-            echo ""
-            echo "── 2. Shared .env — is RESEND_API_KEY set? (length + prefix only, no value) ──"
-            if grep -qE '^RESEND_API_KEY=' /opt/sentimentpulse/.env; then
-              val=$(grep -E '^RESEND_API_KEY=' /opt/sentimentpulse/.env | head -1 | cut -d'=' -f2-)
-              echo "present=true length=${#val} starts_with_re_=$( [[ \"$val\" == re_* ]] && echo true || echo false )"
-            else
-              echo "present=false"
+            # Read SentimentPulse's confirmed-working Resend API key from the
+            # shared .env. Never echoed — used only inline in curl calls below.
+            KEY=$(grep -E '^RESEND_API_KEY=' /opt/sentimentpulse/.env | head -1 | cut -d'=' -f2-)
+            if [ -z "$KEY" ]; then
+              echo "ERROR: could not read RESEND_API_KEY from .env"
+              exit 1
             fi
 
-            echo ""
-            echo "── 3. Does SignalPulse's SQLite settings table have its OWN separate resend_api_key (independent of .env)? ──"
-            sqlite3 /opt/sentimentpulse/signalpulse/*.db "SELECT key, isSecret, length(value) as val_len, updatedAt FROM app_settings WHERE key LIKE 'resend%';" 2>&1 || \
-            find /opt/sentimentpulse/signalpulse -maxdepth 2 -iname '*.db' 2>&1
+            echo "── 1. Push key into SignalPulse settings (response is masked, safe to print) ──"
+            curl -s -X PUT http://127.0.0.1:5000/api/settings/resend_api_key \
+              -H "x-app-password: SABER" -H "Content-Type: application/json" \
+              -d "{\"value\":\"$KEY\"}" | python3 -m json.tool
+
+            unset KEY
 
             echo ""
-            echo "── 4. Recent SentimentPulse backend logs mentioning resend/digest sends (success/fail only, no payloads) ──"
-            journalctl -u sentimentpulse --no-pager -n 4000 2>&1 | grep -iE 'resend|digest.*sent|digest.*fail' | tail -40 || echo "no matching log lines in recent history"
+            echo "── 2. Set resend_from to the already-verified domain (same one SentimentPulse uses) ──"
+            curl -s -X PUT http://127.0.0.1:5000/api/settings/resend_from \
+              -H "x-app-password: SABER" -H "Content-Type: application/json" \
+              -d '{"value":"signalpulse@mail.howmanyareplaying.com"}' | python3 -m json.tool
 
             echo ""
-            echo "── 5. Does backend/services/digest_service.py get invoked by a live scheduler? ──"
-            grep -n "digest" /opt/sentimentpulse/backend/scheduler.py | head -20 || true
+            echo "── 3. Confirm settings updated (masked) ──"
+            curl -s http://127.0.0.1:5000/api/settings -H "x-app-password: SABER" | python3 -c "
+import json,sys
+for s in json.load(sys.stdin):
+    if 'resend' in s['key']:
+        print(s)
+"
+
+            echo ""
+            echo "── 4. Send real test digest to the FULL production recipient list ──"
+            curl -s -w '\nHTTP_STATUS:%{http_code}\n' -X POST http://127.0.0.1:5000/api/leaderboards/email-recipients/test-send \
+              -H "x-app-password: SABER" -H "Content-Type: application/json"
           EOF
