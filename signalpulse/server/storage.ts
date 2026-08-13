@@ -18,6 +18,7 @@ import {
   type YoutubeVideoDaily, type InsertYoutubeVideoDaily, youtubeVideoDaily,
   type ForecastRevision, type InsertForecastRevision, forecastRevisions,
   type AppSetting, type InsertAppSetting, appSettings,
+  type LeaderboardEmailRecipient, type InsertLeaderboardEmailRecipient, leaderboardEmailRecipients,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -289,6 +290,15 @@ function initializeDatabase() {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS leaderboard_email_recipients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT NOT NULL,
+      label TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS leaderboard_recipients_unique_email ON leaderboard_email_recipients(email);
   `);
 }
 
@@ -539,6 +549,13 @@ export interface IStorage {
   getSetting(key: string): AppSetting | undefined;
   upsertSetting(key: string, value: string): AppSetting;
   seedDefaultSettings(): void;
+
+  // Leaderboard Weekly Email Recipients
+  getLeaderboardEmailRecipients(): LeaderboardEmailRecipient[];
+  getActiveLeaderboardEmailRecipients(): LeaderboardEmailRecipient[];
+  createLeaderboardEmailRecipient(data: InsertLeaderboardEmailRecipient): LeaderboardEmailRecipient;
+  updateLeaderboardEmailRecipient(id: number, data: Partial<InsertLeaderboardEmailRecipient>): LeaderboardEmailRecipient | undefined;
+  deleteLeaderboardEmailRecipient(id: number): void;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1700,13 +1717,15 @@ export class DatabaseStorage implements IStorage {
 
   seedDefaultSettings(): void {
     const now = this.now();
-    const defaults: { key: string; label: string; category: string; isSecret: boolean }[] = [
+    const defaults: { key: string; label: string; category: string; isSecret: boolean; value?: string }[] = [
       { key: "steam_api_key", label: "Steam Web API Key", category: "api_keys", isSecret: true },
       { key: "steam_partner_id", label: "Steam Partner ID", category: "api_keys", isSecret: false },
       { key: "sony_api_key", label: "Sony Partner Portal API Key", category: "api_keys", isSecret: true },
       { key: "sony_partner_id", label: "Sony Partner ID", category: "api_keys", isSecret: false },
       { key: "youtube_api_key", label: "YouTube Data API Key", category: "api_keys", isSecret: true },
       { key: "app_password", label: "App Password", category: "general", isSecret: true },
+      { key: "resend_api_key", label: "Resend API Key", category: "email", isSecret: true },
+      { key: "resend_from", label: "Resend From Address", category: "email", isSecret: false, value: "onboarding@resend.dev" },
     ];
 
     for (const d of defaults) {
@@ -1714,7 +1733,7 @@ export class DatabaseStorage implements IStorage {
       if (!existing) {
         db.insert(appSettings).values({
           key: d.key,
-          value: d.key === "app_password" ? "SABER" : "",
+          value: d.key === "app_password" ? "SABER" : (d.value ?? ""),
           label: d.label,
           category: d.category,
           isSecret: d.isSecret,
@@ -1723,6 +1742,38 @@ export class DatabaseStorage implements IStorage {
         }).run();
       }
     }
+  }
+
+  // ─── Leaderboard Weekly Email Recipients ──────────────────────────────────────
+
+  getLeaderboardEmailRecipients(): LeaderboardEmailRecipient[] {
+    return db.select().from(leaderboardEmailRecipients)
+      .orderBy(asc(leaderboardEmailRecipients.createdAt)).all();
+  }
+
+  getActiveLeaderboardEmailRecipients(): LeaderboardEmailRecipient[] {
+    return db.select().from(leaderboardEmailRecipients)
+      .where(eq(leaderboardEmailRecipients.isActive, true))
+      .orderBy(asc(leaderboardEmailRecipients.createdAt)).all();
+  }
+
+  createLeaderboardEmailRecipient(data: InsertLeaderboardEmailRecipient): LeaderboardEmailRecipient {
+    const now = this.now();
+    return db.insert(leaderboardEmailRecipients).values({
+      ...data,
+      createdAt: now,
+    }).returning().get();
+  }
+
+  updateLeaderboardEmailRecipient(id: number, data: Partial<InsertLeaderboardEmailRecipient>): LeaderboardEmailRecipient | undefined {
+    return db.update(leaderboardEmailRecipients)
+      .set(data)
+      .where(eq(leaderboardEmailRecipients.id, id))
+      .returning().get();
+  }
+
+  deleteLeaderboardEmailRecipient(id: number): void {
+    db.delete(leaderboardEmailRecipients).where(eq(leaderboardEmailRecipients.id, id)).run();
   }
 }
 

@@ -480,6 +480,28 @@ export const insertForecastRevisionSchema = createInsertSchema(forecastRevisions
 export type InsertForecastRevision = z.infer<typeof insertForecastRevisionSchema>;
 export type ForecastRevision = typeof forecastRevisions.$inferSelect;
 
+// ─── Leaderboard Weekly Email Recipients ─────────────────────────────────────
+// A managed list, not a comma-separated appSettings string — lets Settings offer
+// real add/remove controls instead of hand-editing text, and lets us pause a
+// recipient without losing their record. See CLAUDE_STEAM_LEADERBOARDS.md §2/§8.1.
+export const leaderboardEmailRecipients = sqliteTable("leaderboard_email_recipients", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  email: text("email").notNull(),
+  label: text("label"), // optional display name, e.g. "Steve Allison"
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueEmail: uniqueIndex("leaderboard_recipients_unique_email").on(table.email),
+}));
+
+export const insertLeaderboardEmailRecipientSchema = createInsertSchema(leaderboardEmailRecipients).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertLeaderboardEmailRecipient = z.infer<typeof insertLeaderboardEmailRecipientSchema>;
+export type LeaderboardEmailRecipient = typeof leaderboardEmailRecipients.$inferSelect;
+
 // ─── App Settings ───────────────────────────────────────────────────────────
 
 export const appSettings = sqliteTable("app_settings", {

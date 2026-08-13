@@ -12,6 +12,7 @@ import {
   getRevenueLeaderboardRows,
   getRevenueLeaderboardKpis,
 } from "./leaderboards";
+import { sendWeeklyLeaderboardDigest } from "./leaderboard-digest";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -1922,6 +1923,91 @@ export async function registerRoutes(
       const rows = getRevenueLeaderboardRows();
       const kpis = getRevenueLeaderboardKpis(rows);
       res.json(kpis);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Weekly Digest Email Recipients (Phase 5) ────────────────────────────────
+  // Managed list, not a comma-separated settings string — see
+  // CLAUDE_STEAM_LEADERBOARDS.md §8.1. `email` is the only required field;
+  // duplicates are rejected with a 400 (unique index on the column).
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  app.get("/api/leaderboards/email-recipients", (_req, res) => {
+    try {
+      const recipients = storage.getLeaderboardEmailRecipients();
+      res.json(recipients);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/leaderboards/email-recipients", (req, res) => {
+    try {
+      const { email, label } = req.body;
+      if (!email || typeof email !== "string" || !EMAIL_RE.test(email.trim())) {
+        return res.status(400).json({ error: "A valid email address is required" });
+      }
+      const created = storage.createLeaderboardEmailRecipient({
+        email: email.trim().toLowerCase(),
+        label: label?.trim() || null,
+        isActive: true,
+      });
+      res.status(201).json(created);
+    } catch (err: any) {
+      if (String(err.message).includes("UNIQUE constraint failed")) {
+        return res.status(400).json({ error: "That email is already on the recipient list" });
+      }
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/leaderboards/email-recipients/:id", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const body: { email?: string; label?: string | null; isActive?: boolean } = {};
+      if (req.body.email !== undefined) {
+        if (!EMAIL_RE.test(String(req.body.email).trim())) {
+          return res.status(400).json({ error: "A valid email address is required" });
+        }
+        body.email = String(req.body.email).trim().toLowerCase();
+      }
+      if (req.body.label !== undefined) body.label = req.body.label?.trim() || null;
+      if (req.body.isActive !== undefined) body.isActive = !!req.body.isActive;
+
+      const updated = storage.updateLeaderboardEmailRecipient(id, body);
+      if (!updated) return res.status(404).json({ error: "Recipient not found" });
+      res.json(updated);
+    } catch (err: any) {
+      if (String(err.message).includes("UNIQUE constraint failed")) {
+        return res.status(400).json({ error: "That email is already on the recipient list" });
+      }
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/leaderboards/email-recipients/:id", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      storage.deleteLeaderboardEmailRecipient(id);
+      res.status(204).send();
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Manual "Send test digest now" trigger (Settings) — lets Phase 5 be
+  // verified end-to-end without waiting for the real Monday 07:00 ET send.
+  // Targets only active recipients, same as the real weekly send.
+  app.post("/api/leaderboards/email-recipients/test-send", async (_req, res) => {
+    try {
+      const result = await sendWeeklyLeaderboardDigest();
+      if (!result.sent) {
+        return res.status(422).json(result);
+      }
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

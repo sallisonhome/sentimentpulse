@@ -448,7 +448,11 @@ export default function Leaderboards() {
                   valueType="currency"
                 />
                 <MoverKpiCard
-                  label="Biggest % Revenue Lift vs Prior 30 Days"
+                  label={
+                    revenueKpis.biggest30dRevenueLift?.direction === "down"
+                      ? "Biggest % Revenue Drop vs Prior 30 Days"
+                      : "Biggest % Revenue Lift vs Prior 30 Days"
+                  }
                   mover={revenueKpis.biggest30dRevenueLift}
                   onOpenChart={(row) => setChartModal({ ...row, dataType: "steamRevenueDaily" })}
                   valueType="percent"
