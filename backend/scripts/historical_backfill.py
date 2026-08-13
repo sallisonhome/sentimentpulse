@@ -102,27 +102,56 @@ def _arctic_shift_page(
         params["title"] = title_query
     if selftext_query:
         params["selftext"] = selftext_query
-    try:
-        r = requests.get(
-            ARCTIC_SHIFT_BASE,
-            params=params,
-            headers={"User-Agent": ARCTIC_SHIFT_USER_AGENT, "Accept": "application/json"},
-            timeout=TIMEOUT,
-        )
-        time.sleep(REQUEST_DELAY)
-        if r.status_code != 200:
-            logger.warning(
-                "arctic_shift HTTP %d for r/%s (before=%d)", r.status_code, subreddit, before_epoch,
+    # v0016.10 (2026-08-12): retry-with-backoff on Arctic Shift's transient
+    # 'Timeout. Maybe slow down a bit' error. Prior behavior returned []
+    # on the first timeout, which the caller interprets as end-of-history
+    # and stops walking the sub entirely — missing all subsequent posts.
+    # Rideshare backfill demonstrated: 5 of 6 subs hit exactly this,
+    # dropping 10 known threads to 1 saved post.
+    _TIMEOUT_RETRY_DELAYS = [3, 8, 20]  # seconds between attempts
+    _RETRY_ERROR_SIGNATURES = ("timeout", "slow down", "too many", "rate")
+
+    for attempt, backoff in enumerate([0] + _TIMEOUT_RETRY_DELAYS):
+        if backoff:
+            time.sleep(backoff)
+        try:
+            r = requests.get(
+                ARCTIC_SHIFT_BASE,
+                params=params,
+                headers={"User-Agent": ARCTIC_SHIFT_USER_AGENT, "Accept": "application/json"},
+                timeout=TIMEOUT,
             )
+            time.sleep(REQUEST_DELAY)
+            if r.status_code != 200:
+                logger.warning(
+                    "arctic_shift HTTP %d for r/%s (before=%d, attempt=%d)",
+                    r.status_code, subreddit, before_epoch, attempt,
+                )
+                if r.status_code in (429, 502, 503, 504) and attempt < len(_TIMEOUT_RETRY_DELAYS):
+                    continue
+                return []
+            data = r.json()
+            if not isinstance(data, dict):
+                logger.warning("arctic_shift bad JSON for r/%s: %s", subreddit, type(data).__name__)
+                return []
+            if "error" in data:
+                err_msg = str(data.get("error") or "").lower()
+                is_retryable = any(sig in err_msg for sig in _RETRY_ERROR_SIGNATURES)
+                if is_retryable and attempt < len(_TIMEOUT_RETRY_DELAYS):
+                    logger.info(
+                        "arctic_shift transient error for r/%s (%s) — retrying in %ds",
+                        subreddit, data.get("error"), _TIMEOUT_RETRY_DELAYS[attempt],
+                    )
+                    continue
+                logger.warning("arctic_shift error for r/%s: %s", subreddit, data.get("error"))
+                return []
+            return data.get("data") or []
+        except Exception as exc:
+            logger.error("arctic_shift request failed for r/%s (attempt=%d): %s", subreddit, attempt, exc)
+            if attempt < len(_TIMEOUT_RETRY_DELAYS):
+                continue
             return []
-        data = r.json()
-        if not isinstance(data, dict) or "error" in data:
-            logger.warning("arctic_shift error for r/%s: %s", subreddit, data.get("error") if isinstance(data, dict) else data)
-            return []
-        return data.get("data") or []
-    except Exception as exc:
-        logger.error("arctic_shift request failed for r/%s: %s", subreddit, exc)
-        return []
+    return []
 
 
 def backfill_dtf_for_game(
