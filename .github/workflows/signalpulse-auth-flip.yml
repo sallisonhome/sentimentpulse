@@ -1,0 +1,74 @@
+name: SignalPulse AUTH_MODE flip
+
+# One-shot workflow to switch SignalPulse's AUTH_MODE.
+# Triggered manually from the Actions tab OR by the scheduled cron on Aug 20
+# (end of grace week) to disable the shared-password fallback.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "AUTH_MODE value: 'saber' (saber-auth only), 'both' (grace-week), or 'legacy' (shared password only)"
+        required: true
+        default: "saber"
+        type: choice
+        options:
+          - saber
+          - both
+          - legacy
+
+jobs:
+  flip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH to droplet and update AUTH_MODE
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 104.236.239.46
+          username: root
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -e
+            MODE="${{ inputs.mode }}"
+            case "$MODE" in
+              saber|both|legacy) ;;
+              *) echo "Invalid mode: $MODE"; exit 1;;
+            esac
+
+            ENVFILE=/etc/signalpulse/env
+            if [ ! -f "$ENVFILE" ]; then
+              echo "ERROR: $ENVFILE does not exist. SignalPulse has never deployed?"
+              exit 1
+            fi
+
+            echo "== Before =="
+            grep '^AUTH_MODE=' "$ENVFILE" || echo "(no AUTH_MODE line)"
+
+            # Replace or append AUTH_MODE
+            if grep -q '^AUTH_MODE=' "$ENVFILE"; then
+              sed -i "s/^AUTH_MODE=.*/AUTH_MODE=${MODE}/" "$ENVFILE"
+            else
+              echo "AUTH_MODE=${MODE}" >> "$ENVFILE"
+            fi
+            chmod 600 "$ENVFILE"
+
+            echo "== After =="
+            grep '^AUTH_MODE=' "$ENVFILE"
+
+            echo "== Restart signalpulse.service =="
+            systemctl restart signalpulse.service
+            sleep 3
+            systemctl is-active signalpulse.service
+
+            echo "== Verify runtime authMode via /signal/api/config =="
+            for i in 1 2 3 4 5; do
+              RESP=$(curl -sS --max-time 5 http://127.0.0.1/signal/api/config || echo "curl-failed")
+              echo "attempt $i: $RESP"
+              if echo "$RESP" | grep -q "\"authMode\":\"${MODE}\""; then
+                echo "OK: runtime authMode matches ${MODE}"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "ERROR: runtime authMode did not converge to ${MODE}"
+            exit 1
