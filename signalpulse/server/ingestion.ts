@@ -286,10 +286,37 @@ export function persistSteamWishlistReportingDay(
 
 async function ingestSteamData(apiKey: string, partnerId: string): Promise<IngestionResult> {
   const products = storage.getAllProducts();
-  const saberProducts = products.filter(p => p.isSaberPublished && p.steamAppId);
+
+  // Wishlist-reporting eligibility (v3.18, 2026-08-13): originally gated to
+  // isSaberPublished only, which meant non-Saber-published-but-revenue-active
+  // titles (Space Marine 2, Tempest Rising, World War Z, Toxic Commando) never
+  // got their steamWishlistSummary card refreshed — those rows went stale
+  // indefinitely since nothing else feeds that table (see getSteamWishlistSummary
+  // in storage.ts, which reads ONLY from this partner-key path).
+  //
+  // Confirmed access: manually running POST /api/steam/backfill/:productId for
+  // Space Marine 2 (isSaberPublished=false) on 2026-08-13 succeeded immediately
+  // against the live Steamworks partner wishlist-reporting endpoint (23/23 days
+  // succeeded in the first few seconds of a 1344-day backfill) — the partner key
+  // has real reporting access for this title despite Saber not being the Steam
+  // publisher of record. User confirmed (2026-08-13) this access extends to the
+  // full revenue-eligible portfolio, sales itself coming in separately via the
+  // Steamworks cookie session, not this key.
+  //
+  // Fix: broaden wishlist-reporting eligibility to Saber-published titles UNION
+  // revenue-eligible titles (same eligibility already used for the cookie-based
+  // sales/revenue leaderboard) — i.e. every title we actually track commercially.
+  // Deliberately does NOT touch the legacy sales/prepurchase sub-block further
+  // below in this same loop (steam_prepurchase_daily via GetDetailedSales) — that
+  // stays isSaberPublished-only, unchanged, since it's a separate superseded path
+  // unrelated to this fix.
+  const revenueEligibleIds = new Set(getRevenueEligibleSteamTitles().map(p => p.id));
+  const saberProducts = products.filter(
+    p => p.steamAppId && (p.isSaberPublished || revenueEligibleIds.has(p.id))
+  );
 
   if (saberProducts.length === 0) {
-    return { source: "steam", status: "skipped", message: "No Saber-published titles with Steam App IDs" };
+    return { source: "steam", status: "skipped", message: "No Saber-published or revenue-eligible titles with Steam App IDs" };
   }
 
   // Data is only final a few hours after the target GMT day ends, so the
@@ -360,7 +387,12 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
       // pre-announcement have no sales endpoint data by definition.
       const releaseMilestone = plsMilestones.find(m => m.name === "Release");
       const releaseHappened = !!releaseMilestone?.actualDate;
-      const purchasableAtSomePoint = prepurchaseActive || releaseHappened;
+      // Kept isSaberPublished-gated deliberately (v3.18): this legacy
+      // GetDetailedSales/steam_prepurchase_daily sub-block is unrelated to the
+      // wishlist-reporting broadening above and is superseded by the
+      // cookie-based ingestSteamSales() for the revenue leaderboard anyway —
+      // don't expand its scope as a side effect of the wishlist fix.
+      const purchasableAtSomePoint = product.isSaberPublished && (prepurchaseActive || releaseHappened);
 
       if (purchasableAtSomePoint) {
         // TODO(perf): hoist this fetch out of the per-product loop; sales
@@ -398,7 +430,10 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
           dataPoints++;
         }
       } else {
-        log(`Steam sales skipped for ${product.title}: neither prepurchase nor release has happened`, "ingestion");
+        const reason = !product.isSaberPublished
+          ? "not Saber-published (revenue tracked separately via cookie-session ingestSteamSales)"
+          : "neither prepurchase nor release has happened";
+        log(`Steam legacy sales/prepurchase fetch skipped for ${product.title}: ${reason}`, "ingestion");
       }
     } catch (err) {
       productErrors.push({ productId: product.id, title: product.title, error: `wishlist: ${String(err)}` });
@@ -416,7 +451,7 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
   return {
     source: "steam",
     status: productErrors.length > 0 && dataPoints === 0 ? "error" : "success",
-    message: `Processed ${saberProducts.length} Saber-published Steam titles for ${targetDate}${errorSummary}`,
+    message: `Processed ${saberProducts.length} Saber-published/revenue-eligible Steam titles for ${targetDate}${errorSummary}`,
     productsProcessed: saberProducts.length,
     dataPointsAdded: dataPoints,
   };
