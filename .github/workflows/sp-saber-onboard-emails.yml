@@ -1,0 +1,214 @@
+name: sp-saber-onboard-emails
+on: workflow_dispatch
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: SSH send emails + restore RESEND key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+          cat > /tmp/onboard-emails.js << 'JS'
+          /**
+           * Send the 9 custom onboarding emails via Resend (using SignalPulse's
+           * key, which is the same Resend account already sending from
+           * mail.howmanyareplaying.com). From: Saber Suite <saber-suite@mail.howmanyareplaying.com>.
+           */
+          'use strict';
+
+          const https = require('https');
+          const fs = require('fs');
+
+          const INVITES = [
+            {"email":"steve.allison.home@gmail.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=b14dafa53b5db713754dd55f3e08025dc94f50320258fd98631f379e7a567995"},
+            {"email":"iones@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=2e73987c52ee7156741d87b0c2114424103e0cdf5d264d87d4b809717e9590e3"},
+            {"email":"karch@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=80aa4c007470dc0348d76b9cf99213c8ce65bcf90784a4d6dfbc57d305f16ce5"},
+            {"email":"cwade@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=6142d5a7a64af893dfccac222377ce7d6637c49b22681d602b060cc5d75ec230"},
+            {"email":"krupkin@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=3bd9b28d2e9674c0b66b3b960ac5cf542677bea7a57cc4f6fa8e7e265c482d27"},
+            {"email":"twillits@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=c0532b051a016a93a03ac95ec5308b2b958028356df5eedcfce8dacc7a0e72b2"},
+            {"email":"jburnham@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=cc710af08050474efda7fe3fb11819a39e79b932acaba93b3b4b3d5dbab64bb6"},
+            {"email":"jortmann@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=21d72845e280a1f169855d2d2994de7df9ae4204eaf7a32ab676fe23a08e01e2"},
+            {"email":"snorton@saber3d.com","acceptUrl":"http://104.236.239.46/auth/accept-invite.html?token=1ccc30f8b8e72a345b047e5fdbd9debd28b83168528493dacd5299f27b22dc94"}
+          ];
+
+          const FROM = 'Saber Suite <saber-suite@mail.howmanyareplaying.com>';
+          const REPLY_TO = 'sallisonhome@yahoo.com';
+          const SUBJECT = 'Set up your Saber Suite login by Thursday, August 20';
+
+          // Get Resend key from SignalPulse settings SQLite DB
+          const Database = require('/opt/sentimentpulse/signalpulse/node_modules/better-sqlite3');
+          const spDb = new Database('/opt/sentimentpulse/signalpulse/data/sqlite.db', { readonly: true });
+          let rk;
+          try {
+            rk = spDb.prepare("SELECT value FROM settings WHERE key = 'resend_api_key'").get();
+          } catch (e) {
+            console.error('DB read failed:', e.message);
+            process.exit(1);
+          }
+          spDb.close();
+          if (!rk || !rk.value) {
+            console.error('resend_api_key not found in signalpulse settings');
+            process.exit(1);
+          }
+          const RESEND_KEY = rk.value;
+          console.log('Loaded Resend key from SignalPulse settings, length=' + RESEND_KEY.length);
+
+          function esc(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          }
+
+          function buildHtml(acceptUrl) {
+            return `<!doctype html><html><body style="margin:0;padding:0;background:#f5f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0f172a;">
+            <div style="max-width:600px;margin:0 auto;padding:32px 24px;background:#ffffff;">
+              <div style="border-bottom:2px solid #1a3a5c;padding-bottom:16px;margin-bottom:24px;">
+                <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.12em;color:#64748b;">Saber Interactive</div>
+                <div style="font-size:22px;font-weight:700;color:#1a3a5c;margin-top:4px;">Intelligence Suite</div>
+              </div>
+              <p style="font-size:15px;line-height:1.6;margin:0 0 16px;">Hi,</p>
+              <p style="font-size:15px;line-height:1.6;margin:0 0 16px;">
+                You currently receive the weekly SignalPulse leaderboard digest. We're moving the whole Saber intelligence suite &mdash;
+                <strong>SignalPulse, SentimentPulse, TripTracker, GenrePulse, and GTM Studio</strong> &mdash;
+                behind a single per-person login so we can invite and revoke people individually instead of sharing one password.
+              </p>
+              <p style="font-size:15px;line-height:1.6;margin:0 0 24px;background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;">
+                <strong>The old shared <code style="background:#fde68a;padding:2px 6px;border-radius:4px;">SABER</code> password stops working on Thursday, August 20, 2026.</strong>
+                After that date, you'll need your own account to reach any of the tools.
+              </p>
+              <h3 style="font-size:16px;color:#1a3a5c;margin:24px 0 12px;">What to do (takes about 60 seconds)</h3>
+              <p style="font-size:15px;line-height:1.6;margin:0 0 12px;"><strong>1. Click your personal invite link:</strong></p>
+              <table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:8px 0 20px;">
+                <tr><td style="background:#1a3a5c;border-radius:8px;">
+                  <a href="${esc(acceptUrl)}" style="display:inline-block;color:#ffffff;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:700;font-size:16px;">Set up my Saber Suite account &rarr;</a>
+                </td></tr>
+              </table>
+              <p style="font-size:15px;line-height:1.6;margin:0 0 12px;">
+                <strong>2. Pick a password.</strong> Minimum 12 characters. Use anything you'll remember &mdash; a passphrase like <code>blue-hedgehog-writes-code</code> works. You can also let your browser or 1Password generate one.
+              </p>
+              <p style="font-size:15px;line-height:1.6;margin:0 0 24px;">
+                <strong>3. Submit.</strong> You'll be signed in immediately. Bookmark <a href="http://104.236.239.46/" style="color:#1a3a5c;">http://104.236.239.46/</a> &mdash; that's the suite's front door.
+              </p>
+              <h3 style="font-size:16px;color:#1a3a5c;margin:24px 0 12px;">After you're set up</h3>
+              <ul style="font-size:14px;line-height:1.7;margin:0 0 20px;padding-left:20px;color:#334155;">
+                <li><strong>To sign in later:</strong> go to <a href="http://104.236.239.46/" style="color:#1a3a5c;">http://104.236.239.46/</a> and use your email + the password you just set.</li>
+                <li><strong>Forgot your password?</strong> Use "Forgot password" on the login page &mdash; you'll get a reset email within a minute.</li>
+                <li><strong>The old <code>SABER</code> password still works until Thursday, August 20</strong> as a fallback. After that, only your personal login works.</li>
+              </ul>
+              <h3 style="font-size:16px;color:#1a3a5c;margin:24px 0 12px;">Why this change</h3>
+              <p style="font-size:14px;line-height:1.6;margin:0 0 20px;color:#334155;">
+                The old single-password gate meant if anyone left the team or a password leaked, we'd have to reset it for everyone at once. Per-person accounts let us grant or revoke access one person at a time, and any admin action is auditable.
+              </p>
+              <p style="font-size:14px;line-height:1.6;margin:24px 0 16px;color:#64748b;">
+                <strong>Your invite link expires in 7 days (Thursday, August 20).</strong> If you miss the window, reply to this email and I'll re-send it.
+              </p>
+              <p style="font-size:15px;line-height:1.6;margin:24px 0 0;">Thanks &mdash;<br>Steve</p>
+            </div>
+            </body></html>`;
+          }
+
+          function buildText(acceptUrl) {
+            return `Hi,
+
+          You currently receive the weekly SignalPulse leaderboard digest. We're moving the whole Saber intelligence suite -- SignalPulse, SentimentPulse, TripTracker, GenrePulse, and GTM Studio -- behind a single per-person login so we can invite and revoke people individually instead of sharing one password.
+
+          THE OLD SHARED "SABER" PASSWORD STOPS WORKING ON THURSDAY, AUGUST 20, 2026. After that date, you'll need your own account to reach any of the tools.
+
+          WHAT TO DO (takes about 60 seconds)
+
+          1. Click your personal invite link:
+             ${acceptUrl}
+
+          2. Pick a password. Minimum 12 characters. Use anything you'll remember -- a passphrase like "blue-hedgehog-writes-code" works. You can also let your browser or 1Password generate one.
+
+          3. Submit. You'll be signed in immediately. Bookmark http://104.236.239.46/ -- that's the suite's front door.
+
+          AFTER YOU'RE SET UP
+
+          - To sign in later: go to http://104.236.239.46/ and use your email + the password you just set.
+          - Forgot your password? Use "Forgot password" on the login page -- you'll get a reset email within a minute.
+          - The old "SABER" password still works until Thursday, August 20 as a fallback. After that, only your personal login works.
+
+          WHY THIS CHANGE
+
+          The old single-password gate meant if anyone left the team or a password leaked, we'd have to reset it for everyone at once. Per-person accounts let us grant or revoke access one person at a time, and any admin action is auditable.
+
+          Your invite link expires in 7 days (Thursday, August 20). If you miss the window, reply to this email and I'll re-send it.
+
+          Thanks --
+          Steve`;
+          }
+
+          function sendResend({ to, subject, html, text }) {
+            const body = JSON.stringify({ from: FROM, to: [to], reply_to: REPLY_TO, subject, html, text });
+            return new Promise((resolve) => {
+              const req = https.request({
+                method: 'POST', hostname: 'api.resend.com', path: '/emails',
+                headers: {
+                  'Authorization': `Bearer ${RESEND_KEY}`,
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(body),
+                },
+              }, (res) => {
+                let chunks = '';
+                res.on('data', c => chunks += c);
+                res.on('end', () => resolve({ status: res.statusCode, body: chunks }));
+              });
+              req.on('error', (err) => resolve({ status: 0, body: err.message }));
+              req.write(body);
+              req.end();
+            });
+          }
+
+          (async () => {
+            const results = [];
+            for (const invite of INVITES) {
+              const r = await sendResend({
+                to: invite.email,
+                subject: SUBJECT,
+                html: buildHtml(invite.acceptUrl),
+                text: buildText(invite.acceptUrl),
+              });
+              const success = r.status >= 200 && r.status < 300;
+              let parsed = {};
+              try { parsed = JSON.parse(r.body); } catch (_) {}
+              results.push({ email: invite.email, ok: success, status: r.status, id: parsed.id, error: parsed.message || (success ? null : r.body.slice(0, 200)) });
+              console.log(`${success ? 'OK ' : 'ERR'} ${invite.email}  status=${r.status}  id=${parsed.id || '-'}`);
+              await new Promise(r => setTimeout(r, 300)); // gentle rate limit
+            }
+            console.log('\n=== EMAIL SEND RESULTS (JSON) ===');
+            console.log(JSON.stringify(results, null, 2));
+            console.log('=== END EMAIL SEND RESULTS ===\n');
+            const ok = results.filter(r => r.ok).length;
+            console.log(`Successful sends: ${ok}/${INVITES.length}`);
+            if (ok < INVITES.length) process.exit(2);
+          })();
+          JS
+
+          scp -i ~/.ssh/id_ed25519 /tmp/onboard-emails.js root@104.236.239.46:/tmp/onboard-emails.js
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 << 'REMOTE'
+            set +e
+            node /tmp/onboard-emails.js
+            EXIT_CODE=$?
+            rm -f /tmp/onboard-emails.js
+
+            echo ""
+            echo "=== Restoring saber-auth RESEND_API_KEY ==="
+            ENV=/opt/saber-auth/.env
+            if [ -f /root/.saber-auth-resend-key.bak ]; then
+              # Replace the blank line with the saved line
+              sed -i -E "s|^RESEND_API_KEY=.*|$(cat /root/.saber-auth-resend-key.bak)|" $ENV
+              rm /root/.saber-auth-resend-key.bak
+              systemctl restart saber-auth
+              sleep 2
+              systemctl is-active saber-auth
+              echo "Restored + restarted."
+              grep '^RESEND_API_KEY=' $ENV | sed -E 's/(RESEND_API_KEY=)([^=]{4}).*/\1\2..REDACTED/'
+            else
+              echo "WARN: no backup at /root/.saber-auth-resend-key.bak"
+            fi
+
+            exit $EXIT_CODE
+          REMOTE
