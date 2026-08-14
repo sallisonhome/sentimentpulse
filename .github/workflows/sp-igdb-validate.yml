@@ -52,7 +52,7 @@ jobs:
 
           echo ""
           echo "== 4. IGDB hype rows BEFORE ingestion =="
-          sqlite3 -header -column "$DB" "SELECT p.name, ih.date, ih.igdb_id, ih.hype_score FROM igdb_hype_daily ih JOIN products p ON p.id = ih.product_id WHERE ih.date >= date('now','-3 days') ORDER BY ih.date DESC, p.name;"
+          sqlite3 -header -column "$DB" "SELECT p.title, ih.date, ih.igdb_id, ih.hype_score FROM igdb_hype_daily ih JOIN products p ON p.id = ih.product_id WHERE ih.date >= date('now','-3 days') ORDER BY ih.date DESC, p.title;"
 
           echo ""
           echo "== 5. Trigger full ingestion =="
@@ -69,7 +69,7 @@ jobs:
 
           echo ""
           echo "== 8. IGDB hype rows AFTER ingestion =="
-          sqlite3 -header -column "$DB" "SELECT p.name, ih.date, ih.igdb_id, ih.hype_score FROM igdb_hype_daily ih JOIN products p ON p.id = ih.product_id WHERE ih.date = (SELECT MAX(date) FROM igdb_hype_daily) ORDER BY p.name;"
+          sqlite3 -header -column "$DB" "SELECT p.title, ih.date, ih.igdb_id, ih.hype_score FROM igdb_hype_daily ih JOIN products p ON p.id = ih.product_id WHERE ih.date = (SELECT MAX(date) FROM igdb_hype_daily) ORDER BY p.title;"
 
           echo ""
           echo "== 9. Coverage summary =="
