@@ -23,6 +23,9 @@ interface SessionInfo {
   cookiePreview?: string;
   cookieByteLength?: number;
   updatedAt?: string;
+  refreshSource?: string | null;
+  autoRefreshLastAttemptAt?: string | null;
+  autoRefreshLastResult?: string | null;
 }
 
 export function SteamworksSessionSettings() {
@@ -172,6 +175,21 @@ export function SteamworksSessionSettings() {
                 Last verified: {new Date(session.lastVerifiedAt).toLocaleString()} · {session.lastVerifiedResult}
               </div>
             )}
+            {session.refreshSource && (
+              <div className="text-xs text-muted-foreground">
+                Current cookie source: {
+                  session.refreshSource === "manual" ? "pasted manually" :
+                  session.refreshSource === "agent_on_demand" ? "agent (on-demand)" :
+                  session.refreshSource === "agent_scheduled" ? "agent (nightly self-heal)" :
+                  session.refreshSource
+                }
+              </div>
+            )}
+            {session.autoRefreshLastAttemptAt && (
+              <div className="text-xs text-muted-foreground">
+                Last auto-refresh attempt: {new Date(session.autoRefreshLastAttemptAt).toLocaleString()} · {session.autoRefreshLastResult}
+              </div>
+            )}
             <div className="pt-1">
               <Button
                 variant="outline"
@@ -189,9 +207,26 @@ export function SteamworksSessionSettings() {
           </div>
         )}
 
+        {/* Agent auto-refresh note (v3.18, 2026-08-14) — explains the
+            on-demand + nightly self-heal flow. No button here that
+            claims to read your browser directly: a webpage can never read
+            partner.steampowered.com's HttpOnly session cookie (browser
+            security, not a missing feature) — only the Perplexity agent
+            driving your actual browser via CDP can do that. */}
+        <div className="rounded border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-muted-foreground space-y-1">
+          <div className="font-medium text-foreground">Agent-assisted refresh</div>
+          <div>
+            Ask your Perplexity agent to “refresh the Steam cookie” anytime — it opens your
+            logged-in Comet session, pulls the fresh cookie, saves it here, and re-verifies automatically.
+            A nightly check also runs shortly after the 3 AM ingestion and attempts the same fix if
+            sales ingestion failed on an expired cookie (requires Comet open and logged in to Steamworks
+            at that time; otherwise you're notified to refresh manually).
+          </div>
+        </div>
+
         {/* Instructions */}
         <div className="text-xs text-muted-foreground space-y-1 border-l-2 pl-3">
-          <div className="font-medium text-foreground">How to grab your cookie:</div>
+          <div className="font-medium text-foreground">How to grab your cookie manually:</div>
           <ol className="list-decimal ml-4 space-y-0.5">
             <li>Log in to <code className="text-[10px]">partner.steampowered.com</code> in Chrome/Edge.</li>
             <li>Open DevTools (F12) → <strong>Application</strong> tab (click » overflow if hidden).</li>

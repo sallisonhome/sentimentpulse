@@ -1143,6 +1143,9 @@ export async function registerRoutes(
       cookiePreview: session.cookieValue.slice(0, 30) + "...",
       cookieByteLength: session.cookieValue.length,
       updatedAt: session.updatedAt,
+      refreshSource: session.refreshSource ?? null,
+      autoRefreshLastAttemptAt: session.autoRefreshLastAttemptAt ?? null,
+      autoRefreshLastResult: session.autoRefreshLastResult ?? null,
     });
   });
 
@@ -1154,12 +1157,21 @@ export async function registerRoutes(
         return res.status(400).json({ error: "cookieValue is required (min 20 chars)" });
       }
       const loggedInAs = typeof req.body?.loggedInAs === "string" ? req.body.loggedInAs.trim() : null;
+      // v3.18 (2026-08-14): provenance tag for who/what pushed this cookie.
+      // 'manual' (pasted in the UI) is the default; the Perplexity agent
+      // passes 'agent_on_demand' or 'agent_scheduled' when it pulls the
+      // cookie from the user's local Comet browser session via CDP.
+      const refreshSourceRaw = typeof req.body?.refreshSource === "string" ? req.body.refreshSource.trim() : "manual";
+      const refreshSource = ["manual", "agent_on_demand", "agent_scheduled"].includes(refreshSourceRaw)
+        ? refreshSourceRaw
+        : "manual";
       const session = storage.upsertSteamworksSession({
         id: "default",
         cookieValue,
         loggedInAs,
         lastVerifiedAt: null,
         lastVerifiedResult: null,
+        refreshSource,
       });
       // Fresh cookie pasted in — reset the expiry-alert cooldown so the
       // next failure (a new episode) alerts immediately rather than
@@ -1179,6 +1191,24 @@ export async function registerRoutes(
   app.delete("/api/steam/session", (_req, res) => {
     const removed = storage.deleteSteamworksSession("default");
     res.json({ removed });
+  });
+
+  // v3.18 (2026-08-14): logs an agent-driven cookie auto-refresh ATTEMPT,
+  // independent of whether it resulted in a saved cookie. Used by the
+  // Perplexity agent's on-demand and scheduled self-heal flows so the
+  // Settings UI can show real auto-refresh health (including failed
+  // attempts, e.g. "no browser reachable" or "Steam session also expired")
+  // rather than only ever reflecting the last successful cookie save.
+  app.post("/api/steam/session/refresh-log", (req, res) => {
+    try {
+      const result = String(req.body?.result ?? "").trim();
+      if (!result) return res.status(400).json({ error: "result is required" });
+      const attemptedAt = new Date().toISOString();
+      storage.logSteamworksSessionRefreshAttempt("default", attemptedAt, result.slice(0, 300));
+      res.json({ ok: true, attemptedAt, result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // POST: test-fetch endpoint. Verifies the session cookie works and

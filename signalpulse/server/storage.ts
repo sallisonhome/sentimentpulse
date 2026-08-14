@@ -316,6 +316,9 @@ function migrateAddColumnIfMissing(table: string, column: string, ddl: string) {
 function runMigrations() {
   migrateAddColumnIfMissing("products", "steam_header_image_url", "steam_header_image_url TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "alert_sent_at", "alert_sent_at TEXT");
+  migrateAddColumnIfMissing("steamworks_sessions", "refresh_source", "refresh_source TEXT");
+  migrateAddColumnIfMissing("steamworks_sessions", "auto_refresh_last_attempt_at", "auto_refresh_last_attempt_at TEXT");
+  migrateAddColumnIfMissing("steamworks_sessions", "auto_refresh_last_result", "auto_refresh_last_result TEXT");
 }
 
 initializeDatabase();
@@ -488,6 +491,7 @@ export interface IStorage {
   getSteamworksSession(id: string): SteamworksSession | undefined;
   upsertSteamworksSession(data: InsertSteamworksSession): SteamworksSession;
   deleteSteamworksSession(id: string): boolean;
+  logSteamworksSessionRefreshAttempt(id: string, attemptedAt: string, result: string): void;
   // Proactive cookie-expiry alerting: tracks when we last sent an expiry
   // email for the CURRENT failure episode, separate from upsertSteamworksSession
   // so unrelated callers (cookie save, verify-ok) can't accidentally clobber it.
@@ -1237,6 +1241,7 @@ export class DatabaseStorage implements IStorage {
             loggedInAs: data.loggedInAs,
             lastVerifiedAt: data.lastVerifiedAt,
             lastVerifiedResult: data.lastVerifiedResult,
+            refreshSource: data.refreshSource ?? null,
             updatedAt: now,
           })
           .where(eq(steamworksSessions.id, data.id))
@@ -1244,6 +1249,20 @@ export class DatabaseStorage implements IStorage {
       }
       throw err;
     }
+  }
+
+  // Records the outcome of an agent-driven cookie auto-refresh ATTEMPT,
+  // independent of whether it resulted in a saved cookie. Called for both
+  // successful and failed attempts (e.g. "no browser available") so the
+  // Settings UI can show real auto-refresh health history rather than
+  // only ever reflecting the last successful save.
+  logSteamworksSessionRefreshAttempt(id: string, attemptedAt: string, result: string): void {
+    const existing = db.select().from(steamworksSessions).where(eq(steamworksSessions.id, id)).get();
+    if (!existing) return; // nothing configured yet — nothing to annotate
+    db.update(steamworksSessions)
+      .set({ autoRefreshLastAttemptAt: attemptedAt, autoRefreshLastResult: result })
+      .where(eq(steamworksSessions.id, id))
+      .run();
   }
 
   deleteSteamworksSession(id: string): boolean {

@@ -227,6 +227,17 @@ export const steamworksSessions = sqliteTable("steamworks_sessions", {
   // (or on a fresh cookie save) so the next expiry re-alerts immediately
   // instead of staying silent forever. See server/ingestion.ts ingestSteamSales().
   alertSentAt: text("alert_sent_at"),
+  // v3.18 (2026-08-14): provenance + health tracking for the agent-driven
+  // cookie auto-refresh flow (Perplexity agent pulls the live Steamworks
+  // session cookie from the user's local browser via CDP and pushes it
+  // here — either on-demand or from a scheduled nightly self-heal check).
+  // 'refreshSource' records how the CURRENTLY STORED cookie got here;
+  // the auto_refresh_last_* fields track the most recent auto-refresh
+  // ATTEMPT regardless of whether it resulted in a saved cookie (e.g. a
+  // failed attempt because no browser was reachable still gets logged).
+  refreshSource: text("refresh_source"), // 'manual' | 'agent_on_demand' | 'agent_scheduled'
+  autoRefreshLastAttemptAt: text("auto_refresh_last_attempt_at"),
+  autoRefreshLastResult: text("auto_refresh_last_result"), // 'success' | 'no_browser_available' | 'steam_session_also_expired' | 'test_fetch_failed: ...'
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
