@@ -1,11 +1,19 @@
 /**
- * Weekly Steam Leaderboard Digest (Phase 5). See CLAUDE_STEAM_LEADERBOARDS.md
- * §8/§8.1.
+ * Weekly Steam Leaderboard Digest (Phase 5, redesigned v4.0 2026-08-14).
+ * See CLAUDE_STEAM_LEADERBOARDS.md §8/§8.1.
  *
- * Renders the approved HTML design (ported verbatim from the
- * design-sign-off preview, `/home/user/workspace/build_digest_preview.py`)
- * against LIVE leaderboard data via the same `leaderboards.ts` getters the
- * `/leaderboards` UI uses — no separate calculation path, per plan.
+ * v4.0 change (user direction, 2026-08-14): the digest previously rendered
+ * LIVE point-in-time leaderboard state (24h/7d deltas) via leaderboards.ts.
+ * It now summarizes the PRIOR Mon-Sun week: total wishlist adds, total
+ * follower adds, rank movement (closing Sunday vs prior Sunday), and total
+ * revenue per title per SKU category (base game vs DLC) — see
+ * leaderboard-digest-weekly.ts for all aggregation/gating logic.
+ *
+ * v4.0 also adds a hold/release gate: if any revenue-eligible title is
+ * missing a cron-ingestion batch for any day in the week window (e.g. the
+ * Steamworks session cookie went stale), the Monday send is HELD rather
+ * than sent with a silent gap. It auto-releases and sends as soon as the
+ * missing day(s) are backfilled by a later ingestion run.
  *
  * Resend send logic mirrors `sentimentpulse/backend/services/digest_service.py`
  * `_post_to_resend`/`_send_via_resend` exactly: HTTPS-only (DigitalOcean
@@ -15,11 +23,13 @@
  */
 import { storage } from "./storage";
 import {
-  getWishlistLeaderboardRows, getWishlistLeaderboardKpis,
-  getRevenueLeaderboardRows, getRevenueLeaderboardKpis,
-  type WishlistLeaderboardRow, type RevenueLeaderboardRow,
-  type LeaderboardMover, type RevenueLeaderboardMover,
-} from "./leaderboards";
+  getWeekWindow, getWeeklyWishlistRows, getWeeklyWishlistKpis,
+  getWeeklyRevenueRows, getWeeklyRevenueKpis,
+  detectSalesGaps, getHeldDigestWeek, setHeldDigestWeek, clearHeldDigestWeek,
+  type WeekWindow, type WeeklyWishlistRow, type WeeklyRevenueRow,
+  type WeeklyMover, type WeeklyRevenueMover,
+} from "./leaderboard-digest-weekly";
+import { callSonar, sonarAvailable } from "./sonar-client";
 import { log } from "./index";
 
 const BASE_URL = "http://104.236.239.46/signal";
@@ -49,16 +59,16 @@ function fmtUsd(n: number | null | undefined): string {
   return n == null ? "—" : `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 }
 
-function fmtPct(n: number | null | undefined): string {
-  if (n == null) return "—";
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(1)}%`;
-}
-
 function fmtSigned(n: number | null | undefined): string {
   if (n == null) return "—";
   const sign = n > 0 ? "+" : "";
   return `${sign}${n.toLocaleString("en-US")}`;
+}
+
+function fmtSignedUsd(n: number | null | undefined): string {
+  if (n == null) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}$${Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 }
 
 function arrow(direction: "up" | "down"): string {
@@ -71,8 +81,8 @@ function colorFor(direction: "up" | "down"): string {
 
 function moverCard(
   label: string,
-  mover: LeaderboardMover | RevenueLeaderboardMover | null,
-  opts?: { widthPct?: number; emptyMessage?: string },
+  mover: WeeklyMover | WeeklyRevenueMover | null,
+  opts?: { widthPct?: number; emptyMessage?: string; suffix?: string; format?: (n: number) => string },
 ): string {
   const widthPct = opts?.widthPct ?? 33.33;
   if (mover == null) {
@@ -83,13 +93,13 @@ function moverCard(
         <tr><td style="padding:16px;">
           <div style="font-size:11px; font-weight:700; letter-spacing:.06em; color:${TEXT_MUTED};
                       text-transform:uppercase; margin-bottom:8px; font-family:${FONT};">${esc(label)}</div>
-          <div style="font-size:14px; color:${TEXT_MUTED}; font-style:italic; font-family:${FONT};">${esc(opts?.emptyMessage ?? "Not enough history yet")}</div>
+          <div style="font-size:14px; color:${TEXT_MUTED}; font-style:italic; font-family:${FONT};">${esc(opts?.emptyMessage ?? "No movement this week")}</div>
         </td></tr>
       </table>
     </td>`;
   }
-  const isPercent = "isPercent" in mover && mover.isPercent;
-  const deltaDisplay = isPercent ? fmtPct(mover.delta) : fmtSigned(mover.delta);
+  const fmt = opts?.format ?? fmtSigned;
+  const deltaDisplay = `${fmt(mover.delta)}${opts?.suffix ?? ""}`;
   const c = colorFor(mover.direction);
   return `
     <td style="width:${widthPct}%; padding:6px;" valign="top">
@@ -113,9 +123,32 @@ function moverCard(
     </td>`;
 }
 
-function wlTableRow(r: WishlistLeaderboardRow): string {
-  const wlDeltaC = (r.wishlistDelta1d ?? 0) >= 0 ? POSITIVE : NEGATIVE;
-  const folDeltaC = (r.followersDelta1d ?? 0) >= 0 ? POSITIVE : NEGATIVE;
+function statPill(label: string, value: string, widthPct = 50): string {
+  return `
+    <td style="width:${widthPct}%; padding:6px;" valign="top">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+             style="background:${BRAND_ACCENT}; border-radius:8px;">
+        <tr><td style="padding:14px 16px;">
+          <div style="font-size:10.5px; font-weight:700; letter-spacing:.06em; color:#cbd8e5;
+                      text-transform:uppercase; margin-bottom:5px; font-family:${FONT};">${esc(label)}</div>
+          <div style="font-size:22px; font-weight:800; color:#ffffff; font-family:${FONT}; font-variant-numeric:tabular-nums;">${esc(value)}</div>
+        </td></tr>
+      </table>
+    </td>`;
+}
+
+function narrativeBlock(text: string | null): string {
+  if (!text) return "";
+  return `
+  <div style="margin-top:12px; padding:12px 14px; background:#fafafa; border-left:3px solid ${BRAND_ACCENT}; border-radius:0 6px 6px 0;">
+    <div style="font-size:13px; color:${TEXT_PRIMARY}; line-height:1.5; font-family:${FONT};">${esc(text)}</div>
+  </div>`;
+}
+
+function wlTableRow(r: WeeklyWishlistRow): string {
+  const addsC = (r.weeklyWishlistAdds ?? 0) >= 0 ? POSITIVE : NEGATIVE;
+  const folC = (r.weeklyFollowerAdds ?? 0) >= 0 ? POSITIVE : NEGATIVE;
+  const rankDeltaC = r.rankDelta == null ? TEXT_MUTED : r.rankDelta >= 0 ? POSITIVE : NEGATIVE;
   return `
     <tr style="border-bottom:1px solid ${BORDER};">
       <td style="padding:10px 8px; font-family:${FONT};">
@@ -124,19 +157,15 @@ function wlTableRow(r: WishlistLeaderboardRow): string {
           <span style="font-size:13px; font-weight:600; color:${TEXT_PRIMARY};">${esc(r.title)}</span>
         </div>
       </td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtNum(r.wishlistTotal)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${wlDeltaC}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtSigned(r.wishlistDelta1d)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtNum(r.followersTotal)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${folDeltaC}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtSigned(r.followersDelta1d)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${r.rankCurrent ?? "—"}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_MUTED}; font-variant-numeric:tabular-nums; font-family:${FONT};">${r.rankDelta7d != null ? fmtSigned(r.rankDelta7d) : "—"}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${addsC}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtSigned(r.weeklyWishlistAdds)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${folC}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtSigned(r.weeklyFollowerAdds)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${r.rankSunday ?? "—"}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${rankDeltaC}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${r.rankDelta != null ? fmtSigned(r.rankDelta) : "—"}</td>
       <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${r.igdbHype ?? "—"}</td>
     </tr>`;
 }
 
-function revTableRow(r: RevenueLeaderboardRow): string {
-  const revDeltaC = (r.revenueDeltaPct24h ?? 0) >= 0 ? POSITIVE : NEGATIVE;
-  const d30C = (r.revenueDelta30dPct ?? 0) >= 0 ? POSITIVE : NEGATIVE;
+function revTableRow(r: WeeklyRevenueRow): string {
   return `
     <tr style="border-bottom:1px solid ${BORDER};">
       <td style="padding:10px 8px; font-family:${FONT};">
@@ -145,43 +174,69 @@ function revTableRow(r: RevenueLeaderboardRow): string {
           <span style="font-size:13px; font-weight:600; color:${TEXT_PRIMARY};">${esc(r.title)}</span>
         </div>
       </td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtNum(r.units24h)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtUsd(r.revenue24hUsd)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${revDeltaC}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtPct(r.revenueDeltaPct24h)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtUsd(r.ltdRevenueUsd)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtUsd(r.revenue30d)}</td>
-      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${d30C}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtPct(r.revenueDelta30dPct)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtNum(r.baseUnitsWeek)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtUsd(r.baseRevenueWeek)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtNum(r.dlcUnitsWeek)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtUsd(r.dlcRevenueWeek)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_PRIMARY}; font-weight:600; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtUsd(r.totalRevenueWeek)}</td>
+      <td style="padding:10px 8px; text-align:right; font-size:13px; color:${TEXT_MUTED}; font-variant-numeric:tabular-nums; font-family:${FONT};">${fmtUsd(r.ltdRevenueUsd)}</td>
     </tr>`;
 }
 
-function formatWeekLabel(now: Date): { weekOf: string; sentOn: string } {
-  // "Week of" = the prior Mon-Sun week ending the Sunday before this send
-  // (send happens Monday 07:00 ET, covering the week that just closed).
-  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const dow = et.getDay(); // 0=Sun..6=Sat; a Monday send has dow===1
-  const daysSinceSunday = dow === 0 ? 7 : dow; // days back to the most recent Sunday (end of prior week)
-  const weekEnd = new Date(et);
-  weekEnd.setDate(et.getDate() - daysSinceSunday);
-  const weekStart = new Date(weekEnd);
-  weekStart.setDate(weekEnd.getDate() - 6);
-
-  const monthDay = (d: Date) => d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/New_York" });
-  const weekOf = weekStart.getMonth() === weekEnd.getMonth()
-    ? `${monthDay(weekStart)} – ${weekEnd.getDate()}, ${weekEnd.getFullYear()}`
-    : `${monthDay(weekStart)} – ${monthDay(weekEnd)}, ${weekEnd.getFullYear()}`;
-  const sentOn = et.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/New_York" });
+function formatWeekLabel(window: WeekWindow, sentAt: Date): { weekOf: string; sentOn: string } {
+  const weekStart = new Date(`${window.weekStart}T12:00:00.000Z`);
+  const weekEnd = new Date(`${window.weekEnd}T12:00:00.000Z`);
+  const monthDay = (d: Date) => d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" });
+  const weekOf = weekStart.getUTCMonth() === weekEnd.getUTCMonth()
+    ? `${monthDay(weekStart)} – ${weekEnd.getUTCDate()}, ${weekEnd.getUTCFullYear()}`
+    : `${monthDay(weekStart)} – ${monthDay(weekEnd)}, ${weekEnd.getUTCFullYear()}`;
+  const sentOn = sentAt.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "America/New_York" });
   return { weekOf, sentOn };
 }
 
-export function renderWeeklyDigestHtml(now: Date = new Date()): { subject: string; html: string } {
-  const wlRows = getWishlistLeaderboardRows();
-  const wlKpis = getWishlistLeaderboardKpis(wlRows);
-  const revRows = getRevenueLeaderboardRows();
-  const revKpis = getRevenueLeaderboardKpis(revRows);
+// ─── LLM narrative (Perplexity Sonar, optional — graceful degradation) ─────
+
+async function generateDigestNarrative(section: "wishlist" | "revenue", summary: string): Promise<string | null> {
+  if (!sonarAvailable()) return null;
+  const prompt = section === "wishlist"
+    ? `Write a short internal digest paragraph summarizing this week's Steam wishlist/follower/rank movement for our pre-release titles. Data:\n${summary}`
+    : `Write a short internal digest paragraph summarizing this week's Steam sales revenue (game + DLC) for our released/pre-purchase titles. Data:\n${summary}`;
+  return callSonar(prompt);
+}
+
+function buildWishlistNarrativeSummary(rows: WeeklyWishlistRow[], kpis: ReturnType<typeof getWeeklyWishlistKpis>): string {
+  const lines = rows.map((r) =>
+    `- ${r.title}: ${r.weeklyWishlistAdds ?? "no data"} net wishlist adds, ${r.weeklyFollowerAdds ?? "no data"} follower adds, rank ${r.rankSunday ?? "unranked"} (${r.rankDelta != null ? (r.rankDelta >= 0 ? `+${r.rankDelta} spots` : `${r.rankDelta} spots`) : "no prior rank"}).`
+  );
+  return `Total wishlist adds across all titles: ${kpis.totalWishlistAdds}. Total follower adds: ${kpis.totalFollowerAdds}.\n${lines.join("\n")}`;
+}
+
+function buildRevenueNarrativeSummary(rows: WeeklyRevenueRow[], kpis: ReturnType<typeof getWeeklyRevenueKpis>): string {
+  const lines = rows.map((r) =>
+    `- ${r.title}: ${r.baseUnitsWeek} base units (${fmtUsd(r.baseRevenueWeek)}), ${r.dlcUnitsWeek} DLC units (${fmtUsd(r.dlcRevenueWeek)}), total ${fmtUsd(r.totalRevenueWeek)} this week.`
+  );
+  return `Total units this week: ${kpis.totalUnitsWeek}. Total revenue this week: ${fmtUsd(kpis.totalRevenueWeek)}.\n${lines.join("\n")}`;
+}
+
+// ─── HTML render ────────────────────────────────────────────────────────────
+
+export async function renderWeeklyDigestHtml(
+  window: WeekWindow = getWeekWindow(new Date()),
+  sentAt: Date = new Date(),
+): Promise<{ subject: string; html: string }> {
+  const wlRows = getWeeklyWishlistRows(window);
+  const wlKpis = getWeeklyWishlistKpis(wlRows);
+  const revRows = getWeeklyRevenueRows(window);
+  const revKpis = getWeeklyRevenueKpis(revRows);
+
+  const [wlNarrative, revNarrative] = await Promise.all([
+    generateDigestNarrative("wishlist", buildWishlistNarrativeSummary(wlRows, wlKpis)),
+    generateDigestNarrative("revenue", buildRevenueNarrativeSummary(revRows, revKpis)),
+  ]);
 
   const wlRowsHtml = wlRows.map(wlTableRow).join("");
   const revRowsHtml = revRows.map(revTableRow).join("");
-  const { weekOf, sentOn } = formatWeekLabel(now);
+  const { weekOf, sentOn } = formatWeekLabel(window, sentAt);
 
   const html = `<!DOCTYPE html>
 <html>
@@ -198,35 +253,39 @@ export function renderWeeklyDigestHtml(now: Date = new Date()): { subject: strin
   <div style="font-family:${FONT}; font-weight:800; font-size:26px; letter-spacing:-.01em; color:${TEXT_PRIMARY}; line-height:1.2;">
     Weekly Steam Leaderboard Digest</div>
   <div style="font-family:${FONT}; font-size:13px; color:${TEXT_MUTED}; margin-top:4px;">
-    Week of ${esc(weekOf)} &nbsp;·&nbsp; Sent Monday, ${esc(sentOn)}, 7:00 AM ET</div>
+    Week in review: ${esc(weekOf)} &nbsp;·&nbsp; Sent ${esc(sentOn)}</div>
 </td></tr>
 
 <!-- Wishlist Section -->
 <tr><td style="padding:0 6px 10px 6px;">
   <div style="font-family:${FONT}; font-size:12px; font-weight:700; letter-spacing:.08em; color:${BRAND_ACCENT};
               text-transform:uppercase; border-bottom:2px solid ${BRAND_ACCENT}; padding-bottom:6px; margin-bottom:14px;">
-    Pre-Release Steam Wishlist Leaderboard</div>
+    Pre-Release Steam Wishlist — Week in Review</div>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-    ${moverCard("Biggest 24hr Wishlist Mover", wlKpis.biggest24hWishlistMover)}
-    ${moverCard("Biggest 7-Day Rank Mover", wlKpis.biggest7dRankMover)}
-    ${moverCard("Biggest 24hr Follower Mover", wlKpis.biggest24hFollowerMover)}
+    ${statPill("Total Wishlist Adds", fmtSigned(wlKpis.totalWishlistAdds))}
+    ${statPill("Total Follower Adds", fmtSigned(wlKpis.totalFollowerAdds))}
+  </tr></table>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:4px;"><tr>
+    ${moverCard("Biggest Wishlist Mover", wlKpis.biggestWishlistMover)}
+    ${moverCard("Biggest Rank Mover", wlKpis.biggestRankMover, { suffix: " spots" })}
+    ${moverCard("Biggest Follower Mover", wlKpis.biggestFollowerMover)}
   </tr></table>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
          style="margin-top:14px; background:${BG_CARD}; border:1px solid ${BORDER}; border-radius:8px; border-collapse:collapse;">
     <tr style="background:#fafafa;">
       <th style="padding:9px 8px; text-align:left; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Title</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Wishlist</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">1d Δ</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Followers</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">1d Δ</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Rank</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">7d Δ</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Week Wishlist Adds</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Week Follower Adds</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Rank (Sun)</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Week Δ</th>
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Hype</th>
     </tr>
     ${wlRowsHtml}
   </table>
+  ${narrativeBlock(wlNarrative)}
 
   <div style="margin-top:12px;">
     <a href="${BASE_URL}/?board=wishlist#/" style="font-family:${FONT}; font-size:13px; font-weight:600; color:${BRAND_ACCENT}; text-decoration:none;">
@@ -241,38 +300,32 @@ export function renderWeeklyDigestHtml(now: Date = new Date()): { subject: strin
 <tr><td style="padding:0 6px 10px 6px;">
   <div style="font-family:${FONT}; font-size:12px; font-weight:700; letter-spacing:.08em; color:${BRAND_ACCENT};
               text-transform:uppercase; border-bottom:2px solid ${BRAND_ACCENT}; padding-bottom:6px; margin-bottom:14px;">
-    Saber Steam Revenue Leaderboard</div>
+    Saber Steam Revenue — Week in Review</div>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
-    ${moverCard("Biggest 24hr Mover, Units", revKpis.biggest24hUnitsMover, { widthPct: 50 })}
-    ${moverCard("Biggest 24hr Mover, $", revKpis.biggest24hRevenueMover, { widthPct: 50 })}
+    ${statPill("Total Units This Week", fmtNum(revKpis.totalUnitsWeek))}
+    ${statPill("Total Revenue This Week", fmtUsd(revKpis.totalRevenueWeek))}
   </tr></table>
+
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:4px;"><tr>
-    ${moverCard(
-      revKpis.biggest30dRevenueLift?.direction === "down" ? "Biggest % Revenue Drop vs Prior 30d" : "Biggest % Revenue Lift vs Prior 30d",
-      revKpis.biggest30dRevenueLift,
-      { widthPct: 50 }
-    )}
-    ${moverCard(
-      "Biggest % Revenue Lift (Positive Only)",
-      revKpis.biggestPositive30dRevenueLift,
-      { widthPct: 50, emptyMessage: "N/A — no positive revenue lift in period" }
-    )}
+    ${moverCard("Biggest Weekly Units Mover", revKpis.biggestUnitsMover, { widthPct: 50 })}
+    ${moverCard("Biggest Weekly Revenue Mover", revKpis.biggestRevenueMover, { widthPct: 50, format: fmtSignedUsd })}
   </tr></table>
 
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
          style="margin-top:14px; background:${BG_CARD}; border:1px solid ${BORDER}; border-radius:8px; border-collapse:collapse;">
     <tr style="background:#fafafa;">
       <th style="padding:9px 8px; text-align:left; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Title</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">24h Units</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">24h Rev</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">24h Δ%</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Game Units (Wk)</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Game Rev (Wk)</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">DLC Units (Wk)</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">DLC Rev (Wk)</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Total Rev (Wk)</th>
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">LTD Rev</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">30d Rev</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">30d Δ%</th>
     </tr>
     ${revRowsHtml}
   </table>
+  ${narrativeBlock(revNarrative)}
 
   <div style="margin-top:12px;">
     <a href="${BASE_URL}/?board=revenue#/" style="font-family:${FONT}; font-size:13px; font-weight:600; color:${BRAND_ACCENT}; text-decoration:none;">
@@ -385,13 +438,25 @@ async function sendViaResend(subject: string, recipients: string[], htmlBody: st
 /** Send the weekly digest to every active recipient, or to `overrideRecipients`
  * when provided (used by the manual "Send test digest now" trigger to target a
  * single verified test address instead of the full production distribution
- * list, e.g. while the Resend sending domain is still unverified). Used by
- * both the Monday cron (no override) and the manual test-send route. */
-export async function sendWeeklyLeaderboardDigest(now: Date = new Date(), overrideRecipients?: string[]): Promise<DigestSendResult & { subject: string }> {
+ * list, e.g. while the Resend sending domain is still unverified).
+ *
+ * `window` — which Mon-Sun week to summarize. Omitted → the live "current"
+ * prior week computed from `new Date()` (used by the manual test-send route
+ * and the on-time Monday cron path). Explicitly passed by the hold/release
+ * path so a backfilled send still reports the ORIGINAL target week, not
+ * whatever week is "current" at release time.
+ *
+ * This function does NOT check the hold gate itself — callers
+ * (runWeeklyDigestCronTick / the release check / the manual test-send route)
+ * decide whether gating applies. */
+export async function sendWeeklyLeaderboardDigest(
+  window?: WeekWindow, overrideRecipients?: string[],
+): Promise<DigestSendResult & { subject: string }> {
+  const effectiveWindow = window ?? getWeekWindow(new Date());
   const recipients = overrideRecipients && overrideRecipients.length > 0
     ? overrideRecipients
     : storage.getActiveLeaderboardEmailRecipients().map((r) => r.email);
-  const { subject, html } = renderWeeklyDigestHtml(now);
+  const { subject, html } = await renderWeeklyDigestHtml(effectiveWindow, new Date());
 
   if (recipients.length === 0) {
     log("Weekly leaderboard digest: no active recipients, skipping send", "leaderboard-digest");
@@ -428,7 +493,9 @@ export async function sendSteamCookieExpiryAlert(detail: string): Promise<Digest
         <h2 style="color:${NEGATIVE};margin:0 0 12px;font-size:18px;">Steamworks session cookie expired</h2>
         <p style="color:${TEXT_PRIMARY};line-height:1.5;font-size:14px;margin:0 0 12px;">
           The daily sales ingestion just failed because the Steamworks session cookie has expired.
-          Revenue leaderboard sales data will stop updating until it's refreshed.
+          Revenue leaderboard sales data will stop updating until it's refreshed. If this happens during
+          the current digest week, the Monday Weekly Steam Leaderboard Digest will be held automatically
+          until the missing day's sales data is backfilled.
         </p>
         <p style="color:${TEXT_MUTED};font-size:12px;line-height:1.5;margin:0 0 20px;">${esc(detail)}</p>
         <a href="${BASE_URL}/settings#/settings" style="display:inline-block;background:${BRAND_ACCENT};color:#ffffff;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:13px;font-weight:600;">
@@ -444,6 +511,65 @@ export async function sendSteamCookieExpiryAlert(detail: string): Promise<Digest
     log(`Steam cookie-expiry alert NOT sent: ${result.reason}${result.detail ? " — " + result.detail : ""}`, "leaderboard-digest");
   }
   return result;
+}
+
+// ─── Hold/release gate ──────────────────────────────────────────────────────
+// Per user direction (2026-08-14): "If there isn't a full week's data because
+// a session went stale via steam cookie we pause the digest being sent until
+// the missing day is filled in ... then compile and send."
+
+/** Called from the Monday cron tick instead of sendWeeklyLeaderboardDigest
+ * directly. If the week has sales-ingestion gaps, holds the digest (persists
+ * hold state, does NOT send) and logs which title/day(s) are missing.
+ * Otherwise sends normally and clears any stale hold state for that week. */
+export async function runWeeklyDigestCronTick(now: Date): Promise<void> {
+  const window = getWeekWindow(now);
+  const gaps = detectSalesGaps(window);
+
+  if (gaps.hasGaps) {
+    setHeldDigestWeek(window, gaps.missingByProduct);
+    const missingCount = Object.keys(gaps.missingByProduct).length;
+    log(
+      `Weekly leaderboard digest HELD for week ${window.weekStart}..${window.weekEnd}: ` +
+      `${missingCount} title(s) missing sales-ingestion batch(es) — ${JSON.stringify(gaps.missingByProduct)}`,
+      "leaderboard-digest",
+    );
+    return;
+  }
+
+  await sendWeeklyLeaderboardDigest(window);
+}
+
+/** Called at the end of every ingestSteamSales() run (success or partial
+ * success — gap detection re-checks the actual batches regardless). If a
+ * digest is currently held and the week's gaps are now fully filled, sends
+ * it immediately using the ORIGINAL held week window (not whatever week is
+ * "current" now) and clears the hold. If gaps remain, refreshes the stored
+ * missing-day list (in case some but not all days were backfilled) and
+ * stays held. No-op if nothing is currently held. Never throws — a failure
+ * here must not break the ingestion run that called it. */
+export async function checkAndReleaseHeldDigest(): Promise<void> {
+  try {
+    const held = getHeldDigestWeek();
+    if (!held) return;
+
+    const gaps = detectSalesGaps(held);
+    if (gaps.hasGaps) {
+      setHeldDigestWeek(held, gaps.missingByProduct);
+      log(
+        `Weekly leaderboard digest still held for week ${held.weekStart}..${held.weekEnd}: ` +
+        `${Object.keys(gaps.missingByProduct).length} title(s) still missing data`,
+        "leaderboard-digest",
+      );
+      return;
+    }
+
+    clearHeldDigestWeek();
+    log(`Weekly leaderboard digest gaps resolved for week ${held.weekStart}..${held.weekEnd} — sending held digest now`, "leaderboard-digest");
+    await sendWeeklyLeaderboardDigest(held);
+  } catch (err) {
+    log(`checkAndReleaseHeldDigest error (non-fatal): ${err}`, "leaderboard-digest");
+  }
 }
 
 // ─── Weekly Cron Scheduler ──────────────────────────────────────────────────
@@ -479,7 +605,14 @@ function getEasternHourMinuteWeekday(now: Date): { hour: number; minute: number;
 }
 
 /** Start the in-process weekly digest scheduler (checks every minute, same
- * pacing style as the existing daily ingestion scheduler in ingestion.ts). */
+ * pacing style as the existing daily ingestion scheduler in ingestion.ts).
+ *
+ * Fires on a 0-5 minute window past 07:00 ET rather than an exact
+ * `minute === 0` match — setInterval ticks can drift a few seconds/minutes
+ * under load, and an exact-minute gate can silently skip the whole send for
+ * a week (see task-scheduling guidance on exact-minute wall-clock gates).
+ * `weeklyDigestLastRunDate` still guarantees at most one run (send-or-hold
+ * decision) per calendar day. */
 export function startWeeklyDigestCron(): void {
   if (weeklyDigestCronInterval) return; // idempotent
   log("Weekly leaderboard digest cron scheduler started (Mondays 07:00 America/New_York)", "leaderboard-digest");
@@ -489,9 +622,9 @@ export function startWeeklyDigestCron(): void {
     const { hour, minute, weekday } = getEasternHourMinuteWeekday(now);
     const todayStr = now.toISOString().split("T")[0];
 
-    if (weekday === "Mon" && hour === 7 && minute === 0 && weeklyDigestLastRunDate !== todayStr) {
+    if (weekday === "Mon" && hour === 7 && minute >= 0 && minute <= 5 && weeklyDigestLastRunDate !== todayStr) {
       weeklyDigestLastRunDate = todayStr;
-      sendWeeklyLeaderboardDigest(now).catch((err) => {
+      runWeeklyDigestCronTick(now).catch((err) => {
         log(`Weekly leaderboard digest cron error: ${err}`, "leaderboard-digest");
       });
     }

@@ -16,7 +16,7 @@ function getTodayDateString(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function getPreReleaseSaberSteamTitles() {
+export function getPreReleaseSaberSteamTitles() {
   const today = getTodayDateString();
   return storage.getAllProducts().filter(
     (p) => p.isSaberPublished && p.steamAppId && (!p.releaseDate || p.releaseDate > today),
@@ -155,7 +155,7 @@ function dayOffsetDateString(baseDate: string, offsetDays: number): string {
  * John Carpenter's Toxic Commando) also appear on this board — keep this
  * in sync with ingestion.ts's copy of the same filter.
  */
-function getRevenueEligibleSteamTitles() {
+export function getRevenueEligibleSteamTitles() {
   const today = getTodayDateString();
   return storage.getAllProducts().filter((p) => {
     if (!p.steamAppId) return false;

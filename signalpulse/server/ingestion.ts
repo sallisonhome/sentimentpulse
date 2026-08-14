@@ -13,7 +13,7 @@ import { calculateDynamicForecasts } from "./forecast";
 import { fetchFollowerCount } from "./steam-followers";
 import { fetchHeaderImage } from "./steam-header-image";
 import { fetchIgdbHypesBySteamAppids } from "./igdb";
-import { sendSteamCookieExpiryAlert } from "./leaderboard-digest";
+import { sendSteamCookieExpiryAlert, checkAndReleaseHeldDigest } from "./leaderboard-digest";
 import { log } from "./index";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1121,6 +1121,14 @@ async function ingestSteamSales(): Promise<IngestionResult> {
   const expiredNote = sessionExpired
     ? " (Steamworks session appears expired — remaining titles skipped; reconnect the cookie in Settings)"
     : "";
+
+  // Check whether this run just filled the gap that was holding the weekly
+  // digest (2026-08-14 hold/release gate). Runs regardless of this run's
+  // own success/failure — gap detection re-checks the actual ingestion
+  // batches, so a run that fixed title A's gap while title B still failed
+  // correctly stays held on B. Never throws; failures here don't affect
+  // this ingestion result.
+  await checkAndReleaseHeldDigest();
 
   return {
     source: "steam_sales",

@@ -49,6 +49,13 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     settingKeys: ["youtube_api_key"],
   },
   {
+    key: "perplexity",
+    label: "Weekly Digest Narrative (Perplexity)",
+    description: "Perplexity Sonar API key used to write the narrative paragraph under each Weekly Steam Leaderboard digest section. Leave unset to send the digest without narrative text.",
+    icon: <KeyRound className="h-5 w-5" />,
+    settingKeys: ["perplexity_api_key"],
+  },
+  {
     key: "security",
     label: "App Security",
     description: "Password required to access the application.",

@@ -21,6 +21,7 @@ import {
   getRevenueLeaderboardKpis,
 } from "./leaderboards";
 import { sendWeeklyLeaderboardDigest } from "./leaderboard-digest";
+import { getHeldDigestWeek, getHeldDigestMissing } from "./leaderboard-digest-weekly";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -2083,11 +2084,37 @@ export async function registerRoutes(
       const overrideRecipients = toParam
         ? toParam.split(",").map((e) => e.trim()).filter(Boolean)
         : undefined;
-      const result = await sendWeeklyLeaderboardDigest(new Date(), overrideRecipients);
+      // Manual test-send always targets the live current week and ignores
+      // the hold gate — it's for verifying the render/send pipeline, not a
+      // real Monday production send.
+      const result = await sendWeeklyLeaderboardDigest(undefined, overrideRecipients);
       if (!result.sent) {
         return res.status(422).json(result);
       }
       res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Weekly digest hold-gate status (Settings) — surfaces whether this
+  // week's send is currently paused because a revenue-eligible title is
+  // missing a sales-ingestion batch for one or more days (e.g. a stale
+  // Steamworks cookie), per the 2026-08-14 hold/release gate.
+  app.get("/api/leaderboards/digest/hold-status", (req, res) => {
+    try {
+      const held = getHeldDigestWeek();
+      if (!held) {
+        return res.json({ held: false });
+      }
+      const missingByProduct = getHeldDigestMissing();
+      const products = storage.getAllProducts();
+      const missing = Object.entries(missingByProduct).map(([productId, dates]) => ({
+        productId: Number(productId),
+        title: products.find((p) => p.id === Number(productId))?.title ?? `Product ${productId}`,
+        missingDates: dates,
+      }));
+      res.json({ held: true, weekStart: held.weekStart, weekEnd: held.weekEnd, missing });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
