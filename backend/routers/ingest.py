@@ -96,6 +96,43 @@ def get_ingest_status():
     return IngestStatusResponse(**status)
 
 
+@router.post("/status/force-reclaim-lock", status_code=200)
+def force_reclaim_lock():
+    """
+    Force-clear the is_running lock. Use when a run has been silently stuck
+    for a long time (process didn't SIGKILL, so try/finally didn't fire,
+    but no progress is being made — e.g. blocked on a network call).
+
+    The trigger_ingestion endpoint won't call run_ingestion's built-in
+    reclaim logic because it bounces at the is_running guard before
+    run_ingestion is invoked. This endpoint bypasses that.
+
+    Safe because worst case is two run_ingestion calls in parallel;
+    each call's own db session and log_lines list are isolated.
+    """
+    from services.ingestor import _reclaim_stuck_lock_if_needed, _status
+    from datetime import datetime, timezone
+
+    was_running = _status.get("is_running", False)
+    prior_start = _status.get("last_run_at")
+
+    # Force-set the last_run_at to something old so the reclaim function
+    # will treat this as stuck. Or just directly clear it.
+    _status["is_running"] = False
+    _status["last_run_status"] = "error"
+    _status["last_run_errors"] = list(_status.get("last_run_errors") or []) + [
+        f"Forcibly reclaimed at {datetime.now(timezone.utc).isoformat()} "
+        f"(prior start={prior_start}, was_running={was_running})."
+    ]
+
+    return {
+        "status": "ok",
+        "was_running": was_running,
+        "prior_last_run_at": prior_start,
+        "now": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @router.post("/status/backfill-snapshot", status_code=200)
 def backfill_status_snapshot(db: Session = Depends(get_db)):
     """
@@ -201,6 +238,14 @@ def trigger_ingestion(
     one source, re-ingest just that source without redundant fetches).
     The scheduled daily cron is unaffected and always runs every source.
     """
+    # 2026-08-14 fix (Steve report: stuck run at is_running=True for 2h+
+    # blocked all manual triggers). Call the reclaim logic BEFORE checking
+    # the is_running guard — otherwise a stuck lock persists indefinitely
+    # because run_ingestion's own reclaim call is unreachable when the
+    # trigger endpoint rejects new invocations at line 205.
+    from services.ingestor import _reclaim_stuck_lock_if_needed
+    _reclaim_stuck_lock_if_needed()
+
     status = get_status()
     if status["is_running"]:
         logger.info("Manual trigger received but ingestion is already running.")
