@@ -136,3 +136,103 @@ rules:
       label: positive
       score: 0.85
       reason: goty_or_10_10
+
+  # ─── Sarcasm and skepticism patterns (2026-08-14) ──────────────────────
+  # Added after RoBERTa mis-tagged "Cool of Saber to save me money by making
+  # sure I won't buy Turok Origins or Jurassic Park Survival" as positive 0.89.
+  # Model reads "cool" + "save" + "buy" as positive markers; misses the sarcasm.
+
+  - id: purchase_refusal
+    description: '"won''t buy / not buying / disregard buying / refuse to buy / won''t support" + game reference → force negative'
+    priority: 96
+    when:
+      text_matches_any:
+        - "(?i)(won'?t|will not|not gonna|not going to|refuse to|disregard) (buy|buying|purchase|support|pay for)"
+        - "(?i)(save|saved) me (money|the money|from buying)"
+        - "(?i)(pass on this|skip this one|hard pass)"
+        - "(?i)(never|not) (touch|touching|playing) this game"
+    set:
+      label: negative
+      score: 0.82
+      reason: purchase_refusal
+
+  - id: excitement_dropped
+    description: '"my excitement dropped / less excited / lost interest / hype died" pattern → negative even when "excited" is in the text'
+    priority: 94
+    when:
+      text_matches_any:
+        - "(?i)(excitement|hype|interest|hope)([^.!?]{0,60})?(just )?(dropped|died|gone|killed|tanked|died down|plummeted)"
+        - "(?i)(less|no longer|not really|way less) excited (about|for)"
+        - "(?i)(lost|losing) (interest|hype|faith|hope)"
+        - "(?i)(dropped|killed) my (hype|excitement|interest)"
+    set:
+      label: negative
+      score: 0.80
+      reason: excitement_dropped
+
+  - id: sarcastic_cool_of
+    description: '"Cool of X to Y" sarcastic construction where Y describes negative outcome → negative'
+    priority: 93
+    when:
+      text_matches_any:
+        - "(?i)cool of (saber|the devs?|the studio|them) to"
+        - "(?i)thanks? (saber|the devs?) for (fucking|ruining|destroying|killing)"
+        - "(?i)real classy of (saber|them)"
+      text_contains_any:
+        - "won't buy"
+        - "wont buy"
+        - "save me money"
+        - "save my money"
+        - "disaster"
+        - "trainwreck"
+        - "ruining"
+        - "destroying"
+    set:
+      label: negative
+      score: 0.82
+      reason: sarcastic_cool_of
+
+  - id: ai_slop_criticism
+    description: '"AI slop / genAI / AI-generated / brags about AI" as post subject → force negative'
+    priority: 91
+    when:
+      text_matches_any:
+        - "(?i)ai\\s+slop"
+        - "(?i)(ai|chatgpt)[\\-\\s]+(generated|written|writer|slop|garbage|trash)"
+        - "(?i)brag(s|ging|ged) about (ai|chatgpt|genai)"
+        - "(?i)(replaced|replacing|fired).*(writer|lead writer).*(chatgpt|ai)"
+        - "(?i)genai use"
+        - "(?i)undisclosed (ai|gen[- ]?ai)"
+    set:
+      label: negative
+      score: 0.85
+      reason: ai_slop_criticism
+
+  - id: boycott_signal
+    description: '"boycott / never support / part of the problem" → force negative'
+    priority: 89
+    when:
+      text_matches_any:
+        - "(?i)boycott(ing|ed)?"
+        - "(?i)part of the problem"
+        - "(?i)(never|no longer) support(ing)? (saber|this (studio|company|dev))"
+        - "(?i)support(ing)? (them|this|saber) is (part of|the) problem"
+    set:
+      label: negative
+      score: 0.82
+      reason: boycott_signal
+
+  - id: waste_of_oxygen
+    description: 'Extreme personal criticism of company/ceo → force negative'
+    priority: 88
+    when:
+      text_matches_any:
+        - "(?i)waste of oxygen"
+        - "(?i)what a (piece of shit|asshole|moron|clown|joke)"
+        - "(?i)(fuck|screw) (this (company|studio)|saber)"
+        - "(?i)fumble(d)? (the|this)"
+        - "(?i)(disaster|trainwreck) (of a|in the making)"
+    set:
+      label: negative
+      score: 0.82
+      reason: extreme_criticism
