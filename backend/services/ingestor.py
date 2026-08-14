@@ -121,7 +121,8 @@ def get_status() -> dict:
     snapshot = dict(_status)
     if snapshot.get("last_run_at") is None:
         try:
-            from database import SessionLocal
+            # SessionLocal already imported at module level. Only new-to-this-scope
+            # names imported inline (AppSetting, since it's a rarely-used model).
             from models import AppSetting
             db = SessionLocal()
             try:
@@ -157,7 +158,14 @@ def set_next_run(dt: Optional[datetime]) -> None:
 # next scheduled trigger will treat it as stuck and forcibly reclaim.
 # Set well above the expected wallclock (30-60 minutes for 32 games) so
 # healthy long runs are never interrupted. See run_ingestion() below.
-_STUCK_RUN_THRESHOLD_S = 2 * 60 * 60  # 2 hours
+# v0016.15 (2026-08-14): reduced from 2h to 90m. A healthy full ingest
+# takes 30-60 min so 90 min is a safe upper bound. False-negatives
+# (waiting 2h+ to reclaim) blocked the whole morning of 2026-08-14 when
+# a startup import bug caused every run to crash instantly on VADER-
+# lightweight mode. The startup smoke test in main.py's lifespan now
+# catches that class of bug before the scheduler even starts, so we no
+# longer need the 2h grace period.
+_STUCK_RUN_THRESHOLD_S = 90 * 60  # 90 minutes
 
 # Maximum wallclock the entire run is allowed to take. Prevents a slow
 # source (Steam Forum on a busy game, Reddit backoff cascade, etc.) from
@@ -786,7 +794,11 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         # Last run: Never' whenever the droplet restarts after the daily
         # cron completed — which happens frequently during deploys.
         try:
-            from database import SessionLocal
+            # NOTE: SessionLocal already imported at module level (line 35).
+            # Re-importing here caused UnboundLocalError on line 294 because
+            # Python treats `from X import Y` inside a function as a local
+            # binding for the ENTIRE function scope — shadowing the module-
+            # level import even before this statement runs. Verified 2026-08-14.
             from models import AppSetting
             import json as _json
             snapshot_json = _json.dumps({
@@ -1175,7 +1187,11 @@ def _step4a_reddit_comments(
         (saved, fetched) — saved is new comment rows inserted;
         fetched is total comments returned by Arctic Shift across all parents.
     """
-    from datetime import datetime, timezone, timedelta
+    # datetime, timezone, timedelta already imported at module level.
+    # DO NOT re-import inside a function — Python treats function-scoped
+    # `from X import Y` as a local binding for the ENTIRE function, which
+    # shadows the module-level import even before this line runs. See
+    # 2026-08-14 bug report on SessionLocal shadowing in run_ingestion.
     from services.arctic_shift_service import fetch_arctic_shift_comments
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=3)

@@ -80,6 +80,33 @@ async def lifespan(app: FastAPI):
     # Pre-load NLP model (synchronous; happens once at startup)
     load_model()
 
+    # v0016.15 (2026-08-14): startup smoke test for the ingest pipeline.
+    # Verify that run_ingestion and its per-step helpers can at least be
+    # IMPORTED without an UnboundLocalError / ImportError. Doesn't execute
+    # them — just proves the module is loadable. Catches the class of bug
+    # where an in-function `from X import Y` shadows a module-level import
+    # (which triggered the daily-cron wedge on 2026-08-14).
+    try:
+        from services.ingestor import (
+            run_ingestion,
+            _step1_discover_games,
+            _step4a_reddit_comments,
+            _step5_classify_sentiment,
+            get_status,
+        )
+        # dis.get_instructions would be even stronger but this is enough
+        # to surface UnboundLocalError-causing shadow imports at compile time.
+        import dis as _dis
+        for _fn in (run_ingestion, _step1_discover_games, _step4a_reddit_comments,
+                    _step5_classify_sentiment, get_status):
+            list(_dis.get_instructions(_fn))  # forces bytecode compilation
+        logger.info("Ingest pipeline smoke test: all helpers importable + compileable.")
+    except Exception as exc:
+        logger.error(
+            "STARTUP SMOKE TEST FAILED for ingest pipeline: %s. "
+            "Daily cron will not work until this is fixed.", exc, exc_info=True,
+        )
+
     # Start background scheduler
     scheduler = create_scheduler()
     scheduler.start()
