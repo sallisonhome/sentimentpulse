@@ -788,3 +788,40 @@ The reddit_comment tier system itself was working — the parent-conversation ru
 > **UI-visible status widgets must fail loudly when their data source is stale, not silently show `Never`.** "Last run: Never" is ambiguous — it could mean the cron literally never ran, OR the process just restarted and lost its cache. The frontend should either (a) always show the most recent last_run_at from durable storage, or (b) explicitly render "Status unknown (process just started)" when the durable snapshot is absent. Showing "Never" when the reality is "just restarted at 12:32 UTC after a successful 07:00 UTC run" is a bug even if the backend is technically returning what it was designed to return.
 
 > **When multiple agents/humans are pushing to the same shared droplet, expect concurrent deploys during any dev day.** Before assuming "the cron just didn't fire," check `gh run list` for the workflow, correlate deploy timestamps with the expected fire window, and be ready to prove the cron *did* fire via post/collected_at row-write timestamps (which are the ground truth) even when in-memory status says otherwise. Today's proof: the fact that 34 games' worth of posts all had `collected_at=2026-08-13T10:59:52 → 11:00:16 UTC` — a 24-second write window — was the definitive evidence the daily cron ran successfully, independent of what the status endpoint reported.
+
+---
+
+## 2026-08-14 (sentimentpulse) — agent kept saying "I don't have SSH to the droplet" when GitHub Actions with a droplet SSH key were already wired up and dispatchable via `gh workflow run`
+
+**Steve's correction (verbatim):** "You can do all the next steps with github actions cli - remember at all times you can do that as a priority if this isn't in lessons.md and CLAUDE.md write it in there now."
+
+**What I was doing wrong.** During the "daily ingest wedged for 2h+, is_running=true but zero writes, zero log lines" investigation, my instinct was to say "SSH to the droplet and either (a) restart the sentimentpulse service or (b) check `ps -ef` for stuck subprocesses." That is *not* a limitation the agent has — the repo already has a full set of dispatchable GitHub Actions workflows (`sp-force-restart.yml`, `sp-health-check.yml`, `sp-restart-nginx.yml`, `sp-db-locate.yml`, `sp-topics-backfill-direct.yml`, `sp-debug-import.yml`, `probe-arctic-shift.yml`, `steam-api-probe.yml`, and others), each of which SSHes into the droplet using `secrets.DROPLET_SSH_KEY` on the agent's behalf. I can dispatch any of them with `gh workflow run <name>.yml -R sallisonhome/sentimentpulse` (via `api_credentials=['github']`), poll for completion with `gh run list`, and read the actual droplet output with `gh run view <id> --log`. Same for one-off diagnostics — I can add a new workflow file, push, dispatch, read logs, and delete it, all without any human touching the droplet.
+
+**Concrete impact of the mistake today.** The stuck-run investigation ended with me telling Steve "SSH to the droplet and restart the service" as if that were a required human step, when I could have run `gh workflow run sp-force-restart.yml` myself and continued the diagnostic loop without handing off. That's the exact opposite of the "Autonomous Bug Fixing / zero context switching required from the user" rule already in CLAUDE.md §6 — I effectively made Steve context-switch to a task I could do in a single tool call.
+
+**Fix — codified in CLAUDE.md's new "Droplet Operations via GitHub Actions (READ FIRST)" section:**
+
+> **Rule:** If your first instinct is "I don't have SSH, can you check the droplet?", pause and check `.github/workflows/` first. Nine times out of ten there's already a workflow for it, and the tenth time you should write one.
+
+Standard workflows and when to use them (all live in `.github/workflows/` of `sallisonhome/sentimentpulse`):
+
+- `sp-force-restart.yml` — kill any stuck uvicorn on :8000, reset systemd, restart the service. Use when `/api/ingest/status` shows `is_running=true` for 10+ minutes with `games_processed=0` and empty log files (the process is wedged on a network call, not just a lock issue).
+- `sp-health-check.yml` — pulls service state, recent journal lines, `/api/ingest/status`, and log-file tail. First stop for "is the droplet alive?".
+- `sp-restart-nginx.yml` / `sp-nginx-inspect.yml` / `sp-nginx-fix-resolver.yml` — nginx tier.
+- `sp-db-locate.yml` / `sp-api-vs-db.yml` / `sp-verify-target-day.yml` / `sp-topics-backfill-direct.yml` — database-tier introspection and one-off backfills.
+- `sp-debug-import.yml` — checks Python import errors that would keep uvicorn from starting.
+- `probe-arctic-shift.yml` / `steam-api-probe.yml` — upstream API health probes for silent-failure diagnosis on Reddit or Steam.
+- `deploy.yml` / `signalpulse-deploy.yml` — already fires on `push` to `main`; also dispatchable manually.
+
+Invocation pattern:
+
+```bash
+gh workflow run sp-force-restart.yml -R sallisonhome/sentimentpulse
+gh run list -R sallisonhome/sentimentpulse --workflow=sp-force-restart.yml -L 1 \
+  --json headSha,status,conclusion,databaseId --jq '.[0]'
+gh run view <databaseId> -R sallisonhome/sentimentpulse --log
+```
+
+**Generalizable rule.**
+
+> **Before saying "I don't have access to X," enumerate what you do have.** For SentimentPulse specifically, that means: (1) direct HTTP to the API on `104.236.239.46`, (2) direct git push to `sallisonhome/sentimentpulse` which triggers `deploy.yml` and restarts the service as a side effect, and (3) `gh workflow run` for any workflow file in `.github/workflows/` — including SSH-into-droplet-and-do-thing workflows that already exist. If the immediate diagnostic path needs droplet-level state (process list, log tail, systemd status, port occupancy, direct DB query), reach for the GH Actions layer before asking the user to intervene. Only ask when there is genuinely no automatable path — e.g., replacing a secret, a manual UI action in a third-party service, or an operator-only physical decision.

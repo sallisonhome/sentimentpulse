@@ -43,6 +43,36 @@ Frontend calls backend at http://localhost:8000/api in dev (Vite proxy configure
 - Do not remove existing tests
 - Do not hard-code publisher names or game IDs — all must come from the database
 
+## Droplet Operations via GitHub Actions (READ FIRST when the droplet is misbehaving)
+
+**The agent does NOT have SSH to the droplet, but DOES have GitHub Actions CLI (`gh workflow run`) and the workflows are already wired up with the droplet's SSH key.** Use these before ever asking the user to "SSH to the droplet" — the agent can drive them directly.
+
+Standard workflows in `.github/workflows/` (list with `gh workflow list -R sallisonhome/sentimentpulse`):
+
+- **sp-force-restart.yml** — kills any stuck uvicorn process on port 8000, resets systemd, restarts `sentimentpulse` service, and prints post-restart health. Use whenever `/api/ingest/status` shows `is_running=true` for 10+ minutes with `games_processed=0` and no log lines appearing (the pipeline is wedged on a network call and the process needs a hard restart, not just a lock reclaim).
+- **sp-health-check.yml** — pulls service state, recent journal lines, `/api/ingest/status`, and log-file tail. First stop for "is the droplet alive?" questions.
+- **sp-restart-nginx.yml** / **sp-nginx-inspect.yml** / **sp-nginx-fix-resolver.yml** — nginx tier of the same stack.
+- **sp-db-locate.yml** / **sp-api-vs-db.yml** / **sp-verify-target-day.yml** / **sp-topics-backfill-direct.yml** — database-tier introspection.
+- **sp-debug-import.yml** — checks module import errors that would prevent uvicorn from starting.
+- **probe-arctic-shift.yml** / **steam-api-probe.yml** — upstream API health probes when a source (Reddit-via-Arctic-Shift or Steam) is silently failing.
+- **deploy.yml** / **signalpulse-deploy.yml** — already fires on `push` to `main`; also dispatchable via `gh workflow run`.
+
+Run any of them with:
+
+```bash
+# api_credentials=['github'] is required for gh to authenticate
+gh workflow run sp-force-restart.yml -R sallisonhome/sentimentpulse
+# Then poll until it completes:
+gh run list -R sallisonhome/sentimentpulse --workflow=sp-force-restart.yml -L 1 \
+  --json headSha,status,conclusion,databaseId --jq '.[0]'
+# Once completed, fetch the log so you can read what happened on the droplet:
+gh run view <databaseId> -R sallisonhome/sentimentpulse --log
+```
+
+When you need diagnostics that no existing workflow covers, **add a one-off workflow file, push it, dispatch it, then delete it in the same session** rather than asking the user to SSH. Precedent: `sp-nginx-inspect.yml`, `sp-topics-backfill-direct.yml`, and the temporary cron-inspection workflows from 2026-08-13 were all created and (in some cases) removed inline.
+
+**Rule:** If your first instinct is "I don't have SSH, can you check the droplet?", pause and check `.github/workflows/` first. Nine times out of ten there's already a workflow for it, and the tenth time you should write one.
+
 ## CRITICAL — Before batch-adding subreddits or running a backfill for any newly-added title
 
 **You MUST re-read `lessons.md` — specifically the 2026-07-24 (evening) entry on the ILL/Townfall data-corruption incident — and then follow the 7-step pre-batch-add checklist documented there.**
