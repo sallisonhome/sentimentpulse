@@ -262,6 +262,11 @@ class RawPostResponse(BaseModel):
     # v3 relevance audit (2026-08-12).
     relevance_tier: Optional[str] = None
     matched_keywords: Optional[list] = None
+    # Parent-thread inheritance (2026-08-11) — for Reddit comments this is the
+    # submission's external_id, so downstream consumers can attribute a
+    # comment back to the parent thread even when the comment body doesn't
+    # restate the game name.
+    parent_external_id: Optional[str] = None
 
 
 class PostsPageResponse(BaseModel):

@@ -179,6 +179,7 @@ def get_posts(
             sentiment_info=sentiment_info,
             relevance_tier=post.relevance_tier,
             matched_keywords=post.matched_keywords,
+            parent_external_id=post.parent_external_id,
         ))
 
     return PostsPageResponse(
