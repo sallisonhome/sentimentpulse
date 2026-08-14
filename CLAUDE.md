@@ -43,6 +43,33 @@ Frontend calls backend at http://localhost:8000/api in dev (Vite proxy configure
 - Do not remove existing tests
 - Do not hard-code publisher names or game IDs — all must come from the database
 
+## MANDATORY: Pre-Push Checklist for services/ingestor.py and adjacent modules
+
+**Every change to `backend/services/ingestor.py`, `backend/services/reddit_service.py`, `backend/services/arctic_shift_service.py`, `backend/services/relevance_tagger.py`, `backend/services/nlp_service.py`, or `backend/scheduler.py` MUST pass all four of these gates before pushing.** These are the hot paths of the daily cron; drift here has broken production 5+ times in the past 3 days.
+
+1. **Local static check** — must exit 0:
+   ```bash
+   python3 backend/scripts/check_ingestor_health.py
+   ```
+   Catches: shadow imports, bare `except:`, missing background-task wrappers, non-compilable functions.
+
+2. **Bytecode compile everything** — use the script above; `python -m py_compile file.py` is NOT sufficient (misses UnboundLocalError at bytecode-walk time).
+
+3. **Local Python import test** (if venv available):
+   ```bash
+   cd backend && python3 -c 'from services.ingestor import run_ingestion, _step1_discover_games, _step4a_reddit_comments, _step5_classify_sentiment, get_status; print("OK")'
+   ```
+
+4. **Diff review** — before pushing, run `git diff HEAD~1 backend/services/ingestor.py` and look for these anti-patterns:
+   - `from X import Y` inside a function where `Y` might already be at module level
+   - Any new `db.commit()` outside a try/except
+   - Any new call to a blocking network function without a timeout (e.g. `requests.get(url)` without `timeout=`)
+   - Any changes to `_STUCK_RUN_THRESHOLD_S` or `_RUN_WALLCLOCK_BUDGET_S`
+
+**After push, verify:** the pre-deploy GitHub Actions step "Ingestor health check" ran and passed. If it failed, the deploy aborted and no bad code reached prod.
+
+**Daily verification:** `sp-cron-canary.yml` runs at 13:45 UTC (3h after the daily cron) and checks that (a) `last_run_at` is today, (b) status is `success`/`partial`, (c) `games_processed >= 30`, (d) portfolio has ≥500 total writes today, (e) every source (reddit, reddit_comment, bluesky, steam_forum, steam_review) has at least one write. Red X on that workflow = the cron drifted, look at it immediately.
+
 ## Droplet Operations via GitHub Actions (READ FIRST when the droplet is misbehaving)
 
 **The agent does NOT have SSH to the droplet, but DOES have GitHub Actions CLI (`gh workflow run`) and the workflows are already wired up with the droplet's SSH key.** Use these before ever asking the user to "SSH to the droplet" — the agent can drive them directly.

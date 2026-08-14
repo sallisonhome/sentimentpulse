@@ -1,0 +1,110 @@
+name: SP Daily Cron Canary
+
+# 2026-08-14: independent verification that the daily 6:45am ET cron actually
+# wrote posts. Runs 3h after the cron fires (i.e. 9:45am ET / 13:45 UTC),
+# queries the API for post counts by source across today's UTC date, and
+# fails LOUDLY if either (a) zero posts today, or (b) any single source has
+# zero writes across the whole portfolio (silent-source regression).
+#
+# Failure alerts show up as red X on the workflow run history. Steve can
+# subscribe to workflow-failure emails or check https://github.com/sallisonhome/sentimentpulse/actions
+# to catch drift before it accumulates.
+
+on:
+  schedule:
+    # 13:45 UTC = 9:45am ET = 3h after the daily 10:45 UTC / 6:45am ET cron
+    - cron: '45 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query today's ingest activity
+        run: |
+          python3 <<'PY'
+          import urllib.request, urllib.parse, json, sys
+          from datetime import datetime, timezone
+          from collections import Counter
+
+          today = datetime.now(timezone.utc).date().isoformat()
+          print(f"Canary date (UTC): {today}")
+          print(f"Now (UTC): {datetime.now(timezone.utc).isoformat()}")
+
+          # 1. Ingest status should show today's last_run_at and status=success
+          with urllib.request.urlopen("http://104.236.239.46/api/ingest/status", timeout=15) as r:
+              status = json.loads(r.read())
+          print(f"\n--- Ingest status ---")
+          print(f"  last_run_at: {status.get('last_run_at')}")
+          print(f"  last_run_status: {status.get('last_run_status')}")
+          print(f"  games_processed: {status.get('games_processed')}")
+          print(f"  posts_collected: {status.get('posts_collected')}")
+
+          failed = False
+
+          # Check 1: last_run_at should be today
+          lra = status.get("last_run_at") or ""
+          if not lra.startswith(today):
+              print(f"\nFAIL: last_run_at is not today ({lra})")
+              failed = True
+
+          # Check 2: last_run_status should be success or partial (not error / never)
+          lrs = status.get("last_run_status") or ""
+          if lrs not in ("success", "partial"):
+              print(f"\nFAIL: last_run_status is '{lrs}' (expected 'success' or 'partial')")
+              failed = True
+
+          # Check 3: games_processed should be >= 30 (portfolio has 34 active games)
+          gp = status.get("games_processed") or 0
+          if gp < 30:
+              print(f"\nFAIL: games_processed={gp} (expected >=30)")
+              failed = True
+
+          # 2. Portfolio-wide post count across all 5 sources for today
+          with urllib.request.urlopen("http://104.236.239.46/api/games?is_active=true&page_size=200", timeout=15) as r:
+              d = json.loads(r.read())
+          games = d.get("items", d) if isinstance(d, dict) else d
+
+          by_src = Counter()
+          for g in games:
+              gid = g["id"]
+              for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
+                  u = f"http://104.236.239.46/api/games/{gid}/posts?" + urllib.parse.urlencode(
+                      {"source": src, "days": 1, "page_size": 200}
+                  )
+                  try:
+                      with urllib.request.urlopen(u, timeout=10) as r:
+                          dd = json.loads(r.read())
+                      for p in dd.get("items", []):
+                          ca = p.get("collected_at") or ""
+                          if ca.startswith(today):
+                              by_src[src] += 1
+                  except Exception as exc:
+                      print(f"  WARN: fetch {name} {src} failed: {exc}")
+
+          print(f"\n--- Portfolio Aug {today} writes by source ---")
+          for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
+              cnt = by_src.get(src, 0)
+              print(f"  {src}: {cnt:,}")
+          total = sum(by_src.values())
+          print(f"  TOTAL: {total:,}")
+
+          # Check 4: at least 500 total posts
+          if total < 500:
+              print(f"\nFAIL: total portfolio writes today ({total}) < 500 threshold")
+              failed = True
+
+          # Check 5: each of the 5 sources should have at least SOME writes.
+          # A source at 0 signals a silent-failure regression (e.g. Reddit API
+          # blocked, Bluesky auth expired, Steam Forum scraper broken).
+          for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
+              if by_src.get(src, 0) == 0:
+                  print(f"\nFAIL: source '{src}' has ZERO writes today (silent-failure regression)")
+                  failed = True
+
+          if failed:
+              print("\n=== CANARY FAILED ===")
+              sys.exit(1)
+          print("\n=== CANARY PASSED ===")
+          PY

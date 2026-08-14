@@ -50,6 +50,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: Checkout for pre-deploy static analysis
+        uses: actions/checkout@v4
+
+      - name: Ingestor health check (shadow-import + compile guard)
+        # 2026-08-14: added after a shadow-import bug in ingestor.py wedged
+        # the daily cron for 2h. See lessons.md entry and
+        # backend/scripts/check_ingestor_health.py for details. Failing this
+        # check aborts the deploy — broken ingestor code never reaches prod.
+        run: |
+          python3 --version
+          python3 backend/scripts/check_ingestor_health.py
+
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
