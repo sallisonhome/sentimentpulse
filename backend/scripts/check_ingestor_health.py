@@ -154,8 +154,19 @@ def main() -> int:
         "Shadow imports (Python UnboundLocalError trap)": check_shadow_imports(tree),
         "Bare except clauses": check_bare_except(tree),
         "run_ingestion missing try/except wrapper": check_background_task_wrappers(tree),
-        "Bytecode compilation": check_bytecode_compiles(),
     }
+
+    # Bytecode compilation only runs when backend dependencies are
+    # installed (i.e. locally on the developer's machine or on the
+    # droplet during the startup smoke test). Skipping on bare CI
+    # runners — the startup smoke test in main.py's lifespan already
+    # covers this check post-deploy.
+    try:
+        import sqlalchemy  # noqa: F401
+        all_issues["Bytecode compilation"] = check_bytecode_compiles()
+    except ImportError:
+        print("SKIP  — Bytecode compilation (backend deps not installed; "
+              "covered by startup smoke test on droplet)")
 
     failed = False
     for check_name, issues in all_issues.items():
