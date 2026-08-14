@@ -2432,12 +2432,26 @@ def _run_relevance_backfill(
     target_ids: list[int],
     only_unclassified: bool,
 ) -> None:
-    """Background: walk each game's raw_posts and tag them."""
+    """Background: walk each game's raw_posts and tag them.
+
+    Two-pass design (2026-08-14):
+      Pass 1 — non-comment rows only. Runs tag_post() against each row's
+               source/url/title/body. Retags reddit parents (which now
+               includes the dominant-topic gate for competitor subs),
+               steam_review, steam_forum, bluesky, dtf.
+      Pass 2 — reddit_comment rows only. Inherits relevance_tier +
+               matched_keywords from the row's parent submission via
+               parent_external_id (same rule as Step 4a at ingest time).
+               Without this, a retag would flip every comment to
+               'unclassified' because tag_post has no source==reddit_comment
+               branch — comments are supposed to inherit, not be tagged
+               independently.
+    """
     from database import SessionLocal
     from services.relevance_tagger import build_keywords_for_game, tag_post
-    from models import RawPost as _RP, Game as _Game
+    from models import RawPost as _RP, Game as _Game, SourceEnum as _SE
 
-    stats = {"games": 0, "posts_tagged": 0, "posts_skipped_ok": 0}
+    stats = {"games": 0, "posts_tagged": 0, "comments_inherited": 0}
     for gid in target_ids:
         db = SessionLocal()
         try:
@@ -2446,7 +2460,11 @@ def _run_relevance_backfill(
                 continue
             keywords = build_keywords_for_game(game)
 
-            q = db.query(_RP).filter(_RP.game_id == gid)
+            # ── Pass 1: non-comment rows ─────────────────────────────────
+            q = db.query(_RP).filter(
+                _RP.game_id == gid,
+                _RP.source != _SE.reddit_comment,
+            )
             if only_unclassified:
                 q = q.filter(_RP.relevance_tier.is_(None))
 
@@ -2470,10 +2488,56 @@ def _run_relevance_backfill(
                 db.commit()
                 offset += batch
 
+            # ── Pass 2: reddit_comment rows inherit from parent ───────────
+            # Build parent_external_id -> (tier, matched_keywords) map
+            # from the JUST-retagged parents for this game.
+            parent_rows = (
+                db.query(_RP.external_id, _RP.relevance_tier, _RP.matched_keywords)
+                .filter(
+                    _RP.game_id == gid,
+                    _RP.source == _SE.reddit,
+                )
+                .all()
+            )
+            parent_map = {
+                ex_id: (tier, matched or [])
+                for ex_id, tier, matched in parent_rows
+            }
+
+            cq = db.query(_RP).filter(
+                _RP.game_id == gid,
+                _RP.source == _SE.reddit_comment,
+            )
+            if only_unclassified:
+                cq = cq.filter(_RP.relevance_tier.is_(None))
+
+            c_offset = 0
+            while True:
+                crows = cq.order_by(_RP.id.asc()).offset(c_offset).limit(batch).all()
+                if not crows:
+                    break
+                for crow in crows:
+                    p_ext = crow.parent_external_id
+                    if p_ext and p_ext in parent_map:
+                        p_tier, p_matched = parent_map[p_ext]
+                        crow.relevance_tier = p_tier
+                        crow.matched_keywords = list(p_matched)
+                    else:
+                        # No parent row found for this comment — parent
+                        # may have been purged or predates the parent-link
+                        # column. Leave tier as-is (or mark unclassified
+                        # on a first classification).
+                        if crow.relevance_tier is None:
+                            crow.relevance_tier = "unclassified"
+                            crow.matched_keywords = []
+                    stats["comments_inherited"] += 1
+                db.commit()
+                c_offset += batch
+
             stats["games"] += 1
             logger.info(
-                "relevance_backfill: game_id=%s '%s' tagged=%s (running total=%s)",
-                gid, game.name, offset, stats["posts_tagged"],
+                "relevance_backfill: game_id=%s '%s' tagged=%s comments_inherited=%s",
+                gid, game.name, offset, c_offset,
             )
         except Exception as exc:
             logger.exception("relevance_backfill: failed for game_id=%s: %s", gid, exc)
@@ -2481,8 +2545,8 @@ def _run_relevance_backfill(
             db.close()
 
     logger.info(
-        "relevance_backfill complete: games=%s posts_tagged=%s",
-        stats["games"], stats["posts_tagged"],
+        "relevance_backfill complete: games=%s posts_tagged=%s comments_inherited=%s",
+        stats["games"], stats["posts_tagged"], stats["comments_inherited"],
     )
 
 

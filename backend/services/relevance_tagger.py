@@ -90,6 +90,93 @@ GENERAL_SUBS: frozenset[str] = frozenset({
 
 _SUB_RE = re.compile(r"/r/([^/]+)/", re.IGNORECASE)
 
+# Per-subreddit "dominant-topic" keywords. When a Reddit submission comes
+# from one of these subs AND its title+body contains 2+ hits on the sub's
+# own dominant keywords, the post is a conversation about *that* sub's
+# game and does NOT tag as signal for the focal game even if the focal
+# game's keyword also appears somewhere in the text.
+#
+# Purpose: catches the case where a competitor-sub submission legitimately
+# name-drops the focal game (e.g. "Turok 3 was better than Helldivers ever
+# will be" posted in r/Helldivers). Without this gate the focal game gets
+# a false-positive dedicated_sub tag and the whole thread's comments
+# inherit it.
+#
+# Keys must be lowercase subreddit names. Values are lowercase distinctive
+# tokens/phrases that only appear when the sub's own game is the actual
+# subject.
+DOMINANT_TOPIC_KEYWORDS: dict[str, frozenset[str]] = {
+    "helldivers": frozenset({
+        "helldiver", "helldivers", "super earth", "stratagem", "stratagems",
+        "managed democracy", "terminid", "automaton", "illuminate",
+        "seaf", "major order", "warbond", "eagle strike", "orbital strike",
+        "cape", "democracy officer", "liber-tea", "malevelon creek",
+        "buffdivers", "nerfdivers", "arrowhead", "joel", "pilestedt",
+    }),
+    "lowsodiumhelldivers": frozenset({
+        "helldiver", "helldivers", "super earth", "stratagem",
+        "managed democracy", "terminid", "automaton", "illuminate",
+        "seaf", "major order", "warbond", "arrowhead",
+    }),
+    "deeprockgalactic": frozenset({
+        "rock and stone", "karl", "driller", "gunner", "scout", "engineer",
+        "bosco", "molly", "hoxxes", "deep dive", "greenbeard", "leaflover",
+        "m1000", "lithophage", "glyphid",
+    }),
+    "darktide": frozenset({
+        "darktide", "tertium", "psyker", "ogryn", "zealot", "veteran",
+        "fatshark", "warhammer 40k", "chaos", "hive city", "chained bolter",
+    }),
+    "spacemarine": frozenset({
+        "space marine 2", "sm2", "titus", "gadriel", "chairon", "tyranid",
+        "thousand sons", "leandros", "decimus", "astartes", "battle brother",
+    }),
+    "worldwarzthegame": frozenset({
+        "world war z", "wwz", "zeke", "lobo", "the swarm", "jerusalem",
+    }),
+    "burnout": frozenset({
+        "burnout paradise", "burnout 3", "burnout revenge", "criterion",
+        "paradise city", "showtime", "crashbreaker", "aftertouch",
+    }),
+    "needforspeed": frozenset({
+        "need for speed", "nfs unbound", "nfs heat", "nfs payback",
+        "criterion", "ghost games", "blackbox", "underground 2",
+    }),
+    "forza": frozenset({
+        "forza horizon", "forza motorsport", "playground games", "turn 10",
+        "forzathon", "eventlab",
+    }),
+    "forzahorizon": frozenset({
+        "forza horizon", "playground games", "forzathon", "eventlab",
+        "horizon 5", "horizon 4",
+    }),
+    "the_crew": frozenset({
+        "crew motorfest", "the crew 2", "ivory tower", "summit", "hyperbike",
+    }),
+    "wreckfest": frozenset({
+        "wreckfest", "bugbear", "flatout", "destruction derby",
+    }),
+    "hitman": frozenset({
+        "hitman 3", "hitman freelancer", "agent 47", "ioi", "io interactive",
+        "world of assassination", "paris sanguine", "sapienza", "berlin",
+        "mendoza", "dartmoor", "providence",
+    }),
+    "maxpayne": frozenset({
+        "max payne 3", "max payne 2", "bullet time", "remedy", "rockstar toronto",
+        "mona sax", "vinnie gognitti",
+    }),
+    "sifu": frozenset({
+        "sifu", "sloclap", "pak mei", "kuroki", "sean", "jinfeng",
+        "kung fu",
+    }),
+    "johnwick": frozenset({
+        "chapter 4", "chapter 3", "chapter 2", "donnie yen", "caine",
+        "marquis", "osaka continental", "bowery king", "charon", "winston",
+    }),
+    # Add other adjacent subs as needed. Only add subs whose dominant
+    # game/franchise is DIFFERENT from any Saber portfolio game.
+}
+
 _STOP_WORDS: frozenset[str] = frozenset({
     "the", "and", "for", "with", "from", "this", "that", "have",
     "game", "games", "just", "your", "more", "about", "like",
@@ -220,6 +307,17 @@ def tag_post(
         sub = _extract_subreddit(url)
         if sub and sub in GENERAL_SUBS:
             if matched:
+                # Dominant-topic gate: if the post primarily discusses the
+                # subreddit's OWN game (2+ competitor-topic hits), a passing
+                # mention of the focal game is not enough to admit it.
+                # Prevents "Turok 3 was better than Helldivers" posted in
+                # r/Helldivers from admitting the whole Helldivers thread
+                # onto Turok's page.
+                if sub in DOMINANT_TOPIC_KEYWORDS:
+                    dom_kws = DOMINANT_TOPIC_KEYWORDS[sub]
+                    dom_hits = sum(1 for k in dom_kws if k in text_raw)
+                    if dom_hits >= 2:
+                        return "noise", []
                 return "signal", matched
             return "noise", []
         # Any non-general sub: dedicated. Still record matches (informational).
