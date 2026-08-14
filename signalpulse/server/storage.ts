@@ -319,6 +319,7 @@ function runMigrations() {
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_source", "refresh_source TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "auto_refresh_last_attempt_at", "auto_refresh_last_attempt_at TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "auto_refresh_last_result", "auto_refresh_last_result TEXT");
+  migrateAddColumnIfMissing("steamworks_sessions", "refresh_requested_at", "refresh_requested_at TEXT");
 }
 
 initializeDatabase();
@@ -491,6 +492,7 @@ export interface IStorage {
   getSteamworksSession(id: string): SteamworksSession | undefined;
   upsertSteamworksSession(data: InsertSteamworksSession): SteamworksSession;
   deleteSteamworksSession(id: string): boolean;
+  requestSteamworksSessionRefresh(id: string): SteamworksSession | undefined;
   logSteamworksSessionRefreshAttempt(id: string, attemptedAt: string, result: string): void;
   // Proactive cookie-expiry alerting: tracks when we last sent an expiry
   // email for the CURRENT failure episode, separate from upsertSteamworksSession
@@ -1249,9 +1251,28 @@ export class DatabaseStorage implements IStorage {
         // defaulting to "manual" server-side). `undefined` = not supplied
         // -> preserve; `null` or a string = an explicit value to write.
         refreshSource: data.refreshSource !== undefined ? data.refreshSource : existing.refreshSource,
+        // v3.19: same preserve-unless-explicit pattern as refreshSource.
+        // Only the cookie-save route explicitly clears this (to null) when
+        // a fresh cookie satisfies a pending manual refresh request; every
+        // verify-only caller omits it and leaves it untouched.
+        refreshRequestedAt: data.refreshRequestedAt !== undefined ? data.refreshRequestedAt : existing.refreshRequestedAt,
         updatedAt: now,
       })
       .where(eq(steamworksSessions.id, data.id))
+      .returning().get();
+  }
+
+  // Sets the "a human clicked Request agent refresh in Settings" flag.
+  // Does not touch cookieValue/loggedInAs/verification fields at all --
+  // this is a request marker for the agent (on-demand chat ask, or the
+  // nightly self-heal check) to notice, not a live trigger.
+  requestSteamworksSessionRefresh(id: string): SteamworksSession | undefined {
+    const now = this.now();
+    const existing = db.select().from(steamworksSessions).where(eq(steamworksSessions.id, id)).get();
+    if (!existing) return undefined;
+    return db.update(steamworksSessions)
+      .set({ refreshRequestedAt: now, updatedAt: now })
+      .where(eq(steamworksSessions.id, id))
       .returning().get();
   }
 

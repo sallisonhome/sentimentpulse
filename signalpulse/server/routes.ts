@@ -1146,6 +1146,7 @@ export async function registerRoutes(
       refreshSource: session.refreshSource ?? null,
       autoRefreshLastAttemptAt: session.autoRefreshLastAttemptAt ?? null,
       autoRefreshLastResult: session.autoRefreshLastResult ?? null,
+      refreshRequestedAt: session.refreshRequestedAt ?? null,
     });
   });
 
@@ -1172,6 +1173,9 @@ export async function registerRoutes(
         lastVerifiedAt: null,
         lastVerifiedResult: null,
         refreshSource,
+        // A fresh cookie save satisfies any pending "Request agent refresh"
+        // click, regardless of who/what supplied it.
+        refreshRequestedAt: null,
       });
       // Fresh cookie pasted in — reset the expiry-alert cooldown so the
       // next failure (a new episode) alerts immediately rather than
@@ -1191,6 +1195,19 @@ export async function registerRoutes(
   app.delete("/api/steam/session", (_req, res) => {
     const removed = storage.deleteSteamworksSession("default");
     res.json({ removed });
+  });
+
+  // v3.19 (2026-08-14): "Request agent refresh" button. A webpage cannot
+  // itself drive the Perplexity agent's browser automation -- there is no
+  // way for a button click to summon the agent -- so this only records a
+  // request flag (refreshRequestedAt). It's surfaced two ways: (1) visibly
+  // in Settings so the user remembers to ask the agent in chat, and (2) as
+  // an input the nightly self-heal check reads, so a pending request gets
+  // picked up even if the user forgets to ask directly.
+  app.post("/api/steam/session/request-refresh", (_req, res) => {
+    const session = storage.requestSteamworksSessionRefresh("default");
+    if (!session) return res.status(404).json({ error: "No session configured yet" });
+    res.json({ ok: true, refreshRequestedAt: session.refreshRequestedAt });
   });
 
   // v3.18 (2026-08-14): logs an agent-driven cookie auto-refresh ATTEMPT,

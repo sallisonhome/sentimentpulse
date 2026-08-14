@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Cookie, CheckCircle2, XCircle, Trash2, Beaker, AlertTriangle } from "lucide-react";
+import { Cookie, CheckCircle2, XCircle, Trash2, Beaker, AlertTriangle, Bell, BellRing } from "lucide-react";
 
 interface SessionInfo {
   configured: boolean;
@@ -26,6 +26,7 @@ interface SessionInfo {
   refreshSource?: string | null;
   autoRefreshLastAttemptAt?: string | null;
   autoRefreshLastResult?: string | null;
+  refreshRequestedAt?: string | null;
 }
 
 export function SteamworksSessionSettings() {
@@ -86,6 +87,20 @@ export function SteamworksSessionSettings() {
   const deleteMutation = useMutation({
     mutationFn: async () => {
       const resp = await fetch("./api/steam/session", { method: "DELETE" });
+      if (!resp.ok) throw new Error(await resp.text());
+      return resp.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/steam/session"] });
+    },
+  });
+
+  // v3.19: "Request agent refresh" — a webpage button cannot itself drive
+  // the agent's browser automation, so this only flags that a refresh is
+  // wanted (visible in Settings, and read by the nightly self-heal check).
+  const requestRefreshMutation = useMutation({
+    mutationFn: async () => {
+      const resp = await fetch("./api/steam/session/request-refresh", { method: "POST" });
       if (!resp.ok) throw new Error(await resp.text());
       return resp.json();
     },
@@ -207,21 +222,48 @@ export function SteamworksSessionSettings() {
           </div>
         )}
 
-        {/* Agent auto-refresh note (v3.18, 2026-08-14) — explains the
-            on-demand + nightly self-heal flow. No button here that
-            claims to read your browser directly: a webpage can never read
-            partner.steampowered.com's HttpOnly session cookie (browser
-            security, not a missing feature) — only the Perplexity agent
-            driving your actual browser via CDP can do that. */}
-        <div className="rounded border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-muted-foreground space-y-1">
+        {/* Agent auto-refresh note + request flag (v3.19, 2026-08-14).
+            No button here can directly trigger the agent's browser
+            automation — a webpage click can never summon a Perplexity
+            agent, and it can never read partner.steampowered.com's
+            HttpOnly session cookie itself either (browser security, not a
+            missing feature). "Request agent refresh" below only records a
+            flag: it's a visible reminder for you, and an input the nightly
+            self-heal check reads, not a live trigger. */}
+        <div className="rounded border border-blue-500/30 bg-blue-500/5 p-3 text-xs text-muted-foreground space-y-2">
           <div className="font-medium text-foreground">Agent-assisted refresh</div>
           <div>
             Ask your Perplexity agent to “refresh the Steam cookie” anytime — it opens your
             logged-in Comet session, pulls the fresh cookie, saves it here, and re-verifies automatically.
             A nightly check also runs shortly after the 3 AM ingestion and attempts the same fix if
-            sales ingestion failed on an expired cookie (requires Comet open and logged in to Steamworks
-            at that time; otherwise you're notified to refresh manually).
+            sales ingestion failed on an expired cookie. That automated attempt needs your browser
+            to be open and logged in to Steamworks with nobody around to grant access, so most nights
+            it likely can't complete on its own — if so, you'll get a notification asking you to refresh
+            it yourself (or just ask the agent in chat).
           </div>
+          {session?.refreshRequestedAt ? (
+            <div className="flex items-center gap-2 text-amber-700 dark:text-amber-400">
+              <BellRing className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                Refresh requested {new Date(session.refreshRequestedAt).toLocaleString()} — ask the
+                agent in chat to pick this up, or it'll be checked at tonight's automatic run.
+              </span>
+            </div>
+          ) : (
+            <div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => requestRefreshMutation.mutate()}
+                disabled={requestRefreshMutation.isPending}
+                className="h-7 text-xs gap-1"
+                data-testid="button-request-refresh"
+              >
+                <Bell className="w-3 h-3" />
+                {requestRefreshMutation.isPending ? "Requesting..." : "Request agent refresh"}
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Instructions */}

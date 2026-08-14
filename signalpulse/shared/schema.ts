@@ -238,6 +238,13 @@ export const steamworksSessions = sqliteTable("steamworks_sessions", {
   refreshSource: text("refresh_source"), // 'manual' | 'agent_on_demand' | 'agent_scheduled'
   autoRefreshLastAttemptAt: text("auto_refresh_last_attempt_at"),
   autoRefreshLastResult: text("auto_refresh_last_result"), // 'success' | 'no_browser_available' | 'steam_session_also_expired' | 'test_fetch_failed: ...'
+  // v3.19 (2026-08-14): a webpage button can't itself trigger the agent's
+  // browser automation, so this is a request flag, not a live trigger --
+  // set when the user clicks "Request agent refresh" in Settings, cleared
+  // whenever a fresh cookie is saved (any refreshSource). The nightly
+  // self-heal check also reads this so a manual request gets picked up
+  // even if the user doesn't happen to ask in chat first.
+  refreshRequestedAt: text("refresh_requested_at"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
