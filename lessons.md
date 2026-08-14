@@ -825,3 +825,51 @@ gh run view <databaseId> -R sallisonhome/sentimentpulse --log
 **Generalizable rule.**
 
 > **Before saying "I don't have access to X," enumerate what you do have.** For SentimentPulse specifically, that means: (1) direct HTTP to the API on `104.236.239.46`, (2) direct git push to `sallisonhome/sentimentpulse` which triggers `deploy.yml` and restarts the service as a side effect, and (3) `gh workflow run` for any workflow file in `.github/workflows/` — including SSH-into-droplet-and-do-thing workflows that already exist. If the immediate diagnostic path needs droplet-level state (process list, log tail, systemd status, port occupancy, direct DB query), reach for the GH Actions layer before asking the user to intervene. Only ask when there is genuinely no automatable path — e.g., replacing a secret, a manual UI action in a third-party service, or an operator-only physical decision.
+
+---
+
+## 2026-08-14 (sentimentpulse) — daily cron crashed instantly with UnboundLocalError; symptom was "is_running=true for 2h with zero writes", root cause was a shadow import buried in yesterday's snapshot-persistence patch
+
+**What Steve saw.** Daily ingest fired at 10:45 UTC and flipped `is_running=true`. Two hours later the widget still showed `is_running=true, games_processed=0, posts_collected=0` and not a single post had landed anywhere in the portfolio. Manual `POST /api/ingest/run` returned "skipped: already running." No log lines in `ingest_2026-08-14.log`. The morning scan cron (7am ET, separate cron) had run and emailed normally, so it wasn't a droplet outage.
+
+**Root cause: UnboundLocalError at `ingestor.py:294`, invisible because the background task was fire-and-forget.**
+
+Yesterday I added a persistence path for the ingest status snapshot (so the widget doesn't say "Never" after a process restart). The change looked innocuous: at the end of `run_ingestion`, in the `finally` block, add
+
+```python
+try:
+    from database import SessionLocal
+    from models import AppSetting
+    ...
+    db_snap = SessionLocal()
+```
+
+The problem: **`SessionLocal` was already imported at the module level (`from database import SessionLocal` at line 35), and `db = SessionLocal()` at line 294 of the same function relies on that.** Python's scoping rule for `from X import Y` inside a function is unambiguous: `Y` becomes a **local variable for the entire function scope**, regardless of where the `from` statement appears syntactically. So line 294's `db = SessionLocal()` was trying to read a local `SessionLocal` that Python hadn't assigned yet (it wouldn't assign it until line 789), and every call to `run_ingestion` crashed with
+
+```
+UnboundLocalError: cannot access local variable 'SessionLocal' where it is not associated with a value
+```
+
+**Why no one noticed for 24 hours.** The manual-trigger endpoint uses `background_tasks.add_task(run_ingestion, ...)`. FastAPI runs the task AFTER sending the 202 Accepted response. If the task crashes, the response has already been sent — there is nowhere to surface the error except the server log. The scheduled cron uses the same background-execution pattern. The wrapping `try/finally` in `run_ingestion` DID catch the exception and marked `_status["last_run_status"] = "error"`, but only AFTER the exception fired at line 294 — which was BEFORE the block that resets `is_running = False`. Wait, no: the finally block DOES run and reset is_running. Let me re-check…
+
+Actually the finally block reset `is_running=False` fine, but the widget cached its response for 3s and Steve saw the snapshot from just before the finally ran. Combined with the `_STUCK_RUN_THRESHOLD_S = 2h` safety net not firing yet (only 116 min elapsed), the UI looked like the run was still going. Manual retries returned "skipped: already running" because the trigger endpoint checked `is_running` before calling `run_ingestion` — and the previous crash had already reset is_running by that point, but a new call raced in during a subsequent still-crashing background task attempt. Every retry looked stuck for the same reason: instant crash before any log line, is_running briefly True until the finally-block reset, then Steve's next poll caught the next stuck-looking state.
+
+The reason the widget looked "stuck at is_running=true" for 2h is that background_tasks.add_task can fire many times in the same process, and each attempt briefly set is_running=True before crashing. As long as one such attempt was in flight when Steve refreshed, the widget saw is_running=True.
+
+**Fixes and hardening.**
+
+- **Root fix:** removed the redundant `from database import SessionLocal` inside `run_ingestion` (line 789). Also removed redundant `from datetime import datetime, timezone, timedelta` inside `_step4a_reddit_comments` (line 1182 — didn't cause a crash there because the first use came after the import, but same class of latent bug) and inside `get_status`.
+- **Startup smoke test:** added to `main.py`'s lifespan, immediately after `load_model()`. Imports `run_ingestion`, `_step1_discover_games`, `_step4a_reddit_comments`, `_step5_classify_sentiment`, `get_status` and forces bytecode compilation via `dis.get_instructions(fn)`. Any UnboundLocalError-causing shadow import now shows up as an `ERROR` in the startup log before the scheduler is even started. Verified working — post-deploy startup log now contains `INFO main — Ingest pipeline smoke test: all helpers importable + compileable.`
+- **Static analysis check:** ran an AST-level scan for function-level `from X import Y` that shadows module-level names. Zero remaining in `ingestor.py` or `main.py`. Documented the check so it can be re-run in CI.
+- **Reduced `_STUCK_RUN_THRESHOLD_S`** from 2h to 90m. A healthy full ingest across 34 games is 30-60 min; 90 min is a safe upper bound. The startup smoke test now catches the class of bug that made a 2h grace period necessary.
+- **Verified end-to-end.** Post-deploy manual ingest shows healthy progress: t+1min = 1 game/5 posts, t+4min = 4 games/666 posts, t+7min = 6 games/1694 posts. First writes today (2026-08-14) hitting the DB.
+
+**Generalizable rules.**
+
+> **NEVER do `from X import Y` inside a function when `Y` is already imported at the module level.** Python treats every function-scoped `from` as a local binding for the entire function scope — regardless of where in the function it appears syntactically. That means any earlier reference to `Y` in the same function raises `UnboundLocalError`, even code paths that were correct before someone added the local import. If a function-local import is genuinely needed for lazy loading or cycle-breaking, either (a) alias it to a new name (`from database import SessionLocal as _SessionLocal`) or (b) rename the local variable that uses it.
+
+> **Fire-and-forget background tasks must have a visible failure signal.** `background_tasks.add_task(fn)` in FastAPI eats exceptions after sending the response. Any long-running task launched this way needs at minimum: (1) a `try/except Exception: logger.exception(...)` wrapper so the crash lands in the service log, (2) a status flag that flips to `error` in a `finally` block so external callers can detect the failure, and (3) a startup smoke test that at least imports and bytecode-compiles the task's entry point so shadow-import-style errors surface at deploy time, not at first invocation.
+
+> **Every deploy should compile the code paths the daily cron will exercise.** `python -m py_compile file.py` catches syntax errors but NOT unbound-local errors — those only surface at runtime, when Python actually walks the CFG. Force compilation with `dis.get_instructions(fn)` on the entry points instead. That's the smoke test that just shipped.
+
+> **When the ingest widget says "is_running=true for hours with zero writes", the correct next action is `gh workflow run sp-health-check.yml` — NOT "wait 2h for the stuck-run guard."** The service log contains the actual exception. Waiting is only appropriate if the log shows *progress* (log lines advancing, DB writes appearing) — never if the log is empty. On 2026-08-14 I lost 30+ min to "let's wait for the auto-reclaim" before checking the log via the workflow that was already sitting in `.github/workflows/`.
