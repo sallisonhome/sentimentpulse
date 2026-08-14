@@ -47,6 +47,18 @@ def get_posts(
     date_to: Optional[str] = Query(
         None, description="ISO date string, e.g. 2024-01-22"
     ),
+    days: Optional[int] = Query(
+        None,
+        ge=1,
+        le=3650,
+        description=(
+            "Convenience filter: last N days by COALESCE(post_date, collected_at). "
+            "Matches the rule used by the weekly digest and dashboard so a post is "
+            "included when its authorship date is within the window, or when it "
+            "lacks a post_date but was ingested within the window. Overrides "
+            "date_from when set; date_to is still honored."
+        ),
+    ),
     # Pagination
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -115,7 +127,17 @@ def get_posts(
                 ),
             )
 
-    if date_from:
+    if days is not None:
+        # Convenience filter: last N days by COALESCE(post_date, collected_at).
+        # Same rule the weekly digest uses (period_summary_service._aggregate_window_data)
+        # so consumers of this endpoint see the same numbers as the dashboard.
+        from sqlalchemy import func as _func
+        from datetime import timezone as _tz, timedelta as _td
+        cutoff = datetime.now(_tz.utc) - _td(days=days)
+        q = q.filter(
+            _func.coalesce(RawPost.post_date, RawPost.collected_at) >= cutoff
+        )
+    elif date_from:
         try:
             from sqlalchemy import func as _func
             q = q.filter(
