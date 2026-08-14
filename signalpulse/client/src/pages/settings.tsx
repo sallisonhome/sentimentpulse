@@ -56,6 +56,13 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     settingKeys: ["perplexity_api_key"],
   },
   {
+    key: "igdb",
+    label: "IGDB Hype Score (Twitch/IGDB)",
+    description: "Twitch Client Credentials used to call the IGDB API directly for hype scores on every Wishlist Leaderboard title \u2014 the same key and calls howmanyareplaying.com uses internally. Leave unset to keep using the howmanyareplaying.com public Top 200 list (Saber titles outside that list won't get a hype score).",
+    icon: <Gamepad2 className="h-5 w-5" />,
+    settingKeys: ["twitch_client_id", "twitch_client_secret"],
+  },
+  {
     key: "security",
     label: "App Security",
     description: "Password required to access the application.",

@@ -1812,6 +1812,8 @@ export class DatabaseStorage implements IStorage {
       { key: "sony_partner_id", label: "Sony Partner ID", category: "api_keys", isSecret: false },
       { key: "youtube_api_key", label: "YouTube Data API Key", category: "api_keys", isSecret: true },
       { key: "perplexity_api_key", label: "Perplexity API Key", category: "api_keys", isSecret: true },
+      { key: "twitch_client_id", label: "Twitch Client ID (IGDB)", category: "api_keys", isSecret: false },
+      { key: "twitch_client_secret", label: "Twitch Client Secret (IGDB)", category: "api_keys", isSecret: true },
       { key: "app_password", label: "App Password", category: "general", isSecret: true },
       { key: "resend_api_key", label: "Resend API Key", category: "email", isSecret: true },
       { key: "resend_from", label: "Resend From Address", category: "email", isSecret: false, value: "onboarding@resend.dev" },
