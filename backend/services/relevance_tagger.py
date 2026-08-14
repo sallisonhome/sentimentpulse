@@ -39,7 +39,7 @@ GENERAL_SUBS: frozenset[str] = frozenset({
     # Platform / console
     "gaming", "games", "pcgaming", "pcmasterrace", "ps5", "playstation",
     "xbox", "xboxseriesx", "xboxone", "steam", "steamdeck",
-    "nintendoswitch", "nintendo",
+    "nintendoswitch", "nintendo", "switch2", "videogames",
     # Discovery / discussion
     "patientgamers", "shouldibuythisgame", "truegaming",
     "gamedeals", "lowspecgamer", "gamingsuggestions",
@@ -50,19 +50,42 @@ GENERAL_SUBS: frozenset[str] = frozenset({
     # game happens to fetch them first — polluting priority games' data with
     # unrelated gaming news (Elder Scrolls, etc).
     "gamingleaksandrumors", "gamingleaksandrumours", "gamingnews",
-    "gamingcirclejerk",
+    "gamingcirclejerk", "gamepreservation", "gamecollecting",
     # Genre discussion
     "shootergames", "thirdpersonshooter", "fps", "coopgaming",
-    "simracing", "simulators", "drivingsimulators",
+    "simracing", "simulators", "drivingsimulators", "racinggames",
     "gamingphotography", "gamingaccessibility",
+    "acgvids", "retrogaming",
     # Genre umbrellas (produce a lot of unrelated posts)
     "horror", "horrorgaming", "horrorgames",
-    "survivalhorror", "residentevil",
+    "survivalhorror", "residentevil", "alienisolation",
+    "outlast", "amnesiathegame",
     # IP-adjacent but broader than one game
     "hellraiser", "halo", "ghostbusters", "jurassicpark", "johnwick",
-    # Publisher / dev / catalog subs
+    "jurassicworld", "jurassicmemes", "jurassicworldevo",
+    "jurassicworldevol2", "jurassicworldalive",
+    "clivebarker", "cenobites", "hellraiserthegame",
+    # Publisher / dev / catalog subs — posts here are often about the studio
+    # or an unrelated title in their catalog, not the focal game.
     "spacemarine", "saberinteractive", "bossteamgames",
-    "gearsofwar", "xboxgamepass",
+    "gearsofwar", "xboxgamepass", "lionsgate", "worldwarzthegame",
+    # Competitor / adjacent-genre game subs — these show up in per-game
+    # subreddit configs to catch cross-title discussion but produce huge
+    # volumes of on-title-for-that-competitor content that must NOT be
+    # inherited into the focal game's dedicated_sub bucket.
+    # (2026-08-14) Added after tracing that Turok's config included r/Helldivers,
+    # r/DeepRockGalactic, r/DarkTide, etc. and every submission from those
+    # subs was being tagged dedicated_sub for Turok without any keyword check.
+    "helldivers", "lowsodiumhelldivers", "darktide", "deeprockgalactic",
+    "hitman", "sifu", "maxpayne", "actionmovies", "movies",
+    "burnout", "builtfromthegroundup", "splitsecond", "flatout",
+    "wreckfest", "needforspeed", "forza", "forzahorizon", "the_crew",
+    "cars", "carporn", "musclecar", "fastandfurious",
+    "backtothefuture", "knightrider", "miamivice", "universalstudios",
+    "psvr", "gta", "ps2", "nostalgia",
+    "dinosaurs", "paleontology", "naturewasmetal", "galapagos",
+    "primalcarnage", "theisle", "pathoftitans", "ark", "playark",
+    "scifi", "indigenousgaming", "n64",
 })
 
 _SUB_RE = re.compile(r"/r/([^/]+)/", re.IGNORECASE)
