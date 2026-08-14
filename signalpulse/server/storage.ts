@@ -1227,28 +1227,32 @@ export class DatabaseStorage implements IStorage {
 
   upsertSteamworksSession(data: InsertSteamworksSession): SteamworksSession {
     const now = this.now();
-    try {
+    const existing = db.select().from(steamworksSessions).where(eq(steamworksSessions.id, data.id)).get();
+    if (!existing) {
       return db.insert(steamworksSessions).values({
         ...data,
         createdAt: now,
         updatedAt: now,
       }).returning().get();
-    } catch (err: any) {
-      if (err.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-        return db.update(steamworksSessions)
-          .set({
-            cookieValue: data.cookieValue,
-            loggedInAs: data.loggedInAs,
-            lastVerifiedAt: data.lastVerifiedAt,
-            lastVerifiedResult: data.lastVerifiedResult,
-            refreshSource: data.refreshSource ?? null,
-            updatedAt: now,
-          })
-          .where(eq(steamworksSessions.id, data.id))
-          .returning().get();
-      }
-      throw err;
     }
+    return db.update(steamworksSessions)
+      .set({
+        cookieValue: data.cookieValue,
+        loggedInAs: data.loggedInAs,
+        lastVerifiedAt: data.lastVerifiedAt,
+        lastVerifiedResult: data.lastVerifiedResult,
+        // v3.18 fix: verify-only callers (test-fetch, ingestion success/
+        // failure paths) call this with cookieValue/lastVerified* only and
+        // omit refreshSource entirely -- they must NOT wipe out who/what
+        // last refreshed the cookie. Only overwrite provenance when the
+        // caller explicitly supplied it (the cookie-save route always does,
+        // defaulting to "manual" server-side). `undefined` = not supplied
+        // -> preserve; `null` or a string = an explicit value to write.
+        refreshSource: data.refreshSource !== undefined ? data.refreshSource : existing.refreshSource,
+        updatedAt: now,
+      })
+      .where(eq(steamworksSessions.id, data.id))
+      .returning().get();
   }
 
   // Records the outcome of an agent-driven cookie auto-refresh ATTEMPT,
