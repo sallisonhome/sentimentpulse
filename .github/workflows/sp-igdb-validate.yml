@@ -97,3 +97,4 @@ if isinstance(rows, list):
         print(f'  {name}: hype={hype}')
 " || true
           EOF
+# force-reparse
