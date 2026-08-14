@@ -6,6 +6,37 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-14 (sentimentpulse) — portfolio sentiment report: multiple stale-assumption failures when filter parameters tightened; "data reconciliation when parameters change, or leaving stale assumptions in place, ever"
+
+**What happened.** Building the executive Portfolio Sentiment Report (6 titles × top-3 pos + top-3 neg + Saber-bleed table), I tightened data-quality filters three separate times over the course of one report and each time left stale downstream numbers or topic buckets in the PDF. Specific reconciliation failures:
+
+1. **Cross-franchise noise in quotes.** First cut used keyword-only matching; produced quotes about Frontier's JWE3 landing on JP:Survival's page, Helldivers content on Turok's page, Hitman/Oppenheimer content on John Wick's page. Fix was to require game-name AND-condition (post text must contain a game alias, e.g. "cenobite", "cerebral bore", "john wick"). But I left the executive-summary paragraphs untouched, so % topic shares in prose (e.g. "Hellraiser positive dominated by Barker fidelity at 38.4%") were still computed from the pre-tightening pool.
+
+2. **`days=7` filters by `collected_at`, not `post_date`.** The SentimentPulse API's `days=N` parameter filters by ingest time. Old high-value posts that get re-ingested (e.g. after yesterday's remediation backfill) leak in as "7-day" content. Hellraiser's 1260-upvote ESRB post from March, and its April dev-diary post, were cited as "this week" content. Portfolio total "78,681 classified posts" was inflated 2.7× vs the real 7-day post-date total of 28,563. Fix was a client-side strict `post_date >= now - 7d` filter — but I only patched the exec-summary total and left the dashboard sentiment %s, sample denominators, per-title Saber-bleed cells, and topic-share narrative paragraphs pointing at the old inflated numbers until the user flagged it.
+
+3. **Stale topic buckets after `dedicated_sub` allowance was removed.** To let low-volume titles have any on-topic quotes, I had an exception: posts collected in a game's "dedicated_sub" reddit tier count as on-topic even without a text alias. Turned out the API's relevance filter mistags Helldivers 2 dedicated_sub content as belonging to Turok (game_id=23), so that exception was pulling in cross-franchise garbage. Dropped the exception. This made on-topic post volumes crater for Turok (3,912 → 0 positive) and John Wick (1,749 → 12 positive), which is honest, but I left the hand-picked topic labels ("Nostalgia for classic Turok / N64 era", "Turkish language-support petition") in place. The PDF then had multiple top-3 topics rendering "0.0% of positive posts this week" with no quotes — visibly broken.
+
+**Root cause.** In all three cases I treated the deliverable as a document to patch locally when the user flagged specific quotes, rather than as a set of numbers that must all be re-derived from the current dataset whenever the underlying filter changes. Percentages, sample denominators, exec-summary claims, and topic labels are downstream of the same filter — they cannot survive a filter tightening without recomputation.
+
+**Fix.**
+- Rebuild data end-to-end from the new filter every time — regenerate `report_data_vN.json`, then update DASH totals, BLEED table, exec-summary %s, and topic labels together.
+- Enforce strict `post_date` window client-side; never trust `days=N` as a post-date filter.
+- When a filter change empties a topic bucket, don't render it with 0% — re-discover top topics from the actual current post pool (bigram/trigram frequency on on-topic posts) and reset the top-3.
+
+**Generalizable rules.**
+
+> **When a filter parameter changes, re-derive EVERY downstream number from the new dataset in one pass.** Denominators, percentages, sample counts, and narrative claims in the executive summary are all derived from the same filter. Patching only the number the user pointed at leaves the rest of the report internally inconsistent and gives the reader no way to know which numbers are current. If you tighten a filter, you owe a full re-run.
+>
+> **Never leave stale topic labels or hypothesis-driven buckets in place after the underlying data changes.** If the top-3 topics were chosen when the pool was 3,900 posts and the new pool is 15, don't keep the old topics and let them show "0.0% of posts this week" — that reads to the executive as a broken report. Re-discover topics from the actual current data (bigram/trigram frequency on the on-topic post pool, filtered to the reporting window), then rewrite the top-3.
+>
+> **Never trust a `days=N` query parameter to filter by post creation date.** SentimentPulse's API filters by `collected_at` (ingest timestamp). Re-ingested backfills and yesterday's remediations will leak old high-upvote content into a "7-day" query. Always add a strict client-side `post_date >= now - Nd` filter on top of the API query for any report where the reporting window matters.
+>
+> **Verify a random sample of quote dates against the reporting window before shipping any report that quotes posts.** If you're claiming "top posts from the last 7 days," open 5 quotes at random and check their `post_date`. If any are outside the window, the filter is wrong upstream and the whole report needs re-derivation, not a one-off quote swap.
+>
+> **When the user flags a data-quality issue, treat it as evidence of an upstream filter problem, not a spot-fix opportunity.** If one Turok quote is actually about Helldivers, don't just replace that quote — audit the filter that let it through and re-derive every downstream number that filter feeds. Spot-fixes compound: three filter tightenings that each only got partially propagated left the report in a worse state than a single clean re-derivation.
+
+---
+
 ## 2026-08-12 (signalpulse) — portal-daily-backfill's delete-then-recreate wasn't idempotent; re-running it over dates that already had real data silently deleted Space Marine 2's Steam sales history (1,342 → 11 rows)
 
 **RESOLUTION (same day, ~4:57pm ET).** Fix committed (`fd3980a`→`0674ce3` after rebase) and deployed via the normal `main`→GitHub Actions→droplet pipeline. Verified idempotency on a 2-day test window (`2024-05-23`→`2024-05-24`) run twice before touching the full range — both runs returned `2/2 succeeded, 0 failed` with identical row values. Then re-ran the full backfill: Toxic Commando (product 10) completed **358/358 succeeded, 0 failed**, restoring 244 real rows (better than the ~203 documented pre-incident baseline). SM2 (product 3) completed **1,342/1,342 succeeded, 0 failed**, restoring `steam_sales_daily` to LTD 5,419,330 units / $250,617,437 base revenue. Confirmed on the live dashboard (`http://104.236.239.46/signal/#/products/3`) that `dynamicFullForecasts` is actuals-driven again: PC (Steam) Dynamic First Month = 1,161,915, Dynamic LT = 5,419,330 — matching pre-incident figures.
