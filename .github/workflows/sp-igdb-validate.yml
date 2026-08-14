@@ -23,10 +23,10 @@ jobs:
           DB=/opt/sentimentpulse/signalpulse/data.db
 
           echo "== 1. Confirm Twitch credentials are stored =="
-          sqlite3 "$DB" "SELECT key, CASE WHEN LENGTH(value) > 0 THEN 'SET (len=' || LENGTH(value) || ')' ELSE 'EMPTY' END AS status FROM settings WHERE key IN ('twitch_client_id','twitch_client_secret');"
+          sqlite3 "$DB" "SELECT key, CASE WHEN LENGTH(value) > 0 THEN 'SET (len=' || LENGTH(value) || ')' ELSE 'EMPTY' END AS status FROM app_settings WHERE key IN ('twitch_client_id','twitch_client_secret');"
 
-          CID=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='twitch_client_id';")
-          CSEC=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='twitch_client_secret';")
+          CID=$(sqlite3 "$DB" "SELECT value FROM app_settings WHERE key='twitch_client_id';")
+          CSEC=$(sqlite3 "$DB" "SELECT value FROM app_settings WHERE key='twitch_client_secret';")
 
           if [ -z "$CID" ] || [ -z "$CSEC" ]; then
             echo "ABORT: Twitch credentials not saved in settings table"
