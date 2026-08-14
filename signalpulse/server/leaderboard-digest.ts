@@ -29,7 +29,7 @@ import {
   type WeekWindow, type WeeklyWishlistRow, type WeeklyRevenueRow,
   type WeeklyMover, type WeeklyRevenueMover,
 } from "./leaderboard-digest-weekly";
-import { callSonar, sonarAvailable } from "./sonar-client";
+import { callSonar, sonarAvailable, type SonarResult } from "./sonar-client";
 import { log } from "./index";
 
 const BASE_URL = "http://104.236.239.46/signal";
@@ -137,11 +137,21 @@ function statPill(label: string, value: string, widthPct = 50): string {
     </td>`;
 }
 
-function narrativeBlock(text: string | null): string {
-  if (!text) return "";
+function narrativeBlock(result: SonarResult | null): string {
+  if (!result?.text) return "";
+  const sourcesHtml = result.citations.length
+    ? `
+    <div style="margin-top:8px; font-size:11px; color:${TEXT_MUTED}; font-family:${FONT};">
+      Sources: ${result.citations
+        .slice(0, 4)
+        .map((url, i) => `<a href="${esc(url)}" style="color:${TEXT_MUTED}; text-decoration:underline;">[${i + 1}]</a>`)
+        .join(" ")}
+    </div>`
+    : "";
   return `
   <div style="margin-top:12px; padding:12px 14px; background:#fafafa; border-left:3px solid ${BRAND_ACCENT}; border-radius:0 6px 6px 0;">
-    <div style="font-size:13px; color:${TEXT_PRIMARY}; line-height:1.5; font-family:${FONT};">${esc(text)}</div>
+    <div style="font-size:13px; color:${TEXT_PRIMARY}; line-height:1.5; font-family:${FONT};">${esc(result.text)}</div>
+    ${sourcesHtml}
   </div>`;
 }
 
@@ -196,24 +206,41 @@ function formatWeekLabel(window: WeekWindow, sentAt: Date): { weekOf: string; se
 
 // ─── LLM narrative (Perplexity Sonar, optional — graceful degradation) ─────
 
-async function generateDigestNarrative(section: "wishlist" | "revenue", summary: string): Promise<string | null> {
+/** YYYY-MM-DD -> MM/DD/YYYY, offset by `days` (may be negative). For Sonar's search_*_date_filter params. */
+function toSonarDateFilter(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T12:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${mm}/${dd}/${d.getUTCFullYear()}`;
+}
+
+async function generateDigestNarrative(
+  section: "wishlist" | "revenue",
+  summary: string,
+  window: WeekWindow,
+): Promise<SonarResult | null> {
   if (!sonarAvailable()) return null;
+  const weekLabel = `${window.weekStart} through ${window.weekEnd}`;
   const prompt = section === "wishlist"
-    ? `Write a short internal digest paragraph summarizing this week's Steam wishlist/follower/rank movement for our pre-release titles. Data:\n${summary}`
-    : `Write a short internal digest paragraph summarizing this week's Steam sales revenue (game + DLC) for our released/pre-purchase titles. Data:\n${summary}`;
-  return callSonar(prompt);
+    ? `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam wishlist/follower/rank movement for our pre-release titles. For each title, research whether it had any real, dated news during or just before this week (Steam festival/event inclusion, demo drop, reveal trailer, showcase appearance, patch/DLC news, review coverage) that could plausibly explain a notable move in its numbers — only mention this when you find an actual dated source. Data:\n${summary}`
+    : `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam sales revenue (game + DLC) for our released/pre-purchase titles. For each title, research whether it had a Steam storefront sale/discount, a sales event/festival inclusion, or another news beat (patch/DLC release, review, controversy, esports/streamer coverage) during or just before this week that could plausibly explain a notable move in its units or revenue — only mention this when you find an actual dated source. Data:\n${summary}`;
+  return callSonar(prompt, {
+    searchAfterDateFilter: toSonarDateFilter(window.weekStart, -3),
+    searchBeforeDateFilter: toSonarDateFilter(window.weekEnd, 1),
+  });
 }
 
 function buildWishlistNarrativeSummary(rows: WeeklyWishlistRow[], kpis: ReturnType<typeof getWeeklyWishlistKpis>): string {
   const lines = rows.map((r) =>
-    `- ${r.title}: ${r.weeklyWishlistAdds ?? "no data"} net wishlist adds, ${r.weeklyFollowerAdds ?? "no data"} follower adds, rank ${r.rankSunday ?? "unranked"} (${r.rankDelta != null ? (r.rankDelta >= 0 ? `+${r.rankDelta} spots` : `${r.rankDelta} spots`) : "no prior rank"}).`
+    `- ${r.title} (Steam App ID ${r.steamAppId}): ${r.weeklyWishlistAdds ?? "no data"} net wishlist adds, ${r.weeklyFollowerAdds ?? "no data"} follower adds, rank ${r.rankSunday ?? "unranked"} (${r.rankDelta != null ? (r.rankDelta >= 0 ? `+${r.rankDelta} spots` : `${r.rankDelta} spots`) : "no prior rank"}).`
   );
   return `Total wishlist adds across all titles: ${kpis.totalWishlistAdds}. Total follower adds: ${kpis.totalFollowerAdds}.\n${lines.join("\n")}`;
 }
 
 function buildRevenueNarrativeSummary(rows: WeeklyRevenueRow[], kpis: ReturnType<typeof getWeeklyRevenueKpis>): string {
   const lines = rows.map((r) =>
-    `- ${r.title}: ${r.baseUnitsWeek} base units (${fmtUsd(r.baseRevenueWeek)}), ${r.dlcUnitsWeek} DLC units (${fmtUsd(r.dlcRevenueWeek)}), total ${fmtUsd(r.totalRevenueWeek)} this week.`
+    `- ${r.title} (Steam App ID ${r.steamAppId}): ${r.baseUnitsWeek} base units (${fmtUsd(r.baseRevenueWeek)}), ${r.dlcUnitsWeek} DLC units (${fmtUsd(r.dlcRevenueWeek)}), total ${fmtUsd(r.totalRevenueWeek)} this week.`
   );
   return `Total units this week: ${kpis.totalUnitsWeek}. Total revenue this week: ${fmtUsd(kpis.totalRevenueWeek)}.\n${lines.join("\n")}`;
 }
@@ -230,8 +257,8 @@ export async function renderWeeklyDigestHtml(
   const revKpis = getWeeklyRevenueKpis(revRows);
 
   const [wlNarrative, revNarrative] = await Promise.all([
-    generateDigestNarrative("wishlist", buildWishlistNarrativeSummary(wlRows, wlKpis)),
-    generateDigestNarrative("revenue", buildRevenueNarrativeSummary(revRows, revKpis)),
+    generateDigestNarrative("wishlist", buildWishlistNarrativeSummary(wlRows, wlKpis), window),
+    generateDigestNarrative("revenue", buildRevenueNarrativeSummary(revRows, revKpis), window),
   ]);
 
   const wlRowsHtml = wlRows.map(wlTableRow).join("");
