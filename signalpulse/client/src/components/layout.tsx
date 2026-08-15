@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { useTheme } from "./theme-provider";
 import { useQuery } from "@tanstack/react-query";
-import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle } from "lucide-react";
+import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -42,6 +42,18 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
   const { data: steamSession } = useQuery<{ isExpired?: boolean; alertSentAt?: string | null }>({
     queryKey: ["/api/steam/session"],
     refetchInterval: 5 * 60 * 1000,
+  });
+
+  // v3.21 (2026-08-15): inbound-email unread badge for the sidebar Inbox link.
+  const { data: inboxUnread } = useQuery<{ unread: number }>({
+    queryKey: ["inbox-unread-count"],
+    queryFn: async () => {
+      const r = await fetch("/api/inbound/unread-count");
+      if (!r.ok) return { unread: 0 };
+      return r.json();
+    },
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   return (
@@ -214,6 +226,31 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
             <Home className="h-3.5 w-3.5 shrink-0" />
             {!sidebarCollapsed && <span>Suite Home</span>}
           </a>
+          <Link href="/inbox">
+            <div
+              className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors ${
+                location === "/inbox"
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+              }`}
+              data-testid="link-inbox"
+            >
+              <InboxIcon className="h-3.5 w-3.5 shrink-0" />
+              {!sidebarCollapsed && (
+                <span className="flex items-center gap-1.5 flex-1">
+                  <span>Inbox</span>
+                  {(inboxUnread?.unread ?? 0) > 0 && (
+                    <span
+                      className="ml-auto inline-flex items-center justify-center rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold text-destructive-foreground min-w-[18px]"
+                      data-testid="inbox-badge"
+                    >
+                      {inboxUnread!.unread}
+                    </span>
+                  )}
+                </span>
+              )}
+            </div>
+          </Link>
           <Link href="/settings">
             <div
               className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors ${

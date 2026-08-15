@@ -76,6 +76,18 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     icon: <Mail className="h-5 w-5" />,
     settingKeys: ["resend_api_key", "resend_from"],
   },
+  {
+    key: "email_inbound",
+    label: "Inbox (Resend Inbound)",
+    description: "Configure how howmanyareplaying.com receives inbound email. Every message is stored in the SignalPulse Inbox and forwarded to your personal address.",
+    icon: <Mail className="h-5 w-5" />,
+    settingKeys: [
+      "resend_inbound_receiving_domain",
+      "resend_inbound_signing_secret",
+      "resend_inbound_forward_enabled",
+      "resend_inbound_forward_to",
+    ],
+  },
 ];
 
 function SettingField({ setting, onSaved }: { setting: SettingRow; onSaved: () => void }) {
@@ -275,6 +287,35 @@ export default function Settings() {
               </div>
             </CardHeader>
             <CardContent>
+              {section.key === "email_inbound" && (
+                <div className="mb-4 p-3 rounded-md bg-muted/50 border text-xs space-y-2">
+                  <div className="font-medium">One-time DNS setup</div>
+                  <div className="text-muted-foreground">
+                    1. In Resend dashboard, go to <b>Emails → Receiving</b>. Add
+                    the domain in <i>Receiving Domain</i> above (default:
+                    howmanyareplaying.com) and copy the MX record Resend shows.
+                  </div>
+                  <div className="text-muted-foreground">
+                    2. At your DNS provider add that MX record on the same
+                    domain. Wait for Resend to mark it verified (usually
+                    &lt;5 min).
+                  </div>
+                  <div className="text-muted-foreground">
+                    3. In Resend, add a webhook for the
+                    <code className="mx-1 px-1 py-0.5 bg-background rounded">email.received</code>
+                    event pointing at:
+                    <code className="ml-1 px-1 py-0.5 bg-background rounded break-all">
+                      {typeof window !== "undefined" ? window.location.origin : ""}/api/webhooks/resend-inbound
+                    </code>
+                  </div>
+                  <div className="text-muted-foreground">
+                    4. Copy the webhook <b>Signing Secret</b> (starts with
+                    <code className="mx-1 px-1 py-0.5 bg-background rounded">whsec_</code>)
+                    into the field below. Once saved, all inbound email lands in the
+                    <a href="/#/inbox" className="text-primary underline ml-1">Inbox</a>.
+                  </div>
+                </div>
+              )}
               <div className="divide-y">
                 {sectionSettings.map(setting => (
                   <SettingField key={setting.key} setting={setting} onSaved={handleSaved} />

@@ -299,6 +299,56 @@ function initializeDatabase() {
       created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS leaderboard_recipients_unique_email ON leaderboard_email_recipients(email);
+
+    -- v3.21 (2026-08-15): Inbound email via Resend webhook. Users reply to
+    -- digests and support@ addresses and land here so an admin can view /
+    -- reply from the SignalPulse admin UI. Threading uses Resend's
+    -- message_id + In-Reply-To/References headers. All inbound goes into
+    -- inbound_messages; large attachments live in inbound_attachments
+    -- (fetched on demand from Resend's temporary URLs, not stored
+    -- inline — keeps DB size bounded).
+    CREATE TABLE IF NOT EXISTS inbound_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      resend_email_id TEXT NOT NULL UNIQUE,           -- data.email_id from webhook
+      message_id TEXT NOT NULL,                        -- RFC-5322 Message-ID header value; used for threading
+      in_reply_to TEXT,                                -- inbound In-Reply-To header, if any
+      references_hdr TEXT,                             -- inbound References header, if any
+      thread_key TEXT NOT NULL,                        -- normalized threading key: root message_id of the thread
+      subject TEXT NOT NULL DEFAULT '',
+      from_addr TEXT NOT NULL,                         -- e.g. "Steve <sallison@example.com>"
+      from_email TEXT NOT NULL,                        -- normalized bare email (lowercased)
+      to_addrs TEXT NOT NULL DEFAULT '[]',             -- JSON array
+      cc_addrs TEXT NOT NULL DEFAULT '[]',             -- JSON array
+      body_text TEXT NOT NULL DEFAULT '',
+      body_html TEXT NOT NULL DEFAULT '',
+      snippet TEXT NOT NULL DEFAULT '',                -- first ~200 chars of body_text for the inbox list
+      raw_json TEXT NOT NULL DEFAULT '{}',             -- full webhook payload for audit / reprocessing
+      is_read INTEGER NOT NULL DEFAULT 0,
+      is_archived INTEGER NOT NULL DEFAULT 0,
+      direction TEXT NOT NULL DEFAULT 'inbound',       -- inbound | outbound; outbound rows are replies we sent
+      outbound_status TEXT,                            -- null for inbound; sent | failed for outbound
+      outbound_error TEXT,                             -- populated when outbound_status = failed
+      received_at TEXT NOT NULL,                       -- inbound: from webhook data.created_at; outbound: send time
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS inbound_messages_thread_idx ON inbound_messages(thread_key, received_at);
+    CREATE INDEX IF NOT EXISTS inbound_messages_received_idx ON inbound_messages(received_at DESC);
+    CREATE INDEX IF NOT EXISTS inbound_messages_unread_idx ON inbound_messages(is_read, is_archived, received_at DESC);
+
+    CREATE TABLE IF NOT EXISTS inbound_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      message_id INTEGER NOT NULL,                     -- FK to inbound_messages.id
+      filename TEXT NOT NULL,
+      content_type TEXT,
+      size_bytes INTEGER,
+      -- Resend returns temporary download URLs; we store the URL and let the
+      -- UI fetch on demand. If the URL expires, we can re-fetch via the
+      -- receiving API using the parent resend_email_id.
+      download_url TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (message_id) REFERENCES inbound_messages(id)
+    );
+    CREATE INDEX IF NOT EXISTS inbound_attachments_message_idx ON inbound_attachments(message_id);
   `);
 }
 
@@ -575,7 +625,61 @@ export interface IStorage {
   createLeaderboardEmailRecipient(data: InsertLeaderboardEmailRecipient): LeaderboardEmailRecipient;
   updateLeaderboardEmailRecipient(id: number, data: Partial<InsertLeaderboardEmailRecipient>): LeaderboardEmailRecipient | undefined;
   deleteLeaderboardEmailRecipient(id: number): void;
+
+  // Inbound email (v3.21, 2026-08-15)
+  insertInboundMessage(data: InsertInboundMessage): InboundMessage;
+  getInboundMessage(id: number): InboundMessage | undefined;
+  getInboundByResendEmailId(resendEmailId: string): InboundMessage | undefined;
+  getInboundByMessageId(messageId: string): InboundMessage | undefined;
+  listInboundMessages(opts: { includeArchived?: boolean; limit?: number; offset?: number }): InboundMessage[];
+  listInboundThread(threadKey: string): InboundMessage[];
+  countUnreadInbound(): number;
+  markInboundRead(id: number, read: boolean): void;
+  archiveInbound(id: number, archived: boolean): void;
+  insertInboundAttachment(data: InsertInboundAttachment): InboundAttachment;
+  listInboundAttachments(messageId: number): InboundAttachment[];
 }
+
+// ─── Inbound email types (v3.21, 2026-08-15) ─────────────────────────────
+export interface InboundMessage {
+  id: number;
+  resend_email_id: string;
+  message_id: string;
+  in_reply_to: string | null;
+  references_hdr: string | null;
+  thread_key: string;
+  subject: string;
+  from_addr: string;
+  from_email: string;
+  to_addrs: string;   // JSON array
+  cc_addrs: string;   // JSON array
+  body_text: string;
+  body_html: string;
+  snippet: string;
+  raw_json: string;
+  is_read: number;
+  is_archived: number;
+  direction: string;  // "inbound" | "outbound"
+  outbound_status: string | null;
+  outbound_error: string | null;
+  received_at: string;
+  created_at: string;
+}
+export type InsertInboundMessage = Omit<InboundMessage, "id">;
+
+export interface InboundAttachment {
+  id: number;
+  message_id: number;
+  filename: string;
+  content_type: string | null;
+  size_bytes: number | null;
+  download_url: string | null;
+  created_at: string;
+}
+export type InsertInboundAttachment = Omit<InboundAttachment, "id">;
+
+// Convenience alias used by inbound-email.ts
+export type Storage = IStorage;
 
 export class DatabaseStorage implements IStorage {
   private now(): string {
@@ -1817,6 +1921,11 @@ export class DatabaseStorage implements IStorage {
       { key: "app_password", label: "App Password", category: "general", isSecret: true },
       { key: "resend_api_key", label: "Resend API Key", category: "email", isSecret: true },
       { key: "resend_from", label: "Resend From Address", category: "email", isSecret: false, value: "onboarding@resend.dev" },
+      // v3.21 (2026-08-15): inbound email via Resend webhook.
+      { key: "resend_inbound_signing_secret", label: "Resend Inbound Webhook Signing Secret (whsec_...)", category: "email", isSecret: true },
+      { key: "resend_inbound_receiving_domain", label: "Resend Inbound Receiving Domain", category: "email", isSecret: false, value: "howmanyareplaying.com" },
+      { key: "resend_inbound_forward_enabled", label: "Forward inbound to personal inbox", category: "email", isSecret: false, value: "true" },
+      { key: "resend_inbound_forward_to", label: "Forward inbound to this address", category: "email", isSecret: false, value: "steve.allison.home@gmail.com" },
     ];
 
     for (const d of defaults) {
@@ -1865,6 +1974,114 @@ export class DatabaseStorage implements IStorage {
 
   deleteLeaderboardEmailRecipient(id: number): void {
     db.delete(leaderboardEmailRecipients).where(eq(leaderboardEmailRecipients.id, id)).run();
+  }
+
+  // ─── Inbound email (v3.21, 2026-08-15) ─────────────────────────────
+  // Uses raw SQL via the sqlite handle rather than Drizzle schema so we
+  // don't need to add a second layer of type definitions for tables that
+  // are already created via CREATE TABLE IF NOT EXISTS above.
+
+  insertInboundMessage(data: InsertInboundMessage): InboundMessage {
+    const stmt = sqlite.prepare(`
+      INSERT INTO inbound_messages (
+        resend_email_id, message_id, in_reply_to, references_hdr, thread_key,
+        subject, from_addr, from_email, to_addrs, cc_addrs,
+        body_text, body_html, snippet, raw_json,
+        is_read, is_archived, direction, outbound_status, outbound_error,
+        received_at, created_at
+      ) VALUES (
+        @resend_email_id, @message_id, @in_reply_to, @references_hdr, @thread_key,
+        @subject, @from_addr, @from_email, @to_addrs, @cc_addrs,
+        @body_text, @body_html, @snippet, @raw_json,
+        @is_read, @is_archived, @direction, @outbound_status, @outbound_error,
+        @received_at, @created_at
+      )
+      RETURNING *
+    `);
+    return stmt.get(data as unknown as Record<string, unknown>) as InboundMessage;
+  }
+
+  getInboundMessage(id: number): InboundMessage | undefined {
+    return sqlite
+      .prepare(`SELECT * FROM inbound_messages WHERE id = ?`)
+      .get(id) as InboundMessage | undefined;
+  }
+
+  getInboundByResendEmailId(resendEmailId: string): InboundMessage | undefined {
+    return sqlite
+      .prepare(`SELECT * FROM inbound_messages WHERE resend_email_id = ?`)
+      .get(resendEmailId) as InboundMessage | undefined;
+  }
+
+  getInboundByMessageId(messageId: string): InboundMessage | undefined {
+    return sqlite
+      .prepare(`SELECT * FROM inbound_messages WHERE message_id = ?`)
+      .get(messageId) as InboundMessage | undefined;
+  }
+
+  listInboundMessages(opts: { includeArchived?: boolean; limit?: number; offset?: number }): InboundMessage[] {
+    const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+    const offset = Math.max(opts.offset ?? 0, 0);
+    // Group by thread — return the LATEST message per thread_key so the
+    // inbox list shows one row per conversation with the most recent activity.
+    const where = opts.includeArchived ? "1=1" : "is_archived = 0";
+    const sql = `
+      SELECT m.*
+      FROM inbound_messages m
+      JOIN (
+        SELECT thread_key, MAX(received_at) AS max_received
+        FROM inbound_messages
+        WHERE ${where}
+        GROUP BY thread_key
+      ) latest
+        ON m.thread_key = latest.thread_key
+       AND m.received_at = latest.max_received
+      WHERE ${where}
+      ORDER BY m.received_at DESC
+      LIMIT ? OFFSET ?
+    `;
+    return sqlite.prepare(sql).all(limit, offset) as InboundMessage[];
+  }
+
+  listInboundThread(threadKey: string): InboundMessage[] {
+    return sqlite
+      .prepare(`SELECT * FROM inbound_messages WHERE thread_key = ? ORDER BY received_at ASC`)
+      .all(threadKey) as InboundMessage[];
+  }
+
+  countUnreadInbound(): number {
+    const row = sqlite
+      .prepare(`SELECT COUNT(*) AS n FROM inbound_messages WHERE is_read = 0 AND is_archived = 0 AND direction = 'inbound'`)
+      .get() as { n: number };
+    return row?.n ?? 0;
+  }
+
+  markInboundRead(id: number, read: boolean): void {
+    sqlite
+      .prepare(`UPDATE inbound_messages SET is_read = ? WHERE id = ?`)
+      .run(read ? 1 : 0, id);
+  }
+
+  archiveInbound(id: number, archived: boolean): void {
+    sqlite
+      .prepare(`UPDATE inbound_messages SET is_archived = ? WHERE id = ?`)
+      .run(archived ? 1 : 0, id);
+  }
+
+  insertInboundAttachment(data: InsertInboundAttachment): InboundAttachment {
+    return sqlite
+      .prepare(`
+        INSERT INTO inbound_attachments (message_id, filename, content_type, size_bytes, download_url, created_at)
+        VALUES (@message_id, @filename, @content_type, @size_bytes, @download_url, @created_at)
+        RETURNING *
+      `)
+      .get(data as unknown as Record<string, unknown>) as InboundAttachment;
+  }
+
+  listInboundAttachments(messageId: number): InboundAttachment[] {
+    return sqlite
+      .prepare(`SELECT * FROM inbound_attachments WHERE message_id = ? ORDER BY id ASC`)
+      .all(messageId) as InboundAttachment[];
   }
 }
 

@@ -22,6 +22,8 @@ import {
 } from "./leaderboards";
 import { sendWeeklyLeaderboardDigest } from "./leaderboard-digest";
 import { getHeldDigestWeek, getHeldDigestMissing } from "./leaderboard-digest-weekly";
+import express from "express";
+import { handleResendInboundWebhook, sendReply, forwardToPersonalInbox } from "./inbound-email";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -2279,6 +2281,98 @@ export async function registerRoutes(
     } finally {
       ingestionInFlight = false;
     }
+  });
+
+  // ─── v3.21 (2026-08-15): Inbound email via Resend webhook ───────────────
+  //
+  // Public webhook (Resend posts here when an email arrives). MUST use raw
+  // body middleware so the Svix signature check gets the exact bytes Resend
+  // signed. Mount before any JSON parsing that might already have consumed
+  // the body — in this app the global JSON parser is in server/index.ts and
+  // is scoped to /api EXCEPT this exact path (see the raw() below).
+  app.post(
+    "/api/webhooks/resend-inbound",
+    express.raw({ type: "application/json", limit: "10mb" }),
+    async (req, res) => {
+      await handleResendInboundWebhook(req, res, storage);
+    },
+  );
+
+  // Admin: list threads (latest message per thread) for the inbox view.
+  app.get("/api/inbound/messages", (req, res) => {
+    const includeArchived = req.query.include_archived === "true";
+    const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 100;
+    const offset = req.query.offset ? parseInt(String(req.query.offset), 10) : 0;
+    const items = storage.listInboundMessages({ includeArchived, limit, offset });
+    const unread = storage.countUnreadInbound();
+    res.json({ items, unread });
+  });
+
+  // Admin: get one thread (all messages ordered old→new) plus attachments.
+  app.get("/api/inbound/thread/:threadKey", (req, res) => {
+    const threadKey = decodeURIComponent(req.params.threadKey);
+    const messages = storage.listInboundThread(threadKey);
+    if (messages.length === 0) {
+      res.status(404).json({ error: "thread_not_found" });
+      return;
+    }
+    // Attach any attachments per message
+    const withAttachments = messages.map((m) => ({
+      ...m,
+      attachments: storage.listInboundAttachments(m.id),
+    }));
+    res.json({ thread_key: threadKey, messages: withAttachments });
+  });
+
+  // Admin: mark one message read/unread.
+  app.post("/api/inbound/messages/:id/read", (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const read = req.body?.read !== false; // default true
+    storage.markInboundRead(id, read);
+    res.json({ ok: true, id, read });
+  });
+
+  // Admin: archive/unarchive.
+  app.post("/api/inbound/messages/:id/archive", (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const archived = req.body?.archived !== false;
+    storage.archiveInbound(id, archived);
+    res.json({ ok: true, id, archived });
+  });
+
+  // Admin: send a reply.
+  app.post("/api/inbound/messages/:id/reply", async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const body = String(req.body?.body || "").trim();
+    if (!body) {
+      res.status(400).json({ error: "body_required" });
+      return;
+    }
+    const result = await sendReply(storage, id, {
+      to: req.body?.to,
+      cc: Array.isArray(req.body?.cc) ? req.body.cc : undefined,
+      subject: req.body?.subject,
+      body,
+    });
+    if (!result.ok) {
+      res.status(500).json(result);
+      return;
+    }
+    // Also mark the original as read once we've replied.
+    storage.markInboundRead(id, true);
+    res.json(result);
+  });
+
+  // Admin: force re-forward to the personal inbox (retry button).
+  app.post("/api/inbound/messages/:id/re-forward", async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    const result = await forwardToPersonalInbox(storage, id);
+    res.json(result);
+  });
+
+  // Admin: unread count (used by the header badge; cheap query, poll every 30s).
+  app.get("/api/inbound/unread-count", (_req, res) => {
+    res.json({ unread: storage.countUnreadInbound() });
   });
 
   return httpServer;
