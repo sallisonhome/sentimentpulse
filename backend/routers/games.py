@@ -309,3 +309,58 @@ def seed_demographic_context_endpoint(
     from seed_demographic_context import seed_default_demographic_context
     result = seed_default_demographic_context(db, overwrite=overwrite)
     return {"result": result, "overwrite": overwrite}
+
+
+@router.post("/{game_id}/reonboard")
+def reonboard_game(
+    game_id: int,
+    days_back: int = 90,
+    db: Session = Depends(get_db),
+):
+    """Re-run the onboarding backfill (Steam Forums + Steam Reviews) for a
+    single game.
+
+    v2 (2026-08-17) recovery endpoint. Reasons a game might legitimately
+    need this after its initial POST:
+      • The daemon thread from POST /games (or /competitors) crashed
+        before completing — typically because the process restarted
+        mid-scrape during a deploy.
+      • The initial onboarding predates the v2 fix that added Steam
+        Reviews backfill, so the game has 0 reviews stored despite
+        being a released title with reviews on Steam.
+      • A publisher change (see PATCH /games/{id}) or a Steam AppID
+        correction shifted the source-of-truth for the game.
+
+    Idempotent by construction: the underlying _bulk_save_posts helper
+    dedupes on external_id, so re-running against a game that already
+    has data is safe and just backfills any missing rows in the window.
+    """
+    game = db.query(Game).filter_by(id=game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+    if not game.steam_app_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Game has no steam_app_id; nothing to backfill from Steam.",
+        )
+    if days_back < 1 or days_back > 365:
+        raise HTTPException(
+            status_code=400,
+            detail="days_back must be between 1 and 365 (inclusive).",
+        )
+
+    from services.new_game_onboarding import schedule_onboarding_backfill  # noqa: PLC0415
+    scheduled = schedule_onboarding_backfill(game.id, days_back=days_back)
+    return {
+        "game_id": game.id,
+        "name": game.name,
+        "steam_app_id": game.steam_app_id,
+        "days_back": days_back,
+        "scheduled": scheduled,
+        "message": (
+            "Backfill scheduled in background thread. Steam forum + review "
+            "rows should appear within 5-15 minutes."
+            if scheduled else
+            "A backfill is already in flight for this game; try again later."
+        ),
+    }
