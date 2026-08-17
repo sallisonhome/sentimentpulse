@@ -21,6 +21,23 @@ orchestrator against permanent stuck-in-flight state.
     or uncaught exception) would leave the game permanently 'stuck' in
     the set and every future onboarding attempt was silently a no-op.
 
+v3 (2026-08-17 evening): Reddit backfill now runs alongside Steam.
+  • Previously the onboarding path was Steam-only (Forums + Reviews).
+    Any game newly added or reonboarded had zero historical Reddit
+    data — the daily cron only fetches ~100 recent submissions per
+    subreddit per day, so a game with 20+ subreddits never accumulates
+    the historical Reddit archive without a manual script run.
+  • The onboarding thread now calls `backfill_reddit_for_game` after
+    the Steam pair, using the same start_dt → start_epoch window.
+    Function already existed in `scripts/historical_backfill.py`;
+    this wiring omission was analogous to the Steam Reviews omission
+    fixed in v2.
+  • MAX_ONBOARDING_SECS bumped 30 → 90 min. Reddit backfill on a game
+    with ~29 subreddits x 2 query variants x 20 pages x 1.5s/page can
+    take ~30 min on its own for the 365-day window; add Steam Forums
+    (~15 min budget) + Reviews (~5 min) and the worst-case wallclock
+    approaches an hour.
+
 Runs in a background daemon thread so the caller's POST returns
 immediately.
 """
@@ -47,11 +64,12 @@ _LOCK = threading.Lock()
 
 DEFAULT_DAYS_BACK = 90
 
-# Onboarding across Forums + Reviews takes ~5-15 min per game (the
-# 15-minute forum wallclock budget dominates). Set the guard TTL to
-# 30 minutes so we allow a retry after that even if the previous
-# attempt vanished silently.
-MAX_ONBOARDING_SECS = 30 * 60
+# Onboarding across Forums + Reviews + Reddit takes ~10-60 min per
+# game depending on subreddit count and days_back. Set the guard TTL
+# to 90 minutes so a genuinely-running 365-day backfill doesn't get
+# preempted by a retry, but a truly crashed thread still gets reclaimed
+# in bounded time.
+MAX_ONBOARDING_SECS = 90 * 60
 
 
 def _run_onboarding_backfill(game_id: int, days_back: int) -> None:
@@ -63,6 +81,7 @@ def _run_onboarding_backfill(game_id: int, days_back: int) -> None:
         from database import SessionLocal
         from models import Game
         from scripts.historical_backfill import (
+            backfill_reddit_for_game,
             backfill_steam_forums_for_game,
             backfill_steam_reviews_for_game,
         )
@@ -107,6 +126,35 @@ def _run_onboarding_backfill(game_id: int, days_back: int) -> None:
             review_saved = backfill_steam_reviews_for_game(db, game, start_dt, errors)
             db.commit()
 
+            # Reddit backfill (v3, 2026-08-17 evening). Analogous to
+            # the v2 Steam Reviews omission: reddit archive was silently
+            # skipped by every prior onboarding, so any game with a
+            # configured `subreddits` list has zero historical reddit
+            # data until either the daily cron slowly accretes ~100
+            # posts/sub/day (which never catches up on games added
+            # months ago) or someone manually invokes
+            # scripts/historical_backfill.py from a shell.
+            #
+            # backfill_reddit_for_game internally:
+            #   - iterates every configured subreddit for the game
+            #   - runs the general-sub keyword gate via _game_search_query
+            #     for subs in _GENERAL_SUBREDDITS (matches the ingestor's
+            #     tagger behavior), and admits every post for dedicated subs
+            #   - dedupes via RawPost.external_id in _bulk_save_posts
+            #
+            # The function takes start_epoch (int, seconds), not start_dt.
+            reddit_saved = 0
+            if game.subreddits:
+                start_epoch = int(start_dt.timestamp())
+                reddit_saved = backfill_reddit_for_game(db, game, start_epoch, errors)
+                db.commit()
+            else:
+                logger.info(
+                    "Onboarding backfill: game_id=%d %r has no subreddits configured; "
+                    "skipping Reddit backfill",
+                    game_id, game.name,
+                )
+
             # Reclassify + resummarize the newly-arrived posts so the
             # dashboard doesn't render "0 sentiment classified" bars over
             # populated raw-post rows.
@@ -120,9 +168,9 @@ def _run_onboarding_backfill(game_id: int, days_back: int) -> None:
             logger.info(
                 "Onboarding backfill DONE for game_id=%d %r: "
                 "steam_forums_saved=%d steam_reviews_saved=%d "
-                "fetch_errors=%d step_errors=%d",
+                "reddit_saved=%d fetch_errors=%d step_errors=%d",
                 game_id, game.name, forum_saved, review_saved,
-                len(errors), len(step_errors),
+                reddit_saved, len(errors), len(step_errors),
             )
         finally:
             db.close()

@@ -6,6 +6,27 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-17 evening (sentimentpulse) — Onboarding backfill silently skipped Reddit; every game with a subreddits list had zero historical reddit rows
+
+**What happened.** User asked to backfill 12 months of Reddit data for WWZ (147) and Insurgency: Sandstorm (148). Both games had recently been given expanded subreddit lists (29 and 20 respectively) plus their first `distinctive_keywords`. Before running the reonboards I checked their current state and found: **the 90-day reonboards I'd fired 4 hours earlier produced 0 Reddit rows**. My first hypothesis ("empty distinctive_keywords blocks Step 5 relevance gate") was true but incomplete. Tracing `_run_onboarding_backfill` in `services/new_game_onboarding.py` revealed the deeper cause: the onboarding path **only calls the two Steam backfill helpers** — there is no `backfill_reddit_for_game` call anywhere in the onboarding thread. This is the exact same class of omission that the v2 (2026-08-17 morning) fix addressed for Steam Reviews.
+
+**Root cause.** `services/new_game_onboarding.py::_run_onboarding_backfill` originally only ran `backfill_steam_forums_for_game`. The v2 fix added `backfill_steam_reviews_for_game`. Both times the corresponding Reddit helper (`scripts/historical_backfill.backfill_reddit_for_game`) existed and was tested, but was never wired into the onboarding path. The daily cron only fetches ~100 most-recent submissions per subreddit per day — so a game added months ago with a 20-sub list would never accumulate the historical archive; it would forever be missing the vast majority of what a 90d or 365d PullPush walk would surface.
+
+**Fix.**
+- `_run_onboarding_backfill` now calls `backfill_reddit_for_game(db, game, start_epoch, errors)` after the Steam pair. Converts `start_dt` → `int(start_dt.timestamp())` because the reddit helper's signature takes an epoch int, not a datetime.
+- Guarded on `if game.subreddits`: games with an empty subreddit list (DLC, cosmetic packs, portfolio watchlist entries) short-circuit with an INFO log — the helper would log its own warning otherwise.
+- `MAX_ONBOARDING_SECS` bumped 30 → 90 min. Reddit backfill on a game with ~29 subreddits x 2 query variants x 20 pages x 1.5s/page can take ~30 min on its own for the 365-day window; plus Steam Forums (~15 min budget) + Reviews (~5 min), worst-case wallclock approaches an hour.
+- Router response text for `POST /api/games/{id}/reonboard` updated to mention Reddit and its 10-60 min completion window.
+- Two new regression tests in `tests/test_new_game_onboarding.py`: (a) `test_v3_backfills_reddit_when_game_has_subreddits` — asserts the reddit helper is called AND that `start_epoch` is an int (not a datetime that would only fail at network-call time), AND that the epoch is ~365 days before now for `days_back=365`; (b) `test_v3_skips_reddit_backfill_when_game_has_no_subreddits` — asserts the empty-list guard fires without calling the helper.
+
+**Generalizable rules.**
+
+> **Before scaling up a backfill (e.g. 90d → 365d), verify the smaller run actually produced data first.** I fired the 90-day reonboards and moved on to other tasks. Had I checked their output before the user asked for 12 months, I'd have caught the reddit omission 4 hours earlier. Any backfill request from the user should include a post-run row-count check before declaring success.
+
+> **The pattern "one source works, the analogous source silently doesn't" is a class, not a coincidence.** SentimentPulse has now hit this pattern three times in one day: (1) Steam Reviews weren't backfilled in onboarding despite Steam Forums being backfilled; (2) Reddit wasn't backfilled in onboarding despite both Steam sources being backfilled; (3) `visibleDateLabels` filtered PLS milestones on a display-format key while the analogous underlying ISO date was available. When you find yourself thinking "but source X clearly works", grep for the sibling source Y at the same architectural layer and confirm it works too. The parallel structure should be genuinely parallel.
+
+---
+
 ## 2026-08-17 (sentimentpulse) — I reached for `gh run watch` and then panicked on a transient GitHub API 504 instead of using the documented `gh run list` → `gh run view --log` pattern from CLAUDE.md
 
 **What happened.** After pushing the ISO-date PLS filter fix, I ran `gh run watch <id> --exit-status` to poll the deploy. GitHub returned an HTTP 504 mid-poll. Instead of retrying via the documented CLI-native flow, I started running `gh run view <id> --json status,conclusion` in a while-loop, which made the interaction look like I was fumbling and prompted the user to correct me: **"We use GitHub CLI! This is in Claude.md and lessons.md you should never run into this GitHub API issue as you should know that's not how we work."** The user was right — CLAUDE.md §"Droplet Operations via GitHub Actions" prescribes the exact idiom (`gh workflow run` → `gh run list --workflow=... -L 1 --json ...` → `gh run view <id> --log`) and I ignored it in favor of a synchronous watch that fails loudly on API blips.

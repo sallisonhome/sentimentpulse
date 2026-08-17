@@ -317,7 +317,7 @@ def reonboard_game(
     days_back: int = 90,
     db: Session = Depends(get_db),
 ):
-    """Re-run the onboarding backfill (Steam Forums + Steam Reviews) for a
+    """Re-run the onboarding backfill (Steam Forums + Steam Reviews + Reddit) for a
     single game.
 
     v2 (2026-08-17) recovery endpoint. Reasons a game might legitimately
@@ -328,6 +328,9 @@ def reonboard_game(
       • The initial onboarding predates the v2 fix that added Steam
         Reviews backfill, so the game has 0 reviews stored despite
         being a released title with reviews on Steam.
+      • The initial onboarding predates the v3 fix (2026-08-17 evening)
+        that added Reddit backfill, so the game has 0 historical
+        Reddit rows despite having a `subreddits` list configured.
       • A publisher change (see PATCH /games/{id}) or a Steam AppID
         correction shifted the source-of-truth for the game.
 
@@ -359,7 +362,9 @@ def reonboard_game(
         "scheduled": scheduled,
         "message": (
             "Backfill scheduled in background thread. Steam forum + review "
-            "rows should appear within 5-15 minutes."
+            "rows appear within 5-15 minutes; Reddit rows follow within "
+            "10-60 minutes depending on subreddit count and days_back "
+            "(365d + 20+ subs approaches the upper bound)."
             if scheduled else
             "A backfill is already in flight for this game; try again later."
         ),
