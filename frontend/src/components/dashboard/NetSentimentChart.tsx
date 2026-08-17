@@ -1,3 +1,20 @@
+/**
+ * NetSentimentChart — daily net sentiment line with overlay annotations.
+ *
+ * v2 (2026-08-17): now merges two annotation streams:
+ *   1. User-authored TimelineEvents (existing, unchanged)
+ *   2. PLS milestones from SignalPulse (new)
+ *
+ * PLS milestones are matched to the current game by Steam App ID and only
+ * rendered when the game has a corresponding SignalPulse product. Because
+ * the marker density can get noisy on titles with many trailers/press
+ * beats, there's a per-user localStorage toggle in the header.
+ *
+ * Period filtering: both annotation streams filter against the visible
+ * X-axis labels, so the selected period selector (Today / 7d / 30d / 90d /
+ * All) already controls what's shown — no per-event date math needed.
+ */
+import { useState } from 'react'
 import {
   ResponsiveContainer,
   LineChart,
@@ -14,19 +31,62 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import type { NetSentimentPoint } from '../../types'
 import { useAppContext } from '../../contexts/AppContext'
 import { useTimelineEvents } from '../../hooks/useTimelineEvents'
+import { useGameDetail } from '../../hooks/useGames'
+import {
+  usePlsMilestones,
+  metaFor as plsMetaFor,
+  type PlsAnnotation,
+} from '../../hooks/usePlsMilestones'
 
 interface NetSentimentChartProps {
   data: NetSentimentPoint[]
 }
 
+// ── Toggle persistence ──────────────────────────────────────────────────
+// Store the PLS-visible preference in localStorage so it survives page
+// reloads and stays consistent across game switches. Wrapped in
+// try/catch because storage can be disabled (private-browsing edge case).
+const PLS_TOGGLE_KEY = 'sp.chart.showPlsMilestones'
+function loadPlsToggle(): boolean {
+  try {
+    const v = localStorage.getItem(PLS_TOGGLE_KEY)
+    // Default ON — user asked for the milestones by default. They can
+    // hide them per-browser without needing to opt back in each session.
+    return v == null ? true : v === '1'
+  } catch { return true }
+}
+function savePlsToggle(on: boolean) {
+  try { localStorage.setItem(PLS_TOGGLE_KEY, on ? '1' : '0') } catch { /* no-op */ }
+}
+
+// ── Unified in-window annotation shape ─────────────────────────────────
+// Both TimelineEvents and PlsAnnotations are collapsed into this shape
+// before we render markers and the compact list. `dot_color` is what the
+// marker uses; PLS uses category color, user events keep the historical
+// amber (#f59e0b) so nothing regresses for existing users.
+interface WindowAnnotation {
+  key:        string
+  date_label: string
+  event_date: string
+  name:       string
+  dot_color:  string
+  category_label: string
+  source:     'user' | 'pls'
+}
+
+const USER_EVENT_COLOR = '#f59e0b'
+
 export default function NetSentimentChart({ data }: NetSentimentChartProps) {
   const { selectedGameId } = useAppContext()
-  // Timeline events for the currently-selected game. The
-  // useTimelineEvents hook is safe to call for ANY game (it returns an
-  // empty array when the game has no events or when the game is
-  // standalone). No conditional useQuery invocation here — always the
-  // same hook order for React.
+
+  // User-authored timeline events (unchanged from v1).
   const { data: events } = useTimelineEvents(selectedGameId)
+
+  // PLS milestones: need the game's steam_app_id to look up its
+  // SignalPulse product, which useGameDetail supplies.
+  const { data: gameDetail } = useGameDetail(selectedGameId)
+  const { data: plsRaw } = usePlsMilestones(gameDetail?.steam_app_id)
+  const [showPls, setShowPls] = useState<boolean>(loadPlsToggle)
 
   const formatted = data.map(d => ({
     ...d,
@@ -34,20 +94,70 @@ export default function NetSentimentChart({ data }: NetSentimentChartProps) {
     net_pct: parseFloat((d.net_sentiment * 100).toFixed(1)),
   }))
 
-  // Filter events to the currently-visible date range so we don't render
-  // markers that fall off the chart edges. The trend data already
-  // reflects the selected period (7d/30d/90d/all), so we intersect
-  // against its first/last date_label — exact string match is fine
-  // because we format both sides with the same 'MMM d' formatter.
+  // Only render markers on days that actually exist on the X axis. The
+  // trend data already reflects the selected period (today / 7d / 30d /
+  // 90d / all), so intersecting with its date labels gives us automatic
+  // period filtering for BOTH annotation streams — no separate math.
   const visibleDateLabels = new Set(formatted.map(f => f.date_label))
-  const inWindowEvents = (events ?? [])
-    .map(ev => ({ ...ev, date_label: format(parseISO(ev.event_date), 'MMM d') }))
+
+  const userAnnotations: WindowAnnotation[] = (events ?? [])
+    .map(ev => ({
+      key:            `user-${ev.id}`,
+      event_date:     ev.event_date,
+      date_label:     format(parseISO(ev.event_date), 'MMM d'),
+      name:           ev.name,
+      dot_color:      USER_EVENT_COLOR,
+      category_label: 'Timeline',
+      source:         'user' as const,
+    }))
     .filter(ev => visibleDateLabels.has(ev.date_label))
+
+  const plsAnnotations: WindowAnnotation[] = !showPls || !plsRaw ? [] : plsRaw
+    .map((m: PlsAnnotation) => {
+      const meta = plsMetaFor(m.category)
+      return {
+        key:            m.id,
+        event_date:     m.event_date,
+        date_label:     format(parseISO(m.event_date), 'MMM d'),
+        name:           m.name + (m.is_planned ? ' (planned)' : ''),
+        dot_color:      meta.color,
+        category_label: meta.label,
+        source:         'pls' as const,
+      }
+    })
+    .filter(ev => visibleDateLabels.has(ev.date_label))
+
+  const inWindowEvents: WindowAnnotation[] = [
+    ...userAnnotations,
+    ...plsAnnotations,
+  ].sort((a, b) => a.event_date.localeCompare(b.event_date))
+
+  // Only offer the PLS toggle when the game actually has any PLS data —
+  // hiding the switch prevents users from wondering why the toggle
+  // doesn't do anything on games without a SignalPulse product.
+  const hasPlsData = (plsRaw?.length ?? 0) > 0
 
   return (
     <Card>
-      <CardHeader>
+      <CardHeader className="flex flex-row items-baseline justify-between space-y-0 pb-2">
         <CardTitle className="text-base">Net Sentiment Trend</CardTitle>
+        {hasPlsData && (
+          <label
+            className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none"
+            data-testid="pls-milestones-toggle"
+          >
+            <input
+              type="checkbox"
+              className="h-3 w-3 cursor-pointer accent-current"
+              checked={showPls}
+              onChange={e => {
+                setShowPls(e.target.checked)
+                savePlsToggle(e.target.checked)
+              }}
+            />
+            <span>PLS milestones</span>
+          </label>
+        )}
       </CardHeader>
       <CardContent>
         <ResponsiveContainer width="100%" height={220}>
@@ -75,29 +185,29 @@ export default function NetSentimentChart({ data }: NetSentimentChartProps) {
               dot={false}
               activeDot={{ r: 4 }}
             />
-            {/* Event markers — dashed vertical lines colored per event.
-                Using the same slate-blue color for all events on this
-                chart since it's a single-game view; the Post Volume by
-                Title chart uses per-game colors because it's multi-line. */}
+            {/* Event markers — dashed vertical lines colored by source
+                (user events keep the historical amber; PLS milestones use
+                their category color from usePlsMilestones.PLS_CATEGORY_META). */}
             {inWindowEvents.map(ev => (
               <ReferenceLine
-                key={`ev-${ev.id}`}
+                key={ev.key}
                 x={ev.date_label}
-                stroke="#f59e0b"
+                stroke={ev.dot_color}
                 strokeDasharray="4 3"
                 strokeWidth={1.5}
                 strokeOpacity={0.85}
                 ifOverflow="visible"
                 isFront
-                label={{ value: '●', position: 'top', fill: '#f59e0b', fontSize: 10 }}
+                label={{ value: '●', position: 'top', fill: ev.dot_color, fontSize: 10 }}
               />
             ))}
           </LineChart>
         </ResponsiveContainer>
 
-        {/* Compact event list under the chart, matching the pattern used
-            by the Post Volume by Title chart. Only shown when there are
-            in-window events, so most single-game dashboards stay
+        {/* Compact event list under the chart. Combines both sources with
+            a per-row color dot so users can see at a glance which is a
+            user event vs a PLS milestone. Only shown when there is at
+            least one in-window annotation, so most dashboards stay
             uncluttered. */}
         {inWindowEvents.length > 0 && (
           <div className="mt-3 border-t border-border/60 pt-2">
@@ -106,8 +216,12 @@ export default function NetSentimentChart({ data }: NetSentimentChartProps) {
             </p>
             <ul className="grid grid-cols-1 gap-x-4 gap-y-0.5 text-[11px] sm:grid-cols-2">
               {inWindowEvents.map(ev => (
-                <li key={ev.id} className="flex items-baseline gap-1.5">
-                  <span aria-hidden style={{ color: '#f59e0b' }}>●</span>
+                <li
+                  key={ev.key}
+                  className="flex items-baseline gap-1.5"
+                  data-testid={`chart-event-${ev.key}`}
+                >
+                  <span aria-hidden style={{ color: ev.dot_color }}>●</span>
                   <span className="tabular-nums text-muted-foreground">{ev.event_date}</span>
                   <span className="truncate" title={ev.name}>{ev.name}</span>
                 </li>
@@ -123,9 +237,8 @@ export default function NetSentimentChart({ data }: NetSentimentChartProps) {
 function NetSentimentTooltip({
   active,
   payload,
-  label,
   events,
-}: TooltipProps<number, string> & { events: { date_label: string; name: string }[] }) {
+}: TooltipProps<number, string> & { events: WindowAnnotation[] }) {
   if (!active || !payload?.length) return null
   const d = payload[0].payload as NetSentimentPoint & { date_label: string; net_pct: number }
   // Any event whose date matches the currently-hovered X label surfaces
@@ -139,11 +252,14 @@ function NetSentimentTooltip({
         +{d.positive_count} / -{d.negative_count} / ~{d.neutral_count} &nbsp;({d.total} total)
       </p>
       {dayEvents.length > 0 && (
-        <div className="mt-1.5 border-t border-border/60 pt-1.5">
-          {dayEvents.map((ev, i) => (
-            <p key={i} className="flex items-baseline gap-1">
-              <span aria-hidden style={{ color: '#f59e0b' }}>●</span>
+        <div className="mt-1.5 border-t border-border/60 pt-1.5 space-y-0.5">
+          {dayEvents.map(ev => (
+            <p key={ev.key} className="flex items-baseline gap-1">
+              <span aria-hidden style={{ color: ev.dot_color }}>●</span>
               <span className="font-medium">{ev.name}</span>
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {ev.category_label}
+              </span>
             </p>
           ))}
         </div>

@@ -57,6 +57,15 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      // v2 (2026-08-17): PLS milestones on the sentiment chart pull
+      // from SignalPulse, which lives at /signal/api/* on the same
+      // host in production (nginx). In local dev we need to reach the
+      // live droplet directly because SignalPulse is not part of the
+      // local FastAPI backend.
+      '/signal': {
+        target: 'http://104.236.239.46',
+        changeOrigin: true,
+      },
     },
   },
   test: {
