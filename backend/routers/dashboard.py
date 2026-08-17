@@ -461,6 +461,87 @@ def get_dashboard(
             vol_map.setdefault(cursor, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "reddit_comment": 0, "bluesky": 0, "dtf": 0})
             cursor += timedelta(days=1)
 
+    # v0016.5 (2026-08-17): compute the same aggregation for the
+    # immediately-prior window of equal length. Used by the Posts by Source
+    # card on the frontend to render period-over-period deltas next to
+    # the headline total and each source bar.
+    #
+    # Skipped for period=today (single in-progress day) and period=lifetime
+    # (no comparable prior window) — matches the rule used elsewhere in
+    # this file for competitor-timeseries pct_change.
+    prior_volume_points: Optional[list[VolumePoint]] = None
+    prior_window_days = {
+        PeriodEnum.weekly: 7,
+        PeriodEnum.monthly: 30,
+        PeriodEnum.quarterly: 90,
+    }.get(period)
+    if prior_window_days is not None:
+        prior_end   = p_start - timedelta(days=1) if p_start else None
+        prior_start = (prior_end - timedelta(days=prior_window_days - 1)) if prior_end else None
+        if prior_start is not None and prior_end is not None:
+            prior_q = (
+                db.query(day_expr, RawPost.source, func.count(RawPost.id).label("cnt"))
+                .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+                .filter(RawPost.game_id == game_id)
+                .filter(RawPost.post_date.isnot(None))
+                .filter(func.date(effective_date_expr) >= str(prior_start))
+                .filter(func.date(effective_date_expr) <= str(prior_end))
+                .group_by(day_expr, RawPost.source)
+                .order_by(day_expr)
+            )
+            prior_map: dict[date, dict[str, int]] = {}
+            for row in prior_q.all():
+                d2 = _to_date(row.day)
+                if d2 is None:
+                    continue
+                prior_map.setdefault(d2, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "reddit_comment": 0, "bluesky": 0, "dtf": 0})
+                src_key = row.source.value
+                if src_key == "reddit_comment":
+                    prior_map[d2]["reddit"] += row.cnt
+                    prior_map[d2]["reddit_comment"] = row.cnt
+                else:
+                    prior_map[d2][src_key] = row.cnt
+
+            # Zero-fill the prior window on the same convention as the
+            # current window so the count of "days with any data" below
+            # is trustworthy.
+            cursor = prior_start
+            while cursor <= prior_end:
+                prior_map.setdefault(cursor, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "reddit_comment": 0, "bluesky": 0, "dtf": 0})
+                cursor += timedelta(days=1)
+
+            # Coverage guard: same rule used by competitor-timeseries
+            # pct_change. If the prior window has fewer than max(3, half)
+            # of its days carrying any ingestion, the comparison would
+            # produce meaningless "+9,999%"-style deltas because the
+            # historical backfill hasn't reached that far. Emit None in
+            # that case; the frontend renders "no baseline" instead.
+            prior_days_with_data = sum(
+                1 for counts in prior_map.values()
+                if any(v > 0 for k, v in counts.items() if k != "reddit_comment")
+            )
+            min_days_required = max(3, prior_window_days // 2)
+            if prior_days_with_data >= min_days_required:
+                prior_volume_points = [
+                    VolumePoint(
+                        day=d2,
+                        steam_review=counts.get("steam_review", 0),
+                        steam_forum=counts.get("steam_forum", 0),
+                        reddit=counts.get("reddit", 0),
+                        reddit_comment=counts.get("reddit_comment", 0),
+                        bluesky=counts.get("bluesky", 0),
+                        dtf=counts.get("dtf", 0),
+                        total=(
+                            counts.get("steam_review", 0)
+                            + counts.get("steam_forum", 0)
+                            + counts.get("reddit", 0)
+                            + counts.get("bluesky", 0)
+                            + counts.get("dtf", 0)
+                        ),
+                    )
+                    for d2, counts in sorted(prior_map.items())
+                ]
+
     volume_points = [
         VolumePoint(
             day=d,
@@ -570,6 +651,7 @@ def get_dashboard(
         top_neutral_topics=[],
         top_topics_summary=top_topics_summary,
         volume_by_source=volume_points,
+        prior_period_volume_by_source=prior_volume_points,
         sentiment_velocity=velocity,
     )
 

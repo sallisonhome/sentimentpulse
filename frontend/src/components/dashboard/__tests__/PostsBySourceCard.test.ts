@@ -8,7 +8,7 @@
  * exposed separately for the context row.
  */
 import { describe, it, expect } from 'vitest'
-import { aggregateVolumeBySource } from '../PostsBySourceCard'
+import { aggregateVolumeBySource, pctChange } from '../PostsBySourceCard'
 import type { VolumePoint } from '../../../types'
 
 function point(overrides: Partial<VolumePoint> = {}): VolumePoint {
@@ -82,6 +82,13 @@ describe('aggregateVolumeBySource', () => {
   })
 
   it('reconciles with the real Hellraiser 90d sample (Total Posts = 3,270)', () => {
+    // NOTE: v0.3 (2026-08-17) corrected the accounting comment here.
+    // reddit_comment is a SUBSET of reddit (submissions + comments), not
+    // a separate additive bucket. The backend's total = sum of the five
+    // source columns and matches sentiment_today.total (Total Posts KPI).
+    // Test values below reflect the real Hellraiser 90d numbers where
+    // reddit=2,309 already includes reddit_comment=2,122, and the total
+    // 3,270 = 336 + 2,309 + 618 + 7 + 0.
     // Numbers pulled 2026-08-17 from
     //   GET /api/games/21/dashboard?period=quarterly
     // sentiment_today.total = 3,270 (the "Total Posts" KPI)
@@ -103,8 +110,8 @@ describe('aggregateVolumeBySource', () => {
     ]
     const out = aggregateVolumeBySource(days)
     expect(out.total).toBe(3270)                     // ← matches Total Posts KPI
-    expect(out.redditComments).toBe(2122)
-    expect(out.bySource.reddit).toBe(2309)
+    expect(out.redditComments).toBe(2122)            // subset of the Reddit bar
+    expect(out.bySource.reddit).toBe(2309)           // submissions + comments
     expect(out.bySource.steam_forum).toBe(336)
     expect(out.bySource.bluesky).toBe(618)
     expect(out.bySource.dtf).toBe(7)
@@ -113,5 +120,35 @@ describe('aggregateVolumeBySource', () => {
     const bySourceSum = Object.values(out.bySource).reduce((a, b) => a + b, 0)
     expect(bySourceSum).toBe(3270)                   // 336 + 2309 + 618 + 7 + 0
     expect(bySourceSum).not.toBe(5392)               // v0.1 regression guard
+  })
+})
+
+describe('pctChange', () => {
+  it('computes signed percent change from prev to curr', () => {
+    expect(pctChange(120, 100)).toBeCloseTo(20)
+    expect(pctChange(80, 100)).toBeCloseTo(-20)
+    expect(pctChange(100, 100)).toBe(0)
+  })
+
+  it('returns null when prev is 0 (division undefined)', () => {
+    // The caller uses null to render a "new" chip instead of a
+    // nonsensical +Infinity% or a divide-by-zero crash.
+    expect(pctChange(50, 0)).toBeNull()
+    expect(pctChange(0, 0)).toBeNull()
+  })
+
+  it('returns null when prev is negative (defensive)', () => {
+    // Counts should never be negative but the guard is cheap and locks
+    // in the invariant that the delta chip never gets an infinite %.
+    expect(pctChange(50, -1)).toBeNull()
+  })
+
+  it('honors the exact Hellraiser 90d → prior-90d rule', () => {
+    // Example numbers a user might see on Hellraiser: current 90d
+    // Reddit=2,309, prior 90d Reddit=1,850. That's +459 posts, +24.8%.
+    // The chip must render both parts correctly.
+    const pct = pctChange(2309, 1850)
+    expect(pct).not.toBeNull()
+    expect(pct!).toBeCloseTo(24.8, 1)
   })
 })

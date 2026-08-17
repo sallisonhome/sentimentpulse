@@ -219,6 +219,21 @@ class DashboardResponse(BaseModel):
     # New concise topic summary for the dashboard widget.
     top_topics_summary: TopTopicsSummary
     volume_by_source: List[VolumePoint]
+    # v0016.5 (2026-08-17): the same aggregation as volume_by_source but
+    # computed against the immediately-prior window of equal length. Used
+    # by the frontend Posts by Source card to render period-over-period
+    # deltas next to the headline total and each source bar.
+    #
+    # None when the delta comparison is not meaningful:
+    #   • period=today     — comparing a single (in-progress) day to
+    #                        yesterday is noisy and misleading.
+    #   • period=lifetime  — no comparable prior window exists.
+    #   • prior window has too little ingestion coverage — comparing a
+    #                        full window to a nearly-empty prior window
+    #                        produces absurd %s (e.g. +61,000%). Matches
+    #                        the same coverage guard used by
+    #                        competitor-timeseries (see routers/dashboard.py).
+    prior_period_volume_by_source: Optional[List[VolumePoint]] = None
     sentiment_velocity: SentimentVelocity
 
 

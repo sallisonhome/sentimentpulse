@@ -100,8 +100,14 @@ export default function DashboardPage() {
 
         {/* Row 1b — Posts by Source card (v0.1 2026-08-17). Sits directly
             below the KPI strip because the ranked-bar layout needs more
-            horizontal room than a single KPI cell provides. */}
-        <PostsBySourceCard data={data.volume_by_source} period={period} />
+            horizontal room than a single KPI cell provides.
+            v0.3 (2026-08-17): also renders period-over-period deltas next
+            to the total and each source (null for today / lifetime). */}
+        <PostsBySourceCard
+          data={data.volume_by_source}
+          priorData={data.prior_period_volume_by_source ?? null}
+          period={period}
+        />
 
         {/* Row 2 — Net sentiment trend (wide) + donut (narrow) */}
         <div className="grid gap-4 lg:grid-cols-3">

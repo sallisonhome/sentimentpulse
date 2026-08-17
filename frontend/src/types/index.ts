@@ -175,6 +175,15 @@ export interface DashboardData {
   top_neutral_topics: TopicItem[]
   top_topics_summary: TopTopicsSummary
   volume_by_source: VolumePoint[]
+  /** v0016.5 (2026-08-17): same aggregation as volume_by_source but for
+   *  the immediately-prior equal-length window. Null for period=today
+   *  and period=lifetime (no comparable prior window), and null when the
+   *  prior window has too little ingestion coverage for the comparison
+   *  to be meaningful (see backend coverage guard). Consumed by
+   *  PostsBySourceCard to render period-over-period deltas. Optional on
+   *  the type because older backend responses cached client-side won't
+   *  include it. */
+  prior_period_volume_by_source?: VolumePoint[] | null
   sentiment_velocity: SentimentVelocity
 }
 
