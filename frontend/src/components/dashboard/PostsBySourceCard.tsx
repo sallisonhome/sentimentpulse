@@ -6,6 +6,19 @@
  *   server-side), so it re-fetches automatically whenever the period selector
  *   changes.
  *
+ * v0.2 (2026-08-17): the headline total now matches the "Total Posts" KPI.
+ *   The backend counts POSTS in that KPI — Reddit comments are ingested for
+ *   context but are NOT counted as first-class posts. In v0.1 we summed all
+ *   six source columns, which double-counted comments and produced a card
+ *   total that exceeded the "Total Posts" KPI (3,270 vs 5,392 for Hellraiser
+ *   90d, a 2,122-post overstatement). The fix:
+ *     • Headline total = sum of the per-day `total` field (which already
+ *       excludes reddit_comment). This equals the Total Posts KPI exactly.
+ *     • Post sources render as a ranked bar list as before.
+ *     • Reddit comments render as a separate secondary line below the main
+ *       list — present for context, visually differentiated so it can't be
+ *       misread as an additive line item.
+ *
  * Design decisions (locked with user 2026-08-17):
  *   • Option A layout: total up top, ranked bars below (one bar per source,
  *     sorted by count descending).
@@ -30,10 +43,13 @@ const PERIOD_LABELS: Record<Period, string> = {
 // ── Source display + palette ──────────────────────────────────────────────
 // Ordered to match how sources appear elsewhere in the app (Steam Forum, then
 // Reddit + comments, then Bluesky, then DTF, then Steam Reviews).
+// v0.2 (2026-08-17): reddit_comment is intentionally excluded from SourceKey
+// because it is not a post-level source in the backend's accounting — it's
+// context that lives alongside Reddit posts. We surface the count separately
+// below the main list.
 export type SourceKey =
   | 'steam_forum'
   | 'reddit'
-  | 'reddit_comment'
   | 'bluesky'
   | 'dtf'
   | 'steam_review'
@@ -49,7 +65,6 @@ interface SourceMeta {
 const SOURCES: readonly SourceMeta[] = [
   { key: 'steam_forum',    label: 'Steam Forum',     color: '#20808D' }, // teal
   { key: 'reddit',         label: 'Reddit',          color: '#A84B2F' }, // terra/rust
-  { key: 'reddit_comment', label: 'Reddit comments', color: '#1B474D' }, // dark teal
   { key: 'bluesky',        label: 'Bluesky',         color: '#944454' }, // mauve
   { key: 'dtf',            label: 'DTF',             color: '#FFC553' }, // gold
   { key: 'steam_review',   label: 'Steam Reviews',   color: '#6E522B' }, // brown
@@ -61,41 +76,53 @@ interface PostsBySourceCardProps {
 }
 
 /**
- * Sum per-day VolumePoint rows into a single {source: count} aggregate for
- * the whole selected period. VolumePoint has optional fields (reddit_comment
- * and dtf were added later) — treat missing as 0.
+ * Sum per-day VolumePoint rows into a single aggregate for the whole selected
+ * period. VolumePoint has optional fields (reddit_comment and dtf were added
+ * later) — treat missing as 0.
+ *
+ * v0.2 (2026-08-17): returns three separate outputs:
+ *   • `bySource`  — counts by post-level source (used for the ranked bars)
+ *   • `total`     — sum of per-day VolumePoint.total, which excludes comments
+ *                    and MATCHES the sentiment_today.total KPI exactly
+ *   • `redditComments` — exposed separately for the context row below the list
  *
  * Exported for unit tests — not consumed elsewhere.
  */
-export function aggregateVolumeBySource(points: VolumePoint[]): Record<SourceKey, number> {
-  const out: Record<SourceKey, number> = {
-    steam_forum:    0,
-    reddit:         0,
-    reddit_comment: 0,
-    bluesky:        0,
-    dtf:            0,
-    steam_review:   0,
+export interface VolumeAggregate {
+  bySource:       Record<SourceKey, number>
+  total:          number
+  redditComments: number
+}
+export function aggregateVolumeBySource(points: VolumePoint[]): VolumeAggregate {
+  const bySource: Record<SourceKey, number> = {
+    steam_forum:  0,
+    reddit:       0,
+    bluesky:      0,
+    dtf:          0,
+    steam_review: 0,
   }
+  let total          = 0
+  let redditComments = 0
   for (const p of points) {
-    out.steam_forum    += p.steam_forum ?? 0
-    out.reddit         += p.reddit ?? 0
-    out.reddit_comment += p.reddit_comment ?? 0
-    out.bluesky        += p.bluesky ?? 0
-    out.dtf            += p.dtf ?? 0
-    out.steam_review   += p.steam_review ?? 0
+    bySource.steam_forum  += p.steam_forum ?? 0
+    bySource.reddit       += p.reddit ?? 0
+    bySource.bluesky      += p.bluesky ?? 0
+    bySource.dtf          += p.dtf ?? 0
+    bySource.steam_review += p.steam_review ?? 0
+    total          += p.total ?? 0
+    redditComments += p.reddit_comment ?? 0
   }
-  return out
+  return { bySource, total, redditComments }
 }
 
 export default function PostsBySourceCard({ data, period }: PostsBySourceCardProps) {
-  const counts = aggregateVolumeBySource(data)
-  const total  = Object.values(counts).reduce((a, b) => a + b, 0)
-  const activeCount = SOURCES.filter(s => counts[s.key] > 0).length
+  const { bySource, total, redditComments } = aggregateVolumeBySource(data)
+  const activeCount = SOURCES.filter(s => bySource[s.key] > 0).length
 
   // Rank rows by descending count so the leader is always on top. Sources with
   // zero posts stay in the list but sort to the bottom.
   const rows = SOURCES
-    .map(s => ({ ...s, count: counts[s.key] }))
+    .map(s => ({ ...s, count: bySource[s.key] }))
     .sort((a, b) => b.count - a.count)
 
   // Bar widths are proportional to the leader (the top row is 100%). Guard
@@ -155,6 +182,29 @@ export default function PostsBySourceCard({ data, period }: PostsBySourceCardPro
             )
           })}
         </div>
+
+        {/* v0.2 (2026-08-17): Reddit comments live outside the main list and
+            outside the headline total, because the backend does not count
+            comments as first-class posts. Rendering them as a peer to Reddit,
+            Bluesky, etc. caused the card total to overstate Total Posts by
+            the exact comment count. Muted styling + explicit “additional”
+            framing keeps the context visible without inviting the wrong sum. */}
+        {redditComments > 0 && (
+          <div
+            className="mt-3 border-t border-border/40 pt-3 flex items-center justify-between text-xs text-muted-foreground"
+            data-testid="posts-by-source-reddit-comments"
+          >
+            <span>
+              <span className="font-medium text-foreground/80">
+                {redditComments.toLocaleString()}
+              </span>{' '}
+              additional Reddit comments on tracked threads
+            </span>
+            <span className="text-[10px] uppercase tracking-wide opacity-70">
+              context, not counted in total
+            </span>
+          </div>
+        )}
       </CardContent>
     </Card>
   )
