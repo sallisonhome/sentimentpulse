@@ -1,7 +1,7 @@
 """
 Executive digest service — weekly + monthly.
 
-Builds an agency-grade HTML email summarizing the 8 priority Saber titles.
+Builds an agency-grade HTML email summarizing the priority Saber titles.
 Each title's section presents:
 
     1. Metrics strip       — total posts · pos/neg/neu counts · pos:neg ratio
@@ -57,12 +57,15 @@ from models import DigestRecipient, Game, MonthlySummary, WindowSummary
 logger = logging.getLogger(__name__)
 
 
-# ── The 8 fixed priority titles (resolved 2026-06-24 against the live DB) ────
+# ── The fixed priority titles (resolved 2026-06-24 against the live DB) ──────
 # Locked in code rather than configurable in the UI because:
 #  • The user specified an exact list during planning.
 #  • Many DLC variants have similar names (e.g. 20 different Space Marine 2
 #    cosmetic packs) and we don't want them sneaking into the digest.
 # To change the list, edit this constant and ship a release.
+#
+# 2026-08-17: added Rideshare "Stimulator" (game_id=144). Saber pre-release
+# title that the user wants tracked in both weekly and monthly digests.
 PRIORITY_TITLES: list[tuple[int, str]] = [
     (24,  "Warhammer 40,000: Space Marine 2"),
     (25,  "John Carpenter's Toxic Commando"),
@@ -72,6 +75,7 @@ PRIORITY_TITLES: list[tuple[int, str]] = [
     (131, "HITMAN Classic Trilogy Remastered"),
     (20,  "Untitled John Wick Game"),
     (130, "Stuntman: Hollywood"),
+    (144, "Rideshare \"Stimulator\""),
 ]
 
 
