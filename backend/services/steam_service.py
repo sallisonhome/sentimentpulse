@@ -23,7 +23,41 @@ STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
 STEAM_REVIEWS_URL = "https://store.steampowered.com/appreviews/{appid}"
 STEAM_FORUM_URL = "https://steamcommunity.com/app/{appid}/discussions/"
 
-_HEADERS = {"User-Agent": "SentimentPulse/1.0"}
+# v2 (2026-08-17): use a real browser User-Agent + age-gate bypass cookies
+# on every Steam request. Steam gates the DISCUSSION HTML for adult /
+# mature-rated titles behind an age check. When we hit that page without
+# the age cookies, Steam silently returns a 200-OK stub page with zero
+# thread rows. Our scraper interpreted this as "forum is empty" and
+# stored nothing.
+#
+# This exact failure hid ALL 130+ threads on SILENT HILL: Townfall's very
+# active pre-launch forum. Verified 2026-08-17 by comparing our scraper's
+# fetch (0 threads returned) against the same request with the cookies
+# below (130 threads returned).
+#
+# Cookies are the standard Steam age-gate bypass used by many public
+# tools: birthtime is Unix epoch for a birth date in 1988 (well over 21);
+# the mature_content flags tell Steam we've opted in to viewing mature
+# content; lastagecheckage keeps the check from re-triggering. These are
+# NOT secrets or auth tokens; they're the same cookies a browser sets
+# after clicking "I'm over 21".
+#
+# Applies to the FORUM HTML fetches only. The Steam Reviews JSON API
+# (store.steampowered.com/appreviews/) is not age-gated, so it's fine on
+# the existing _HEADERS.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    ),
+}
+_STEAM_AGE_GATE_COOKIES = {
+    "birthtime":            "568022401",       # 1988-01-01 UTC
+    "mature_content":       "1",
+    "wants_mature_content": "1",
+    "lastagecheckage":      "1-January-1988",
+    "Steam_Language":       "english",
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -33,9 +67,22 @@ def _get(
     params: Optional[dict] = None,
     timeout: int = 15,
 ) -> Optional[requests.Response]:
-    """HTTP GET with error handling and mandatory rate-limit delay."""
+    """HTTP GET with error handling and mandatory rate-limit delay.
+
+    v2 (2026-08-17): sends the Steam age-gate bypass cookies on every
+    request. Harmless for non-gated titles; essential for mature-gated
+    forums (Townfall, Hellraiser, Halloween, any horror / M-rated title).
+    Without these, Steam returns a 200-OK age-check stub with no threads
+    and the scraper silently records 0 posts.
+    """
     try:
-        resp = requests.get(url, params=params, headers=_HEADERS, timeout=timeout)
+        resp = requests.get(
+            url,
+            params=params,
+            headers=_HEADERS,
+            cookies=_STEAM_AGE_GATE_COOKIES,
+            timeout=timeout,
+        )
         resp.raise_for_status()
         return resp
     except requests.RequestException as exc:

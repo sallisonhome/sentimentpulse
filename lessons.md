@@ -6,6 +6,36 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-17 (sentimentpulse) — Steam scraper silently returned 0 threads for age-gated titles; user pushed back on my "Townfall has no forum" claim and was right
+
+**What happened.** While investigating why several Saber child titles had 0 Steam Forum data, I checked SILENT HILL: Townfall's forum directly, saw 0 threads, and concluded aloud that "Townfall's Steam Community forum has been dead ever since Konami cancelled the game." The user pushed back: **"There is a valid Steam forum that is very active for townfall find it and backfill it, you are wrong to say there isn't one."** They were right. When I retried the same URL with age-gate bypass cookies (`birthtime`, `mature_content`, `wants_mature_content`, `lastagecheckage`), the page returned 130+ real threads including recent activity. Steam gates the DISCUSSION HTML for adult/mature-rated titles behind an age check, and returns a 200-OK stub with zero thread rows when the check hasn't been passed. No error, no redirect, no signal. Our scraper (`services/steam_service._get`) sent `User-Agent: SentimentPulse/1.0` with no cookies, so **every mature-rated title's forum was invisible to us in perpetuity**.
+
+**Root cause.** Two compounding failures:
+
+1. **The scraper made assumptions Steam doesn't guarantee.** A 200 response body with zero threads is indistinguishable from "the forum is empty" vs. "you were served an age-gate stub." The scraper had no signal-of-suppression check.
+2. **I trusted my own probe over the user's stated ground truth.** The user was reporting a concrete observation from their side (they can see Townfall's forum in a browser). Instead of asking what they were seeing that I wasn't, I confidently declared the forum "cancelled" based on a single unauthenticated `curl -sS -m 20 -L`. The user had to correct me before I looked harder.
+
+**Fix.**
+- `_HEADERS` now uses a real Chrome User-Agent.
+- New `_STEAM_AGE_GATE_COOKIES` dict is passed on every `_get` call. These are the standard public age-gate bypass cookies (birthdate in 1988; mature-content opt-in flags) — the same values a browser sets after clicking "I'm over 21".
+- Regression test `tests/test_steam_age_gate.py` asserts both the cookies and the browser UA are sent on every request. Removing either would fail the test.
+- Backfill: ran `POST /api/games/{id}/reonboard` for every affected mature-rated title so historical data catches up.
+- Verified same-request comparison: pre-fix returned 0 threads for Townfall; post-fix returned 396 threads (and no regression on non-gated titles like Halloween and Hellraiser).
+
+**Generalizable rules.**
+
+> **When a user contradicts your empirical claim about a live system, retry your probe with the assumption that YOUR probe is the thing that's wrong.** Real users are watching live UIs, which use authenticated sessions, browser cookies, and real UAs. Your unauthenticated `curl` sees a subset of what the user sees. Do not tell the user their observation is wrong until you've verified with the same fidelity as their client.
+
+> **A 200 response with an empty result set is not proof of an empty result set.** Gated endpoints (age gates, geographic gates, login walls) can return 200 with a stub. Before trusting "the API returned 0 rows," verify with an authenticated / cookied comparison, or add a shape check that would notice a stub page (e.g. "the response is 27 KB but the populated pages are 80 KB" is a signal).
+
+> **Silent zeros in an ingestion pipeline are the highest-priority alarm.** If a scraper writes 0 rows and doesn't crash, it can hide behind "maybe there really was nothing" for months. Add a per-source per-game "we've never seen non-zero from this source" watchlist so newly-onboarded titles with valid AppIDs but 0 forum posts after 48h automatically flag for review.
+
+> **Always use realistic HTTP hygiene when scraping public web pages.** A browser User-Agent + the site's standard consent cookies is table stakes. `SentimentPulse/1.0` as a UA is a bot signal that platforms increasingly use to gate or degrade responses. When in doubt, mimic a real browser exactly.
+
+> **Adult/mature content isn't a niche edge case for a game-analytics platform.** Every horror title, every M-rated shooter, and every game with an ESRB Mature rating triggers this path. The default assumption should be "we need to see gated content" — not the other way around.
+
+---
+
 ## 2026-08-14 (sentimentpulse) — portfolio sentiment report: multiple stale-assumption failures when filter parameters tightened; "data reconciliation when parameters change, or leaving stale assumptions in place, ever"
 
 **What happened.** Building the executive Portfolio Sentiment Report (6 titles × top-3 pos + top-3 neg + Saber-bleed table), I tightened data-quality filters three separate times over the course of one report and each time left stale downstream numbers or topic buckets in the PDF. Specific reconciliation failures:
