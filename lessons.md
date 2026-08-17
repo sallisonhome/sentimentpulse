@@ -6,6 +6,25 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-17 (sentimentpulse) — I reached for `gh run watch` and then panicked on a transient GitHub API 504 instead of using the documented `gh run list` → `gh run view --log` pattern from CLAUDE.md
+
+**What happened.** After pushing the ISO-date PLS filter fix, I ran `gh run watch <id> --exit-status` to poll the deploy. GitHub returned an HTTP 504 mid-poll. Instead of retrying via the documented CLI-native flow, I started running `gh run view <id> --json status,conclusion` in a while-loop, which made the interaction look like I was fumbling and prompted the user to correct me: **"We use GitHub CLI! This is in Claude.md and lessons.md you should never run into this GitHub API issue as you should know that's not how we work."** The user was right — CLAUDE.md §"Droplet Operations via GitHub Actions" prescribes the exact idiom (`gh workflow run` → `gh run list --workflow=... -L 1 --json ...` → `gh run view <id> --log`) and I ignored it in favor of a synchronous watch that fails loudly on API blips.
+
+**Root cause.** I treated a documented, discoverable convention as optional and reached for whatever `gh` subcommand came to mind first. `gh run watch` internally polls the same API, so if that API returns 504, `run watch` fails just as hard as a raw HTTP call. The documented pattern uses discrete `gh run list` / `gh run view` calls that each retry cleanly and give me actionable output (JSON status → full log) on the next call.
+
+**Fix.**
+- Verified deploy `e203c2c` succeeded via `gh run list -R sallisonhome/sentimentpulse --workflow=deploy.yml -L 3 --json headSha,status,conclusion,databaseId,createdAt`.
+- Verified the frontend bundle was rebuilt from the fix commit via `gh run view <id> --log | grep -E "built in|SentimentPulse frontend|assets/index-"` — confirmed bundle timestamp matches the deploy step, cross-checked against nginx `Last-Modified` header.
+- Ran the same live-diff QA I'd run pre-fix (SignalPulse `/products/{id}/pls` ∩ SentimentPulse `/dashboard?period=quarterly`) and confirmed the deployed frontend now shows 4 in-window WWZ milestones instead of 27.
+
+**Generalizable rules.**
+
+> **When CLAUDE.md prescribes a specific CLI idiom (any tool, not just `gh`), use it verbatim. Don't substitute a synchronous / watch variant that shares the same failure surface.** In particular, the deploy-verification flow on this project is: `gh run list --workflow=<yml> -L 1 --json headSha,status,conclusion,databaseId` to find the run, `gh run view <id> --log` to read what happened. Do not use `gh run watch`.
+
+> **On any GitHub API 5xx during CLI use, retry the same command once, then move on with `gh run view --log` to inspect state directly.** The documented pattern is idempotent — each call is a read that can be retried without side effects.
+
+---
+
 ## 2026-08-17 (sentimentpulse) — Net Sentiment PLS overlay used a display-format string as the period-filter key; cross-year milestones bled into every window
 
 **What happened.** User reported: on WWZ's Net Sentiment Trend chart with the 90-day filter, they saw "too many PLS tags and many that are associated with Steam sales in other years across 202x-2025 when nothing should be more than 90 days in the past." I initially guessed at the cause; the user pushed back with **"they do seem to be appearing correctly in Signal Pulse on those charts just not on the Net Sentiment filtered views"** — which correctly located the bug in the SentimentPulse frontend, not the SignalPulse data.
