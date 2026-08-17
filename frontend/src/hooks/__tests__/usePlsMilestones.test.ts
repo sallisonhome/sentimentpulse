@@ -76,6 +76,24 @@ describe('metaFor', () => {
     expect(metaFor('video')).toBe(PLS_CATEGORY_META.video)
     expect(metaFor('press_coverage')).toBe(PLS_CATEGORY_META.press_coverage)
     expect(metaFor('demo_beta')).toBe(PLS_CATEGORY_META.demo_beta)
+    expect(metaFor('promotion')).toBe(PLS_CATEGORY_META.promotion)
+  })
+
+  it('gives the promotion (Steam Sale / Next Fest) category its own distinct color', () => {
+    // Regression guard: promotion milestones were rendering with the brown
+    // default fallback (same as truly-unknown categories) instead of a
+    // color of their own. Must be distinct from every other known category
+    // AND from the default fallback color.
+    const promo = metaFor('promotion')
+    expect(promo).not.toBe(PLS_CATEGORY_DEFAULT)
+    expect(promo.color).not.toBe(PLS_CATEGORY_DEFAULT.color)
+    const otherColors = [
+      PLS_CATEGORY_META.core.color,
+      PLS_CATEGORY_META.video.color,
+      PLS_CATEGORY_META.press_coverage.color,
+      PLS_CATEGORY_META.demo_beta.color,
+    ]
+    expect(otherColors).not.toContain(promo.color)
   })
 
   it('falls back to the default for unknown categories', () => {

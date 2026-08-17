@@ -44,8 +44,9 @@ export interface SignalPulseProduct {
  * derived selector below.
  *
  * Categories seen in production (2026-08-17): 'core', 'video',
- * 'press_coverage', 'demo_beta'. Extend `PLS_CATEGORY_META` when a new
- * category shows up so it gets a color/label instead of the default.
+ * 'press_coverage', 'demo_beta', 'promotion'. Extend `PLS_CATEGORY_META`
+ * when a new category shows up so it gets a color/label instead of the
+ * default.
  */
 export interface SignalPulsePlsMilestone {
   id:         number
@@ -93,6 +94,11 @@ export const PLS_CATEGORY_META: Record<string, PlsCategoryMeta> = {
   video:          { label: 'Video',   color: '#A84B2F' }, // terra/rust
   press_coverage: { label: 'Press',   color: '#944454' }, // mauve
   demo_beta:      { label: 'Demo',    color: '#FFC553' }, // gold
+  // 2026-08-17: Steam Sale / Next Fest windows, batch-tagged across all
+  // released titles. Olive keeps it distinct from the 4 categories above
+  // (and from the brown default fallback) while staying within the
+  // design-foundations chart color sequence (position 7).
+  promotion:      { label: 'Sale',    color: '#848456' }, // olive
 }
 export const PLS_CATEGORY_DEFAULT: PlsCategoryMeta = {
   label: 'PLS',
