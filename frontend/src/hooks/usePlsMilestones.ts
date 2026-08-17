@@ -24,11 +24,18 @@ import { useQuery } from '@tanstack/react-query'
 
 // ── SignalPulse response shapes (subset we actually consume) ──────────────
 
+/**
+ * SignalPulse serializes `steamAppId` as a STRING on the wire even though
+ * SentimentPulse uses a numeric `steam_app_id`. Do NOT tighten this to
+ * `number` — the raw payload really is a string (verified against the
+ * live droplet 2026-08-17). See findProductBySteamAppId below for the
+ * type-normalizing comparison that keeps this from silently no-matching.
+ */
 export interface SignalPulseProduct {
   id:          number
   title:       string
   publisher:   string
-  steamAppId:  number | null
+  steamAppId:  string | number | null
 }
 
 /**
@@ -129,13 +136,23 @@ export function useSignalPulseProducts() {
  * app id. Returns undefined when no matching product exists, which is
  * a valid state (most SentimentPulse games don't have a SignalPulse
  * product — DLC, cosmetics, competitor watchlist entries).
+ *
+ * v0.2 bug fix (2026-08-17): SentimentPulse returns steam_app_id as a
+ * NUMBER (e.g. 1551980) while SignalPulse returns steamAppId as a
+ * STRING (e.g. "1551980"). A strict `===` compared these and always
+ * returned false, so the PLS toggle never rendered on the sentiment
+ * chart. Normalize both sides to strings before comparing — strings
+ * because Steam App IDs are identifiers, not quantities, so string
+ * equality is the safer invariant even if SignalPulse ever emits a
+ * non-numeric ID in the future.
  */
 export function findProductBySteamAppId(
   products: SignalPulseProduct[] | undefined,
-  steamAppId: number | null | undefined,
+  steamAppId: number | string | null | undefined,
 ): SignalPulseProduct | undefined {
-  if (!products || steamAppId == null) return undefined
-  return products.find(p => p.steamAppId === steamAppId)
+  if (!products || steamAppId == null || steamAppId === '') return undefined
+  const needle = String(steamAppId)
+  return products.find(p => p.steamAppId != null && String(p.steamAppId) === needle)
 }
 
 /**

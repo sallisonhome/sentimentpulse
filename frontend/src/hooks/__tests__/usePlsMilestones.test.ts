@@ -18,18 +18,31 @@ import {
   type SignalPulseProduct,
 } from '../usePlsMilestones'
 
+// v0.2 regression fixture (2026-08-17): live SignalPulse serializes
+// steamAppId as a STRING. Keep these as strings in the fixture so the
+// tests exercise the real wire shape and would have caught the original
+// bug — in v0.1 we used numbers here, which passed `===` locally but
+// silently no-matched against production.
 const products: SignalPulseProduct[] = [
-  { id: 3, title: 'Space Marine 2',            publisher: 'Focus x Saber', steamAppId: 2183900 },
-  { id: 7, title: "Clive Barker's Hellraiser", publisher: 'Saber',         steamAppId: 1551980 },
-  { id: 12, title: 'Rideshare Stimulator',     publisher: 'Saber',         steamAppId: 2366590 },
-  { id: 99, title: 'Legacy product',           publisher: 'Saber',         steamAppId: null    },
+  { id: 3,  title: 'Space Marine 2',            publisher: 'Focus x Saber', steamAppId: '2183900' },
+  { id: 7,  title: "Clive Barker's Hellraiser", publisher: 'Saber',         steamAppId: '1551980' },
+  { id: 12, title: 'Rideshare Stimulator',      publisher: 'Saber',         steamAppId: '2366590' },
+  { id: 99, title: 'Legacy product',            publisher: 'Saber',         steamAppId: null      },
 ]
 
 describe('findProductBySteamAppId', () => {
-  it('returns the matching product', () => {
+  it('matches a numeric SentimentPulse id against a string SignalPulse id', () => {
+    // The exact type mismatch from the v0.1 bug: SentimentPulse's
+    // steam_app_id comes in as a JS number, SignalPulse's steamAppId
+    // comes in as a string. Strict `===` returned false, so the toggle
+    // never appeared. This test locks in the type-coercion behavior.
     const p = findProductBySteamAppId(products, 2366590)
     expect(p?.id).toBe(12)
     expect(p?.title).toBe('Rideshare Stimulator')
+  })
+
+  it('also matches when both sides are strings', () => {
+    expect(findProductBySteamAppId(products, '1551980')?.id).toBe(7)
   })
 
   it('returns undefined for an unmatched Steam App ID', () => {
