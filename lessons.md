@@ -6,6 +6,30 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-17 (sentimentpulse) — Expanding a game's subreddit list without extending GENERAL_SUBS re-creates the Turok/Helldivers false-tag bug
+
+**What happened.** User asked me to research subreddits to add to WWZ (game 147) and Insurgency: Sandstorm (game 148). My first-pass recommendations included many competitor subs (Back4Blood, l4d2, ReadyOrNotGame, groundbranch, HellLetLoose, EscapefromTarkov, Battlefield, CallOfDuty, VR platform subs, FocusEntertainment publisher sub, etc.). None of these were in `services/relevance_tagger.GENERAL_SUBS`. If they'd been added to a game's `subreddits` config as-is, **every submission on those subs would be tagged `dedicated_sub` for the focal game** — the exact bug that was fixed on 2026-08-14 for Turok inheriting Helldivers/DeepRockGalactic content.
+
+The user re-framed the request with a strict rule: **"remove subreddits for other games other than our own"** — which corrected the scope to studio/publisher subs plus keyword-gated umbrellas only.
+
+**Root cause.** Two-part:
+
+1. **Recommending subs without checking their fate through `tag_post`.** When suggesting a per-game `subreddits` update, the recommendation must include verification that each new sub is either dedicated (correct for it) OR already in `GENERAL_SUBS` (keyword-gated). Silently proposing subs that will be treated as dedicated is a data-corruption trap.
+2. **Assuming an "own-IP" sub (r/worldwarzthegame) needed no special treatment.** It's already in `GENERAL_SUBS` from the 2026-08-14 fix (as a defensive gate against OTHER games' configs including it). This means from WWZ's OWN config perspective, r/worldwarzthegame posts are keyword-gated, not treated as dedicated. This is fine because WWZ's own keywords are the widest match set.
+
+**Fix.**
+- Extended `GENERAL_SUBS` with 43 additions: `focusentertainment`, 4 VR platform umbrellas (`virtualreality`, `vrgaming`, `oculusquest`, `metaquestvr`), 12 tactical-shooter competitor subs (Squad/Arma/RoN/GroundBranch/HLL/RS2/HarshDoorstop/SixDaysInFallujah/Tarkov/DeltaForce/MilSim), 7 Battlefield/CoD family subs, and 11 zombie/co-op-shooter neighbors (Back4Blood, l4d2, left4dead, killingfloor, killingfloor2, Vermintide, PayDay, zombies, CODZombies, postapocalyptic).
+- Expanded `DOMINANT_TOPIC_KEYWORDS["worldwarzthegame"]` from 6 tokens to 32 (character names, class names, mode names, VR-shipping tokens) so a WWZ-primary post in r/worldwarzthegame that name-drops competitors still gets dominant-topic-gated on the focal-game side.
+- Regression test file: `tests/test_relevance_tagger_general_subs.py` — pins down all 43 additions AND asserts that a Ready-or-Not-specific post in r/ReadyOrNotGame is `noise` for Insurgency; a Back-4-Blood-specific post in r/Back4Blood is `noise` for WWZ; a generic VR post in r/virtualreality is `noise` for WWZ; a Warhammer post in r/FocusEntertainment is `noise` for WWZ. Positive cases (an Insurgency-mentioning post in r/ReadyOrNotGame; a WWZ-VR-mentioning post in r/virtualreality) still admit as signal.
+
+**Generalizable rules.**
+
+> **Before adding a subreddit to any game's `subreddits` config, verify it is either (a) truly dedicated to that game or its IP, OR (b) already in `GENERAL_SUBS`.** If it's in a category like "publisher", "competitor", "genre umbrella", or "platform", it MUST be in `GENERAL_SUBS` first — otherwise you're staging the same false-positive tagging bug that hit Turok/Helldivers.
+
+> **Latent bug flagged but not fixed:** when a sub is BOTH in `GENERAL_SUBS` (as a defensive gate) AND assigned as a game's own sub, and the `DOMINANT_TOPIC_KEYWORDS` set for that sub contains tokens found in the focal game's own keywords, the dominant-topic gate may return `noise` for legitimate focal-game posts in the focal game's own sub. Currently harmless in production because the tagger falls through to keyword-match matching before the gate. Worth revisiting if a game's own-sub volume drops unexpectedly after this deploy.
+
+---
+
 ## 2026-08-17 (sentimentpulse) — Steam scraper silently returned 0 threads for age-gated titles; user pushed back on my "Townfall has no forum" claim and was right
 
 **What happened.** While investigating why several Saber child titles had 0 Steam Forum data, I checked SILENT HILL: Townfall's forum directly, saw 0 threads, and concluded aloud that "Townfall's Steam Community forum has been dead ever since Konami cancelled the game." The user pushed back: **"There is a valid Steam forum that is very active for townfall find it and backfill it, you are wrong to say there isn't one."** They were right. When I retried the same URL with age-gate bypass cookies (`birthtime`, `mature_content`, `wants_mature_content`, `lastagecheckage`), the page returned 130+ real threads including recent activity. Steam gates the DISCUSSION HTML for adult/mature-rated titles behind an age check, and returns a 200-OK stub with zero thread rows when the check hasn't been passed. No error, no redirect, no signal. Our scraper (`services/steam_service._get`) sent `User-Agent: SentimentPulse/1.0` with no cookies, so **every mature-rated title's forum was invisible to us in perpetuity**.

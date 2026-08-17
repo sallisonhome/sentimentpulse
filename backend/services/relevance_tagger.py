@@ -69,6 +69,41 @@ GENERAL_SUBS: frozenset[str] = frozenset({
     # or an unrelated title in their catalog, not the focal game.
     "spacemarine", "saberinteractive", "bossteamgames",
     "gearsofwar", "xboxgamepass", "lionsgate", "worldwarzthegame",
+    # (2026-08-17) Focus Entertainment publisher sub — carries WWZ AND
+    # Insurgency: Sandstorm announcements plus a large catalog of unrelated
+    # titles (Warhammer, Aliens Dark Descent, Atomfall, GreedFall, etc.).
+    # Must be keyword-gated so unrelated Focus catalog posts don't get tagged
+    # dedicated_sub for whichever Focus-published game happens to fetch first.
+    "focusentertainment",
+    # (2026-08-17) VR platform umbrellas — WWZ VR shipped Aug 2025 and its
+    # config includes these subs, but they carry every VR game's content.
+    # Keyword-gate so only actual WWZ VR posts get tagged for WWZ.
+    "virtualreality", "vrgaming", "oculusquest", "metaquestvr",
+    # (2026-08-17) Ready or Not / Squad / Arma / Ground Branch / HLL / RS2 /
+    # Harsh Doorstop / Six Days in Fallujah / Tarkov / Delta Force — all are
+    # tactical-shooter competitors of Insurgency: Sandstorm. If added to an
+    # Insurgency subreddit config without keyword-gating, every submission on
+    # their own games would be tagged dedicated_sub for Insurgency — same bug
+    # as the Turok/Helldivers issue on 2026-08-14. MilSim + Battlefield/CoD
+    # families included for the same reason.
+    "playsquad", "joinsquad",
+    "arma", "arma3", "armareforger",
+    "readyornotgame",
+    "groundbranch",
+    "helletloose", "hellletloose",
+    "rs2vietnam", "risingstorm2",
+    "harshdoorstop",
+    "sixdaysinfallujah",
+    "escapefromtarkov", "tarkov",
+    "deltaforcegamehq", "deltaforce", "deltaforceglobal",
+    "milsim",
+    "battlefield", "battlefield6", "battlefieldv", "battlefield2042",
+    "callofduty", "modernwarfareiii", "modernwarfareii",
+    # Zombie / co-op-shooter neighbors already covered elsewhere; adding the
+    # remaining canonical subs so WWZ can't inherit their content.
+    "back4blood", "l4d2", "left4dead", "killingfloor", "killingfloor2",
+    "vermintide", "paydaytheheist", "payday", "paydaythegame",
+    "zombies", "codzombies", "postapocalyptic",
     # Competitor / adjacent-genre game subs — these show up in per-game
     # subreddit configs to catch cross-title discussion but produce huge
     # volumes of on-title-for-that-competitor content that must NOT be
@@ -132,7 +167,22 @@ DOMINANT_TOPIC_KEYWORDS: dict[str, frozenset[str]] = {
         "thousand sons", "leandros", "decimus", "astartes", "battle brother",
     }),
     "worldwarzthegame": frozenset({
+        # Core franchise tokens
         "world war z", "wwz", "zeke", "lobo", "the swarm", "jerusalem",
+        # (2026-08-17) Expanded coverage: characters, factions, class names,
+        # mission/location tokens, and mode names distinctive to WWZ so posts
+        # that name-drop competitors (Helldivers, L4D, Back 4 Blood) don't
+        # false-tag as WWZ conversation. Note: 'hellraiser' is intentionally
+        # excluded — it collides with the Hellraiser IP.
+        "doyle", "mancini", "rothman", "kelly", "tanaka",
+        "raven rock", "zero-day", "zero day",
+        "bull zombie", "bull", "screamer", "lurker", "bomber",
+        "gunslinger class", "slasher class", "medic class", "exterminator",
+        "dronemaster", "vanguard class",
+        "aftermath", "horde mode xl", "horde mode",
+        "wwz aftermath", "gotr",
+        # WWZ VR (shipped Aug 2025)
+        "wwz vr", "world war z vr",
     }),
     "burnout": frozenset({
         "burnout paradise", "burnout 3", "burnout revenge", "criterion",
