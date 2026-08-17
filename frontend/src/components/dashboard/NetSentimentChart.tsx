@@ -64,7 +64,7 @@ function savePlsToggle(on: boolean) {
 // before we render markers and the compact list. `dot_color` is what the
 // marker uses; PLS uses category color, user events keep the historical
 // amber (#f59e0b) so nothing regresses for existing users.
-interface WindowAnnotation {
+export interface WindowAnnotation {
   key:        string
   date_label: string
   event_date: string
@@ -74,7 +74,30 @@ interface WindowAnnotation {
   source:     'user' | 'pls'
 }
 
-const USER_EVENT_COLOR = '#f59e0b'
+export const USER_EVENT_COLOR = '#f59e0b'
+
+// ── Pure filter helper (exported for tests) ─────────────────────────────
+//
+// Take a list of trend points (whose `summary_date` is the ISO YYYY-MM-DD
+// of the days actually rendered on the X axis) and return the set of ISO
+// dates that annotations may attach to. This is the single source of
+// truth for "is this event in the visible window", and it must NEVER be
+// weakened to a display-format string — doing so re-introduces the
+// cross-year collision bug (2026-08-17 v0.4).
+export function buildVisibleIsoDateSet(
+  data: { summary_date: string }[],
+): Set<string> {
+  return new Set(data.map(d => d.summary_date))
+}
+
+// Filter an annotation list down to the subset whose `event_date` (also
+// ISO YYYY-MM-DD) falls within the visible-date set. Preserves ordering.
+export function filterAnnotationsToWindow<
+  T extends { event_date: string },
+>(annotations: T[] | null | undefined, visibleIsoDates: Set<string>): T[] {
+  if (!annotations) return []
+  return annotations.filter(a => visibleIsoDates.has(a.event_date))
+}
 
 export default function NetSentimentChart({ data }: NetSentimentChartProps) {
   const { selectedGameId } = useAppContext()
@@ -96,12 +119,26 @@ export default function NetSentimentChart({ data }: NetSentimentChartProps) {
 
   // Only render markers on days that actually exist on the X axis. The
   // trend data already reflects the selected period (today / 7d / 30d /
-  // 90d / all), so intersecting with its date labels gives us automatic
-  // period filtering for BOTH annotation streams — no separate math.
-  const visibleDateLabels = new Set(formatted.map(f => f.date_label))
+  // 90d / all), so intersecting with its dates gives us automatic period
+  // filtering for BOTH annotation streams — no separate math.
+  //
+  // BUG FIX (2026-08-17 v0.4): We previously intersected on `date_label`
+  // (e.g. "Aug 17"), which has NO YEAR. That meant a Steam Sale milestone
+  // from 2022-08-17 collided with a data point on 2026-08-17 and rendered
+  // on the 90-day view even though it was 4 years out of window. User
+  // reported "many PLS tags associated with Steam sales in other years
+  // 202x-2025 when nothing should be more than 90 days in the past".
+  // Fix: intersect on the ISO YYYY-MM-DD `summary_date` / `event_date`
+  // instead. `date_label` is still used AFTER the filter to position the
+  // marker on Recharts' categorical X-axis (see ReferenceLine below).
+  //
+  // The `buildVisibleIsoDateSet` / `filterAnnotationsToWindow` helpers
+  // are exported so tests can lock in this contract without needing to
+  // render the whole chart.
+  const visibleIsoDates = buildVisibleIsoDateSet(data)
 
-  const userAnnotations: WindowAnnotation[] = (events ?? [])
-    .map(ev => ({
+  const userAnnotations: WindowAnnotation[] =
+    filterAnnotationsToWindow(events, visibleIsoDates).map(ev => ({
       key:            `user-${ev.id}`,
       event_date:     ev.event_date,
       date_label:     format(parseISO(ev.event_date), 'MMM d'),
@@ -110,22 +147,21 @@ export default function NetSentimentChart({ data }: NetSentimentChartProps) {
       category_label: 'Timeline',
       source:         'user' as const,
     }))
-    .filter(ev => visibleDateLabels.has(ev.date_label))
 
-  const plsAnnotations: WindowAnnotation[] = !showPls || !plsRaw ? [] : plsRaw
-    .map((m: PlsAnnotation) => {
-      const meta = plsMetaFor(m.category)
-      return {
-        key:            m.id,
-        event_date:     m.event_date,
-        date_label:     format(parseISO(m.event_date), 'MMM d'),
-        name:           m.name + (m.is_planned ? ' (planned)' : ''),
-        dot_color:      meta.color,
-        category_label: meta.label,
-        source:         'pls' as const,
-      }
-    })
-    .filter(ev => visibleDateLabels.has(ev.date_label))
+  const plsAnnotations: WindowAnnotation[] = !showPls || !plsRaw
+    ? []
+    : filterAnnotationsToWindow(plsRaw, visibleIsoDates).map((m: PlsAnnotation) => {
+        const meta = plsMetaFor(m.category)
+        return {
+          key:            m.id,
+          event_date:     m.event_date,
+          date_label:     format(parseISO(m.event_date), 'MMM d'),
+          name:           m.name + (m.is_planned ? ' (planned)' : ''),
+          dot_color:      meta.color,
+          category_label: meta.label,
+          source:         'pls' as const,
+        }
+      })
 
   const inWindowEvents: WindowAnnotation[] = [
     ...userAnnotations,

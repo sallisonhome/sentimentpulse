@@ -6,6 +6,33 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-17 (sentimentpulse) — Net Sentiment PLS overlay used a display-format string as the period-filter key; cross-year milestones bled into every window
+
+**What happened.** User reported: on WWZ's Net Sentiment Trend chart with the 90-day filter, they saw "too many PLS tags and many that are associated with Steam sales in other years across 202x-2025 when nothing should be more than 90 days in the past." I initially guessed at the cause; the user pushed back with **"they do seem to be appearing correctly in Signal Pulse on those charts just not on the Net Sentiment filtered views"** — which correctly located the bug in the SentimentPulse frontend, not the SignalPulse data.
+
+**Root cause.** `NetSentimentChart.tsx` filtered annotations against the visible X-axis by intersecting on `date_label` (e.g. "Aug 17"), which is a `format(parseISO(d.summary_date), 'MMM d')` string with no year:
+
+```ts
+const visibleDateLabels = new Set(formatted.map(f => f.date_label))
+// ...
+.filter(ev => visibleDateLabels.has(ev.date_label))
+```
+
+A Steam Sale milestone from 2022-06-23 formatted to `"Jun 23"`. A trend point from 2026-06-23 also formatted to `"Jun 23"`. The `Set.has()` returned true, and the annotation rendered even though it was 4 years out of window. Live measurement on WWZ (109 total PLS milestones): the buggy filter rendered 27 markers on the quarterly window spanning **8 different years** (2018, 2019, 2021–2026); the fixed filter rendered 4, all correctly from 2026.
+
+**Fix.**
+- Extracted two pure helpers into `NetSentimentChart.tsx` and exported them for tests: `buildVisibleIsoDateSet(data)` (returns a set of full YYYY-MM-DD strings from `d.summary_date`) and `filterAnnotationsToWindow(annotations, visibleIsoDates)` (filters on `event_date`).
+- Replaced the display-label intersection with the ISO-date intersection. `date_label` is still generated for annotations that survive the filter because Recharts' categorical X-axis positions markers by matching tick strings, but it's no longer the join key.
+- Regression test file: `frontend/src/components/dashboard/__tests__/NetSentimentChart.filter.test.ts` — pins down (1) that `buildVisibleIsoDateSet` returns YYYY-MM-DD strings and never day-month labels, (2) that same-month-day out-of-year milestones (2022-08-17, 2023-08-17, 2024-08-17, 2025-08-17) are all DROPPED from a 2026-anchored window, (3) that a real four-year Steam Sale history reduces to only the 2026 entries.
+
+**Generalizable rules.**
+
+> **Never use a display-formatted string as a set/filter key across time-series data.** Display formats compress dimensions (year, timezone, seconds) and turn distinct values into collisions. The join key must always be the fully-qualified underlying value (ISO date, UTC timestamp, uuid). Display strings are for humans, not for identity.
+
+> **When the user contradicts your explanation of a UI symptom by pointing to another surface that behaves correctly, believe them and localize your search to the surface they've excluded.** In this case the user said "correct in SignalPulse, wrong in SentimentPulse Net Sentiment view" — that immediately narrowed the bug to the SentimentPulse chart's own filter, not the milestone data.
+
+---
+
 ## 2026-08-17 (sentimentpulse) — Expanding a game's subreddit list without extending GENERAL_SUBS re-creates the Turok/Helldivers false-tag bug
 
 **What happened.** User asked me to research subreddits to add to WWZ (game 147) and Insurgency: Sandstorm (game 148). My first-pass recommendations included many competitor subs (Back4Blood, l4d2, ReadyOrNotGame, groundbranch, HellLetLoose, EscapefromTarkov, Battlefield, CallOfDuty, VR platform subs, FocusEntertainment publisher sub, etc.). None of these were in `services/relevance_tagger.GENERAL_SUBS`. If they'd been added to a game's `subreddits` config as-is, **every submission on those subs would be tagged `dedicated_sub` for the focal game** — the exact bug that was fixed on 2026-08-14 for Turok inheriting Helldivers/DeepRockGalactic content.
