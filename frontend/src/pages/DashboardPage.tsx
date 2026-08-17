@@ -1,6 +1,7 @@
 import { useAppContext } from '../contexts/AppContext'
 import { useDashboard } from '../hooks/useDashboard'
 import KpiCards from '../components/dashboard/KpiCards'
+import PostsBySourceCard from '../components/dashboard/PostsBySourceCard'
 import NetSentimentChart from '../components/dashboard/NetSentimentChart'
 import SentimentDonut from '../components/dashboard/SentimentDonut'
 import VolumeBySourceChart from '../components/dashboard/VolumeBySourceChart'
@@ -96,6 +97,11 @@ export default function DashboardPage() {
         )}
         {/* Row 1 — KPI stat cards */}
         <KpiCards sentiment={data.sentiment_today} velocity={data.sentiment_velocity} period={period} />
+
+        {/* Row 1b — Posts by Source card (v0.1 2026-08-17). Sits directly
+            below the KPI strip because the ranked-bar layout needs more
+            horizontal room than a single KPI cell provides. */}
+        <PostsBySourceCard data={data.volume_by_source} period={period} />
 
         {/* Row 2 — Net sentiment trend (wide) + donut (narrow) */}
         <div className="grid gap-4 lg:grid-cols-3">
