@@ -266,8 +266,12 @@ export default function Leaderboards() {
     key: "wishlistTotal",
     dir: "desc",
   });
+  // v3.21 (2026-08-18): default sort changed to 24h revenue (was 30d
+  // revenue) per explicit request -- the sales leaderboard should always
+  // open ranked by 24h revenue. Still fully user-sortable by clicking any
+  // column header; this only changes the initial/default ordering.
   const [revenueSort, setRevenueSort] = useState<{ key: RevenueSortKey; dir: "asc" | "desc" }>({
-    key: "revenue30d",
+    key: "revenue24hUsd",
     dir: "desc",
   });
   const [chartModal, setChartModal] = useState<{ productId: number; title: string; dataType: "steamWishlist" | "steamRevenueDaily" } | null>(null);
