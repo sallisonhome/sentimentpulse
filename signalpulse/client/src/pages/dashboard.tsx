@@ -66,6 +66,42 @@ export default function Dashboard() {
             const steamDynLtUnits = product.steamDynamicLt;
             const hasSteamDyn = steamDynFirstUnits != null;
 
+            // v3.22 (2026-08-18): Launch Forecast Snapshot.
+            //
+            // When a product has released (releaseDate <= today) and is
+            // within 365 days post-release, launchForecastSnapshot is the
+            // wishlist-driven forecast frozen on release day. Card renders:
+            //   • Baseline row (dim, top): the locked launch-day forecast
+            //   • Current row (bright, bottom): the live actuals-influenced
+            //     forecast + (±Δ% vs baseline)
+            //
+            // When null (pre-release OR past T+365), the card falls back to
+            // the single-line 'current' display.
+            const launchSnap = product.launchForecastSnapshot as null | {
+              totalFirstMonth: number;
+              totalFirstYear: number;
+              totalLifetime: number;
+              steamFirstMonth: number | null;
+              steamFirstYear: number | null;
+              steamLifetime: number | null;
+              steamWishlistCountAtLaunch: number | null;
+              snapshotDate: string;
+              perPlatformForecasts: Array<{ platform: string; firstMonth: number; firstYear: number; lifetime: number }>;
+            };
+            const hasLaunchSnap = !!launchSnap;
+
+            // Helper: format a percent delta from baseline to current.
+            function formatDeltaPct(current: number, baseline: number): { text: string; cls: string } {
+              if (baseline <= 0) return { text: '—', cls: 'text-muted-foreground' };
+              const pct = ((current - baseline) / baseline) * 100;
+              const sign = pct > 0 ? '+' : '';
+              const text = `${sign}${pct.toFixed(1)}%`;
+              const cls = pct > 0.5 ? 'text-emerald-600 dark:text-emerald-400'
+                : pct < -0.5 ? 'text-red-500 dark:text-red-400'
+                : 'text-muted-foreground';
+              return { text, cls };
+            }
+
             // v3.9 (2026-08-12): blended GMV factor. Server computes it as
             // 0.5 × observedSteamAspRatio + 0.5 × 0.66 when Steam actuals
             // exist. Pre-release or no actuals falls back to 0.66.
@@ -240,33 +276,84 @@ export default function Dashboard() {
                       )}
                     </div>
 
-                    {/* Block A — Units */}
+                    {/* Block A — Units.
+                        v3.22 (2026-08-18): When launchForecastSnapshot is
+                        present (post-release, within 365 days), each tile
+                        shows two stacked rows:
+                          Line 1 (top, dim):  Launch: <baseline value>
+                          Line 2 (bottom):    <current value> (±Δ%)
+                        Pre-release or >T+365 falls back to the single-line
+                        display it had before. */}
                     <div className="mb-3">
-                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1.5 font-medium">
-                        Units
+                      <div className="flex items-baseline justify-between mb-1.5">
+                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                          Units
+                        </div>
+                        {hasLaunchSnap && (
+                          <span
+                            title={`Launch-day baseline locked ${launchSnap!.snapshotDate} from ${formatNumber(launchSnap!.steamWishlistCountAtLaunch ?? 0)} pre-release wishlists. Baseline never changes; current updates from actuals until 1 year post-release.`}
+                            className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 font-semibold uppercase tracking-wide"
+                          >
+                            Launch ● Current
+                          </span>
+                        )}
                       </div>
                       <div className="grid grid-cols-3 gap-x-3">
                         {[
-                          { label: "1st Month", allUnits: dynFirstUnits, steamUnits: steamDynFirstUnits },
-                          { label: "1st Year", allUnits: dynYearUnits, steamUnits: steamDynYearUnits },
-                          { label: "Lifetime", allUnits: dynLtUnits, steamUnits: steamDynLtUnits },
-                        ].map((col) => (
-                          <div key={col.label} className="rounded-md border bg-blue-500/5 dark:bg-blue-500/10 p-2">
-                            <div className="text-[10px] text-muted-foreground">{col.label}</div>
-                            <div className="text-base font-bold tabular-nums text-blue-700 dark:text-blue-300 leading-tight">
-                              {formatNumber(col.allUnits)}
-                            </div>
-                            <div className="text-[9px] text-muted-foreground">All Platforms</div>
-                            {hasSteamDyn && col.steamUnits != null && (
-                              <div className="mt-1 pt-1 border-t border-blue-500/20">
-                                <div className="text-[10px] tabular-nums text-blue-600/80 dark:text-blue-400/80">
-                                  {formatNumber(col.steamUnits)}
+                          { label: "1st Month", allUnits: dynFirstUnits, steamUnits: steamDynFirstUnits, allBase: launchSnap?.totalFirstMonth, steamBase: launchSnap?.steamFirstMonth },
+                          { label: "1st Year", allUnits: dynYearUnits, steamUnits: steamDynYearUnits, allBase: launchSnap?.totalFirstYear, steamBase: launchSnap?.steamFirstYear },
+                          { label: "Lifetime", allUnits: dynLtUnits, steamUnits: steamDynLtUnits, allBase: launchSnap?.totalLifetime, steamBase: launchSnap?.steamLifetime },
+                        ].map((col) => {
+                          const allDelta = hasLaunchSnap && col.allBase != null
+                            ? formatDeltaPct(col.allUnits, col.allBase)
+                            : null;
+                          const steamDelta = hasLaunchSnap && col.steamBase != null && col.steamUnits != null
+                            ? formatDeltaPct(col.steamUnits, col.steamBase)
+                            : null;
+                          return (
+                            <div key={col.label} className="rounded-md border bg-blue-500/5 dark:bg-blue-500/10 p-2">
+                              <div className="text-[10px] text-muted-foreground">{col.label}</div>
+                              {/* Baseline row — only rendered when snapshot exists */}
+                              {hasLaunchSnap && col.allBase != null && (
+                                <div className="text-[10px] tabular-nums text-muted-foreground/80 leading-tight">
+                                  Launch: {formatNumber(col.allBase)}
                                 </div>
-                                <div className="text-[9px] text-muted-foreground">Steam only</div>
+                              )}
+                              {/* Current row */}
+                              <div className="flex items-baseline gap-1.5">
+                                <div className="text-base font-bold tabular-nums text-blue-700 dark:text-blue-300 leading-tight">
+                                  {formatNumber(col.allUnits)}
+                                </div>
+                                {allDelta && (
+                                  <div className={`text-[10px] font-semibold tabular-nums ${allDelta.cls}`}>
+                                    {allDelta.text}
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        ))}
+                              <div className="text-[9px] text-muted-foreground">All Platforms</div>
+                              {hasSteamDyn && col.steamUnits != null && (
+                                <div className="mt-1 pt-1 border-t border-blue-500/20">
+                                  {hasLaunchSnap && col.steamBase != null && (
+                                    <div className="text-[9px] tabular-nums text-muted-foreground/70 leading-tight">
+                                      Launch: {formatNumber(col.steamBase)}
+                                    </div>
+                                  )}
+                                  <div className="flex items-baseline gap-1">
+                                    <div className="text-[10px] tabular-nums text-blue-600/80 dark:text-blue-400/80">
+                                      {formatNumber(col.steamUnits)}
+                                    </div>
+                                    {steamDelta && (
+                                      <div className={`text-[9px] font-semibold tabular-nums ${steamDelta.cls}`}>
+                                        {steamDelta.text}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="text-[9px] text-muted-foreground">Steam only</div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -493,6 +580,19 @@ export default function Dashboard() {
                         {deltaStr}
                       </div>
                       <div className="text-[10px] text-muted-foreground">{deltaSub}</div>
+                      {/* v3.22 (2026-08-18): also show Dyn LT vs Launch Baseline
+                          when the snapshot exists (post-release, within 365d). */}
+                      {hasLaunchSnap && launchSnap!.totalLifetime > 0 && (() => {
+                        const vsBase = formatDeltaPct(dynLtUnits, launchSnap!.totalLifetime);
+                        return (
+                          <div className="mt-1 pt-1 border-t border-dashed border-border/50">
+                            <div className={`text-xs font-semibold tabular-nums ${vsBase.cls}`}>
+                              {vsBase.text}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground">Dyn LT vs Launch</div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                 </Card>
