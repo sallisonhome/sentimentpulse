@@ -1,0 +1,59 @@
+name: SP Backfill Verify (one-off)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Verify
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+            sqlite3 -header sentimentpulse.db <<'SQL'
+          -- 1) How many SentimentRecords have the audit rule?
+          SELECT COUNT(*) AS tagged_rows
+          FROM sentiment_records
+          WHERE applied_rules LIKE '%FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT%';
+
+          -- 2) Of those, how many have original_label populated (non-NULL)?
+          SELECT COUNT(*) AS with_original
+          FROM sentiment_records
+          WHERE applied_rules LIKE '%FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT%'
+            AND original_label IS NOT NULL;
+
+          -- 3) Distribution of original_label values (proves the flip)
+          SELECT
+            original_label,
+            COUNT(*) AS n
+          FROM sentiment_records
+          WHERE applied_rules LIKE '%FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT%'
+          GROUP BY original_label;
+
+          -- 4) Post-backfill sentiment distribution for reddit_comment
+          SELECT sr.sentiment, COUNT(*) AS n
+          FROM raw_posts rp
+          JOIN sentiment_records sr ON sr.raw_post_id = rp.id
+          WHERE rp.source = 'reddit_comment'
+          GROUP BY sr.sentiment
+          ORDER BY n DESC;
+
+          -- 5) Sample of a flipped record
+          SELECT sr.id, sr.sentiment, sr.original_label, sr.original_score, sr.applied_rules, substr(rp.body, 1, 100) AS body_preview
+          FROM sentiment_records sr
+          JOIN raw_posts rp ON rp.id = sr.raw_post_id
+          WHERE sr.applied_rules LIKE '%FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT%'
+            AND sr.original_label = 'positive'
+          LIMIT 3;
+          SQL
+          EOF
