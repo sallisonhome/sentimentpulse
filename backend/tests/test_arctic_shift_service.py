@@ -383,3 +383,99 @@ def test_null_score_upvotes_is_zero():
         )
 
     assert results[0]["upvotes"] == 0
+
+
+# ── Test 17: General-sub call with non-None `game` kwarg ─────────────────────
+#
+# Regression for the 2026-08-18 bug where arctic_shift_service.py had its
+# own local `_game_search_query(game_name: str)` copy that did NOT accept
+# the `game=` kwarg, but the general-sub code path at line 237 called
+# it as `_game_search_query(game_name, game=game)`. Every general-sub
+# fetch raised TypeError silently (caught by the outer try/except and
+# logged as "unexpected error"), returning 0 posts. The daily cron's
+# Phase A wallclock kept growing from the failing subs, and 4 tail-of-list
+# games were skipped this morning.
+#
+# Fix: arctic_shift_service now imports `_game_search_query` directly from
+# reddit_service so the two can't drift. This test locks in that the
+# general-sub path works when a real (non-None) game object is passed.
+
+def test_general_sub_accepts_non_none_game_kwarg():
+    """
+    A general-sub fetch with `game=<real Game>` must succeed and issue
+    the expected two search requests. Prior to 2026-08-18 this raised
+    TypeError inside arctic_shift_service's local `_game_search_query`
+    and every general-sub arctic_shift call returned 0 posts.
+    """
+    from types import SimpleNamespace
+
+    # A minimal object matching the Game shape the caller (ingestor)
+    # passes. `distinctive_keywords` is what the (currently disabled)
+    # rideshare v3 branch would consult; we mirror the prod shape so the
+    # test would still hold if that branch is ever reactivated.
+    fake_game = SimpleNamespace(
+        id=147,
+        name="World War Z",
+        distinctive_keywords=["World War Z game", "WWZ Aftermath"],
+    )
+
+    on_topic = _make_post(
+        post_id="wwz1",
+        title="World War Z Aftermath is on sale on Steam",
+        selftext="Great co-op zombie shooter, worth picking up",
+    )
+
+    responses = [
+        _arctic_ok([on_topic]),   # title-search response
+        _arctic_ok([]),           # selftext-search response (empty ok)
+    ]
+
+    with requests_mock_module.Mocker() as m:
+        m.get(ARCTIC_SHIFT_BASE, [{"json": r} for r in responses])
+        # This exact call shape (game=<Game>) is what services.ingestor
+        # uses in production. The bug made it raise TypeError.
+        results = fetch_arctic_shift_subreddit_posts(
+            "gaming",
+            limit=100,
+            game_name="World War Z",
+            is_general_sub=True,
+            game=fake_game,
+        )
+
+    assert m.call_count == 2, (
+        "General-sub path with a game kwarg must issue exactly two "
+        "requests (title + selftext search)"
+    )
+    # The regression: prior to the fix, this list was ALWAYS empty because
+    # the underlying TypeError swallowed the whole fetch.
+    assert len(results) == 1, (
+        f"General-sub fetch with a non-None game kwarg must return posts, "
+        f"got {len(results)}. If this is 0, arctic_shift_service._game_search_query "
+        f"probably drifted from reddit_service._game_search_query again."
+    )
+    assert results[0]["external_id"] == "wwz1"
+
+
+# ── Test 18: _game_search_query is the SAME OBJECT as reddit_service's ───────
+#
+# Companion to test 17: pin down that the fix is import-based, not a
+# local re-implementation that could drift again.
+
+def test_game_search_query_is_imported_from_reddit_service_not_duplicated():
+    """
+    2026-08-18 regression guard. Before the fix, arctic_shift_service had
+    its own copy of _game_search_query that drifted out of sync with the
+    reddit_service one. The chosen fix was to import directly. This test
+    ensures we don't accidentally reintroduce a local copy in a future
+    refactor — the two must be the same function object.
+    """
+    from services.arctic_shift_service import _game_search_query as _ass_gsq
+    from services.reddit_service import _game_search_query as _rs_gsq
+
+    assert _ass_gsq is _rs_gsq, (
+        "arctic_shift_service._game_search_query must be the SAME object as "
+        "reddit_service._game_search_query (imported, not duplicated) so the "
+        "two can't drift out of sync. If this fails, someone has re-added a "
+        "local copy of the helper in arctic_shift_service.py — delete it and "
+        "re-add the import."
+    )

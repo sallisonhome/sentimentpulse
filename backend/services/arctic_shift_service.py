@@ -57,18 +57,24 @@ ARCTIC_SHIFT_GENERAL_SUBS: frozenset[str] = frozenset({
 
 # ── Private helpers ───────────────────────────────────────────────────────────
 
-def _game_search_query(game_name: str) -> str:
-    """
-    Extract the most distinctive search term from a game name.
-
-    Strips possessive studio/director prefixes (e.g. "John Carpenter's Toxic
-    Commando" → "Toxic Commando") so searches target the actual game title
-    rather than the studio/creator's name.  Mirrors the same helper in
-    reddit_service.py.
-    """
-    if "'s " in game_name:
-        game_name = game_name.split("'s ", 1)[1]
-    return game_name.strip()
+# _game_search_query has grown a `game=` kwarg in reddit_service.py (v3
+# 2026-08-12 rideshare-collision fix; v3.1 disabled the branch but kept
+# the signature). The local copy in this file previously did NOT accept
+# the kwarg, so every call at ~line 237 below — which passes `game=game`
+# — raised TypeError silently killing arctic_shift's general-sub fetch
+# for every game whose subreddit list included r/gaming, r/Games, r/PS5,
+# r/xbox, r/pcgaming, r/patientgamers, r/ShouldIbuythisgame, r/SteamDeck,
+# etc. Observed 2026-08-18 in journal after Halloween: The Game and
+# Rideshare Stimulator emitted a wall of "unexpected keyword argument
+# 'game'" errors during a Phase-A run that then exceeded its wallclock
+# budget and skipped 4 tail-of-list games.
+#
+# Fix (2026-08-18): import from reddit_service so the two never drift.
+# No circular-import risk — reddit_service does not import anything
+# from arctic_shift_service.
+from services.reddit_service import (  # noqa: E402
+    _game_search_query as _game_search_query,
+)
 
 
 def _post_mentions_game(post: dict, search_query: str) -> bool:

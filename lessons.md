@@ -6,6 +6,30 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-18 (sentimentpulse) — arctic_shift's local `_game_search_query` copy silently drifted from reddit_service's, killing every general-sub fetch for 6 days
+
+**What happened.** While auditing why this morning's Phase-A cron ran out of wallclock budget (skipped 4 tail-of-list games), I found the journal was choked with `arctic_shift: unexpected error for r/{gaming,Games,pcgaming,PS5,xbox,...} game='...': _game_search_query() got an unexpected keyword argument 'game'`. Every single arctic_shift call to a **general** subreddit (r/gaming, r/Games, r/pcgaming, r/PS5, r/xbox, r/patientgamers, r/ShouldIbuythisgame, r/SteamDeck, r/Steam — the whole `ARCTIC_SHIFT_GENERAL_SUBS` set) had been raising TypeError since 2026-08-12 and returning 0 posts. That's 6 days of missing reddit signal for general subs across the entire portfolio, plus 5-second-per-failing-sub delays that inflated Phase A's wallclock enough to push the tail games off the cron budget.
+
+**Root cause.** On 2026-08-12 (v0016.8, "rideshare-collision" fix) someone added a `game=None` kwarg to `reddit_service._game_search_query` and updated `arctic_shift_service.py:237` to call it as `_game_search_query(game_name, game=game)`. But `arctic_shift_service` had its **own local copy** of `_game_search_query` at line 60 with the older signature `(game_name: str)` — the caller was resolving to that local copy, not the reddit_service one, so `game=game` blew up. The v3.1 revert in reddit_service kept the kwarg in the signature ("code kept commented for reference — don't reactivate without multi-query fan-out") but never touched the arctic_shift twin. Classic copy-drift bug: two helpers named the same thing, one updated, the other rots. The outer try/except in `fetch_arctic_shift_subreddit_posts` caught the TypeError and logged it as "unexpected error", so the whole pipeline looked healthy from the outside — Steam sources returned data, game-specific reddit subs returned data, only the general-sub half of arctic_shift was silently empty.
+
+**Why the tests didn't catch it.** `test_general_sub_with_game_name_two_requests_merged` in `test_arctic_shift_service.py` calls `fetch_arctic_shift_subreddit_posts(...)` with `game_name="..."` but no `game=` kwarg. Production callers (ingestor, onboarding backfill) always pass `game=game`. The test's call shape didn't match the real caller's, so it happily hit the working code path while prod hit the broken one.
+
+**Fix.**
+- Deleted the local `arctic_shift_service._game_search_query` copy and replaced it with `from services.reddit_service import _game_search_query as _game_search_query`. No circular-import risk: `reddit_service` doesn't import from `arctic_shift_service`.
+- Two new regression tests in `test_arctic_shift_service.py`:
+  - `test_general_sub_accepts_non_none_game_kwarg` — calls `fetch_arctic_shift_subreddit_posts(..., is_general_sub=True, game=<SimpleNamespace>)` exactly like the ingestor does; before the fix this returned 0 posts because of the swallowed TypeError, now it returns the mocked post.
+  - `test_game_search_query_is_imported_from_reddit_service_not_duplicated` — asserts `arctic_shift_service._game_search_query is reddit_service._game_search_query` so any future refactor that re-adds a local copy fails loudly.
+
+**Generalizable rules.**
+
+> **When two modules have helpers with identical names and a comment that says "mirrors X", they will drift.** The `arctic_shift_service._game_search_query` docstring literally said "Mirrors the same helper in reddit_service.py" — which is the strongest possible signal that it should be an `import`, not a duplicate. If a mirror comment tempts you, import instead. If circular-import risk blocks importing, extract both to a shared module (e.g. `services/_reddit_query_utils.py`). Never copy-paste with a "keep in sync" note.
+
+> **Test call shapes must match production call shapes.** A test that exercises `f(a, b)` when production always calls `f(a, b, c=extra)` is a false positive. Grep the codebase for real invocations of the function under test and ensure at least one test mirrors each invocation shape. When adding a kwarg to a shared helper, add a test that passes the kwarg through every public entry point that could route to it.
+
+> **A silent "unexpected error" that logs but returns "empty" is worse than a crash.** `fetch_arctic_shift_subreddit_posts` catches all exceptions and returns `[]`, which makes every dependent chart, digest, and cron look successful — just with less data. Prefer `logger.exception(...)` (which prints the traceback so `_game_search_query() got an unexpected keyword argument` is instantly recognizable) over `logger.error("unexpected error: %s", exc)` which only shows the message. Any "catch-all + return sentinel" pattern needs a Datadog/Grafana alert on the error rate — otherwise the failure just accumulates in the journal for days.
+
+---
+
 ## 2026-08-17 evening (sentimentpulse) — Onboarding backfill silently skipped Reddit; every game with a subreddits list had zero historical reddit rows
 
 **What happened.** User asked to backfill 12 months of Reddit data for WWZ (147) and Insurgency: Sandstorm (148). Both games had recently been given expanded subreddit lists (29 and 20 respectively) plus their first `distinctive_keywords`. Before running the reonboards I checked their current state and found: **the 90-day reonboards I'd fired 4 hours earlier produced 0 Reddit rows**. My first hypothesis ("empty distinctive_keywords blocks Step 5 relevance gate") was true but incomplete. Tracing `_run_onboarding_backfill` in `services/new_game_onboarding.py` revealed the deeper cause: the onboarding path **only calls the two Steam backfill helpers** — there is no `backfill_reddit_for_game` call anywhere in the onboarding thread. This is the exact same class of omission that the v2 (2026-08-17 morning) fix addressed for Steam Reviews.
