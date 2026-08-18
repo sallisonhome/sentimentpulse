@@ -221,7 +221,12 @@ export function TimeSeriesChart({
 }: TimeSeriesChartProps) {
   // v3.10 (2026-08-12): pick formatter once so Y-axis + tooltip agree.
   const yFormatter = valueUnit === "usd" ? formatYAxisCurrency : formatYAxis;
-  const [range, setRange] = useState<DateRange>("all");
+  // v3.22 (2026-08-18): default changed from "all" to "90" -- All Time is too
+  // cluttered for routine use across every PDP chart and every leaderboard
+  // click-through chart (this component is shared by all three). All Time
+  // is still one click away via the range buttons below, for the rare LTD
+  // CSV / full-history case.
+  const [range, setRange] = useState<DateRange>("90");
 
   // v3.12 (2026-08-12): custom date-range picker state. `customRange` holds
   // the in-progress/selected picker value; `appliedCustomRange` is what the
