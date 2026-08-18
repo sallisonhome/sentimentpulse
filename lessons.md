@@ -6,6 +6,38 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-18 (sentimentpulse) — Relevance-tier invariant broken: noise-tier posts had SentimentRecords and leaked into every LLM synthesis
+
+**What happened.** After fixing the Sonar web-search contamination bug (below), the Turok: Origins dashboard's Top Topics widget STILL had suspicious content — volumes of 41/47/37/12 in a 7d window, generic labels ("Time", "Enemies", "About", "Update"), and detail lines about "XP progression", "hidden spawns", "structural engine stuttering". Turok has 19 admitted posts in that window per `/api/games/23/posts?relevance_tier=(signal,dedicated_sub)`. Investigating the mismatch: **the underlying corpus was 5,328 posts — the extra 5,311 were all `relevance_tier='noise'`, all from r/Helldivers, and every one of them had a SentimentRecord row**. The dashboard synthesizer's read query joined `RawPost JOIN SentimentRecord` on `game_id` + sentiment + `post_date >= period_start` — no `relevance_tier` filter — so the noise posts flooded the corpus and drove the cluster labels/details.
+
+**Root cause (two layers).** 
+
+1. **Invariant break at write time.** `services/ingestor.py` Step 5 (line 1443–1449) admits posts to sentiment classification via two paths: (a) `relevance_tier in ('signal', 'dedicated_sub')` → auto-admit, or (b) fall back to the older `is_post_relevant_to_game()` keyword gate. Path (b) admits posts whose body text names the game, **even when the v3 relevance tagger has already marked them 'noise'**. That creates SentimentRecords for noise-tier rows, breaking the invariant declared in `routers/dashboard.py:111–114`: *"a RawPost has a SentimentRecord iff it passed the relevance gate at Step 5"*. For Turok, whose subreddit list contains r/Helldivers, r/lowsodiumhelldivers, r/DarkTide, r/DeepRockGalactic, r/Spacemarine, r/WorldWarZTheGame, r/Saberinteractive, r/Dinosaurs, r/scifi, and other adjacent/generic subs, a huge fraction of ingested cross-posts get body-text-matched on "Turok" (or its synonyms) and end up sentiment-classified.
+
+2. **No defense-in-depth at read time.** `services/dashboard_feedback_synthesizer.py` (Top Topics) and `services/period_summary_service.py` (`_call_llm_for_user_block` corpus at line 982) both queried the full `SentimentRecord`-joined set without filtering `relevance_tier`. The read side trusted the write-time invariant; when the write-time invariant broke, every downstream LLM synthesis inherited the pollution.
+
+**Fix (this pass, defense-in-depth read side).**
+- `dashboard_feedback_synthesizer.generate_feedback_summary` — add `(RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != 'noise')` to the corpus query. Explicit `'noise'` exclusion (not "only signal + dedicated_sub") preserves legacy rows with `NULL` or `'unclassified'` tier that predate the v3 tagger.
+- `period_summary_service` line 982 (LLM synthesis corpus for exec_summary / recommended_actions / bold_ideas) — same filter.
+- Two new tests in `test_dashboard_feedback_synthesizer.py::TestNoiseTierExcludedFromCorpus`:
+  - `test_noise_tier_posts_are_excluded` — creates 5 signal + 20 noise-tier SentimentRecords, verifies the synthesizer's cluster corpus contains zero noise-tier vocabulary and the output volume never exceeds the signal count.
+  - `test_unclassified_and_null_tiers_still_admitted` — creates one row per tier (NULL, 'unclassified', 'signal', 'dedicated_sub') and verifies all four end up in the corpus.
+
+**Deliberately NOT fixed in this pass (intent: keep read-side change surgical).**
+- The Step 5 write-time invariant break in `services/ingestor.py` remains. Repairing it (either by refusing to admit noise-tier posts even when the keyword gate matches, or by re-tagging keyword-gate admits to 'signal') is a larger change with portfolio-wide impact on daily sentiment counts — the read-side filter protects the user-visible LLM output immediately without touching those counts.
+- KPI cards / Net Sentiment Trend / Volume by Source (all in `routers/dashboard.py`) still count `SentimentRecord` rows without a noise filter. Applying the filter there would drop game-level totals sharply for portfolio entries with polluted subreddit lists — a bigger, separately-scoped correctness change to plan with the user.
+- Bug A: Turok's subreddit list contains r/Helldivers + a dozen other adjacent/generic subs. That's a data cleanup task per game, not a code fix.
+
+**Generalizable rules.**
+
+> **A write-time invariant that says "we only create record X when condition Y holds" MUST be enforced at write time OR filtered at read time — not both trusted independently.** The 2026-07-24 dashboard change made every KPI/trend/volume/topic reader assume `RawPost has SentimentRecord iff it passed Step 5`. That assumption is a load-bearing invariant, but nothing enforced it — Step 5 could still create SentimentRecords for noise-tier posts under the keyword-gate fallback. Any invariant asserted in a code comment but not enforced by the schema or a check should be treated as "a hypothesis, not a fact". Every read-side query that depends on the invariant should either verify it in-query (defense-in-depth) or the write-side should carry a runtime assertion that fails loudly.
+
+> **"Adjacent-game subreddits in a game's subreddit list" is a data-quality trap that surfaces as LLM contamination downstream.** When a game like Turok gets r/Helldivers, r/Spacemarine, r/DarkTide, r/DeepRockGalactic, r/Saberinteractive attached to its subreddit list (competitor/genre/publisher discovery), the reddit ingestor pulls posts about THOSE games and cross-attributes them to Turok. Even after the v3 relevance tagger correctly marks them 'noise', the Step 5 keyword-gate fallback can rescue them if the body text mentions Turok in passing. This class of bug will surface again for any portfolio game whose subs list is not tightly curated — the durable fix is a periodic "is this subreddit dominated by content about game X where X ≠ the attributed game?" audit, not just a per-game cleanup.
+
+> **When a mysterious volume mismatch shows up (dashboard says N, corpus API says M, N ≫ M), the extra rows almost always ARE in the DB — they're just being filtered out by one query and not another.** For Turok: the posts endpoint filters `relevance_tier != 'noise'` implicitly (via its default `relevance` param), but the dashboard synthesizer didn't. Volume mismatches like this ALWAYS trace to two queries with different WHERE clauses reading the same table. Compare the WHERE clauses first, not the code around them.
+
+---
+
 ## 2026-08-18 (sentimentpulse) — Sonar web-search contamination: an unreleased game got a "Patch notes fix the shield mech" bullet grafted from Helldivers 2
 
 **What happened.** User screenshotted the Turok: Origins dashboard — an **unreleased** game — showing a Top Topics bullet labelled "About" with detail "Patch notes changes fix the shield mech but ignore lumberer and flame sentry dead zones of about three meters." That's verbatim Helldivers 2 patch-note vocabulary ("shield mech", "lumberer", "flame sentry") — Turok can't have patch notes because it hasn't shipped. Auditing Turok's admitted 7d posts (via `/api/games/23/posts`) returned only 19 posts, none of which contained any of those tokens. The bullet was entirely fabricated by the LLM.

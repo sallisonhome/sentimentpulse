@@ -492,6 +492,28 @@ def generate_feedback_summary(
         return [TopicSummaryOut(**c) for c in cached]
 
     # 1. Pull posts in the window.
+    #
+    # 2026-08-18 (relevance-tier invariant fix): filter out noise-tier posts.
+    # The 2026-07-24 comment on routers/dashboard.py said "a RawPost has a
+    # SentimentRecord iff it passed the relevance gate at Step 5", but that
+    # invariant is violated by services/ingestor.py Step 5: when the v3
+    # relevance tagger marks a post 'noise', Step 5 falls back to the
+    # older is_post_relevant_to_game() keyword gate. If the post's body
+    # happens to name the game (very common for cross-posted comments in
+    # competitor subs like r/Helldivers when the wrong subreddits are
+    # attached to a game), the keyword gate admits it and a SentimentRecord
+    # is created — but relevance_tier stays 'noise'. Turok: Origins had
+    # 5,311 such noise-tier SentimentRecord rows in a 7d window (99.7% of
+    # its 5,328 sentiment-classified posts), all from r/Helldivers, which
+    # produced hallucinated Top Topics bullets full of Helldivers 2 patch-
+    # note vocabulary even after Sonar web search was disabled. Filtering
+    # here at the read side is defense-in-depth: any game with polluted
+    # subreddit lists or leaky ingestion is protected until the underlying
+    # data / Step 5 logic is repaired. See lessons.md 2026-08-18.
+    #
+    # Rationale for `!= 'noise'` (not `in ('signal', 'dedicated_sub')`):
+    # 'unclassified' means the post predates the v3 tagger — those rows
+    # should still count. Only explicit 'noise' verdicts are excluded.
     q = (
         db.query(RawPost.id, RawPost.title, RawPost.body)
         .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
@@ -499,6 +521,7 @@ def generate_feedback_summary(
             RawPost.game_id == game_id,
             SentimentRecord.sentiment == sentiment,
             RawPost.post_date.isnot(None),
+            (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
         )
     )
     if period_start is not None:

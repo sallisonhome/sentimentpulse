@@ -581,3 +581,212 @@ class TestBoilerplateStripping:
         # like "broken" no longer appear — that's by design (they'd
         # become useless cluster labels).
         assert "matchmaking" in ngrams
+
+
+# ── Test: noise-tier posts must not enter the synthesizer corpus ──────────
+#
+# 2026-08-18 regression guard for the Turok: Origins hallucination. Step 5
+# of services/ingestor.py has a keyword-gate fallback that can create a
+# SentimentRecord for a RawPost whose v3 relevance_tier is 'noise'. If
+# those rows leak into the synthesizer corpus, unrelated-game content
+# ends up in the Top Topics widget for whichever game had the noise
+# ingestion (Turok's r/Helldivers-polluted subreddit list produced 5,311
+# such rows in a 7d window). The fix filters relevance_tier != 'noise'
+# at the read side.
+
+class TestNoiseTierExcludedFromCorpus:
+    """Guard: noise-tier SentimentRecords must not feed the synthesizer."""
+
+    def test_noise_tier_posts_are_excluded(self, db):
+        """
+        Create 5 SIGNAL-tier posts (should be corpus) plus 20 NOISE-tier
+        posts (must be dropped even though they have SentimentRecords).
+        Verify the synthesizer's cluster sees only the 5 signal posts.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from unittest.mock import patch as _patch
+
+        from models import (
+            Game, Publisher, RawPost, SentimentEnum, SentimentRecord,
+            SourceEnum,
+        )
+        from services import dashboard_feedback_synthesizer as m
+        from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+        m._CACHE.clear()
+
+        pub = Publisher(name="Test Pub Noise")
+        db.add(pub); db.flush()
+        g = Game(
+            publisher_id=pub.id, steam_app_id=88881, name="Noise Game",
+            is_active=True, distinctive_keywords=["Noise Game"],
+        )
+        db.add(g); db.flush()
+
+        # 5 legitimate signal posts, all sharing a phrase (single cluster).
+        signal_bodies = [
+            "The matchmaking is broken and needs a fix asap",
+            "Matchmaking bugs make ranked unplayable, please patch",
+            "Matchmaking has been unfair for weeks now",
+            "Matchmaking issues ruin the whole experience",
+            "Matchmaking system needs a serious rework",
+        ]
+        for i, body in enumerate(signal_bodies):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit,
+                external_id=f"sig_{i}", body=body, is_relevant=True,
+                relevance_tier="signal",
+                post_date=datetime.now(timezone.utc) - timedelta(hours=i),
+                collected_at=datetime.now(timezone.utc),
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.8, topics=[],
+            ))
+
+        # 20 NOISE-tier posts with Helldivers-style content that would
+        # completely dominate the cluster if they were admitted.
+        noise_bodies = [
+            "Shield mech dead zone is three meters, obvious bug",
+            "Flame sentry lumberer combo is broken and needs a nerf",
+            "GPU stutter in first 10 minutes is unbearable",
+            "Warbond content feels rushed and underbaked",
+            "Stratagem cooldowns are way too long since patch",
+        ] * 4  # 20 posts total
+        for i, body in enumerate(noise_bodies):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit,
+                external_id=f"noise_{i}", body=body, is_relevant=True,
+                relevance_tier="noise",  # <-- the invariant break
+                post_date=datetime.now(timezone.utc) - timedelta(hours=i + 20),
+                collected_at=datetime.now(timezone.utc),
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.7, topics=[],
+            ))
+        db.commit()
+
+        # Sonar is stubbed — we only care about what corpus reaches it.
+        captured_posts: list[list[str]] = []
+
+        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
+            captured_posts.append(list(cluster_posts))
+            return f"Fake synthesis about {cluster_phrase}."
+
+        with _patch(
+            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            side_effect=_fake_synth,
+        ):
+            out = generate_feedback_summary(
+                db=db, game_id=g.id, game_name="Noise Game",
+                sentiment=SentimentEnum.negative,
+                period_key="monthly",
+                period_start=date.today() - timedelta(days=30),
+            )
+
+        # Cluster must see only the 5 signal posts, never the 20 noise ones.
+        assert captured_posts, "expected at least one cluster to be synthesised"
+        seen_texts = " || ".join("\n".join(c) for c in captured_posts)
+        assert "matchmaking" in seen_texts.lower(), (
+            "signal posts should be in the corpus"
+        )
+        # Zero noise-tier vocabulary allowed through.
+        for kw in ("shield mech", "flame sentry", "lumberer", "warbond",
+                   "stratagem", "gpu stutter"):
+            assert kw not in seen_texts.lower(), (
+                f"noise-tier vocabulary {kw!r} leaked into the synthesizer "
+                f"corpus. If this fails, the relevance_tier != 'noise' filter "
+                f"in generate_feedback_summary has regressed. Full corpus:\n"
+                f"{seen_texts[:1500]}"
+            )
+
+        # Volume in the output should reflect only signal posts (≤5),
+        # never the 20 noise ones. Some signal posts may not clear the
+        # opinion+specificity clusterer bar — that's fine as long as
+        # zero noise-tier posts get through.
+        assert out, "expected non-empty output"
+        assert 3 <= out[0].volume <= 5, (
+            f"expected volume in [3, 5] (signal-only, some may not clear "
+            f"opinion+specificity), got {out[0].volume}. If this is >5, the "
+            f"noise filter has regressed and noise-tier rows are entering "
+            f"the corpus."
+        )
+
+    def test_unclassified_and_null_tiers_still_admitted(self, db):
+        """
+        Rows with relevance_tier IN (NULL, 'unclassified', 'signal',
+        'dedicated_sub') must ALL still count. Only explicit 'noise' is
+        excluded. Legacy posts that predate the v3 tagger have
+        relevance_tier=NULL and must not be silently dropped.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from unittest.mock import patch as _patch
+
+        from models import (
+            Game, Publisher, RawPost, SentimentEnum, SentimentRecord,
+            SourceEnum,
+        )
+        from services import dashboard_feedback_synthesizer as m
+        from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+        m._CACHE.clear()
+
+        pub = Publisher(name="Legacy Pub")
+        db.add(pub); db.flush()
+        g = Game(
+            publisher_id=pub.id, steam_app_id=88882, name="Legacy Game",
+            is_active=True, distinctive_keywords=["Legacy Game"],
+        )
+        db.add(g); db.flush()
+
+        # One post per tier, all sharing the same shared cluster phrase.
+        tiers = [None, "unclassified", "signal", "dedicated_sub"]
+        body_template = (
+            "The prestige grind feels endless and needs a serious rework"
+        )
+        for i, tier in enumerate(tiers):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit,
+                external_id=f"tier_{i}",
+                body=f"{body_template} (variant {i})",
+                is_relevant=True, relevance_tier=tier,
+                post_date=datetime.now(timezone.utc) - timedelta(hours=i),
+                collected_at=datetime.now(timezone.utc),
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.8, topics=[],
+            ))
+        db.commit()
+
+        captured: list[list[str]] = []
+
+        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
+            captured.append(list(cluster_posts))
+            return "Fake."
+
+        with _patch(
+            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            side_effect=_fake_synth,
+        ):
+            out = generate_feedback_summary(
+                db=db, game_id=g.id, game_name="Legacy Game",
+                sentiment=SentimentEnum.negative,
+                period_key="monthly",
+                period_start=date.today() - timedelta(days=30),
+            )
+
+        assert captured, "cluster should have been synthesised"
+        assert len(captured[0]) == 4, (
+            f"expected all 4 non-noise-tier posts in the corpus, got "
+            f"{len(captured[0])}. If this is <4, the filter has become too "
+            f"aggressive and is dropping unclassified/NULL/signal rows."
+        )
+        assert out[0].volume == 4

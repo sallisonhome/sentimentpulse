@@ -984,6 +984,15 @@ def _aggregate_posts_1day(
             RawPost.game_id == game_id,
             effective_date >= start_dt,
             effective_date <= end_dt,
+            # 2026-08-18 (relevance-tier invariant fix): exclude noise-tier
+            # posts from the LLM synthesis corpus. See
+            # dashboard_feedback_synthesizer.py §1 for the full write-up
+            # and lessons.md 2026-08-18. Same class of bug: Step 5's
+            # keyword-gate fallback creates SentimentRecords for
+            # relevance_tier='noise' rows when the body happens to name
+            # the game; those rows should never feed a strictly-grounded
+            # LLM prompt (exec_summary / recommended_actions / bold_ideas).
+            (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
         )
         .all()
     )
