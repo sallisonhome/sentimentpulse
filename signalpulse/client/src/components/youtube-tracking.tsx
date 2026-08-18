@@ -157,7 +157,9 @@ function YouTubeChartsModal({
   milestoneName: string;
   aggregate: AggregateData;
 }) {
-  const [range, setRange] = useState<"30" | "90" | "all">("all");
+  // v3.23 (2026-08-18): default changed from "all" to "90" -- All Time is too
+  // cluttered for routine use; 90 Days and 30 Days remain one click away.
+  const [range, setRange] = useState<"30" | "90" | "all">("90");
 
   const filteredAggData = useMemo(() => {
     if (!aggregate?.aggregateTimeSeries?.length) return [];
