@@ -492,6 +492,56 @@ export const insertYoutubeVideoDailySchema = createInsertSchema(youtubeVideoDail
 export type InsertYoutubeVideoDaily = z.infer<typeof insertYoutubeVideoDailySchema>;
 export type YoutubeVideoDaily = typeof youtubeVideoDaily.$inferSelect;
 
+// ─── Launch Forecast Snapshot (v3.22) ────────────────────────────────────────
+//
+// One row per product. Written exactly once, the first time the dashboard
+// route observes releaseDate <= today. Locks in the wishlist-driven dynamic
+// forecast (per-platform: firstMonth / firstYear / lifetime) computed from
+// preLaunchNet at release-day, plus the total-across-all-platforms rollups
+// and the Steam-only rollups so the card can render Baseline / Current /
+// Delta without any recomputation.
+//
+// Never rewritten after creation — the whole point is that this number is
+// the immortal launch-day baseline. Post-release the card compares live
+// (actuals-influenced) forecasts to this locked baseline until T+365 days
+// past release, when the baseline is hidden from the card (data stays in
+// the table for historical review).
+
+export const launchForecastSnapshots = sqliteTable("launch_forecast_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  // The date on which the snapshot was captured (ISO YYYY-MM-DD, UTC).
+  // Normally equals the product's releaseDate but could be later if the
+  // dashboard wasn't hit until N days after launch — we still capture the
+  // preLaunchNet at that moment (which is already locked and immutable).
+  snapshotDate: text("snapshot_date").notNull(),
+  // The Steam preLaunchNet wishlist count that fed the forecast — recorded
+  // so future audits can reconstruct exactly what the multiplier was applied to.
+  steamWishlistCountAtLaunch: integer("steam_wishlist_count_at_launch"),
+  // Rollup totals across ALL selected platforms.
+  totalFirstMonth: integer("total_first_month").notNull(),
+  totalFirstYear: integer("total_first_year").notNull(),
+  totalLifetime: integer("total_lifetime").notNull(),
+  // Steam-only slice (denormalized for card convenience).
+  steamFirstMonth: integer("steam_first_month"),
+  steamFirstYear: integer("steam_first_year"),
+  steamLifetime: integer("steam_lifetime"),
+  // Full per-platform DynamicForecastResult array (JSON):
+  //   [{platform: 'PC (Steam)', firstMonth, firstYear, lifetime}, ...]
+  perPlatformForecastsJson: text("per_platform_forecasts_json").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueProduct: uniqueIndex("launch_forecast_unique_product").on(table.productId),
+}));
+
+export const insertLaunchForecastSnapshotSchema = createInsertSchema(launchForecastSnapshots).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertLaunchForecastSnapshot = z.infer<typeof insertLaunchForecastSnapshotSchema>;
+export type LaunchForecastSnapshot = typeof launchForecastSnapshots.$inferSelect;
+
 // ─── Forecast Revisions ─────────────────────────────────────────────────────
 
 export const forecastRevisions = sqliteTable("forecast_revisions", {

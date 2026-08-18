@@ -17,6 +17,7 @@ import {
   type YoutubeLink, type InsertYoutubeLink, plsVideoYoutubeLinks,
   type YoutubeVideoDaily, type InsertYoutubeVideoDaily, youtubeVideoDaily,
   type ForecastRevision, type InsertForecastRevision, forecastRevisions,
+  type LaunchForecastSnapshot, type InsertLaunchForecastSnapshot, launchForecastSnapshots,
   type AppSetting, type InsertAppSetting, appSettings,
   type LeaderboardEmailRecipient, type InsertLeaderboardEmailRecipient, leaderboardEmailRecipients,
 } from "@shared/schema";
@@ -268,6 +269,23 @@ function initializeDatabase() {
       FOREIGN KEY (youtube_link_id) REFERENCES pls_video_youtube_links(id)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS youtube_daily_unique ON youtube_video_daily(youtube_link_id, date);
+
+    CREATE TABLE IF NOT EXISTS launch_forecast_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      steam_wishlist_count_at_launch INTEGER,
+      total_first_month INTEGER NOT NULL,
+      total_first_year INTEGER NOT NULL,
+      total_lifetime INTEGER NOT NULL,
+      steam_first_month INTEGER,
+      steam_first_year INTEGER,
+      steam_lifetime INTEGER,
+      per_platform_forecasts_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS launch_forecast_unique_product ON launch_forecast_snapshots(product_id);
 
     CREATE TABLE IF NOT EXISTS forecast_revisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -613,6 +631,12 @@ export interface IStorage {
   createForecastRevision(productId: number, forecasts: { platform: string; forecastUnits: number }[], revisionDate: string, revisionLabel: string): ForecastRevision[];
   getForecastRevisions(productId: number): ForecastRevision[];
   getLatestRevisionTotal(productId: number): { total: number; date: string } | null;
+
+  // ─── Launch Forecast Snapshot (v3.22) ────────────────────────────────────
+  // Idempotent write — does nothing if a snapshot already exists for productId.
+  // Returns the row that now exists (either freshly-created or pre-existing).
+  upsertLaunchForecastSnapshotIfMissing(data: InsertLaunchForecastSnapshot): LaunchForecastSnapshot;
+  getLaunchForecastSnapshot(productId: number): LaunchForecastSnapshot | null;
 
   // App Settings
   getAllSettings(): AppSetting[];
@@ -1869,6 +1893,28 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(forecastRevisions)
       .where(eq(forecastRevisions.productId, productId))
       .orderBy(asc(forecastRevisions.revisionDate)).all();
+  }
+
+  // ─── Launch Forecast Snapshot (v3.22) ────────────────────────────────────
+  //
+  // Written exactly once per product, the first time the dashboard route
+  // observes releaseDate <= today. Never rewritten. The card compares the
+  // live actuals-influenced forecast to this locked baseline for 1 year
+  // post-release.
+  upsertLaunchForecastSnapshotIfMissing(data: InsertLaunchForecastSnapshot): LaunchForecastSnapshot {
+    const existing = db.select().from(launchForecastSnapshots)
+      .where(eq(launchForecastSnapshots.productId, data.productId)).get();
+    if (existing) return existing;
+    const now = this.now();
+    return db.insert(launchForecastSnapshots).values({
+      ...data,
+      createdAt: now,
+    }).returning().get();
+  }
+
+  getLaunchForecastSnapshot(productId: number): LaunchForecastSnapshot | null {
+    return db.select().from(launchForecastSnapshots)
+      .where(eq(launchForecastSnapshots.productId, productId)).get() ?? null;
   }
 
   getLatestRevisionTotal(productId: number): { total: number; date: string } | null {
