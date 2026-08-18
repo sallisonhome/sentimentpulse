@@ -6,6 +6,40 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-18 (signalpulse) — Wishlist backfill MUST use the Steamworks Partner Financials API (steam_api_key), never HTML parsing
+
+**What happened.** After adding Twisted Tower (Steam AppID 1575990) to SignalPulse, the auto-triggered wishlist backfill on product creation only produced ONE row before the signalpulse deploy (from a subsequent commit) restarted the Node.js process and killed the in-flight background job. The dashboard showed `latestSteamWishlistCount: 5,215` when Steamworks ground truth was 147,718 (1,975 rows of pre-launch daily data, going back to first-wishlist date 2021-03-30). Steve caught it: "prior to release was over 133K but only seeing 11K wishlists in signalpulse is this because of the backfill running?" I initially proposed HTML-parsing the Steamworks partner portal via the cookie proxy as a fix — WRONG. The correct answer is to always use the pre-existing Steam Partner Financials web API (`IPartnerFinancialsService/GetAppWishlistReporting/v001/`) which requires `steam_api_key` and returns structured per-day rows with adds/deletes/purchases/gifts + per-platform, country, and language splits. The manual re-fire via `POST /api/steam/backfill/17` recovered instantly: 1,967 days queued, ~13 days/sec, latestSteamWishlistCount jumped from 5,215 → 147,718 within 60 seconds, matching Steamworks portal ground truth exactly.
+
+**Non-negotiable rules going forward.**
+
+1. **Wishlist backfilling for any product ALWAYS uses `fetchSteamWishlistReportingDay` (the Partner Financials web API with `steam_api_key`), never the Steamworks portal HTML.** The Partner Financials API is the authoritative structured source: per-day rows with adds/deletes/purchases/gifts and per-platform + country + language splits, all machine-readable, going back to `app_min_date`. The portal HTML jqplot data is a fallback for diagnosing discrepancies, not for ingest.
+
+2. **`steamworks-raw-fetch.ts` (the cookie-proxy admin endpoint added earlier today) is for diagnostics only — never wire it into any recurring ingest path.** Its cookie-refresh SLA is ~24 hours between refreshes and depends on Steve keeping his Steamworks login active. The Financials API key has no such fragility.
+
+3. **Every path that fires a wishlist backfill MUST use the same `runBackfillJob` function** in `server/routes.ts`. If a code path skips it (e.g., a new "quick-add" route that hand-writes a single row), it will silently produce sparse data — exactly the symptom that made this bug hard to spot (`rowCount: 1133` looked full because it had the 2021-2024 rows from the API's normal history, and the missing 2024→2026 gap only showed if you inspected the date column).
+
+**Deploy-safety note (secondary lesson).** Auto-triggered background backfill jobs (fire-and-forget `runBackfillJob(...)` after `storage.createProduct(...)`) do NOT survive a signalpulse redeploy — the Node.js process restart kills them, and there's no job-persistence layer. This means:
+
+- If a product is created within ~5-10 minutes of a subsequent deploy, its historical backfill will be truncated silently.
+- The operator has to re-fire it manually via `POST /api/steam/backfill/:productId` after the deploy completes.
+- A durable fix would be to persist BackfillJob state to disk and resume on server start, or to add a UI badge that flags any product with `rowCount < expected_from_app_min_date`. Not doing that today — just documenting the operator workaround.
+
+**Concrete verification.** For Twisted Tower (product 17):
+
+- Steamworks portal (raw ground truth): 152,268 current outstanding, 174,966 lifetime adds, first wishlist 2021-03-30
+- SignalPulse after manual re-fire (mid-backfill snapshot at 1,008/1,967 days done): `latestSteamWishlistCount: 147,718`, `dayOverDayDelta: +5,215`, `latestDate: 2026-08-17`, `rowCount: 1,965`
+- Match: exact — the API's cumulative view of Aug 17 is 147,718 which is Steamworks portal's "cumulative on Aug 17" (152,268 current outstanding − Aug 18's adds of 5,053 not yet ingested)
+
+**Rules of thumb.**
+
+> **Structured API > HTML parse, always.** If both exist and the API is authoritative, HTML parsing is a diagnostic tool for spotting discrepancies, not an ingest path. HTML shapes change; API contracts don't (as fast). The Partner Financials endpoint has been stable for years; the portal HTML gets Valve's UX refreshes every few months.
+
+> **A missing backfill silently degrades to "looks fine, but sparse."** `rowCount: 1133` for Twisted Tower looked plausibly-populated on the surface because rows 2021-03-30 through 2024-05-06 were all present — the gap only showed if you sorted by date and saw the 27-month hole. Any future check on new-product ingestion completeness should verify: (a) `latestDate` is within 3 days of today, (b) `rowCount` >= `(today - app_min_date).days − 5`. If either fails, re-fire the backfill.
+
+> **Fire-and-forget background jobs need a resumption story if they cross a deploy boundary.** SignalPulse's `runBackfillJob` has no persistence — a redeploy loses state. Until that's fixed, any auto-triggered backfill must be verified with a manual poll of `steamWishlistSummary.rowCount` post-deploy.
+
+---
+
 ## 2026-08-18 (sentimentpulse) — v0017: `is_off_topic_drift` boolean, 4-class sentiment model, KPIs and volume decoupled
 
 **What Steve asked for.** After the earlier drift-override + backfill (see next entry down) forced 97,371 off-topic comments to neutral, Steve pointed out that the neutral bucket was now polluted — users couldn't distinguish "player said something neutral about the game" from "someone posted a Cyberpunk essay in an SM2 thread reply". His spec:
