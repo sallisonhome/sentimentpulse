@@ -6,6 +6,46 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-18 (sentimentpulse) — v0017: `is_off_topic_drift` boolean, 4-class sentiment model, KPIs and volume decoupled
+
+**What Steve asked for.** After the earlier drift-override + backfill (see next entry down) forced 97,371 off-topic comments to neutral, Steve pointed out that the neutral bucket was now polluted — users couldn't distinguish "player said something neutral about the game" from "someone posted a Cyberpunk essay in an SM2 thread reply". His spec:
+
+1. Split drift from sentiment as an orthogonal dimension (a boolean flag on RawPost, NOT a fourth SentimentEnum value).
+2. Every sentiment metric (KPI, trend, top topics, LLM synthesis, hot-thread detection) excludes drift.
+3. Every volume/engagement metric (volume-by-source, competitor-timeseries) INCLUDES drift because engagement is a full-conversation metric.
+4. Retroactively flag every existing row that was force-neutraled by the earlier backfill.
+5. All KPIs must sync up — KPI total == net_sentiment_trend total, and both == volume total minus drift count.
+
+**What landed (commit `d969e3e`, v0017).**
+
+- **Migration 0017**: `raw_posts.is_off_topic_drift BOOLEAN NOT NULL DEFAULT FALSE` with an index. SQLite `batch_alter_table` for SQLite portability. Upgrade + downgrade smoke-tested against an in-memory DB.
+- **ORM**: `RawPost.is_off_topic_drift: Mapped[bool]` with server_default `text("0")`.
+- **Write path** (`services/ingestor.py` Step 5): when the comment focus check fails, set `post.is_off_topic_drift = True` alongside the existing forced-neutral + audit rule. The boolean is what dashboards read; the forced-neutral stays as defense in depth.
+- **Read paths updated** (all filter `is_off_topic_drift = False`): KPI cards, net-sentiment trend, top topics (both cold-start and main paths), yesterday-velocity, DailySummary counts, MonthlySummary/WindowSummary counts, LLM synthesis corpus (feedback synth + period_summary user-block prompt), portfolio scan hot-thread detection. All routed through a module-level `_NOT_DRIFT` predicate in `routers/dashboard.py` so future audits can grep every filtered site.
+- **Deliberately NOT filtered**: volume-by-source, prior-window volume, competitor-timeseries, pct-change coverage. Each has an explicit `# v0017: does NOT filter drift` comment above it so future maintainers don't "helpfully" add the filter.
+- **Regression tests** (`test_dashboard_drift_filter.py`): 9 non-drift + 20 drift SentimentRecords seeded across 60 minutes; asserts KPI totals == 3/2/4 not 13/7/9, trend total == 9 not 29, volume total == 29 not 9.
+- **Retroactive backfill** (`scripts/backfill_off_topic_drift_flag.py`): 114,546 rows flipped in 2.6s. Idempotent (WHERE clause excludes already-flagged rows). Post-apply sanity check verifies 0 remaining target rows.
+- **Prod verification**: for every audited game (SM2, Turok, Toxic Commando, Halloween, Silent Hill), KPI total == trend total, and volume total - KPI total exactly equals the drift row count. Neutral bucket dropped by the drift count (was polluted before, clean now). Pos/neg unchanged (drift wasn't there anyway after the earlier forced-neutral pass).
+
+**Concrete before/after** (weekly window, after apply):
+
+| Game | Neutral before | Neutral after | Δ (= drift) | Volume total |
+|---|---|---|---|---|
+| SM2 | 3904 | 1623 | −2281 | 8053 |
+| Turok: Origins | 5834 | 2706 | −3128 | 9641 |
+| Toxic Commando | 4084 | 1907 | −2177 | 6550 |
+| Halloween: The Game | 3039 | 1323 | −1716 | 5505 |
+
+**Generalizable rules.**
+
+> **"Force this row into an existing bucket" is worse than "add a new dimension".** The earlier drift override forced off-topic comments into `neutral`. That pollutes the bucket — downstream readers can't distinguish real neutral from override-neutral without inspecting `applied_rules`. When a fix needs to distinguish two populations, add an orthogonal flag (boolean, enum value, side table) rather than overloading an existing column. The v0017 boolean IS the correct data model; the forced-neutral is now belt + suspenders. Migration + backfill cost was cheap (2.6s for 114k rows); the model is now honest.
+
+> **Volume and sentiment answer different questions — keep them decoupled.** "How much conversation is happening?" (volume) is a different question from "what do people feel about this game?" (sentiment). Wiring them through the same filter conflates the two. The v0017 explicit `# does NOT filter drift` comments on every volume query codify the decoupling so a future maintainer doesn't fold them back together thinking they were inconsistent.
+
+> **The single-shared-predicate pattern (`_NOT_DRIFT`) beats copy-pasted `.filter()` clauses.** Every filtered query in `routers/dashboard.py` reads `.filter(_NOT_DRIFT)`. When a future filter change is needed, one edit updates every site consistently. This is the module-level analog of the same `same-object-not-duplicated` rule we applied to `_game_search_query` this morning.
+
+---
+
 ## 2026-08-18 (sentimentpulse) — Comment-drift override: verified-parent Reddit comments now get forced-neutral when off-topic
 
 **What happened.** Even after the Sonar disable-search + noise-tier read-side filters landed earlier today, Steve pointed out that comments on a verified-parent Reddit thread were still contaminating sentiment counts. Reddit comments are auto-admitted at Step 5 (see `ingestor.py _AUTO_ADMIT_SOURCES`) so short reactions like "yep same here" or "fixed it for me" aren't lost — that admission logic dates to v0016.2 (2026-08-12) and was correct in principle. But the same admission also lets long off-topic drift comments through: a comment on an SM2 thread that's really a Helldivers 2 essay, a hardware-only complaint about the Steam Deck itself under an Insurgency: Sandstorm thread, generic-gaming philosophy under a Turok: Origins thread — all of these were getting the model's positive/negative verdict recorded and moving the pos/neg needle for the wrong reasons.
