@@ -78,6 +78,7 @@ def call_sonar(
     temperature: float = 0.2,
     timeout: int = _DEFAULT_TIMEOUT,
     search_context_size: str = "low",
+    disable_search: bool = True,
 ) -> SonarResponse:
     """POST a single user prompt to Sonar and return the response.
 
@@ -92,15 +93,31 @@ def call_sonar(
         max_tokens: Maximum tokens in the response.
         temperature: Sampling temperature. Lower = more deterministic.
         timeout: HTTP timeout in seconds.
-        search_context_size: Sonar web-search retrieval depth. `low` is
-            usually right for our use case — we don't want Sonar pulling
-            in web context that competes with our cited posts, but we
-            also can't fully disable it on Sonar. `low` keeps it minimal.
+        search_context_size: Sonar web-search retrieval depth. Only
+            consulted when disable_search=False. `low` is minimal but
+            still allows blended web content — use disable_search=True
+            for any call whose system prompt is "ground strictly in the
+            provided posts".
+        disable_search: If True, tell Sonar to skip web search entirely
+            and answer only from training data + user-provided context.
+            Defaults to True because the _DEFAULT_SYSTEM prompt above
+            already tells the model "You never use external web
+            knowledge" — leaving web search on lets Sonar contradict
+            that system message and blend live web content into
+            strictly-grounded synthesis. That's how a Turok: Origins
+            (unreleased, 19 sparse admitted posts) dashboard ended up
+            with a "Patch notes fix the shield mech..." bullet on
+            2026-08-18 — Sonar had gone to the web and pulled Helldivers 2
+            patch-note content, then grafted it onto Turok. See
+            lessons.md 2026-08-18 (Sonar web-search contamination).
+            Any future caller that legitimately WANTS web enrichment
+            (e.g. hot-thread discovery, competitor snapshot) should
+            pass disable_search=False explicitly.
     """
     if not sonar_available():
         raise RuntimeError("Perplexity API key not configured (settings.perplexity_api_key empty).")
 
-    body = {
+    body: dict = {
         "model": model,
         "messages": [
             {"role": "system", "content": system or _DEFAULT_SYSTEM},
@@ -108,8 +125,13 @@ def call_sonar(
         ],
         "max_tokens": max_tokens,
         "temperature": temperature,
-        "web_search_options": {"search_context_size": search_context_size},
     }
+    if disable_search:
+        # Fully off: search_context_size has no meaning; don't send it.
+        body["disable_search"] = True
+    else:
+        # Search enabled: control depth. `low` is the safest non-zero.
+        body["web_search_options"] = {"search_context_size": search_context_size}
     body_bytes = json.dumps(body).encode("utf-8")
 
     req = urllib.request.Request(

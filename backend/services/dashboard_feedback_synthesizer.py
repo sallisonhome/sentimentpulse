@@ -402,7 +402,21 @@ def _synthesize_cluster_sentence(
         f"One-sentence output:"
     )
     try:
-        resp = call_sonar(prompt, max_tokens=80, temperature=0.2, search_context_size="low")
+        # 2026-08-18: pass disable_search=True explicitly (also the default
+        # in sonar_client) to lock in that this synthesis MUST be grounded
+        # only in the cluster's actual posts. Prior to this fix, Sonar was
+        # called with search_context_size="low", which still let it web-
+        # search and blend live content. That produced a Turok: Origins
+        # dashboard bullet full of Helldivers 2 patch-note vocabulary
+        # ("shield mech", "flame sentry", "lumberer") even though Turok
+        # is unreleased and its 19 admitted 7d posts contained no such
+        # words. See lessons.md 2026-08-18.
+        resp = call_sonar(
+            prompt,
+            max_tokens=80,
+            temperature=0.2,
+            disable_search=True,
+        )
     except Exception as exc:
         logger.warning("Sonar call failed for game=%s sentiment=%s: %s",
                        game_name, sentiment.value, exc)

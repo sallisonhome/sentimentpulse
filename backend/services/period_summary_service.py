@@ -5326,11 +5326,20 @@ def _call_llm_for_user_block(
         from services.sonar_client import sonar_available, call_sonar  # local import to avoid cycles
         if sonar_available():
             try:
+                # 2026-08-18: disable_search=True is the default in
+                # sonar_client, but pass it explicitly here as an
+                # invariant. Exec/recs/bold-ideas prompts already say
+                # "ground strictly in the cited posts" — letting Sonar
+                # web-search alongside caused a Turok: Origins Top
+                # Topics regression where Helldivers 2 patch-note
+                # vocabulary leaked into an unreleased-game summary.
+                # See lessons.md 2026-08-18.
                 resp = call_sonar(
                     prompt,
                     model=sonar_model,
                     max_tokens=sonar_max_tokens,
                     temperature=temperature,
+                    disable_search=True,
                 )
                 logger.info(
                     "LLM[%s] via Sonar (model=%s, resp_chars=%d)",

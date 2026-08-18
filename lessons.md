@@ -6,6 +6,39 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-18 (sentimentpulse) — Sonar web-search contamination: an unreleased game got a "Patch notes fix the shield mech" bullet grafted from Helldivers 2
+
+**What happened.** User screenshotted the Turok: Origins dashboard — an **unreleased** game — showing a Top Topics bullet labelled "About" with detail "Patch notes changes fix the shield mech but ignore lumberer and flame sentry dead zones of about three meters." That's verbatim Helldivers 2 patch-note vocabulary ("shield mech", "lumberer", "flame sentry") — Turok can't have patch notes because it hasn't shipped. Auditing Turok's admitted 7d posts (via `/api/games/23/posts`) returned only 19 posts, none of which contained any of those tokens. The bullet was entirely fabricated by the LLM.
+
+**Root cause.** `services/dashboard_feedback_synthesizer.py::_synthesize_cluster_sentence` calls `services/sonar_client.py::call_sonar(...)` — Sonar Pro, Perplexity's search-enabled model. The call passed `search_context_size="low"` with a comment reading *"we don't want Sonar pulling in web context that competes with our cited posts, but we also **can't fully disable it on Sonar**. `low` keeps it minimal."* That comment was wrong: Perplexity's API explicitly supports `disable_search: true` to turn web search off entirely (see https://docs.perplexity.ai/api-reference/chat-completions-post). With web search left on, when a game's admitted-post corpus is sparse or non-committal (Turok's 19 posts were mostly French comments, "the best", "🎶 ba bum…", and generic Turok 1/2/3 nostalgia), Sonar reaches out to the web, finds a genre-adjacent live game's actual patch notes, and grafts that content onto the strictly-grounded prompt — exactly what the strict-grounding system message was supposed to prevent.
+
+**Blast radius.** Both `call_sonar` call sites in the codebase were affected:
+1. `dashboard_feedback_synthesizer._synthesize_cluster_sentence` — Top Topics widget on the dashboard, every game, every period, every sentiment bucket.
+2. `period_summary_service._call_llm_for_user_block` — exec_summary, recommended_actions, and bold_ideas fields in every DailySummary, MonthlySummary, and WindowSummary, every game, every window. These flow into notifications, the digest emails, and the SentimentPulse portfolio scan cron.
+
+Since the cache TTL is 15 min for Top Topics and daily-fresh for period summaries, this had been silently degrading every LLM-generated user-facing string for however long Sonar has been the primary route. Games with sparse or thin post corpora — unreleased titles, low-volume portfolio entries, DLC/expansion rows, non-English communities — were most vulnerable because that's exactly when Sonar leans hardest on the web.
+
+**Fix.**
+- `services/sonar_client.py::call_sonar` grows a `disable_search: bool = True` kwarg. When True (the new default), the request body sends `"disable_search": true` and omits `web_search_options` entirely. When False (opt-in), the body preserves the legacy `web_search_options.search_context_size` behavior for callers that legitimately need web enrichment (none in-tree today; kept as a future extension point for e.g. hot-thread discovery, competitor snapshot).
+- Both current call sites (`dashboard_feedback_synthesizer.py` and `period_summary_service.py`) also pass `disable_search=True` **explicitly** so a future refactor that flips the default can't silently re-enable web blending.
+- New test file `tests/test_sonar_client_disable_search.py` with four regression tests:
+  1. `test_call_sonar_default_disables_web_search` — default kwargs must send `disable_search: true` and no `web_search_options`.
+  2. `test_call_sonar_explicit_disable_search_true` — explicit True same as default.
+  3. `test_call_sonar_disable_search_false_sends_web_search_options` — opt-in mode still works for future callers.
+  4. `test_all_call_sonar_sites_in_tree_use_strict_grounding` — greps `services/` for `call_sonar(...)` and fails if any site sets `disable_search=False` without being on an explicit whitelist. If a future caller has a legitimate need for web enrichment, the whitelist is the review checkpoint.
+
+**Generalizable rules.**
+
+> **A "strict grounding" system message does NOT disable an LLM's search tool. The API-level flag is the truth; the system message is a suggestion.** Sonar's default system message in this codebase explicitly said "You never use external web knowledge. Sentences that cannot be backed by a citation are forbidden." It did not matter — as long as `web_search_options.search_context_size` was non-zero, Sonar could and did search. If an LLM has a tool (search, code execution, browsing), disable it at the API level, don't rely on prose in the system message. Same class of failure as "just tell the LLM not to hallucinate" — the fact that the guardrail lives in the prompt instead of the request schema means it's advisory, not enforced.
+
+> **When you copy a config comment from stack overflow / prior code, verify against the current API docs before pasting.** The comment `"we also can't fully disable it on Sonar. \`low\` keeps it minimal"` in sonar_client.py was flat wrong. A one-minute check of https://docs.perplexity.ai/api-reference/chat-completions-post would have surfaced `disable_search`. Any comment that says "can't do X" about a third-party API needs a documentation link — without one, treat it as a claim to re-verify, not a fact.
+
+> **Safe-by-default kwargs. `disable_search=True` is the new default even though every existing caller passes it explicitly, because "the next caller will forget" is a load-bearing assumption.** If a call site's failure mode is a subtle correctness bug (content contamination) rather than a loud crash, the default must be the strict setting and opting into the loose setting must be a visible act. Applied to any similar knob: sampling `temperature`, retry counts, cache TTLs, etc.
+
+> **Whitelist tests catch drift.** Test 4 above is a coarse grep-based invariant, not a unit test of one function. It fails loudly if any file in `services/` adds a `disable_search=False` call site without updating the whitelist. This is the same idea as the "same-object-not-duplicated" test added for `_game_search_query` this morning — pin down the SHAPE of the codebase, not just the behavior of individual functions.
+
+---
+
 ## 2026-08-18 (sentimentpulse) — arctic_shift's local `_game_search_query` copy silently drifted from reddit_service's, killing every general-sub fetch for 6 days
 
 **What happened.** While auditing why this morning's Phase-A cron ran out of wallclock budget (skipped 4 tail-of-list games), I found the journal was choked with `arctic_shift: unexpected error for r/{gaming,Games,pcgaming,PS5,xbox,...} game='...': _game_search_query() got an unexpected keyword argument 'game'`. Every single arctic_shift call to a **general** subreddit (r/gaming, r/Games, r/pcgaming, r/PS5, r/xbox, r/patientgamers, r/ShouldIbuythisgame, r/SteamDeck, r/Steam — the whole `ARCTIC_SHIFT_GENERAL_SUBS` set) had been raising TypeError since 2026-08-12 and returning 0 posts. That's 6 days of missing reddit signal for general subs across the entire portfolio, plus 5-second-per-failing-sub delays that inflated Phase A's wallclock enough to push the tail games off the cron budget.
