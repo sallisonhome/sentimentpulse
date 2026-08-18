@@ -461,6 +461,10 @@ def _aggregate_posts(
             RawPost.game_id == game_id,
             effective_date >= start_dt,
             effective_date <= end_dt,
+            # v0017 (2026-08-18): sentiment metric → exclude drift.
+            # Keeps DailySummary / MonthlySummary / WindowSummary
+            # counts consistent with the dashboard KPI cards.
+            RawPost.is_off_topic_drift.is_(False),
         )
         .group_by(SentimentRecord.sentiment)
         .all()
@@ -526,6 +530,8 @@ def _aggregate_posts(
                     SentimentRecord.sentiment == sentiment,
                     effective_date >= start_dt,
                     effective_date <= end_dt,
+                    # v0017: cold-start fallback topics also exclude drift.
+                    RawPost.is_off_topic_drift.is_(False),
                 )
                 .all()
             )
@@ -993,6 +999,13 @@ def _aggregate_posts_1day(
             # the game; those rows should never feed a strictly-grounded
             # LLM prompt (exec_summary / recommended_actions / bold_ideas).
             (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
+            # v0017 (2026-08-18): also exclude off-topic drift. Drift
+            # comments on verified parents pass the relevance_tier
+            # filter (they're 'signal' or 'dedicated_sub') but their
+            # content isn't about the game — grounding LLM synthesis on
+            # them produces cross-game/hardware/philosophy content in
+            # exec_summary and recommended_actions.
+            RawPost.is_off_topic_drift.is_(False),
         )
         .all()
     )

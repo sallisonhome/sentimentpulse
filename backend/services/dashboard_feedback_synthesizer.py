@@ -522,6 +522,14 @@ def generate_feedback_summary(
             SentimentRecord.sentiment == sentiment,
             RawPost.post_date.isnot(None),
             (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
+            # v0017 (2026-08-18): also exclude off-topic drift. Belt +
+            # suspenders against relevance_tier: drift comments on
+            # verified parents are 'dedicated_sub' or 'signal' tier but
+            # their body content isn't about the game. Without this
+            # filter the LLM synthesizer builds Top Topics clusters from
+            # cross-game essays and Steam Deck hardware complaints. See
+            # lessons.md 2026-08-18.
+            RawPost.is_off_topic_drift.is_(False),
         )
     )
     if period_start is not None:

@@ -168,11 +168,18 @@ def _detect_hot_threads(
     # subs is excluded so it doesn't inflate the numbers or drown the
     # baseline. Untagged rows ('unclassified') are permissively included —
     # avoids blackout during the retroactive-tagging window.
+    #
+    # v0017 (2026-08-18): also exclude off-topic drift. A Turok thread
+    # that becomes 200 comments of Helldivers cross-posting would
+    # inherit 'dedicated_sub' tier and look like a spike but isn't about
+    # the tracked game. Hot-thread detection is a game-specific signal
+    # — apply the drift filter so surfaced spikes are real.
     from sqlalchemy import or_
     _relevance_ok = or_(
         RawPost.relevance_tier.in_(("dedicated_sub", "signal")),
         RawPost.relevance_tier.is_(None),
     )
+    _not_drift = RawPost.is_off_topic_drift.is_(False)
 
     # 24h post counts per game (across all sources — Steam Forum,
     # Reddit, Bluesky, Steam Review — since a spike anywhere counts).
@@ -180,6 +187,7 @@ def _detect_hot_threads(
         db.query(RawPost.game_id, func.count(RawPost.id))
         .filter(RawPost.collected_at >= since_24h)
         .filter(_relevance_ok)
+        .filter(_not_drift)
         .group_by(RawPost.game_id)
         .all()
     )
@@ -189,6 +197,7 @@ def _detect_hot_threads(
         db.query(RawPost.game_id, func.count(RawPost.id))
         .filter(RawPost.collected_at >= since_7d)
         .filter(_relevance_ok)
+        .filter(_not_drift)
         .group_by(RawPost.game_id)
         .all()
     )

@@ -4,7 +4,7 @@ from typing import Optional, List
 
 from sqlalchemy import (
     Integer, String, Float, Boolean, Text, Date, DateTime,
-    ForeignKey, Enum, JSON, UniqueConstraint, func,
+    ForeignKey, Enum, JSON, UniqueConstraint, func, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -215,6 +215,22 @@ class RawPost(Base):
     # name. NULL for submissions (source='reddit') and non-Reddit sources.
     parent_external_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, default=None, index=True,
+    )
+
+    # v0017 (2026-08-18): off-topic drift flag. True when a post was
+    # admitted for engagement/volume reasons (e.g. reddit_comment on a
+    # verified-parent thread) but its content is NOT about this game
+    # (cross-game essays, hardware complaints, generic gaming philosophy,
+    # meme replies). Every sentiment-metric read path (KPI cards,
+    # net-sentiment trend, top topics, feedback synth, period summary,
+    # digest emails, portfolio scan) filters `is_off_topic_drift = False`
+    # so pos/neg/neutral totals only reflect content actually about the
+    # game. Volume-by-source and engagement metrics keep counting all
+    # admitted posts — a busy thread is a busy thread. Orthogonal to
+    # SentimentEnum, indexed for filter perf.
+    is_off_topic_drift: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("0"),
+        index=True,
     )
 
     game: Mapped["Game"] = relationship("Game", back_populates="raw_posts")

@@ -1553,6 +1553,14 @@ def _step5_classify_sentiment(
                 applied_rules.append(
                     "FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT"
                 )
+                # v0017 (2026-08-18): mark the RawPost itself as
+                # off-topic drift. This is the primary flag every
+                # sentiment-metric read path filters on (KPI cards,
+                # net-sentiment trend, top topics, feedback synth,
+                # period summary). The forced-neutral sentiment above
+                # is belt-and-suspenders — the boolean is what the
+                # dashboard actually reads.
+                post.is_off_topic_drift = True
 
         post.is_relevant = True
         db.add(SentimentRecord(
@@ -1780,6 +1788,11 @@ def _step7_daily_summary(
             RawPost.game_id == game.id,
             effective_date >= day_start,
             effective_date < day_end,
+            # v0017 (2026-08-18): DailySummary counts feed the dashboard
+            # KPI cards (via period_summary_service) — exclude drift so
+            # daily counts stay consistent with the KPI + trend + topic
+            # queries in routers/dashboard.py.
+            RawPost.is_off_topic_drift.is_(False),
         )
         .group_by(SentimentRecord.sentiment)
         .all()

@@ -46,6 +46,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/games", tags=["dashboard"])
 
 
+# Drift-filter predicate (v0017, 2026-08-18).
+#
+# Every sentiment-metric query in this router filters on
+# `RawPost.is_off_topic_drift == False` so pos/neg/neutral totals,
+# net-sentiment trend, sentiment velocity, and topic frequencies only
+# reflect content genuinely about the game. Volume-by-source and
+# competitor-timeseries queries deliberately do NOT apply this filter
+# — a busy thread is a busy thread, and engagement volume should
+# include off-topic drift so operators can see the full activity level.
+#
+# Kept as a module-level constant so every callsite reads identically
+# and future audits can grep `_NOT_DRIFT` to find every filtered query.
+_NOT_DRIFT = RawPost.is_off_topic_drift.is_(False)
+
+
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 def _period_start(period: PeriodEnum) -> Optional[date]:
@@ -137,6 +152,7 @@ def get_dashboard(
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id == game_id)
         .filter(RawPost.post_date.isnot(None))
+        .filter(_NOT_DRIFT)  # v0017: sentiment metric → exclude drift
     )
     if p_start is not None:
         kpi_q = kpi_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -177,6 +193,7 @@ def get_dashboard(
         .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id == game_id)
         .filter(RawPost.post_date.isnot(None))
+        .filter(_NOT_DRIFT)  # v0017: sentiment metric → exclude drift
     )
     if p_start:
         trend_rows_q = trend_rows_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -282,6 +299,7 @@ def get_dashboard(
                 RawPost.game_id == game_id,
                 SentimentRecord.sentiment == sentiment,
                 RawPost.post_date.isnot(None),
+                _NOT_DRIFT,  # v0017: sentiment metric → exclude drift
             )
         )
         if p_start is not None:
@@ -346,6 +364,7 @@ def get_dashboard(
                 RawPost.game_id == game_id,
                 SentimentRecord.sentiment == sentiment,
                 RawPost.post_date.isnot(None),
+                _NOT_DRIFT,  # v0017: sentiment metric → exclude drift
             )
         )
         if p_start is not None:
@@ -412,6 +431,11 @@ def get_dashboard(
     # By construction, a RawPost has a SentimentRecord iff it passed the
     # relevance gate at Step 5. Joining here makes the chart consistent
     # with the KPI/trend/topics data on the same dashboard.
+    # v0017 (2026-08-18): volume-by-source deliberately does NOT filter
+    # `is_off_topic_drift` — engagement/activity metrics count every
+    # admitted post so operators see the full conversation level. Only
+    # sentiment-metric queries above (KPI, trend, topics, velocity)
+    # exclude drift. If you're tempted to add `_NOT_DRIFT` here, don't.
     vol_q = (
         db.query(
             day_expr,
@@ -479,6 +503,9 @@ def get_dashboard(
         prior_end   = p_start - timedelta(days=1) if p_start else None
         prior_start = (prior_end - timedelta(days=prior_window_days - 1)) if prior_end else None
         if prior_start is not None and prior_end is not None:
+            # v0017: prior-window volume also excludes drift filter (see
+            # main vol_q comment above). Volume comparisons stay apples-
+            # to-apples with the current-window totals.
             prior_q = (
                 db.query(day_expr, RawPost.source, func.count(RawPost.id).label("cnt"))
                 .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
@@ -584,6 +611,7 @@ def get_dashboard(
             .filter(
                 RawPost.game_id == game_id,
                 func.date(effective_date_expr) == str(yesterday),
+                _NOT_DRIFT,  # v0017: sentiment metric → exclude drift
             )
             .group_by(SentimentRecord.sentiment)
             .all()
@@ -714,6 +742,9 @@ def get_competitor_timeseries(
     effective_date_expr = RawPost.post_date
     day_expr = func.date(effective_date_expr).label("day")
 
+    # v0017 (2026-08-18): competitor timeseries is a VOLUME chart ("Post
+    # Volume by Title"), not a sentiment metric — no drift filter.
+    # Consistent with the volume-by-source chart above.
     ts_q = (
         db.query(
             day_expr,
