@@ -1517,6 +1517,43 @@ def _step5_classify_sentiment(
             original_score = result.get("original_score")
             applied_rules = result.get("applied_rules", [])
 
+        # 2026-08-18 (Steve's feedback on Turok / SM2 contamination):
+        # Reddit comments on a verified-parent thread are auto-admitted
+        # so short reactions don't get lost ("yep", "same here", "fixed
+        # it for me"). But long off-topic drift comments on the same
+        # thread — hardware complaints about the Steam Deck itself,
+        # cross-game essays, generic-gaming philosophy — were landing
+        # as positive/negative sentiment and moving the pos/neg needle
+        # for the wrong reasons.
+        #
+        # Fix: keep the comment in the corpus (no volume loss for
+        # engagement/thread completeness), but if it fails the
+        # "focused on this game" check, override the final sentiment
+        # to `neutral` so it doesn't skew feedback signal. The model's
+        # original verdict is preserved in original_label / original_score
+        # and the override is tagged with an applied_rule for audit.
+        #
+        # See services/post_relevance.py::is_comment_focused_on_game
+        # for the decision tree (keyword match / short reply / game-aspect
+        # + opinion). Only runs for source=reddit_comment.
+        if post.source == SourceEnum.reddit_comment:
+            from services.post_relevance import is_comment_focused_on_game  # noqa: PLC0415
+            if not is_comment_focused_on_game(post.body or "", game):
+                # Preserve the model's verdict for audit before overriding.
+                if original_label is None:
+                    original_label = label
+                if original_score is None:
+                    original_score = score
+                label = "neutral"
+                # Confidence unchanged: this is a policy override, not
+                # a re-classification. Downstream tooling can spot the
+                # rule tag if it needs to distinguish model-neutral from
+                # override-neutral.
+                applied_rules = list(applied_rules) if applied_rules else []
+                applied_rules.append(
+                    "FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT"
+                )
+
         post.is_relevant = True
         db.add(SentimentRecord(
             raw_post_id=post.id,

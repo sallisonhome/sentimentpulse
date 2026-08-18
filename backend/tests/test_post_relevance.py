@@ -922,3 +922,197 @@ class TestShortCollisionWordsFuzzyGuard_2026_07_25:
                 "driving model, though a couple of the trucks feel underpowered.")
         assert is_post_relevant_to_game(title, body, game), \
             "'Bus Buond' typo should still fuzzy-match to 'Bus Bound' — regression!"
+
+
+# ── is_comment_focused_on_game — 2026-08-18 comment-drift filter ──────────
+#
+# Reddit comments on a verified-parent thread are auto-admitted at Step 5.
+# This helper detects when a comment is off-topic drift so the caller can
+# force the sentiment to `neutral` instead of letting the model's verdict
+# skew pos/neg counts. Called from services/ingestor.py.
+
+from services.post_relevance import is_comment_focused_on_game
+
+
+class TestIsCommentFocusedOnGame:
+    """
+    Contract:
+      - Empty / whitespace comment → False.
+      - Comment < 100 chars → True (short reaction reply).
+      - Long comment containing a keyword or bare distinctive token +
+        context → True.
+      - Long comment with a game-aspect noun paired with an opinion
+        marker → True.
+      - Long comment with NONE of the above → False (drift; caller
+        overrides sentiment to neutral).
+    """
+
+    # ── Empty / short-reply admissions ────────────────────────────────
+
+    def test_empty_comment_returns_false(self):
+        game = _make_game("Space Marine 2", keywords=["Space Marine 2", "SM2 game"])
+        assert is_comment_focused_on_game("", game) is False
+        assert is_comment_focused_on_game("   ", game) is False
+        assert is_comment_focused_on_game(None, game) is False
+
+    def test_short_reaction_reply_admitted(self):
+        """Community threads are 90% short reactions. Keep them all."""
+        game = _make_game("Space Marine 2", keywords=["Space Marine 2"])
+        # Under 100 chars — no need to name the game.
+        assert is_comment_focused_on_game("yep same here", game) is True
+        assert is_comment_focused_on_game("fixed it for me thanks", game) is True
+        assert is_comment_focused_on_game("wtf lol", game) is True
+        assert is_comment_focused_on_game(
+            "yeah I've been running into the same thing on my end", game
+        ) is True
+
+    def test_boundary_99_chars_admitted_100_chars_needs_signal(self):
+        """The <100-char threshold is strict-less-than."""
+        game = _make_game("Space Marine 2", keywords=["Space Marine 2"])
+        # 99 chars of pure drift — short-reply path admits it.
+        drift_99 = "x" * 99
+        assert len(drift_99) == 99
+        assert is_comment_focused_on_game(drift_99, game) is True
+
+        # 100 chars of pure drift (no keyword, no aspect+opinion) — fails.
+        drift_100 = "x" * 100
+        assert len(drift_100) == 100
+        assert is_comment_focused_on_game(drift_100, game) is False
+
+    # ── Keyword-match admissions ──────────────────────────────────────
+
+    def test_long_comment_mentioning_keyword_admitted(self):
+        game = _make_game(
+            "Space Marine 2",
+            keywords=["Space Marine 2", "SM2 game", "Warhammer Space Marine 2"],
+        )
+        long_comment_with_kw = (
+            "Space Marine 2 combat feels miles ahead of the first game, "
+            "the melee weight is exactly what I wanted from a WH40k sequel. "
+            "Played through Operations last night and had a blast, "
+            "cannot recommend enough."
+        )
+        assert len(long_comment_with_kw) >= 100
+        assert is_comment_focused_on_game(long_comment_with_kw, game) is True
+
+    def test_long_comment_with_bare_distinctive_token_and_context_admitted(self):
+        """A long comment saying 'Hellraiser on PS5' should pass."""
+        game = _make_game(
+            "Clive Barker's Hellraiser: Revival",
+            keywords=["Hellraiser Revival", "Hellraiser Revival game"],
+        )
+        long_comment = (
+            "Hellraiser looks great running on PS5, the puzzle box scene "
+            "was fantastic and the atmosphere reminds me of the original "
+            "Cenobite lore in a really respectful way. Cannot wait for the "
+            "full launch to see how the mechanics come together."
+        )
+        assert len(long_comment) >= 100
+        assert is_comment_focused_on_game(long_comment, game) is True
+
+    # ── Game-aspect + opinion admissions ──────────────────────────────
+
+    def test_long_comment_with_aspect_and_opinion_admitted(self):
+        """Reply-context feedback: 'the combat feels great' on an SM2 thread."""
+        game = _make_game("Space Marine 2", keywords=["Space Marine 2"])
+        # Doesn't restate the game name (implied from parent-thread context)
+        # but has 'combat' (aspect) + 'great' (opinion).
+        comment = (
+            "The combat feels great once you get into the flow of it, "
+            "parry timing took me a bit to nail down but once it clicked "
+            "the whole experience opened up in a big way."
+        )
+        assert len(comment) >= 100
+        assert is_comment_focused_on_game(comment, game) is True
+
+    def test_long_comment_matchmaking_broken_admitted(self):
+        """Aspect (matchmaking) + opinion (broken) — classic feedback."""
+        game = _make_game("Space Marine 2", keywords=["Space Marine 2"])
+        comment = (
+            "Matchmaking has been broken for me since last Tuesday. "
+            "I keep getting dropped into level 20+ lobbies as a fresh "
+            "level 3 which is not fun for anyone involved."
+        )
+        assert len(comment) >= 100
+        assert is_comment_focused_on_game(comment, game) is True
+
+    # ── Off-topic drift rejections (the point of the whole check) ─────
+
+    def test_long_cross_game_essay_rejected(self):
+        """
+        Steve's exact case: a comment on an SM2 thread that's really about
+        Helldivers 2 with no SM2 reference.
+        """
+        game = _make_game("Space Marine 2", keywords=["Space Marine 2", "SM2 game"])
+        drift = (
+            "This whole discussion reminds me of when Helldivers 2 first "
+            "dropped and the community was going wild. Arrowhead really "
+            "nailed the moment-to-moment feel of that game in a way most "
+            "shooters cannot replicate, and I keep going back to it every "
+            "time a new warbond drops."
+        )
+        assert len(drift) >= 100
+        assert is_comment_focused_on_game(drift, game) is False
+
+    def test_long_steam_deck_hardware_complaint_rejected(self):
+        """
+        A comment on a game thread that's actually about Steam Deck
+        hardware issues (RMA, screen dying) — not the game. Should be
+        forced-neutral.
+        """
+        game = _make_game(
+            "Insurgency: Sandstorm",
+            keywords=["Insurgency Sandstorm", "Sandstorm game"],
+        )
+        drift = (
+            "Honestly my Steam Deck's right stick has been drifting for "
+            "the last two weeks and I finally sent it in for RMA. Valve "
+            "support has been decent but the turnaround is longer than "
+            "the last time I dealt with them. Anyone else have hardware "
+            "problems this bad?"
+        )
+        assert len(drift) >= 100
+        # Note: this comment mentions "Steam Deck" (a game-context word).
+        # But it does NOT contain any Insurgency keyword or bare token,
+        # AND has no game-aspect noun paired with an opinion, so it
+        # correctly falls through to False.
+        assert is_comment_focused_on_game(drift, game) is False
+
+    def test_long_generic_gaming_philosophy_rejected(self):
+        """Long comment about the industry generally — off-topic drift."""
+        game = _make_game("Turok: Origins", keywords=["Turok Origins", "Turok Origins game"])
+        drift = (
+            "The whole industry is chasing extraction shooters right now "
+            "and I honestly do not understand who is asking for this. Every "
+            "publisher wants their own Escape from Tarkov clone and it is "
+            "getting exhausting to see the same design template repeated "
+            "over and over again in every genre panel presentation."
+        )
+        assert len(drift) >= 100
+        assert is_comment_focused_on_game(drift, game) is False
+
+
+class TestForcedNeutralOverrideRuleName:
+    """
+    The applied_rule string added when a comment is forced to neutral is
+    referenced by audit tooling. Pin it down as a stable identifier.
+    """
+
+    def test_forced_neutral_rule_string_is_stable(self):
+        # Just import and verify the exact string ingestor.py appends. If
+        # someone renames this in ingestor.py without updating dependent
+        # audits, this test locks the drift.
+        from pathlib import Path
+        import re as _re
+
+        ingestor_src = Path(__file__).resolve().parent.parent / "services" / "ingestor.py"
+        text = ingestor_src.read_text(encoding="utf-8")
+        matches = _re.findall(
+            r'"(FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT)"', text
+        )
+        assert matches, (
+            "Expected the exact rule name "
+            "'FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT' to appear "
+            "in services/ingestor.py. If you renamed it, update dependent "
+            "audit tooling and this test."
+        )

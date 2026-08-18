@@ -1215,3 +1215,152 @@ def _fuzzy_match_relevant(
             )
             return True
     return False
+
+
+# ── Comment-focus check for verified-parent Reddit comments ────────────────
+#
+# 2026-08-18 (Steve's feedback on Turok / SM2 contamination): Reddit comments
+# on a verified-parent thread are auto-admitted at Step 5 (see ingestor.py
+# _AUTO_ADMIT_SOURCES) so short reactions like "yep same here" aren't lost.
+# But that also lets long off-topic drift comments ("this reminds me of
+# Cyberpunk...", hardware complaints about Steam Deck itself, cross-game
+# comparisons that go on for paragraphs) accumulate as positive/negative
+# sentiment records — moving the pos/neg needle for the wrong reasons.
+#
+# The fix (per user spec): keep comments admitted (no volume loss for
+# engagement/thread completeness), but detect off-topic drift and force
+# those to `neutral` sentiment so they don't distort feedback signal.
+#
+# A comment is treated as ON-TOPIC (keep model verdict) when ANY of:
+#
+#   1. It contains a game keyword or the bare distinctive-token form
+#      (e.g. "Hellraiser", "Insurgency Sandstorm", or a keyword from
+#      game.distinctive_keywords). This is the strongest signal.
+#
+#   2. It is a short reaction reply (< _COMMENT_SHORT_REACTION_CHARS chars,
+#      default 100). Community threads are full of "yep", "same here",
+#      "fixed it for me", "wtf lol" — these are legitimate reply signal
+#      even when they don't restate the game name. Length is a good proxy
+#      for "this reads as a reply, not an off-topic essay".
+#
+#   3. It contains a game-aspect noun paired with an opinion marker
+#      ("the combat feels great", "matchmaking is broken", "boss fight
+#      sucked"). This catches genuine feedback where the game is
+#      implicit from the parent-thread context.
+#
+# When none of those fire, the comment is treated as OFF-TOPIC DRIFT.
+# Step 5's classifier still runs (so we keep the audit trail), but the
+# caller should override the final sentiment to `neutral` and record an
+# applied_rule for traceability.
+#
+# Deliberately NOT applied to non-comment sources — Reddit submissions,
+# Steam reviews, Steam forum posts each have their own admission logic
+# and this override would be wrong for them.
+
+# Short-reply admission threshold. Empirical: 100 chars covers 95%+ of
+# thumbs-up-style reactions ("yeah I hit this too, thanks for the fix")
+# while catching the point where a comment starts becoming a mini-essay.
+_COMMENT_SHORT_REACTION_CHARS = 100
+
+# Game-aspect nouns — the "specificity markers" also used by the
+# feedback synthesizer (see services/dashboard_feedback_synthesizer.py
+# _SPECIFICITY_MARKERS). Duplicated here to avoid a cross-module import,
+# and slightly wider because comments are shorter than submissions and
+# a single hit already carries meaning in reply context.
+_COMMENT_GAME_ASPECT_RE = re.compile(
+    r"\b("
+    # Structural game elements
+    r"combat|gameplay|controls|movement|animation|animations|"
+    r"class|classes|weapon|weapons|mode|modes|map|maps|level|levels|"
+    r"chapter|chapters|boss|bosses|enemy|enemies|mechanic|mechanics|"
+    r"skill|skills|perk|perks|ability|abilities|"
+    r"gun|guns|melee|sniper|shotgun|rifle|grenade|parry|dodge|block|"
+    r"aim|aiming|hitreg|hitbox|hitscan|"
+    # Progression / economy
+    r"prestige|xp|exp|grind|grinding|unlock|unlocks|"
+    r"progression|reward|rewards|loadout|"
+    # Balance / patch
+    r"balance|patch|update|hotfix|nerf|nerfed|buff|buffed|meta|"
+    # Story / setting
+    r"story|plot|character|characters|writing|dialogue|voice|"
+    r"lore|world|setting|cutscene|cutscenes|"
+    # Technical / gameplay-relevant
+    r"performance|fps|framerate|optimization|graphics|texture|"
+    r"matchmaking|multiplayer|co.?op|coop|solo|singleplayer|"
+    r"campaign|mission|missions|quest|quests|"
+    # Commercial
+    r"price|priced|pricing|dlc|expansion|season.pass|microtransaction|"
+    r"launch|release|beta|alpha|demo"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Opinion markers — same list as the feedback synthesizer's
+# _OPINION_MARKERS. When a game-aspect noun co-occurs with one of these,
+# the comment is treated as focused feedback.
+_COMMENT_OPINION_RE = re.compile(
+    r"\b("
+    r"love|loved|loving|amazing|incredible|great|awesome|fun|enjoy|"
+    r"solid|nailed|hooked|hyped|best|"
+    r"hate|hated|disappointed|frustrating|frustrated|broken|terrible|"
+    r"awful|unfair|bad|worst|garbage|trash|nerf|regret|refund|"
+    r"wish|hope|please|need|needs|should|"
+    r"fix|fixed|"
+    r"issue|problem|bug|glitch|crash|crashes|lag|laggy|"
+    r"stutter|stuttering|"
+    r"underrated|overrated"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_comment_focused_on_game(comment_text: str, game) -> bool:
+    """Return True iff a Reddit comment on a verified-parent thread reads
+    as being ABOUT the tracked game (or is a legitimate short reply).
+
+    Callers: services/ingestor.py Step 5, applied only to
+    RawPost.source == 'reddit_comment' whose parent had a verified
+    relevance_tier of 'signal' or 'dedicated_sub'.
+
+    See the module-level comment above for the full decision tree.
+    Returns True on:
+      1. Comment mentions a game keyword (distinctive_keywords or the
+         game name / bare distinctive tokens).
+      2. Comment is < 100 chars — treated as a short reaction reply.
+      3. Comment contains BOTH a game-aspect noun AND an opinion marker.
+
+    Returns False otherwise — caller should override sentiment to
+    'neutral' and record an applied_rule for audit.
+    """
+    text = (comment_text or "").strip()
+    if not text:
+        # Deleted / [removed] / empty — no signal. Treat as off-topic drift
+        # so it doesn't skew pos/neg counts (default sentiment on empty is
+        # usually neutral anyway, but be explicit).
+        return False
+
+    # 2. Short reaction reply — cheapest check, do it first.
+    if len(text) < _COMMENT_SHORT_REACTION_CHARS:
+        return True
+
+    # 1. Direct keyword mention.
+    keywords = _get_keywords(game)
+    if keywords:
+        # Full-keyword match (multi-word AND-matched).
+        if _find_keyword_matches(text, keywords):
+            return True
+        # Bare distinctive-token match (e.g. "Hellraiser" from keyword
+        # "Hellraiser Revival") — same signal the fast-path uses for
+        # submissions. Requires a game-context word to guard against
+        # e.g. bare "Halo" appearing in a random music-halo comment;
+        # in-thread comments almost always have a platform / studio /
+        # 'game' word nearby when the bare token is used substantively.
+        if _has_bare_distinctive_token(text, keywords):
+            if _has_game_context_word(text):
+                return True
+
+    # 3. Game-aspect noun + opinion marker → focused feedback.
+    if _COMMENT_GAME_ASPECT_RE.search(text) and _COMMENT_OPINION_RE.search(text):
+        return True
+
+    return False

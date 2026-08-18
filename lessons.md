@@ -6,6 +6,36 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-08-18 (sentimentpulse) — Comment-drift override: verified-parent Reddit comments now get forced-neutral when off-topic
+
+**What happened.** Even after the Sonar disable-search + noise-tier read-side filters landed earlier today, Steve pointed out that comments on a verified-parent Reddit thread were still contaminating sentiment counts. Reddit comments are auto-admitted at Step 5 (see `ingestor.py _AUTO_ADMIT_SOURCES`) so short reactions like "yep same here" or "fixed it for me" aren't lost — that admission logic dates to v0016.2 (2026-08-12) and was correct in principle. But the same admission also lets long off-topic drift comments through: a comment on an SM2 thread that's really a Helldivers 2 essay, a hardware-only complaint about the Steam Deck itself under an Insurgency: Sandstorm thread, generic-gaming philosophy under a Turok: Origins thread — all of these were getting the model's positive/negative verdict recorded and moving the pos/neg needle for the wrong reasons.
+
+**Root cause.** Auto-admission for `source=reddit_comment` had no downstream refinement. Once a comment was admitted, whatever the model returned became the final sentiment. There was no check that asked "is this comment ACTUALLY about the tracked game, or is it just riding on the verified parent?"
+
+**Fix (per Steve's spec).** Keep the auto-admit — don't drop any comment, since the parent thread is verified on-topic and thread completeness matters for engagement/volume signal. But **add a comment-focus check that runs after the model classifies**, and if it fails, **override the final sentiment to `neutral`** with an audit tag (`applied_rule = FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT`). The model's original verdict is preserved in `original_label` / `original_score` so nothing is lost.
+
+A comment counts as ON-TOPIC (keeps its model verdict) when ANY of:
+1. It contains a game keyword or a bare distinctive token paired with a game-context word (e.g. "Hellraiser on PS5").
+2. It's < 100 chars — short reaction replies are legitimate signal regardless of whether they restate the game name ("yep", "same here", "fixed it for me", "wtf lol").
+3. It contains BOTH a game-aspect noun (combat, matchmaking, weapon, boss, patch, framerate, ...) AND an opinion marker (great, broken, love, hate, frustrating, ...). This catches implicit-context feedback like "the combat feels great" or "matchmaking has been broken since last patch".
+
+When none of those fire, the comment is drift — kept in the corpus for engagement/volume, but its sentiment is forced to neutral.
+
+**Files.**
+- `services/post_relevance.py` — new `is_comment_focused_on_game(comment_text, game)` helper with the three-way decision tree. Uses the same `_get_keywords` + `_find_keyword_matches` + `_has_bare_distinctive_token` + `_has_game_context_word` primitives that submissions use, plus two new regexes (`_COMMENT_GAME_ASPECT_RE`, `_COMMENT_OPINION_RE`) for the aspect+opinion path.
+- `services/ingestor.py` Step 5 — after the sentiment model returns for each post, if `post.source == reddit_comment` and the focus check fails, override `label = "neutral"` and append the audit rule.
+- `tests/test_post_relevance.py` — 10 unit tests covering: empty comment, short-reply admission, 99-vs-100-char boundary, keyword admission (both full and bare-token+context paths), aspect+opinion admission ("combat feels great", "matchmaking is broken"), and three rejection cases (cross-game essay, Steam Deck hardware complaint, generic-gaming philosophy). Plus one meta-test that pins the exact `FORCED_NEUTRAL_OFFTOPIC_COMMENT_ON_VERIFIED_PARENT` rule name in `ingestor.py` so audit tooling doesn't silently drift.
+
+**Generalizable rules.**
+
+> **When an auto-admit path is added for good reason ("short comments matter"), pair it with a downstream refinement, not raw trust.** The v0016.2 auto-admit was correct: keyword-gating comments would have dropped 90% of legitimate short reactions. But "admit" and "the model's verdict is final" are two different decisions. The right architecture is admit permissively + apply targeted overrides based on evidence the model can't see (parent-thread linkage, comment length, aspect-vs-drift). Any time you widen an admission path, ask: "what additional check should run downstream to protect the eventual output?"
+
+> **Preserve model output when overriding — don't overwrite it.** The `original_label` / `original_score` fields exist for exactly this. When Step 5 forces a comment to neutral, the model's actual verdict is still recorded so audits can measure how often the override fires and whether it agrees with the model. That's how you know whether the rule is over-firing (many originals were reasonable) or under-firing (many overrides were forced when the model was already neutral anyway).
+
+> **The three-way admission signal for comments generalizes.** Every user-generated-content pipeline that admits reply chatter under a verified parent — forum threads, Discord messages, YouTube comments, Twitter/X replies — will face the same trade-off. The pattern (keyword match, short-reply cutoff, aspect+opinion regex) is a reusable heuristic that works better than either "admit everything" or "require keyword restatement".
+
+---
+
 ## 2026-08-18 (sentimentpulse) — Relevance-tier invariant broken: noise-tier posts had SentimentRecords and leaked into every LLM synthesis
 
 **What happened.** After fixing the Sonar web-search contamination bug (below), the Turok: Origins dashboard's Top Topics widget STILL had suspicious content — volumes of 41/47/37/12 in a 7d window, generic labels ("Time", "Enemies", "About", "Update"), and detail lines about "XP progression", "hidden spawns", "structural engine stuttering". Turok has 19 admitted posts in that window per `/api/games/23/posts?relevance_tier=(signal,dedicated_sub)`. Investigating the mismatch: **the underlying corpus was 5,328 posts — the extra 5,311 were all `relevance_tier='noise'`, all from r/Helldivers, and every one of them had a SentimentRecord row**. The dashboard synthesizer's read query joined `RawPost JOIN SentimentRecord` on `game_id` + sentiment + `post_date >= period_start` — no `relevance_tier` filter — so the noise posts flooded the corpus and drove the cluster labels/details.
