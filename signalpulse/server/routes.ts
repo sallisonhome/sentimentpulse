@@ -1150,6 +1150,9 @@ export async function registerRoutes(
       autoRefreshLastAttemptAt: session.autoRefreshLastAttemptAt ?? null,
       autoRefreshLastResult: session.autoRefreshLastResult ?? null,
       refreshRequestedAt: session.refreshRequestedAt ?? null,
+      // v3.20: boolean + byte length only -- NEVER the raw refresh token.
+      refreshTokenConfigured: !!session.refreshTokenValue,
+      refreshTokenByteLength: session.refreshTokenValue ? session.refreshTokenValue.length : 0,
     });
   });
 
@@ -1226,6 +1229,55 @@ export async function registerRoutes(
       const attemptedAt = new Date().toISOString();
       storage.logSteamworksSessionRefreshAttempt("default", attemptedAt, result.slice(0, 300));
       res.json({ ok: true, attemptedAt, result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3.20 (2026-08-17): store the long-lived `steamRefresh_partner` cookie
+  // value so the server can silently mint fresh access cookies on its own
+  // schedule -- no browser/Playwright required for the recurring refresh.
+  // Captured ONCE from the user's logged-in browser session (via the agent's
+  // CDP access, on-demand only) and never echoed back by any GET endpoint.
+  app.post("/api/steam/session/capture-refresh-token", (req, res) => {
+    try {
+      const refreshTokenValue = String(req.body?.refreshTokenValue ?? "").trim();
+      if (!refreshTokenValue || refreshTokenValue.length < 20) {
+        return res.status(400).json({ error: "refreshTokenValue is required (min 20 chars)" });
+      }
+      const existing = storage.getSteamworksSession("default");
+      if (!existing) {
+        return res.status(400).json({ error: "No Steamworks session configured yet -- save a cookie first via POST /api/steam/session" });
+      }
+      const session = storage.upsertSteamworksSession({
+        id: "default",
+        cookieValue: existing.cookieValue,
+        loggedInAs: existing.loggedInAs,
+        lastVerifiedAt: existing.lastVerifiedAt,
+        lastVerifiedResult: existing.lastVerifiedResult,
+        refreshTokenValue,
+      });
+      res.json({
+        ok: true,
+        refreshTokenConfigured: !!session.refreshTokenValue,
+        refreshTokenByteLength: session.refreshTokenValue ? session.refreshTokenValue.length : 0,
+        updatedAt: session.updatedAt,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3.20 (2026-08-17): trigger one auto-refresh cycle on demand (also used
+  // by the ~12h in-process scheduler in index.ts). Mints a fresh
+  // steamLoginSecure from the stored refresh token via pure HTTP, persists
+  // it on success, and always logs the attempt. Never returns raw cookie
+  // or token values.
+  app.post("/api/steam/session/auto-refresh", async (_req, res) => {
+    try {
+      const { performSteamCookieAutoRefresh } = await import("./steam-token-refresh");
+      const result = await performSteamCookieAutoRefresh(storage);
+      res.json({ ok: result.ok, error: result.error ?? null });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

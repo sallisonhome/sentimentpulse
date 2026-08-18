@@ -370,6 +370,7 @@ function runMigrations() {
   migrateAddColumnIfMissing("steamworks_sessions", "auto_refresh_last_attempt_at", "auto_refresh_last_attempt_at TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "auto_refresh_last_result", "auto_refresh_last_result TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_requested_at", "refresh_requested_at TEXT");
+  migrateAddColumnIfMissing("steamworks_sessions", "refresh_token_value", "refresh_token_value TEXT");
 }
 
 initializeDatabase();
@@ -1360,6 +1361,15 @@ export class DatabaseStorage implements IStorage {
         // a fresh cookie satisfies a pending manual refresh request; every
         // verify-only caller omits it and leaves it untouched.
         refreshRequestedAt: data.refreshRequestedAt !== undefined ? data.refreshRequestedAt : existing.refreshRequestedAt,
+        // v3.20: SAME preserve-unless-explicit pattern. This is the critical
+        // one -- ingestSteamSales() calls upsertSteamworksSession on every
+        // successful/failed daily fetch with only cookieValue/lastVerified*
+        // set. If refreshTokenValue defaulted to undefined-wipes-to-null
+        // here, the very first ingestion run after capture would silently
+        // erase the refresh token and the whole auto-refresh system would
+        // die without anyone noticing. Only the capture-refresh-token route
+        // explicitly supplies this field.
+        refreshTokenValue: data.refreshTokenValue !== undefined ? data.refreshTokenValue : existing.refreshTokenValue,
         updatedAt: now,
       })
       .where(eq(steamworksSessions.id, data.id))

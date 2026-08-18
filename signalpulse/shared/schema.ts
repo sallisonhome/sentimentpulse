@@ -245,6 +245,15 @@ export const steamworksSessions = sqliteTable("steamworks_sessions", {
   // self-heal check also reads this so a manual request gets picked up
   // even if the user doesn't happen to ask in chat first.
   refreshRequestedAt: text("refresh_requested_at"),
+  // v3.20 (2026-08-17): long-lived Steam refresh token (`steamRefresh_partner`
+  // cookie value, ~200-day lifetime) used to silently mint a fresh
+  // steamLoginSecure access cookie via the login.steampowered.com/jwt/
+  // ajaxrefresh + partner.steampowered.com/login/settoken HTTP flow --
+  // no browser/Playwright required for the recurring refresh. Captured
+  // once from the user's logged-in browser session; NEVER returned by any
+  // GET endpoint (see /api/steam/session below -- only a boolean +
+  // preview length are exposed).
+  refreshTokenValue: text("refresh_token_value"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });

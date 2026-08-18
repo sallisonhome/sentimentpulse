@@ -5,6 +5,8 @@ import { createServer } from "http";
 import { startWeeklyDigestCron } from "./leaderboard-digest";
 import { startIngestionCron } from "./ingestion";
 import { createSaberAuthMiddleware } from "./saber-auth";
+import { startSteamCookieAutoRefreshCron } from "./steam-token-refresh";
+import { storage } from "./storage";
 
 const app = express();
 const httpServer = createServer(app);
@@ -112,6 +114,14 @@ app.get("/api/config", (_req, res) => {
   // the codebase prior to 2026-08-13 (confirmed dead code via repo-wide
   // grep) -- there was no automated daily ingestion running at all.
   startIngestionCron();
+
+  // v3.20 (2026-08-17): Steam long-lived-cookie auto-refresh -- pure HTTP,
+  // no browser/Playwright required. Runs once ~2min after boot (self-heal
+  // after every deploy restart) then every ~12h, well within the ~24h
+  // lifetime of the minted steamLoginSecure access cookie. Requires a
+  // refreshTokenValue to already be stored (POST /api/steam/session/
+  // capture-refresh-token); no-ops (logs + records the attempt) until then.
+  startSteamCookieAutoRefreshCron(storage, log);
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
