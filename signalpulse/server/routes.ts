@@ -1287,6 +1287,71 @@ export async function registerRoutes(
   // returns the parsed page for one product/date range without writing
   // anything to the sales table. Used by the settings UI to sanity-check
   // before enabling the recurring monthly cron.
+  // Admin diagnostic: fetch an arbitrary Steamworks partner-portal URL
+  // using the stored steamLoginSecure cookie and return the raw HTML.
+  //
+  // Used for one-off investigations where building a full parser +
+  // ingest schema would be overkill (e.g. checking wishlistdetail,
+  // navtrafficstats, or visibility for a specific date range).
+  //
+  // Security: URL must be on partner.steampowered.com or
+  // partner.steamgames.com. Method is GET-only. Response is capped by
+  // an optional `maxBytes` param (default 500KB, max 2MB).
+  app.post("/api/steam/raw-fetch", async (req, res) => {
+    try {
+      const url = String(req.body?.url ?? "").trim();
+      if (!url) return res.status(400).json({ error: "url is required" });
+
+      const maxBytesRaw = Number(req.body?.maxBytes ?? 500_000);
+      const maxBytes = Math.min(Math.max(1000, maxBytesRaw), 2_000_000);
+
+      const session = storage.getSteamworksSession("default");
+      if (!session) return res.status(400).json({ error: "No Steamworks session cookie configured" });
+
+      const { fetchSteamworksRawPage, isAllowedSteamworksUrl } = await import("./steamworks-raw-fetch");
+      const check = isAllowedSteamworksUrl(url);
+      if (!check.ok) return res.status(400).json({ error: check.error });
+
+      const result = await fetchSteamworksRawPage({
+        url,
+        cookieHeader: session.cookieValue,
+      });
+
+      // Update session verification status based on the fetch result.
+      const nowIso = new Date().toISOString();
+      storage.upsertSteamworksSession({
+        id: "default",
+        cookieValue: session.cookieValue,
+        loggedInAs: session.loggedInAs,
+        lastVerifiedAt: nowIso,
+        lastVerifiedResult: result.ok ? "ok" : `error: ${(result.error ?? "unknown").slice(0, 200)}`,
+      });
+
+      if (!result.ok) {
+        return res.status(502).json({
+          ok: false,
+          httpStatus: result.httpStatus,
+          error: result.error,
+          finalUrl: result.finalUrl,
+        });
+      }
+
+      // Truncate HTML to maxBytes to avoid huge responses.
+      const truncated = result.html && result.html.length > maxBytes;
+      const html = truncated ? result.html!.slice(0, maxBytes) : result.html;
+      res.json({
+        ok: true,
+        httpStatus: result.httpStatus,
+        htmlBytes: result.htmlBytes,
+        truncatedAt: truncated ? maxBytes : null,
+        html,
+      });
+    } catch (err: any) {
+      console.error(`[routes] steam raw-fetch error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post("/api/steam/portal/test-fetch", async (req, res) => {
     try {
       const productId = parseInt(String(req.body?.productId ?? "0"));
