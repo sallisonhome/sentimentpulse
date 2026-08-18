@@ -1,0 +1,54 @@
+name: SP Comment Drift Backfill
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run or apply'
+        required: true
+        default: 'dry-run'
+        type: choice
+        options:
+          - dry-run
+          - apply
+      game_id:
+        description: 'Optional: restrict to a single game_id (leave empty for all games)'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # Give the script room — dry-run is fast (~1-2 min) but apply mode
+    # commits ~277k rows in batches of 500, which takes several minutes
+    # on SQLite. 15 min is comfortable ceiling.
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run backfill
+        env:
+          MODE:    ${{ inputs.mode }}
+          GAME_ID: ${{ inputs.game_id }}
+        run: |
+          # Build the flag string carefully so we never accidentally pass
+          # both --dry-run and --apply.
+          case "$MODE" in
+            dry-run) FLAG="--dry-run" ;;
+            apply)   FLAG="--apply"   ;;
+            *) echo "unknown mode: $MODE" >&2; exit 1 ;;
+          esac
+          GAME_FLAG=""
+          if [ -n "$GAME_ID" ]; then
+            GAME_FLAG="--game-id $GAME_ID"
+          fi
+          echo "Running with: $FLAG $GAME_FLAG"
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              "cd /opt/sentimentpulse/backend && .venv/bin/python -m scripts.reclassify_comment_drift_neutral $FLAG $GAME_FLAG"
