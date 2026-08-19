@@ -128,3 +128,27 @@ def test_stuck_threshold_is_greater_than_wallclock_budget():
         f"run budget ({ingestor._RUN_WALLCLOCK_BUDGET_S}s) to avoid "
         "reclaiming healthy in-progress runs."
     )
+
+
+def test_wallclock_budget_scales_with_portfolio_size():
+    """Regression guard for 2026-08-19: the 75-min budget was insufficient
+    when the portfolio hit 39 active games and skipped the 10 highest-ID
+    tail. Budget MUST leave enough headroom for portfolio growth.
+
+    Rule of thumb: at ~2 min/game amortized (fetch + step 2→4b) the
+    budget should support >=60 active games. 60 games × 120s = 7200s = 2h.
+    Assert budget >= 7200 s.
+
+    Also assert budget < 24h (86400) since the daily cron re-fires every
+    24h and a run longer than the cadence would collide with the next one.
+    """
+    assert ingestor._RUN_WALLCLOCK_BUDGET_S >= 7200, (
+        f"Wallclock budget ({ingestor._RUN_WALLCLOCK_BUDGET_S}s) below the "
+        f"7200s (2h) floor that supports 60 active games at 2 min/game. "
+        "Raise the budget before adding more titles to the active roster."
+    )
+    assert ingestor._RUN_WALLCLOCK_BUDGET_S < 86400, (
+        f"Wallclock budget ({ingestor._RUN_WALLCLOCK_BUDGET_S}s) exceeds "
+        "the daily cron cadence (86400s / 24h) — a run at this length would "
+        "collide with the next scheduled trigger."
+    )

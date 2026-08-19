@@ -165,13 +165,38 @@ def set_next_run(dt: Optional[datetime]) -> None:
 # lightweight mode. The startup smoke test in main.py's lifespan now
 # catches that class of bug before the scheduler even starts, so we no
 # longer need the 2h grace period.
-_STUCK_RUN_THRESHOLD_S = 90 * 60  # 90 minutes
+# 2026-08-19: bumped 90 -> 180 min in tandem with _RUN_WALLCLOCK_BUDGET_S
+# below (75 -> 150 min). Invariant: STUCK_RUN_THRESHOLD must exceed the
+# outer wallclock budget so a healthy long run is never treated as stuck
+# by the next cron trigger. 180 = 150 + 30 min grace — the grace covers
+# Phase C (sentiment + topics + daily summary) which runs AFTER Phase A's
+# wallclock check and is not budgeted separately.
+_STUCK_RUN_THRESHOLD_S = 180 * 60  # 180 minutes
 
 # Maximum wallclock the entire run is allowed to take. Prevents a slow
 # source (Steam Forum on a busy game, Reddit backoff cascade, etc.) from
 # silently blowing past the daily scheduling boundary. Individual phases
 # already have their own budgets; this is the outer safety net.
-_RUN_WALLCLOCK_BUDGET_S = 75 * 60  # 75 minutes
+#
+# 2026-08-19: bumped 75 -> 150 min after a 39-active-game run skipped the
+# 10 highest-ID games at the 75-min deadline (per _status.last_run_errors:
+# "Wallclock budget (4500s) exceeded after 29/39 games"). Portfolio has
+# been growing (+3 new games in the last 48h: Aliens: Fireteam Elite 2,
+# Twisted Tower, Hot Wheels Unleashed) and per-game fetch time is up
+# because HOT WHEELS UNLEASHED has 5 years of Steam Reviews to page.
+# The next-run boundary is 24h out (daily cron), so 150 min gives 6x
+# headroom vs the last observed longest run (~50 min for 29 games) and
+# still finishes 21+ hours before the next scheduled trigger. If we ever
+# see a run genuinely near 150 min, that's the signal to switch to
+# least-recently-ingested-first iteration (see ingestor todo doc).
+# The _STUCK_RUN_THRESHOLD_S above (90m -> stays at 90m) is deliberately
+# LOWER than this new budget so a genuinely-hung run still gets reclaimed
+# by the next cron trigger even if the intended budget hasn't fired.
+# Actually 90m < 150m creates a hazard: a healthy run that legitimately
+# uses 100-120 minutes would be treated as stuck by the next trigger.
+# Raise _STUCK_RUN_THRESHOLD_S in tandem below to keep the invariant
+# STUCK > BUDGET so healthy long runs never get reclaimed mid-flight.
+_RUN_WALLCLOCK_BUDGET_S = 150 * 60  # 150 minutes
 
 
 def _reclaim_stuck_lock_if_needed() -> None:
