@@ -1268,3 +1268,25 @@ The reason the widget looked "stuck at is_running=true" for 2h is that backgroun
 
 **How to verify.** After deploy, watch `reddit_fetched_total` in `/api/ingest/status`. Steady state should drop from ~1,148/game to ~50-150/game. Backfills should still work — they route through the same `_bulk_save_posts` dedup path and only bypass cursor writes, not the actual fetch.
 
+
+---
+
+## 2026-08-19 — Divergent constant lists = silent data pollution (v0019)
+
+**Problem.** After the v0018 cursor deploy, spot-checking the 10 catch-up backfill showed Rideshare Stimulator had 0 Reddit posts but 40 Steam Forum posts. The user (correctly) suspected the game-mention filter was too strict. Investigation found the OPPOSITE: the filter was completely bypassed for 18 popular subs on the daily-ingest path, because `arctic_shift_service.ARCTIC_SHIFT_GENERAL_SUBS` (12 subs) had drifted from `reddit_service._GENERAL_SUBREDDITS` (25+ subs). Popular subs like r/pcmasterrace, r/playstation, r/XboxSeriesX, r/GamingLeaksAndRumours, r/truegaming, r/ShouldIbuythisgame were treated as DEDICATED in arctic_shift — so daily ingest saved 100 random posts per day per affected game as if they were about the game. 28,101 polluted rows across 20 games; ~16.5% of all Reddit posts in the system.
+
+The `_post_mentions_game` filter was itself too permissive for common-word titles: any single ≥4-char non-stopword match was enough. "Rideshare" primary alone matched every ride-share industry post ever crawled.
+
+**Non-negotiable rules going forward.**
+1. **Never define the same constant list in two files.** Any config that governs runtime behavior (subreddit lists, source enums, filter allowlists, etc.) MUST live in exactly one module, imported from any other module that uses it. If two copies exist, they WILL drift and cause bugs that stay silent until an operator runs a manual audit.
+2. **Same rule for helper functions used across the ingest boundary.** `_post_mentions_game` had two copies too — one in `reddit_service.py`, one in `arctic_shift_service.py`. They diverged. Now `arctic_shift_service` imports the reddit_service one. The test suite includes an `is` identity check to guarantee they can't diverge again.
+3. **The mention filter uses a strict two-token gate when `distinctive_keywords` is set on the game.** Primary word AND at least one companion keyword must appear together in title+body. Fallback to legacy any-word match when distinctive_keywords is None/empty. Games with common-English primary words MUST have distinctive_keywords configured.
+4. **Response schemas MUST expose fields that operators need to audit.** `distinctive_keywords` was write-only via PATCH but not exposed in `GameResponse` — persisted value could not be verified end-to-end without SSH. Now exposed on GET.
+5. **Data-cleanup routes MUST be dry-run by default.** The new `/api/ingest/admin/audit-polluted-reddit-posts` defaults to `purge=false` and returns a per-game breakdown + sample titles. Purge only fires when `purge=true` is explicit.
+
+**How to verify.** After any change to the mention filter or the general-subs list, run:
+```
+GET /api/ingest/admin/audit-polluted-reddit-posts?purge=false
+```
+Global polluted count should be 0 or very small (a small remainder is OK when a legit post's title lacks the distinctive companion; watch for anything above ~1% and re-tune the game's keywords).
+
