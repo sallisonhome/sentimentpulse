@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, type SteamWishlistSummary } from "./storage";
-import { autoGenerateForecasts, calculateDynamicForecasts, calculateDynamicForecastsFull, getAdjustedPlatformMix, STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER } from "./forecast";
+import { calculateDynamicForecasts, calculateDynamicForecastsFull, STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER } from "./forecast";
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
@@ -146,8 +146,6 @@ export async function registerRoutes(
         const latestSteamWl = storage.getLatestSteamWishlist(p.id);
         const latestPs5Wl = storage.getLatestPs5Wishlist(p.id);
         const latestPs5Pre = storage.getLatestPs5Prepurchase(p.id);
-        const comps = storage.getCompForecasts(p.id);
-        const compTotal = comps.reduce((sum, c) => sum + c.forecastUnits, 0);
 
         // v2.1 (2026-08-11): compute wishlist summary FIRST so we can feed
         // the pre-release-locked count into dynamic forecasts.
@@ -204,9 +202,6 @@ export async function registerRoutes(
             && wishlistBasedSteamForecast > 0)
           ? 1 + 0.5 * ((steamActualFirstMonth! / wishlistBasedSteamForecast) - 1)
           : 1;
-
-        // Get latest revision total if any
-        const latestRevision = storage.getLatestRevisionTotal(p.id);
 
         // v3.2 (2026-08-11): Steam Revenue split by release date. Feeds the
         // dashboard card 'Steam Revenue' triad (Pre-Release / Post-Release / Total).
@@ -301,9 +296,6 @@ export async function registerRoutes(
           latestSteamWishlistCount: wishlistSummary.lifetimeNet ?? latestSteamWl?.cumulativeCount ?? null,
           latestPs5WishlistCount: latestPs5Wl?.cumulativeCount ?? null,
           latestPs5PrepurchaseCount: latestPs5Pre?.cumulativeCount ?? null,
-          compsForecastTotal: compTotal,
-          latestRevisionTotal: latestRevision?.total ?? null,
-          latestRevisionDate: latestRevision?.date ?? null,
           dynamicFirstMonthTotal,
           dynamicFirstYearTotal,
           dynamicLtTotal,
@@ -394,22 +386,11 @@ export async function registerRoutes(
         }
       }
 
-      // If auto_generate mode with comps data, generate forecasts
-      if (body.forecastMode === "auto_generate" && body.steamForecast != null && body.ps5Forecast != null) {
-        const platforms = JSON.parse(product.platforms);
-        const forecasts = autoGenerateForecasts(platforms, body.steamForecast, body.ps5Forecast);
-        storage.upsertCompForecasts(product.id, forecasts);
-      } else if (body.compsForecasts) {
-        // Manual mode
-        const platforms = JSON.parse(product.platforms);
-        const mix = getAdjustedPlatformMix(platforms);
-        const forecasts = body.compsForecasts.map((f: any) => ({
-          platform: f.platform,
-          forecastUnits: f.forecastUnits,
-          adjustedPct: Math.round((mix[f.platform] || 0) * 10000) / 100,
-        }));
-        storage.upsertCompForecasts(product.id, forecasts);
-      }
+      // v3.26 (2026-08-19): manual comps-forecast creation removed — the
+      // Add Product dialog no longer sends forecastMode/steamForecast/
+      // ps5Forecast/compsForecasts. Dynamic forecasting (calculated on
+      // read, see GET /api/products) is now the only forecast for every
+      // title, so there is nothing to seed here.
 
       res.status(201).json({
         ...product,
@@ -430,7 +411,6 @@ export async function registerRoutes(
       const latestSteamPre = storage.getLatestSteamPrepurchase(id);
       const latestPs5Wl = storage.getLatestPs5Wishlist(id);
       const latestPs5Pre = storage.getLatestPs5Prepurchase(id);
-      const comps = storage.getCompForecasts(id);
       const dynamicForecasts = storage.getLatestDynamicForecasts(id);
 
       // v2.1 (2026-08-11): compute wishlist summary FIRST so we can feed
@@ -470,21 +450,6 @@ export async function registerRoutes(
       const prepurchaseStartMilestone = plsMilestones.find(m => m.name === "Prepurchase Start");
       const prepurchaseStartDate = prepurchaseStartMilestone?.actualDate ?? null;
       const prepurchaseTargetDate = prepurchaseStartMilestone?.targetDate ?? null;
-
-      // Get forecast revisions grouped by date
-      const allRevisions = storage.getForecastRevisions(id);
-      const revisionGrouped: Record<string, { date: string; label: string; forecasts: Record<string, number> }> = {};
-      for (const r of allRevisions) {
-        if (!revisionGrouped[r.revisionDate]) {
-          revisionGrouped[r.revisionDate] = {
-            date: r.revisionDate,
-            label: r.revisionLabel || r.revisionDate,
-            forecasts: {},
-          };
-        }
-        revisionGrouped[r.revisionDate].forecasts[r.platform] = r.forecastUnits;
-      }
-      const forecastRevisions = Object.values(revisionGrouped).sort((a, b) => a.date.localeCompare(b.date));
 
       // Calculate full per-platform forecasts (first month, 1yr, LT).
       // v3.7: pass Steam actual first-month post-release when available so
@@ -545,10 +510,8 @@ export async function registerRoutes(
         latestSteamPrepurchaseCount: latestSteamPre?.cumulativeCount ?? null,
         latestPs5WishlistCount: latestPs5Wl?.cumulativeCount ?? null,
         latestPs5PrepurchaseCount: latestPs5Pre?.cumulativeCount ?? null,
-        compsForecasts: comps,
         dynamicForecasts: dynamicData,
         dynamicFullForecasts,  // per-platform {firstMonth, firstYear, lifetime}
-        forecastRevisions,
         steamFirstMonthForecast,
         // v2.1 fields: full wishlist summary object with pre-launch,
         // post-launch, lifetime, day-over-day delta, and staleness flag.
@@ -596,28 +559,11 @@ export async function registerRoutes(
       const updated = storage.updateProduct(id, body);
       if (!updated) return res.status(404).json({ error: "Product not found" });
 
-      // If platforms changed, add comps entries for new platforms and recalculate dynamic forecasts
+      // If platforms changed, recalculate dynamic forecasts with the new mix.
       if (newPlatformsArray) {
         const addedPlatforms = newPlatformsArray.filter(p => !oldPlatforms.includes(p));
 
         if (addedPlatforms.length > 0) {
-          // Get existing comps and add entries for new platforms with 0 units
-          const existingComps = storage.getCompForecasts(id);
-          const mix = getAdjustedPlatformMix(newPlatformsArray);
-          const allForecasts = [
-            ...existingComps.map(c => ({
-              platform: c.platform,
-              forecastUnits: c.forecastUnits,
-              adjustedPct: Math.round((mix[c.platform] || 0) * 10000) / 100,
-            })),
-            ...addedPlatforms.map(p => ({
-              platform: p,
-              forecastUnits: 0,
-              adjustedPct: Math.round((mix[p] || 0) * 10000) / 100,
-            })),
-          ];
-          storage.upsertCompForecasts(id, allForecasts);
-
           // Recalculate dynamic forecasts with new platform mix.
           // v2.1: use pre-release-locked wishlist count once title has released.
           const latestSteamWl = storage.getLatestSteamWishlist(id);
@@ -664,47 +610,7 @@ export async function registerRoutes(
     }
   });
 
-  // ─── Comps Forecasts ────────────────────────────────────────────────────────
-
-  app.get("/api/products/:id/forecasts/comps", (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const forecasts = storage.getCompForecasts(id);
-      res.json(forecasts);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.put("/api/products/:id/forecasts/comps", (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const product = storage.getProduct(id);
-      if (!product) return res.status(404).json({ error: "Product not found" });
-      
-      const body = req.body;
-      const platforms = JSON.parse(product.platforms);
-
-      if (body.mode === "auto_generate") {
-        const forecasts = autoGenerateForecasts(platforms, body.steamForecast, body.ps5Forecast);
-        const result = storage.upsertCompForecasts(id, forecasts);
-        res.json(result);
-      } else {
-        const mix = getAdjustedPlatformMix(platforms);
-        const forecasts = body.forecasts.map((f: any) => ({
-          platform: f.platform,
-          forecastUnits: f.forecastUnits,
-          adjustedPct: Math.round((mix[f.platform] || 0) * 10000) / 100,
-        }));
-        const result = storage.upsertCompForecasts(id, forecasts);
-        res.json(result);
-      }
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // ─── Dynamic Forecasts ───────────────────────────────────────────────────────
+  // ─── Dynamic Forecasts ───────────────────────────────────────────────────
 
   app.get("/api/products/:id/forecasts/dynamic", (req, res) => {
     try {
@@ -737,56 +643,6 @@ export async function registerRoutes(
       const id = parseInt(req.params.id);
       const history = storage.getDynamicForecasts(id);
       res.json(history);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // ─── Forecast Revisions ─────────────────────────────────────────────────────
-
-  app.post("/api/products/:id/forecasts/revisions", (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const product = storage.getProduct(id);
-      if (!product) return res.status(404).json({ error: "Product not found" });
-
-      const { forecasts, revisionDate } = req.body;
-      if (!forecasts || !Array.isArray(forecasts)) {
-        return res.status(400).json({ error: "forecasts array is required" });
-      }
-
-      const date = revisionDate || new Date().toISOString().split("T")[0];
-      // Format label: "Revised Biz Forecast (Mar 30, 2026)"
-      const d = new Date(date + "T12:00:00");
-      const label = `Revised (${d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })})`;
-
-      const result = storage.createForecastRevision(id, forecasts, date, label);
-      res.status(201).json(result);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.get("/api/products/:id/forecasts/revisions", (req, res) => {
-    try {
-      const id = parseInt(req.params.id);
-      const allRevisions = storage.getForecastRevisions(id);
-
-      // Group by revision_date
-      const grouped: Record<string, { date: string; label: string; forecasts: Record<string, number> }> = {};
-      for (const r of allRevisions) {
-        if (!grouped[r.revisionDate]) {
-          grouped[r.revisionDate] = {
-            date: r.revisionDate,
-            label: r.revisionLabel || r.revisionDate,
-            forecasts: {},
-          };
-        }
-        grouped[r.revisionDate].forecasts[r.platform] = r.forecastUnits;
-      }
-
-      const revisions = Object.values(grouped).sort((a, b) => a.date.localeCompare(b.date));
-      res.json({ revisions });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

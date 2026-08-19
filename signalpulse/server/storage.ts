@@ -489,10 +489,6 @@ export interface IStorage {
   updateProductHeaderImage(id: number, url: string | null): void;
   deleteProduct(id: number): void;
 
-  // Forecasts (Comps)
-  getCompForecasts(productId: number): ForecastComps[];
-  upsertCompForecasts(productId: number, forecasts: { platform: string; forecastUnits: number; adjustedPct: number }[]): ForecastComps[];
-
   // Steam Wishlists
   getSteamWishlists(productId: number): SteamWishlistDaily[];
   getLatestSteamWishlist(productId: number): SteamWishlistDaily | undefined;
@@ -626,11 +622,6 @@ export interface IStorage {
     }>;
     aggregateTimeSeries: Array<{ date: string; cumulativeViews: number; dailyDelta: number }>;
   };
-
-  // Forecast Revisions
-  createForecastRevision(productId: number, forecasts: { platform: string; forecastUnits: number }[], revisionDate: string, revisionLabel: string): ForecastRevision[];
-  getForecastRevisions(productId: number): ForecastRevision[];
-  getLatestRevisionTotal(productId: number): { total: number; date: string } | null;
 
   // ─── Launch Forecast Snapshot (v3.22) ────────────────────────────────────
   // Idempotent write — does nothing if a snapshot already exists for productId.
@@ -770,34 +761,6 @@ export class DatabaseStorage implements IStorage {
     db.delete(ps5PrepurchaseDaily).where(eq(ps5PrepurchaseDaily.productId, id)).run();
     // 5. Finally delete the product
     db.delete(products).where(eq(products.id, id)).run();
-  }
-
-  // ─── Comps Forecasts ────────────────────────────────────────────────────────
-
-  getCompForecasts(productId: number): ForecastComps[] {
-    return db.select().from(productForecastsComps)
-      .where(eq(productForecastsComps.productId, productId)).all();
-  }
-
-  upsertCompForecasts(productId: number, forecasts: { platform: string; forecastUnits: number; adjustedPct: number }[]): ForecastComps[] {
-    const now = this.now();
-    // Delete existing for this product
-    db.delete(productForecastsComps)
-      .where(eq(productForecastsComps.productId, productId)).run();
-    
-    const results: ForecastComps[] = [];
-    for (const f of forecasts) {
-      const result = db.insert(productForecastsComps).values({
-        productId,
-        platform: f.platform,
-        forecastUnits: f.forecastUnits,
-        adjustedPct: f.adjustedPct,
-        createdAt: now,
-        updatedAt: now,
-      }).returning().get();
-      results.push(result);
-    }
-    return results;
   }
 
   // ─── Steam Wishlists ─────────────────────────────────────────────────────────
@@ -1855,46 +1818,6 @@ export class DatabaseStorage implements IStorage {
     return { totalViews, officialViews, reuploadViews, videos, aggregateTimeSeries };
   }
 
-  // ─── Forecast Revisions ─────────────────────────────────────────────────────
-
-  createForecastRevision(productId: number, forecasts: { platform: string; forecastUnits: number }[], revisionDate: string, revisionLabel: string): ForecastRevision[] {
-    const now = this.now();
-    const results: ForecastRevision[] = [];
-    // v1.1 (2026-07-22): DELETE existing rows for the same (productId,
-    // revisionDate) before inserting so re-saving today's revision replaces
-    // rather than appends. Without this, every 'Save Revision' click added
-    // a NEW set of platform rows on the same date, all of which
-    // getLatestRevisionTotal() summed together -- the dashboard showed a
-    // multi-fold inflated total (26.6M instead of the 6.2M actually
-    // entered in the widget). The detail-page revisions endpoint groups
-    // by (date, platform) with last-write-wins so it always displayed
-    // the correct set, masking the bug on that surface.
-    db.delete(forecastRevisions)
-      .where(and(
-        eq(forecastRevisions.productId, productId),
-        eq(forecastRevisions.revisionDate, revisionDate),
-      ))
-      .run();
-    for (const f of forecasts) {
-      const result = db.insert(forecastRevisions).values({
-        productId,
-        platform: f.platform,
-        forecastUnits: f.forecastUnits,
-        revisionDate,
-        revisionLabel,
-        createdAt: now,
-      }).returning().get();
-      results.push(result);
-    }
-    return results;
-  }
-
-  getForecastRevisions(productId: number): ForecastRevision[] {
-    return db.select().from(forecastRevisions)
-      .where(eq(forecastRevisions.productId, productId))
-      .orderBy(asc(forecastRevisions.revisionDate)).all();
-  }
-
   // ─── Launch Forecast Snapshot (v3.22) ────────────────────────────────────
   //
   // Written exactly once per product, the first time the dashboard route
@@ -1915,26 +1838,6 @@ export class DatabaseStorage implements IStorage {
   getLaunchForecastSnapshot(productId: number): LaunchForecastSnapshot | null {
     return db.select().from(launchForecastSnapshots)
       .where(eq(launchForecastSnapshots.productId, productId)).get() ?? null;
-  }
-
-  getLatestRevisionTotal(productId: number): { total: number; date: string } | null {
-    // Get the latest revision date
-    const latest = db.select().from(forecastRevisions)
-      .where(eq(forecastRevisions.productId, productId))
-      .orderBy(desc(forecastRevisions.revisionDate))
-      .limit(1).get();
-    if (!latest) return null;
-
-    // Sum all platform units for that revision date
-    const rows = db.select().from(forecastRevisions)
-      .where(and(
-        eq(forecastRevisions.productId, productId),
-        eq(forecastRevisions.revisionDate, latest.revisionDate),
-      )).all();
-    return {
-      total: rows.reduce((sum, r) => sum + r.forecastUnits, 0),
-      date: latest.revisionDate,
-    };
   }
 
   // ─── App Settings ───────────────────────────────────────────────────────────

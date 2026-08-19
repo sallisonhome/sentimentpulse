@@ -3,8 +3,7 @@ import { Link } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Calendar, Users, Gamepad2, TrendingUp, DollarSign, ExternalLink } from "lucide-react";
-import { format } from "date-fns";
+import { Calendar, Users, Gamepad2, ExternalLink } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
 
 export default function Dashboard() {
@@ -49,13 +48,10 @@ export default function Dashboard() {
             const price = product.targetRetailPriceUsd ?? 0;
             const hasPrice = price > 0;
 
-            // v1.1 (2026-07-22): show ORIGINAL and REVISED as distinct columns
-            // when a revision exists (was collapsed into one 'bizLabel' col).
-            // Delta moved to far right and now compares Dyn LT vs Revised
-            // (falls back to Dyn LT vs Original when no revision exists).
-            const originalUnits = product.compsForecastTotal;
-            const hasRevision = product.latestRevisionTotal != null;
-            const revisedUnits = hasRevision ? product.latestRevisionTotal : null;
+            // v3.25 (2026-08-19): manually-entered biz case forecasts
+            // (compsForecastTotal / latestRevisionTotal) are no longer
+            // displayed on the dashboard card -- we only track dynamic
+            // forecasts (wishlist-based, or actuals-driven once live).
             const dynFirstUnits = product.dynamicFirstMonthTotal;
             const dynYearUnits = product.dynamicFirstYearTotal;
             const dynLtUnits = product.dynamicLtTotal;
@@ -66,31 +62,12 @@ export default function Dashboard() {
             const steamDynLtUnits = product.steamDynamicLt;
             const hasSteamDyn = steamDynFirstUnits != null;
 
-            // v3.22 (2026-08-18): Launch Forecast Snapshot.
-            //
-            // When a product has released (releaseDate <= today) and is
-            // within 365 days post-release, launchForecastSnapshot is the
-            // wishlist-driven forecast frozen on release day. Card renders:
-            //   • Baseline row (dim, top): the locked launch-day forecast
-            //   • Current row (bright, bottom): the live actuals-influenced
-            //     forecast + (±Δ% vs baseline)
-            //
-            // When null (pre-release OR past T+365), the card falls back to
-            // the single-line 'current' display.
-            const launchSnap = product.launchForecastSnapshot as null | {
-              totalFirstMonth: number;
-              totalFirstYear: number;
-              totalLifetime: number;
-              steamFirstMonth: number | null;
-              steamFirstYear: number | null;
-              steamLifetime: number | null;
-              steamWishlistCountAtLaunch: number | null;
-              snapshotDate: string;
-              perPlatformForecasts: Array<{ platform: string; firstMonth: number; firstYear: number; lifetime: number }>;
-            };
-            const hasLaunchSnap = !!launchSnap;
-
-            // Helper: format a percent delta from baseline to current.
+            // v3.25 (2026-08-19): the launch-day baseline snapshot and its
+            // ±Δ% ('Launch ● Current') tracking were removed from the
+            // Dynamic Forecast display per request -- visually noisy and
+            // not needed for routine use. formatDeltaPct is kept as a
+            // general current-vs-reference percent helper, now used only
+            // for the Steam Actuals-vs-Forecast delta below.
             function formatDeltaPct(current: number, baseline: number): { text: string; cls: string } {
               if (baseline <= 0) return { text: '—', cls: 'text-muted-foreground' };
               const pct = ((current - baseline) / baseline) * 100;
@@ -106,10 +83,6 @@ export default function Dashboard() {
             // 0.5 × observedSteamAspRatio + 0.5 × 0.66 when Steam actuals
             // exist. Pre-release or no actuals falls back to 0.66.
             const gmvFactor = product.gmvFactor ?? 0.66;
-            const originalGmv = Math.round(originalUnits * price * gmvFactor);
-            const originalNet = Math.round(originalGmv * 0.70);
-            const revisedGmv = revisedUnits != null ? Math.round(revisedUnits * price * gmvFactor) : null;
-            const revisedNet = revisedGmv != null ? Math.round(revisedGmv * 0.70) : null;
             const dynFirstGmv = Math.round(dynFirstUnits * price * gmvFactor);
             const dynFirstNet = Math.round(dynFirstGmv * 0.70);
             const dynYearGmv = Math.round(dynYearUnits * price * gmvFactor);
@@ -117,21 +90,10 @@ export default function Dashboard() {
             const dynLtGmv = Math.round(dynLtUnits * price * gmvFactor);
             const dynLtNet = Math.round(dynLtGmv * 0.70);
 
-            // Delta: Dyn LT vs Revised (if revised exists) else vs Original
-            const compareUnits = revisedUnits != null ? revisedUnits : originalUnits;
-            let deltaStr = '—';
-            let deltaColor = 'text-muted-foreground';
-            if (compareUnits > 0) {
-              const pct = ((dynLtUnits - compareUnits) / compareUnits) * 100;
-              deltaStr = `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`;
-              deltaColor = pct > 0 ? 'text-emerald-600 dark:text-emerald-400'
-                : pct < 0 ? 'text-red-500 dark:text-red-400'
-                : 'text-muted-foreground';
-            }
-            const deltaSub = hasRevision ? "Dyn LT vs Revised" : "Dyn LT vs Original";
-            const revisedLabel = hasRevision
-              ? `Revised (${format(new Date(product.latestRevisionDate + "T00:00:00"), "MMM d, yyyy")})`
-              : null;
+            // v3.25: Steam-only lifetime forecast revenue, for the new
+            // Steam Actuals-vs-Forecast delta (item 5). Mirrors the
+            // all-platforms GMV/net calc above but scoped to steamDynLtUnits.
+            const steamDynLtGmv = hasSteamDyn ? Math.round(steamDynLtUnits * price * gmvFactor) : null;
 
             // Flag seeded dummy products by their known titles
             const DUMMY_TITLES = ['Warhammer 40,000: Space Marine 2', 'Expeditions: A New Earth'];
@@ -242,8 +204,144 @@ export default function Dashboard() {
                     );
                   })()}
 
-                  {/* v3.4 (2026-08-11): Dynamic Forecasts, redesigned for clarity.
-                      Split into two visually distinct blocks:
+                  {/* v3.25 (2026-08-19): 'Steam — Actuals' now renders FIRST
+                      (was second) so actuals are the primary read and the
+                      forecast sits below for context. Shows only when
+                      there's ingested sales data. Two subrows:
+                        1. Revenue triad (Pre / Post / Total)
+                        2. Units triad (Pre / Post / Total) with base ASP
+                      v3.25: Total Revenue / Total Units now also show the
+                      delta vs the Steam Dynamic Lifetime Forecast, but only
+                      when that forecast exists -- otherwise no delta line.
+                      Tagged 'Steam' explicitly so other platforms can slot in
+                      later as parallel sections (Xbox — Actuals, PSN — Actuals). */}
+                  {(() => {
+                    const rev = product.steamRevenueSplit as {
+                      preReleaseRevenueUsd: number;
+                      postReleaseRevenueUsd: number;
+                      totalRevenueUsd: number;
+                      preReleaseBaseNetUnits: number;
+                      postReleaseBaseNetUnits: number;
+                      totalBaseNetUnits: number;
+                      preReleaseBaseAspUsd: number | null;
+                      postReleaseBaseAspUsd: number | null;
+                      totalBaseAspUsd: number | null;
+                      preReleaseRowCount: number;
+                      postReleaseRowCount: number;
+                      releaseDate: string | null;
+                      latestDate: string | null;
+                    } | null | undefined;
+                    if (!rev || rev.totalRevenueUsd <= 0) return null;
+                    const hasPre = rev.preReleaseRevenueUsd > 0;
+                    const revDelta = hasSteamDyn && steamDynLtGmv != null && steamDynLtGmv > 0
+                      ? formatDeltaPct(rev.totalRevenueUsd, steamDynLtGmv)
+                      : null;
+                    const unitsDelta = hasSteamDyn && steamDynLtUnits != null && steamDynLtUnits > 0
+                      ? formatDeltaPct(rev.totalBaseNetUnits, steamDynLtUnits)
+                      : null;
+                    return (
+                      <div className="pt-3 mt-3 border-t">
+                        <div className="flex items-baseline justify-between mb-2">
+                          <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                            Steam — Actuals
+                            <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
+                              click card for daily chart →
+                            </span>
+                          </div>
+                          <div className="text-[9px] text-muted-foreground">
+                            Through {rev.latestDate ?? "—"}
+                          </div>
+                        </div>
+                        {/* Revenue row */}
+                        <div className="grid grid-cols-3 gap-x-3 gap-y-1 mb-2">
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Pre-Release Revenue</div>
+                            <div className={`text-sm font-semibold tabular-nums ${hasPre ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/50"}`}
+                              data-testid={`text-steam-rev-prerelease-${product.id}`}>
+                              {formatCurrency(rev.preReleaseRevenueUsd)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Post-Release Revenue</div>
+                            <div className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
+                              data-testid={`text-steam-rev-postrelease-${product.id}`}>
+                              {formatCurrency(rev.postReleaseRevenueUsd)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Total Revenue</div>
+                            <div className="text-sm font-bold tabular-nums text-emerald-700 dark:text-emerald-300"
+                              data-testid={`text-steam-rev-total-${product.id}`}>
+                              {formatCurrency(rev.totalRevenueUsd)}
+                            </div>
+                            {revDelta && (
+                              <div
+                                title="Steam Total Revenue vs Steam Dynamic Lifetime Forecast revenue"
+                                className={`text-[10px] font-semibold tabular-nums ${revDelta.cls}`}
+                              >
+                                {revDelta.text} vs forecast
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {/* Units + ASP row */}
+                        <div className="grid grid-cols-3 gap-x-3 gap-y-1">
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Pre-Release Units · ASP</div>
+                            <div className="text-sm font-semibold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-prerelease-${product.id}`}>
+                              {formatNumber(rev.preReleaseBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.preReleaseBaseAspUsd != null ? `\$${rev.preReleaseBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Post-Release Units · ASP</div>
+                            <div className="text-sm font-semibold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-postrelease-${product.id}`}>
+                              {formatNumber(rev.postReleaseBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.postReleaseBaseAspUsd != null ? `\$${rev.postReleaseBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-muted-foreground">Steam Total Units · ASP</div>
+                            <div className="text-sm font-bold tabular-nums text-foreground"
+                              data-testid={`text-steam-units-total-${product.id}`}>
+                              {formatNumber(rev.totalBaseNetUnits)}
+                            </div>
+                            <div className="text-[10px] tabular-nums text-muted-foreground">
+                              ASP {rev.totalBaseAspUsd != null ? `\$${rev.totalBaseAspUsd.toFixed(2)}` : "—"}
+                            </div>
+                            {unitsDelta && (
+                              <div
+                                title="Steam Total Units vs Steam Dynamic Lifetime Forecast units"
+                                className={`text-[10px] font-semibold tabular-nums ${unitsDelta.cls}`}
+                              >
+                                {unitsDelta.text} vs forecast
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="text-[9px] text-muted-foreground mt-1.5">
+                          Base game only for ASP · revenue includes base + paid DLC
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* v3.25 (2026-08-19): Dynamic Forecast Across All Platforms
+                      (renamed from 'Dynamic Forecasts'; now renders SECOND,
+                      below Steam Actuals). Simplified per request:
+                        • Launch-baseline / ±Δ% tracking removed from the
+                          Units tiles — visually noisy, not needed routinely.
+                        • Manually-entered biz case forecasts removed
+                          entirely — dynamic forecasts (wishlist-based, or
+                          actuals-driven once live) are now the only forecast
+                          tracked on this card.
+                      Still split into two blocks:
                         A. Units block — 1st Month / 1st Year / Lifetime, with
                            Steam-only inline underneath each All-Platforms total.
                         B. Revenue block — GMV + Net at each timeframe.
@@ -252,7 +350,7 @@ export default function Dashboard() {
                   <div className="pt-3 mt-3 border-t">
                     <div className="flex items-baseline justify-between mb-2">
                       <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                        Dynamic Forecasts
+                        Dynamic Forecast Across All Platforms
                         <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
                           click card for methodology →
                         </span>
@@ -276,84 +374,35 @@ export default function Dashboard() {
                       )}
                     </div>
 
-                    {/* Block A — Units.
-                        v3.22 (2026-08-18): When launchForecastSnapshot is
-                        present (post-release, within 365 days), each tile
-                        shows two stacked rows:
-                          Line 1 (top, dim):  Launch: <baseline value>
-                          Line 2 (bottom):    <current value> (±Δ%)
-                        Pre-release or >T+365 falls back to the single-line
-                        display it had before. */}
+                    {/* Block A — Units. Clean single-line-per-tile display:
+                        current dynamic forecast value only, no baseline, no
+                        delta. */}
                     <div className="mb-3">
-                      <div className="flex items-baseline justify-between mb-1.5">
-                        <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
-                          Units
-                        </div>
-                        {hasLaunchSnap && (
-                          <span
-                            title={`Launch-day baseline locked ${launchSnap!.snapshotDate} from ${formatNumber(launchSnap!.steamWishlistCountAtLaunch ?? 0)} pre-release wishlists. Baseline never changes; current updates from actuals until 1 year post-release.`}
-                            className="text-[9px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 font-semibold uppercase tracking-wide"
-                          >
-                            Launch ● Current
-                          </span>
-                        )}
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium mb-1.5">
+                        Units
                       </div>
                       <div className="grid grid-cols-3 gap-x-3">
                         {[
-                          { label: "1st Month", allUnits: dynFirstUnits, steamUnits: steamDynFirstUnits, allBase: launchSnap?.totalFirstMonth, steamBase: launchSnap?.steamFirstMonth },
-                          { label: "1st Year", allUnits: dynYearUnits, steamUnits: steamDynYearUnits, allBase: launchSnap?.totalFirstYear, steamBase: launchSnap?.steamFirstYear },
-                          { label: "Lifetime", allUnits: dynLtUnits, steamUnits: steamDynLtUnits, allBase: launchSnap?.totalLifetime, steamBase: launchSnap?.steamLifetime },
-                        ].map((col) => {
-                          const allDelta = hasLaunchSnap && col.allBase != null
-                            ? formatDeltaPct(col.allUnits, col.allBase)
-                            : null;
-                          const steamDelta = hasLaunchSnap && col.steamBase != null && col.steamUnits != null
-                            ? formatDeltaPct(col.steamUnits, col.steamBase)
-                            : null;
-                          return (
-                            <div key={col.label} className="rounded-md border bg-blue-500/5 dark:bg-blue-500/10 p-2">
-                              <div className="text-[10px] text-muted-foreground">{col.label}</div>
-                              {/* Baseline row — only rendered when snapshot exists */}
-                              {hasLaunchSnap && col.allBase != null && (
-                                <div className="text-[10px] tabular-nums text-muted-foreground/80 leading-tight">
-                                  Launch: {formatNumber(col.allBase)}
-                                </div>
-                              )}
-                              {/* Current row */}
-                              <div className="flex items-baseline gap-1.5">
-                                <div className="text-base font-bold tabular-nums text-blue-700 dark:text-blue-300 leading-tight">
-                                  {formatNumber(col.allUnits)}
-                                </div>
-                                {allDelta && (
-                                  <div className={`text-[10px] font-semibold tabular-nums ${allDelta.cls}`}>
-                                    {allDelta.text}
-                                  </div>
-                                )}
-                              </div>
-                              <div className="text-[9px] text-muted-foreground">All Platforms</div>
-                              {hasSteamDyn && col.steamUnits != null && (
-                                <div className="mt-1 pt-1 border-t border-blue-500/20">
-                                  {hasLaunchSnap && col.steamBase != null && (
-                                    <div className="text-[9px] tabular-nums text-muted-foreground/70 leading-tight">
-                                      Launch: {formatNumber(col.steamBase)}
-                                    </div>
-                                  )}
-                                  <div className="flex items-baseline gap-1">
-                                    <div className="text-[10px] tabular-nums text-blue-600/80 dark:text-blue-400/80">
-                                      {formatNumber(col.steamUnits)}
-                                    </div>
-                                    {steamDelta && (
-                                      <div className={`text-[9px] font-semibold tabular-nums ${steamDelta.cls}`}>
-                                        {steamDelta.text}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div className="text-[9px] text-muted-foreground">Steam only</div>
-                                </div>
-                              )}
+                          { label: "1st Month", allUnits: dynFirstUnits, steamUnits: steamDynFirstUnits },
+                          { label: "1st Year", allUnits: dynYearUnits, steamUnits: steamDynYearUnits },
+                          { label: "Lifetime", allUnits: dynLtUnits, steamUnits: steamDynLtUnits },
+                        ].map((col) => (
+                          <div key={col.label} className="rounded-md border bg-blue-500/5 dark:bg-blue-500/10 p-2">
+                            <div className="text-[10px] text-muted-foreground">{col.label}</div>
+                            <div className="text-base font-bold tabular-nums text-blue-700 dark:text-blue-300 leading-tight">
+                              {formatNumber(col.allUnits)}
                             </div>
-                          );
-                        })}
+                            <div className="text-[9px] text-muted-foreground">All Platforms</div>
+                            {hasSteamDyn && col.steamUnits != null && (
+                              <div className="mt-1 pt-1 border-t border-blue-500/20">
+                                <div className="text-[10px] tabular-nums text-blue-600/80 dark:text-blue-400/80">
+                                  {formatNumber(col.steamUnits)}
+                                </div>
+                                <div className="text-[9px] text-muted-foreground">Steam only</div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     </div>
 
@@ -430,107 +479,6 @@ export default function Dashboard() {
                     )}
                   </div>
 
-                  {/* v3.4 (2026-08-11): 'Steam — Actuals' section. Shows only
-                      when there's ingested sales data. Two subrows:
-                        1. Revenue triad (Pre / Post / Total)
-                        2. Units triad (Pre / Post / Total) with base ASP
-                      Tagged 'Steam' explicitly so other platforms can slot in
-                      later as parallel sections (Xbox — Actuals, PSN — Actuals). */}
-                  {(() => {
-                    const rev = product.steamRevenueSplit as {
-                      preReleaseRevenueUsd: number;
-                      postReleaseRevenueUsd: number;
-                      totalRevenueUsd: number;
-                      preReleaseBaseNetUnits: number;
-                      postReleaseBaseNetUnits: number;
-                      totalBaseNetUnits: number;
-                      preReleaseBaseAspUsd: number | null;
-                      postReleaseBaseAspUsd: number | null;
-                      totalBaseAspUsd: number | null;
-                      preReleaseRowCount: number;
-                      postReleaseRowCount: number;
-                      releaseDate: string | null;
-                      latestDate: string | null;
-                    } | null | undefined;
-                    if (!rev || rev.totalRevenueUsd <= 0) return null;
-                    const hasPre = rev.preReleaseRevenueUsd > 0;
-                    return (
-                      <div className="pt-3 mt-3 border-t">
-                        <div className="flex items-baseline justify-between mb-2">
-                          <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                            Steam — Actuals
-                            <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
-                              click card for daily chart →
-                            </span>
-                          </div>
-                          <div className="text-[9px] text-muted-foreground">
-                            Through {rev.latestDate ?? "—"}
-                          </div>
-                        </div>
-                        {/* Revenue row */}
-                        <div className="grid grid-cols-3 gap-x-3 gap-y-1 mb-2">
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Steam Pre-Release Revenue</div>
-                            <div className={`text-sm font-semibold tabular-nums ${hasPre ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground/50"}`}
-                              data-testid={`text-steam-rev-prerelease-${product.id}`}>
-                              {formatCurrency(rev.preReleaseRevenueUsd)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Steam Post-Release Revenue</div>
-                            <div className="text-sm font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
-                              data-testid={`text-steam-rev-postrelease-${product.id}`}>
-                              {formatCurrency(rev.postReleaseRevenueUsd)}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Steam Total Revenue</div>
-                            <div className="text-sm font-bold tabular-nums text-emerald-700 dark:text-emerald-300"
-                              data-testid={`text-steam-rev-total-${product.id}`}>
-                              {formatCurrency(rev.totalRevenueUsd)}
-                            </div>
-                          </div>
-                        </div>
-                        {/* Units + ASP row */}
-                        <div className="grid grid-cols-3 gap-x-3 gap-y-1">
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Steam Pre-Release Units · ASP</div>
-                            <div className="text-sm font-semibold tabular-nums text-foreground"
-                              data-testid={`text-steam-units-prerelease-${product.id}`}>
-                              {formatNumber(rev.preReleaseBaseNetUnits)}
-                            </div>
-                            <div className="text-[10px] tabular-nums text-muted-foreground">
-                              ASP {rev.preReleaseBaseAspUsd != null ? `\$${rev.preReleaseBaseAspUsd.toFixed(2)}` : "—"}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Steam Post-Release Units · ASP</div>
-                            <div className="text-sm font-semibold tabular-nums text-foreground"
-                              data-testid={`text-steam-units-postrelease-${product.id}`}>
-                              {formatNumber(rev.postReleaseBaseNetUnits)}
-                            </div>
-                            <div className="text-[10px] tabular-nums text-muted-foreground">
-                              ASP {rev.postReleaseBaseAspUsd != null ? `\$${rev.postReleaseBaseAspUsd.toFixed(2)}` : "—"}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-muted-foreground">Steam Total Units · ASP</div>
-                            <div className="text-sm font-bold tabular-nums text-foreground"
-                              data-testid={`text-steam-units-total-${product.id}`}>
-                              {formatNumber(rev.totalBaseNetUnits)}
-                            </div>
-                            <div className="text-[10px] tabular-nums text-muted-foreground">
-                              ASP {rev.totalBaseAspUsd != null ? `\$${rev.totalBaseAspUsd.toFixed(2)}` : "—"}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="text-[9px] text-muted-foreground mt-1.5">
-                          Base game only for ASP · revenue includes base + paid DLC
-                        </div>
-                      </div>
-                    );
-                  })()}
-
                   {/* v3.6 (2026-08-12): Bottom affordance strip so users always
                       know the whole card is clickable to open the full PDP. */}
                   <div className="flex items-center justify-between pt-3 mt-3 border-t">
@@ -540,59 +488,6 @@ export default function Dashboard() {
                     <div className="flex items-center gap-1 text-[11px] font-medium text-primary">
                       <span>Open detail page</span>
                       <ExternalLink className="h-3 w-3" />
-                    </div>
-                  </div>
-
-                  {/* v3.4: Business Case row (Original + Revised + Trend) — kept
-                      compact at the bottom since it's the reference-point row. */}
-                  <div className={`grid ${hasRevision ? "grid-cols-3" : "grid-cols-2"} gap-x-3 pt-3 mt-3 border-t`}>
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Original LT Biz Case</div>
-                      <div className="text-sm font-semibold tabular-nums text-foreground">
-                        {formatNumber(originalUnits)}
-                      </div>
-                      {hasPrice && (
-                        <div className="text-[10px] tabular-nums text-muted-foreground">
-                          {formatCurrency(originalNet)} net
-                        </div>
-                      )}
-                    </div>
-                    {hasRevision && (
-                      <div>
-                        <div className="text-[10px] text-primary uppercase tracking-wide font-semibold">
-                          {revisedLabel}
-                        </div>
-                        <div className="text-sm font-semibold tabular-nums text-primary flex items-center gap-1"
-                          data-testid={`text-forecast-${product.id}`}>
-                          <TrendingUp className="h-3 w-3" />
-                          {formatNumber(revisedUnits!)}
-                        </div>
-                        {hasPrice && (
-                          <div className="text-[10px] tabular-nums text-muted-foreground">
-                            {formatCurrency(revisedNet!)} net
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <div>
-                      <div className="text-[10px] text-muted-foreground uppercase tracking-wide">Dyn LT vs Biz Case</div>
-                      <div className={`text-sm font-bold tabular-nums ${deltaColor}`}>
-                        {deltaStr}
-                      </div>
-                      <div className="text-[10px] text-muted-foreground">{deltaSub}</div>
-                      {/* v3.22 (2026-08-18): also show Dyn LT vs Launch Baseline
-                          when the snapshot exists (post-release, within 365d). */}
-                      {hasLaunchSnap && launchSnap!.totalLifetime > 0 && (() => {
-                        const vsBase = formatDeltaPct(dynLtUnits, launchSnap!.totalLifetime);
-                        return (
-                          <div className="mt-1 pt-1 border-t border-dashed border-border/50">
-                            <div className={`text-xs font-semibold tabular-nums ${vsBase.cls}`}>
-                              {vsBase.text}
-                            </div>
-                            <div className="text-[10px] text-muted-foreground">Dyn LT vs Launch</div>
-                          </div>
-                        );
-                      })()}
                     </div>
                   </div>
                 </Card>

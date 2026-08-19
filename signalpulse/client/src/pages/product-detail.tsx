@@ -6,13 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useState } from "react";
 import {
-  ArrowLeft, Edit2, ChevronDown, ChevronRight, Info, AlertTriangle, BarChart3, Plus, RefreshCw, Clock,
+  ArrowLeft, Edit2, ChevronDown, ChevronRight, Info, AlertTriangle, BarChart3, Plus, Clock,
   Upload, DollarSign, Trash2
 } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
@@ -481,15 +478,19 @@ export default function ProductDetail() {
           onToggle={toggleSection}
         >
           <ForecastTable
-            compsForecasts={product.compsForecasts}
             dynamicForecasts={product.dynamicForecasts}
             dynamicFullForecasts={product.dynamicFullForecasts}
             platforms={platforms}
-            forecastRevisions={product.forecastRevisions || []}
-            productId={productId}
             targetRetailPriceUsd={product.targetRetailPriceUsd}
             perPlatformPricing={product.perPlatformPricing}
             gmvFactor={product.gmvFactor ?? 0.66}
+            actualUnitsByPlatform={{
+              // v3.26 (2026-08-19): only Steam has a live actuals pipeline
+              // today. Add a PS5 entry here once a PSN API key/actuals feed
+              // exists -- the table renders "--" for any platform with no
+              // entry, so no further UI changes are needed when that lands.
+              "PC (Steam)": steamRev?.totalBaseNetUnits ?? undefined,
+            }}
           />
         </CollapsibleSection>
 
@@ -628,39 +629,28 @@ function PrepurchaseNotStarted({ targetDate }: { targetDate: string | null }) {
 
 // ─── Forecast Table ─────────────────────────────────────────────────────────
 
-type RevisionGroup = {
-  date: string;
-  label: string;
-  forecasts: Record<string, number>;
-};
-
 function ForecastTable({
-  compsForecasts,
   dynamicForecasts,
   dynamicFullForecasts,
   platforms,
-  forecastRevisions,
-  productId,
   targetRetailPriceUsd,
   perPlatformPricing,
   gmvFactor,
+  actualUnitsByPlatform,
 }: {
-  compsForecasts: any[];
   dynamicForecasts: any[];
   dynamicFullForecasts?: any[];
   platforms: string[];
-  forecastRevisions: RevisionGroup[];
-  productId: number;
   targetRetailPriceUsd: number | null;
   perPlatformPricing: Record<string, number> | null;
   // v3.9 (2026-08-12): blended GMV factor. Server-provided; 0.66 default.
   gmvFactor: number;
+  // v3.26 (2026-08-19): cumulative actual units sold to date, keyed by
+  // platform label. Only platforms with a live actuals pipeline have an
+  // entry here (currently just "PC (Steam)"); any platform without an
+  // entry renders "—" for both the Actual and Delta columns.
+  actualUnitsByPlatform: Partial<Record<string, number>>;
 }) {
-  const [reviseOpen, setReviseOpen] = useState(false);
-
-  const compsMap: Record<string, number> = {};
-  compsForecasts?.forEach((c: any) => { compsMap[c.platform] = c.forecastUnits; });
-
   // Use server-calculated full forecasts (handles PS5 prepurchase LT-first logic)
   const dynamicMap: Record<string, number> = {};
   const dynamic1YearMap: Record<string, number> = {};
@@ -680,23 +670,17 @@ function ForecastTable({
     });
   }
 
-  const compsTotal = Object.values(compsMap).reduce((a, b) => a + b, 0);
   const dynamicTotal = Object.values(dynamicMap).reduce((a, b) => a + b, 0);
   const dynamic1YearTotal = Object.values(dynamic1YearMap).reduce((a, b) => a + b, 0);
   const dynamicLtTotal = Object.values(dynamicLtMap).reduce((a, b) => a + b, 0);
 
-  const revisions = forecastRevisions || [];
-  const hasRevisions = revisions.length > 0;
-
-  // ─── Financial Calculations ─────────────────────────────────────────────────
+  // ─── Financial Calculations ─────────────────────────────────────────────
   // GMV (Gross Sales) = Units × Full USD Price × gmvFactor
   // Net Revenue       = GMV × 0.70
   // v3.9 (2026-08-12): gmvFactor is blended — 0.5 × observed Steam
   // ASP/list ratio + 0.5 × 0.66 when Steam actuals exist; else 0.66.
   const price = targetRetailPriceUsd ?? 0;
-  // gmvFactor comes in as a prop (v3.9)
 
-  // Helper: calculate weighted GMV across platforms using per-platform pricing if available
   function calcGmv(unitsByPlatform: Record<string, number>): number {
     let gmv = 0;
     for (const p of platforms) {
@@ -707,152 +691,94 @@ function ForecastTable({
     return Math.round(gmv);
   }
 
-  function calcGmvFromTotal(totalUnits: number): number {
-    // When we only have a total (e.g. revision totals), use the base price
-    return Math.round(totalUnits * price * gmvFactor);
-  }
-
   function calcNetFromGmv(gmv: number): number {
     return Math.round(gmv * 0.70);
   }
 
-  // Pre-calculate financials for each column
   const dynamicGmv = calcGmv(dynamicMap);
   const dynamic1YearGmv = calcGmv(dynamic1YearMap);
   const dynamicLtGmv = calcGmv(dynamicLtMap);
-  const compsGmv = calcGmv(compsMap);
   const dynamicNet = calcNetFromGmv(dynamicGmv);
   const dynamic1YearNet = calcNetFromGmv(dynamic1YearGmv);
   const dynamicLtNet = calcNetFromGmv(dynamicLtGmv);
-  const compsNet = calcNetFromGmv(compsGmv);
-
-  const revisionGmvs = revisions.map((rev) => calcGmv(rev.forecasts));
-  const revisionNets = revisionGmvs.map((g) => calcNetFromGmv(g));
 
   const hasPrice = price > 0;
 
-  // % delta helper: (dynamic - original) / original * 100
-  function pctDelta(dynamicVal: number, originalVal: number): string {
-    if (originalVal === 0) return dynamicVal > 0 ? "+∞" : "—";
-    const pct = ((dynamicVal - originalVal) / originalVal) * 100;
-    const sign = pct >= 0 ? "+" : "";
-    return `${sign}${pct.toFixed(1)}%`;
-  }
-  function deltaColor(dynamicVal: number, originalVal: number): string {
-    if (originalVal === 0) return "text-muted-foreground";
-    const pct = ((dynamicVal - originalVal) / originalVal) * 100;
-    if (pct > 0) return "text-emerald-600 dark:text-emerald-400";
-    if (pct < 0) return "text-red-500 dark:text-red-400";
-    return "text-muted-foreground";
+  // v3.26 (2026-08-19): actual-to-date vs Dynamic LT Forecast delta — same
+  // convention as the dashboard's "Steam — Actuals" card (formatDeltaPct):
+  // compares CUMULATIVE units sold so far against the LIFETIME forecast, so
+  // a negative % early in a title's life is expected and does NOT mean the
+  // title is "missing" its forecast — it just hasn't reached end-of-life yet.
+  function formatDeltaPct(current: number, baseline: number): { text: string; cls: string } {
+    if (baseline <= 0) return { text: "—", cls: "text-muted-foreground" };
+    const pct = ((current - baseline) / baseline) * 100;
+    const sign = pct > 0 ? "+" : "";
+    const text = `${sign}${pct.toFixed(1)}%`;
+    const cls = pct > 0.5 ? "text-emerald-600 dark:text-emerald-400"
+      : pct < -0.5 ? "text-red-500 dark:text-red-400"
+      : "text-muted-foreground";
+    return { text, cls };
   }
 
-  // Sticky column styles
-  const stickyBase = "sticky bg-background z-10";
-  const stickyPlatformCol = `${stickyBase} left-0`;
-  const stickyDynFirstCol = `${stickyBase} left-[120px]`;
-  const stickyDyn1YearCol = `${stickyBase} left-[250px]`;
+  const platformsWithActuals = platforms.filter(
+    (p) => actualUnitsByPlatform[p] != null && (actualUnitsByPlatform[p] as number) > 0
+  );
+  const actualUnitsTotal = platformsWithActuals.reduce(
+    (sum, p) => sum + (actualUnitsByPlatform[p] as number), 0
+  );
+  const actualsLtTotal = platformsWithActuals.reduce(
+    (sum, p) => sum + (dynamicLtMap[p] ?? 0), 0
+  );
+  const totalDelta = platformsWithActuals.length > 0
+    ? formatDeltaPct(actualUnitsTotal, actualsLtTotal)
+    : null;
 
   return (
     <div>
       <div className="overflow-x-auto">
-        <table className="w-full text-sm" data-testid="table-forecasts" style={{ minWidth: hasRevisions ? "700px" : undefined }}>
+        <table className="w-full text-sm" data-testid="table-forecasts">
           <thead>
             <tr className="border-b">
-              <th className={`text-left py-2 text-xs font-medium text-muted-foreground min-w-[120px] ${hasRevisions ? stickyPlatformCol : ""}`}>Platform</th>
-              <th className={`text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px] ${hasRevisions ? stickyDynFirstCol : ""}`}>Dynamic First Month</th>
-              <th className={`text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px] ${hasRevisions ? stickyDyn1YearCol : ""}`}>Dynamic 1 Year</th>
-              <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[150px]">Dynamic LT Biz Forecast</th>
-              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[150px]">Original LT Biz Forecast</th>
-              {revisions.map((rev, idx) => (
-                <th
-                  key={rev.date}
-                  className={`text-right py-2 text-xs font-medium min-w-[140px] ${
-                    idx === revisions.length - 1
-                      ? "text-primary font-semibold"
-                      : "text-muted-foreground"
-                  }`}
-                >
-                  {rev.label}
-                </th>
-              ))}
-              {/* v1.1 (2026-07-22): delta moved to FAR RIGHT and now compares
-                  DYNAMIC LT vs REVISED (latest revision) rather than Dynamic
-                  vs Original. When no revision exists, we fall back to
-                  comparing Dynamic vs Original so the column still shows
-                  something useful. */}
-              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[90px]">
-                {hasRevisions ? "Dyn LT vs Revised" : "Dyn LT vs Original"}
-              </th>
+              <th className="text-left py-2 text-xs font-medium text-muted-foreground min-w-[120px]">Platform</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Dynamic First Month</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Dynamic 1 Year</th>
+              <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[140px]">Dynamic LT Forecast</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Actual (to date)</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[100px]">Δ vs Forecast</th>
             </tr>
           </thead>
           <tbody>
-            {platforms.map((p) => (
-              <tr key={p} className="border-b border-border/50">
-                <td className={`py-2 ${hasRevisions ? stickyPlatformCol : ""}`}>
-                  <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${getPlatformClass(p)}`}>
-                    {p}
-                  </span>
-                </td>
-                <td className={`text-right py-2 tabular-nums font-medium ${hasRevisions ? stickyDynFirstCol : ""}`}>{formatNumber(dynamicMap[p] ?? 0)}</td>
-                <td className={`text-right py-2 tabular-nums font-medium ${hasRevisions ? stickyDyn1YearCol : ""}`}>{formatNumber(dynamic1YearMap[p] ?? 0)}</td>
-                <td className="text-right py-2 tabular-nums font-semibold text-blue-600 dark:text-blue-400">{formatNumber(dynamicLtMap[p] ?? 0)}</td>
-                <td className="text-right py-2 tabular-nums font-medium">{formatNumber(compsMap[p] ?? 0)}</td>
-                {revisions.map((rev, idx) => (
-                  <td
-                    key={rev.date}
-                    className={`text-right py-2 tabular-nums font-medium ${
-                      idx === revisions.length - 1 ? "text-primary font-semibold" : ""
-                    }`}
-                  >
-                    {formatNumber(rev.forecasts[p] ?? 0)}
+            {platforms.map((p) => {
+              const actual = actualUnitsByPlatform[p];
+              const dynLt = dynamicLtMap[p] ?? 0;
+              const delta = actual != null ? formatDeltaPct(actual, dynLt) : null;
+              return (
+                <tr key={p} className="border-b border-border/50">
+                  <td className="py-2">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${getPlatformClass(p)}`}>
+                      {p}
+                    </span>
                   </td>
-                ))}
-                {/* v1.1: delta cell (far right). Compares Dynamic LT to
-                    latest revision when one exists, else to Original. */}
-                {(() => {
-                  const dynLt = dynamicLtMap[p] ?? 0;
-                  const compareTo = hasRevisions
-                    ? (revisions[revisions.length - 1].forecasts[p] ?? 0)
-                    : (compsMap[p] ?? 0);
-                  return (
-                    <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynLt, compareTo)}`}>
-                      {pctDelta(dynLt, compareTo)}
-                    </td>
-                  );
-                })()}
-              </tr>
-            ))}
+                  <td className="text-right py-2 tabular-nums font-medium">{formatNumber(dynamicMap[p] ?? 0)}</td>
+                  <td className="text-right py-2 tabular-nums font-medium">{formatNumber(dynamic1YearMap[p] ?? 0)}</td>
+                  <td className="text-right py-2 tabular-nums font-semibold text-blue-600 dark:text-blue-400">{formatNumber(dynLt)}</td>
+                  <td className="text-right py-2 tabular-nums font-medium">{actual != null ? formatNumber(actual) : "—"}</td>
+                  <td className={`text-right py-2 tabular-nums text-xs font-semibold ${delta ? delta.cls : "text-muted-foreground"}`}>
+                    {delta ? delta.text : "—"}
+                  </td>
+                </tr>
+              );
+            })}
             {/* ── Unit Totals Row ── */}
             <tr className="font-semibold border-b">
-              <td className={`py-2 text-xs uppercase tracking-wide text-muted-foreground ${hasRevisions ? stickyPlatformCol : ""}`}>Total Units</td>
-              <td className={`text-right py-2 tabular-nums ${hasRevisions ? stickyDynFirstCol : ""}`}>{formatNumber(dynamicTotal)}</td>
-              <td className={`text-right py-2 tabular-nums ${hasRevisions ? stickyDyn1YearCol : ""}`}>{formatNumber(dynamic1YearTotal)}</td>
+              <td className="py-2 text-xs uppercase tracking-wide text-muted-foreground">Total Units</td>
+              <td className="text-right py-2 tabular-nums">{formatNumber(dynamicTotal)}</td>
+              <td className="text-right py-2 tabular-nums">{formatNumber(dynamic1YearTotal)}</td>
               <td className="text-right py-2 tabular-nums font-semibold text-blue-600 dark:text-blue-400">{formatNumber(dynamicLtTotal)}</td>
-              <td className="text-right py-2 tabular-nums">{formatNumber(compsTotal)}</td>
-              {revisions.map((rev, idx) => {
-                const total = Object.values(rev.forecasts).reduce((a, b) => a + b, 0);
-                return (
-                  <td
-                    key={rev.date}
-                    className={`text-right py-2 tabular-nums ${
-                      idx === revisions.length - 1 ? "text-primary" : ""
-                    }`}
-                  >
-                    {formatNumber(total)}
-                  </td>
-                );
-              })}
-              {/* v1.1: total-row delta (far right). Dynamic LT vs Revised total, else vs Original. */}
-              {(() => {
-                const compareTo = hasRevisions
-                  ? Object.values(revisions[revisions.length - 1].forecasts).reduce((a: number, b: any) => a + (b as number), 0)
-                  : compsTotal;
-                return (
-                  <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtTotal, compareTo)}`}>
-                    {pctDelta(dynamicLtTotal, compareTo)}
-                  </td>
-                );
-              })()}
+              <td className="text-right py-2 tabular-nums">{platformsWithActuals.length > 0 ? formatNumber(actualUnitsTotal) : "—"}</td>
+              <td className={`text-right py-2 tabular-nums text-xs font-semibold ${totalDelta ? totalDelta.cls : "text-muted-foreground"}`}>
+                {totalDelta ? totalDelta.text : "—"}
+              </td>
             </tr>
 
             {/* ── Financial Forecast Rows ── */}
@@ -860,62 +786,38 @@ function ForecastTable({
               <>
                 {/* Gross Sales (GMV) */}
                 <tr className="bg-emerald-50/50 dark:bg-emerald-950/10">
-                  <td className={`py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-400 ${hasRevisions ? stickyPlatformCol + " bg-emerald-50/50 dark:bg-emerald-950/10" : ""}`}>Gross Sales</td>
-                  <td className={`text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400 ${hasRevisions ? stickyDynFirstCol + " bg-emerald-50/50 dark:bg-emerald-950/10" : ""}`}>{formatCurrency(dynamicGmv)}</td>
-                  <td className={`text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400 ${hasRevisions ? stickyDyn1YearCol + " bg-emerald-50/50 dark:bg-emerald-950/10" : ""}`}>{formatCurrency(dynamic1YearGmv)}</td>
+                  <td className="py-2 text-xs font-semibold text-emerald-700 dark:text-emerald-400">Gross Sales</td>
+                  <td className="text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrency(dynamicGmv)}</td>
+                  <td className="text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrency(dynamic1YearGmv)}</td>
                   <td className="text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrency(dynamicLtGmv)}</td>
-                  <td className="text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400">{formatCurrency(compsGmv)}</td>
-                  {revisionGmvs.map((gmv, idx) => (
-                    <td
-                      key={revisions[idx].date}
-                      className={`text-right py-2 tabular-nums font-semibold text-emerald-700 dark:text-emerald-400 ${
-                        idx === revisions.length - 1 ? "!text-emerald-600 dark:!text-emerald-300" : ""
-                      }`}
-                    >
-                      {formatCurrency(gmv)}
-                    </td>
-                  ))}
-                  {/* v1.1: GMV delta (far right). */}
-                  {(() => {
-                    const compareTo = hasRevisions ? revisionGmvs[revisionGmvs.length - 1] : compsGmv;
-                    return (
-                      <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtGmv, compareTo)}`}>
-                        {pctDelta(dynamicLtGmv, compareTo)}
-                      </td>
-                    );
-                  })()}
+                  <td className="text-right py-2 tabular-nums text-muted-foreground">—</td>
+                  <td className="text-right py-2 tabular-nums text-muted-foreground">—</td>
                 </tr>
                 {/* Net Revenue */}
                 <tr className="bg-emerald-50/30 dark:bg-emerald-950/5 border-b">
-                  <td className={`py-2 text-xs font-semibold text-emerald-600 dark:text-emerald-500 ${hasRevisions ? stickyPlatformCol + " bg-emerald-50/30 dark:bg-emerald-950/5" : ""}`}>Net Revenue</td>
-                  <td className={`text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500 ${hasRevisions ? stickyDynFirstCol + " bg-emerald-50/30 dark:bg-emerald-950/5" : ""}`}>{formatCurrency(dynamicNet)}</td>
-                  <td className={`text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500 ${hasRevisions ? stickyDyn1YearCol + " bg-emerald-50/30 dark:bg-emerald-950/5" : ""}`}>{formatCurrency(dynamic1YearNet)}</td>
+                  <td className="py-2 text-xs font-semibold text-emerald-600 dark:text-emerald-500">Net Revenue</td>
+                  <td className="text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500">{formatCurrency(dynamicNet)}</td>
+                  <td className="text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500">{formatCurrency(dynamic1YearNet)}</td>
                   <td className="text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500">{formatCurrency(dynamicLtNet)}</td>
-                  <td className="text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500">{formatCurrency(compsNet)}</td>
-                  {revisionNets.map((net, idx) => (
-                    <td
-                      key={revisions[idx].date}
-                      className={`text-right py-2 tabular-nums font-semibold text-emerald-600 dark:text-emerald-500 ${
-                        idx === revisions.length - 1 ? "!text-emerald-500 dark:!text-emerald-400" : ""
-                      }`}
-                    >
-                      {formatCurrency(net)}
-                    </td>
-                  ))}
-                  {/* v1.1: Net delta (far right). */}
-                  {(() => {
-                    const compareTo = hasRevisions ? revisionNets[revisionNets.length - 1] : compsNet;
-                    return (
-                      <td className={`text-right py-2 tabular-nums text-xs font-semibold ${deltaColor(dynamicLtNet, compareTo)}`}>
-                        {pctDelta(dynamicLtNet, compareTo)}
-                      </td>
-                    );
-                  })()}
+                  <td className="text-right py-2 tabular-nums text-muted-foreground">—</td>
+                  <td className="text-right py-2 tabular-nums text-muted-foreground">—</td>
                 </tr>
               </>
             )}
           </tbody>
         </table>
+      </div>
+
+      {/* Methodology — v3.26 (2026-08-19): manual forecast input removed;
+          dynamic forecasting is now the only forecast on this table, and
+          an actuals-vs-forecast delta is shown for platforms with a live
+          actuals pipeline (Steam today; PS5 once a PSN feed exists). */}
+      <div className="mt-2 flex gap-2 p-2 rounded-md bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-800/30">
+        <Info className="h-3 w-3 text-blue-500 shrink-0 mt-0.5" />
+        <p className="text-[10px] text-blue-700 dark:text-blue-400 leading-relaxed">
+          <strong>Dynamic Forecast</strong> is fully automatic (wishlist-driven pre-launch, actuals-driven once live) — there is no manual forecast input for this title.
+          <strong className="ml-2">Actual (to date)</strong> and <strong>Δ vs Forecast</strong> compare cumulative units sold so far against the Dynamic LT Forecast, currently available for Steam only (a negative % early in a title's life is expected, not a miss). PS5 will populate here once a PSN actuals feed is connected; Xbox, Switch, and Epic have no actuals pipeline yet.
+        </p>
       </div>
 
       {/* Financial formula annotation */}
@@ -929,127 +831,7 @@ function ForecastTable({
           </p>
         </div>
       )}
-
-      {/* Revise Forecast Button */}
-      <div className="mt-3 flex justify-end">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setReviseOpen(true)}
-          className="h-8 text-xs gap-1.5"
-          data-testid="button-revise-forecast"
-        >
-          <RefreshCw className="h-3.5 w-3.5" /> Revise Forecast
-        </Button>
-      </div>
-
-      {/* Revise Forecast Dialog */}
-      {reviseOpen && (
-        <ReviseForecastDialog
-          open={reviseOpen}
-          onOpenChange={setReviseOpen}
-          productId={productId}
-          platforms={platforms}
-          compsMap={compsMap}
-          revisions={revisions}
-        />
-      )}
     </div>
-  );
-}
-
-// ─── Revise Forecast Dialog ───────────────────────────────────────────────
-
-function ReviseForecastDialog({
-  open,
-  onOpenChange,
-  productId,
-  platforms,
-  compsMap,
-  revisions,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  productId: number;
-  platforms: string[];
-  compsMap: Record<string, number>;
-  revisions: RevisionGroup[];
-}) {
-  // Pre-fill with latest revision values, or original comps
-  const latestRevision = revisions.length > 0 ? revisions[revisions.length - 1] : null;
-  const initialValues: Record<string, string> = {};
-  for (const p of platforms) {
-    const val = latestRevision ? (latestRevision.forecasts[p] ?? 0) : (compsMap[p] ?? 0);
-    initialValues[p] = String(val);
-  }
-
-  const [values, setValues] = useState<Record<string, string>>(initialValues);
-  const [saving, setSaving] = useState(false);
-
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const forecasts = platforms.map(p => ({
-        platform: p,
-        forecastUnits: parseInt(values[p] || "0", 10) || 0,
-      }));
-
-      await apiRequest("POST", `/api/products/${productId}/forecasts/revisions`, {
-        forecasts,
-      });
-
-      // Invalidate queries to refresh data
-      queryClient.invalidateQueries({ queryKey: ["/api/products", productId] });
-      queryClient.invalidateQueries({ queryKey: ["/api/products"] });
-      onOpenChange(false);
-    } catch (err) {
-      console.error("Failed to save revision:", err);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const total = platforms.reduce((sum, p) => sum + (parseInt(values[p] || "0", 10) || 0), 0);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle className="text-base">Revise Forecast</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-3 py-2">
-          <p className="text-xs text-muted-foreground">
-            Enter updated lifetime forecast units per platform. This creates a new revision snapshot dated today.
-          </p>
-          {platforms.map(p => (
-            <div key={p} className="flex items-center gap-3">
-              <Label className="w-32 text-xs shrink-0">
-                <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border ${getPlatformClass(p)}`}>
-                  {p}
-                </span>
-              </Label>
-              <Input
-                type="number"
-                min={0}
-                value={values[p]}
-                onChange={(e) => setValues(prev => ({ ...prev, [p]: e.target.value }))}
-                className="h-8 text-sm tabular-nums"
-              />
-            </div>
-          ))}
-          <div className="flex items-center gap-3 pt-2 border-t">
-            <div className="w-32 text-xs font-semibold text-muted-foreground uppercase tracking-wide shrink-0">Total</div>
-            <div className="text-sm font-semibold tabular-nums">{formatNumber(total)}</div>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button size="sm" onClick={handleSave} disabled={saving}>
-            {saving ? "Saving..." : "Save Revision"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

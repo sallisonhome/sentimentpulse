@@ -65,13 +65,6 @@ export function seedDatabase(): void {
     sortOrder: 21,
   });
 
-  // Comps-based forecasts
-  storage.upsertCompForecasts(product1.id, [
-    { platform: "PC (Steam)", forecastUnits: 550000, adjustedPct: 36.67 },
-    { platform: "PS5", forecastUnits: 600000, adjustedPct: 44.44 },
-    { platform: "Xbox", forecastUnits: 285000, adjustedPct: 18.89 },
-  ]);
-
   // ─── Steam Wishlist Data: 7 months, with spikes at milestone events ─────────
   // Starts Sep 15, 2025 (product page live) → present (~Mar 30, 2026)
   const wlStartDate = new Date("2025-09-15");
@@ -272,11 +265,6 @@ export function seedDatabase(): void {
   const m2 = storage.getPlsMilestones(product2.id);
   const ann2 = m2.find(m => m.name === "Announce");
   if (ann2) storage.updatePlsMilestone(ann2.id, { actualDate: "2025-12-10" });
-
-  storage.upsertCompForecasts(product2.id, [
-    { platform: "PC (Steam)", forecastUnits: 180000, adjustedPct: 45.21 },
-    { platform: "PS5", forecastUnits: 220000, adjustedPct: 54.79 },
-  ]);
 
   // Steam wishlist from announce date
   const exp2Start = new Date("2025-12-10");

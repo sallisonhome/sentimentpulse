@@ -7,7 +7,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useToast } from "@/hooks/use-toast";
@@ -35,9 +34,6 @@ export function AddProductDialog({ open, onOpenChange, editProduct }: AddProduct
   );
   const [price, setPrice] = useState(editProduct?.targetRetailPriceUsd?.toString() ?? "59.99");
   const [steamAppId, setSteamAppId] = useState(editProduct?.steamAppId ?? "");
-  const [forecastMode, setForecastMode] = useState(editProduct?.forecastMode ?? "manual");
-  const [steamForecast, setSteamForecast] = useState("");
-  const [ps5Forecast, setPs5Forecast] = useState("");
   const [perPlatformPricing, setPerPlatformPricing] = useState(false);
   const [platformPrices, setPlatformPrices] = useState<Record<string, string>>({});
 
@@ -91,14 +87,11 @@ export function AddProductDialog({ open, onOpenChange, editProduct }: AddProduct
       releaseDate: format(releaseDate, "yyyy-MM-dd"),
       targetRetailPriceUsd: parseFloat(price) || null,
       steamAppId: steamAppId || null,
-      forecastMode,
+      // v3.26 (2026-08-19): manual forecast input removed — dynamic
+      // forecasting (wishlist-driven pre-launch, actuals-driven once live)
+      // is fully automatic and requires no setup-time forecast entry.
       perPlatformPricing: perPlatformPricing ? platformPrices : null,
     };
-
-    if (forecastMode === "auto_generate") {
-      data.steamForecast = parseInt(steamForecast) || 0;
-      data.ps5Forecast = parseInt(ps5Forecast) || 0;
-    }
 
     createMutation.mutate(data);
   };
@@ -250,48 +243,6 @@ export function AddProductDialog({ open, onOpenChange, editProduct }: AddProduct
               className="h-9 text-sm"
             />
           </div>
-
-          {/* Forecast Mode */}
-          {!isEdit && (
-            <div className="space-y-2">
-              <Label className="text-xs font-medium">Forecast Mode</Label>
-              <RadioGroup value={forecastMode} onValueChange={setForecastMode} className="flex gap-4">
-                <div className="flex items-center gap-2">
-                  <RadioGroupItem value="manual" id="manual" />
-                  <Label htmlFor="manual" className="text-xs cursor-pointer">Manual Input</Label>
-                </div>
-                <div className="flex items-center gap-2">
-                  <RadioGroupItem value="auto_generate" id="auto" />
-                  <Label htmlFor="auto" className="text-xs cursor-pointer">Auto-Generate from Steam + PS5</Label>
-                </div>
-              </RadioGroup>
-
-              {forecastMode === "auto_generate" && (
-                <div className="grid grid-cols-2 gap-3 mt-2 p-3 rounded-lg bg-muted/50">
-                  <div className="space-y-1">
-                    <Label className="text-[10px] text-muted-foreground">Steam Forecast (units)</Label>
-                    <Input
-                      type="number"
-                      value={steamForecast}
-                      onChange={(e) => setSteamForecast(e.target.value)}
-                      placeholder="0"
-                      className="h-8 text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-[10px] text-muted-foreground">PS5 Forecast (units)</Label>
-                    <Input
-                      type="number"
-                      value={ps5Forecast}
-                      onChange={(e) => setPs5Forecast(e.target.value)}
-                      placeholder="0"
-                      className="h-8 text-sm"
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Submit */}
           <div className="flex justify-end gap-2 pt-2">
