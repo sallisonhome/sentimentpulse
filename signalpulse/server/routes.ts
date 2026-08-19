@@ -504,6 +504,12 @@ export async function registerRoutes(
         ...product,
         gmvFactor: pdpGmvFactor,
         observedSteamAspRatio: pdpObservedSteamAspRatio,
+        // v3.27 fix: this endpoint computed pdpSteamRev above (used
+        // internally for pdpGmvFactor/pdpObservedSteamAspRatio) but never
+        // returned it, so the PDP ForecastTable's actualUnitsByPlatform
+        // was always undefined and no Actual/Delta values ever rendered.
+        // The list endpoint already returns this field; mirror it here.
+        steamRevenueSplit: pdpSteamRev,
         platforms,
         perPlatformPricing: product.perPlatformPricing ? JSON.parse(product.perPlatformPricing) : null,
         latestSteamWishlistCount: steamWishlistSummary.lifetimeNet ?? latestSteamWl?.cumulativeCount ?? null,
