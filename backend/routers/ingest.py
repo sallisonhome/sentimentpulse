@@ -3166,3 +3166,66 @@ def audit_polluted_reddit_posts(
         }
     finally:
         db.close()
+
+
+@router.get("/admin/orphan-state")
+def orphan_state():
+    """Quick diagnostic: are there sentiment_records with dangling
+    raw_post_id after the v0019 purge? Also reports daily_summary and
+    topic freshness."""
+    from database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        # Orphaned sentiment_records
+        n_orphaned_sr = db.execute(text("""
+            SELECT COUNT(*) FROM sentiment_records sr
+            LEFT JOIN raw_posts rp ON rp.id = sr.raw_post_id
+            WHERE rp.id IS NULL
+        """)).scalar()
+
+        # Total sentiment_records
+        n_total_sr = db.execute(text("SELECT COUNT(*) FROM sentiment_records")).scalar()
+        n_total_rp = db.execute(text("SELECT COUNT(*) FROM raw_posts")).scalar()
+
+        # Per-game orphan breakdown
+        per_game = db.execute(text("""
+            SELECT rp_g.id AS game_id, rp_g.name,
+                   (SELECT COUNT(*) FROM sentiment_records sr
+                    LEFT JOIN raw_posts rp ON rp.id = sr.raw_post_id
+                    WHERE rp.id IS NULL AND sr.raw_post_id IN (
+                        SELECT id FROM raw_posts WHERE game_id = rp_g.id
+                    )
+                   ) AS orphan_count
+            FROM games rp_g
+            ORDER BY rp_g.id
+        """)).fetchall()
+        return {
+            "n_orphaned_sentiment_records": n_orphaned_sr,
+            "n_total_sentiment_records": n_total_sr,
+            "n_total_raw_posts": n_total_rp,
+        }
+    finally:
+        db.close()
+
+
+@router.post("/admin/purge-orphaned-sentiment-records", status_code=202)
+def purge_orphaned_sentiment_records():
+    """Delete sentiment_records rows whose raw_post_id no longer exists.
+    Safe to run repeatedly; idempotent."""
+    from database import SessionLocal
+    from sqlalchemy import text
+    db = SessionLocal()
+    try:
+        result = db.execute(text("""
+            DELETE FROM sentiment_records
+            WHERE raw_post_id IN (
+                SELECT sr.raw_post_id FROM sentiment_records sr
+                LEFT JOIN raw_posts rp ON rp.id = sr.raw_post_id
+                WHERE rp.id IS NULL
+            )
+        """))
+        db.commit()
+        return {"deleted": result.rowcount}
+    finally:
+        db.close()
