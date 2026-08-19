@@ -207,6 +207,7 @@ def fetch_arctic_shift_subreddit_posts(
     game_name: str = "",
     is_general_sub: bool = False,
     game=None,
+    after: int = 0,
 ) -> list[dict]:
     """
     Fetch posts from a single subreddit via Arctic Shift.
@@ -250,6 +251,12 @@ def fetch_arctic_shift_subreddit_posts(
                     "limit": limit,
                     "sort": "desc",
                 }
+                # v0018 (2026-08-19): incremental fetch — pass after=<epoch>
+                # so Arctic Shift only returns posts newer than the last
+                # ones we've saved.  Zero (default) means "no filter", i.e.
+                # full fresh fetch (used by backfill).
+                if after > 0:
+                    params["after"] = after
                 for post in _fetch_one(params):
                     pid = post["external_id"]
                     if pid not in seen:
@@ -270,6 +277,9 @@ def fetch_arctic_shift_subreddit_posts(
                 "limit": limit,
                 "sort": "desc",
             }
+            # v0018: incremental fetch (see title/selftext branch above).
+            if after > 0:
+                params["after"] = after
             results = _fetch_one(params)
             posts_returned = len(results)
             return results

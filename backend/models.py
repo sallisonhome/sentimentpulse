@@ -593,3 +593,60 @@ class TimelineEvent(Base):
     )
 
     game: Mapped["Game"] = relationship("Game")
+
+
+class SourceFetchCursor(Base):
+    """
+    Per-(game_id, source, scope_key) cursor recording the newest post
+    epoch we've already fetched.  The daily ingest read path passes
+    `after=<cursor - 48h buffer>` to Arctic Shift / Bluesky / DTF so we
+    stop re-fetching the same 100 newest posts every day.
+
+    Added 2026-08-19 (migration 0018) after a 39-active-game daily run
+    hit its wallclock budget after 29 games, silently skipping the 10
+    highest-ID titles. Diagnosis: reddit_fetched_total = 33,300 raw,
+    posts_collected = 5,208 new, keep rate 15.6% — the wasted API time
+    on already-known posts dominated the budget.
+
+    Scoping:
+      * source='reddit' or 'reddit_comment' — scope_key is subreddit
+        name (lower-cased normalized form) so a game's 12 subreddits
+        each get their own cursor.  A game recently added to r/gaming
+        should not silently skip its own game-specific sub because the
+        general sub happens to have newer posts.
+      * source='bluesky' / 'dtf' / 'steam_review' / 'steam_forum'
+        — scope_key is '' (source-scoped only).  These sources query by
+        game name globally, not per-subforum.
+
+    Update semantics:
+      * Cursor writes are MAX(new_epoch, existing_cursor) so a slow
+        system clock or a bad batch can't move the cursor backward.
+      * Backfills (invoked via /api/ingest/backfill) MUST bypass cursor
+        updates entirely.  A backfill that finds Aug 2025 posts must not
+        move the daily cursor forward past those dates or the next daily
+        run would skip Aug 2026 posts younger than the backfill's newest
+        hit.  Enforced via a thread-local flag checked in the write path
+        (see services/source_cursor_service.py).
+    """
+    __tablename__ = "source_fetch_cursors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    game_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("games.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_seen_epoch: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.current_timestamp(), nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "game_id", "source", "scope_key",
+            name="uq_source_fetch_cursors_game_source_scope",
+        ),
+    )
+
+    game: Mapped["Game"] = relationship("Game")

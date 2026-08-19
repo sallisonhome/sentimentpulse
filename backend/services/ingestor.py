@@ -1122,6 +1122,17 @@ def _step4_reddit(
 ) -> tuple[int, int]:
     """Fetch Reddit posts from configured subreddits.
 
+    v0018 (2026-08-19): now passes `after=<cursor - 48h buffer>` to
+    Arctic Shift so we stop re-fetching the same 100 newest posts every
+    day.  Cursors are per-(game, subreddit) so a game's 12 subreddits
+    each track their own "last seen" epoch — a game recently added to
+    r/gaming should not silently skip its own game-specific sub because
+    the general sub happens to have newer posts.
+
+    First-ever fetch for a subreddit (no cursor) uses a 48h fallback,
+    matching the daily cadence.  Backfill is the proper tool for
+    grabbing full history — daily cron should never re-pull years.
+
     Returns:
         (saved, fetched) tuple.
             saved   — count of NEW rows inserted into raw_posts
@@ -1130,6 +1141,10 @@ def _step4_reddit(
                       Used by run_ingestion to detect when the whole Reddit
                       phase silently fetched nothing.
     """
+    from services.source_cursor_service import (
+        read_cursor, write_cursor, compute_after_epoch, newest_epoch_from_posts,
+    )
+
     subreddits: list[str] = game.subreddits or []
     if not subreddits:
         log_lines.append(
@@ -1149,24 +1164,34 @@ def _step4_reddit(
             sub_name = sub_name[2:]
         if not sub_name:
             continue
+
+        # v0018: read the cursor for this subreddit, compute after=<epoch>
+        cursor_epoch = read_cursor(db, game.id, "reddit", sub_name)
+        after_epoch = compute_after_epoch(cursor_epoch)
+
         try:
             # limit=100 is Arctic Shift's hard ceiling per request (verified
-            # 2026-07-28 — 200+ returns 400 Bad Request). Was 25; bumped for
-            # two reasons:
-            #   1. Coverage. limit=25 on a busy general sub like r/pcgaming
-            #      only reaches ~10 hours back — leaving a hole if a daily
-            #      run is delayed. limit=100 covers ~38 hours on the same
-            #      sub, and multi-day windows on quieter game-specific
-            #      subs (SnowRunner ~3.7d, HalloweenTVG ~20d).
-            #   2. Cost is effectively identical (0.98s vs 0.79s per
-            #      request; parse+network dominates). _bulk_save_posts
-            #      dedupes on external_id so overlap with yesterday's
-            #      pull is free.
-            submissions = fetch_subreddit_posts(sub_name, limit=100, game_name=game.name)
+            # 2026-07-28 — 200+ returns 400 Bad Request).  Post-v0018 the
+            # steady-state case pulls FEWER than 100 because after= filters
+            # out already-seen posts server-side.  Duplicate risk is still
+            # covered by _bulk_save_posts's external_id dedup.
+            submissions = fetch_subreddit_posts(
+                sub_name, limit=100, game_name=game.name, after=after_epoch
+            )
             total_fetched += len(submissions)
-            total_saved += _bulk_save_posts(
+            saved = _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
             )
+            total_saved += saved
+
+            # v0018: advance the cursor to the newest post seen.  Backfill
+            # contexts silently skip this via source_cursor_service's
+            # thread-local flag.  Cursor uses MAX() so a spurious old post
+            # can't rewind.
+            newest = newest_epoch_from_posts(submissions)
+            if newest:
+                write_cursor(db, game.id, "reddit", sub_name, newest)
+
             # NOTE: Comment fetching is disabled because Reddit blocks all
             # JSON API requests from datacenter IPs (403 Blocked). Each
             # blocked comment fetch adds ~4s of wasted retry time, which
@@ -1299,7 +1324,24 @@ def _step4b_bluesky(
     Fetched counts posts Bluesky returned for this game (duplicates included);
     the run loop uses the per-source total to detect silent-failure regressions
     and to trigger retry-with-backoff (parallel to Reddit) when the total is 0.
+
+    v0018 (2026-08-19): passes since=<cursor - 48h> so Bluesky's search
+    only returns posts newer than the last one we saved.  Cuts steady-
+    state fetches from limit=100 down to whatever fresh volume actually
+    exists for the game (usually 0-10 per day per title).
     """
+    from datetime import datetime, timezone
+    from services.source_cursor_service import (
+        read_cursor, write_cursor, compute_after_epoch, newest_epoch_from_posts,
+    )
+
+    # Compute the since= filter from the cursor.
+    cursor_epoch = read_cursor(db, game.id, "bluesky", "")
+    since_epoch = compute_after_epoch(cursor_epoch)
+    since_rfc3339 = datetime.fromtimestamp(
+        since_epoch, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ") if since_epoch > 0 else None
+
     try:
         # Pass game.distinctive_keywords so Bluesky's query AND post-fetch
         # filter use game-specific terms. Critical for games whose title
@@ -1310,10 +1352,16 @@ def _step4b_bluesky(
             game.name,
             limit=100,
             distinctive_keywords=game.distinctive_keywords,
+            since=since_rfc3339,
         )
         total_saved = _bulk_save_posts(
             db, game.id, SourceEnum.bluesky, posts, errors,
         )
+
+        # Advance the cursor to the newest fetched post.
+        newest = newest_epoch_from_posts(posts)
+        if newest:
+            write_cursor(db, game.id, "bluesky", "", newest)
     except Exception as exc:
         msg = f"[Step 4b] Bluesky error for '{game.name}': {exc}"
         errors.append(msg)

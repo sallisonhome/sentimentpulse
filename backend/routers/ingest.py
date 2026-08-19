@@ -270,7 +270,16 @@ def trigger_ingestion(
 # ------------------------------------------------------------------ backfill
 
 def _run_backfill(game_ids: list[int], start_date: str) -> None:
-    """Background wrapper for historical_backfill.main()."""
+    """Background wrapper for historical_backfill.main().
+
+    v0018 (2026-08-19): wrapped in backfill_suppress_cursor_updates() so
+    the ingest read path's per-source cursors are NOT moved forward by
+    a historical backfill.  Backfills routinely pull posts from months
+    ago; if they moved the cursor forward to their newest hit (which is
+    still older than what the daily cron has seen), the next daily run
+    would incorrectly filter after=<old date> and re-fetch already-seen
+    posts — the exact waste this refactor removes.
+    """
     from datetime import datetime, timezone as _tz
     from database import SessionLocal
     from models import Game
@@ -286,6 +295,7 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
         backfill_dtf_for_game,
     )
     from services.nlp_service import load_model
+    from services.source_cursor_service import backfill_suppress_cursor_updates
 
     try:
         _BACKFILL_RUNNING["running"] = True
@@ -295,35 +305,36 @@ def _run_backfill(game_ids: list[int], start_date: str) -> None:
         db = SessionLocal()
         result_lines: list[str] = []
         try:
-            for gid in game_ids:
-                game = db.query(Game).filter_by(id=gid).first()
-                if not game:
-                    result_lines.append(f"game {gid}: not found")
-                    continue
-                errors: list[str] = []
-                r_saved = backfill_reddit_for_game(db, game, start_epoch, errors)
-                db.commit()
-                sr_saved = backfill_steam_reviews_for_game(db, game, start_dt, errors)
-                db.commit()
-                sf_saved = backfill_steam_forums_for_game(db, game, start_dt, errors)
-                db.commit()
-                # DTF backfill (2026-07-26). Skips at runtime when the
-                # AppSetting['dtf_enabled'] flag is not set to true.
-                d_saved = backfill_dtf_for_game(db, game, start_dt, errors)
-                db.commit()
+            with backfill_suppress_cursor_updates():
+                for gid in game_ids:
+                    game = db.query(Game).filter_by(id=gid).first()
+                    if not game:
+                        result_lines.append(f"game {gid}: not found")
+                        continue
+                    errors: list[str] = []
+                    r_saved = backfill_reddit_for_game(db, game, start_epoch, errors)
+                    db.commit()
+                    sr_saved = backfill_steam_reviews_for_game(db, game, start_dt, errors)
+                    db.commit()
+                    sf_saved = backfill_steam_forums_for_game(db, game, start_dt, errors)
+                    db.commit()
+                    # DTF backfill (2026-07-26). Skips at runtime when the
+                    # AppSetting['dtf_enabled'] flag is not set to true.
+                    d_saved = backfill_dtf_for_game(db, game, start_dt, errors)
+                    db.commit()
 
-                log_lines: list[str] = []
-                step_errors: list[str] = []
-                _step5_classify_sentiment(db, game, log_lines, step_errors)
-                _step6_extract_topics(db, game, log_lines, step_errors)
-                _step7_daily_summary(db, game, log_lines, step_errors)
-                db.commit()
+                    log_lines: list[str] = []
+                    step_errors: list[str] = []
+                    _step5_classify_sentiment(db, game, log_lines, step_errors)
+                    _step6_extract_topics(db, game, log_lines, step_errors)
+                    _step7_daily_summary(db, game, log_lines, step_errors)
+                    db.commit()
 
-                result_lines.append(
-                    f"#{gid} {game.name}: reddit={r_saved} steam_reviews={sr_saved} "
-                    f"steam_forums={sf_saved} dtf={d_saved} fetch_errors={len(errors)} "
-                    f"step_errors={len(step_errors)}"
-                )
+                    result_lines.append(
+                        f"#{gid} {game.name}: reddit={r_saved} steam_reviews={sr_saved} "
+                        f"steam_forums={sf_saved} dtf={d_saved} fetch_errors={len(errors)} "
+                        f"step_errors={len(step_errors)}"
+                    )
         finally:
             db.close()
         _BACKFILL_RUNNING["last_result"] = result_lines
@@ -353,6 +364,7 @@ def _run_bluesky_backfill(game_ids: list[int], start_date: str) -> None:
     )
     from scripts.historical_backfill import backfill_bluesky_for_game
     from services.nlp_service import load_model
+    from services.source_cursor_service import backfill_suppress_cursor_updates
 
     try:
         _BACKFILL_RUNNING["running"] = True
@@ -361,29 +373,30 @@ def _run_bluesky_backfill(game_ids: list[int], start_date: str) -> None:
         db = SessionLocal()
         result_lines: list[str] = []
         try:
-            for gid in game_ids:
-                game = db.query(Game).filter_by(id=gid).first()
-                if not game:
-                    result_lines.append(f"game {gid}: not found")
-                    continue
-                errors: list[str] = []
-                b_saved = backfill_bluesky_for_game(db, game, start_dt, errors)
-                db.commit()
+            with backfill_suppress_cursor_updates():
+                for gid in game_ids:
+                    game = db.query(Game).filter_by(id=gid).first()
+                    if not game:
+                        result_lines.append(f"game {gid}: not found")
+                        continue
+                    errors: list[str] = []
+                    b_saved = backfill_bluesky_for_game(db, game, start_dt, errors)
+                    db.commit()
 
-                # Score + summarize the newly-saved posts. Steps 5-7
-                # are idempotent on already-scored posts, so re-running
-                # them for games with existing posts is a no-op.
-                log_lines: list[str] = []
-                step_errors: list[str] = []
-                _step5_classify_sentiment(db, game, log_lines, step_errors)
-                _step6_extract_topics(db, game, log_lines, step_errors)
-                _step7_daily_summary(db, game, log_lines, step_errors)
-                db.commit()
+                    # Score + summarize the newly-saved posts. Steps 5-7
+                    # are idempotent on already-scored posts, so re-running
+                    # them for games with existing posts is a no-op.
+                    log_lines: list[str] = []
+                    step_errors: list[str] = []
+                    _step5_classify_sentiment(db, game, log_lines, step_errors)
+                    _step6_extract_topics(db, game, log_lines, step_errors)
+                    _step7_daily_summary(db, game, log_lines, step_errors)
+                    db.commit()
 
-                result_lines.append(
-                    f"#{gid} {game.name}: bluesky={b_saved} "
-                    f"fetch_errors={len(errors)} step_errors={len(step_errors)}"
-                )
+                    result_lines.append(
+                        f"#{gid} {game.name}: bluesky={b_saved} "
+                        f"fetch_errors={len(errors)} step_errors={len(step_errors)}"
+                    )
             _BACKFILL_RUNNING["last_result"] = result_lines
         finally:
             db.close()

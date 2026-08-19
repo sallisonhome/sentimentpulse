@@ -1250,3 +1250,21 @@ The reason the widget looked "stuck at is_running=true" for 2h is that backgroun
 **Generalizable rule.**
 
 > **"Don't run heavy operations while backfills are active" means ANYTHING that can restart the droplet's Node processes — not just the specific API route that caused the last incident.** This includes: calling `/api/ingestion/run`, pushing any commit to `main` (this repo's `deploy.yml` auto-deploys and restarts services on every push, even a docs-only change to `lessons.md`), manually triggering `sp-force-restart.yml` or any other restart-capable workflow, and likely any other team member's push to the same repo. Before performing ANY of these while a long-running backfill job is active, either wait for the backfill to finish, or accept that the job will need to be re-verified via gap-scan and resumed afterward. When in doubt, check `GET` job-status for all known active job IDs immediately before AND after any droplet-affecting action, and treat "was running, now returns not-found" as an automatic gap-scan trigger, not just a mystery to shrug off.
+
+---
+
+## 2026-08-19 — Daily ingest re-fetched 100% of already-seen Reddit/Bluesky posts every day (v0018)
+
+**Problem.** The 2026-08-19 wallclock-budget skip that dropped 10 games from the daily run was *symptomatic*; the real cause was underneath. Reddit's `fetch_subreddit_posts` and Bluesky's `fetch_bluesky_posts_for_game` were called with `limit=100` and no `after=`/`since=` filter, so every daily run re-fetched the 100 newest posts from every configured subreddit and Bluesky feed. `_bulk_save_posts` deduped on `external_id` at save time, so no duplicate rows landed — but the wasted API time (~1s per Arctic Shift call × ~85% duplicate rate) dominated the wallclock budget. Concretely: last run pulled 33,300 Reddit posts and 2,211 Bluesky posts across 29 games and kept only ~5,208.
+
+**Root cause categories.** (a) A latent design gap: only Steam Reviews had a known_ids short-circuit. (b) A performance cliff that only manifested when the portfolio hit 39 active games. (c) The wallclock budget silently masked the waste until it ran out.
+
+**Non-negotiable rules going forward.**
+1. Every fetch that pages an external API for "recent posts" MUST take an incremental `after=`/`since=` cutoff computed from a persisted per-(game, source, scope) cursor.
+2. Cursor writes MUST use MAX() semantics — a stale-clock system or a bad batch can never rewind the cursor.
+3. Backfill code paths MUST be wrapped in `backfill_suppress_cursor_updates()` so a historical backfill can NEVER move a daily cursor forward past dates the daily cron hasn't yet seen. Wrap `_run_backfill` and `_run_bluesky_backfill` at the router layer; scripts that call `backfill_*_for_game` directly must do the same.
+4. New per-source cursor rows use per-subreddit `scope_key` for Reddit (case-normalized, `r/` stripped) and empty `scope_key` for source-scoped feeds (Bluesky, DTF, Steam Reviews, Steam Forums).
+5. First-ever fetch for a subreddit (no cursor) MUST fall back to a bounded window (48h) — daily cron should never pull years of history; that's what backfill is for.
+
+**How to verify.** After deploy, watch `reddit_fetched_total` in `/api/ingest/status`. Steady state should drop from ~1,148/game to ~50-150/game. Backfills should still work — they route through the same `_bulk_save_posts` dedup path and only bypass cursor writes, not the actual fetch.
+
