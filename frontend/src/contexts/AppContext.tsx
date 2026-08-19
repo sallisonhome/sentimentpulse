@@ -53,25 +53,47 @@ function writeStoredGameId(id: number | null): void {
 }
 
 export function AppProvider({ children }: { children: ReactNode }) {
-  // Initial load precedence (highest wins):
-  //   1. localStorage — the user's persisted dropdown selection.
-  //   2. ?game=<id> in the URL — supports deep links / bookmarks.
-  //   3. null — TopBar's auto-select-latest fallback will pick a default.
+  // Initial load precedence (highest wins on mount):
+  //   1. ?game=<id> in the URL — deep links, bookmarks, and shared
+  //      Slack/email links MUST land on the game they name.  This
+  //      is a first-load-only override; the URL is NOT observed on
+  //      subsequent navigations.
+  //   2. localStorage — the user's persisted dropdown selection.
+  //   3. null — TopBar's auto-select-latest fallback picks a default.
   //
-  // Once mounted, ONLY step 1 (dropdown) can change the value.  The URL
-  // param is NOT observed on subsequent navigations, so a side-nav
-  // click that drops ?game= cannot reset the title.  This is
-  // intentional per the 2026-08-19 requirement:
-  //   "never switch to other titles unless the user selects them from
-  //    the drop down".
+  // v0022.1 (2026-08-19): swapped precedence so URL wins over
+  // localStorage on first mount.  Prior order (localStorage-first)
+  // silently ignored deep links when the user had ever previously
+  // picked a title in this browser.  QA confirmed this on live site
+  // (Scenario D): /?game=20 loaded Space Marine 2 because localStorage
+  // held game_id=24.  The URL win here is safe because we only read
+  // the URL ONCE, at mount time, so a side-nav click that drops
+  // ?game= still can't reset the title after mount.
+  //
+  // The URL-wins overrides localStorage immediately AND persists to
+  // localStorage below (in the useEffect one-shot sync), so a hard
+  // reload of the deep-linked page continues to land on the deep-
+  // linked title even if the URL param has since been stripped.
   const [searchParams, setSearchParams] = useSearchParams()
   const [selectedGameId, setSelectedGameIdState] = useState<number | null>(() => {
-    const stored = readStoredGameId()
-    if (stored != null) return stored
     const gp = searchParams.get('game')
     const parsed = gp ? Number(gp) : null
-    return Number.isFinite(parsed as number) ? parsed : null
+    if (parsed != null && Number.isFinite(parsed)) return parsed
+    return readStoredGameId()
   })
+
+  // v0022.1: on first mount ONLY, if the URL supplied a game id, mirror
+  // it into localStorage so subsequent side-nav / reloads keep that
+  // title.  This is a one-shot effect (empty deps) — later URL changes
+  // (side-nav dropping ?game=) do NOT rewrite localStorage.
+  useEffect(() => {
+    const gp = searchParams.get('game')
+    const parsed = gp ? Number(gp) : null
+    if (parsed != null && Number.isFinite(parsed)) {
+      writeStoredGameId(parsed)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const setSelectedGameId = useCallback((id: number | null) => {
     // The dropdown handler is the ONLY caller that should ever pass a
