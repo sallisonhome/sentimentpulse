@@ -1,4 +1,4 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, useSearchParams } from 'react-router-dom'
 import { LayoutDashboard, FileText, TrendingUp, MessageSquare, Settings, ArrowRightLeft, Home } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -11,6 +11,24 @@ const NAV_ITEMS = [
 ]
 
 export default function Sidebar() {
+  // v0021 (2026-08-19): preserve the ?game=<id> URL param when navigating
+  // between side-nav routes so the user stays anchored on the title they
+  // selected from the top-bar dropdown. Prior version passed a bare `to`
+  // string like "/summary", which dropped every query param on the
+  // Dashboard→Summary→Posts route change. That left the URL without
+  // ?game=<id>, which then made AppContext's URL→state useEffect null out
+  // selectedGameId, which then made TopBar's fallback logic (`if
+  // selectedGameId == null`) reset to the FIRST title in the dropdown
+  // — exactly the awful UX the user reported.
+  //
+  // Preserving *all* current search params (not just game=) is
+  // intentional: it also carries period, filters, etc. across routes so
+  // a user viewing "Aliens FE2" on the monthly period lands on Summary
+  // for the same title without losing their period selection.
+  const [searchParams] = useSearchParams()
+  const search = searchParams.toString()
+  const suffix = search ? `?${search}` : ''
+
   return (
     <aside className="flex w-56 flex-col border-r bg-card px-3 py-4">
       <div className="mb-6 px-2">
@@ -22,7 +40,7 @@ export default function Sidebar() {
         {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
           <NavLink
             key={to}
-            to={to}
+            to={`${to}${suffix}`}
             end={end}
             className={({ isActive }) =>
               cn(

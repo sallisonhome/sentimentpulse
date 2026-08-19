@@ -11,6 +11,29 @@ interface AppContextValue {
 
 const AppContext = createContext<AppContextValue | null>(null)
 
+/**
+ * v0021 (2026-08-19) exported for direct unit-testing.
+ *
+ * Decide whether the URL's game= query param should override the current
+ * in-memory selectedGameId. Rules:
+ *   * If the URL param is a valid finite number DIFFERENT from current
+ *     state — return that number (deep-link / browser back/forward).
+ *   * If the URL has NO param, or an invalid one — keep current state.
+ *     This is the safety net for the Dashboard→Summary bug where a bare
+ *     NavLink dropped the query string and used to null out the game.
+ *   * If the URL param matches current state — no-op (return current).
+ */
+export function resolveUrlGameOverride(
+  gameParam: string | null,
+  current: number | null,
+): number | null {
+  const parsed = gameParam != null && gameParam !== '' ? Number(gameParam) : null
+  if (parsed != null && Number.isFinite(parsed) && parsed !== current) {
+    return parsed
+  }
+  return current
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   // Sync selectedGameId with the URL query param `?game=<id>` so:
   //   1. The browser back button correctly returns to the previously
@@ -29,10 +52,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // When the URL param changes (browser back/forward, external navigation),
   // update the state to match.
+  //
+  // v0021 (2026-08-19) safety net: only sync URL → state when the URL
+  // carries a VALID game id. If the URL loses ?game=<id> for any reason
+  // (a stray relative navigation, a redirect, a third-party link into a
+  // page without the param), do NOT clear state — that used to make
+  // TopBar's fallback silently reset the user to the FIRST title in the
+  // dropdown. The Sidebar was fixed to always preserve the query string,
+  // but this guard makes the reset impossible even if a new nav path
+  // regresses.
+  //
+  // Deep links still work: fresh page loads read from the URL param
+  // via the useState initializer above, before this effect ever runs.
   useEffect(() => {
-    const parsed = gameParam ? Number(gameParam) : null
-    if (parsed !== selectedGameId) {
-      setSelectedGameIdState(Number.isFinite(parsed as number) ? parsed : null)
+    const next = resolveUrlGameOverride(gameParam, selectedGameId)
+    if (next !== selectedGameId) {
+      setSelectedGameIdState(next)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameParam])
