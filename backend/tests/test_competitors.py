@@ -225,6 +225,11 @@ class TestCompetitorTimeseries:
         assert len(data["games"]) == 1
         assert data["games"][0]["game_id"] == game.id
         assert data["games"][0]["is_parent"] is True
+        # v0020 (2026-08-19): steam_app_id MUST be exposed so the Post
+        # Volume by Title chart can look up PLS milestones from
+        # SignalPulse for the parent Saber title.
+        assert "steam_app_id" in data["games"][0]
+        assert data["games"][0]["steam_app_id"] == game.steam_app_id
 
     def test_parent_not_found(self, client):
         r = client.get("/api/games/99999/competitor-timeseries")

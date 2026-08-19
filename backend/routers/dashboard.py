@@ -863,6 +863,12 @@ def get_competitor_timeseries(
             game_id=g.id,
             name=g.name,
             is_parent=(g.id == parent_id),
+            # v0020 (2026-08-19): pass through so the frontend can look
+            # up PLS milestones from SignalPulse for the parent Saber
+            # title. All competitor games get their steam_app_id too
+            # so the chart could annotate their lines in the future,
+            # but v0020's initial UI only decorates the parent line.
+            steam_app_id=g.steam_app_id,
             current_total=(current_totals[g.id] if pct_window_days is not None else None),
             prev_total=(prev_totals[g.id] if pct_window_days is not None else None),
             pct_change=(_pct(current_totals[g.id], prev_totals[g.id])

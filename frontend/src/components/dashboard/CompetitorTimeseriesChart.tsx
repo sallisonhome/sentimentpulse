@@ -23,6 +23,29 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { useAppContext } from '../../contexts/AppContext'
 import { useCompetitorTimeseries } from '../../hooks/useCompetitors'
 import type { Period } from '../../types'
+// v0020 (2026-08-19): PLS annotations for the parent Saber title.
+// Same hook + category-color palette that powers Net Sentiment Trend's
+// PLS overlay — chart rendering only differs in what data axis and
+// legend surface the markers sit against.
+import {
+  usePlsMilestones,
+  metaFor as plsMetaFor,
+  type PlsAnnotation,
+} from '../../hooks/usePlsMilestones'
+
+// v0020: persist the PLS toggle so it survives page reloads.  Separate
+// key from Net Sentiment's toggle so users can independently enable/
+// disable PLS on each chart.
+const PLS_TOGGLE_KEY = 'sp.chart.competitor.showPlsMilestones'
+function loadPlsToggle(): boolean {
+  try {
+    const v = localStorage.getItem(PLS_TOGGLE_KEY)
+    return v === null ? true : v === '1'
+  } catch { return true }
+}
+function savePlsToggle(on: boolean): void {
+  try { localStorage.setItem(PLS_TOGGLE_KEY, on ? '1' : '0') } catch { /* no-op */ }
+}
 
 interface CompetitorTimeseriesChartProps {
   parentId: number
@@ -46,6 +69,19 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   const { setSelectedGameId } = useAppContext()
   const { data, isLoading } = useCompetitorTimeseries(parentId, period)
 
+  // v0020 (2026-08-19): PLS annotations from SignalPulse for the parent
+  // Saber title. We look up the parent's steam_app_id from the response
+  // (added in v0020 backend). The hook itself returns an empty array
+  // when there's no matching SignalPulse product, so the toggle is
+  // silently hidden below for non-Saber parents.
+  //
+  // Hooks must be called unconditionally (React rules of hooks) even
+  // though the chart may bail out below with `return null`, so this
+  // sits above the early-return.
+  const parentSteamAppId = data?.games.find(g => g.is_parent)?.steam_app_id ?? null
+  const { data: plsRaw } = usePlsMilestones(parentSteamAppId)
+  const [showPls, setShowPls] = useState<boolean>(loadPlsToggle)
+
   // Ref to the chart's outer card so the JPEG download can capture the
   // full card layout (title + chart + event list) instead of just the
   // recharts SVG.
@@ -55,7 +91,7 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   // Hover state for the event marker tooltip. Recharts' ReferenceLine
   // doesn't emit hover events natively, so we render invisible SVG
   // hitboxes over each marker and track which one is hovered here.
-  const [hoveredEventId, setHoveredEventId] = useState<number | null>(null)
+  const [hoveredEventId, setHoveredEventId] = useState<string | null>(null)
 
   // Hidden entirely when the parent has no competitors — `games` contains
   // only the parent in that case. Also render nothing while loading so we
@@ -105,6 +141,23 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
     ...point.counts,
   }))
 
+  // v0020: Build the visible-ISO-date set for PLS filtering.  Same
+  // pattern as NetSentimentChart — intersect on YYYY-MM-DD, NEVER on
+  // display strings like "Aug 17", because those have no year and would
+  // let 2022-08-17 PLS milestones bleed into a 90-day 2026 window.
+  const visibleIsoDates = new Set(data.timeseries.map(p => String(p.day)))
+
+  // Filter PLS annotations to only those inside the visible window,
+  // then decorate them with the category color/label + the parent
+  // game's game_id so the event-list rendering below can reuse the same
+  // legend palette (as a secondary reference) if we later add per-
+  // competitor PLS overlays. For v0020, PLS is parent-only.
+  const parentGameId = data.games.find(g => g.is_parent)?.game_id ?? null
+  const plsInWindow: PlsAnnotation[] = !showPls || !plsRaw
+    ? []
+    : plsRaw.filter(m => visibleIsoDates.has(m.event_date))
+  const hasPlsData = (plsRaw?.length ?? 0) > 0
+
   function handleLegendClick(gameId: number, isParent: boolean) {
     // Clicking the parent's own name is a no-op — we're already on its
     // dashboard. Clicking a competitor sets the game via AppContext,
@@ -140,16 +193,38 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
             Daily post volume comparison across parent title and competitors
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleDownload}
-          disabled={downloading}
-          className="shrink-0 gap-1.5"
-        >
-          <Download className="h-3.5 w-3.5" />
-          {downloading ? 'Preparing…' : 'Download JPEG'}
-        </Button>
+        <div className="flex items-center gap-3 shrink-0">
+          {/* v0020: PLS milestones toggle — only shown when the parent
+              Saber title actually has PLS data in SignalPulse. Matches
+              the NetSentimentChart toggle pattern for consistency. */}
+          {hasPlsData && (
+            <label
+              className="flex items-center gap-2 cursor-pointer select-none text-xs text-muted-foreground"
+              data-testid="competitor-pls-milestones-toggle"
+            >
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5 cursor-pointer"
+                checked={showPls}
+                onChange={e => {
+                  setShowPls(e.target.checked)
+                  savePlsToggle(e.target.checked)
+                }}
+              />
+              <span>PLS milestones</span>
+            </label>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDownload}
+            disabled={downloading}
+            className="gap-1.5"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {downloading ? 'Preparing…' : 'Download JPEG'}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {/* Chart is taller (420 vs prior 240) and always full-card-width so
@@ -266,7 +341,8 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
               if (gameIdx < 0) return null
               const color = LINE_COLORS[gameIdx % LINE_COLORS.length]
               const dateLabel = format(parseISO(ev.event_date), 'MMM d')
-              const isHovered = hoveredEventId === ev.id
+              const evKey = `user-${ev.id}`
+              const isHovered = hoveredEventId === evKey
               // Stagger label vertical position by index (offset 0 / 14 /
               // 28 px) so labels on nearby dates don't collide. dy is
               // relative to the top of the plot area (position='top').
@@ -283,7 +359,7 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
               const displayName = ev.name.length > 22 ? ev.name.slice(0, 21) + '…' : ev.name
               return (
                 <ReferenceLine
-                  key={`ev-${ev.id}`}
+                  key={evKey}
                   x={dateLabel}
                   stroke={color}
                   strokeDasharray="4 3"
@@ -303,7 +379,53 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
                     fontWeight: isHovered ? 700 : 600,
                     dy,
                   }}
-                  onMouseEnter={() => setHoveredEventId(ev.id)}
+                  onMouseEnter={() => setHoveredEventId(evKey)}
+                  onMouseLeave={() => setHoveredEventId(null)}
+                />
+              )
+            })}
+            {/* v0020: PLS milestone markers for the parent Saber title.
+                Dashed pattern is "6 4" to visually distinguish from the
+                user-timeline "4 3" pattern at a glance without demanding
+                a legend. Category color from PLS_CATEGORY_META keeps the
+                signal encoded in the marker itself (Core=teal, Video=
+                rust, Press=mauve, Demo=gold, Sale=olive, other=brown).
+
+                Stagger index continues from where user events left off
+                so a dense day doesn't stack a PLS label right on top of
+                a user event label at the same dy row. */}
+            {plsInWindow.map((m, i) => {
+              const meta = plsMetaFor(m.category)
+              const dateLabel = format(parseISO(m.event_date), 'MMM d')
+              const evKey = m.id  // already 'pls-<id>' from usePlsMilestones
+              const isHovered = hoveredEventId === evKey
+              // Continue the stagger sequence past the user-events so
+              // labels don't collide on shared dates.
+              const dy = -(4 + ((data.events?.length ?? 0) + i) % 3 * 26)
+              const suffix = m.is_planned ? ' (planned)' : ''
+              const rawLabel = m.name + suffix
+              const displayName = rawLabel.length > 22
+                ? rawLabel.slice(0, 21) + '…'
+                : rawLabel
+              return (
+                <ReferenceLine
+                  key={evKey}
+                  x={dateLabel}
+                  stroke={meta.color}
+                  strokeDasharray="6 4"
+                  strokeWidth={isHovered ? 2.5 : 1.5}
+                  strokeOpacity={isHovered ? 1 : 0.75}
+                  ifOverflow="visible"
+                  isFront
+                  label={{
+                    value: displayName,
+                    position: 'top',
+                    fill: meta.color,
+                    fontSize: 20,
+                    fontWeight: isHovered ? 700 : 600,
+                    dy,
+                  }}
+                  onMouseEnter={() => setHoveredEventId(evKey)}
                   onMouseLeave={() => setHoveredEventId(null)}
                 />
               )
@@ -313,35 +435,80 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
         <p className="mt-3 text-sm text-muted-foreground">
           Click a competitor's name in the legend to open its full dashboard.
           {(data.events?.length ?? 0) > 0 && (
-            <> · Dashed vertical markers are user-added timeline events (add or edit in Settings).</>
+            <> · Dashed vertical markers (4-3) are user-added timeline events (add or edit in Settings).</>
+          )}
+          {plsInWindow.length > 0 && (
+            <> · Longer-dash markers (6-4) are Saber PLS milestones from SignalPulse, colored by category.</>
           )}
         </p>
 
         {/* Event list beneath the chart — gives users a clean way to read
             each marker's date, description, and which game it belongs to,
             without depending on hover interactions with the small dot on
-            the chart itself. */}
-        {(data.events?.length ?? 0) > 0 && (
+            the chart itself.
+
+            v0020: PLS milestones are appended to the same list, sorted
+            chronologically with user events.  Row color follows the
+            marker: user events use the competing-game line color, PLS
+            uses its category color from PLS_CATEGORY_META.  Category
+            label appears next to the PLS name so "Core" vs "Sale" is
+            legible in the list without matching swatches to the header. */}
+        {((data.events?.length ?? 0) > 0 || plsInWindow.length > 0) && (
           <div className="mt-4 border-t border-border/60 pt-3">
             <p className="mb-2 text-sm font-medium uppercase tracking-wide text-muted-foreground">
               Events in this window
             </p>
             <ul className="grid grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
-              {data.events!.map(ev => {
-                const gameIdx = data.games.findIndex(g => g.game_id === ev.game_id)
-                const color = LINE_COLORS[Math.max(gameIdx, 0) % LINE_COLORS.length]
-                const g = data.games[gameIdx]
-                return (
-                  <li key={ev.id} className="flex items-baseline gap-1.5">
-                    <span aria-hidden style={{ color }}>●</span>
-                    <span className="tabular-nums text-muted-foreground">{ev.event_date}</span>
-                    <span className="truncate" title={`${g?.name ?? ''} — ${ev.name}`}>
-                      {ev.name}
-                      {g && <span className="text-muted-foreground"> — {g.name}</span>}
-                    </span>
-                  </li>
-                )
-              })}
+              {[
+                // Unified list of user events + PLS milestones, sorted
+                // by event_date so a Steam Sale on Aug 15 shows next to
+                // a user 'Feature launch' event on Aug 15.
+                ...(data.events ?? []).map(ev => ({
+                  kind: 'user' as const,
+                  key:  `user-${ev.id}`,
+                  event_date: ev.event_date,
+                  name: ev.name,
+                  game_id: ev.game_id,
+                })),
+                ...plsInWindow.map(m => ({
+                  kind: 'pls' as const,
+                  key:  m.id,
+                  event_date: m.event_date,
+                  name: m.name + (m.is_planned ? ' (planned)' : ''),
+                  category: m.category,
+                  game_id: parentGameId ?? undefined,
+                })),
+              ]
+                .sort((a, b) => a.event_date.localeCompare(b.event_date))
+                .map(row => {
+                  if (row.kind === 'user') {
+                    const gameIdx = data.games.findIndex(g => g.game_id === row.game_id)
+                    const color = LINE_COLORS[Math.max(gameIdx, 0) % LINE_COLORS.length]
+                    const g = data.games[gameIdx]
+                    return (
+                      <li key={row.key} className="flex items-baseline gap-1.5">
+                        <span aria-hidden style={{ color }}>●</span>
+                        <span className="tabular-nums text-muted-foreground">{row.event_date}</span>
+                        <span className="truncate" title={`${g?.name ?? ''} — ${row.name}`}>
+                          {row.name}
+                          {g && <span className="text-muted-foreground"> — {g.name}</span>}
+                        </span>
+                      </li>
+                    )
+                  }
+                  // PLS row
+                  const meta = plsMetaFor(row.category!)
+                  return (
+                    <li key={row.key} className="flex items-baseline gap-1.5">
+                      <span aria-hidden style={{ color: meta.color }}>●</span>
+                      <span className="tabular-nums text-muted-foreground">{row.event_date}</span>
+                      <span className="truncate" title={`PLS — ${meta.label} — ${row.name}`}>
+                        {row.name}
+                        <span className="text-muted-foreground"> — PLS · {meta.label}</span>
+                      </span>
+                    </li>
+                  )
+                })}
             </ul>
           </div>
         )}

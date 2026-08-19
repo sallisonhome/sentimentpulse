@@ -53,6 +53,10 @@ export interface CompetitorTimeseriesGame {
   game_id: number
   name: string
   is_parent: boolean
+  /** v0020 (2026-08-19): exposed so the Post Volume by Title chart can
+   *  look up PLS milestones from SignalPulse for the parent Saber title.
+   *  Nullable because uploaded-only titles may not have a Steam AppID. */
+  steam_app_id: number | null
   /** Period-over-period totals (2026-07-26).
    *  Populated only for 7d / 30d / 90d views — null for `today` and
    *  `lifetime` (no comparable prior window). pct_change is null when

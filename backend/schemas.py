@@ -439,6 +439,12 @@ class CompetitorTimeseriesGame(BaseModel):
     game_id: int
     name: str
     is_parent: bool
+    # v0020 (2026-08-19): exposed so the Post Volume by Title chart can
+    # ask SignalPulse for the parent Saber title's PLS milestones (child
+    # titles set up in SignalPulse are joined to SentimentPulse games on
+    # this key). Nullable because pre-release / uploaded-only titles may
+    # not yet have a Steam AppID; those simply won't get PLS annotations.
+    steam_app_id: Optional[int] = None
     # Period-over-period post-volume totals (2026-07-26). Populated for
     # 7d/30d/90d (`weekly`/`monthly`/`quarterly`) views only — for
     # `today` and `lifetime` these are None because there is no directly
