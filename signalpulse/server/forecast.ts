@@ -131,13 +131,29 @@ export function calculateDynamicForecastsFull(
    */
   steamActualFirstMonthUnits?: number | null,
   /**
-   * v3.8 (2026-08-12): Steam cumulative BASE units to-date. When provided,
-   * used as the Steam LT projection (not steamFirstMonth * 4). Steam 1st
-   * Yr is interpolated between 1st Mo and LT (70% of remaining tail).
-   * Pass null pre-release. Console dampening (v3.7) is UNCHANGED — only
-   * the Steam side benefits from observed cumulative.
+   * v3.8 (2026-08-12): Steam cumulative BASE units to-date. Only used as a
+   * fallback when no `baselineSteam` snapshot is available yet (v3.28
+   * superseded the normal path — see below). Pass null pre-release.
    */
   steamActualCumulativeUnits?: number | null,
+  /**
+   * v3.28 (2026-08-19): Steam first-YEAR actual BASE units (T+365d window).
+   * When provided along with `baselineSteam`, re-anchors the LT projection
+   * off the first-year/baseline ratio instead of the first-month ratio.
+   * Pass null before T+365d or when actuals are insufficient.
+   */
+  steamActualFirstYearUnits?: number | null,
+  /**
+   * v3.28 (2026-08-19): the LOCKED Dynamic Pre-Launch Forecast for Steam —
+   * read from the immutable `launchForecastSnapshot` row (wishlist ×
+   * multiplier, captured once at first-observed-release and never
+   * recomputed). This is the reference the Dynamic Actuals-Driven Forecast
+   * projects up/down from at each milestone crossing, and the baseline
+   * every delta (dashboard + PDP) is measured against. Pass null/undefined
+   * when no snapshot exists yet (falls back to the legacy clamp below so
+   * behavior degrades gracefully rather than going blank).
+   */
+  baselineSteam?: { firstMonth: number | null; firstYear: number | null; lifetime: number | null } | null,
 ): DynamicForecastResult[] {
   const mix = getAdjustedPlatformMix(selectedPlatforms);
   const hasSteam = selectedPlatforms.includes("PC (Steam)");
@@ -155,34 +171,61 @@ export function calculateDynamicForecastsFull(
     && steamActualFirstMonthUnits != null
     && steamActualFirstMonthUnits > 0;
 
-  const steamFirstMonth = useActuals
-    ? steamActualFirstMonthUnits!
-    : wishlistBasedSteamFirstMonth;
+  // v3.28 (2026-08-19): Dynamic Actuals-Driven Forecast — milestone
+  // ratio-scaling against the LOCKED Dynamic Pre-Launch Forecast baseline,
+  // replacing the old "LT = max(cumulative, firstMonth)" clamp (which
+  // always produced a 0% delta once actuals existed). At T+30d we scale
+  // the whole baseline by (actual firstMonth / baseline firstMonth); at
+  // T+365d we re-anchor using (actual firstYear / baseline firstYear).
+  const hasBaseline = baselineSteam != null
+    && baselineSteam.firstMonth != null && baselineSteam.firstMonth > 0
+    && baselineSteam.firstYear != null && baselineSteam.firstYear > 0
+    && baselineSteam.lifetime != null && baselineSteam.lifetime > 0;
 
-  // Steam lift ratio (actual vs wishlist-based). Used to dampen-propagate
-  // to console platforms. No lift when no actuals OR baseline was zero.
-  const steamLift = (useActuals
-      && wishlistBasedSteamFirstMonth != null
-      && wishlistBasedSteamFirstMonth > 0)
-    ? (steamActualFirstMonthUnits! / wishlistBasedSteamFirstMonth)
-    : 1;
+  let steamFirstMonth: number | null;
+  let steamFirstYear: number | null;
+  let steamLifetime: number | null;
+  let steamLift: number;
+
+  if (useActuals && hasBaseline) {
+    const ratio1 = steamActualFirstMonthUnits! / baselineSteam!.firstMonth!;
+    steamLift = ratio1;
+    steamFirstMonth = steamActualFirstMonthUnits!;
+
+    const hasFirstYearActual = steamActualFirstYearUnits != null && steamActualFirstYearUnits > 0;
+    if (hasFirstYearActual) {
+      const ratio2 = steamActualFirstYearUnits! / baselineSteam!.firstYear!;
+      steamFirstYear = steamActualFirstYearUnits!;
+      steamLifetime = Math.round(baselineSteam!.lifetime! * ratio2);
+    } else {
+      steamFirstYear = Math.round(baselineSteam!.firstYear! * ratio1);
+      steamLifetime = Math.round(baselineSteam!.lifetime! * ratio1);
+    }
+  } else if (useActuals) {
+    // Fallback: actuals exist but no locked baseline yet (e.g. a title
+    // released with zero pre-release wishlist history, or a transitional
+    // state before the next dashboard load backfills the snapshot).
+    // Degrade to the legacy clamp so this can't silently go blank.
+    steamFirstMonth = steamActualFirstMonthUnits!;
+    const useCumulative = steamActualCumulativeUnits != null && steamActualCumulativeUnits > 0;
+    steamLifetime = useCumulative
+      ? Math.max(steamActualCumulativeUnits!, steamFirstMonth!)
+      : steamFirstMonth * 4;
+    steamFirstYear = useCumulative && steamLifetime != null
+      ? Math.round(steamFirstMonth! + (steamLifetime - steamFirstMonth!) * 0.7)
+      : steamFirstMonth * 2;
+    steamLift = (wishlistBasedSteamFirstMonth != null && wishlistBasedSteamFirstMonth > 0)
+      ? (steamActualFirstMonthUnits! / wishlistBasedSteamFirstMonth)
+      : 1;
+  } else {
+    // Pre-release, or no actuals at all: pure wishlist formula.
+    steamFirstMonth = wishlistBasedSteamFirstMonth;
+    steamFirstYear = steamFirstMonth != null ? steamFirstMonth * 2 : null;
+    steamLifetime = steamFirstMonth != null ? steamFirstMonth * 4 : null;
+    steamLift = 1;
+  }
+
   const consoleLift = 1 + CONSOLE_LIFT_DAMPENING * (steamLift - 1);
-
-  // v3.8: When Steam cumulative actuals are provided, use them as the
-  // Steam LT projection (not first-month * 4). Steam 1st Yr = 1st Mo +
-  // 70% of the tail between 1st Mo and LT — heuristic for how much of
-  // remaining lifetime lands inside year 1. Falls back to 1st Mo * 2/4
-  // when cumulative isn't provided (pre-release or no data).
-  const useCumulative = hasSteam
-    && steamActualCumulativeUnits != null
-    && steamActualCumulativeUnits > 0
-    && steamFirstMonth != null;
-  const steamLifetime = useCumulative
-    ? Math.max(steamActualCumulativeUnits!, steamFirstMonth!)
-    : (steamFirstMonth != null ? steamFirstMonth * 4 : null);
-  const steamFirstYear = useCumulative && steamLifetime != null
-    ? Math.round(steamFirstMonth! + (steamLifetime - steamFirstMonth!) * 0.7)
-    : (steamFirstMonth != null ? steamFirstMonth * 2 : null);
 
   // ── PS5 with prepurchase: LT-first approach ────────────────────────────────
   // prepurchase × 8 = LT forecast, then work backwards

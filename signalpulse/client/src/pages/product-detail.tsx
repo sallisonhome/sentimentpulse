@@ -480,6 +480,7 @@ export default function ProductDetail() {
           <ForecastTable
             dynamicForecasts={product.dynamicForecasts}
             dynamicFullForecasts={product.dynamicFullForecasts}
+            preLaunchSnapshot={product.launchForecastSnapshot}
             platforms={platforms}
             targetRetailPriceUsd={product.targetRetailPriceUsd}
             perPlatformPricing={product.perPlatformPricing}
@@ -632,6 +633,7 @@ function PrepurchaseNotStarted({ targetDate }: { targetDate: string | null }) {
 function ForecastTable({
   dynamicForecasts,
   dynamicFullForecasts,
+  preLaunchSnapshot,
   platforms,
   targetRetailPriceUsd,
   perPlatformPricing,
@@ -640,6 +642,7 @@ function ForecastTable({
 }: {
   dynamicForecasts: any[];
   dynamicFullForecasts?: any[];
+  preLaunchSnapshot?: { perPlatformForecasts?: { platform: string; firstMonth: number; firstYear: number; lifetime: number }[] } | null;
   platforms: string[];
   targetRetailPriceUsd: number | null;
   perPlatformPricing: Record<string, number> | null;
@@ -672,7 +675,23 @@ function ForecastTable({
 
   const dynamicTotal = Object.values(dynamicMap).reduce((a, b) => a + b, 0);
   const dynamic1YearTotal = Object.values(dynamic1YearMap).reduce((a, b) => a + b, 0);
-  const dynamicLtTotal = Object.values(dynamicLtMap).reduce((a, b) => a + b, 0);
+
+  // v3.28 (2026-08-19): the Lifetime column is now the LOCKED Dynamic
+  // Pre-Launch Forecast per platform, once a snapshot exists -- NOT the
+  // live Dynamic Actuals-Driven Forecast (dynamicLtMap), so the number
+  // used for the Delta vs Forecast comparison stays fixed over a title's
+  // life instead of drifting as actuals accrue. Falls back to the live
+  // dynamicLtMap only pre-release, before any snapshot has been captured.
+  const preLaunchLtMap: Record<string, number> = {};
+  for (const f of preLaunchSnapshot?.perPlatformForecasts ?? []) {
+    preLaunchLtMap[f.platform] = f.lifetime;
+  }
+  const hasPreLaunchSnapshot = Object.keys(preLaunchLtMap).length > 0;
+  const effectiveLtMap: Record<string, number> = {};
+  for (const p of platforms) {
+    effectiveLtMap[p] = preLaunchLtMap[p] ?? dynamicLtMap[p] ?? 0;
+  }
+  const dynamicLtTotal = Object.values(effectiveLtMap).reduce((a, b) => a + b, 0);
 
   // ─── Financial Calculations ─────────────────────────────────────────────
   // GMV (Gross Sales) = Units × Full USD Price × gmvFactor
@@ -697,7 +716,7 @@ function ForecastTable({
 
   const dynamicGmv = calcGmv(dynamicMap);
   const dynamic1YearGmv = calcGmv(dynamic1YearMap);
-  const dynamicLtGmv = calcGmv(dynamicLtMap);
+  const dynamicLtGmv = calcGmv(effectiveLtMap);
   const dynamicNet = calcNetFromGmv(dynamicGmv);
   const dynamic1YearNet = calcNetFromGmv(dynamic1YearGmv);
   const dynamicLtNet = calcNetFromGmv(dynamicLtGmv);
@@ -727,7 +746,7 @@ function ForecastTable({
     (sum, p) => sum + (actualUnitsByPlatform[p] as number), 0
   );
   const actualsLtTotal = platformsWithActuals.reduce(
-    (sum, p) => sum + (dynamicLtMap[p] ?? 0), 0
+    (sum, p) => sum + (effectiveLtMap[p] ?? 0), 0
   );
   const totalDelta = platformsWithActuals.length > 0
     ? formatDeltaPct(actualUnitsTotal, actualsLtTotal)
@@ -742,7 +761,7 @@ function ForecastTable({
               <th className="text-left py-2 text-xs font-medium text-muted-foreground min-w-[120px]">Platform</th>
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Dynamic First Month</th>
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Dynamic 1 Year</th>
-              <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[140px]">Dynamic LT Forecast</th>
+              <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[140px]">Dynamic Pre-Launch Forecast</th>
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Actual (to date)</th>
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[100px]">Δ vs Forecast</th>
             </tr>
@@ -750,7 +769,7 @@ function ForecastTable({
           <tbody>
             {platforms.map((p) => {
               const actual = actualUnitsByPlatform[p];
-              const dynLt = dynamicLtMap[p] ?? 0;
+              const dynLt = effectiveLtMap[p] ?? 0;
               const delta = actual != null ? formatDeltaPct(actual, dynLt) : null;
               return (
                 <tr key={p} className="border-b border-border/50">
@@ -815,8 +834,9 @@ function ForecastTable({
       <div className="mt-2 flex gap-2 p-2 rounded-md bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-800/30">
         <Info className="h-3 w-3 text-blue-500 shrink-0 mt-0.5" />
         <p className="text-[10px] text-blue-700 dark:text-blue-400 leading-relaxed">
-          <strong>Dynamic Forecast</strong> is fully automatic (wishlist-driven pre-launch, actuals-driven once live) — there is no manual forecast input for this title.
-          <strong className="ml-2">Actual (to date)</strong> and <strong>Δ vs Forecast</strong> compare cumulative units sold so far against the Dynamic LT Forecast, currently available for Steam only (a negative % early in a title's life is expected, not a miss). PS5 will populate here once a PSN actuals feed is connected; Xbox, Switch, and Epic have no actuals pipeline yet.
+          <strong>Dynamic First Month</strong> and <strong>Dynamic 1 Year</strong> are fully automatic (wishlist-driven pre-launch, actuals-driven once live) — there is no manual forecast input for this title.
+          <strong className="ml-2">Dynamic Pre-Launch Forecast</strong> is the LOCKED wishlist/prepurchase-derived lifetime forecast, frozen the first time this title is observed as released — it never changes afterward{hasPreLaunchSnapshot ? ", which is why it's used as the fixed baseline below" : " (will populate once this title is observed post-release)"}.
+          <strong className="ml-2">Actual (to date)</strong> and <strong>Δ vs Forecast</strong> compare cumulative units sold so far against the Dynamic Pre-Launch Forecast, currently available for Steam only (a negative % early in a title's life is expected, not a miss). PS5 will populate here once a PSN actuals feed is connected; Xbox, Switch, and Epic have no actuals pipeline yet.
         </p>
       </div>
 

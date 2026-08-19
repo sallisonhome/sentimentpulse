@@ -166,73 +166,29 @@ export async function registerRoutes(
         const steamActualFirstMonth = storage.getSteamActualFirstMonthBaseUnits(
           p.id, releaseDate,
         );
+        const steamActualFirstYear = storage.getSteamActualFirstYearBaseUnits(
+          p.id, releaseDate,
+        );
         const steamActualCumulative = storage.getSteamActualCumulativeBaseUnits(
           p.id, releaseDate,
         );
-        const dynamicFull = calculateDynamicForecastsFull(
-          platforms,
-          forecastingWl,
-          latestPs5Pre?.cumulativeCount ?? null,
-          steamActualFirstMonth,
-          steamActualCumulative,
-        );
-        const dynamicFirstMonthTotal = dynamicFull.reduce((sum, d) => sum + d.firstMonth, 0);
-        const dynamicFirstYearTotal = dynamicFull.reduce((sum, d) => sum + d.firstYear, 0);
-        const dynamicLtTotal = dynamicFull.reduce((sum, d) => sum + d.lifetime, 0);
 
-        // v2.5 (2026-08-11): expose Steam-only forecast track so the summary
-        // card can display 'Steam Dyn' rows separately from 'All Platforms'.
-        const steamRow = dynamicFull.find(d => d.platform === "PC (Steam)");
-        const steamDynamicFirstMonth = steamRow?.firstMonth ?? null;
-        const steamDynamicFirstYear = steamRow?.firstYear ?? null;
-        const steamDynamicLt = steamRow?.lifetime ?? null;
-
-        // v3.7 (2026-08-12): flag whether the Steam Dyn track was driven by
-        // actuals or wishlist. Also expose the raw actual and the console
-        // lift factor so the UI can annotate the tiles.
-        const wishlistBasedSteamForecast = forecastingWl != null
-          ? Math.round(forecastingWl * 0.27)
-          : null;
-        const forecastMode: "actuals" | "wishlist" | "none" =
-          steamActualFirstMonth != null && steamActualFirstMonth > 0
-            ? "actuals"
-            : forecastingWl != null ? "wishlist" : "none";
-        const consoleLiftFactor = (forecastMode === "actuals"
-            && wishlistBasedSteamForecast != null
-            && wishlistBasedSteamForecast > 0)
-          ? 1 + 0.5 * ((steamActualFirstMonth! / wishlistBasedSteamForecast) - 1)
-          : 1;
-
-        // v3.2 (2026-08-11): Steam Revenue split by release date. Feeds the
-        // dashboard card 'Steam Revenue' triad (Pre-Release / Post-Release / Total).
-        const steamRevenueSplit = storage.getSteamRevenueByReleaseSplit(p.id, releaseDate);
-
-        // v3.22 (2026-08-18): Launch Forecast Snapshot.
-        //
-        // If today is on or after the product's releaseDate AND no snapshot
-        // exists yet, capture the wishlist-driven (NOT actuals-influenced)
-        // dynamic forecast NOW and freeze it. Writes are idempotent —
-        // upsertLaunchForecastSnapshotIfMissing() returns the existing row
-        // when one exists, so a re-request never rewrites.
-        //
-        // The snapshot deliberately uses the WISHLIST formula (actuals=null)
-        // even if actuals data exists at snapshot time, because on release
-        // day actuals volume is 0 and we want the pure wishlist projection
-        // as the immortal baseline that post-launch actuals-influenced
-        // forecasts are compared against.
-        //
-        // After T+365 days post-release, launchForecastSnapshot is set to
-        // null in the response so the card hides the baseline row — the DB
-        // row is retained for historical review, just not shown on the card.
+        // v3.28 (2026-08-19): Launch Forecast Snapshot — the LOCKED Dynamic
+        // Pre-Launch Forecast. Moved BEFORE calculateDynamicForecastsFull so
+        // its baseline can feed the Dynamic Actuals-Driven Forecast's
+        // milestone ratio-scaling below. Written exactly once per product
+        // (idempotent upsert), the first time we observe releaseDate <=
+        // today — forever after, regardless of days-since-release (v3.28
+        // removed the old 365-day write/display window so older titles
+        // like Space Marine 2 get backfilled on next load).
         let launchForecastSnapshot: any = null;
         const todayStr = new Date().toISOString().split("T")[0];
         const hasReleased = releaseDate != null && releaseDate <= todayStr;
         if (hasReleased) {
-          const daysSinceRelease = Math.floor(
-            (new Date(todayStr).getTime() - new Date(releaseDate!).getTime()) / (1000 * 60 * 60 * 24)
-          );
-          const withinWindow = daysSinceRelease <= 365;
-          if (withinWindow) {
+          const existingSnapshot = storage.getLaunchForecastSnapshot(p.id);
+          if (existingSnapshot) {
+            launchForecastSnapshot = existingSnapshot;
+          } else {
             // Compute the wishlist-only (baseline) forecast — pass nulls for
             // steamActuals so calculateDynamicForecastsFull uses the pure
             // wishlist formula, matching what the card showed at release moment.
@@ -267,11 +223,54 @@ export async function registerRoutes(
               });
             }
           }
-          // If out-of-window (>365d), fetch the existing row anyway so
-          // callers can still read it — but respond null to the client to
-          // hide the card row. Actually just leave it null; the DB row is
-          // preserved for historical audits.
         }
+        const baselineSteamForActuals = launchForecastSnapshot
+          ? {
+              firstMonth: launchForecastSnapshot.steamFirstMonth,
+              firstYear: launchForecastSnapshot.steamFirstYear,
+              lifetime: launchForecastSnapshot.steamLifetime,
+            }
+          : null;
+
+        const dynamicFull = calculateDynamicForecastsFull(
+          platforms,
+          forecastingWl,
+          latestPs5Pre?.cumulativeCount ?? null,
+          steamActualFirstMonth,
+          steamActualCumulative,
+          steamActualFirstYear,
+          baselineSteamForActuals,
+        );
+        const dynamicFirstMonthTotal = dynamicFull.reduce((sum, d) => sum + d.firstMonth, 0);
+        const dynamicFirstYearTotal = dynamicFull.reduce((sum, d) => sum + d.firstYear, 0);
+        const dynamicLtTotal = dynamicFull.reduce((sum, d) => sum + d.lifetime, 0);
+
+        // v2.5 (2026-08-11): expose Steam-only forecast track so the summary
+        // card can display 'Steam Dyn' rows separately from 'All Platforms'.
+        const steamRow = dynamicFull.find(d => d.platform === "PC (Steam)");
+        const steamDynamicFirstMonth = steamRow?.firstMonth ?? null;
+        const steamDynamicFirstYear = steamRow?.firstYear ?? null;
+        const steamDynamicLt = steamRow?.lifetime ?? null;
+
+        // v3.7 (2026-08-12): flag whether the Steam Dyn track was driven by
+        // actuals or wishlist. Also expose the raw actual and the console
+        // lift factor so the UI can annotate the tiles.
+        const wishlistBasedSteamForecast = forecastingWl != null
+          ? Math.round(forecastingWl * 0.27)
+          : null;
+        const forecastMode: "actuals" | "wishlist" | "none" =
+          steamActualFirstMonth != null && steamActualFirstMonth > 0
+            ? "actuals"
+            : forecastingWl != null ? "wishlist" : "none";
+        const consoleLiftFactor = (forecastMode === "actuals"
+            && wishlistBasedSteamForecast != null
+            && wishlistBasedSteamForecast > 0)
+          ? 1 + 0.5 * ((steamActualFirstMonth! / wishlistBasedSteamForecast) - 1)
+          : 1;
+
+        // v3.2 (2026-08-11): Steam Revenue split by release date. Feeds the
+        // dashboard card 'Steam Revenue' triad (Pre-Release / Post-Release / Total).
+        const steamRevenueSplit = storage.getSteamRevenueByReleaseSplit(p.id, releaseDate);
 
         // v3.9 (2026-08-12): blended GMV factor. Default is 0.66 (accounts
         // for regional discounting, store cuts before storefront splits,
@@ -322,10 +321,12 @@ export async function registerRoutes(
           // use observed Steam ASP/list-price ratio when available.
           gmvFactor,
           observedSteamAspRatio,
-          // v3.22 (2026-08-18): locked launch-day baseline forecast. Null
-          // pre-release and after T+365. Card renders baseline / current /
-          // delta rows when present. Includes parsed perPlatformForecasts
-          // array so the card can compare per-platform baseline to current.
+          // v3.28 (2026-08-19): the LOCKED Dynamic Pre-Launch Forecast.
+          // Null only pre-release (or the rare zero-data corner case) —
+          // once captured it is shown forever (no more 365-day cutoff).
+          // This is the immutable baseline every actuals delta (PDP +
+          // dashboard) is measured against. Includes parsed
+          // perPlatformForecasts so the UI can compare per-platform.
           launchForecastSnapshot: launchForecastSnapshot
             ? { ...launchForecastSnapshot,
                 perPlatformForecasts: JSON.parse(launchForecastSnapshot.perPlatformForecastsJson) }
@@ -457,15 +458,35 @@ export async function registerRoutes(
       const steamActualFirstMonthUnits = storage.getSteamActualFirstMonthBaseUnits(
         id, releaseDateForSummary,
       );
+      const steamActualFirstYearUnits = storage.getSteamActualFirstYearBaseUnits(
+        id, releaseDateForSummary,
+      );
       const steamActualCumulativeUnits = storage.getSteamActualCumulativeBaseUnits(
         id, releaseDateForSummary,
       );
+
+      // v3.28 (2026-08-19): read the locked Dynamic Pre-Launch Forecast
+      // (read-only here — writes happen in the list endpoint, which the
+      // dashboard hits first on every load; see comment below) so its
+      // baseline can feed the Dynamic Actuals-Driven Forecast's milestone
+      // ratio-scaling.
+      const pdpLaunchSnapshotForBaseline = storage.getLaunchForecastSnapshot(id);
+      const pdpBaselineSteamForActuals = pdpLaunchSnapshotForBaseline
+        ? {
+            firstMonth: pdpLaunchSnapshotForBaseline.steamFirstMonth,
+            firstYear: pdpLaunchSnapshotForBaseline.steamFirstYear,
+            lifetime: pdpLaunchSnapshotForBaseline.steamLifetime,
+          }
+        : null;
+
       const dynamicFullForecasts = calculateDynamicForecastsFull(
         platforms,
         forecastingWl,
         latestPs5Pre?.cumulativeCount ?? null,
         steamActualFirstMonthUnits,
         steamActualCumulativeUnits,
+        steamActualFirstYearUnits,
+        pdpBaselineSteamForActuals,
       );
 
       // v3.9 (2026-08-12): compute blended GMV factor for revenue tiles.
@@ -481,24 +502,16 @@ export async function registerRoutes(
         pdpGmvFactor = 0.5 * pdpObservedSteamAspRatio + 0.5 * 0.66;
       }
 
-      // v3.22 (2026-08-18): read existing launch snapshot (writes happen
-      // in the list endpoint, which the dashboard hits first on every
-      // load). If somehow a detail request happens before the list
-      // request post-release, the snapshot will just be null this cycle
-      // and populated the next time — no data loss.
-      const pdpLaunchSnapshot = storage.getLaunchForecastSnapshot(id);
-      let pdpLaunchSnapshotOut: any = null;
-      if (pdpLaunchSnapshot && releaseDateForSummary) {
-        const daysSinceRelease = Math.floor(
-          (new Date().getTime() - new Date(releaseDateForSummary).getTime()) / (1000 * 60 * 60 * 24)
-        );
-        if (daysSinceRelease <= 365) {
-          pdpLaunchSnapshotOut = {
-            ...pdpLaunchSnapshot,
-            perPlatformForecasts: JSON.parse(pdpLaunchSnapshot.perPlatformForecastsJson),
-          };
-        }
-      }
+      // v3.28 (2026-08-19): expose the same snapshot read above. Shown
+      // forever once captured (no more 365-day cutoff) — it's the locked
+      // Dynamic Pre-Launch Forecast baseline the PDP's ForecastTable
+      // renders as its own column and measures Δ vs Forecast against.
+      const pdpLaunchSnapshotOut: any = pdpLaunchSnapshotForBaseline
+        ? {
+            ...pdpLaunchSnapshotForBaseline,
+            perPlatformForecasts: JSON.parse(pdpLaunchSnapshotForBaseline.perPlatformForecastsJson),
+          }
+        : null;
 
       res.json({
         ...product,

@@ -90,10 +90,17 @@ export default function Dashboard() {
             const dynLtGmv = Math.round(dynLtUnits * price * gmvFactor);
             const dynLtNet = Math.round(dynLtGmv * 0.70);
 
-            // v3.25: Steam-only lifetime forecast revenue, for the new
-            // Steam Actuals-vs-Forecast delta (item 5). Mirrors the
-            // all-platforms GMV/net calc above but scoped to steamDynLtUnits.
-            const steamDynLtGmv = hasSteamDyn ? Math.round(steamDynLtUnits * price * gmvFactor) : null;
+            // v3.28 (2026-08-19): the LOCKED Dynamic Pre-Launch Forecast for
+            // Steam (wishlist/prepurchase-derived, frozen at first-observed-
+            // release, never recomputed). This is now the baseline every
+            // actuals delta on this card is measured against — NOT the
+            // live Dynamic Actuals-Driven Forecast (steamDynLtUnits), which
+            // itself now projects up/down from actuals and would make the
+            // delta partially self-referential.
+            const steamPreLaunchLtUnits: number | null = product.launchForecastSnapshot?.steamLifetime ?? null;
+            const steamPreLaunchLtGmv = (steamPreLaunchLtUnits != null && steamPreLaunchLtUnits > 0)
+              ? Math.round(steamPreLaunchLtUnits * price * gmvFactor)
+              : null;
 
             // Flag seeded dummy products by their known titles
             const DUMMY_TITLES = ['Warhammer 40,000: Space Marine 2', 'Expeditions: A New Earth'];
@@ -233,11 +240,14 @@ export default function Dashboard() {
                     } | null | undefined;
                     if (!rev || rev.totalRevenueUsd <= 0) return null;
                     const hasPre = rev.preReleaseRevenueUsd > 0;
-                    const revDelta = hasSteamDyn && steamDynLtGmv != null && steamDynLtGmv > 0
-                      ? formatDeltaPct(rev.totalRevenueUsd, steamDynLtGmv)
+                    // v3.28: delta now measured vs the locked Dynamic
+                    // Pre-Launch Forecast (steamPreLaunchLtGmv/Units), not
+                    // the live actuals-driven forecast.
+                    const revDelta = steamPreLaunchLtGmv != null && steamPreLaunchLtGmv > 0
+                      ? formatDeltaPct(rev.totalRevenueUsd, steamPreLaunchLtGmv)
                       : null;
-                    const unitsDelta = hasSteamDyn && steamDynLtUnits != null && steamDynLtUnits > 0
-                      ? formatDeltaPct(rev.totalBaseNetUnits, steamDynLtUnits)
+                    const unitsDelta = steamPreLaunchLtUnits != null && steamPreLaunchLtUnits > 0
+                      ? formatDeltaPct(rev.totalBaseNetUnits, steamPreLaunchLtUnits)
                       : null;
                     return (
                       <div className="pt-3 mt-3 border-t">
@@ -276,10 +286,10 @@ export default function Dashboard() {
                             </div>
                             {revDelta && (
                               <div
-                                title="Steam Total Revenue vs Steam Dynamic Lifetime Forecast revenue"
+                                title="Steam Total Revenue vs Dynamic Pre-Launch Forecast revenue (locked wishlist/prepurchase baseline)"
                                 className={`text-[10px] font-semibold tabular-nums ${revDelta.cls}`}
                               >
-                                {revDelta.text} vs forecast
+                                {revDelta.text} vs pre-launch forecast
                               </div>
                             )}
                           </div>
@@ -317,10 +327,10 @@ export default function Dashboard() {
                             </div>
                             {unitsDelta && (
                               <div
-                                title="Steam Total Units vs Steam Dynamic Lifetime Forecast units"
+                                title="Steam Total Units vs Dynamic Pre-Launch Forecast units (locked wishlist/prepurchase baseline)"
                                 className={`text-[10px] font-semibold tabular-nums ${unitsDelta.cls}`}
                               >
-                                {unitsDelta.text} vs forecast
+                                {unitsDelta.text} vs pre-launch forecast
                               </div>
                             )}
                           </div>
@@ -350,7 +360,7 @@ export default function Dashboard() {
                   <div className="pt-3 mt-3 border-t">
                     <div className="flex items-baseline justify-between mb-2">
                       <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                        Dynamic Forecast Across All Platforms
+                        Dynamic Actuals Driven Forecast
                         <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
                           click card for methodology →
                         </span>

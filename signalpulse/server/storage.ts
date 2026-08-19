@@ -1191,6 +1191,53 @@ export class DatabaseStorage implements IStorage {
   }
 
   /**
+   * v3.28 (2026-08-19): Steam first-YEAR actual BASE net units, mirroring
+   * getSteamActualFirstMonthBaseUnits but with a 365-day window. Used as
+   * the second milestone gate for the Dynamic Actuals-Driven Forecast:
+   * once a title crosses T+365d, its LT projection re-anchors off this
+   * actual/baseline ratio instead of the T+30d ratio.
+   *
+   *   - Returns null if releaseDate is missing.
+   *   - Returns null if today < releaseDate + windowDays (partial window).
+   *   - Otherwise sums base skuGroup net units on dates in
+   *     [releaseDate, releaseDate + windowDays).
+   *
+   * Default windowDays = 365 (first year).
+   */
+  getSteamActualFirstYearBaseUnits(
+    productId: number,
+    releaseDate: string | null,
+    windowDays: number = 365,
+  ): number | null {
+    if (!releaseDate) return null;
+
+    const relEpochMs = Date.parse(releaseDate + "T00:00:00Z");
+    if (Number.isNaN(relEpochMs)) return null;
+    const windowEndMs = relEpochMs + windowDays * 86400_000;
+    const windowEndDate = new Date(windowEndMs).toISOString().split("T")[0];
+
+    const todayDate = new Date().toISOString().split("T")[0];
+    if (todayDate < windowEndDate) return null;
+
+    const rows = db.select().from(steamSalesDaily)
+      .where(and(
+        eq(steamSalesDaily.productId, productId),
+        gte(steamSalesDaily.date, releaseDate),
+        lte(steamSalesDaily.date, windowEndDate),
+        eq(steamSalesDaily.skuGroup, "base"),
+      ))
+      .all();
+
+    if (rows.length === 0) return null;
+
+    let total = 0;
+    for (const r of rows) {
+      if (r.date < windowEndDate) total += r.netUnits;
+    }
+    return total > 0 ? total : null;
+  }
+
+  /**
    * v3.8 (2026-08-12): Steam cumulative BASE net units to-date, INCLUSIVE
    * of pre-release pre-purchase units + post-release sales. Returns the
    * same number that appears in the Steam Sales card 'Steam Base Game
