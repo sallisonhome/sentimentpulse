@@ -26,7 +26,20 @@ export default function TopBar() {
   const { data: ingestStatus } = useIngestStatus()
   const triggerIngest = useTriggerIngest()
 
-  // Auto-select most recent game on first load
+  // v0022 (2026-08-19): Auto-select the most recent game ONLY on true
+  // first-ever load — when there is no persisted selection in
+  // localStorage AND no ?game=<id> in the URL.  AppContext's useState
+  // initializer reads localStorage first, so selectedGameId is only
+  // null in that scenario.  Once this effect writes the initial id it
+  // is persisted to localStorage by setSelectedGameId, so the fallback
+  // won't re-fire on later navigations.
+  //
+  // BEFORE v0022 this same code was the actual cause of the "every
+  // side-nav click resets to HOT WHEELS" bug: any navigation that
+  // dropped ?game=<id> cleared state to null, this effect fired, and
+  // silently switched the picker to the newest game.  Now that state
+  // is localStorage-backed, that state-clearing pathway is gone, and
+  // this fallback stays a first-load-only affordance.
   useEffect(() => {
     if (selectedGameId == null && latestGame) {
       setSelectedGameId(latestGame.id)
