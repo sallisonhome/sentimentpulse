@@ -481,6 +481,7 @@ export default function ProductDetail() {
             dynamicForecasts={product.dynamicForecasts}
             dynamicFullForecasts={product.dynamicFullForecasts}
             preLaunchSnapshot={product.launchForecastSnapshot}
+            releaseDate={product.releaseDate ?? null}
             platforms={platforms}
             targetRetailPriceUsd={product.targetRetailPriceUsd}
             perPlatformPricing={product.perPlatformPricing}
@@ -634,6 +635,7 @@ function ForecastTable({
   dynamicForecasts,
   dynamicFullForecasts,
   preLaunchSnapshot,
+  releaseDate,
   platforms,
   targetRetailPriceUsd,
   perPlatformPricing,
@@ -643,6 +645,7 @@ function ForecastTable({
   dynamicForecasts: any[];
   dynamicFullForecasts?: any[];
   preLaunchSnapshot?: { perPlatformForecasts?: { platform: string; firstMonth: number; firstYear: number; lifetime: number }[] } | null;
+  releaseDate?: string | null;
   platforms: string[];
   targetRetailPriceUsd: number | null;
   perPlatformPricing: Record<string, number> | null;
@@ -683,8 +686,10 @@ function ForecastTable({
   // life instead of drifting as actuals accrue. Falls back to the live
   // dynamicLtMap only pre-release, before any snapshot has been captured.
   const preLaunchLtMap: Record<string, number> = {};
+  const preLaunchFirstYearMap: Record<string, number> = {};
   for (const f of preLaunchSnapshot?.perPlatformForecasts ?? []) {
     preLaunchLtMap[f.platform] = f.lifetime;
+    preLaunchFirstYearMap[f.platform] = f.firstYear;
   }
   const hasPreLaunchSnapshot = Object.keys(preLaunchLtMap).length > 0;
   const effectiveLtMap: Record<string, number> = {};
@@ -692,6 +697,24 @@ function ForecastTable({
     effectiveLtMap[p] = preLaunchLtMap[p] ?? dynamicLtMap[p] ?? 0;
   }
   const dynamicLtTotal = Object.values(effectiveLtMap).reduce((a, b) => a + b, 0);
+
+  // v3.29 (2026-08-19): the Delta vs Forecast column compares CUMULATIVE
+  // actuals-to-date against a locked baseline -- comparing 2 days of
+  // actuals against the LIFETIME forecast produces a misleadingly huge
+  // negative % for every freshly-released title. Gate + bucket by days
+  // since release, same convention as the dashboard card:
+  //   < 30d   -> hidden entirely (too little signal to be meaningful)
+  //   30-365d -> compare vs the locked First-Year forecast
+  //   365d+   -> compare vs the locked Lifetime forecast
+  const daysSinceRelease = releaseDate
+    ? Math.floor((Date.now() - Date.parse(releaseDate)) / 86400000)
+    : null;
+  const deltaBasis: "none" | "firstYear" | "lifetime" =
+    daysSinceRelease == null || daysSinceRelease < 30 ? "none"
+    : daysSinceRelease < 365 ? "firstYear"
+    : "lifetime";
+  const deltaBaseMap: Record<string, number> = deltaBasis === "firstYear" ? preLaunchFirstYearMap : effectiveLtMap;
+  const deltaBasisLabel = deltaBasis === "firstYear" ? "1st-Yr" : "Lifetime";
 
   // ─── Financial Calculations ─────────────────────────────────────────────
   // GMV (Gross Sales) = Units × Full USD Price × gmvFactor
@@ -746,9 +769,9 @@ function ForecastTable({
     (sum, p) => sum + (actualUnitsByPlatform[p] as number), 0
   );
   const actualsLtTotal = platformsWithActuals.reduce(
-    (sum, p) => sum + (effectiveLtMap[p] ?? 0), 0
+    (sum, p) => sum + (deltaBaseMap[p] ?? 0), 0
   );
-  const totalDelta = platformsWithActuals.length > 0
+  const totalDelta = platformsWithActuals.length > 0 && deltaBasis !== "none"
     ? formatDeltaPct(actualUnitsTotal, actualsLtTotal)
     : null;
 
@@ -763,14 +786,15 @@ function ForecastTable({
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Dynamic 1 Year</th>
               <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[140px]">Dynamic Pre-Launch Forecast</th>
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Actual (to date)</th>
-              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[100px]">Δ vs Forecast</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[100px]">Δ vs Forecast{deltaBasis !== "none" ? ` (${deltaBasisLabel})` : ""}</th>
             </tr>
           </thead>
           <tbody>
             {platforms.map((p) => {
               const actual = actualUnitsByPlatform[p];
               const dynLt = effectiveLtMap[p] ?? 0;
-              const delta = actual != null ? formatDeltaPct(actual, dynLt) : null;
+              const deltaBase = deltaBaseMap[p] ?? 0;
+              const delta = actual != null && deltaBasis !== "none" ? formatDeltaPct(actual, deltaBase) : null;
               return (
                 <tr key={p} className="border-b border-border/50">
                   <td className="py-2">
@@ -836,7 +860,7 @@ function ForecastTable({
         <p className="text-[10px] text-blue-700 dark:text-blue-400 leading-relaxed">
           <strong>Dynamic First Month</strong> and <strong>Dynamic 1 Year</strong> are fully automatic (wishlist-driven pre-launch, actuals-driven once live) — there is no manual forecast input for this title.
           <strong className="ml-2">Dynamic Pre-Launch Forecast</strong> is the LOCKED wishlist/prepurchase-derived lifetime forecast, frozen the first time this title is observed as released — it never changes afterward{hasPreLaunchSnapshot ? ", which is why it's used as the fixed baseline below" : " (will populate once this title is observed post-release)"}.
-          <strong className="ml-2">Actual (to date)</strong> and <strong>Δ vs Forecast</strong> compare cumulative units sold so far against the Dynamic Pre-Launch Forecast, currently available for Steam only (a negative % early in a title's life is expected, not a miss). PS5 will populate here once a PSN actuals feed is connected; Xbox, Switch, and Epic have no actuals pipeline yet.
+          <strong className="ml-2">Actual (to date)</strong> and <strong>Δ vs Forecast</strong> compare cumulative units sold so far against the locked Dynamic Pre-Launch Forecast, currently available for Steam only. To keep the comparison meaningful, the delta is hidden for the first 30 days post-release, then measured against the First-Year forecast through day 365, and against the Lifetime forecast thereafter{daysSinceRelease != null && daysSinceRelease < 30 ? ` (this title is ${daysSinceRelease}d post-release -- Δ appears in ${30 - daysSinceRelease}d)` : ""}. PS5 will populate here once a PSN actuals feed is connected; Xbox, Switch, and Epic have no actuals pipeline yet.
         </p>
       </div>
 

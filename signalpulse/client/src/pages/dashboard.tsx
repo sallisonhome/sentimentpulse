@@ -101,6 +101,35 @@ export default function Dashboard() {
             const steamPreLaunchLtGmv = (steamPreLaunchLtUnits != null && steamPreLaunchLtUnits > 0)
               ? Math.round(steamPreLaunchLtUnits * price * gmvFactor)
               : null;
+            const steamPreLaunchFirstYearUnits: number | null = product.launchForecastSnapshot?.steamFirstYear ?? null;
+            const steamPreLaunchFirstYearGmv = (steamPreLaunchFirstYearUnits != null && steamPreLaunchFirstYearUnits > 0)
+              ? Math.round(steamPreLaunchFirstYearUnits * price * gmvFactor)
+              : null;
+
+            // v3.29 (2026-08-19): comparing a few days of actuals against a
+            // LIFETIME forecast produces a misleadingly huge negative % for
+            // every freshly-released title (e.g. Twisted Tower at -93% two
+            // days post-release). Gate + bucket the actuals-vs-forecast
+            // delta by days since release so the comparison basis always
+            // matches how much of the title's life has actually elapsed:
+            //   < 30d   -> hidden entirely (too little signal to be meaningful)
+            //   30-365d -> compare vs the locked First-Year forecast
+            //   365d+   -> compare vs the locked Lifetime forecast
+            const releaseDateStr: string | null = product.releaseDate ?? null;
+            const daysSinceRelease = releaseDateStr
+              ? Math.floor((Date.now() - Date.parse(releaseDateStr)) / 86400000)
+              : null;
+            const deltaBasis: "none" | "firstYear" | "lifetime" =
+              daysSinceRelease == null || daysSinceRelease < 30 ? "none"
+              : daysSinceRelease < 365 ? "firstYear"
+              : "lifetime";
+            const deltaBasisUnits = deltaBasis === "firstYear" ? steamPreLaunchFirstYearUnits
+              : deltaBasis === "lifetime" ? steamPreLaunchLtUnits
+              : null;
+            const deltaBasisGmv = deltaBasis === "firstYear" ? steamPreLaunchFirstYearGmv
+              : deltaBasis === "lifetime" ? steamPreLaunchLtGmv
+              : null;
+            const deltaBasisLabel = deltaBasis === "firstYear" ? "1st-yr forecast" : "lifetime forecast";
 
             // Flag seeded dummy products by their known titles
             const DUMMY_TITLES = ['Warhammer 40,000: Space Marine 2', 'Expeditions: A New Earth'];
@@ -243,11 +272,11 @@ export default function Dashboard() {
                     // v3.28: delta now measured vs the locked Dynamic
                     // Pre-Launch Forecast (steamPreLaunchLtGmv/Units), not
                     // the live actuals-driven forecast.
-                    const revDelta = steamPreLaunchLtGmv != null && steamPreLaunchLtGmv > 0
-                      ? formatDeltaPct(rev.totalRevenueUsd, steamPreLaunchLtGmv)
+                    const revDelta = deltaBasisGmv != null && deltaBasisGmv > 0
+                      ? formatDeltaPct(rev.totalRevenueUsd, deltaBasisGmv)
                       : null;
-                    const unitsDelta = steamPreLaunchLtUnits != null && steamPreLaunchLtUnits > 0
-                      ? formatDeltaPct(rev.totalBaseNetUnits, steamPreLaunchLtUnits)
+                    const unitsDelta = deltaBasisUnits != null && deltaBasisUnits > 0
+                      ? formatDeltaPct(rev.totalBaseNetUnits, deltaBasisUnits)
                       : null;
                     return (
                       <div className="pt-3 mt-3 border-t">
@@ -286,10 +315,15 @@ export default function Dashboard() {
                             </div>
                             {revDelta && (
                               <div
-                                title="Steam Total Revenue vs Dynamic Pre-Launch Forecast revenue (locked wishlist/prepurchase baseline)"
+                                title={`Steam Total Revenue vs the locked Dynamic Pre-Launch Forecast's ${deltaBasisLabel} (wishlist/prepurchase baseline) -- hidden until 30 days post-release`}
                                 className={`text-[10px] font-semibold tabular-nums ${revDelta.cls}`}
                               >
-                                {revDelta.text} vs pre-launch forecast
+                                {revDelta.text} vs {deltaBasisLabel}
+                              </div>
+                            )}
+                            {!revDelta && daysSinceRelease != null && daysSinceRelease < 30 && (
+                              <div className="text-[10px] text-muted-foreground/70">
+                                Δ vs forecast in {30 - daysSinceRelease}d
                               </div>
                             )}
                           </div>
@@ -327,10 +361,15 @@ export default function Dashboard() {
                             </div>
                             {unitsDelta && (
                               <div
-                                title="Steam Total Units vs Dynamic Pre-Launch Forecast units (locked wishlist/prepurchase baseline)"
+                                title={`Steam Total Units vs the locked Dynamic Pre-Launch Forecast's ${deltaBasisLabel} (wishlist/prepurchase baseline) -- hidden until 30 days post-release`}
                                 className={`text-[10px] font-semibold tabular-nums ${unitsDelta.cls}`}
                               >
-                                {unitsDelta.text} vs pre-launch forecast
+                                {unitsDelta.text} vs {deltaBasisLabel}
+                              </div>
+                            )}
+                            {!unitsDelta && daysSinceRelease != null && daysSinceRelease < 30 && (
+                              <div className="text-[10px] text-muted-foreground/70">
+                                Δ vs forecast in {30 - daysSinceRelease}d
                               </div>
                             )}
                           </div>
