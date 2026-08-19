@@ -1330,7 +1330,11 @@ def _step4b_bluesky(
     state fetches from limit=100 down to whatever fresh volume actually
     exists for the game (usually 0-10 per day per title).
     """
-    from datetime import datetime, timezone
+    # NOTE: datetime + timezone are already imported at module level.
+    # Do NOT re-import inside this function — that turns them into
+    # function-local bindings and shadows the module import for the
+    # ENTIRE function body (see 2026-08-14 SessionLocal bug and the
+    # scripts/check_ingestor_health.py shadow-import trap).
     from services.source_cursor_service import (
         read_cursor, write_cursor, compute_after_epoch, newest_epoch_from_posts,
     )
