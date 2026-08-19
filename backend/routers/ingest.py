@@ -3057,3 +3057,112 @@ def _run_classify_topics_scoped(
         )
     finally:
         db.close()
+
+
+# ── v0019 (2026-08-19): audit + purge polluted Reddit posts ────────────
+#
+# See scripts/audit_polluted_reddit_posts.py for the full CLI version.
+# This wraps it as an HTTP endpoint because the droplet doesn't have
+# operator SSH access.
+
+@router.get("/admin/audit-polluted-reddit-posts")
+def audit_polluted_reddit_posts(
+    game_ids: str = Query("", description="Comma-separated game ids to scope to. Empty = all active games."),
+    purge: bool = Query(False, description="If true, delete polluted rows. Default false (dry-run)."),
+    sample_titles: int = Query(3, ge=0, le=10, description="How many sample polluted titles to include per game."),
+):
+    """Audit Reddit RawPost rows for pollution from the pre-v0019 divergent
+    _GENERAL_SUBREDDITS bug. A post is 'polluted' if:
+      * Its subreddit is in reddit_service._GENERAL_SUBREDDITS (case-insensitive) AND
+      * _post_mentions_game(post, query, distinctive_keywords=game.distinctive_keywords)
+        returns False under the game's CURRENT config.
+
+    Returns a per-game breakdown + a global total.  Set purge=true to delete.
+    """
+    from services.reddit_service import (
+        _GENERAL_SUBREDDITS, _post_mentions_game, _game_search_query,
+    )
+    from models import Game, RawPost, SourceEnum
+    from database import SessionLocal
+
+    def _sub_from_url(url: str):
+        if not url or "reddit.com/r/" not in url:
+            return None
+        try:
+            return url.split("/r/", 1)[1].split("/", 1)[0].lower()
+        except IndexError:
+            return None
+
+    scope_ids: set[int] | None = None
+    if game_ids.strip():
+        scope_ids = {int(x) for x in game_ids.split(",") if x.strip()}
+
+    db = SessionLocal()
+    try:
+        q = db.query(Game).filter(Game.is_active == True)  # noqa: E712
+        if scope_ids:
+            q = q.filter(Game.id.in_(scope_ids))
+        games = q.order_by(Game.id).all()
+
+        general_lower = {s.lower() for s in _GENERAL_SUBREDDITS}
+        per_game_report: list[dict] = []
+        global_total = 0
+        global_polluted = 0
+        polluted_ids_all: list[int] = []
+
+        for game in games:
+            posts = (
+                db.query(RawPost)
+                .filter(RawPost.game_id == game.id, RawPost.source == SourceEnum.reddit)
+                .all()
+            )
+            if not posts:
+                continue
+            query = _game_search_query(game.name, game=game)
+            dk = game.distinctive_keywords or None
+            polluted_ids: list[int] = []
+            sample: list[str] = []
+            for p in posts:
+                sub = _sub_from_url(p.url or "")
+                if sub is None or sub not in general_lower:
+                    continue
+                as_dict = {"title": p.title or "", "body": p.body or ""}
+                if not _post_mentions_game(as_dict, query, distinctive_keywords=dk):
+                    polluted_ids.append(p.id)
+                    if len(sample) < sample_titles:
+                        sample.append((p.title or "")[:120])
+            polluted_ids_all.extend(polluted_ids)
+            global_total += len(posts)
+            global_polluted += len(polluted_ids)
+            per_game_report.append({
+                "game_id": game.id,
+                "name": game.name,
+                "total_reddit_posts": len(posts),
+                "polluted_count": len(polluted_ids),
+                "polluted_pct": round(len(polluted_ids) * 100.0 / len(posts), 1) if posts else 0.0,
+                "has_distinctive_keywords": bool(game.distinctive_keywords),
+                "sample_polluted_titles": sample,
+            })
+
+        deleted = 0
+        if purge and polluted_ids_all:
+            # Chunk deletes
+            for i in range(0, len(polluted_ids_all), 500):
+                chunk = polluted_ids_all[i : i + 500]
+                n = db.query(RawPost).filter(RawPost.id.in_(chunk)).delete(
+                    synchronize_session=False,
+                )
+                deleted += n
+            db.commit()
+
+        return {
+            "dry_run": not purge,
+            "global_total_reddit_posts": global_total,
+            "global_polluted_count": global_polluted,
+            "global_polluted_pct": round(global_polluted * 100.0 / global_total, 1) if global_total else 0.0,
+            "affected_games": len([r for r in per_game_report if r["polluted_count"] > 0]),
+            "deleted": deleted,
+            "per_game": sorted(per_game_report, key=lambda r: -r["polluted_count"]),
+        }
+    finally:
+        db.close()
