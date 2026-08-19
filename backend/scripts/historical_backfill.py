@@ -280,7 +280,11 @@ def backfill_reddit_for_game(
                     if converted is None:
                         continue
                     # For general subs, post-filter (matches arctic_shift_service).
-                    if is_general and query and not _post_mentions_game(converted, query):
+                    # v0019: pass distinctive_keywords for the strict two-token gate.
+                    if is_general and query and not _post_mentions_game(
+                        converted, query,
+                        distinctive_keywords=(game.distinctive_keywords or None),
+                    ):
                         continue
                     posts.append(converted)
 

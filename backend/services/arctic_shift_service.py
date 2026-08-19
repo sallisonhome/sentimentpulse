@@ -48,11 +48,22 @@ _REQUEST_DELAY = 1.0  # seconds
 # path is genuinely necessary because unfiltered fetches would exceed
 # Arctic Shift's per-request post cap. Everything else uses full fetch
 # and gets tagged (never dropped) at ingest.
-ARCTIC_SHIFT_GENERAL_SUBS: frozenset[str] = frozenset({
-    "gaming", "games", "pcgaming", "ps5", "xbox", "steam",
-    "halo", "ghostbusters", "JurassicPark", "hellraiser", "JohnWick",
-    "patientgamers", "ShouldIbuythisgame",
-})
+# v0019 (2026-08-19): ARCTIC_SHIFT_GENERAL_SUBS previously duplicated
+# reddit_service._GENERAL_SUBREDDITS and drifted — the two lists were
+# out of sync, so subs like r/pcmasterrace, r/playstation, r/XboxSeriesX,
+# r/GamingLeaksAndRumours (which _ARE_ general in reddit_service.py) were
+# being treated as DEDICATED here. That skipped the title/selftext search
+# + _post_mentions_game filter, so daily ingest was silently saving 100
+# random r/pcmasterrace posts per day per affected game as if they were
+# about the game (17 games affected, incl Twisted Tower, Toxic Commando,
+# Hellraiser Revival, SM2, Turok Origins, Jurassic Park Survival, John
+# Wick, Rideshare, Bus Bound, Stuntman, Aliens FE2, Gears E-Day, Silent
+# Hill Townfall, Halloween The Game, ILL, WWZ, Insurgency).
+#
+# Fix: single source of truth. arctic_shift_service imports the reddit_service
+# list. The name is kept as an alias for backward compat with call sites.
+from services.reddit_service import _GENERAL_SUBREDDITS as _RS_GENERAL_SUBS  # noqa: E402
+ARCTIC_SHIFT_GENERAL_SUBS: frozenset[str] = frozenset(s.lower() for s in _RS_GENERAL_SUBS)
 
 
 # ── Private helpers ───────────────────────────────────────────────────────────
@@ -77,26 +88,10 @@ from services.reddit_service import (  # noqa: E402
 )
 
 
-def _post_mentions_game(post: dict, search_query: str) -> bool:
-    """
-    Return True if the post title or body contains at least one distinctive
-    keyword from the search_query (case-insensitive, ≥4 chars, ignoring common
-    English stop-words).  Mirrors the same helper in reddit_service.py.
-    """
-    _STOP = {
-        "the", "and", "for", "with", "from", "this", "that", "have",
-        "game", "games", "just", "your", "more", "about", "like",
-    }
-    text = (
-        (post.get("title") or "") + " " + (post.get("body") or "")
-    ).lower()
-
-    for word in search_query.lower().split():
-        word = word.strip("':,-.")
-        if len(word) >= 4 and word not in _STOP:
-            if word in text:
-                return True
-    return False
+# v0019 (2026-08-19): the two _post_mentions_game copies drifted between
+# reddit_service.py and arctic_shift_service.py, causing enforcement gaps.
+# Single source of truth now lives in reddit_service; import it here.
+from services.reddit_service import _post_mentions_game as _post_mentions_game  # noqa: E402, F401
 
 
 def _convert_post(raw: dict) -> Optional[dict]:
@@ -262,10 +257,16 @@ def fetch_arctic_shift_subreddit_posts(
                     if pid not in seen:
                         seen[pid] = post
 
-            # Post-filter: keep only posts that actually mention the game
+            # Post-filter: keep only posts that actually mention the game.
+            # v0019: pass game.distinctive_keywords so games with common-
+            # English primary words (Rideshare, Docked) get the strict
+            # two-token gate instead of the permissive any-word match.
+            _dk = None
+            if game is not None:
+                _dk = getattr(game, "distinctive_keywords", None) or None
             merged = [
                 p for p in seen.values()
-                if _post_mentions_game(p, query)
+                if _post_mentions_game(p, query, distinctive_keywords=_dk)
             ]
             posts_returned = len(merged)
             return merged

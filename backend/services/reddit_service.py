@@ -602,26 +602,80 @@ def _game_search_query(game_name: str, game=None) -> str:
     return max(distinctive, key=len)
 
 
-def _post_mentions_game(post: dict, search_query: str) -> bool:
+_MENTION_STOP: frozenset[str] = frozenset({
+    "the", "and", "for", "with", "from", "this", "that", "have",
+    "game", "games", "just", "your", "more", "about", "like",
+})
+
+
+def _post_mentions_game(
+    post: dict,
+    search_query: str,
+    distinctive_keywords: list[str] | None = None,
+) -> bool:
     """
-    Return True if the post title or body contains at least one distinctive
-    keyword from the search query (case-insensitive, min 4 chars, ignoring
-    common English stop-words).
+    Return True if the post's title/body genuinely mentions the game.
+
+    Semantics (v0019, 2026-08-19):
+      * If distinctive_keywords is non-empty:
+            Requires the primary search_query word AND at least one
+            distinctive keyword to appear together in the same title+body.
+            This is the strict path used for games whose primary word is
+            a common English word (Rideshare, Docked, Simulator variants).
+            Prevents ride-share industry pollution while still allowing
+            variant spellings ("Rideshare Saber", "Rideshare game").
+      * If distinctive_keywords is None or empty:
+            Falls back to legacy behavior — True iff any ≥4-char, non-
+            stopword token from search_query appears in title+body.
+            Backward-compatible with games that have clean proper-noun
+            titles (Hellraiser, Turok, Twisted Tower).
+
+    Case-insensitive. Empty title AND body -> False.
+
+    The primary keyword AND at-least-one-companion rule is intentionally
+    stricter than requiring ALL keywords — that would drop legitimate
+    posts that only mention one variant spelling. It's also stricter
+    than the legacy "any word matches" rule which lets in industry
+    pollution.
     """
-    _STOP = {
-        "the", "and", "for", "with", "from", "this", "that", "have",
-        "game", "games", "just", "your", "more", "about", "like",
-    }
     text = (
         (post.get("title") or "") + " " + (post.get("body") or "")
     ).lower()
+    if not text.strip():
+        return False
 
-    for word in search_query.lower().split():
-        # Strip punctuation from word edges
-        word = word.strip("':,-.")
-        if len(word) >= 4 and word not in _STOP:
-            if word in text:
-                return True
+    # Extract candidate words from the primary query
+    primary_words = [
+        w.strip("':,-.").lower()
+        for w in search_query.split()
+    ]
+    primary_words = [
+        w for w in primary_words
+        if len(w) >= 4 and w not in _MENTION_STOP
+    ]
+
+    # Path A: strict two-token gate for games with distinctive_keywords
+    if distinctive_keywords:
+        # Normalize distinctive keywords: strip, lowercase, keep only
+        # >=3-char tokens (allow 3 so acronyms like "IP", codes like "ETA"
+        # can be used — but not 1-2 chars which match too broadly).
+        distinctive_normalized = [
+            k.strip().lower() for k in distinctive_keywords if k and k.strip()
+        ]
+        distinctive_normalized = [k for k in distinctive_normalized if len(k) >= 3]
+
+        # The primary word must appear at least once
+        if not primary_words or not any(w in text for w in primary_words):
+            return False
+        # AND at least one distinctive keyword must appear
+        if not any(k in text for k in distinctive_normalized):
+            return False
+        return True
+
+    # Path B: legacy any-word match
+    for word in primary_words:
+        if word in text:
+            return True
     return False
 
 

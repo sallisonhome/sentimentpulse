@@ -49,6 +49,10 @@ class GameResponse(BaseModel):
     release_date: Optional[str] = None
     is_active: bool
     subreddits: Optional[list] = None
+    # v0019 (2026-08-19): expose distinctive_keywords on GET so operators
+    # can audit them without shelling into the DB. Previously write-only via
+    # PATCH, which meant a persisted value could not be verified end-to-end.
+    distinctive_keywords: Optional[list] = None
     # CLAUDE.md §21 commercial strategic context (per-title positioning brief)
     commercial_context: Optional[str] = None
     # CLAUDE.md §24 demographic + IP-awareness brief (per-title)
