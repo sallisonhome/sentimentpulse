@@ -12,20 +12,10 @@ jobs:
           echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
-      - name: Check service stability + edge caching
+      - name: Check nginx location-block context for proxy_cache
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'REMOTEEOF'
           set -e
-          echo "=== systemctl status signalpulse.service ==="
-          systemctl status signalpulse.service --no-pager -l | head -25
-          echo "=== systemctl show: NRestarts, ActiveEnterTimestamp ==="
-          systemctl show signalpulse.service -p NRestarts -p ActiveEnterTimestamp -p ExecMainStartTimestamp -p Restart
-          echo "=== journalctl restart-related lines, last 12h ==="
-          journalctl -u signalpulse.service --since "12 hours ago" --no-pager | grep -iE "Started|Stopped|Main process exited|Scheduled restart|Failed with result|SIGTERM|SIGKILL" | tail -60
-          echo "=== nginx config: any proxy_cache directives? ==="
-          grep -rn "proxy_cache\|fastcgi_cache\|expires " /etc/nginx/ 2>/dev/null || echo "no cache directives found in /etc/nginx"
-          echo "=== raw response headers for /api/products (via localhost, bypassing nginx if any) ==="
-          curl -s -D - -o /dev/null "http://localhost:5000/api/products" | head -20 || echo "curl to :5000 failed"
-          echo "=== raw response headers via public nginx path ==="
-          curl -s -D - -o /dev/null "http://104.236.239.46/signal/api/products" | head -20 || echo "curl to public path failed"
+          echo "=== nginx sentimentpulse config, lines 60-140 (location blocks) ==="
+          sed -n '60,140p' /etc/nginx/sites-available/sentimentpulse
           REMOTEEOF
