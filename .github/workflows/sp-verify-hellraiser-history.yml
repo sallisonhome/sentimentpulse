@@ -5,13 +5,16 @@ on:
 jobs:
   query:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Query product 7 wishlist rank history over droplet SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.DROPLET_HOST }}
-          username: ${{ secrets.DROPLET_USER }}
-          key: ${{ secrets.DROPLET_SSH_KEY }}
-          script: |
-            sqlite3 /opt/sentimentpulse/signalpulse/data.db \
-              "SELECT date, rank FROM steam_wishlist_rank_daily WHERE product_id=7 ORDER BY date DESC LIMIT 30;"
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Query product 7 wishlist rank history (read-only)
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
+            "sqlite3 /opt/sentimentpulse/signalpulse/data.db \"SELECT date, rank FROM steam_wishlist_rank_daily WHERE product_id=7 ORDER BY date DESC LIMIT 30;\""
