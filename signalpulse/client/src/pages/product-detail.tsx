@@ -141,7 +141,11 @@ export default function ProductDetail() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => setLocation("/")}
+          // v3.39 (2026-08-20): route root "/" is Leaderboards, not
+          // Dashboard.  Prior version sent "Back to Dashboard" clicks to
+          // Leaderboards.  Route explicitly to /dashboard so the button
+          // label matches the destination.
+          onClick={() => setLocation("/dashboard")}
           className="h-8 text-xs gap-1.5"
           data-testid="button-back"
         >
