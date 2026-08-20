@@ -12,20 +12,20 @@ jobs:
           echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
-      - name: Query wishlist reporting rows + recent ingestion logs
+      - name: Check service stability + edge caching
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'REMOTEEOF'
           set -e
-          echo "=== Today's UTC date on droplet ==="
-          date -u
-          echo "=== Last 10 rows: steam_wishlist_reporting_daily, product_id=7 (Hellraiser) ==="
-          sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT product_id, date, wishlist_adds, wishlist_deletes, wishlist_purchases, fetched_at FROM steam_wishlist_reporting_daily WHERE product_id=7 ORDER BY date DESC LIMIT 10;"
-          echo "=== Same for ALL products, last row each (to check breadth of disparity) ==="
-          sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT p.id, p.title, w.date, w.wishlist_adds, w.wishlist_deletes, w.wishlist_purchases FROM products p LEFT JOIN steam_wishlist_reporting_daily w ON w.product_id = p.id AND w.date = (SELECT MAX(date) FROM steam_wishlist_reporting_daily WHERE product_id = p.id) WHERE p.steam_app_id IS NOT NULL ORDER BY p.id;"
-          echo "=== journalctl: last 07:00 UTC ingestion run for signalpulse.service, 'steam' + 'wishlist' lines ==="
-          journalctl -u signalpulse.service --since "6 hours ago" --no-pager | grep -i "wishlist\|ingestion" | tail -80
-          echo "=== steam_wishlist_daily (legacy cumulative table) last 5 rows for product 7 ==="
-          sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT product_id, date, cumulative_count, daily_delta FROM steam_wishlist_daily WHERE product_id=7 ORDER BY date DESC LIMIT 5;"
-          echo "=== products table columns (confirm steam_app_id column name) ==="
-          sqlite3 /opt/sentimentpulse/signalpulse/data.db ".schema products" | head -5
+          echo "=== systemctl status signalpulse.service ==="
+          systemctl status signalpulse.service --no-pager -l | head -25
+          echo "=== systemctl show: NRestarts, ActiveEnterTimestamp ==="
+          systemctl show signalpulse.service -p NRestarts -p ActiveEnterTimestamp -p ExecMainStartTimestamp -p Restart
+          echo "=== journalctl restart-related lines, last 12h ==="
+          journalctl -u signalpulse.service --since "12 hours ago" --no-pager | grep -iE "Started|Stopped|Main process exited|Scheduled restart|Failed with result|SIGTERM|SIGKILL" | tail -60
+          echo "=== nginx config: any proxy_cache directives? ==="
+          grep -rn "proxy_cache\|fastcgi_cache\|expires " /etc/nginx/ 2>/dev/null || echo "no cache directives found in /etc/nginx"
+          echo "=== raw response headers for /api/products (via localhost, bypassing nginx if any) ==="
+          curl -s -D - -o /dev/null "http://localhost:5000/api/products" | head -20 || echo "curl to :5000 failed"
+          echo "=== raw response headers via public nginx path ==="
+          curl -s -D - -o /dev/null "http://104.236.239.46/signal/api/products" | head -20 || echo "curl to public path failed"
           REMOTEEOF
