@@ -1,0 +1,17 @@
+name: One-off - verify Hellraiser wishlist rank history
+on:
+  workflow_dispatch: {}
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query product 7 wishlist rank history over droplet SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            sqlite3 /opt/sentimentpulse/signalpulse/data.db \
+              "SELECT date, rank FROM steam_wishlist_rank_daily WHERE product_id=7 ORDER BY date DESC LIMIT 30;"
