@@ -5,11 +5,19 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Calendar, Users, Gamepad2, ExternalLink } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
+import { useForecastScenario } from "@/hooks/use-forecast-scenario";
+import { ForecastScenarioToggle } from "@/components/forecast-scenario-toggle";
 
 export default function Dashboard() {
   const { data: products, isLoading } = useQuery<any[]>({
     queryKey: ["/api/products"],
   });
+  // v3.32 (2026-08-19): one page-level Bull/Bear toggle controls every
+  // card's locked Dynamic Pre-Launch Forecast basis simultaneously
+  // (persisted globally -- see hook). Does NOT affect the separate
+  // "Dynamic Actuals Driven Forecast" block, which is live/actuals-driven
+  // and has no Bull/Bear scenario of its own.
+  const [scenario, setScenario] = useForecastScenario();
 
   if (isLoading) {
     return (
@@ -29,11 +37,19 @@ export default function Dashboard() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-lg font-semibold" data-testid="text-dashboard-title">Product Dashboard</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          {products?.length ?? 0} titles tracked
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-lg font-semibold" data-testid="text-dashboard-title">Product Dashboard</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            {products?.length ?? 0} titles tracked
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <ForecastScenarioToggle value={scenario} onChange={setScenario} />
+          <p className="text-[10px] text-muted-foreground max-w-[220px] text-right">
+            Locked Dynamic Pre-Launch Forecast basis for every card's Steam Actuals delta
+          </p>
+        </div>
       </div>
 
       {(!products || products.length === 0) ? (
@@ -97,11 +113,20 @@ export default function Dashboard() {
             // live Dynamic Actuals-Driven Forecast (steamDynLtUnits), which
             // itself now projects up/down from actuals and would make the
             // delta partially self-referential.
-            const steamPreLaunchLtUnits: number | null = product.launchForecastSnapshot?.steamLifetime ?? null;
+            // v3.32 (2026-08-19): basis now follows the page-level Bull/Bear
+            // toggle -- forecastScenarios.{bull,bear} are recomputed from the
+            // exact same locked snapshot inputs, just at a different Steam
+            // wishlist first-month conversion rate. Falls back to the
+            // pre-scenario snapshot field if forecastScenarios is ever absent
+            // (e.g. stale cached response).
+            const scenarioForecast = product.forecastScenarios?.[scenario];
+            const steamPreLaunchLtUnits: number | null =
+              scenarioForecast?.steamLifetime ?? product.launchForecastSnapshot?.steamLifetime ?? null;
             const steamPreLaunchLtGmv = (steamPreLaunchLtUnits != null && steamPreLaunchLtUnits > 0)
               ? Math.round(steamPreLaunchLtUnits * price * gmvFactor)
               : null;
-            const steamPreLaunchFirstYearUnits: number | null = product.launchForecastSnapshot?.steamFirstYear ?? null;
+            const steamPreLaunchFirstYearUnits: number | null =
+              scenarioForecast?.steamFirstYear ?? product.launchForecastSnapshot?.steamFirstYear ?? null;
             const steamPreLaunchFirstYearGmv = (steamPreLaunchFirstYearUnits != null && steamPreLaunchFirstYearUnits > 0)
               ? Math.round(steamPreLaunchFirstYearUnits * price * gmvFactor)
               : null;
@@ -129,6 +154,7 @@ export default function Dashboard() {
             const deltaBasisGmv = deltaBasis === "firstYear" ? steamPreLaunchFirstYearGmv
               : deltaBasis === "lifetime" ? steamPreLaunchLtGmv
               : null;
+            const scenarioLabel = scenario === "bear" ? "Bear 18%" : "Bull 45%";
             const deltaBasisLabel = deltaBasis === "firstYear" ? "1st-yr forecast" : "lifetime forecast";
 
             // Flag seeded dummy products by their known titles
@@ -315,7 +341,7 @@ export default function Dashboard() {
                             </div>
                             {revDelta && (
                               <div
-                                title={`Steam Total Revenue vs the locked Dynamic Pre-Launch Forecast's ${deltaBasisLabel} (wishlist/prepurchase baseline) -- hidden until 30 days post-release`}
+                                title={`Steam Total Revenue vs the locked Dynamic Pre-Launch Forecast's ${deltaBasisLabel} (${scenarioLabel} wishlist/prepurchase baseline) -- hidden until 30 days post-release`}
                                 className={`text-[10px] font-semibold tabular-nums ${revDelta.cls}`}
                               >
                                 {revDelta.text} vs {deltaBasisLabel}
@@ -361,7 +387,7 @@ export default function Dashboard() {
                             </div>
                             {unitsDelta && (
                               <div
-                                title={`Steam Total Units vs the locked Dynamic Pre-Launch Forecast's ${deltaBasisLabel} (wishlist/prepurchase baseline) -- hidden until 30 days post-release`}
+                                title={`Steam Total Units vs the locked Dynamic Pre-Launch Forecast's ${deltaBasisLabel} (${scenarioLabel} wishlist/prepurchase baseline) -- hidden until 30 days post-release`}
                                 className={`text-[10px] font-semibold tabular-nums ${unitsDelta.cls}`}
                               >
                                 {unitsDelta.text} vs {deltaBasisLabel}

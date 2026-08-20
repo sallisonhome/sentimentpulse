@@ -22,6 +22,8 @@ import { SteamSalesCard } from "@/components/steam-sales-card";
 import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
 import { ALL_PLATFORMS } from "@shared/schema";
 import { useQuery as useChartQuery } from "@tanstack/react-query";
+import { useForecastScenario, type ForecastScenario } from "@/hooks/use-forecast-scenario";
+import { ForecastScenarioToggle } from "@/components/forecast-scenario-toggle";
 
 export default function ProductDetail() {
   const params = useParams<{ id: string }>();
@@ -30,6 +32,10 @@ export default function ProductDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [inputDialog, setInputDialog] = useState<{ type: string; open: boolean }>({ type: "", open: false });
   const [chartModal, setChartModal] = useState<{ type: ChartDataType; open: boolean } | null>(null);
+  // v3.32 (2026-08-19): same global Bull/Bear preference as the Dashboard
+  // (shared hook, persisted in localStorage) -- drives the Dynamic
+  // Pre-Launch Forecasts table below, including its Δ vs Forecast basis.
+  const [scenario, setScenario] = useForecastScenario();
 
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     steamWishlist: true,
@@ -480,7 +486,19 @@ export default function ProductDetail() {
           <ForecastTable
             dynamicForecasts={product.dynamicForecasts}
             dynamicFullForecasts={product.dynamicFullForecasts}
-            preLaunchSnapshot={product.launchForecastSnapshot}
+            // v3.32 (2026-08-19): feed the selected Bull/Bear scenario's
+            // per-platform forecast into the same preLaunchSnapshot slot
+            // that used to always be the (Bull-equivalent) locked snapshot.
+            // forecastScenarios is always present (pre-release: live
+            // preview off current counts; post-release: recomputed from the
+            // frozen snapshot inputs), so this also covers every platform
+            // consistently pre-release, not just Steam. Falls back to the
+            // raw snapshot if forecastScenarios is ever missing.
+            preLaunchSnapshot={
+              product.forecastScenarios?.[scenario]
+                ? { perPlatformForecasts: product.forecastScenarios[scenario].perPlatformForecasts }
+                : product.launchForecastSnapshot
+            }
             releaseDate={product.releaseDate ?? null}
             platforms={platforms}
             targetRetailPriceUsd={product.targetRetailPriceUsd}
@@ -493,6 +511,8 @@ export default function ProductDetail() {
               // entry, so no further UI changes are needed when that lands.
               "PC (Steam)": steamRev?.totalBaseNetUnits ?? undefined,
             }}
+            scenario={scenario}
+            onScenarioChange={setScenario}
           />
         </CollapsibleSection>
 
@@ -641,6 +661,8 @@ function ForecastTable({
   perPlatformPricing,
   gmvFactor,
   actualUnitsByPlatform,
+  scenario,
+  onScenarioChange,
 }: {
   dynamicForecasts: any[];
   dynamicFullForecasts?: any[];
@@ -656,6 +678,12 @@ function ForecastTable({
   // entry here (currently just "PC (Steam)"); any platform without an
   // entry renders "—" for both the Actual and Delta columns.
   actualUnitsByPlatform: Partial<Record<string, number>>;
+  // v3.32 (2026-08-19): which locked-input scenario is driving the three
+  // forecast columns above (and the Δ vs Forecast basis) -- purely for
+  // the toggle control + labeling here; the actual numbers already arrive
+  // pre-selected via preLaunchSnapshot.
+  scenario: ForecastScenario;
+  onScenarioChange: (s: ForecastScenario) => void;
 }) {
   // Use server-calculated full forecasts (handles PS5 prepurchase LT-first logic)
   const dynamicMap: Record<string, number> = {};
@@ -791,8 +819,16 @@ function ForecastTable({
     ? formatDeltaPct(actualUnitsTotal, actualsLtTotal)
     : null;
 
+  const scenarioLabel = scenario === "bear" ? "Bear 18%" : "Bull 45%";
+
   return (
     <div>
+      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <p className="text-[11px] text-muted-foreground max-w-[420px]">
+          Steam wishlist first-month conversion basis: <strong>{scenarioLabel}</strong>. Bull is the locked default (matches the frozen snapshot); Bear recomputes the same locked inputs at a more conservative rate.
+        </p>
+        <ForecastScenarioToggle value={scenario} onChange={onScenarioChange} />
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm" data-testid="table-forecasts">
           <thead>
@@ -802,7 +838,7 @@ function ForecastTable({
               <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[130px]">Pre-Launch 1 Year</th>
               <th className="text-right py-2 text-xs font-medium text-blue-600 dark:text-blue-400 min-w-[140px]">Pre-Launch Lifetime</th>
               <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[130px]">Actual (to date)</th>
-              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[100px]">Δ vs Forecast{deltaBasis !== "none" ? ` (${deltaBasisLabel})` : ""}</th>
+              <th className="text-right py-2 text-xs font-medium text-muted-foreground min-w-[100px]">Δ vs Forecast{deltaBasis !== "none" ? ` (${scenarioLabel} ${deltaBasisLabel})` : ""}</th>
             </tr>
           </thead>
           <tbody>
