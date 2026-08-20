@@ -33,10 +33,12 @@ export default function ProductDetail() {
   const [editOpen, setEditOpen] = useState(false);
   const [inputDialog, setInputDialog] = useState<{ type: string; open: boolean }>({ type: "", open: false });
   const [chartModal, setChartModal] = useState<{ type: ChartDataType; open: boolean } | null>(null);
-  // v3.32 (2026-08-19): same global Bull/Bear preference as the Dashboard
-  // (shared hook, persisted in localStorage) -- drives the Dynamic
-  // Pre-Launch Forecasts table below, including its Δ vs Forecast basis.
-  const [scenario, setScenario] = useForecastScenario();
+  // v3.36 (2026-08-20): per-product Bull/Bear preference (was global).
+  // Toggling on THIS product's PDP no longer affects any other product.
+  // The same hook powers the Dashboard cards, each keyed on its own
+  // product.id -- so this product's card mirrors this preference and
+  // other cards are unaffected.
+  const [scenario, setScenario] = useForecastScenario(productId);
 
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     steamWishlist: true,

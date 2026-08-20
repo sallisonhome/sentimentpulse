@@ -1,3 +1,4 @@
+import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Link } from "wouter";
@@ -6,10 +7,26 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Calendar, Users, Gamepad2, ExternalLink } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
-import { useForecastScenario } from "@/hooks/use-forecast-scenario";
+import { useForecastScenario, type ForecastScenario } from "@/hooks/use-forecast-scenario";
 import { ForecastScenarioToggle } from "@/components/forecast-scenario-toggle";
 import { queryClient } from "@/lib/queryClient";
 import { SHARED_WISHLIST_FIELDS, PRODUCT_QUERY_STALE_TIME_MS } from "@/lib/shared-product-fields";
+
+// v3.36 (2026-08-20): render-prop wrapper so each Dashboard card gets
+// its OWN scenario state (keyed by product.id).  Hooks can't run inside
+// a plain Array.map callback, so we route the per-product hook call
+// through this tiny component instead of extracting the whole 500-line
+// card body.
+function PerProductScenario({
+  productId,
+  children,
+}: {
+  productId: string | number;
+  children: (scenario: ForecastScenario, setScenario: (s: ForecastScenario) => void) => React.ReactNode;
+}) {
+  const [scenario, setScenario] = useForecastScenario(productId);
+  return <>{children(scenario, setScenario)}</>;
+}
 
 export default function Dashboard() {
   // v3.35 (2026-08-20): staleTime was Infinity with no refetch trigger, so a
@@ -28,10 +45,6 @@ export default function Dashboard() {
   // v3.35 (2026-08-20): single source of truth sync -- whenever this list
   // query resolves with fresh data, push the shared wishlist/forecast
   // fields into any already-cached PDP detail entry for that product too.
-  // Only updates entries that already exist in the cache (never creates a
-  // new, partially-shaped one), so a PDP the user has open or cached from
-  // an earlier visit can't keep showing numbers older than what the
-  // dashboard just fetched.
   useEffect(() => {
     if (!products) return;
     for (const p of products) {
@@ -43,16 +56,10 @@ export default function Dashboard() {
       });
     }
   }, [products]);
-  // v3.32 (2026-08-19): one page-level Bull/Bear toggle controls every
-  // card's locked Dynamic Pre-Launch Forecast basis simultaneously
-  // (persisted globally -- see hook).
-  // v3.37 (2026-08-20): this toggle now also drives each card's headline
-  // "Dynamic Pre-Launch Forecast" units/revenue block directly (previously
-  // that block always showed the Bull-equivalent dynamicFirstMonthTotal/
-  // etc fields regardless of the selected scenario -- fixed). It still does
-  // NOT affect the separate "Steam — Actuals" block, which is real ingested
-  // sales data with no scenario of its own.
-  const [scenario, setScenario] = useForecastScenario();
+
+  // v3.36 (2026-08-20): page-level useForecastScenario() removed.  Each
+  // card now uses PerProductScenario (below) so toggling one product's
+  // Bull/Bear preference no longer affects any other product.
 
   if (isLoading) {
     return (
@@ -79,12 +86,10 @@ export default function Dashboard() {
             {products?.length ?? 0} titles tracked
           </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <ForecastScenarioToggle value={scenario} onChange={setScenario} />
-          <p className="text-[10px] text-muted-foreground max-w-[220px] text-right">
-            Locked Dynamic Pre-Launch Forecast basis for every card's headline forecast and Steam Actuals delta
-          </p>
-        </div>
+        {/* v3.36 (2026-08-20): removed the page-level Bull/Bear toggle.
+            Each card is now scoped to its own product via
+            PerProductScenario below, so toggling one product's
+            preference no longer flips every other title. */}
       </div>
 
       {(!products || products.length === 0) ? (
@@ -95,7 +100,14 @@ export default function Dashboard() {
         </div>
       ) : (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {products.map((product: any) => {
+          {products.map((product: any) => (
+            // v3.36 (2026-08-20): each card is wrapped so it gets its
+            // OWN per-product bull/bear scenario state.  The whole body
+            // below (const calcs + JSX return) runs inside this render
+            // prop, so `scenario` refers to THIS product's preference
+            // and toggling it does NOT affect any other card.
+            <PerProductScenario key={product.id} productId={product.id}>
+              {(scenario, setScenario) => {
             const price = product.targetRetailPriceUsd ?? 0;
             const hasPrice = price > 0;
 
@@ -615,7 +627,9 @@ export default function Dashboard() {
                 </Card>
               </Link>
             );
-          })}
+              }}
+            </PerProductScenario>
+          ))}
         </div>
       )}
     </div>
