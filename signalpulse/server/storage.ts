@@ -628,6 +628,11 @@ export interface IStorage {
   // Returns the row that now exists (either freshly-created or pre-existing).
   upsertLaunchForecastSnapshotIfMissing(data: InsertLaunchForecastSnapshot): LaunchForecastSnapshot;
   getLaunchForecastSnapshot(productId: number): LaunchForecastSnapshot | null;
+  // v3.31 (2026-08-19) one-off recalibration tool: force-overwrites an
+  // EXISTING locked snapshot in place (unlike the IfMissing variant above).
+  // Only for deliberate rate-recalibration migrations — never called from
+  // normal request-serving code paths.
+  forceUpdateLaunchForecastSnapshot(data: InsertLaunchForecastSnapshot): LaunchForecastSnapshot;
 
   // App Settings
   getAllSettings(): AppSetting[];
@@ -1885,6 +1890,23 @@ export class DatabaseStorage implements IStorage {
   getLaunchForecastSnapshot(productId: number): LaunchForecastSnapshot | null {
     return db.select().from(launchForecastSnapshots)
       .where(eq(launchForecastSnapshots.productId, productId)).get() ?? null;
+  }
+
+  // v3.31 (2026-08-19) one-off recalibration tool — see interface comment.
+  forceUpdateLaunchForecastSnapshot(data: InsertLaunchForecastSnapshot): LaunchForecastSnapshot {
+    return db.update(launchForecastSnapshots)
+      .set({
+        steamWishlistCountAtLaunch: data.steamWishlistCountAtLaunch,
+        totalFirstMonth: data.totalFirstMonth,
+        totalFirstYear: data.totalFirstYear,
+        totalLifetime: data.totalLifetime,
+        steamFirstMonth: data.steamFirstMonth,
+        steamFirstYear: data.steamFirstYear,
+        steamLifetime: data.steamLifetime,
+        perPlatformForecastsJson: data.perPlatformForecastsJson,
+      })
+      .where(eq(launchForecastSnapshots.productId, data.productId))
+      .returning().get();
   }
 
   // ─── App Settings ───────────────────────────────────────────────────────────

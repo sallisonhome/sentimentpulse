@@ -77,11 +77,12 @@ export interface DynamicForecastResult {
  * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER.
  *
  * 2026-08-11: Raised from 0.20 → 0.27 based on updated Saber cohort
- * conversion data. Once a title has released, the wishlist count fed to
- * this formula is LOCKED at the pre-release snapshot (see
+ * conversion data. 2026-08-19: Raised again from 0.27 → 0.45 per updated
+ * Saber cohort conversion data. Once a title has released, the wishlist
+ * count fed to this formula is LOCKED at the pre-release snapshot (see
  * getForecastingWishlistCount in routes.ts).
  */
-export const STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER = 0.27;
+export const STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER = 0.45;
 
 /**
  * Console propagation dampening factor (v3.7, 2026-08-12).
@@ -104,7 +105,7 @@ export const CONSOLE_LIFT_DAMPENING = 0.5;
  * Calculate dynamic forecasts from current wishlist/prepurchase counts.
  *
  * PC (Steam): Always driven by wishlist data
- *   - First Month = wishlist × STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER (0.27)
+ *   - First Month = wishlist × STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER (0.45)
  *   - 1 Year = First Month × 2
  *   - LT = 1 Year × 2
  *

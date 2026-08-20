@@ -256,7 +256,7 @@ export async function registerRoutes(
         // actuals or wishlist. Also expose the raw actual and the console
         // lift factor so the UI can annotate the tiles.
         const wishlistBasedSteamForecast = forecastingWl != null
-          ? Math.round(forecastingWl * 0.27)
+          ? Math.round(forecastingWl * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER)
           : null;
         const forecastMode: "actuals" | "wishlist" | "none" =
           steamActualFirstMonth != null && steamActualFirstMonth > 0
@@ -2368,6 +2368,87 @@ export async function registerRoutes(
       res.status(500).json({ error: err?.message || String(err) });
     } finally {
       ingestionInFlight = false;
+    }
+  });
+
+  // ─── v3.31 (2026-08-19) ONE-OFF: recalibrate locked launch snapshots ────
+  // Rate recalibration 0.27 → 0.45 (STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER).
+  // Recomputes the wishlist-only baseline for every ALREADY-RELEASED title
+  // that already has a locked launchForecastSnapshot row, using the new
+  // multiplier, and overwrites that row in place (snapshotDate preserved).
+  // Skips titles with no existing snapshot (nothing to recalibrate) and
+  // titles that haven't released (their live forecast already picks up the
+  // new constant on next load — no snapshot to touch yet).
+  // TEMPORARY: delete this route once the one-time recalibration run is
+  // confirmed complete (per cleanup-pattern policy for one-off migrations).
+  app.post("/api/admin/recalibrate-launch-snapshots-v331", async (_req, res) => {
+    try {
+      const products = storage.getAllProducts();
+      const todayStr = new Date().toISOString().split("T")[0];
+      const results: any[] = [];
+      for (const p of products) {
+        const releaseDate = storage.getProductReleaseDate(p.id);
+        const hasReleased = releaseDate != null && releaseDate <= todayStr;
+        if (!hasReleased) continue;
+        const existingSnapshot = storage.getLaunchForecastSnapshot(p.id);
+        if (!existingSnapshot) continue;
+
+        const wishlistSummary = storage.getSteamWishlistSummary(p.id, releaseDate);
+        const forecastingWl = getForecastingWishlistCount(wishlistSummary, releaseDate);
+        const latestPs5Pre = storage.getLatestPs5Prepurchase(p.id);
+        const platforms = JSON.parse(p.platforms);
+
+        const baselineDynamic = calculateDynamicForecastsFull(
+          platforms,
+          forecastingWl,
+          latestPs5Pre?.cumulativeCount ?? null,
+          null,
+          null,
+        );
+        const baselineTotalFirstMonth = baselineDynamic.reduce((s, d) => s + d.firstMonth, 0);
+        const baselineTotalFirstYear = baselineDynamic.reduce((s, d) => s + d.firstYear, 0);
+        const baselineTotalLifetime = baselineDynamic.reduce((s, d) => s + d.lifetime, 0);
+        const baselineSteamRow = baselineDynamic.find(d => d.platform === "PC (Steam)");
+
+        const before = {
+          steamFirstMonth: existingSnapshot.steamFirstMonth,
+          steamFirstYear: existingSnapshot.steamFirstYear,
+          steamLifetime: existingSnapshot.steamLifetime,
+          totalFirstMonth: existingSnapshot.totalFirstMonth,
+          totalFirstYear: existingSnapshot.totalFirstYear,
+          totalLifetime: existingSnapshot.totalLifetime,
+        };
+
+        const updated = storage.forceUpdateLaunchForecastSnapshot({
+          productId: p.id,
+          snapshotDate: existingSnapshot.snapshotDate,
+          steamWishlistCountAtLaunch: forecastingWl ?? null,
+          totalFirstMonth: baselineTotalFirstMonth,
+          totalFirstYear: baselineTotalFirstYear,
+          totalLifetime: baselineTotalLifetime,
+          steamFirstMonth: baselineSteamRow?.firstMonth ?? null,
+          steamFirstYear: baselineSteamRow?.firstYear ?? null,
+          steamLifetime: baselineSteamRow?.lifetime ?? null,
+          perPlatformForecastsJson: JSON.stringify(baselineDynamic),
+        });
+
+        results.push({
+          productId: p.id,
+          name: p.title,
+          before,
+          after: {
+            steamFirstMonth: updated.steamFirstMonth,
+            steamFirstYear: updated.steamFirstYear,
+            steamLifetime: updated.steamLifetime,
+            totalFirstMonth: updated.totalFirstMonth,
+            totalFirstYear: updated.totalFirstYear,
+            totalLifetime: updated.totalLifetime,
+          },
+        });
+      }
+      res.json({ recalibrated: results.length, results });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
     }
   });
 

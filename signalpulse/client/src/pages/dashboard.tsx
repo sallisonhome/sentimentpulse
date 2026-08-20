@@ -415,7 +415,7 @@ export default function Dashboard() {
                       )}
                       {product.forecastMode === "wishlist" && (
                         <span
-                          title="Wishlist-based forecast: Steam 1st-Mo = pre-release wishlist × 27%. Consoles derived from platform mix. Switches to actuals-driven 30 days after release."
+                          title="Wishlist-based forecast: Steam 1st-Mo = pre-release wishlist × 45%. Consoles derived from platform mix. Switches to actuals-driven 30 days after release."
                           className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-semibold uppercase tracking-wide"
                         >
                           Wishlist-based
