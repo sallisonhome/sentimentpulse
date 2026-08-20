@@ -389,6 +389,7 @@ function runMigrations() {
   migrateAddColumnIfMissing("steamworks_sessions", "auto_refresh_last_result", "auto_refresh_last_result TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_requested_at", "refresh_requested_at TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_token_value", "refresh_token_value TEXT");
+  migrateAddColumnIfMissing("launch_forecast_snapshots", "ps5_prepurchase_count_at_lock", "ps5_prepurchase_count_at_lock INTEGER");
 }
 
 initializeDatabase();
@@ -1903,6 +1904,7 @@ export class DatabaseStorage implements IStorage {
         steamFirstMonth: data.steamFirstMonth,
         steamFirstYear: data.steamFirstYear,
         steamLifetime: data.steamLifetime,
+        ps5PrepurchaseCountAtLock: data.ps5PrepurchaseCountAtLock,
         perPlatformForecastsJson: data.perPlatformForecastsJson,
       })
       .where(eq(launchForecastSnapshots.productId, data.productId))

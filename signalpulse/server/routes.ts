@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage, type SteamWishlistSummary } from "./storage";
-import { calculateDynamicForecasts, calculateDynamicForecastsFull, STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER } from "./forecast";
+import { calculateDynamicForecasts, calculateDynamicForecastsFull, computeForecastScenarios, STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER } from "./forecast";
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
 import { extractVideoId, fetchVideoData } from "./youtube-fetcher";
@@ -219,6 +219,10 @@ export async function registerRoutes(
                 steamFirstMonth: baselineSteamRow?.firstMonth ?? null,
                 steamFirstYear: baselineSteamRow?.firstYear ?? null,
                 steamLifetime: baselineSteamRow?.lifetime ?? null,
+                // v3.32: lock the PS5 prepurchase input alongside the Steam
+                // wishlist input so the Bull/Bear toggle can recompute an
+                // alternate scenario later from these SAME frozen inputs.
+                ps5PrepurchaseCountAtLock: latestPs5Pre?.cumulativeCount ?? null,
                 perPlatformForecastsJson: JSON.stringify(baselineDynamic),
               });
             }
@@ -244,6 +248,26 @@ export async function registerRoutes(
         const dynamicFirstMonthTotal = dynamicFull.reduce((sum, d) => sum + d.firstMonth, 0);
         const dynamicFirstYearTotal = dynamicFull.reduce((sum, d) => sum + d.firstYear, 0);
         const dynamicLtTotal = dynamicFull.reduce((sum, d) => sum + d.lifetime, 0);
+
+        // v3.32 (2026-08-19): Bull(.45)/Bear(.18) Month-1 conversion scenario
+        // pair for the Dynamic Pre-Launch Forecast (Track 1) toggle. Once
+        // released, this recomputes from the SAME locked snapshot inputs
+        // (steamWishlistCountAtLaunch / ps5PrepurchaseCountAtLock) so the
+        // Bull scenario always matches the immutable snapshot exactly and
+        // Bear is a deterministic what-if off the same frozen baseline.
+        // Pre-release (no snapshot yet), it's a live preview off current
+        // wishlist/prepurchase counts — same shape either way for the UI.
+        const forecastScenarios = launchForecastSnapshot
+          ? computeForecastScenarios(
+              platforms,
+              launchForecastSnapshot.steamWishlistCountAtLaunch,
+              launchForecastSnapshot.ps5PrepurchaseCountAtLock,
+            )
+          : computeForecastScenarios(
+              platforms,
+              forecastingWl,
+              latestPs5Pre?.cumulativeCount ?? null,
+            );
 
         // v2.5 (2026-08-11): expose Steam-only forecast track so the summary
         // card can display 'Steam Dyn' rows separately from 'All Platforms'.
@@ -331,6 +355,10 @@ export async function registerRoutes(
             ? { ...launchForecastSnapshot,
                 perPlatformForecasts: JSON.parse(launchForecastSnapshot.perPlatformForecastsJson) }
             : null,
+          // v3.32 (2026-08-19): Bull/Bear Month-1 conversion scenario pair —
+          // { bull: {...}, bear: {...} }, each shaped like the snapshot's own
+          // totals/steam/perPlatform fields. Drives the card's forecast toggle.
+          forecastScenarios,
         };
       });
       res.json(enriched);
@@ -489,6 +517,20 @@ export async function registerRoutes(
         pdpBaselineSteamForActuals,
       );
 
+      // v3.32 (2026-08-19): Bull(.45)/Bear(.18) Month-1 conversion scenario
+      // pair — mirrors the list endpoint's logic exactly (see comment there).
+      const pdpForecastScenarios = pdpLaunchSnapshotForBaseline
+        ? computeForecastScenarios(
+            platforms,
+            pdpLaunchSnapshotForBaseline.steamWishlistCountAtLaunch,
+            pdpLaunchSnapshotForBaseline.ps5PrepurchaseCountAtLock,
+          )
+        : computeForecastScenarios(
+            platforms,
+            forecastingWl,
+            latestPs5Pre?.cumulativeCount ?? null,
+          );
+
       // v3.9 (2026-08-12): compute blended GMV factor for revenue tiles.
       // Mirrors the same math the list endpoint uses.
       const pdpSteamRev = storage.getSteamRevenueByReleaseSplit(id, releaseDateForSummary);
@@ -543,6 +585,9 @@ export async function registerRoutes(
         // v3.22 fields: locked launch-day baseline forecast (see the list
         // endpoint for the full write path documentation).
         launchForecastSnapshot: pdpLaunchSnapshotOut,
+        // v3.32 (2026-08-19): Bull/Bear Month-1 conversion scenario pair for
+        // the PDP forecast toggle. See list endpoint for full explanation.
+        forecastScenarios: pdpForecastScenarios,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });

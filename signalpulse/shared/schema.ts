@@ -526,6 +526,12 @@ export const launchForecastSnapshots = sqliteTable("launch_forecast_snapshots", 
   steamFirstMonth: integer("steam_first_month"),
   steamFirstYear: integer("steam_first_year"),
   steamLifetime: integer("steam_lifetime"),
+  // v3.32 (2026-08-19): the PS5 prepurchase count that fed the PS5 side of
+  // this snapshot's forecast (mirrors steamWishlistCountAtLaunch above).
+  // Stored so the Bull(.45)/Bear(.18) scenario toggle can recompute an
+  // alternate scenario at read time from the SAME locked inputs, without a
+  // second DB write. Null when the product has no PS5 prepurchase signal.
+  ps5PrepurchaseCountAtLock: integer("ps5_prepurchase_count_at_lock"),
   // Full per-platform DynamicForecastResult array (JSON):
   //   [{platform: 'PC (Steam)', firstMonth, firstYear, lifetime}, ...]
   perPlatformForecastsJson: text("per_platform_forecasts_json").notNull(),

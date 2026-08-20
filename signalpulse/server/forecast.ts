@@ -85,6 +85,17 @@ export interface DynamicForecastResult {
 export const STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER = 0.45;
 
 /**
+ * v3.32 (2026-08-19): Bull/Bear scenario multipliers for the Month-1
+ * conversion toggle. Bull === the default STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER
+ * (0.45) and is the default display basis on cards and the PDP. Bear is a
+ * conservative 0.18 the user can toggle on to see a downside scenario.
+ * Both apply to the SAME locked wishlist/prepurchase inputs — only the
+ * conversion rate changes.
+ */
+export const STEAM_WISHLIST_BULL_MULTIPLIER = STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER;
+export const STEAM_WISHLIST_BEAR_MULTIPLIER = 0.18;
+
+/**
  * Console propagation dampening factor (v3.7, 2026-08-12).
  *
  * When Steam actuals reveal that a title over/underperformed its
@@ -155,6 +166,13 @@ export function calculateDynamicForecastsFull(
    * behavior degrades gracefully rather than going blank).
    */
   baselineSteam?: { firstMonth: number | null; firstYear: number | null; lifetime: number | null } | null,
+  /**
+   * v3.32 (2026-08-19): Bull/Bear scenario toggle — overrides the Month-1
+   * wishlist conversion rate. Defaults to STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER
+   * (Bull/0.45) so every existing call site is unaffected unless it
+   * explicitly opts into a different scenario (e.g. STEAM_WISHLIST_BEAR_MULTIPLIER).
+   */
+  firstMonthMultiplier: number = STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER,
 ): DynamicForecastResult[] {
   const mix = getAdjustedPlatformMix(selectedPlatforms);
   const hasSteam = selectedPlatforms.includes("PC (Steam)");
@@ -165,7 +183,7 @@ export function calculateDynamicForecastsFull(
   // When post-release Steam actuals are available, they drive the Steam
   // 1st-Mo track. Otherwise fall back to wishlist × multiplier.
   const wishlistBasedSteamFirstMonth = hasSteam && steamWishlistCount != null
-    ? Math.round(steamWishlistCount * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER)
+    ? Math.round(steamWishlistCount * firstMonthMultiplier)
     : null;
 
   const useActuals = hasSteam
@@ -327,4 +345,70 @@ export function calculateDynamicForecasts(
 ): { platform: string; forecastUnits: number }[] {
   const full = calculateDynamicForecastsFull(selectedPlatforms, steamWishlistCount, ps5PrepurchaseCount);
   return full.map(f => ({ platform: f.platform, forecastUnits: f.firstMonth }));
+}
+
+/**
+ * v3.32 (2026-08-19): Bull/Bear Month-1 conversion scenario pair.
+ *
+ * Computes the SAME pure wishlist-formula forecast (no post-release
+ * actuals influence — this is the Track 1 "Dynamic Pre-Launch Forecast"
+ * mechanism only) at both the Bull (0.45) and Bear (0.18) conversion
+ * rates, from identical locked inputs. Used both for the pre-release
+ * live preview (inputs = current wishlist/prepurchase counts) and the
+ * post-release locked snapshot (inputs = the snapshot's frozen
+ * steamWishlistCountAtLaunch / ps5PrepurchaseCountAtLock columns) so the
+ * UI toggle has an identical shape to switch between either way.
+ */
+export interface ForecastScenario {
+  totalFirstMonth: number;
+  totalFirstYear: number;
+  totalLifetime: number;
+  steamFirstMonth: number | null;
+  steamFirstYear: number | null;
+  steamLifetime: number | null;
+  perPlatformForecasts: DynamicForecastResult[];
+}
+
+export interface ForecastScenarioPair {
+  bull: ForecastScenario;
+  bear: ForecastScenario;
+}
+
+function buildScenario(
+  selectedPlatforms: string[],
+  steamWishlistCount: number | null,
+  ps5PrepurchaseCount: number | null,
+  multiplier: number,
+): ForecastScenario {
+  const dynamic = calculateDynamicForecastsFull(
+    selectedPlatforms,
+    steamWishlistCount,
+    ps5PrepurchaseCount,
+    null, // steamActualFirstMonthUnits — pure wishlist formula only
+    null, // steamActualCumulativeUnits
+    null, // steamActualFirstYearUnits
+    null, // baselineSteam
+    multiplier,
+  );
+  const steamRow = dynamic.find(d => d.platform === "PC (Steam)") ?? null;
+  return {
+    totalFirstMonth: dynamic.reduce((s, d) => s + d.firstMonth, 0),
+    totalFirstYear: dynamic.reduce((s, d) => s + d.firstYear, 0),
+    totalLifetime: dynamic.reduce((s, d) => s + d.lifetime, 0),
+    steamFirstMonth: steamRow?.firstMonth ?? null,
+    steamFirstYear: steamRow?.firstYear ?? null,
+    steamLifetime: steamRow?.lifetime ?? null,
+    perPlatformForecasts: dynamic,
+  };
+}
+
+export function computeForecastScenarios(
+  selectedPlatforms: string[],
+  steamWishlistCount: number | null,
+  ps5PrepurchaseCount: number | null,
+): ForecastScenarioPair {
+  return {
+    bull: buildScenario(selectedPlatforms, steamWishlistCount, ps5PrepurchaseCount, STEAM_WISHLIST_BULL_MULTIPLIER),
+    bear: buildScenario(selectedPlatforms, steamWishlistCount, ps5PrepurchaseCount, STEAM_WISHLIST_BEAR_MULTIPLIER),
+  };
 }
