@@ -138,40 +138,6 @@ export async function registerRoutes(
 
   // ─── Products CRUD ─────────────────────────────────────────────────────────
 
-  // TEMP v3.32 backfill endpoint -- deleted immediately after one run.
-  // Populates ps5_prepurchase_count_at_lock for the launch_forecast_snapshots
-  // rows that were written before that column existed, using the current
-  // (near-identical, since these snapshots were all written within the last
-  // ~30 min) live PS5 prepurchase count as the locked value.
-  app.post("/api/admin/backfill-ps5-lock-v332", (_req, res) => {
-    try {
-      const products = storage.getAllProducts();
-      const results: any[] = [];
-      for (const p of products) {
-        const snapshot = storage.getLaunchForecastSnapshot(p.id);
-        if (!snapshot) continue;
-        const latestPs5Pre = storage.getLatestPs5Prepurchase(p.id);
-        const updated = storage.forceUpdateLaunchForecastSnapshot({
-          productId: p.id,
-          snapshotDate: snapshot.snapshotDate,
-          steamWishlistCountAtLaunch: snapshot.steamWishlistCountAtLaunch,
-          totalFirstMonth: snapshot.totalFirstMonth,
-          totalFirstYear: snapshot.totalFirstYear,
-          totalLifetime: snapshot.totalLifetime,
-          steamFirstMonth: snapshot.steamFirstMonth,
-          steamFirstYear: snapshot.steamFirstYear,
-          steamLifetime: snapshot.steamLifetime,
-          ps5PrepurchaseCountAtLock: latestPs5Pre?.cumulativeCount ?? null,
-          perPlatformForecastsJson: snapshot.perPlatformForecastsJson,
-        });
-        results.push({ productId: p.id, title: p.title, ps5PrepurchaseCountAtLock: updated.ps5PrepurchaseCountAtLock });
-      }
-      res.json({ backfilled: results.length, results });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
   app.get("/api/products", (_req, res) => {
     try {
       const products = storage.getAllProducts();
