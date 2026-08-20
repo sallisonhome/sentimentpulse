@@ -25,18 +25,22 @@ jobs:
           echo ""
           echo "=== Does today's row EXIST at all (vs missing) for product_id=7 ==="
           sqlite3 /opt/sentimentpulse/signalpulse/data.db \
-            "SELECT date, rank FROM steam_wishlist_ranks WHERE product_id = 7 AND date >= '2026-08-17' ORDER BY date;"
-
-          echo ""
-          echo "=== Last 3 ingestion log entries for wishlist_rank source ==="
-          sqlite3 /opt/sentimentpulse/signalpulse/data.db \
-            "SELECT source, status, message, started_at FROM ingestion_log WHERE source LIKE '%wishlist%' ORDER BY started_at DESC LIMIT 5;" 2>&1 || echo "no ingestion_log table or different schema"
+            "SELECT date, rank FROM steam_wishlist_rank_daily WHERE product_id = 7 AND date >= '2026-08-13' ORDER BY date;"
 
           echo ""
           echo "=== pm2 process restart time (proxy for when current code went live) ==="
-          pm2 jlist 2>/dev/null | grep -E '"pm_uptime"|"name"' | head -10 || pm2 list
+          pm2 jlist 2>/dev/null | grep -E '"pm_uptime"|"name"|"restart_time"' | head -10 || pm2 list
 
           echo ""
-          echo "=== App log grep for wishlist/Hellraiser/429 activity today (UTC date) ==="
-          pm2 logs signalpulse --lines 500 --nostream 2>/dev/null | grep -iE "wishlist|1551980|429|hellraiser" | tail -60 || echo "no matching log lines in last 500"
+          echo "=== Full pm2 log history available (line count) ==="
+          pm2 logs signalpulse --lines 2000 --nostream 2>/dev/null | wc -l
+
+          echo ""
+          echo "=== App log grep for wishlist/Hellraiser/429/error activity (last 2000 lines) ==="
+          pm2 logs signalpulse --lines 2000 --nostream 2>/dev/null | grep -iE "wishlist|1551980|429|hellraiser|steam wishlist" | tail -80 || echo "no matching log lines in last 2000"
+
+          echo ""
+          echo "=== All products with null rank today vs yesterday (systemic vs single-title) ==="
+          sqlite3 /opt/sentimentpulse/signalpulse/data.db \
+            "SELECT date, COUNT(*) as total, SUM(CASE WHEN rank IS NULL THEN 1 ELSE 0 END) as null_count FROM steam_wishlist_rank_daily WHERE date >= '2026-08-18' GROUP BY date ORDER BY date;"
           REMOTEEOF
