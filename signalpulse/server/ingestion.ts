@@ -497,7 +497,13 @@ const EXTENDED_PAGE_SIZE = 100;
 const EXTENDED_WINDOW_BEFORE = 150;
 const EXTENDED_WINDOW_PAGES = 8; // 8 * 100 = 800 items scanned around the seed
 const FULL_SCAN_MAX_PAGES = 60; // 60 * 100 = 6000 items, covers full chart (~5100) with margin
-const EXTENDED_REQUEST_DELAY_MS = 400;
+// v3.33 (2026-08-20): widened from 400ms after a same-day production incident
+// where Steam 429'd a paginated request at start=900 even after 4 backoff
+// retries -- Steam's rate limit on this endpoint is tighter than it was when
+// 400ms was chosen. Pacing pages further apart reduces how often we hit it
+// at all; per-title fault isolation below (see resolveExtendedWishlistRanks)
+// is the actual fix for what happens when we still do.
+const EXTENDED_REQUEST_DELAY_MS = 1750;
 
 function extendedWishlistUrl(start: number): string {
   return `https://store.steampowered.com/search/results/?query&start=${start}&count=${EXTENDED_PAGE_SIZE}&dynamic_data=&sort_by=_ASC&supportedlang=english&filter=popularwishlist&infinite=1`;
@@ -510,7 +516,7 @@ function extendedWishlistUrl(start: number): string {
  */
 async function fetchExtendedWishlistPage(
   start: number,
-  { attempts = 4 }: { attempts?: number } = {},
+  { attempts = 5 }: { attempts?: number } = {},
 ): Promise<{ appids: number[]; totalCount: number }> {
   let lastErr: Error | null = null;
   for (let i = 0; i < attempts; i++) {
@@ -534,7 +540,10 @@ async function fetchExtendedWishlistPage(
       lastErr = err;
     }
     if (i < attempts - 1) {
-      const wait = 5000 + Math.floor(Math.random() * 10000) + i * 5000;
+      // v3.33: widened backoff (was 5-15s/10-20s/15-25s/20-30s over 4
+      // attempts) -- today's incident hit 429 on every attempt at start=900,
+      // so give Steam more room to cool down, with one extra attempt.
+      const wait = 8000 + Math.floor(Math.random() * 12000) + i * 7000;
       await new Promise((r) => setTimeout(r, wait));
     }
   }
@@ -594,21 +603,39 @@ async function resolveExtendedWishlistRanks(
 
   // Windowed scans, one seed-window at a time (windows can overlap targets,
   // so just run each title's own window — cheap since these are rare).
+  //
+  // v3.33 (2026-08-20 incident): each title's scan is isolated in its own
+  // try/catch. Previously a single title hitting a Steam 429 (even after
+  // all fetchExtendedWishlistPage retries) threw out of this loop entirely,
+  // aborting resolution for every OTHER unmatched title too -- on
+  // 2026-08-20 that meant 5 of 6 pre-release titles came back rank=null
+  // for the day even though only one of them actually failed. A failed
+  // title now just stays null; the rest still get resolved.
   for (const { appid, seed } of withSeed) {
     const windowStart = Math.max(WISHLIST_TARGET, seed - EXTENDED_WINDOW_BEFORE);
-    const hit = await scanExtendedWishlistRange(new Set([appid]), windowStart, EXTENDED_WINDOW_PAGES);
-    if (hit.has(appid)) result.set(appid, hit.get(appid)!);
+    try {
+      const hit = await scanExtendedWishlistRange(new Set([appid]), windowStart, EXTENDED_WINDOW_PAGES);
+      if (hit.has(appid)) result.set(appid, hit.get(appid)!);
+    } catch (err) {
+      log(`Steam extended wishlist rank scan failed for appid ${appid} (windowed): ${err}`, "ingestion");
+    }
   }
 
   // Anything still missing (no seed, or seed window missed a big jump)
-  // shares one full scan from WISHLIST_TARGET onward.
+  // shares one full scan from WISHLIST_TARGET onward. Isolated the same
+  // way -- a full-scan failure no longer wipes out ranks already found
+  // above by the per-title windowed scans.
   const stillMissing = new Set<number>([
     ...withoutSeed.map((s) => s.appid),
     ...withSeed.filter((s) => !result.has(s.appid)).map((s) => s.appid),
   ]);
   if (stillMissing.size > 0) {
-    const hits = await scanExtendedWishlistRange(stillMissing, WISHLIST_TARGET, FULL_SCAN_MAX_PAGES);
-    hits.forEach((rank, appid) => result.set(appid, rank));
+    try {
+      const hits = await scanExtendedWishlistRange(stillMissing, WISHLIST_TARGET, FULL_SCAN_MAX_PAGES);
+      hits.forEach((rank, appid) => result.set(appid, rank));
+    } catch (err) {
+      log(`Steam extended wishlist rank full scan failed for ${stillMissing.size} title(s): ${err}`, "ingestion");
+    }
   }
 
   return result;
