@@ -171,7 +171,13 @@ def set_next_run(dt: Optional[datetime]) -> None:
 # by the next cron trigger. 180 = 150 + 30 min grace — the grace covers
 # Phase C (sentiment + topics + daily summary) which runs AFTER Phase A's
 # wallclock check and is not budgeted separately.
-_STUCK_RUN_THRESHOLD_S = 180 * 60  # 180 minutes
+# v0023 (2026-08-20): bumped from 180 min to 500 min so it stays above
+# the new hard-stop guard (3 × _RUN_WALLCLOCK_BUDGET_S = 450 min).  The
+# stuck-threshold's job is to detect that a run is truly hung from the
+# OUTSIDE (via the reclaim logic in run_ingestion); it MUST be higher
+# than any legitimate run bound.  Enforced by
+# tests/test_ingestor_hardening.py::test_stuck_threshold_is_greater_than_wallclock_budget.
+_STUCK_RUN_THRESHOLD_S = 500 * 60  # 500 minutes
 
 # Maximum wallclock the entire run is allowed to take. Prevents a slow
 # source (Steam Forum on a busy game, Reddit backoff cascade, etc.) from
@@ -443,25 +449,49 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
             return game_posts_local, r_fetched, b_fetched, sr_fetched, sf_fetched, d_fetched
 
         # ── Phase A: fetch sources (Steps 2 -> 4c) for every active game ────────
+        #
+        # v0023 (2026-08-20): the previous version SKIPPED remaining games
+        # when the wallclock budget was exceeded.  Steve's directive after
+        # the 2026-08-20 morning run: "all active games get their data
+        # pulled in every ingestion even as the count of games grows".
+        # v0018's per-source cursors dramatically cut per-game time
+        # (Reddit ~85% duplicate work removed, Bluesky ~90%), so the
+        # remaining games after the deadline are actually fast — the old
+        # skip was a leftover safety net from the era when a stuck game
+        # could hang the whole pipeline.  We now log a warning and keep
+        # going.  A separate global HARD_STOP kicks in only at 3× budget
+        # to bound truly pathological runs (network partition, upstream
+        # 500s across the board).
+        _run_hard_stop_s = _RUN_WALLCLOCK_BUDGET_S * 3
+        _phase_a_soft_warn_seen = False
         dtf_fetched_total = 0
         for i, game in enumerate(active_games, start=1):
-            # Outer wallclock safety net: if the run has already blown past
-            # _RUN_WALLCLOCK_BUDGET_S, skip remaining games so we still get
-            # to Phase C (sentiment/topics/summaries) on whatever data we
-            # collected before the deadline. Better a partial success with
-            # summaries computed than an indefinite hang.
-            if time.monotonic() - _run_started_at > _RUN_WALLCLOCK_BUDGET_S:
+            elapsed = time.monotonic() - _run_started_at
+            if elapsed > _run_hard_stop_s:
+                # Hard stop: something is truly wrong — exit Phase A so
+                # we still get to Phase C on the partial data we have.
                 remaining = len(active_games) - (i - 1)
                 msg = (
-                    f"[Phase A] Wallclock budget "
-                    f"({_RUN_WALLCLOCK_BUDGET_S}s) exceeded after "
-                    f"{i - 1}/{len(active_games)} games; skipping remaining "
-                    f"{remaining} game(s) and jumping to Phase C."
+                    f"[Phase A] HARD STOP: wallclock {elapsed:.0f}s > 3× "
+                    f"budget ({_run_hard_stop_s}s).  Skipping remaining "
+                    f"{remaining} game(s) to guarantee Phase C runs.  "
+                    f"This is a runaway-safety trip — investigate."
                 )
                 errors.append(msg)
                 logger.error(msg)
                 log_lines.append(msg)
                 break
+            if elapsed > _RUN_WALLCLOCK_BUDGET_S and not _phase_a_soft_warn_seen:
+                # Soft warn once per run — keep processing.
+                _phase_a_soft_warn_seen = True
+                msg = (
+                    f"[Phase A] Wallclock budget "
+                    f"({_RUN_WALLCLOCK_BUDGET_S}s) exceeded after "
+                    f"{i - 1}/{len(active_games)} games; continuing "
+                    f"(no skip — v0023 policy is finish all games)."
+                )
+                logger.warning(msg)
+                log_lines.append(msg)
 
             try:
                 (game_posts, r_f, b_f, sr_f, sf_f, d_f) = _safe_run_steps_2_to_4b(game)

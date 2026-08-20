@@ -112,6 +112,50 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("APScheduler started — daily ingestion at 02:00 local time.")
 
+    # v0023 (2026-08-20): startup catch-up.  If the last successful ingest
+    # completed more than 20 hours ago, fire an immediate run.  Protects
+    # against the 2026-08-19 scenario where a burst of deploys spanning
+    # the 10:45 UTC ingest window silently dropped that day's fire, leaving
+    # 39 games un-ingested until manual trigger.  Uses a 20h floor (not
+    # 24h) so a slightly-late run doesn't chain into a duplicate.
+    #
+    # Runs in a background thread so it never blocks FastAPI startup or
+    # readiness probes.  The ingest itself has its own is_running guard
+    # so racing this with an already-firing cron is safe.
+    from threading import Thread  # noqa: PLC0415
+    def _startup_catchup():
+        try:
+            from datetime import datetime, timezone, timedelta  # noqa: PLC0415
+            from services.ingestor import get_status, run_ingestion  # noqa: PLC0415
+            status = get_status()
+            last = status.get("last_run_at")
+            if last is None:
+                # First-ever boot with no history — don't fire; the daily
+                # cron will pick it up.
+                logger.info("Startup catch-up: no prior run recorded; skipping.")
+                return
+            if isinstance(last, str):
+                last_dt = datetime.fromisoformat(last)
+            else:
+                last_dt = last
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            age = datetime.now(timezone.utc) - last_dt
+            if age > timedelta(hours=20):
+                logger.warning(
+                    "Startup catch-up: last ingest was %s ago (> 20h). "
+                    "Firing immediate run.", age,
+                )
+                run_ingestion()
+            else:
+                logger.info(
+                    "Startup catch-up: last ingest was %s ago (≤ 20h). Skipping.",
+                    age,
+                )
+        except Exception as exc:
+            logger.exception("Startup catch-up crashed: %s", exc)
+    Thread(target=_startup_catchup, daemon=True, name="startup_catchup").start()
+
     yield
 
     # ── Shutdown ──────────────────────────────────────────────────────────────

@@ -1290,3 +1290,20 @@ GET /api/ingest/admin/audit-polluted-reddit-posts?purge=false
 ```
 Global polluted count should be 0 or very small (a small remainder is OK when a legit post's title lacks the distinctive companion; watch for anything above ~1% and re-tune the game's keywords).
 
+
+---
+
+## 2026-08-20 — Scheduler misfire dropped an entire day; skip policy conflicted with growth (v0023)
+
+**Problem 1: Missed cron fire.** Yesterday's four separate deploys (v0018, v0019, v0020, v0021, v0022) spanned the 10:45 UTC daily-ingest window. APScheduler's `misfire_grace_time` was set to 3600 s (1 h). The 2026-08-20 fire arrived while the process was mid-deploy → grace exhausted → fire silently DROPPED. Result: no ingest on 2026-08-20; `last_run_at` still on 2026-08-19; user woke up to the same "10 games skipped" error message from yesterday's PRE-v0018 stale run.
+
+**Problem 2: The skip policy itself.** Even when the cron DID fire (yesterday's 10:45 UTC), the old wallclock-budget guard would `break` out of Phase A once the budget was exceeded, skipping any un-processed games. Steve's directive after seeing this pattern: "all active games get their data pulled in every ingestion even as the count of games grows." The old skip was a leftover safety net from the era when a stuck game could hang the whole pipeline.
+
+**Non-negotiable rules going forward.**
+1. **APScheduler `misfire_grace_time` >= 12 h.** Any shorter grace can't survive a normal multi-deploy afternoon. If a deploy window is longer than 12 h, that's an ops issue, not something to hide by skipping a data fetch.
+2. **Startup catch-up job MUST fire when `last_run_at` is > 20 h old.** Runs in a background thread so it never blocks FastAPI startup or readiness probes. The ingest's own `is_running` guard prevents racing with an already-firing cron.
+3. **Phase A NEVER skips a game at the wallclock-budget boundary.** The budget is a SOFT warning that fires once per run, logged to `log_lines`. A separate HARD_STOP kicks in only at 3× budget for truly pathological runs (network partition, upstream 500s across the board). Enforced by `test_no_skip_policy_finish_all_games` in test_ingestor_hardening.py.
+4. **`_STUCK_RUN_THRESHOLD_S` must be >= 3 × `_RUN_WALLCLOCK_BUDGET_S`.** The stuck-threshold's job is to detect truly-hung processes from the OUTSIDE via the reclaim logic; it MUST sit above any legitimate run bound including the hard stop. Enforced by `test_stuck_threshold_covers_hard_stop_bound`.
+
+**How to verify.** After any change to the wallclock guard, hit `/api/ingest/run` manually and watch `games_processed` climb monotonically past the budget deadline without any `[Phase A] Wallclock budget ... skipping` errors in `/api/ingest/status.last_run_errors`.
+

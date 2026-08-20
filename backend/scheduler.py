@@ -45,7 +45,16 @@ def create_scheduler() -> BackgroundScheduler:
         timezone=get_localzone(),
         job_defaults={
             "coalesce": True,         # If multiple misfires queued, run once
-            "misfire_grace_time": 3600,  # Allow up to 1 h late before skipping
+            # v0023 (2026-08-20): bumped from 3600 (1h) to 43200 (12h).
+            # The 1h grace kept dropping fires whenever a deploy window
+            # spanned the 10:45 UTC ingest time.  On 2026-08-19 we shipped
+            # four separate deploys in the afternoon and the next-day
+            # 10:45 UTC fire was silently skipped, leaving 39 games
+            # un-ingested until manual trigger.  12h is generous but
+            # bounded: if the process is down that long we still want a
+            # catch-up run; if longer, the operator can hit
+            # /api/ingest/run manually.  See lessons.md v0023 entry.
+            "misfire_grace_time": 43200,
             "max_instances": 1,          # Never run two ingestions simultaneously
         },
     )

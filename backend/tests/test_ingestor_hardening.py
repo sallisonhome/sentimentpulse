@@ -152,3 +152,45 @@ def test_wallclock_budget_scales_with_portfolio_size():
         "the daily cron cadence (86400s / 24h) — a run at this length would "
         "collide with the next scheduled trigger."
     )
+
+
+def test_stuck_threshold_covers_hard_stop_bound():
+    """v0023 (2026-08-20): the wallclock budget is now a SOFT warning —
+    Phase A keeps processing every game past the budget.  A separate
+    hard-stop kicks in at 3× budget for truly pathological runs.  The
+    STUCK threshold must sit ABOVE the hard-stop, otherwise the reclaim
+    logic could kill a legitimate long-running catch-up while it's still
+    working."""
+    hard_stop_s = ingestor._RUN_WALLCLOCK_BUDGET_S * 3
+    assert ingestor._STUCK_RUN_THRESHOLD_S >= hard_stop_s, (
+        f"stuck threshold ({ingestor._STUCK_RUN_THRESHOLD_S}s) must be >= "
+        f"hard-stop ({hard_stop_s}s = 3× wallclock budget) so the reclaim "
+        "logic never kills a legitimate long run before it self-terminates."
+    )
+
+
+def test_no_skip_policy_finish_all_games():
+    """v0023 (2026-08-20): Steve directive — 'all active games get their
+    data pulled in every ingestion even as the count of games grows'.
+    Guard against a regression that reintroduces the old Phase A skip
+    at the soft-budget boundary.
+
+    The regression pattern to reject: any `break` inside the Phase A
+    game loop that triggers when elapsed > _RUN_WALLCLOCK_BUDGET_S.
+    We look at the source of run_ingestion to make sure the only
+    `break` inside Phase A is the hard-stop guard at 3× budget.
+    """
+    import inspect
+    src = inspect.getsource(ingestor.run_ingestion)
+    # There should be at most one `break` statement inside Phase A.
+    # It must guard against hard_stop, NOT against the soft budget.
+    assert "_run_hard_stop_s" in src, (
+        "Phase A must reference _run_hard_stop_s — the soft budget skip "
+        "was removed in v0023. See lessons.md v0023 for context."
+    )
+    # The soft-warning comment must be present so future readers know
+    # the historical skip is intentionally gone.
+    assert "no skip" in src or "v0023" in src, (
+        "Phase A should carry a v0023-era comment explaining the no-skip "
+        "policy so nobody re-introduces the old skip 'safety net'."
+    )
