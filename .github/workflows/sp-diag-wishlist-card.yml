@@ -1,0 +1,29 @@
+name: sp-diag-wishlist-card
+on:
+  workflow_dispatch: {}
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Query wishlist reporting rows + recent ingestion logs
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -e
+          echo "=== Today's UTC date on droplet ==="
+          date -u
+          echo "=== Last 10 rows: steam_wishlist_reporting_daily, product_id=7 (Hellraiser) ==="
+          sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT productId, date, wishlistAdds, wishlistDeletes, wishlistPurchases, createdAt FROM steam_wishlist_reporting_daily WHERE productId=7 ORDER BY date DESC LIMIT 10;"
+          echo "=== Same for ALL products, last 3 rows each (to check breadth of disparity) ==="
+          sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT p.id, p.title, w.date, w.wishlistAdds, w.wishlistDeletes, w.wishlistPurchases FROM products p LEFT JOIN steam_wishlist_reporting_daily w ON w.productId = p.id AND w.date = (SELECT MAX(date) FROM steam_wishlist_reporting_daily WHERE productId = p.id) WHERE p.steamAppId IS NOT NULL ORDER BY p.id;"
+          echo "=== journalctl: last 07:00 UTC ingestion run for signalpulse.service, 'steam' + 'wishlist' lines ==="
+          journalctl -u signalpulse.service --since "6 hours ago" --no-pager | grep -i "wishlist\|ingestion" | tail -60
+          echo "=== steam_wishlist_daily (legacy cumulative table) last 5 rows for product 7 ==="
+          sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT productId, date, cumulativeCount, dailyDelta FROM steam_wishlist_daily WHERE productId=7 ORDER BY date DESC LIMIT 5;"
+          REMOTEEOF
