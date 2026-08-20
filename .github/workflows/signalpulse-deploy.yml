@@ -52,9 +52,11 @@ jobs:
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Pull, build, restart signalpulse on droplet
+        env:
+          OPS_TOKEN_SECRET: ${{ secrets.INGESTION_OPS_TOKEN }}
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-              root@104.236.239.46 bash -s <<'REMOTEEOF'
+              root@104.236.239.46 "OPS_TOKEN_SECRET='${OPS_TOKEN_SECRET}' bash -s" <<'REMOTEEOF'
           set -euo pipefail
 
           REPO_DIR=/opt/sentimentpulse
@@ -131,9 +133,27 @@ jobs:
           else
             echo "SABER_AUTH_JWT_SECRET already present in /etc/signalpulse/env"
           fi
-          # Show non-secret vars for debugging (mask the JWT).
-          echo "env contents (JWT masked):"
-          sed 's/^\(SABER_AUTH_JWT_SECRET=\).*/\1***MASKED***/' /etc/signalpulse/env
+          # Ensure an ops/automation service token exists (2026-08-20).
+          # Lets GitHub Actions workflows and this app's own scheduled
+          # health checks call a narrow allow-list of automation routes
+          # (see server/saber-auth.ts OPS_TOKEN_PATHS) via the x-ops-token
+          # header, without needing a human JWT session. Sourced from the
+          # INGESTION_OPS_TOKEN repo secret (GitHub Actions masks its value
+          # in all logs automatically) so it never needs to be generated on
+          # or read back off the droplet.
+          if [ -n "${OPS_TOKEN_SECRET}" ] && ! grep -q '^INGESTION_OPS_TOKEN=' /etc/signalpulse/env; then
+            echo "INGESTION_OPS_TOKEN=${OPS_TOKEN_SECRET}" >> /etc/signalpulse/env
+            chmod 600 /etc/signalpulse/env
+            echo "set INGESTION_OPS_TOKEN from repo secret"
+          else
+            echo "INGESTION_OPS_TOKEN already present in /etc/signalpulse/env (or secret not configured)"
+          fi
+
+          # Show non-secret vars for debugging (mask the JWT + ops token).
+          echo "env contents (secrets masked):"
+          sed -e 's/^\(SABER_AUTH_JWT_SECRET=\).*/\1***MASKED***/' \
+              -e 's/^\(INGESTION_OPS_TOKEN=\).*/\1***MASKED***/' \
+              /etc/signalpulse/env
 
           echo ""
           echo "== Ensure signalpulse.service reads /etc/signalpulse/env =="

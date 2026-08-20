@@ -104,13 +104,53 @@ export function readAuthMode(): AuthMode {
 }
 
 // Routes exempt from saber-auth even in "saber" mode.
-const EXEMPT_PATHS = new Set(["/api/auth/verify", "/api/health"]);
+// /api/config is intentionally public: it's non-sensitive (authMode,
+// authReady, login/logout URLs) and the unauthenticated SPA must be able to
+// read it to know whether to redirect to /auth/login.html in the first
+// place — gating it behind auth created a chicken-and-egg bug (also broke
+// the deploy smoke test, which reads authMode/authReady from this route).
+const EXEMPT_PATHS = new Set(["/api/auth/verify", "/api/health", "/api/config"]);
 
 function isExempt(req: Request): boolean {
   if (EXEMPT_PATHS.has(req.path)) return true;
   // Static assets, HMR, the SPA HTML shell — not our concern.
   if (!req.path.startsWith("/api/")) return true;
   return false;
+}
+
+// ─── Ops/automation service token (2026-08-20) ──────────────────────────────
+// AUTH_MODE=saber enforces human JWT sessions on every /api/* route, which is
+// correct for the SPA but breaks unattended automation (GitHub Actions
+// workflows, this app's own scheduled ingestion triggers, health-check
+// crons) that has no browser session to present. Rather than requiring those
+// callers to log in, a narrow set of automation-only routes accept a
+// separate service token via the `x-ops-token` header.
+//
+// This is intentionally NOT a general auth bypass:
+//   - Only the specific routes below honor the token; everything else still
+//     requires a human JWT exactly as before.
+//   - It only activates when INGESTION_OPS_TOKEN is set in the environment;
+//     unset (the pre-2026-08-20 default) means these routes behave exactly
+//     as they did previously (JWT only).
+//   - The token is a fresh, purpose-built shared secret (not derived from
+//     the JWT signing secret or any other credential) with no session/user
+//     impersonation semantics.
+const OPS_TOKEN_PATHS = new Set([
+  "/api/ingestion/run",
+  "/api/ingestion/run-sales",
+  "/api/ingestion/run-public-wishlist",
+  "/api/ingestion/run-partner-wishlist",
+  "/api/ingestion/status",
+  "/api/ingestion/manual-status",
+  "/api/steam/session",
+]);
+
+function hasValidOpsToken(req: Request): boolean {
+  const expected = process.env.INGESTION_OPS_TOKEN;
+  if (!expected) return false;
+  const provided = req.headers["x-ops-token"];
+  if (typeof provided !== "string" || provided.length === 0) return false;
+  return provided === expected;
 }
 
 interface SaberContext {
@@ -183,6 +223,17 @@ export function createSaberAuthMiddleware(): {
     next: NextFunction,
   ): Promise<void> => {
     if (isExempt(req)) return next();
+
+    if (OPS_TOKEN_PATHS.has(req.path) && hasValidOpsToken(req)) {
+      (req as Request & { saberUser?: unknown }).saberUser = {
+        userId: "ops-automation",
+        email: "ops-automation@internal",
+        scopes: [scope],
+        isAdmin: false,
+        jti: "ops-token",
+      };
+      return next();
+    }
 
     // Try to load a user without enforcing.
     let user: Awaited<ReturnType<typeof auth.loadUser>> = null;
