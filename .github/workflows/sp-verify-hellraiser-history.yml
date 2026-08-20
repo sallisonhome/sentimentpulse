@@ -14,7 +14,23 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Query product 7 wishlist rank history (read-only)
+      - name: Test whether the stored Steam session bypasses the age-gate (no secret ever leaves the droplet)
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
-            "sqlite3 /opt/sentimentpulse/signalpulse/data.db \"SELECT date, rank FROM steam_wishlist_rank_daily WHERE product_id=7 ORDER BY date DESC LIMIT 30;\""
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -euo pipefail
+          COOKIE=$(sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT cookie_value FROM steamworks_sessions LIMIT 1;")
+          echo "cookie length: ${#COOKIE}"
+          echo "--- anonymous request (control) ---"
+          curl -s -o /dev/null -w "http_code=%{http_code} final_url=%{url_effective}\n" \
+            -A "Mozilla/5.0" \
+            "https://store.steampowered.com/app/1551980/"
+          echo "--- with stored steamLoginSecure cookie ---"
+          curl -s -o /dev/null -w "http_code=%{http_code} final_url=%{url_effective}\n" \
+            -A "Mozilla/5.0" -H "Cookie: ${COOKIE}" -L \
+            "https://store.steampowered.com/app/1551980/"
+          echo "--- with cookie, check search endpoint finds it ---"
+          RESULT=$(curl -s -A "Mozilla/5.0" -H "Cookie: ${COOKIE}" \
+            "https://store.steampowered.com/search/results/?term=Hellraiser+Revival&json=1&count=10")
+          echo "search result: $RESULT"
+          unset COOKIE
+          REMOTEEOF
