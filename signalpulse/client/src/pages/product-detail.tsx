@@ -1,13 +1,14 @@
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { SHARED_WISHLIST_FIELDS, PRODUCT_QUERY_STALE_TIME_MS } from "@/lib/shared-product-fields";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   ArrowLeft, Edit2, ChevronDown, ChevronRight, Info, AlertTriangle, BarChart3, Plus, Clock,
   Upload, DollarSign, Trash2
@@ -52,9 +53,37 @@ export default function ProductDetail() {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
   };
 
+  // v3.35 (2026-08-20): staleTime was Infinity with no refetch trigger, so
+  // a PDP tab left open across the daily 07:00 UTC ingestion cron would go
+  // just as stale as the dashboard card was -- bounded staleTime +
+  // refetchOnWindowFocus fixes that symmetrically here. Targeted to this
+  // query only -- the global default is unchanged for queries that
+  // intentionally want it.
   const { data: product, isLoading } = useQuery<any>({
     queryKey: ["/api/products", productId],
+    staleTime: PRODUCT_QUERY_STALE_TIME_MS,
+    refetchOnWindowFocus: true,
   });
+
+  // v3.35 (2026-08-20): single source of truth sync -- whenever this PDP's
+  // detail query resolves with fresh data, push the shared wishlist/
+  // forecast fields into the dashboard's already-cached list entry for
+  // this product too. Only updates the entry if the list query is already
+  // cached (never fetches or creates one), so visiting a PDP first and the
+  // dashboard second always reflects whichever fetch was most recent,
+  // instead of the dashboard card lagging behind until its own refetch.
+  useEffect(() => {
+    if (!product) return;
+    queryClient.setQueryData<any[]>(["/api/products"], (old) => {
+      if (!old) return old;
+      return old.map((p) => {
+        if (p.id !== productId) return p;
+        const next = { ...p };
+        for (const field of SHARED_WISHLIST_FIELDS) next[field] = product[field];
+        return next;
+      });
+    });
+  }, [product, productId]);
 
   if (isLoading) {
     return (

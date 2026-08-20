@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { Link } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -7,11 +8,41 @@ import { Calendar, Users, Gamepad2, ExternalLink } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
 import { useForecastScenario } from "@/hooks/use-forecast-scenario";
 import { ForecastScenarioToggle } from "@/components/forecast-scenario-toggle";
+import { queryClient } from "@/lib/queryClient";
+import { SHARED_WISHLIST_FIELDS, PRODUCT_QUERY_STALE_TIME_MS } from "@/lib/shared-product-fields";
 
 export default function Dashboard() {
+  // v3.35 (2026-08-20): staleTime was Infinity with no refetch trigger, so a
+  // dashboard tab left open across the daily 07:00 UTC ingestion cron kept
+  // showing yesterday's cached numbers indefinitely (root cause of the
+  // stale wishlist-card bug). Bounded staleTime + refetchOnWindowFocus caps
+  // the worst case at 5 minutes without polling for data that only changes
+  // once a day. Targeted to this query only -- the global default is
+  // unchanged for queries that intentionally want it.
   const { data: products, isLoading } = useQuery<any[]>({
     queryKey: ["/api/products"],
+    staleTime: PRODUCT_QUERY_STALE_TIME_MS,
+    refetchOnWindowFocus: true,
   });
+
+  // v3.35 (2026-08-20): single source of truth sync -- whenever this list
+  // query resolves with fresh data, push the shared wishlist/forecast
+  // fields into any already-cached PDP detail entry for that product too.
+  // Only updates entries that already exist in the cache (never creates a
+  // new, partially-shaped one), so a PDP the user has open or cached from
+  // an earlier visit can't keep showing numbers older than what the
+  // dashboard just fetched.
+  useEffect(() => {
+    if (!products) return;
+    for (const p of products) {
+      queryClient.setQueryData<any>(["/api/products", p.id], (old: any) => {
+        if (!old) return old;
+        const next = { ...old };
+        for (const field of SHARED_WISHLIST_FIELDS) next[field] = p[field];
+        return next;
+      });
+    }
+  }, [products]);
   // v3.32 (2026-08-19): one page-level Bull/Bear toggle controls every
   // card's locked Dynamic Pre-Launch Forecast basis simultaneously
   // (persisted globally -- see hook). Does NOT affect the separate
