@@ -14,23 +14,18 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Find how the app process is managed and pull today's wishlist logs
+      - name: Pull today's signalpulse.service journal around the 07:00 UTC ingestion run
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'REMOTEEOF'
           set -uo pipefail
-          echo "=== Process manager check ==="
-          command -v pm2 || echo "no pm2 on PATH"
-          su - root -c 'command -v pm2' 2>/dev/null || echo "no pm2 via login shell"
-          ls -la /root/.nvm/versions/node/*/bin/pm2 2>/dev/null || echo "no nvm pm2"
-          systemctl list-units --type=service --all 2>/dev/null | grep -i sentiment || echo "no systemd service matching sentiment"
-          ps aux | grep -i "node\|signalpulse" | grep -v grep
+          echo "=== journal entries mentioning wishlist, 06:55-07:15 UTC today ==="
+          journalctl -u signalpulse.service --since "2026-08-20 06:55:00" --until "2026-08-20 07:15:00" --no-pager | grep -i "wishlist" 
 
           echo ""
-          echo "=== journalctl for the service (if systemd) ==="
-          systemctl list-units --type=service --all 2>/dev/null | grep -iE "signal|sentiment"
+          echo "=== journal entries mentioning wishlist/error/429, full day so far ==="
+          journalctl -u signalpulse.service --since "2026-08-20 00:00:00" --no-pager | grep -iE "wishlist|429|error" | head -100
 
           echo ""
-          echo "=== Recent log files on disk ==="
-          find /opt/sentimentpulse -iname "*.log" -mmin -1440 2>/dev/null
-          find /root/.pm2/logs -iname "*.log" 2>/dev/null
+          echo "=== Was there a service restart between 06:55 and 07:15 that could have interrupted the run? ==="
+          journalctl -u signalpulse.service --since "2026-08-20 06:55:00" --until "2026-08-20 07:15:00" --no-pager | grep -iE "start|stop|restart" || echo "no restart in that window"
           REMOTEEOF
