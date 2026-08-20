@@ -14,33 +14,23 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Check today's actual DB row, deployed code version, and ingestion log
+      - name: Find how the app process is managed and pull today's wishlist logs
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'REMOTEEOF'
-          set -euo pipefail
-          echo "=== Deployed code version (HEAD on droplet) ==="
-          cd /opt/sentimentpulse/signalpulse
-          git log -1 --format="%H %ad %s" --date=iso
+          set -uo pipefail
+          echo "=== Process manager check ==="
+          command -v pm2 || echo "no pm2 on PATH"
+          su - root -c 'command -v pm2' 2>/dev/null || echo "no pm2 via login shell"
+          ls -la /root/.nvm/versions/node/*/bin/pm2 2>/dev/null || echo "no nvm pm2"
+          systemctl list-units --type=service --all 2>/dev/null | grep -i sentiment || echo "no systemd service matching sentiment"
+          ps aux | grep -i "node\|signalpulse" | grep -v grep
 
           echo ""
-          echo "=== Does today's row EXIST at all (vs missing) for product_id=7 ==="
-          sqlite3 /opt/sentimentpulse/signalpulse/data.db \
-            "SELECT date, rank FROM steam_wishlist_rank_daily WHERE product_id = 7 AND date >= '2026-08-13' ORDER BY date;"
+          echo "=== journalctl for the service (if systemd) ==="
+          systemctl list-units --type=service --all 2>/dev/null | grep -iE "signal|sentiment"
 
           echo ""
-          echo "=== pm2 process restart time (proxy for when current code went live) ==="
-          pm2 jlist 2>/dev/null | grep -E '"pm_uptime"|"name"|"restart_time"' | head -10 || pm2 list
-
-          echo ""
-          echo "=== Full pm2 log history available (line count) ==="
-          pm2 logs signalpulse --lines 2000 --nostream 2>/dev/null | wc -l
-
-          echo ""
-          echo "=== App log grep for wishlist/Hellraiser/429/error activity (last 2000 lines) ==="
-          pm2 logs signalpulse --lines 2000 --nostream 2>/dev/null | grep -iE "wishlist|1551980|429|hellraiser|steam wishlist" | tail -80 || echo "no matching log lines in last 2000"
-
-          echo ""
-          echo "=== All products with null rank today vs yesterday (systemic vs single-title) ==="
-          sqlite3 /opt/sentimentpulse/signalpulse/data.db \
-            "SELECT date, COUNT(*) as total, SUM(CASE WHEN rank IS NULL THEN 1 ELSE 0 END) as null_count FROM steam_wishlist_rank_daily WHERE date >= '2026-08-18' GROUP BY date ORDER BY date;"
+          echo "=== Recent log files on disk ==="
+          find /opt/sentimentpulse -iname "*.log" -mmin -1440 2>/dev/null
+          find /root/.pm2/logs -iname "*.log" 2>/dev/null
           REMOTEEOF
