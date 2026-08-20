@@ -483,26 +483,28 @@ const WISHLIST_TARGET = 200;
 // (~5,100 titles as of 2026-08-12). We use a bigger page size here (100 vs
 // the 25 used above) since we may need many pages for a low-ranked title.
 //
-// Strategy per unmatched title:
-//   1. If we have yesterday's rank, seed the scan at max(WISHLIST_TARGET,
-//      lastRank - EXTENDED_WINDOW_BEFORE) — day-to-day rank movement is
-//      usually small, so this normally finds the title in 1-2 requests.
-//   2. Scan forward up to EXTENDED_WINDOW_PAGES pages from the seed. If not
-//      found (a big jump, or first-time lookup with no seed), fall back to
-//      a full scan from WISHLIST_TARGET up to FULL_SCAN_MAX_PAGES pages.
-//   3. Still not found after the full scan → rank stays null ("unranked"),
-//      same as today; this only happens for titles ranked below ~6,000 or
-//      delisted from the chart entirely.
+// Steam has no "look up appid X's rank" call -- rank only exists as a
+// position in this one public ranked list (confirmed 2026-08-20: not even
+// Steamworks partner endpoints expose it; third-party wishlist trackers
+// build their own cache from this same public listing). Getting a rank
+// unavoidably means walking the list at least once.
+//
+// v3.34 (2026-08-20): simplified from a per-title seeded-window-then-
+// full-scan strategy to ONE shared scan for every unmatched title per run.
+// The old approach ran up to 5 separate scan chains (one per title, each
+// with its own retry loop) even though we track a small, fixed handful of
+// titles -- more independent Steam request chains than necessary, and more
+// surface area for a rate-limit to hit. A single combined scan finds every
+// title in the same pass of page fetches and stops as soon as all targets
+// are found, so it's normally cheaper AND simpler than the windowed version
+// it replaces.
 const EXTENDED_PAGE_SIZE = 100;
-const EXTENDED_WINDOW_BEFORE = 150;
-const EXTENDED_WINDOW_PAGES = 8; // 8 * 100 = 800 items scanned around the seed
 const FULL_SCAN_MAX_PAGES = 60; // 60 * 100 = 6000 items, covers full chart (~5100) with margin
 // v3.33 (2026-08-20): widened from 400ms after a same-day production incident
 // where Steam 429'd a paginated request at start=900 even after 4 backoff
 // retries -- Steam's rate limit on this endpoint is tighter than it was when
 // 400ms was chosen. Pacing pages further apart reduces how often we hit it
-// at all; per-title fault isolation below (see resolveExtendedWishlistRanks)
-// is the actual fix for what happens when we still do.
+// at all.
 const EXTENDED_REQUEST_DELAY_MS = 1750;
 
 function extendedWishlistUrl(start: number): string {
@@ -564,7 +566,20 @@ async function scanExtendedWishlistRange(
   const found = new Map<number, number>();
   let offset = startOffset;
   for (let page = 0; page < maxPages && found.size < targetAppids.size; page++) {
-    const { appids, totalCount } = await fetchExtendedWishlistPage(offset);
+    let appids: number[];
+    let totalCount: number;
+    try {
+      ({ appids, totalCount } = await fetchExtendedWishlistPage(offset));
+    } catch (err) {
+      // v3.34 (2026-08-20 incident): a page failing (e.g. Steam 429 after
+      // all of fetchExtendedWishlistPage's own retries) used to propagate
+      // out of this loop and discard every hit already found on earlier
+      // pages in the SAME scan. Stop here instead and return whatever was
+      // found so far -- partial results beat losing everything to one bad
+      // page deep into the scan.
+      log(`Steam extended wishlist page fetch failed at start=${offset}, stopping scan with ${found.size}/${targetAppids.size} found: ${err}`, "ingestion");
+      break;
+    }
     if (appids.length === 0) break; // end of chart
     appids.forEach((appid, i) => {
       if (targetAppids.has(appid) && !found.has(appid)) {
@@ -581,9 +596,11 @@ async function scanExtendedWishlistRange(
 }
 
 /**
- * Resolve ranks for titles the top-200 fast path didn't match, using the
- * seeded-window-then-full-scan strategy described above. `unmatched` is
- * the list of {appid, productId} pairs still needing a rank.
+ * Resolve ranks for titles the top-200 fast path didn't match. One shared
+ * scan of Steam's public popularwishlist listing, from WISHLIST_TARGET
+ * onward, looking for every unmatched appid at once -- stops as soon as
+ * all are found or the chart (or FULL_SCAN_MAX_PAGES) is exhausted.
+ * `unmatched` is the list of {appid, productId} pairs still needing a rank.
  */
 async function resolveExtendedWishlistRanks(
   unmatched: Array<{ appid: number; productId: number }>,
@@ -591,51 +608,15 @@ async function resolveExtendedWishlistRanks(
   const result = new Map<number, number>();
   if (unmatched.length === 0) return result;
 
-  // Seed each title's window from yesterday's known rank, if any.
-  const seeded: Array<{ appid: number; seed: number | null }> = unmatched.map((t) => {
-    const last = storage.getLatestSteamWishlistRank(t.productId);
-    return { appid: t.appid, seed: last?.rank ?? null };
-  });
-
-  // Group into: has-seed (windowed scan) vs no-seed (needs full scan).
-  const withSeed = seeded.filter((s) => s.seed != null) as Array<{ appid: number; seed: number }>;
-  const withoutSeed = seeded.filter((s) => s.seed == null);
-
-  // Windowed scans, one seed-window at a time (windows can overlap targets,
-  // so just run each title's own window — cheap since these are rare).
-  //
-  // v3.33 (2026-08-20 incident): each title's scan is isolated in its own
-  // try/catch. Previously a single title hitting a Steam 429 (even after
-  // all fetchExtendedWishlistPage retries) threw out of this loop entirely,
-  // aborting resolution for every OTHER unmatched title too -- on
-  // 2026-08-20 that meant 5 of 6 pre-release titles came back rank=null
-  // for the day even though only one of them actually failed. A failed
-  // title now just stays null; the rest still get resolved.
-  for (const { appid, seed } of withSeed) {
-    const windowStart = Math.max(WISHLIST_TARGET, seed - EXTENDED_WINDOW_BEFORE);
-    try {
-      const hit = await scanExtendedWishlistRange(new Set([appid]), windowStart, EXTENDED_WINDOW_PAGES);
-      if (hit.has(appid)) result.set(appid, hit.get(appid)!);
-    } catch (err) {
-      log(`Steam extended wishlist rank scan failed for appid ${appid} (windowed): ${err}`, "ingestion");
-    }
-  }
-
-  // Anything still missing (no seed, or seed window missed a big jump)
-  // shares one full scan from WISHLIST_TARGET onward. Isolated the same
-  // way -- a full-scan failure no longer wipes out ranks already found
-  // above by the per-title windowed scans.
-  const stillMissing = new Set<number>([
-    ...withoutSeed.map((s) => s.appid),
-    ...withSeed.filter((s) => !result.has(s.appid)).map((s) => s.appid),
-  ]);
-  if (stillMissing.size > 0) {
-    try {
-      const hits = await scanExtendedWishlistRange(stillMissing, WISHLIST_TARGET, FULL_SCAN_MAX_PAGES);
-      hits.forEach((rank, appid) => result.set(appid, rank));
-    } catch (err) {
-      log(`Steam extended wishlist rank full scan failed for ${stillMissing.size} title(s): ${err}`, "ingestion");
-    }
+  const targets = new Set(unmatched.map((t) => t.appid));
+  try {
+    const hits = await scanExtendedWishlistRange(targets, WISHLIST_TARGET, FULL_SCAN_MAX_PAGES);
+    hits.forEach((rank, appid) => result.set(appid, rank));
+  } catch (err) {
+    // Non-fatal: whatever the fast top-200 path already matched still gets
+    // persisted by the caller. These titles simply keep a null rank for
+    // today and get another shot at tomorrow's run.
+    log(`Steam extended wishlist rank scan failed for ${targets.size} title(s): ${err}`, "ingestion");
   }
 
   return result;
