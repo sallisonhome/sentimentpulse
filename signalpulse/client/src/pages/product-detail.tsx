@@ -375,6 +375,14 @@ export default function ProductDetail() {
               productId={productId}
               productTitle={product.title}
               releaseDate={product.releaseDate ?? null}
+              steamRevenueSplit={
+                steamRev
+                  ? {
+                      preReleaseRevenueUsd: steamRev.preReleaseRevenueUsd,
+                      preReleaseBaseNetUnits: steamRev.preReleaseBaseNetUnits,
+                    }
+                  : null
+              }
             />
           </CollapsibleSection>
         )}

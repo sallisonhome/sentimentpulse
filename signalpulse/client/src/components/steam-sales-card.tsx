@@ -25,6 +25,17 @@ interface Props {
   /** v3.10 (2026-08-12): product title + release date for the revenue chart modal. */
   productTitle?: string;
   releaseDate?: string | null;
+  /**
+   * v3.38 (2026-08-20): Steam pre-purchase (pre-release) totals, sourced
+   * from the same storage.getSteamRevenueByReleaseSplit() split the
+   * dashboard's "Steam — Actuals" card already uses. Passed down from
+   * product-detail.tsx (product.steamRevenueSplit) rather than
+   * re-fetched here, since the parent already loads it.
+   */
+  steamRevenueSplit?: {
+    preReleaseRevenueUsd: number;
+    preReleaseBaseNetUnits: number;
+  } | null;
 }
 
 interface SalesSummary {
@@ -80,7 +91,7 @@ interface UploadResponse {
   }>;
 }
 
-export function SteamSalesCard({ productId, productTitle, releaseDate }: Props) {
+export function SteamSalesCard({ productId, productTitle, releaseDate, steamRevenueSplit }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [lastUpload, setLastUpload] = useState<UploadResponse | null>(null);
   // v3.10 (2026-08-12): revenue-per-day chart modal state
@@ -170,6 +181,10 @@ export function SteamSalesCard({ productId, productTitle, releaseDate }: Props) 
 
   const summary = data?.summary;
   const hasSales = !!summary && summary.rowCount > 0 && summary.baseNetUnits > 0;
+  // v3.38 (2026-08-20): only show pre-purchase totals when there's actually
+  // pre-release revenue — most already-released titles ingested post-release
+  // will have zero, and a zero-value tile on every card would be noise.
+  const hasPrePurchase = !!steamRevenueSplit && steamRevenueSplit.preReleaseRevenueUsd > 0;
 
   return (
     <div className="space-y-3">
@@ -222,6 +237,38 @@ export function SteamSalesCard({ productId, productTitle, releaseDate }: Props) 
           <span className="tabular-nums">
             {formatCurrency(summary.otherNetRevenueUsd)} ({formatNumber(summary.otherNetUnits)} units)
           </span>
+        </div>
+      )}
+
+      {/* v3.38 (2026-08-20): Steam pre-purchase (pre-release) totals —
+          same split the dashboard's "Steam — Actuals" card uses
+          (storage.getSteamRevenueByReleaseSplit). Revenue includes base +
+          DLC rows before release date; units is base-SKU only, same
+          asymmetry as the dashboard's presentation. */}
+      {hasSales && hasPrePurchase && steamRevenueSplit && (
+        <div className="grid grid-cols-2 gap-4 border-t pt-3">
+          <div>
+            <div className="text-xs text-muted-foreground uppercase tracking-wide">
+              Steam Pre-Purchase Units
+            </div>
+            <div className="text-2xl font-semibold tabular-nums mt-0.5" data-testid="text-steam-prepurchase-units">
+              {formatNumber(steamRevenueSplit.preReleaseBaseNetUnits)}
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-0.5">
+              Base game, before release date
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-muted-foreground uppercase tracking-wide">
+              Steam Pre-Purchase Revenue
+            </div>
+            <div className="text-2xl font-semibold tabular-nums mt-0.5 text-emerald-600 dark:text-emerald-400" data-testid="text-steam-prepurchase-revenue">
+              {formatCurrency(steamRevenueSplit.preReleaseRevenueUsd)}
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-0.5">
+              Net USD, base + DLC, before release date
+            </div>
+          </div>
         </div>
       )}
 
