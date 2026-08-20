@@ -45,9 +45,13 @@ export default function Dashboard() {
   }, [products]);
   // v3.32 (2026-08-19): one page-level Bull/Bear toggle controls every
   // card's locked Dynamic Pre-Launch Forecast basis simultaneously
-  // (persisted globally -- see hook). Does NOT affect the separate
-  // "Dynamic Actuals Driven Forecast" block, which is live/actuals-driven
-  // and has no Bull/Bear scenario of its own.
+  // (persisted globally -- see hook).
+  // v3.37 (2026-08-20): this toggle now also drives each card's headline
+  // "Dynamic Pre-Launch Forecast" units/revenue block directly (previously
+  // that block always showed the Bull-equivalent dynamicFirstMonthTotal/
+  // etc fields regardless of the selected scenario -- fixed). It still does
+  // NOT affect the separate "Steam — Actuals" block, which is real ingested
+  // sales data with no scenario of its own.
   const [scenario, setScenario] = useForecastScenario();
 
   if (isLoading) {
@@ -78,7 +82,7 @@ export default function Dashboard() {
         <div className="flex flex-col items-end gap-1">
           <ForecastScenarioToggle value={scenario} onChange={setScenario} />
           <p className="text-[10px] text-muted-foreground max-w-[220px] text-right">
-            Locked Dynamic Pre-Launch Forecast basis for every card's Steam Actuals delta
+            Locked Dynamic Pre-Launch Forecast basis for every card's headline forecast and Steam Actuals delta
           </p>
         </div>
       </div>
@@ -95,19 +99,27 @@ export default function Dashboard() {
             const price = product.targetRetailPriceUsd ?? 0;
             const hasPrice = price > 0;
 
-            // v3.25 (2026-08-19): manually-entered biz case forecasts
-            // (compsForecastTotal / latestRevisionTotal) are no longer
-            // displayed on the dashboard card -- we only track dynamic
-            // forecasts (wishlist-based, or actuals-driven once live).
-            const dynFirstUnits = product.dynamicFirstMonthTotal;
-            const dynYearUnits = product.dynamicFirstYearTotal;
-            const dynLtUnits = product.dynamicLtTotal;
+            // v3.37 (2026-08-20): headline forecast numbers now come from
+            // the page-level Bull/Bear scenario (product.forecastScenarios),
+            // the SAME locked figure already shown on this product's own
+            // page -- not the old dynamicFirstMonthTotal/etc fields, which
+            // for released titles were actuals-blended and mathematically
+            // could never react to the toggle (the multiplier cancels out
+            // of that formula once real actuals + a locked baseline exist).
+            // Real Steam actuals are unaffected -- they still render in the
+            // separate "Steam — Actuals" block above. Falls back to the old
+            // fields only if forecastScenarios is ever absent (stale cache).
+            const scenarioForecast = product.forecastScenarios?.[scenario];
+            const dynFirstUnits = scenarioForecast?.totalFirstMonth ?? product.dynamicFirstMonthTotal;
+            const dynYearUnits = scenarioForecast?.totalFirstYear ?? product.dynamicFirstYearTotal;
+            const dynLtUnits = scenarioForecast?.totalLifetime ?? product.dynamicLtTotal;
 
             // v2.5: Steam-only dynamic forecast (from PC (Steam) row only)
-            const steamDynFirstUnits = product.steamDynamicFirstMonth;
-            const steamDynYearUnits = product.steamDynamicFirstYear;
-            const steamDynLtUnits = product.steamDynamicLt;
+            const steamDynFirstUnits = scenarioForecast?.steamFirstMonth ?? product.steamDynamicFirstMonth;
+            const steamDynYearUnits = scenarioForecast?.steamFirstYear ?? product.steamDynamicFirstYear;
+            const steamDynLtUnits = scenarioForecast?.steamLifetime ?? product.steamDynamicLt;
             const hasSteamDyn = steamDynFirstUnits != null;
+            const dynPerPlatform = scenarioForecast?.perPlatformForecasts ?? product.dynamicPerPlatform;
 
             // v3.25 (2026-08-19): the launch-day baseline snapshot and its
             // ±Δ% ('Launch ● Current') tracking were removed from the
@@ -149,8 +161,8 @@ export default function Dashboard() {
             // exact same locked snapshot inputs, just at a different Steam
             // wishlist first-month conversion rate. Falls back to the
             // pre-scenario snapshot field if forecastScenarios is ever absent
-            // (e.g. stale cached response).
-            const scenarioForecast = product.forecastScenarios?.[scenario];
+            // (e.g. stale cached response). scenarioForecast itself is now
+            // computed above (v3.37), reused here for the delta basis.
             const steamPreLaunchLtUnits: number | null =
               scenarioForecast?.steamLifetime ?? product.launchForecastSnapshot?.steamLifetime ?? null;
             const steamPreLaunchLtGmv = (steamPreLaunchLtUnits != null && steamPreLaunchLtUnits > 0)
@@ -456,28 +468,32 @@ export default function Dashboard() {
                   <div className="pt-3 mt-3 border-t">
                     <div className="flex items-baseline justify-between mb-2">
                       <div className="text-[10px] uppercase tracking-widest font-semibold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
-                        Dynamic Actuals Driven Forecast
+                        Dynamic Pre-Launch Forecast
                         <span className="text-[9px] normal-case tracking-normal text-muted-foreground/80 font-normal">
                           click card for methodology →
                         </span>
                       </div>
-                      {/* v3.7: forecast provenance badge */}
-                      {product.forecastMode === "actuals" && (
-                        <span
-                          title={`Actuals-driven: Steam 1st-Mo = ${formatNumber(product.steamActualFirstMonthUnits)} observed base units. Wishlist forecast was ${formatNumber(product.wishlistBasedSteamFirstMonth)} — lift ${(product.steamActualFirstMonthUnits / product.wishlistBasedSteamFirstMonth).toFixed(2)}x. Consoles receive dampened lift of ${product.consoleLiftFactor.toFixed(2)}x (50% of Steam lift).`}
-                          className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold uppercase tracking-wide"
-                        >
-                          Actuals-driven
-                        </span>
-                      )}
-                      {product.forecastMode === "wishlist" && (
-                        <span
-                          title="Wishlist-based forecast: Steam 1st-Mo = pre-release wishlist × 45%. Consoles derived from platform mix. Switches to actuals-driven 30 days after release."
-                          className="text-[9px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-semibold uppercase tracking-wide"
-                        >
-                          Wishlist-based
-                        </span>
-                      )}
+                      {/* v3.37 (2026-08-20): replaced the old "Actuals-driven"/
+                          "Wishlist-based" provenance badge. This block now
+                          always renders the locked Bull/Bear scenario figure
+                          (product.forecastScenarios), which is a pure
+                          wishlist/prepurchase-multiplier formula by
+                          construction for every product, released or not --
+                          so a provenance split no longer applies here. The
+                          badge instead shows which scenario is selected,
+                          matching the page-level toggle. Real Steam actuals
+                          still render untouched in the "Steam — Actuals"
+                          block above. */}
+                      <span
+                        title={`${scenarioLabel} scenario: Steam 1st-Month = wishlist × ${scenario === "bear" ? "18%" : "45%"}. Same locked figure shown on this product's own page; toggle Bull/Bear above to switch.`}
+                        className={`text-[9px] px-1.5 py-0.5 rounded font-semibold uppercase tracking-wide ${
+                          scenario === "bear"
+                            ? "bg-red-500/15 text-red-700 dark:text-red-300"
+                            : "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        }`}
+                      >
+                        {scenarioLabel}
+                      </span>
                     </div>
 
                     {/* Block A — Units. Clean single-line-per-tile display:
@@ -543,7 +559,7 @@ export default function Dashboard() {
                     )}
 
                     {/* Per-platform breakdown — shows how All-Platforms rolls up */}
-                    {product.dynamicPerPlatform && product.dynamicPerPlatform.length > 0 && (
+                    {dynPerPlatform && dynPerPlatform.length > 0 && (
                       <details className="group" onClick={(e) => e.stopPropagation()}>
                         <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-muted-foreground hover:text-foreground select-none list-none flex items-center gap-1">
                           <span className="group-open:rotate-90 transition-transform inline-block">▶</span>
@@ -560,7 +576,7 @@ export default function Dashboard() {
                               </tr>
                             </thead>
                             <tbody>
-                              {product.dynamicPerPlatform.map((row: any) => (
+                              {dynPerPlatform.map((row: any) => (
                                 <tr key={row.platform} className="border-t">
                                   <td className="px-2 py-1 text-foreground">
                                     <span className={`inline-flex items-center px-1.5 py-0 rounded text-[9px] font-medium border ${getPlatformClass(row.platform)}`}>
