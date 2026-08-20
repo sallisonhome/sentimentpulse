@@ -1,4 +1,4 @@
-name: One-off - verify Hellraiser wishlist rank history
+name: One-off - verify today's wishlist ingestion run for Hellraiser
 on:
   workflow_dispatch: {}
 
@@ -14,23 +14,29 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Test whether the stored Steam session bypasses the age-gate (no secret ever leaves the droplet)
+      - name: Check today's actual DB row, deployed code version, and ingestion log
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'REMOTEEOF'
           set -euo pipefail
-          COOKIE=$(sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT cookie_value FROM steamworks_sessions LIMIT 1;")
-          echo "cookie length: ${#COOKIE}"
-          echo "--- anonymous request (control) ---"
-          curl -s -o /dev/null -w "http_code=%{http_code} final_url=%{url_effective}\n" \
-            -A "Mozilla/5.0" \
-            "https://store.steampowered.com/app/1551980/"
-          echo "--- with stored steamLoginSecure cookie ---"
-          curl -s -o /dev/null -w "http_code=%{http_code} final_url=%{url_effective}\n" \
-            -A "Mozilla/5.0" -H "Cookie: ${COOKIE}" -L \
-            "https://store.steampowered.com/app/1551980/"
-          echo "--- with cookie, check search endpoint finds it ---"
-          RESULT=$(curl -s -A "Mozilla/5.0" -H "Cookie: ${COOKIE}" \
-            "https://store.steampowered.com/search/results/?term=Hellraiser+Revival&json=1&count=10")
-          echo "search result: $RESULT"
-          unset COOKIE
+          echo "=== Deployed code version (HEAD on droplet) ==="
+          cd /opt/sentimentpulse/signalpulse
+          git log -1 --format="%H %ad %s" --date=iso
+
+          echo ""
+          echo "=== Does today's row EXIST at all (vs missing) for product_id=7 ==="
+          sqlite3 /opt/sentimentpulse/signalpulse/data.db \
+            "SELECT date, rank FROM steam_wishlist_ranks WHERE product_id = 7 AND date >= '2026-08-17' ORDER BY date;"
+
+          echo ""
+          echo "=== Last 3 ingestion log entries for wishlist_rank source ==="
+          sqlite3 /opt/sentimentpulse/signalpulse/data.db \
+            "SELECT source, status, message, started_at FROM ingestion_log WHERE source LIKE '%wishlist%' ORDER BY started_at DESC LIMIT 5;" 2>&1 || echo "no ingestion_log table or different schema"
+
+          echo ""
+          echo "=== pm2 process restart time (proxy for when current code went live) ==="
+          pm2 jlist 2>/dev/null | grep -E '"pm_uptime"|"name"' | head -10 || pm2 list
+
+          echo ""
+          echo "=== App log grep for wishlist/Hellraiser/429 activity today (UTC date) ==="
+          pm2 logs signalpulse --lines 500 --nostream 2>/dev/null | grep -iE "wishlist|1551980|429|hellraiser" | tail -60 || echo "no matching log lines in last 500"
           REMOTEEOF
