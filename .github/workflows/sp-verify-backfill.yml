@@ -1,0 +1,28 @@
+name: SP Verify Backfill (one-off, delete after use)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Query today's wishlist ranks for the affected products
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<'EOF'
+            set -euo pipefail
+            DB=$(find /opt/sentimentpulse/signalpulse -maxdepth 2 -iname "data.db" 2>/dev/null | head -1)
+            echo "db candidate: ${DB:-none}"
+            if [ -n "${DB:-}" ] && [ -f "$DB" ]; then
+              sqlite3 "$DB" "SELECT p.id, p.title, w.date, w.rank FROM products p LEFT JOIN steam_wishlist_rank_daily w ON w.product_id = p.id AND w.date = date('now') WHERE p.id IN (5,6,7,11,12,13) ORDER BY p.id;"
+            else
+              echo "data.db not found under /opt/sentimentpulse/signalpulse"
+            fi
+          EOF
