@@ -21,7 +21,7 @@ jobs:
             DB=$(find /opt/sentimentpulse/signalpulse -maxdepth 2 -iname "data.db" 2>/dev/null | head -1)
             echo "db candidate: ${DB:-none}"
             if [ -n "${DB:-}" ] && [ -f "$DB" ]; then
-              sqlite3 "$DB" "SELECT p.id, p.title, w.date, w.rank FROM products p LEFT JOIN steam_wishlist_rank_daily w ON w.product_id = p.id AND w.date = date('now') WHERE p.id IN (5,6,7,11,12,13) ORDER BY p.id;"
+              sqlite3 "$DB" "SELECT p.id, p.title, p.steam_app_id, w.date, w.rank FROM products p LEFT JOIN steam_wishlist_rank_daily w ON w.product_id = p.id AND w.date = date('now') WHERE p.id IN (5,6,7,11,12,13) ORDER BY p.id;"
             else
               echo "data.db not found under /opt/sentimentpulse/signalpulse"
             fi
