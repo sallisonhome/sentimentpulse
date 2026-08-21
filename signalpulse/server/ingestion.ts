@@ -14,6 +14,7 @@ import { fetchFollowerCount } from "./steam-followers";
 import { fetchHeaderImage } from "./steam-header-image";
 import { fetchIgdbHypesBySteamAppids } from "./igdb";
 import { sendSteamCookieExpiryAlert, checkAndReleaseHeldDigest } from "./leaderboard-digest";
+import { loadManualAppids, mergeIntoRankMap, detectDrops } from "./wishlist-manual-merge";
 import { log } from "./index";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -889,6 +890,73 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
     }
   }
 
+  // ─── Manual-insert fallback + drop detector ───────────────────────
+  //
+  // Steam's popularwishlist endpoint silently omits some appids that ARE
+  // publicly ranked — verified for appid 1551980 (Hellraiser) on 2026-08-21
+  // across the hmap probe. Without this block, those titles would stamp
+  // rank=null every day and drop off the Wishlist Leaderboard's ranked
+  // rows entirely, despite still being on Steam's public wishlist ranking.
+  //
+  // Two independent surfaces:
+  //   1. Manual-insert fallback: for appids listed in wishlist-manual-
+  //      appids.json that Steam omitted this run, stamp their last-known
+  //      rank (or seed_rank if we've never observed one).
+  //   2. Drop detector: for any tracked appid recently ranked but missing
+  //      this run AND not covered by the manual list, surface it in the
+  //      result message so we notice new omissions promptly.
+  //
+  // See wishlist-manual-merge.ts for the design rationale.
+  const trackedAppids = titles
+    .map((p) => Number(p.steamAppId))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const steamAppidSet = new Set<number>(rankByAppid.keys());
+
+  const manualEntries = await loadManualAppids();
+  const lastKnownRanks = storage.getLatestSteamWishlistRankByAppids(
+    manualEntries.map((e) => e.appid),
+  );
+  const mergeResult = mergeIntoRankMap({
+    manualEntries,
+    lastKnownRanks,
+    steamAppidSet,
+  });
+  // Apply fallbacks — Steam-native rank always wins, so we only fill gaps.
+  mergeResult.rankOverrides.forEach((rank, appid) => {
+    if (rankByAppid.get(appid) === undefined) {
+      rankByAppid.set(appid, rank);
+    }
+  });
+  const manualCoveredAppids = new Set<number>(mergeResult.rankOverrides.keys());
+
+  const DROP_WINDOW_DAYS = 14;
+  const rankedDaysInWindow = storage.countRankedDaysInWindowByAppids(trackedAppids, DROP_WINDOW_DAYS);
+  const drops = detectDrops({
+    trackedAppids,
+    steamAppidSet,
+    manualCoveredAppids,
+    rankedDaysInWindow,
+    minRankedDaysForDrop: 1,
+  });
+
+  if (mergeResult.metrics.manual_inserts_active > 0) {
+    const detail = mergeResult.metrics.inserts_detail
+      .filter((d) => d.source !== "none")
+      .map((d) => `${d.appid}:${d.name} @${d.fallback_rank}(${d.source})`)
+      .join(", ");
+    log(
+      `[wishlist] manual-merge: configured=${mergeResult.metrics.manual_configured} active=${mergeResult.metrics.manual_inserts_active} recovered=${mergeResult.metrics.manual_inserts_recovered} stale=${mergeResult.metrics.manual_inserts_stale} inserted=[${detail}]`,
+      "ingestion",
+    );
+  }
+  if (drops.length > 0) {
+    const dropDetail = drops.map((d) => `${d.appid}(${d.ranked_days_in_window}d)`).join(", ");
+    log(
+      `[wishlist] drop-detector: ${drops.length} tracked appid(s) missing from Steam this run despite recent ranks: ${dropDetail}`,
+      "ingestion",
+    );
+  }
+
   const today = getTodayDateString();
   let dataPoints = 0;
   for (const product of titles) {
@@ -900,11 +968,17 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
   const extendedNote = unmatched.length > 0
     ? ` (extended scan resolved ${extendedCount}/${unmatched.length} titles outside top ${WISHLIST_TARGET}${extendedError ? `; scan error: ${extendedError}` : ""})`
     : "";
+  const manualNote = mergeResult.metrics.manual_inserts_active > 0
+    ? `; manual-merge active=${mergeResult.metrics.manual_inserts_active} recovered=${mergeResult.metrics.manual_inserts_recovered}`
+    : "";
+  const dropNote = drops.length > 0
+    ? `; drops=${drops.length} [${drops.map((d) => d.appid).join(",")}]`
+    : "";
 
   return {
     source: "steam_wishlist_rank",
     status: "success",
-    message: `Matched ${rankByAppid.size} ranked appids against ${titles.length} pre-release Saber titles${extendedNote}`,
+    message: `Matched ${rankByAppid.size} ranked appids against ${titles.length} pre-release Saber titles${extendedNote}${manualNote}${dropNote}`,
     productsProcessed: titles.length,
     dataPointsAdded: dataPoints,
   };
