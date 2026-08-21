@@ -14,7 +14,11 @@ import { fetchFollowerCount } from "./steam-followers";
 import { fetchHeaderImage } from "./steam-header-image";
 import { fetchIgdbHypesBySteamAppids } from "./igdb";
 import { sendSteamCookieExpiryAlert, checkAndReleaseHeldDigest } from "./leaderboard-digest";
-import { loadManualAppids, mergeIntoRankMap, detectDrops } from "./wishlist-manual-merge";
+import { loadManualAppids, detectDrops } from "./wishlist-manual-merge";
+import {
+  fetchHmapWishlistRanks,
+  resolveManualRanks,
+} from "./hmap-source-of-truth";
 import { log } from "./index";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -890,44 +894,88 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
     }
   }
 
-  // ─── Manual-insert fallback + drop detector ───────────────────────
+  // ─── hmap source-of-truth + manual fallback + drop detector ───────
   //
   // Steam's popularwishlist endpoint silently omits some appids that ARE
   // publicly ranked — verified for appid 1551980 (Hellraiser) on 2026-08-21
-  // across the hmap probe. Without this block, those titles would stamp
+  // across the hmap probe. Without a fallback, those titles would stamp
   // rank=null every day and drop off the Wishlist Leaderboard's ranked
   // rows entirely, despite still being on Steam's public wishlist ranking.
   //
-  // Two independent surfaces:
-  //   1. Manual-insert fallback: for appids listed in wishlist-manual-
-  //      appids.json that Steam omitted this run, stamp their last-known
-  //      rank (or seed_rank if we've never observed one).
-  //   2. Drop detector: for any tracked appid recently ranked but missing
+  // SOURCE OF TRUTH: howmanyareplaying.com. hmap ships the same fix and
+  // publishes the resulting ranks at /api/wishlist. SignalPulse fetches
+  // hmap on every run and uses hmap's number for any manually-covered
+  // appid Steam omitted — guaranteeing the two surfaces stay in sync by
+  // construction. Local last-known and seed_rank are last-resort
+  // fallbacks only used if hmap is unreachable or missing the appid.
+  //
+  // Three independent surfaces:
+  //   1. Fetch hmap's public wishlist API.
+  //   2. Manual-insert fallback: for appids listed in wishlist-manual-
+  //      appids.json that Steam omitted this run, use hmap's rank; else
+  //      last-known; else seed_rank.
+  //   3. Drop detector: for any tracked appid recently ranked but missing
   //      this run AND not covered by the manual list, surface it in the
   //      result message so we notice new omissions promptly.
   //
-  // See wishlist-manual-merge.ts for the design rationale.
+  // See hmap-source-of-truth.ts and wishlist-manual-merge.ts.
   const trackedAppids = titles
     .map((p) => Number(p.steamAppId))
     .filter((n) => Number.isFinite(n) && n > 0);
   const steamAppidSet = new Set<number>(rankByAppid.keys());
 
   const manualEntries = await loadManualAppids();
-  const lastKnownRanks = storage.getLatestSteamWishlistRankByAppids(
-    manualEntries.map((e) => e.appid),
+  const manualAppids = manualEntries.map((e) => e.appid);
+  const lastKnownRanks = storage.getLatestSteamWishlistRankByAppids(manualAppids);
+  const seedRankByAppid = new Map<number, number | null>(
+    manualEntries.map((e) => [e.appid, e.seed_rank]),
   );
-  const mergeResult = mergeIntoRankMap({
-    manualEntries,
-    lastKnownRanks,
+
+  const hmap = await fetchHmapWishlistRanks();
+  if (!hmap.ok) {
+    log(
+      `[wishlist] hmap-source: FETCH FAILED (${hmap.error}) — falling back to local last-known / seed_rank`,
+      "ingestion",
+    );
+  } else {
+    log(
+      `[wishlist] hmap-source: fetched ${hmap.rows.length} rows (generated_at=${hmap.generatedAt ?? "n/a"})`,
+      "ingestion",
+    );
+  }
+
+  const syncResult = resolveManualRanks({
+    hmapRankByAppid: hmap.rankByAppid,
+    hmapOk: hmap.ok,
+    manualAppids,
     steamAppidSet,
+    lastKnownRanks,
+    seedRankByAppid,
   });
   // Apply fallbacks — Steam-native rank always wins, so we only fill gaps.
-  mergeResult.rankOverrides.forEach((rank, appid) => {
+  syncResult.rankOverrides.forEach((rank, appid) => {
     if (rankByAppid.get(appid) === undefined) {
       rankByAppid.set(appid, rank);
     }
   });
-  const manualCoveredAppids = new Set<number>(mergeResult.rankOverrides.keys());
+  const manualCoveredAppids = new Set<number>(syncResult.rankOverrides.keys());
+
+  // Log every non-trivial manual entry with source + delta so drift is visible.
+  if (syncResult.metrics.entries.length > 0) {
+    const detail = syncResult.metrics.entries
+      .map((e) => {
+        const deltaTag =
+          e.delta !== null && e.delta !== 0
+            ? ` delta=${e.delta > 0 ? "+" : ""}${e.delta}`
+            : "";
+        return `${e.appid}@${e.fallback_rank}(${e.source})${deltaTag}`;
+      })
+      .join(", ");
+    log(
+      `[wishlist] manual-merge: configured=${syncResult.metrics.manual_configured} hmap_ok=${syncResult.metrics.hmap_ok} hmap_covered=${syncResult.metrics.hmap_covered} sources={hmap:${syncResult.metrics.hmap_source_count},last_known:${syncResult.metrics.last_known_source_count},seed:${syncResult.metrics.seed_source_count},none:${syncResult.metrics.none_source_count}} drift_vs_local=${syncResult.metrics.delta_nonzero_count} inserted=[${detail}]`,
+      "ingestion",
+    );
+  }
 
   const DROP_WINDOW_DAYS = 14;
   const rankedDaysInWindow = storage.countRankedDaysInWindowByAppids(trackedAppids, DROP_WINDOW_DAYS);
@@ -938,17 +986,6 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
     rankedDaysInWindow,
     minRankedDaysForDrop: 1,
   });
-
-  if (mergeResult.metrics.manual_inserts_active > 0) {
-    const detail = mergeResult.metrics.inserts_detail
-      .filter((d) => d.source !== "none")
-      .map((d) => `${d.appid}:${d.name} @${d.fallback_rank}(${d.source})`)
-      .join(", ");
-    log(
-      `[wishlist] manual-merge: configured=${mergeResult.metrics.manual_configured} active=${mergeResult.metrics.manual_inserts_active} recovered=${mergeResult.metrics.manual_inserts_recovered} stale=${mergeResult.metrics.manual_inserts_stale} inserted=[${detail}]`,
-      "ingestion",
-    );
-  }
   if (drops.length > 0) {
     const dropDetail = drops.map((d) => `${d.appid}(${d.ranked_days_in_window}d)`).join(", ");
     log(
@@ -968,9 +1005,14 @@ async function ingestSteamWishlistRank(): Promise<IngestionResult> {
   const extendedNote = unmatched.length > 0
     ? ` (extended scan resolved ${extendedCount}/${unmatched.length} titles outside top ${WISHLIST_TARGET}${extendedError ? `; scan error: ${extendedError}` : ""})`
     : "";
-  const manualNote = mergeResult.metrics.manual_inserts_active > 0
-    ? `; manual-merge active=${mergeResult.metrics.manual_inserts_active} recovered=${mergeResult.metrics.manual_inserts_recovered}`
-    : "";
+  const totalActive =
+    syncResult.metrics.hmap_source_count +
+    syncResult.metrics.last_known_source_count +
+    syncResult.metrics.seed_source_count;
+  const manualNote =
+    totalActive > 0
+      ? `; manual-merge hmap=${syncResult.metrics.hmap_source_count} last_known=${syncResult.metrics.last_known_source_count} seed=${syncResult.metrics.seed_source_count}${!syncResult.metrics.hmap_ok ? " hmap_offline" : ""}${syncResult.metrics.delta_nonzero_count > 0 ? ` drift=${syncResult.metrics.delta_nonzero_count}` : ""}`
+      : "";
   const dropNote = drops.length > 0
     ? `; drops=${drops.length} [${drops.map((d) => d.appid).join(",")}]`
     : "";

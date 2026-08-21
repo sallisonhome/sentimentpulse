@@ -1,15 +1,16 @@
 {
-  "$schema_version": 1,
+  "$schema_version": 2,
   "updated_at": "2026-08-21",
-  "docs": "Wishlist appids Steam intermittently filters out of https://store.steampowered.com/search/results/?filter=popularwishlist despite the game being in the public wishlist ranking (verified via SteamDB and the Steam client's public wishlist view). Ported from howmanyareplaying/backend/src/data/wishlistManualAppids.json 2026-08-21. Only pre-release Saber-published titles with a Steam App ID are eligible here \u2014 non-Saber titles are handled upstream by hmap. Kept byte-for-byte-compatible with the hmap schema so a future consolidation into a shared package is trivial.",
-  "logo_convention": "Use Steam's stable header.jpg key art (460x215): https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{APPID}/header.jpg \u2014 verified 200 OK for any appid without needing the per-build hash that capsule_sm_120.jpg requires. This matches hmap's convention exactly.",
+  "docs": "Wishlist appids Steam intermittently filters out of https://store.steampowered.com/search/results/?filter=popularwishlist despite the game being in the public wishlist ranking (verified via SteamDB and the Steam client's public wishlist view). This file is now primarily an ALLOWLIST of appids for which SignalPulse is willing to accept a fallback rank; hmap's /api/wishlist is the authoritative source (see hmap-source-of-truth.ts). seed_rank is a last-resort fallback only used when hmap is unreachable AND we've never observed a rank locally.",
+  "source_of_truth": "https://howmanyareplaying.com/api/wishlist \u2014 fetched on every ingestSteamWishlistRank() run; hmap's number wins for any appid Steam omitted.",
+  "logo_convention": "Use Steam's stable header.jpg key art (460x215): https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/{APPID}/header.jpg \u2014 verified 200 OK for any appid. Matches hmap's convention exactly.",
   "appids": [
     {
       "appid": 1551980,
       "name": "Clive Barker's Hellraiser: Revival",
       "seed_rank": 155,
       "logo": "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/1551980/header.jpg",
-      "notes": "Silently filtered from popularwishlist despite ranking #155 on SteamDB and Steam client public wishlist view. Steam-side cause verified 2026-08-21 (hmap): content_descriptors.ids = [1,2,4,5] (descriptor 4 = Adult Only Sexual Content) plus country bans (steam_germany BANNED, igrs Indonesia BANNED). Even with ignore_preferences=1 and cookieless requests across every cc (US/DE/JP/GB/IN/AU/CN/RU) and every page (0..5200), the appid is absent \u2014 not a top-200 issue. seed_rank=155 matches the observed public rank on 2026-08-21 and is used only until SignalPulse itself has observed a rank for this appid."
+      "notes": "Silently filtered from popularwishlist despite ranking on SteamDB and Steam client public wishlist view. Steam-side cause verified 2026-08-21 (hmap probe): content_descriptors.ids = [1,2,4,5] (descriptor 4 = Adult Only Sexual Content) plus country bans (steam_germany BANNED, igrs Indonesia BANNED). Even with ignore_preferences=1 and cookieless requests across every cc (US/DE/JP/GB/IN/AU/CN/RU) and every page (0..5200), the appid is absent. seed_rank=155 is only used if hmap is unreachable AND SignalPulse has never observed a rank; the live rank is normally pulled from hmap on every run (hmap observed rank was 157 on 2026-08-21 13:25 UTC \u2014 seed value is intentionally stale so hmap wins on the first sync)."
     }
   ]
 }
