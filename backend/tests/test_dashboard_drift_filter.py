@@ -1,25 +1,23 @@
-"""2026-08-18 regression tests: dashboard sentiment metrics exclude
-`raw_posts.is_off_topic_drift = True` rows; volume metrics include them.
-
-Steve's request (2026-08-18): off-topic drift comments (previously
-force-neutraled by Step 5 or the retroactive backfill) must be OMITTED
-from pos/neg/neutral totals so those numbers only reflect content
-genuinely about the game. Volume-by-source and competitor-timeseries
-keep counting drift so engagement metrics still reflect the full
-conversation level. See lessons.md 2026-08-18.
+"""2026-08-21 (v0024) regression tests: EVERY dashboard metric excludes
+`raw_posts.is_off_topic_drift = True` rows. Prior to v0024 volume metrics
+intentionally included drift (see v0017); Steve reported 2026-08-21 that
+the divergence between the Total Posts KPI (3,913, drift-excluded) and
+the Posts by Source card (6,264, drift-included) on Toxic Commando was
+confusing UX. Decision: exclude drift everywhere so every card on the
+dashboard agrees on the same headline count.
 
 These tests seed a small in-memory DB with a game that has:
   * 3 positive non-drift posts
   * 2 negative non-drift posts
   * 4 neutral non-drift posts
   * 20 drift posts (any sentiment — the model's original verdict is
-    irrelevant, they should all be excluded from sentiment metrics)
+    irrelevant, they should all be excluded from every metric)
 
 Then hit each dashboard endpoint and assert:
   * KPI totals == 3 pos + 2 neg + 4 neu (not 3+2+4+20)
   * Trend chart rows exclude drift
   * Top topics ignore drift
-  * Volume-by-source INCLUDES drift (all 29 posts)
+  * Volume-by-source EXCLUDES drift (matches the KPI at 9 posts)
 """
 from __future__ import annotations
 
@@ -141,10 +139,11 @@ class TestDashboardDriftFilter:
             f"If it's 29, drift is being counted in the trend."
         )
 
-    def test_volume_by_source_INCLUDES_drift(self, client, game_with_drift):
+    def test_volume_by_source_EXCLUDES_drift(self, client, game_with_drift):
         """
-        Volume-by-source counts all admitted posts (drift + non-drift)
-        because engagement volume is a full-conversation metric.
+        v0024 (2026-08-21): volume-by-source now excludes drift, matching
+        the KPI. Before v0024 it included drift and diverged from the
+        Total Posts KPI — confusing UX Steve reported and asked to fix.
         """
         gid = game_with_drift
         r = client.get(f"/api/games/{gid}/dashboard?period=weekly")
@@ -152,11 +151,12 @@ class TestDashboardDriftFilter:
         vol = d["volume_by_source"]
         # VolumePoint.total already sums the display axes correctly
         # (reddit_comment is folded into reddit, not double-counted).
-        # All 29 admitted posts should be counted here.
+        # Only the 9 non-drift posts should be counted here — same as
+        # the KPI, which is the whole point of v0024.
         total = sum(pt.get("total", 0) or 0 for pt in vol)
-        assert total == 29, (
-            f"Expected volume total 29 (all admitted posts, drift + "
-            f"non-drift), got {total}. If it's 9, someone incorrectly "
-            f"applied the drift filter to volume-by-source \u2014 volume "
-            f"is a conversation-level metric and must include drift."
+        assert total == 9, (
+            f"Expected volume total 9 (drift excluded, matching KPI), "
+            f"got {total}. If it's 29, the v0024 `_NOT_DRIFT` filter is "
+            f"missing from the volume-by-source query — the whole point of "
+            f"v0024 is that every dashboard count agrees on the same number."
         )

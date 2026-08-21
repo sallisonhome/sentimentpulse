@@ -431,11 +431,18 @@ def get_dashboard(
     # By construction, a RawPost has a SentimentRecord iff it passed the
     # relevance gate at Step 5. Joining here makes the chart consistent
     # with the KPI/trend/topics data on the same dashboard.
-    # v0017 (2026-08-18): volume-by-source deliberately does NOT filter
-    # `is_off_topic_drift` — engagement/activity metrics count every
-    # admitted post so operators see the full conversation level. Only
-    # sentiment-metric queries above (KPI, trend, topics, velocity)
-    # exclude drift. If you're tempted to add `_NOT_DRIFT` here, don't.
+    # v0024 (2026-08-21): apply the same `_NOT_DRIFT` filter used by the
+    # KPI/trend/topics queries above. Prior to v0024, this query counted
+    # every admitted RawPost including those flagged as off-topic drift,
+    # so the "Posts by Source" card total diverged from the "Total Posts"
+    # KPI (e.g. Toxic Commando 7d: KPI 3,913 vs source total 6,264, a
+    # 2,351-post gap driven by the word 'toxic' tripping drift
+    # false-positives). Steve, 2026-08-21: "these numbers shouldn't be
+    # different from one another". Design intent kept in git history
+    # (see v0017 comment): if we ever want to surface raw engagement
+    # including drift, do it as a separate "engagement" metric with its
+    # own label, not by silently overstating the volume shown next to
+    # the sentiment KPI.
     vol_q = (
         db.query(
             day_expr,
@@ -445,6 +452,7 @@ def get_dashboard(
         .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id == game_id)
         .filter(RawPost.post_date.isnot(None))
+        .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
     )
     if p_start:
         vol_q = vol_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -511,6 +519,7 @@ def get_dashboard(
                 .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
                 .filter(RawPost.game_id == game_id)
                 .filter(RawPost.post_date.isnot(None))
+                .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
                 .filter(func.date(effective_date_expr) >= str(prior_start))
                 .filter(func.date(effective_date_expr) <= str(prior_end))
                 .group_by(day_expr, RawPost.source)
@@ -742,9 +751,10 @@ def get_competitor_timeseries(
     effective_date_expr = RawPost.post_date
     day_expr = func.date(effective_date_expr).label("day")
 
-    # v0017 (2026-08-18): competitor timeseries is a VOLUME chart ("Post
-    # Volume by Title"), not a sentiment metric — no drift filter.
-    # Consistent with the volume-by-source chart above.
+    # v0024 (2026-08-21): now also excludes drift, matching the
+    # volume-by-source card and the Total Posts KPI so every
+    # count on every card agrees. See v0024 comment on vol_q above
+    # for full context.
     ts_q = (
         db.query(
             day_expr,
@@ -754,6 +764,7 @@ def get_competitor_timeseries(
         .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id.in_(game_ids))
         .filter(RawPost.post_date.isnot(None))
+        .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
     )
     if p_start:
         ts_q = ts_q.filter(func.date(effective_date_expr) >= str(p_start))
@@ -819,6 +830,7 @@ def get_competitor_timeseries(
             )
             .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
             .filter(RawPost.game_id.in_(game_ids))
+            .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
             .filter(func.date(effective_date_expr) >= str(prev_start))
             .filter(func.date(effective_date_expr) <= str(curr_end))
             .group_by(RawPost.game_id, window_case)
@@ -843,6 +855,7 @@ def get_competitor_timeseries(
             .select_from(RawPost)
             .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
             .filter(RawPost.game_id.in_(game_ids))
+            .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
             .filter(func.date(effective_date_expr) >= str(prev_start))
             .filter(func.date(effective_date_expr) <= str(prev_end))
         )
