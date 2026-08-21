@@ -23,7 +23,7 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, and, desc, isNull, asc, gte, lte } from "drizzle-orm";
+import { eq, and, desc, isNull, isNotNull, asc, gte, lte } from "drizzle-orm";
 
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -576,6 +576,22 @@ export interface IStorage {
   /** Returns the row exactly `daysAgo` calendar days before the latest row's date, or undefined if none. */
   getSteamWishlistRankDaysAgo(productId: number, daysAgo: number): SteamWishlistRankDaily | undefined;
   upsertSteamWishlistRank(data: InsertSteamWishlistRank): SteamWishlistRankDaily;
+
+  /**
+   * For a given set of appids, return the most recent non-null rank per
+   * appid (across ALL products, though in practice each Saber-published
+   * appid maps to exactly one product). Powers the wishlist manual-merge
+   * fallback in ingestSteamWishlistRank() — see wishlist-manual-merge.ts.
+   */
+  getLatestSteamWishlistRankByAppids(appids: number[]): Map<number, { rank: number; captured_at: string }>;
+
+  /**
+   * For each of the given appids, count the number of days in the last
+   * `windowDays` on which the appid had a non-null rank. Powers the drop
+   * detector — an appid recently ranked but missing today is a drop worth
+   * surfacing. Returns a Map<appid, count>.
+   */
+  countRankedDaysInWindowByAppids(appids: number[], windowDays: number): Map<number, number>;
 
   // IGDB Hype (Steam Leaderboards — Wishlist board)
   getIgdbHypeHistory(productId: number): IgdbHypeDaily[];
@@ -1542,7 +1558,63 @@ export class DatabaseStorage implements IStorage {
     }).returning().get();
   }
 
-  // ─── IGDB Hype (Steam Leaderboards — Wishlist board) ─────────────────
+  // ─── Wishlist Manual-Merge Support (see wishlist-manual-merge.ts) ──
+  //
+  // These helpers exist to keep the merge module (wishlist-manual-merge.ts)
+  // storage-agnostic and unit-testable without a DB. ingestSteamWishlistRank
+  // calls these once per run.
+
+  getLatestSteamWishlistRankByAppids(appids: number[]): Map<number, { rank: number; captured_at: string }> {
+    const out = new Map<number, { rank: number; captured_at: string }>();
+    if (appids.length === 0) return out;
+    // Two-step: appid → productId via products, then latest non-null rank
+    // per productId via steamWishlistRankDaily. Both tables have small
+    // row counts (products <200, rank rows <200/day × days) so O(N) reads
+    // are fine and simpler than a raw SQL join across ORM boundaries.
+    const appidSet = new Set(appids);
+    const matchingProducts = db.select({ id: products.id, appid: products.steamAppId })
+      .from(products).all()
+      .filter((p): p is { id: number; appid: string } => !!p.appid && appidSet.has(Number(p.appid)));
+    for (const { id: productId, appid } of matchingProducts) {
+      const latest = db.select().from(steamWishlistRankDaily)
+        .where(and(
+          eq(steamWishlistRankDaily.productId, productId),
+          isNotNull(steamWishlistRankDaily.rank),
+        ))
+        .orderBy(desc(steamWishlistRankDaily.date))
+        .limit(1).get();
+      if (latest && latest.rank !== null) {
+        out.set(Number(appid), { rank: latest.rank, captured_at: latest.createdAt });
+      }
+    }
+    return out;
+  }
+
+  countRankedDaysInWindowByAppids(appids: number[], windowDays: number): Map<number, number> {
+    const out = new Map<number, number>();
+    if (appids.length === 0 || windowDays <= 0) return out;
+    const cutoff = new Date();
+    cutoff.setUTCDate(cutoff.getUTCDate() - windowDays);
+    const cutoffStr = cutoff.toISOString().split("T")[0];
+    const appidSet = new Set(appids);
+    const matchingProducts = db.select({ id: products.id, appid: products.steamAppId })
+      .from(products).all()
+      .filter((p): p is { id: number; appid: string } => !!p.appid && appidSet.has(Number(p.appid)));
+    for (const { id: productId, appid } of matchingProducts) {
+      const rows = db.select({ rank: steamWishlistRankDaily.rank, date: steamWishlistRankDaily.date })
+        .from(steamWishlistRankDaily)
+        .where(and(
+          eq(steamWishlistRankDaily.productId, productId),
+          isNotNull(steamWishlistRankDaily.rank),
+        ))
+        .all()
+        .filter((r) => r.date >= cutoffStr);
+      out.set(Number(appid), rows.length);
+    }
+    return out;
+  }
+
+  // ─── IGDB Hype (Steam Leaderboards — Wishlist board) ─────────────
 
   getIgdbHypeHistory(productId: number): IgdbHypeDaily[] {
     return db.select().from(igdbHypeDaily)
