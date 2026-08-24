@@ -68,9 +68,17 @@ jobs:
           "
 
           echo ""
-          echo "── Ingestion settings (last run timestamps for each manual trigger) ──"
+          echo "── Hitman exact follower + rank values for today ──"
           sqlite3 -header -column "$DB" "
-            SELECT key, value FROM settings
-            WHERE key IN ('ingestion_last_run', 'ingestion_last_run_public', 'ingestion_last_run_partner', 'ingestion_last_run_sales');
+            SELECT p.id, p.title, f.date, f.follower_count, f.daily_delta
+            FROM steam_followers_daily f JOIN products p ON p.id = f.product_id
+            WHERE p.id = 18
+            ORDER BY f.date DESC LIMIT 3;
+          "
+          sqlite3 -header -column "$DB" "
+            SELECT p.id, p.title, w.date, w.rank
+            FROM steam_wishlist_rank_daily w JOIN products p ON p.id = w.product_id
+            WHERE p.id = 18
+            ORDER BY w.date DESC LIMIT 3;
           "
           REMOTEEOF
