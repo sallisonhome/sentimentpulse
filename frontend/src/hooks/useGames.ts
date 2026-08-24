@@ -8,23 +8,37 @@ import type { Game, GameDetail } from '../types'
  * app dropdown. Competitors render with a "Competitor" badge in the
  * picker so users can pick them directly instead of hunting the parent's
  * Post Volume by Title chart.
+ *
+ * v0025 (2026-08-24): staleTime=0 so the moment the Settings toggle
+ * invalidates `['games']`, the dropdown refetches immediately. Prior to
+ * v0025 the global 5-minute staleTime on the QueryClient meant a
+ * freshly-hidden game could linger in the dropdown for up to 5 minutes
+ * after saving in Settings (Steve, 2026-08-24: "I've clicked hidden on
+ * the newly added SKU ... and the SKU is still showing up in the drop
+ * down menu").
  */
 export function useGames() {
   return useQuery<Game[]>({
     queryKey: ['games'],
     queryFn: () => api.get<Game[]>('/games?is_active=true').then(r => r.data),
+    staleTime: 0,
   })
 }
 
 /**
  * Same as useGames() but excludes competitors — used only where a truly
  * parents-only view matters (e.g. Settings page's parent-card list, or
- * the competitor-timeseries chart's group‑set).
+ * the competitor-timeseries chart's group‐set).
+ *
+ * v0025 (2026-08-24): staleTime=0 for the same reason as useGames() —
+ * keep the parents-only surface in lock-step with the dropdown after
+ * Settings toggles.
  */
 export function useParentGames() {
   return useQuery<Game[]>({
     queryKey: ['games', 'parents-only'],
     queryFn: () => api.get<Game[]>('/games?is_active=true&exclude_competitors=true').then(r => r.data),
+    staleTime: 0,
   })
 }
 
@@ -60,8 +74,15 @@ export function useUpdateGameSettings(gameId: number) {
   return useMutation({
     mutationFn: (data: { subreddits?: string[]; is_active?: boolean; commercial_context?: string }) =>
       api.patch(`/games/${gameId}`, data).then(r => r.data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['games'] })
+    // v0025 (2026-08-24): use refetchQueries + await so the fresh list
+    // is guaranteed to be in the cache before the mutation resolves.
+    // invalidateQueries alone marks queries stale and schedules a
+    // background refetch, but the currently-mounted <TopBar> dropdown
+    // was continuing to render its stale `games` array in the window
+    // between the toast "Saved" and the refetch settling. Awaiting a
+    // refetch closes that window.
+    onSuccess: async () => {
+      await queryClient.refetchQueries({ queryKey: ['games'] })
     },
   })
 }
