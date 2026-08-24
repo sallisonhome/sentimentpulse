@@ -53,4 +53,22 @@ jobs:
             WHERE p.title LIKE '%Hellraiser%'
               AND m.deleted_at IS NULL;
           "
+
+          echo ""
+          echo "── Reference: milestone id=87 exact naming convention for prepurchase-start events ──"
+          sqlite3 -header -column "$DB" "
+            SELECT m.id, m.product_id, m.category, m.name, m.target_date, m.actual_date, m.sort_order
+            FROM pls_milestones m
+            WHERE m.id = 87;
+          "
+
+          echo ""
+          echo "── All other core-category milestones with 'pre' or 'Pre' in the name (naming pattern survey) ──"
+          sqlite3 -header -column "$DB" "
+            SELECT m.id, m.product_id, m.category, m.name, m.actual_date
+            FROM pls_milestones m
+            WHERE m.category = 'core' AND (m.name LIKE '%re-purchase%' OR m.name LIKE '%repurchase%' OR m.name LIKE '%Pre-Order%' OR m.name LIKE '%Prepurchase%' OR m.name LIKE '%pre-order%')
+              AND m.deleted_at IS NULL
+            ORDER BY m.id;
+          "
           REMOTEEOF
