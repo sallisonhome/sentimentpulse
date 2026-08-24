@@ -1,0 +1,56 @@
+name: SP PLS Query Hellraiser (one-off, read-only)
+
+# 2026-08-23 — Read-only diagnostic to inspect existing PLS milestones for
+# Clive Barker's Hellraiser: Revival before adding new ones for the last
+# 30 days. Deleted immediately after its diagnostic run per cleanup policy.
+
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  query:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Query pls_milestones for Hellraiser
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+
+          echo "── Products matching 'Hellraiser' ──"
+          sqlite3 -header -column "$DB" "
+            SELECT id, title, steam_app_id, release_date
+            FROM products
+            WHERE title LIKE '%Hellraiser%';
+          "
+
+          echo ""
+          echo "── All PLS milestones for that product, newest actualDate first ──"
+          sqlite3 -header -column "$DB" "
+            SELECT m.id, m.category, m.name, m.target_date, m.actual_date, m.is_default, m.sort_order
+            FROM pls_milestones m
+            JOIN products p ON p.id = m.product_id
+            WHERE p.title LIKE '%Hellraiser%'
+              AND m.deleted_at IS NULL
+            ORDER BY COALESCE(m.actual_date, m.target_date) DESC;
+          "
+
+          echo ""
+          echo "── Count + most recent actualDate ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS total, MAX(m.actual_date) AS most_recent_actual_date
+            FROM pls_milestones m
+            JOIN products p ON p.id = m.product_id
+            WHERE p.title LIKE '%Hellraiser%'
+              AND m.deleted_at IS NULL;
+          "
+          REMOTEEOF
