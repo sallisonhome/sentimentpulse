@@ -1,0 +1,39 @@
+name: SP PLS Fix Twisted Tower Percent Typo (one-off)
+
+# 2026-08-23 — Corrective fix: milestone id=634's name was inserted with
+# a literal "%%" instead of "%" due to an unnecessary escape in the
+# original INSERT statement. This workflow corrects the text only —
+# no other fields change. Deleted immediately after this run.
+
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Fix id=634 name text
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+          echo "── Before fix ──"
+          sqlite3 -header -column "$DB" "SELECT id, name FROM pls_milestones WHERE id = 634;"
+
+          sqlite3 "$DB" "UPDATE pls_milestones SET name = 'Steam reviews reach Overwhelmingly Positive (~96%, 590+ reviews)', updated_at = '$NOW' WHERE id = 634;"
+
+          echo ""
+          echo "── After fix ──"
+          sqlite3 -header -column "$DB" "SELECT id, category, name, actual_date, sort_order FROM pls_milestones WHERE id IN (634, 635);"
+          REMOTEEOF
