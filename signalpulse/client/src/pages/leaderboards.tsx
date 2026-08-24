@@ -176,6 +176,28 @@ function GameKeyart({ headerImage, title }: { headerImage: string; title: string
   );
 }
 
+function ChartButton({
+  onClick,
+  testId,
+}: {
+  onClick: () => void;
+  testId: string;
+}) {
+  return (
+    <Button
+      variant="outline"
+      size="icon"
+      className="h-8 w-8 text-muted-foreground hover:text-foreground"
+      onClick={onClick}
+      title="View chart"
+      aria-label="View chart"
+      data-testid={testId}
+    >
+      <BarChart3 className="h-3.5 w-3.5" />
+    </Button>
+  );
+}
+
 function SortableHead<K extends string>({
   label,
   sortKey,
@@ -395,6 +417,7 @@ export default function Leaderboards() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-[220px]">Game Title</TableHead>
+                    <TableHead className="w-[56px] text-center">Chart</TableHead>
                     <SortableHead label="24h Units" sortKey="units24h" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="24h Units Δ%" sortKey="unitsDeltaPct24h" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="24h Revenue" sortKey="revenue24hUsd" activeSort={revenueSort} onSort={handleRevenueSort} />
@@ -405,7 +428,6 @@ export default function Leaderboards() {
                     <SortableHead label="30d Revenue" sortKey="revenue30d" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="30d Rev Δ$" sortKey="revenueDelta30dUsd" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="30d Rev Δ%" sortKey="revenueDelta30dPct" activeSort={revenueSort} onSort={handleRevenueSort} />
-                    <TableHead className="text-right">Chart</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -424,6 +446,12 @@ export default function Leaderboards() {
                           )}
                         </div>
                       </TableCell>
+                      <TableCell className="text-center">
+                        <ChartButton
+                          onClick={() => setChartModal({ productId: row.productId, title: row.title, dataType: "steamRevenueDaily" })}
+                          testId={`button-chart-revenue-${row.productId}`}
+                        />
+                      </TableCell>
                       <TableCell className="tabular-nums">{formatNumber(row.units24h)}</TableCell>
                       <TableCell><PercentDeltaValue value={row.unitsDeltaPct24h} /></TableCell>
                       <TableCell className="tabular-nums">{formatCurrency(row.revenue24hUsd)}</TableCell>
@@ -434,18 +462,6 @@ export default function Leaderboards() {
                       <TableCell className="tabular-nums">{formatCurrency(row.revenue30d)}</TableCell>
                       <TableCell><CurrencyDeltaValue value={row.revenueDelta30dUsd} /></TableCell>
                       <TableCell><PercentDeltaValue value={row.revenueDelta30dPct} /></TableCell>
-                      <TableCell className="text-right">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 text-[11px] gap-1.5"
-                          onClick={() => setChartModal({ productId: row.productId, title: row.title, dataType: "steamRevenueDaily" })}
-                          data-testid={`button-chart-revenue-${row.productId}`}
-                        >
-                          <BarChart3 className="h-3 w-3" />
-                          View Chart
-                        </Button>
-                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -510,6 +526,7 @@ export default function Leaderboards() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[240px]">Game Title</TableHead>
+                  <TableHead className="w-[56px] text-center">Chart</TableHead>
                   <SortableHead label="Total WL" sortKey="wishlistTotal" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="1D WL Δ" sortKey="wishlistDelta1d" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="7D WL Adds" sortKey="wishlistAdds7d" activeSort={sort} onSort={handleSort} />
@@ -518,7 +535,6 @@ export default function Leaderboards() {
                   <SortableHead label="Rank" sortKey="rankCurrent" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="7D Rank Δ" sortKey="rankDelta7d" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="IGDB Hype" sortKey="igdbHype" activeSort={sort} onSort={handleSort} />
-                  <TableHead className="text-right">Chart</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -530,6 +546,12 @@ export default function Leaderboards() {
                         <span className="font-medium text-sm truncate">{row.title}</span>
                       </div>
                     </TableCell>
+                    <TableCell className="text-center">
+                      <ChartButton
+                        onClick={() => setChartModal({ productId: row.productId, title: row.title, dataType: "steamWishlist" })}
+                        testId={`button-chart-${row.productId}`}
+                      />
+                    </TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.wishlistTotal)}</TableCell>
                     <TableCell><DeltaValue value={row.wishlistDelta1d} /></TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.wishlistAdds7d)}</TableCell>
@@ -540,18 +562,6 @@ export default function Leaderboards() {
                     </TableCell>
                     <TableCell><DeltaValue value={row.rankDelta7d} /></TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.igdbHype)}</TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-7 text-[11px] gap-1.5"
-                        onClick={() => setChartModal({ productId: row.productId, title: row.title, dataType: "steamWishlist" })}
-                        data-testid={`button-chart-${row.productId}`}
-                      >
-                        <BarChart3 className="h-3 w-3" />
-                        View Chart
-                      </Button>
-                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
