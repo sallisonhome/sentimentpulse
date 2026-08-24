@@ -1,0 +1,189 @@
+name: SP Add Hitman Classic Trilogy Remastered
+
+# One-off workflow that adds "Hitman Classic Trilogy Remastered" (Saber x IOI,
+# AppID 4716160) to SignalPulse.
+#
+# Sequence:
+#   1. Guard: refuse to run if ingestion is inFlight (never restart-clobber a
+#      backfill — see lessons.md "droplet-restarting action" rule).
+#   2. POST /api/products — also auto-triggers the historical wishlist
+#      backfill via the Steam Web Partner API (routes.ts v3.9, 2026-08-12).
+#   3. PATCH Announce + Product Page Live milestones to actualDate=2026-06-05
+#      (IOI Showcase reveal at Summer Game Fest 2026; Steam page live same
+#      day — verified via Wario64 tweet + GamesRadar coverage).
+#   4. Poll for the auto-triggered wishlist backfill to reach yesterday
+#      (steamWishlistSummary.latestReportingDate == yesterday GMT).
+#   5. Verify the product appears on the Pre-Release Wishlist Leaderboard.
+#
+# No pre-purchase is backfilled — Hitman Classic Trilogy has not opened
+# pre-purchase yet (Steam page still says "Coming soon", no store price).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  add:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Add product + backfill
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 'bash -s' << 'REMOTE_EOF'
+          set -euo pipefail
+          API=http://127.0.0.1:5000
+          WORK=/tmp/hitman_add
+          rm -rf "$WORK" && mkdir -p "$WORK"
+
+          # Write helper Python probes with printf so we can flush-left the
+          # bodies regardless of how YAML+ssh transport whitespace.
+          write_helper() {
+            local path="$1"
+            shift
+            printf '%s\n' "$@" > "$path"
+          }
+
+          write_helper "$WORK/probe_status.py" \
+            'import json' \
+            "d=json.load(open('$WORK/status.json'))" \
+            "print(d.get('inFlight'))"
+
+          write_helper "$WORK/probe_exists.py" \
+            'import json' \
+            "ps=json.load(open('$WORK/products.json'))" \
+            "print(any((p.get('steamAppId')=='4716160' or 'Hitman Classic Trilogy' in p.get('title','')) for p in ps))"
+
+          write_helper "$WORK/probe_id.py" \
+            'import json' \
+            "print(json.load(open('$WORK/create_res.json')).get('id'))"
+
+          write_helper "$WORK/probe_ms.py" \
+            'import json, sys' \
+            'name=sys.argv[1]' \
+            "ms=json.load(open('$WORK/ms.json'))" \
+            "print(next((m['id'] for m in ms if m.get('name')==name), ''))"
+
+          write_helper "$WORK/probe_summary.py" \
+            'import json' \
+            "d=json.load(open('$WORK/pdp.json'))" \
+            "s=d.get('steamWishlistSummary') or {}" \
+            "out={'lifetimeNet': s.get('lifetimeNet'), 'latestReportingDate': s.get('latestReportingDate'), 'preLaunchNet': s.get('preLaunchNet'), 'latestSteamWishlistCount': d.get('latestSteamWishlistCount')}" \
+            'print(json.dumps(out))'
+
+          write_helper "$WORK/probe_leaderboard.py" \
+            'import os, json' \
+            "pid=int(os.environ['PRODUCT_ID'])" \
+            "rows=json.load(open('$WORK/lb.json'))" \
+            "hits=[r for r in rows if r.get('productId')==pid or 'Hitman Classic Trilogy' in (r.get('title') or '')]" \
+            'print(f"leaderboard rows: {len(rows)}, hitman rows: {len(hits)}")' \
+            'for r in hits:' \
+            '  print(json.dumps(r, indent=2, default=str))'
+
+          write_helper "$WORK/probe_snapshot.py" \
+            'import json' \
+            "d=json.load(open('$WORK/pdp.json'))" \
+            "out={k: d.get(k) for k in ('id','title','publisher','platforms','genre','playerFormat','releaseDate','targetRetailPriceUsd','steamAppId','latestSteamWishlistCount','steamWishlistSummary')}" \
+            'print(json.dumps(out, indent=2, default=str))'
+
+          echo "── 0. Ingestion status guard ──"
+          curl -sS "$API/api/ingestion/status" > "$WORK/status.json"
+          cat "$WORK/status.json"
+          echo ""
+          INFLIGHT=$(python3 "$WORK/probe_status.py")
+          if [ "$INFLIGHT" = "True" ] || [ "$INFLIGHT" = "true" ]; then
+            echo "ERR: ingestion is inFlight — abort."
+            exit 1
+          fi
+
+          echo ""
+          echo "── 0b. Sanity: not already present ──"
+          curl -sS "$API/api/products" > "$WORK/products.json"
+          EXISTS=$(python3 "$WORK/probe_exists.py")
+          if [ "$EXISTS" = "True" ]; then
+            echo "ERR: Hitman Classic Trilogy Remastered already present — abort."
+            exit 1
+          fi
+
+          echo ""
+          echo "── 1. POST /api/products ──"
+          cat > "$WORK/create.json" <<'JSON'
+          {"title":"Hitman Classic Trilogy Remastered","publisher":"Saber Interactive","platforms":["PC (Steam)","PS5","Xbox","Switch 2"],"playerFormat":"single_player","genre":"Action Adventure","releaseDate":"2027-09-14","targetRetailPriceUsd":29.99,"steamAppId":"4716160","perPlatformPricing":null}
+          JSON
+          cat "$WORK/create.json"
+          echo ""
+          curl -sS -X POST -H 'Content-Type: application/json' --data @"$WORK/create.json" "$API/api/products" > "$WORK/create_res.json"
+          cat "$WORK/create_res.json"
+          echo ""
+          PRODUCT_ID=$(python3 "$WORK/probe_id.py")
+          if [ -z "$PRODUCT_ID" ] || [ "$PRODUCT_ID" = "None" ]; then
+            echo "ERR: product creation returned no id"
+            exit 1
+          fi
+          export PRODUCT_ID
+          echo "Created product id=$PRODUCT_ID (wishlist backfill auto-triggered)"
+
+          echo ""
+          echo "── 2. Backfill Announce + Product Page Live actualDate=2026-06-05 ──"
+          curl -sS "$API/api/products/$PRODUCT_ID/pls" > "$WORK/ms.json"
+          ANNOUNCE_ID=$(python3 "$WORK/probe_ms.py" Announce)
+          PAGE_ID=$(python3 "$WORK/probe_ms.py" "Product Page Live")
+          echo "Announce milestone id=$ANNOUNCE_ID, Product Page Live id=$PAGE_ID"
+
+          if [ -n "$ANNOUNCE_ID" ]; then
+            curl -sS -X PATCH -H 'Content-Type: application/json' \
+              -d '{"actualDate":"2026-06-05"}' \
+              "$API/api/products/$PRODUCT_ID/pls/$ANNOUNCE_ID"
+            echo ""
+          else
+            echo "WARN: no Announce milestone found"
+          fi
+          if [ -n "$PAGE_ID" ]; then
+            curl -sS -X PATCH -H 'Content-Type: application/json' \
+              -d '{"actualDate":"2026-06-05"}' \
+              "$API/api/products/$PRODUCT_ID/pls/$PAGE_ID"
+            echo ""
+          else
+            echo "WARN: no Product Page Live milestone found"
+          fi
+
+          echo ""
+          echo "── 3. Poll wishlist backfill (up to ~15 min) ──"
+          YESTERDAY=$(date -u -d 'yesterday' +%Y-%m-%d)
+          echo "Target: latestReportingDate == $YESTERDAY (GMT)"
+          for i in $(seq 1 90); do
+            curl -sS "$API/api/products/$PRODUCT_ID" > "$WORK/pdp.json"
+            PROBE=$(python3 "$WORK/probe_summary.py")
+            echo "[t+$((i*10))s] $PROBE"
+            LATEST=$(echo "$PROBE" | python3 -c "import json,sys;print(json.load(sys.stdin).get('latestReportingDate'))")
+            NET=$(echo "$PROBE" | python3 -c "import json,sys;print(json.load(sys.stdin).get('lifetimeNet'))")
+            if [ "$LATEST" = "$YESTERDAY" ] && [ "$NET" != "None" ] && [ "$NET" != "0" ] && [ "$NET" != "null" ]; then
+              echo "Backfill caught up: lifetimeNet=$NET, latestReportingDate=$LATEST"
+              break
+            fi
+            sleep 10
+          done
+
+          echo ""
+          echo "── 4. Verify Pre-Release Wishlist Leaderboard ──"
+          curl -sS "$API/api/leaderboards/wishlist" > "$WORK/lb.json"
+          python3 "$WORK/probe_leaderboard.py"
+
+          echo ""
+          echo "── 5. Final product snapshot ──"
+          curl -sS "$API/api/products/$PRODUCT_ID" > "$WORK/pdp.json"
+          python3 "$WORK/probe_snapshot.py"
+
+          echo ""
+          echo "── 6. Final milestone state ──"
+          curl -sS "$API/api/products/$PRODUCT_ID/pls" | python3 -c "import json,sys;ms=json.load(sys.stdin);print(json.dumps([{'id':m['id'],'category':m.get('category'),'name':m.get('name'),'targetDate':m.get('targetDate'),'actualDate':m.get('actualDate')} for m in ms], indent=2))"
+          REMOTE_EOF
