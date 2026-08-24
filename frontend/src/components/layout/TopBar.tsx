@@ -46,6 +46,30 @@ export default function TopBar() {
     }
   }, [latestGame, selectedGameId, setSelectedGameId])
 
+  // v0026 (2026-08-24): if the currently-selected game gets Hidden in
+  // Settings (is_active flipped to false), it drops out of useGames()
+  // but the persisted selectedGameId in localStorage still points at
+  // it -- so the trigger keeps rendering the hidden game's name via
+  // useGameDetail (which fetches by id, ignoring is_active). Detect
+  // that mismatch and drop the selection back to null so the
+  // latestGame fallback above re-picks a visible title. Steve, 2026-
+  // 08-24: hidden Docked DLC was still showing as the picker's
+  // current value even though it was correctly missing from the
+  // dropdown items themselves.
+  //
+  // Guards:
+  //   - Wait for games to actually load (games !== undefined).
+  //   - Only act when selectedGameId is set AND not present in the
+  //     active list. Competitors ARE in useGames() output, so this
+  //     doesn't accidentally punt off a valid competitor selection.
+  useEffect(() => {
+    if (selectedGameId == null || games == null) return
+    const isVisible = games.some(g => g.id === selectedGameId)
+    if (!isVisible) {
+      setSelectedGameId(null)
+    }
+  }, [games, selectedGameId, setSelectedGameId])
+
   return (
     <header className="flex h-14 items-center justify-between border-b bg-card px-6">
       <div className="flex items-center gap-3">
