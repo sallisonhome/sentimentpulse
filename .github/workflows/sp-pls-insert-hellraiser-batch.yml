@@ -1,0 +1,83 @@
+name: SP PLS Insert Hellraiser Batch (one-off)
+
+# 2026-08-23 — One-off batch insert of real-world PLS events for Clive
+# Barker's Hellraiser: Revival (product id 7) discovered since the last
+# batch add (cutoff ~2026-08-15). Deleted immediately after its run per
+# cleanup policy.
+#
+# Renumbers the existing "Release day" milestone (id 185, sort_order 115)
+# to 118 so the three new chronologically-earlier real events (2026-08-19,
+# 2026-08-19, 2026-08-20) can take sort_order 115-117 and keep sort_order
+# in strict date order, matching the existing convention in this table.
+
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  insert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Insert new Hellraiser PLS milestones
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+          echo "── Renumber existing 'Release day' milestone (id 185) to sort_order 118 ──"
+          sqlite3 "$DB" "
+            UPDATE pls_milestones
+            SET sort_order = 118, updated_at = '$NOW'
+            WHERE id = 185;
+          "
+
+          echo "── Insert 3 new milestones ──"
+          sqlite3 "$DB" "
+            INSERT INTO pls_milestones
+              (product_id, category, name, target_date, actual_date, is_default, sort_order, created_at, updated_at)
+            VALUES
+              (7, 'core', 'Nintendo Switch 2 version confirmed; console digital pre-orders open (Standard \$39.99 / Deluxe \$49.99)', '2026-08-19', '2026-08-19', 0, 115, '$NOW', '$NOW'),
+              (7, 'video', 'Pre-Order Trailer (Switch 2 launch announcement, weapon-skin showcase)', '2026-08-19', '2026-08-19', 0, 116, '$NOW', '$NOW'),
+              (7, 'press_coverage', 'IXBT.games (RU) coverage of pre-order trailer / Switch 2 reveal', '2026-08-20', '2026-08-20', 0, 117, '$NOW', '$NOW');
+          "
+
+          echo ""
+          echo "── Verify: all Hellraiser milestones, newest actualDate first ──"
+          sqlite3 -header -column "$DB" "
+            SELECT m.id, m.category, m.name, m.actual_date, m.sort_order
+            FROM pls_milestones m
+            JOIN products p ON p.id = m.product_id
+            WHERE p.title LIKE '%Hellraiser%'
+              AND m.deleted_at IS NULL
+            ORDER BY m.sort_order DESC
+            LIMIT 6;
+          "
+
+          echo ""
+          echo "── Lookup: products matching 'Twisted Tower' ──"
+          sqlite3 -header -column "$DB" "
+            SELECT id, title, steam_app_id, release_date
+            FROM products
+            WHERE title LIKE '%Twisted Tower%';
+          "
+
+          echo ""
+          echo "── If found, existing PLS milestones for Twisted Tower ──"
+          sqlite3 -header -column "$DB" "
+            SELECT m.id, m.category, m.name, m.target_date, m.actual_date, m.sort_order
+            FROM pls_milestones m
+            JOIN products p ON p.id = m.product_id
+            WHERE p.title LIKE '%Twisted Tower%'
+              AND m.deleted_at IS NULL
+            ORDER BY COALESCE(m.actual_date, m.target_date) DESC;
+          "
+          REMOTEEOF
