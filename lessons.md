@@ -1307,3 +1307,37 @@ Global polluted count should be 0 or very small (a small remainder is OK when a 
 
 **How to verify.** After any change to the wallclock guard, hit `/api/ingest/run` manually and watch `games_processed` climb monotonically past the budget deadline without any `[Phase A] Wallclock budget ... skipping` errors in `/api/ingest/status.last_run_errors`.
 
+
+
+---
+
+## 2026-08-27 — Strict distinctive-keyword gate over-dropped press headlines; comment fetcher lost busy older threads (v0027)
+
+**Problem.** Steve flagged that Gamescom-week post volume looked lower than expected despite heavy press coverage. Investigation via a new `/api/ingest/admin/daily-raw-counts` diagnostic endpoint showed raw ingestion was *stable* (drift ratio 15–20% steady), so no drift-classifier bug — but three separate regressions were dropping legitimate content:
+
+1. **The v0019 strict two-token gate over-drops press headlines during news cycles.** Games have very specific `distinctive_keywords` (e.g. Halo 3: `['Halo 3 campaign','H3 MCC','Halo 3 multiplayer','Halo 3 MCC']`). A plain press headline like *"Halo 3 anniversary edition coming to PC — Gamescom reveal"* contains primary word `halo` but no distinctive-keyword variant, so `_post_mentions_game` returned False and the post was dropped from every general-sub sweep. Verified against 12 realistic Gamescom-style headlines, 3 got dropped.
+2. **Step 4a comment fetcher only looked at parents `collected_at ≥ now-3d`.** Busy older threads that erupt during a news week (a 5-day-old megathread getting fresh comments from a Gamescom trailer) never had their new comments pulled. Also, `collected_at` isn't the semantic timestamp — `post_date` is. Rows backfilled recently but originally posted earlier were sorted incorrectly.
+3. **Per-game silent zero-comment days.** When Step 4a's fresh window returned empty for a title (v0018 cursors leaving no fresh signal/dedicated parents), it early-returned `(0, 0)` — silently emitting a comment=0 day for that title even when it had ongoing discussion in older threads.
+
+**Fix (v0027).**
+
+- **`_post_mentions_game(post, search_query, distinctive_keywords, game_name=None)`** — new optional `game_name` param. When set AND the game's name has a space OR is ≥8 chars, the name-phrase is accepted as an implicit companion keyword. Preserves the anti-pollution guarantee (industry news like "Uber rideshare price hike" still fails because the full phrase "Rideshare Stimulator" isn't present). Short single-token names (`Docked`, `Turok`, `Inversion`) stay strict — otherwise the gate would collapse back to Path B (any-word match) for those games.
+- **Wired `game.name` through every call site of `_post_mentions_game` where a `Game` object is in scope** — `arctic_shift_service.py` (daily general-sub sweeps, the highest-volume path) and `routers/ingest.py` audit-polluted endpoint (so the audit stays consistent with what the ingest actually admits). Diagnostic probes and Bluesky/RSS fallback paths that use Path B (no distinctive_keywords) don't need it.
+- **Step 4a parent window widened to 7d and keyed on `COALESCE(post_date, collected_at)` instead of `collected_at` only.** Limit raised 50→150 so peak news weeks don't truncate.
+- **Step 4a fallback path:** when the fresh window is empty, fall back to the top 30 signal/dedicated parents from the last 14 days. Emits a distinctive `"using fallback"` log line so operators can tell fresh-window runs from fallback runs in production logs. Only fires when the fresh window is actually empty — verified by a test.
+
+**Non-negotiable rules going forward.**
+
+1. **When adding a strict-match gate, the game's own name is always an implicit companion.** Any future revision of `_post_mentions_game` (or a sibling helper on the ingest boundary) MUST accept the game name as a passing companion when it's multi-token or ≥8 characters. Otherwise every new distinctive-keyword-based gate re-invents the "Halo 3 anniversary" bug the next time a game has ultra-specific keywords. Enforced by `TestV0027GameNameCompanion` in `tests/test_post_mentions_game.py`.
+
+2. **Never key an "is this row recent?" filter on `collected_at` alone.** The semantic timestamp is `post_date`; `collected_at` reflects when the ingest happened, which can be much later for backfilled data. Every "recent" query MUST use `COALESCE(post_date, collected_at)` for both ordering AND filtering. If you write a new step that filters by "last N days", copy the pattern from `_step4a_reddit_comments`.
+
+3. **Any step that returns "0 rows processed" for a game MUST emit a distinguishing log line.** Silent `return 0, 0` is what let per-game comment-zero days go unnoticed for two weeks. If the primary window is empty, try a fallback. If the fallback is also empty, log the reason with the exact window sizes so the failure mode is obvious in logs. Enforced by `test_no_parents_at_all_returns_zero_zero` in `tests/test_step4a_comment_parent_window.py`.
+
+4. **Any change to `_post_mentions_game` MUST run the full `test_post_mentions_game.py` suite and confirm both v0019 (anti-pollution) AND v0027 (press-headline pass-through) tests pass.** They intentionally exercise the SAME code paths from opposite directions — pollution must fail; legitimate press must pass. Failing either half is a regression.
+
+**How to verify.** After deploy, hit the new diag endpoint:
+```
+GET /api/ingest/admin/daily-raw-counts?days=14
+```
+`reddit_comment` daily totals should be **stable across all portfolio titles** (no more per-game zero days). Overall daily ingestion should show a small but real bump in Reddit submissions (press coverage that used to be dropped now landing). Watch for a matching bump in the drift ratio — the extra admits are legitimate content, not pollution, so drift % should stay flat.

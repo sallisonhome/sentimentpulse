@@ -261,12 +261,24 @@ def fetch_arctic_shift_subreddit_posts(
             # v0019: pass game.distinctive_keywords so games with common-
             # English primary words (Rideshare, Docked) get the strict
             # two-token gate instead of the permissive any-word match.
+            # v0027 (2026-08-27): also pass game.name so the game's own
+            # multi-token / long name acts as an implicit companion
+            # keyword. Fixes over-drop of Gamescom-style press headlines
+            # ("Halo 3 anniversary", "Turok Origins reveal") that mention
+            # the game by name but not by any of the operator-curated
+            # distinctive-keyword variants. See reddit_service:
+            # _post_mentions_game docstring for the safety analysis —
+            # short single-token names stay strict.
             _dk = None
+            _name = None
             if game is not None:
                 _dk = getattr(game, "distinctive_keywords", None) or None
+                _name = getattr(game, "name", None) or None
             merged = [
                 p for p in seen.values()
-                if _post_mentions_game(p, query, distinctive_keywords=_dk)
+                if _post_mentions_game(
+                    p, query, distinctive_keywords=_dk, game_name=_name,
+                )
             ]
             posts_returned = len(merged)
             return merged

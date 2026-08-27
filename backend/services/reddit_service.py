@@ -612,11 +612,12 @@ def _post_mentions_game(
     post: dict,
     search_query: str,
     distinctive_keywords: list[str] | None = None,
+    game_name: str | None = None,
 ) -> bool:
     """
     Return True if the post's title/body genuinely mentions the game.
 
-    Semantics (v0019, 2026-08-19):
+    Semantics (v0019, 2026-08-19; adjusted v0027, 2026-08-27):
       * If distinctive_keywords is non-empty:
             Requires the primary search_query word AND at least one
             distinctive keyword to appear together in the same title+body.
@@ -624,6 +625,17 @@ def _post_mentions_game(
             a common English word (Rideshare, Docked, Simulator variants).
             Prevents ride-share industry pollution while still allowing
             variant spellings ("Rideshare Saber", "Rideshare game").
+
+            v0027 (2026-08-27): if game_name is passed, the game's own
+            name-phrase counts as an implicit companion keyword. This
+            fixes over-drop of legitimate press headlines like "Halo 3
+            anniversary at Gamescom" or "Turok returns! Gamescom hands-
+            on" that mention the game by name but not by any of the
+            operator-curated distinctive-keyword variants. The strict
+            gate against pollution still holds because industry news
+            like "Uber rideshare price hike" doesn't contain the full
+            phrase "Rideshare Stimulator" (the game name), and doesn't
+            match any other distinctive keyword either.
       * If distinctive_keywords is None or empty:
             Falls back to legacy behavior — True iff any ≥4-char, non-
             stopword token from search_query appears in title+body.
@@ -664,11 +676,28 @@ def _post_mentions_game(
         ]
         distinctive_normalized = [k for k in distinctive_normalized if len(k) >= 3]
 
+        # v0027 (2026-08-27): the game's own name-phrase is also an
+        # accepted companion. Guard against 1-token game names — those
+        # would collapse this path back into the legacy any-word match
+        # (e.g. game_name="Docked" would let every "docked" mention
+        # through). Require the raw name to contain a space OR be at
+        # least 8 chars ("Hellraiser", "Ghostbusters") — short single-
+        # token names ("Docked", "Turok", "Inversion") stay strict.
+        name_phrase: str | None = None
+        if game_name:
+            n = game_name.strip().lower()
+            if n and (" " in n or len(n) >= 8):
+                name_phrase = n
+
         # The primary word must appear at least once
         if not primary_words or not any(w in text for w in primary_words):
             return False
-        # AND at least one distinctive keyword must appear
-        if not any(k in text for k in distinctive_normalized):
+        # AND at least one distinctive keyword must appear (or the game
+        # name phrase, per v0027 addition above).
+        companion_hit = any(k in text for k in distinctive_normalized)
+        if not companion_hit and name_phrase and name_phrase in text:
+            companion_hit = True
+        if not companion_hit:
             return False
         return True
 

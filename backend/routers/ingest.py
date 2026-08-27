@@ -3127,7 +3127,13 @@ def audit_polluted_reddit_posts(
                 if sub is None or sub not in general_lower:
                     continue
                 as_dict = {"title": p.title or "", "body": p.body or ""}
-                if not _post_mentions_game(as_dict, query, distinctive_keywords=dk):
+                # v0027 (2026-08-27): pass game_name so the audit uses the
+                # same mention-check semantics as the daily ingest. Prior
+                # to v0027 the audit was stricter than ingest and would
+                # flag legitimate press headlines as "polluted".
+                if not _post_mentions_game(
+                    as_dict, query, distinctive_keywords=dk, game_name=game.name,
+                ):
                     polluted_ids.append(p.id)
                     if len(sample) < sample_titles:
                         sample.append((p.title or "")[:120])

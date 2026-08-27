@@ -1274,29 +1274,76 @@ def _step4a_reddit_comments(
     # 2026-08-14 bug report on SessionLocal shadowing in run_ingestion.
     from services.arctic_shift_service import fetch_arctic_shift_comments
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
-    # v0016.1 (2026-08-12): order by post_date so recent Reddit discussion
-    # ranks above recently-ingested-but-older archive imports. Fall back to
-    # collected_at when a row is missing post_date.
+    # v0027 (2026-08-27): widen the parent window from 3d→ 7d, key it on
+    # COALESCE(post_date, collected_at) instead of collected_at only, and
+    # raise the limit from 50 → 150. Pre-v0027 the daily comment fetcher
+    # was silently skipping busy older threads that erupted during a
+    # news week (e.g. Gamescom): if a Space Marine 2 discussion thread
+    # was collected 5 days ago but a Gamescom trailer sent new comments
+    # to it today, comments never got pulled because collected_at was
+    # outside the 3d window. Keying on post_date fixes that; widening to
+    # 7d gives enough headroom for typical news cycles; raising limit
+    # keeps us from truncating during peak weeks.
+    #
+    # v0027 fallback (see below): if this fresh-window query returns
+    # empty, fall back to the top parents from the last 14 days so a
+    # low-activity title never emits a silent comment=0 day.
+    _PARENT_WINDOW_DAYS = 7
+    _PARENT_LIMIT = 150
+    _PARENT_FALLBACK_WINDOW_DAYS = 14
+    _PARENT_FALLBACK_LIMIT = 30
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=_PARENT_WINDOW_DAYS)
     from sqlalchemy import func as _func, desc as _desc
+    _effective_ts = _func.coalesce(RawPost.post_date, RawPost.collected_at)
     parents = (
         db.query(RawPost)
         .filter(
             RawPost.game_id == game.id,
             RawPost.source == SourceEnum.reddit,
             RawPost.relevance_tier.in_(("signal", "dedicated_sub")),
-            RawPost.collected_at >= cutoff,
+            _effective_ts >= cutoff,
         )
-        .order_by(_desc(_func.coalesce(RawPost.post_date, RawPost.collected_at)))
-        .limit(50)
+        .order_by(_desc(_effective_ts))
+        .limit(_PARENT_LIMIT)
         .all()
     )
 
+    used_fallback = False
+    if not parents:
+        # v0027 fallback: no fresh parents — grab the top N most-recent
+        # signal/dedicated parents from the last 14 days so we still
+        # ingest comments for any ongoing discussion. Prevents silent
+        # "comment=0" days for lower-activity portfolio titles.
+        fallback_cutoff = datetime.now(timezone.utc) - timedelta(
+            days=_PARENT_FALLBACK_WINDOW_DAYS,
+        )
+        parents = (
+            db.query(RawPost)
+            .filter(
+                RawPost.game_id == game.id,
+                RawPost.source == SourceEnum.reddit,
+                RawPost.relevance_tier.in_(("signal", "dedicated_sub")),
+                _effective_ts >= fallback_cutoff,
+            )
+            .order_by(_desc(_effective_ts))
+            .limit(_PARENT_FALLBACK_LIMIT)
+            .all()
+        )
+        used_fallback = bool(parents)
+
     if not parents:
         log_lines.append(
-            f"[Step 4a] '{game.name}': no signal/dedicated parents in last 3 days — skipping."
+            f"[Step 4a] '{game.name}': no signal/dedicated parents in last "
+            f"{_PARENT_FALLBACK_WINDOW_DAYS} days — skipping."
         )
         return 0, 0
+    if used_fallback:
+        log_lines.append(
+            f"[Step 4a] '{game.name}': no parents in the fresh {_PARENT_WINDOW_DAYS}d "
+            f"window; using fallback (top {len(parents)} parents in last "
+            f"{_PARENT_FALLBACK_WINDOW_DAYS}d)."
+        )
 
     total_saved = 0
     total_fetched = 0

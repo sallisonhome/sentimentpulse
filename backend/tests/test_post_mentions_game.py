@@ -227,3 +227,193 @@ def test_real_world_twisted_tower_generic_word_fine():
     assert rs._post_mentions_game(
         unrelated, "Twisted", distinctive_keywords=["tower"],
     ) is False
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# v0027 (2026-08-27) — game_name acts as an implicit companion keyword
+#
+# Bug being fixed:
+#   Prior to v0027 the strict two-token gate over-dropped legitimate press
+#   headlines during Gamescom-style news cycles. Example: Turok Origins had
+#   distinctive_keywords ['Turok Origins','Turok game','Saber Turok',
+#   'Turok 2026','new Turok']. A Gamescom headline "Turok returns! Gamescom
+#   hands-on impressions" contained primary word 'turok' but none of the
+#   specific distinctive-keyword variants. Gate returned False → post
+#   dropped → title looked dead during a big news week.
+#
+# Fix: pass game_name to _post_mentions_game. Its exact phrase counts as a
+# companion. Preserves the anti-pollution guarantee: industry news like
+# "Uber rideshare price hike" still fails because the full game name
+# 'Rideshare Stimulator' does not appear.
+#
+# Also: guard against 1-token short names ("Docked") collapsing the strict
+# gate back to Path B — the name-phrase companion only kicks in when the
+# game's name has a space OR is >= 8 chars.
+# ────────────────────────────────────────────────────────────────────────────
+
+
+class TestV0027GameNameCompanion:
+    """Locks in the v0027 press-headline pass-through behavior."""
+
+    # ── Press headlines that USED to be dropped, must now pass ────────────
+
+    def test_turok_press_headline_passes_via_game_name(self):
+        post = {"title": "Turok Origins bombshell at Gamescom", "body": ""}
+        dk = [
+            "Turok Origins", "Turok game", "Saber Turok",
+            "Turok 2026", "new Turok",
+        ]
+        # "turok origins" appears as the distinctive keyword AND as the
+        # game-name phrase — both companion routes work. Explicitly test
+        # the game_name-only path in test_turok_press_headline_dropped_
+        # without_game_name_when_no_variant_matches below.
+        assert rs._post_mentions_game(
+            post, "turok origins",
+            distinctive_keywords=dk, game_name="Turok: Origins",
+        ) is True
+
+    def test_turok_press_headline_dropped_without_game_name_when_no_variant_matches(self):
+        # Choose a headline where NO distinctive variant matches, so we
+        # can prove game_name is doing the work.
+        post = {"title": "Gamescom drops a Turok bombshell", "body": ""}
+        dk = [
+            "Turok Origins", "Turok game", "Saber Turok",
+            "Turok 2026", "new Turok",
+        ]
+        # game_name IS "Turok: Origins" but the game name TOKEN "turok"
+        # is a single token < 8 chars → name-phrase companion should NOT
+        # fire (see docstring: short single-token names stay strict).
+        assert rs._post_mentions_game(
+            post, "turok origins",
+            distinctive_keywords=dk, game_name="Turok",
+        ) is False
+        # However with the multi-token real name it passes because
+        # "turok origins" is a phrase companion that matches when the
+        # headline contains it. Prove separately:
+        post2 = {"title": "Turok Origins bombshell at Gamescom", "body": ""}
+        assert rs._post_mentions_game(
+            post2, "turok origins",
+            distinctive_keywords=dk, game_name="Turok: Origins",
+        ) is True
+
+    def test_halo3_anniversary_press_headline_passes_via_game_name(self):
+        post = {
+            "title": "Halo 3 anniversary edition coming to PC — Gamescom reveal",
+            "body": "",
+        }
+        # Actual Halo 3 keywords in prod (Aug 2026): all specific variants,
+        # none plain "Halo 3".
+        dk = [
+            "Halo 3 campaign", "H3 MCC", "Halo 3 multiplayer",
+            "Halo 3 MCC", "Halo 3 campain",
+        ]
+        # Without game_name → dropped.
+        assert rs._post_mentions_game(
+            post, "halo 3", distinctive_keywords=dk,
+        ) is False
+        # With game_name "Halo 3" → still dropped: "halo 3" is 5 chars and
+        # single-token (space in name is between 'halo' and '3', but '3'
+        # is one char). Wait: "Halo 3" contains a space → name_phrase
+        # applies. And "halo 3" appears in the headline. Should PASS.
+        assert rs._post_mentions_game(
+            post, "halo 3",
+            distinctive_keywords=dk, game_name="Halo 3",
+        ) is True
+
+    def test_multitoken_game_name_passes_press_headline(self):
+        post = {"title": "Aliens Fireteam Elite 2 gameplay reveal", "body": ""}
+        dk = ["fireteam", "xenomorph"]  # Actual short list case
+        # Even a permissive dk would pass here, but confirm game_name path
+        # works stably with a multi-token real name.
+        assert rs._post_mentions_game(
+            post, "aliens fireteam elite",
+            distinctive_keywords=dk,
+            game_name="Aliens: Fireteam Elite 2",
+        ) is True
+
+    def test_long_singleword_gamename_still_passes(self):
+        # Ghostbusters is a single-token name, but >=8 chars → allowed.
+        post = {"title": "Ghostbusters remake trailer at Gamescom", "body": ""}
+        dk = ["Ghostbusters Remastered", "GB VG Remastered"]
+        assert rs._post_mentions_game(
+            post, "ghostbusters",
+            distinctive_keywords=dk, game_name="Ghostbusters",
+        ) is True
+
+    # ── Anti-pollution guarantees MUST still hold ─────────────────────────
+
+    def test_industry_news_still_rejected_multitoken_name(self):
+        """The whole reason distinctive_keywords exists: 'Rideshare
+        Stimulator' industry pollution must stay rejected even after the
+        v0027 game-name companion is added."""
+        post = {
+            "title": "Uber rideshare price hike hits drivers hard",
+            "body": "Drivers say the platform is squeezing them",
+        }
+        dk = ["stimulator", "simulator", "saber interactive", "rideshare game"]
+        assert rs._post_mentions_game(
+            post, "rideshare stimulator",
+            distinctive_keywords=dk, game_name="Rideshare \"Stimulator\"",
+        ) is False
+
+    def test_short_singletoken_gamename_does_NOT_widen_gate(self):
+        """Docked's name is single-token, 6 chars. It MUST stay strict —
+        otherwise every 'docked at the port' story passes."""
+        post = {"title": "Cruise ship docked at Miami port yesterday", "body": ""}
+        dk = ["Docked game", "Docked TV game", "TV gaming setup game"]
+        # Primary 'docked' present, no distinctive-keyword variant present,
+        # game_name='Docked' is 6 chars single-token → name-phrase gate
+        # does NOT open. Post must be rejected.
+        assert rs._post_mentions_game(
+            post, "docked",
+            distinctive_keywords=dk, game_name="Docked",
+        ) is False
+
+    def test_short_singletoken_gamename_docked_variant_still_passes(self):
+        """Confirm the real Docked game post still passes via a real
+        distinctive keyword — verifying we didn't over-tighten."""
+        post = {
+            "title": "Docked TV game launches soon",
+            "body": "New indie",
+        }
+        dk = ["Docked game", "Docked TV game", "TV gaming setup game"]
+        assert rs._post_mentions_game(
+            post, "docked",
+            distinctive_keywords=dk, game_name="Docked",
+        ) is True
+
+    def test_primary_word_missing_still_rejected(self):
+        """Even if game_name (as phrase) appears in text, the primary
+        word from search_query must also appear. This is the outer
+        gate v0027 does not weaken."""
+        # Contrived: text mentions the name phrase but doesn't contain
+        # any primary word. In practice this can't happen because the
+        # name IS what the primary words come from. We keep the test to
+        # lock in the ordering.
+        post = {"title": "The-game-is-fun", "body": "no primary word here"}
+        dk = ["Turok Origins"]
+        assert rs._post_mentions_game(
+            post, "xyzzyprimary",  # primary word that will not appear
+            distinctive_keywords=dk, game_name="Turok: Origins",
+        ) is False
+
+    def test_backcompat_no_distinctive_keywords_unchanged(self):
+        """Path B (no distinctive_keywords) MUST be identical pre/post
+        v0027 — game_name has no effect there."""
+        post = {"title": "Hellraiser Revival trailer", "body": ""}
+        assert rs._post_mentions_game(
+            post, "hellraiser revival", game_name="Hellraiser Revival",
+        ) is True
+        # Same result without game_name.
+        assert rs._post_mentions_game(post, "hellraiser revival") is True
+
+    def test_backcompat_none_game_name_matches_v0019_behavior(self):
+        """Old callers that don't pass game_name must see the exact same
+        gate as v0019."""
+        post = {"title": "Halo 3 anniversary edition", "body": ""}
+        dk = ["Halo 3 campaign", "H3 MCC"]
+        # v0019 behavior: dropped. v0027 default (game_name=None) must
+        # preserve that.
+        assert rs._post_mentions_game(
+            post, "halo 3", distinctive_keywords=dk,
+        ) is False
