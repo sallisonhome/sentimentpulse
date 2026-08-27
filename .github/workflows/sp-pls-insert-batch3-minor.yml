@@ -1,0 +1,54 @@
+name: SP PLS Insert Batch3 Minor Events (one-off)
+
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  insert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Insert batch3 minor PLS events
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          echo "── Pre-insert sort_order check ──"
+          sqlite3 -header -column "$DB" "SELECT product_id, MAX(sort_order) AS max_sort FROM pls_milestones WHERE product_id IN (3,10,12,14,15,16,17) AND deleted_at IS NULL GROUP BY product_id;"
+          sqlite3 "$DB" "
+          BEGIN TRANSACTION;
+          -- Batch3 minor PLS events (non-Gamescom), user-approved insert-only
+          INSERT INTO pls_milestones (product_id, category, name, target_date, actual_date, is_default, sort_order, created_at, updated_at) VALUES
+            (3, 'core', 'Hotfix 14.1', NULL, '2026-08-11', 0, 116, '$NOW', '$NOW'),
+            (10, 'demo_beta', 'Public Test Server — new game mode, weapons', NULL, '2026-07-23', 0, 116, '$NOW', '$NOW'),
+            (12, 'press_coverage', 'Saber CEO Matt Karch publicly apologizes to ex-lead writer Stella Sacco over Rideshare Stimulator AI controversy', NULL, '2026-08-17', 0, 105, '$NOW', '$NOW'),
+            (14, 'core', 'Update 1.21 \"Operation: Breachpoint\" – Minor Patch', NULL, '2026-07-15', 0, 109, '$NOW', '$NOW'),
+            (15, 'promotion', 'SimFest Sale (25% base / 30% Deluxe)', NULL, '2026-07-20', 0, 104, '$NOW', '$NOW'),
+            (15, 'core', '\"Contraband\" DLC & Update (2nd New Horizons DLC — Forklift, scanner tool)', NULL, '2026-07-28', 0, 105, '$NOW', '$NOW'),
+            (15, 'core', 'Hotfix 1.5.2', NULL, '2026-08-13', 0, 106, '$NOW', '$NOW'),
+            (15, 'promotion', 'Premium Reach Stacker now sold standalone (previously pre-order-only)', NULL, '2026-08-20', 0, 107, '$NOW', '$NOW'),
+            (16, 'promotion', '\"Driver''s Diary of July\" community/roadmap update', NULL, '2026-07-30', 0, 110, '$NOW', '$NOW'),
+            (17, 'promotion', '\"Letters from the Tower...\" — dev post-launch thank-you / community letter from Thomas Brush', NULL, '2026-08-21', 0, 53, '$NOW', '$NOW'),
+            (17, 'core', 'Patch v1.0.4.4.2 (progression, secrets, saves fixes)', NULL, '2026-08-25', 0, 54, '$NOW', '$NOW');
+          COMMIT;
+          "
+          echo "── Post-insert verification (all rows inserted this batch, by actual_date) ──"
+          sqlite3 -header -column "$DB" "SELECT product_id, id, sort_order, category, actual_date, name FROM pls_milestones WHERE product_id IN (3,10,12,14,15,16,17) AND deleted_at IS NULL AND actual_date >= '2026-07-15' ORDER BY product_id, sort_order;"
+          echo "── Row count check ──"
+          sqlite3 "$DB" "SELECT 'pid=3 rows: ' || COUNT(*) FROM pls_milestones WHERE product_id=3 AND deleted_at IS NULL;"
+          sqlite3 "$DB" "SELECT 'pid=10 rows: ' || COUNT(*) FROM pls_milestones WHERE product_id=10 AND deleted_at IS NULL;"
+          sqlite3 "$DB" "SELECT 'pid=12 rows: ' || COUNT(*) FROM pls_milestones WHERE product_id=12 AND deleted_at IS NULL;"
+          sqlite3 "$DB" "SELECT 'pid=14 rows: ' || COUNT(*) FROM pls_milestones WHERE product_id=14 AND deleted_at IS NULL;"
+          sqlite3 "$DB" "SELECT 'pid=15 rows: ' || COUNT(*) FROM pls_milestones WHERE product_id=15 AND deleted_at IS NULL;"
+          sqlite3 "$DB" "SELECT 'pid=16 rows: ' || COUNT(*) FROM pls_milestones WHERE product_id=16 AND deleted_at IS NULL;"
+          sqlite3 "$DB" "SELECT 'pid=17 rows: ' || COUNT(*) FROM pls_milestones WHERE product_id=17 AND deleted_at IS NULL;"
+          REMOTEEOF
