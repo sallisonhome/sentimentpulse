@@ -16,10 +16,27 @@ function getTodayDateString(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * v3.19 (2026-08-27): dropped the isSaberPublished filter, same precedent
+ * as v3.17's getRevenueEligibleSteamTitles() broadening further below in
+ * this file. Found via
+ * Road Kings (Focus x Saber Interactive, isSaberPublished=false,
+ * pre-release, no Prepurchase Start milestone yet) — it has a real
+ * steamAppId and real daily wishlist/follower/rank data flowing (backfill
+ * confirmed access), but was invisible on this leaderboard and excluded
+ * from ingestSteamFollowers()/ingestSteamWishlistRank() purely because of
+ * the publisher-of-record flag. Audited full portfolio before this change
+ * (2026-08-27): every OTHER non-Saber-published title with a steamAppId is
+ * already revenue-eligible (released or has an active prepurchase), so
+ * this broadening only changes behavior for Road Kings today — zero blast
+ * radius on the other 17 titles. Keep this in sync with ingestion.ts's
+ * copy of the same filter (see that file's comment for why they're
+ * duplicated instead of imported).
+ */
 export function getPreReleaseSaberSteamTitles() {
   const today = getTodayDateString();
   return storage.getAllProducts().filter(
-    (p) => p.isSaberPublished && p.steamAppId && (!p.releaseDate || p.releaseDate > today),
+    (p) => !!p.steamAppId && (!p.releaseDate || p.releaseDate > today),
   );
 }
 

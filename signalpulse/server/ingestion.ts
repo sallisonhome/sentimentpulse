@@ -316,9 +316,27 @@ async function ingestSteamData(apiKey: string, partnerId: string): Promise<Inges
   // below in this same loop (steam_prepurchase_daily via GetDetailedSales) — that
   // stays isSaberPublished-only, unchanged, since it's a separate superseded path
   // unrelated to this fix.
+  //
+  // v3.19 (2026-08-27): further broadened to ANY title with a steamAppId,
+  // dropping the isSaberPublished/revenueEligible condition entirely. Found
+  // via Road Kings (Focus x Saber Interactive, isSaberPublished=false,
+  // pre-release, no Prepurchase Start milestone yet) — it satisfied neither
+  // isSaberPublished nor revenueEligible, so its daily wishlist count never
+  // updated past its one-time historical backfill despite confirmed partner-
+  // API access for the title. Every title with a steamAppId in this system
+  // was deliberately added and is meant to be tracked (mirrors the precedent
+  // already set by getAllSteamTitlesWithAppId() for header images) — the
+  // three-way union below is now mathematically redundant with "has a
+  // steamAppId" (revenueEligible-false implies pre-release, which is now
+  // itself unconditionally included), but is left spelled out for
+  // readability and to avoid silently relying on that equivalence holding.
+  // Audited full portfolio before this change: every OTHER non-Saber-
+  // published title with a steamAppId is already revenue-eligible, so this
+  // only changes behavior for Road Kings today.
   const revenueEligibleIds = new Set(getRevenueEligibleSteamTitles().map(p => p.id));
+  const today = getTodayDateString();
   const saberProducts = products.filter(
-    p => p.steamAppId && (p.isSaberPublished || revenueEligibleIds.has(p.id))
+    p => p.steamAppId && (p.isSaberPublished || revenueEligibleIds.has(p.id) || !p.releaseDate || p.releaseDate > today)
   );
 
   if (saberProducts.length === 0) {
@@ -633,14 +651,28 @@ function getTodayDateString(): string {
 }
 
 /**
- * Returns pre-release Saber-published titles with a Steam App ID —
- * "pre-release" = releaseDate is set AND strictly after today. A title
- * with no releaseDate (TBD) is treated as pre-release (it hasn't released).
+ * Returns pre-release titles with a Steam App ID — "pre-release" =
+ * releaseDate is set AND strictly after today. A title with no releaseDate
+ * (TBD) is treated as pre-release (it hasn't released).
+ *
+ * v3.19 (2026-08-27): dropped the isSaberPublished filter, same precedent
+ * as v3.18's wishlist-reporting broadening below in this file. Found via
+ * Road Kings (Focus x Saber Interactive, isSaberPublished=false,
+ * pre-release, no Prepurchase Start milestone yet) — excluded from
+ * ingestSteamFollowers()/ingestSteamWishlistRank() and the Wishlist
+ * Leaderboard purely because of the publisher-of-record flag, despite
+ * having a real steamAppId and confirmed partner-API access. Audited full
+ * portfolio before this change: every OTHER non-Saber-published title with
+ * a steamAppId is already revenue-eligible (released or active
+ * prepurchase), so this only changes behavior for Road Kings today — zero
+ * blast radius on the other 17 titles. Keep this in sync with
+ * leaderboards.ts's copy of the same filter (see that file's comment for
+ * why they're duplicated instead of imported).
  */
 function getPreReleaseSaberSteamTitles() {
   const today = getTodayDateString();
   return storage.getAllProducts().filter(
-    (p) => p.isSaberPublished && p.steamAppId && (!p.releaseDate || p.releaseDate > today),
+    (p) => !!p.steamAppId && (!p.releaseDate || p.releaseDate > today),
   );
 }
 
