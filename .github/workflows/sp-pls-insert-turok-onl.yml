@@ -1,0 +1,37 @@
+name: SP PLS Insert Turok Origins Gamescom ONL 2026 (one-off)
+
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  insert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Insert Turok Origins ONL milestone
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          sqlite3 "$DB" "
+            INSERT INTO pls_milestones (product_id, category, name, target_date, actual_date, is_default, sort_order, created_at, updated_at)
+            VALUES
+              (6, 'video', 'Gamescom Opening Night Live World Premiere Story Trailer (confirms Spring 2027 delay from Fall 2026)', '2026-08-25', '2026-08-25', 0, 107, '$NOW', '$NOW');
+          "
+          echo "── Verification ──"
+          sqlite3 -header -column "$DB" "
+            SELECT m.id, m.category, m.name, m.actual_date, m.sort_order
+            FROM pls_milestones m
+            WHERE m.product_id = 6 AND m.deleted_at IS NULL
+            ORDER BY m.sort_order DESC LIMIT 4;
+          "
+          REMOTEEOF
