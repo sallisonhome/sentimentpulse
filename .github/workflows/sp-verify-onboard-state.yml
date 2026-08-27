@@ -1,0 +1,72 @@
+name: SP Verify Onboard State (one-off, read-only)
+
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Query current state
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+
+          echo "── Product rows ──"
+          sqlite3 -header -column "$DB" "
+            SELECT id, title, publisher, is_saber_published, player_format, genre,
+                   release_date, steam_app_id, target_retail_price_usd, steam_header_image_url
+            FROM products WHERE title IN ('RoadCraft', 'Road Kings');
+          "
+
+          echo ""
+          echo "── RoadCraft (id via subquery) wishlist_daily coverage ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS rows, MIN(date) AS first, MAX(date) AS last
+            FROM steam_wishlist_daily
+            WHERE product_id = (SELECT id FROM products WHERE title='RoadCraft');
+          "
+
+          echo ""
+          echo "── RoadCraft sales_daily coverage ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS rows, MIN(date) AS first, MAX(date) AS last, SUM(net_units) AS total_net_units
+            FROM steam_sales_daily
+            WHERE product_id = (SELECT id FROM products WHERE title='RoadCraft');
+          "
+
+          echo ""
+          echo "── Road Kings wishlist_daily coverage ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS rows, MIN(date) AS first, MAX(date) AS last
+            FROM steam_wishlist_daily
+            WHERE product_id = (SELECT id FROM products WHERE title='Road Kings');
+          "
+
+          echo ""
+          echo "── PLS milestones for both ──"
+          sqlite3 -header -column "$DB" "
+            SELECT p.title, m.name, m.target_date, m.actual_date
+            FROM pls_milestones m JOIN products p ON p.id = m.product_id
+            WHERE p.title IN ('RoadCraft', 'Road Kings')
+            ORDER BY p.title, m.sort_order;
+          "
+
+          echo ""
+          echo "── Any leftover onboard.js / running node processes ──"
+          ps aux | grep -i "onboard.js\|node " | grep -v grep
+
+          echo ""
+          echo "── PM2 / systemd service status (sanity check nothing crashed) ──"
+          pm2 list 2>/dev/null || systemctl status signalpulse --no-pager 2>/dev/null | head -10 || echo "no pm2/systemd found under that name"
+          REMOTEEOF
