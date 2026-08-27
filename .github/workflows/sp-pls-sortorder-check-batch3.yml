@@ -24,6 +24,6 @@ jobs:
           echo "── Max sort_order per product (3,7,10,12,14,15,16,17) ──"
           sqlite3 -header -column "$DB" "SELECT product_id, MAX(sort_order) AS max_sort, COUNT(*) AS row_count FROM pls_milestones WHERE product_id IN (3,7,10,12,14,15,16,17) AND deleted_at IS NULL GROUP BY product_id ORDER BY product_id;"
           echo ""
-          echo "── Check for any existing rows matching our planned dates (avoid dupes) ──"
-          sqlite3 -header -column "$DB" "SELECT product_id, id, actual_date, substr(name,1,50) FROM pls_milestones WHERE product_id IN (3,7,10,12,14,15,16,17) AND deleted_at IS NULL AND actual_date IN ('2026-08-11','2026-08-19','2026-07-23','2026-08-17','2026-07-15','2026-07-20','2026-07-28','2026-08-13','2026-08-20','2026-07-30','2026-08-21','2026-08-25') ORDER BY product_id, actual_date;"
+          echo "── Full-text rows for products in scope, actual_date >= 2026-07-01 (no truncation) ──"
+          sqlite3 -header -column "$DB" "SELECT product_id, id, category, actual_date, name FROM pls_milestones WHERE product_id IN (3,7,10,12,14,15,16,17) AND deleted_at IS NULL AND actual_date >= '2026-07-01' ORDER BY product_id, actual_date, id;"
           REMOTEEOF
