@@ -3229,3 +3229,68 @@ def purge_orphaned_sentiment_records():
         return {"deleted": result.rowcount}
     finally:
         db.close()
+
+@router.get("/admin/daily-raw-counts")
+def daily_raw_counts(
+    days: int = Query(30, ge=1, le=180, description="Look back this many days"),
+    game_id: Optional[int] = Query(None, description="Scope to one game; empty = all active"),
+):
+    """v0026 (2026-08-27): diagnostic — per-day RawPost totals by source
+    AND drift split. Bypasses every dashboard filter (no _NOT_DRIFT, no
+    SentimentRecord join). Answers: 'is real ingestion falling off, or
+    is the dashboard just hiding drift-flagged content?'.
+
+    Returns
+    -------
+    rows : list[{date, source, total_raw, drift, non_drift, classified}]
+    """
+    from datetime import date, timedelta
+    from sqlalchemy import func, Integer
+    from models import RawPost
+    from database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        cutoff = date.today() - timedelta(days=days)
+        day_expr = func.date(RawPost.post_date).label("day")
+        q = (
+            db.query(
+                day_expr,
+                RawPost.source,
+                func.count(RawPost.id).label("total_raw"),
+                func.sum(func.cast(RawPost.is_off_topic_drift, Integer)).label("drift"),
+            )
+            .filter(RawPost.post_date.isnot(None))
+            .filter(func.date(RawPost.post_date) >= str(cutoff))
+        )
+        if game_id is not None:
+            q = q.filter(RawPost.game_id == game_id)
+        q = q.group_by(day_expr, RawPost.source).order_by(day_expr, RawPost.source)
+        rows = []
+        for r in q.all():
+            total = int(r.total_raw or 0)
+            drift = int(r.drift or 0)
+            rows.append({
+                "date": str(r.day),
+                "source": r.source.value if hasattr(r.source, "value") else str(r.source),
+                "total_raw": total,
+                "drift": drift,
+                "non_drift": total - drift,
+            })
+        # Also emit a per-day cross-source totals rollup so we can quickly
+        # see if raw ingestion volume itself changed vs display filtering.
+        totals_by_day: dict[str, dict[str, int]] = {}
+        for r in rows:
+            d = r["date"]
+            b = totals_by_day.setdefault(d, {"total_raw": 0, "drift": 0, "non_drift": 0})
+            b["total_raw"] += r["total_raw"]
+            b["drift"] += r["drift"]
+            b["non_drift"] += r["non_drift"]
+        return {
+            "days": days,
+            "game_id": game_id,
+            "rows": rows,
+            "totals_by_day": totals_by_day,
+        }
+    finally:
+        db.close()
