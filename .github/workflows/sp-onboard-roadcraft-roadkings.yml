@@ -1,0 +1,238 @@
+name: SP Onboard RoadCraft + Road Kings (one-off)
+
+# 2026-08-27 — Onboards two new products into SignalPulse:
+#   1. RoadCraft (steam_app_id 2104890) — released 2025-05-20, Saber x Focus co-op
+#      driving/logistics sim. Revenue-eligible (already released), so this also
+#      runs the portal-daily sales backfill to populate the Sales/Revenue
+#      Leaderboard per standing product-completeness rule.
+#   2. Road Kings (steam_app_id 2141130) — pre-release (targeting 2027-03-11),
+#      Focus x Saber async-multiplayer trucking sim, wishlist-only (no
+#      pre-purchase open yet, no price announced). The wishlist backfill call
+#      here doubles as an empirical test of whether the Steamworks partner key
+#      currently has wishlist-reporting access to this title.
+#
+# Mints a short-lived JWT (Bearer) per API call using SABER_AUTH_JWT_SECRET
+# from /etc/signalpulse/env — POST /api/products is not on the ops-token
+# allowlist. Ops-token is used only for GET /api/ingestion/status and
+# POST /api/ingestion/run, which ARE allowlisted, using INGESTION_OPS_TOKEN
+# read from the same droplet env file (never printed).
+#
+# Read-only db verification queries at the end. Deleted immediately after
+# this run completes per cleanup policy.
+
+"on":
+  workflow_dispatch: {}
+
+jobs:
+  onboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Onboard products and backfill
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          cd /opt/sentimentpulse/signalpulse
+
+          cat > /tmp/onboard.js <<'JSEOF'
+          const fs = require('fs');
+          const jwt = require('/opt/sentimentpulse/signalpulse/node_modules/jsonwebtoken');
+
+          const envRaw = fs.readFileSync('/etc/signalpulse/env', 'utf8');
+          function readEnvVar(name) {
+            const m = envRaw.match(new RegExp('^' + name + '=(.*)$', 'm'));
+            if (!m) return null;
+            return m[1].trim().replace(/^["']|["']$/g, '');
+          }
+          const JWT_SECRET = readEnvVar('SABER_AUTH_JWT_SECRET');
+          const OPS_TOKEN = readEnvVar('INGESTION_OPS_TOKEN');
+          if (!JWT_SECRET) { console.error('FATAL: SABER_AUTH_JWT_SECRET not found'); process.exit(1); }
+
+          function mintToken() {
+            return jwt.sign(
+              { sub: 'onboard-script', email: 'ops@saber.internal', scopes: ['signalpulse'], is_admin: true, jti: 'onb-' + Date.now() + '-' + Math.random().toString(36).slice(2) },
+              JWT_SECRET,
+              { expiresIn: '30m' }
+            );
+          }
+
+          const BASE = 'http://localhost:5000';
+
+          async function apiJwt(method, path, body) {
+            const res = await fetch(BASE + path, {
+              method,
+              headers: { 'Authorization': 'Bearer ' + mintToken(), 'Content-Type': 'application/json' },
+              body: body ? JSON.stringify(body) : undefined,
+            });
+            const text = await res.text();
+            let json;
+            try { json = JSON.parse(text); } catch (e) { json = { raw: text }; }
+            if (!res.ok) { throw new Error('HTTP ' + res.status + ' on ' + method + ' ' + path + ': ' + JSON.stringify(json)); }
+            return json;
+          }
+
+          async function apiOps(method, path, body) {
+            if (!OPS_TOKEN) throw new Error('INGESTION_OPS_TOKEN not found in env file');
+            const res = await fetch(BASE + path, {
+              method,
+              headers: { 'x-ops-token': OPS_TOKEN, 'Content-Type': 'application/json' },
+              body: body ? JSON.stringify(body) : undefined,
+            });
+            const text = await res.text();
+            let json;
+            try { json = JSON.parse(text); } catch (e) { json = { raw: text }; }
+            if (!res.ok) { throw new Error('HTTP ' + res.status + ' on ' + method + ' ' + path + ': ' + JSON.stringify(json)); }
+            return json;
+          }
+
+          function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+          async function pollWishlistBackfill(jobId, label) {
+            for (let i = 0; i < 180; i++) { // up to ~15 min at 5s interval
+              const job = await apiJwt('GET', '/api/steam/backfill/' + jobId);
+              if (job.status === 'completed' || job.status === 'failed') {
+                console.log(label + ' wishlist backfill finished:', JSON.stringify(job));
+                return job;
+              }
+              await sleep(5000);
+            }
+            console.log(label + ' wishlist backfill: TIMED OUT waiting, check job ' + jobId + ' manually');
+            return null;
+          }
+
+          async function pollPortalDailyBackfill(jobId, label) {
+            for (let i = 0; i < 180; i++) {
+              const job = await apiJwt('GET', '/api/steam/portal-daily-backfill/' + jobId);
+              if (job.status === 'completed' || job.status === 'failed') {
+                console.log(label + ' portal-daily sales backfill finished:', JSON.stringify(job));
+                return job;
+              }
+              await sleep(5000);
+            }
+            console.log(label + ' portal-daily sales backfill: TIMED OUT waiting, check job ' + jobId + ' manually');
+            return null;
+          }
+
+          (async () => {
+            try {
+              // ---------- RoadCraft ----------
+              console.log('=== Creating RoadCraft ===');
+              const rc = await apiJwt('POST', '/api/products', {
+                title: 'RoadCraft',
+                publisher: 'Focus x Saber Interactive',
+                platforms: ['PC (Steam)', 'PS5', 'Xbox Series X|S', 'Epic Games Store'],
+                playerFormat: 'co_op',
+                genre: 'Driving Sim',
+                releaseDate: '2025-05-20',
+                steamAppId: '2104890',
+                targetRetailPriceUsd: 39.99,
+                perPlatformPricing: { 'PC (Steam)': 39.99, 'PS5': 39.99, 'Xbox Series X|S': 39.99, 'Epic Games Store': 39.99 },
+              });
+              console.log('RoadCraft created, id =', rc.id);
+
+              console.log('=== RoadCraft wishlist/prepurchase backfill (explicit, trackable) ===');
+              const rcWl = await apiJwt('POST', '/api/steam/backfill/' + rc.id, {});
+              const rcWlResult = await pollWishlistBackfill(rcWl.jobId || rcWl.id, 'RoadCraft');
+
+              console.log('=== RoadCraft sales portal-daily backfill (2025-05-20 -> yesterday) ===');
+              const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+              const rcSales = await apiJwt('POST', '/api/products/' + rc.id + '/steam/portal-daily-backfill', { fromDate: '2025-05-20', toDate: yesterday });
+              const rcSalesResult = await pollPortalDailyBackfill(rcSales.jobId || rcSales.id, 'RoadCraft');
+
+              // ---------- Road Kings ----------
+              console.log('=== Creating Road Kings ===');
+              const rk = await apiJwt('POST', '/api/products', {
+                title: 'Road Kings',
+                publisher: 'Focus x Saber Interactive',
+                platforms: ['PC (Steam)', 'PS5', 'Xbox Series X|S'],
+                playerFormat: 'multiplayer',
+                genre: 'Driving Sim',
+                releaseDate: '2027-03-11',
+                steamAppId: '2141130',
+                targetRetailPriceUsd: null,
+              });
+              console.log('Road Kings created, id =', rk.id);
+
+              console.log('=== Road Kings wishlist backfill (also serves as partner-key access test) ===');
+              const rkWl = await apiJwt('POST', '/api/steam/backfill/' + rk.id, {});
+              const rkWlResult = await pollWishlistBackfill(rkWl.jobId || rkWl.id, 'Road Kings');
+
+              // ---------- Header images ----------
+              console.log('=== Running ingestion (ops-token) to pull header images ===');
+              const ing = await apiOps('POST', '/api/ingestion/run', {});
+              console.log('Ingestion run result summary:', JSON.stringify((ing.results || []).map(r => ({ source: r.source, status: r.status, message: r.message }))));
+
+              console.log('=== SUMMARY ===');
+              console.log(JSON.stringify({
+                roadcraft: { id: rc.id, wishlistBackfill: rcWlResult && rcWlResult.status, salesBackfill: rcSalesResult && rcSalesResult.status },
+                roadkings: { id: rk.id, wishlistBackfill: rkWlResult && rkWlResult.status, wishlistBackfillMessage: rkWlResult && rkWlResult.message },
+              }, null, 2));
+            } catch (e) {
+              console.error('FATAL:', e.message);
+              process.exit(1);
+            }
+          })();
+          JSEOF
+
+          node /tmp/onboard.js
+          RC=$?
+          rm -f /tmp/onboard.js
+          exit $RC
+          REMOTEEOF
+
+      - name: Verify via read-only DB query
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+
+          echo "── Product rows ──"
+          sqlite3 -header -column "$DB" "
+            SELECT id, title, publisher, is_saber_published, player_format, genre,
+                   release_date, steam_app_id, target_retail_price_usd, header_image_url
+            FROM products WHERE title IN ('RoadCraft', 'Road Kings');
+          "
+
+          echo ""
+          echo "── RoadCraft wishlist_daily coverage ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS rows, MIN(date) AS first, MAX(date) AS last
+            FROM steam_wishlist_daily
+            WHERE product_id = (SELECT id FROM products WHERE title='RoadCraft');
+          "
+
+          echo ""
+          echo "── RoadCraft sales_daily coverage ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS rows, MIN(date) AS first, MAX(date) AS last, SUM(units) AS total_units
+            FROM steam_sales_daily
+            WHERE product_id = (SELECT id FROM products WHERE title='RoadCraft');
+          "
+
+          echo ""
+          echo "── Road Kings wishlist_daily coverage ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS rows, MIN(date) AS first, MAX(date) AS last
+            FROM steam_wishlist_daily
+            WHERE product_id = (SELECT id FROM products WHERE title='Road Kings');
+          "
+
+          echo ""
+          echo "── PLS milestones present for either title (should be auto-generated defaults) ──"
+          sqlite3 -header -column "$DB" "
+            SELECT p.title, m.name, m.target_date, m.actual_date
+            FROM pls_milestones m JOIN products p ON p.id = m.product_id
+            WHERE p.title IN ('RoadCraft', 'Road Kings')
+            ORDER BY p.title, m.target_date;
+          "
+          REMOTEEOF
