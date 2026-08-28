@@ -99,7 +99,7 @@ export function CompareChartModal({ open, onOpenChange, board, candidates }: Com
   const queries = [0, 1, 2].map((i) => {
     const id = slots[i];
     return useQuery<TimeSeriesDataPoint[]>({
-      queryKey: [id != null ? getEndpoint(board, id) : "compare-empty-slot", i],
+      queryKey: [id != null ? getEndpoint(board, id) : `compare-empty-slot-${i}`],
       enabled: open && id != null,
     });
   });
