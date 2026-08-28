@@ -827,6 +827,17 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         # ── Step 8: write log ─────────────────────────────────────────────────
         _step8_write_log(log_lines, errors)
 
+        # v0028 (2026-08-28): health-drop check after every run. Compares
+        # today's signal-tier volume per (game, source) against a 7-day
+        # baseline; if any (game, source) with >=3/day baseline drops
+        # below 50% of that baseline, log a HEALTH DROP block and emit
+        # an in-app notification. Deliberately non-fatal.
+        try:
+            _run_health_drop_check(db, log_lines, errors)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("health-drop check failed: %s", exc)
+            errors.append(f"health-drop check failed: {exc}")
+
         db.close()
         _status["is_running"] = False
         _status["last_run_status"] = final_status
@@ -1095,6 +1106,18 @@ def _step2_steam_reviews(
     log_lines.append(
         f"[Step 2] '{game.name}': {saved} new review(s) (fetched {len(reviews)})."
     )
+    # v0028 (2026-08-28): distinguishing zero-log so silent failures
+    # are grep-able. See lessons.md 2026-08-28 rule 3.
+    if saved == 0 and len(reviews) == 0:
+        log_lines.append(
+            f"[Step 2] '{game.name}': ZERO FETCH — Steam Reviews API returned no rows "
+            f"(possible: app id invalid, no reviews yet, or reviews API down)."
+        )
+    elif saved == 0 and len(reviews) > 0:
+        log_lines.append(
+            f"[Step 2] '{game.name}': ZERO SAVE — fetched {len(reviews)} reviews but "
+            f"all were duplicates already in DB (steady-state on quiet review pages)."
+        )
     return saved, len(reviews)
 
 
@@ -1139,6 +1162,19 @@ def _step3_steam_forums(
     log_lines.append(
         f"[Step 3] '{game.name}': {saved} new forum post(s) (fetched {len(posts)})."
     )
+    # v0028 (2026-08-28): distinguishing zero-log.
+    if saved == 0 and len(posts) == 0:
+        log_lines.append(
+            f"[Step 3] '{game.name}': ZERO FETCH — no forum threads in the 48h window "
+            f"(possible: quiet forum, age-gate blocking, or Steam DOM change; "
+            f"see steam_service.scrape_forum_threads log for pages/refs/skipped)."
+        )
+    elif saved == 0 and len(posts) > 0:
+        log_lines.append(
+            f"[Step 3] '{game.name}': ZERO SAVE — fetched {len(posts)} forum rows but "
+            f"all were duplicates already in DB (steady state — no new activity since "
+            f"last ingest)."
+        )
     return saved, len(posts)
 
 
@@ -1236,6 +1272,19 @@ def _step4_reddit(
         f"[Step 4] '{game.name}': {total_saved} new Reddit post(s) "
         f"(fetched {total_fetched})."
     )
+    # v0028 (2026-08-28): distinguishing zero-log.
+    if total_saved == 0 and total_fetched == 0:
+        log_lines.append(
+            f"[Step 4] '{game.name}': ZERO FETCH — Reddit + Arctic Shift both returned "
+            f"empty across every configured subreddit. Possible: game has no subreddits "
+            f"configured, Reddit blocked, or all subs 404."
+        )
+    elif total_saved == 0 and total_fetched > 0:
+        log_lines.append(
+            f"[Step 4] '{game.name}': ZERO SAVE — fetched {total_fetched} rows but all "
+            f"were duplicates or filtered out by _post_mentions_game (steady state or "
+            f"noise-only sweep)."
+        )
     return total_saved, total_fetched
 
 
@@ -1429,9 +1478,16 @@ def _step4b_bluesky(
         # is a common English word (Docked, Inversion, TimeShift) or a
         # common phrase ("A Quiet Place"). Fallback to title-based when
         # distinctive_keywords is empty/null.
+        # v0028 (2026-08-28): raised limit 100 -> 500. Combined with the
+        # BLUESKY_MAX_PAGES bump to 10 (bluesky_service.py) this lifts
+        # the daily per-game cap from 300 to 1000. Pre-v0028 the 300
+        # ceiling was truncating real press coverage on Gamescom-featured
+        # titles like Stuntman: Hollywood (Vandal, Viretec, playswave,
+        # IGN, GameSpot posted the Jurassic World reveal on the same day
+        # and only ~27 landed in ingest).
         posts = fetch_bluesky_posts_for_game(
             game.name,
-            limit=100,
+            limit=500,
             distinctive_keywords=game.distinctive_keywords,
             since=since_rfc3339,
         )
@@ -1452,6 +1508,18 @@ def _step4b_bluesky(
         f"[Step 4b] '{game.name}': {total_saved} new Bluesky post(s) "
         f"(fetched {len(posts)})."
     )
+    # v0028 (2026-08-28): distinguishing zero-log.
+    if total_saved == 0 and len(posts) == 0:
+        log_lines.append(
+            f"[Step 4b] '{game.name}': ZERO FETCH — Bluesky search returned no rows "
+            f"(possible: quiet week, distinctive keywords too narrow, or credentials "
+            f"expired — check bluesky_service auth_health)."
+        )
+    elif total_saved == 0 and len(posts) > 0:
+        log_lines.append(
+            f"[Step 4b] '{game.name}': ZERO SAVE — fetched {len(posts)} Bluesky rows but "
+            f"all were duplicates or filtered by distinctive_keywords/aggregator gate."
+        )
     return total_saved, len(posts)
 
 
@@ -1520,6 +1588,17 @@ def _step4c_dtf(
         f"[Step 4c] '{game.name}': {total_saved} new DTF post(s) "
         f"(fetched {len(posts)})."
     )
+    # v0028 (2026-08-28): distinguishing zero-log.
+    if total_saved == 0 and len(posts) == 0:
+        log_lines.append(
+            f"[Step 4c] '{game.name}': ZERO FETCH — DTF search returned no rows "
+            f"(most titles legitimately have no Russian-language DTF coverage)."
+        )
+    elif total_saved == 0 and len(posts) > 0:
+        log_lines.append(
+            f"[Step 4c] '{game.name}': ZERO SAVE — fetched {len(posts)} DTF rows but "
+            f"all were duplicates or filtered by relevance check."
+        )
     return total_saved, len(posts)
 
 
@@ -2164,6 +2243,128 @@ def _step9_monthly_summaries(
 
 # ── Step 8: Write Log ─────────────────────────────────────────────────────────
 
+# v0028 (2026-08-28): health-drop constants — kept module-level so tests
+# and the /admin/health-drops endpoint can import the same defaults.
+HEALTH_BASELINE_DAYS = 7
+HEALTH_MIN_BASELINE = 3.0
+HEALTH_MIN_ACTIVE_DAYS = 3
+HEALTH_THRESHOLD_PCT = 0.5
+
+
+def _run_health_drop_check(db: Session, log_lines: list, errors: list) -> None:
+    """v0028 (2026-08-28): after every ingest, compare today's SIGNAL-tier
+    volume per (game, source) against a rolling 7d baseline. Any pair
+    where the baseline is meaningful (>=3/day active on >=3 days) AND
+    today's count is <50% of baseline is flagged. Flagged pairs get:
+      1. A HEALTH DROP block appended to log_lines (so it appears in
+         diag/log and the daily log file).
+      2. An in-app notification, one per run, listing the drops.
+
+    Non-fatal by contract: caller wraps this in try/except.
+    """
+    from datetime import date as _date, timedelta as _td
+    from sqlalchemy import func
+    from models import Game, RawPost
+    from collections import defaultdict
+
+    today = _date.today()
+    baseline_start = today - _td(days=HEALTH_BASELINE_DAYS)
+    baseline_dates = [
+        (baseline_start + _td(days=i)).isoformat()
+        for i in range(HEALTH_BASELINE_DAYS)
+    ]
+
+    q = (
+        db.query(
+            RawPost.game_id,
+            RawPost.source,
+            func.date(RawPost.post_date).label("day"),
+            func.count(RawPost.id).label("cnt"),
+        )
+        .filter(RawPost.post_date.isnot(None))
+        .filter(RawPost.relevance_tier.in_(("signal", "dedicated_sub")))
+        .filter(func.date(RawPost.post_date) >= str(baseline_start))
+        .filter(func.date(RawPost.post_date) <= str(today))
+        .group_by(RawPost.game_id, RawPost.source, func.date(RawPost.post_date))
+    )
+    counts: dict[tuple[int, str], dict[str, int]] = defaultdict(dict)
+    for r in q.all():
+        src = r.source.value if hasattr(r.source, "value") else str(r.source)
+        counts[(r.game_id, src)][str(r.day)] = int(r.cnt or 0)
+
+    active_games = db.query(Game).filter(Game.is_active == True).all()  # noqa: E712
+    drops: list[dict] = []
+    for game in active_games:
+        for src in ("reddit", "reddit_comment", "bluesky", "steam_forum",
+                    "steam_review", "dtf"):
+            key = (game.id, src)
+            if key not in counts:
+                continue
+            per_day = counts[key]
+            baseline_vals = [per_day.get(d, 0) for d in baseline_dates]
+            active_days = sum(1 for v in baseline_vals if v > 0)
+            avg = sum(baseline_vals) / len(baseline_vals) if baseline_vals else 0
+            if avg < HEALTH_MIN_BASELINE or active_days < HEALTH_MIN_ACTIVE_DAYS:
+                continue
+            check = per_day.get(today.isoformat(), 0)
+            if check >= avg * HEALTH_THRESHOLD_PCT:
+                continue
+            drops.append({
+                "game_id": game.id,
+                "game_name": game.name,
+                "source": src,
+                "baseline_avg": round(avg, 1),
+                "today": check,
+            })
+
+    drops.sort(key=lambda d: -d["baseline_avg"])
+
+    if not drops:
+        log_lines.append(
+            f"[HEALTH] '{today.isoformat()}': no signal drops — all (game, source) "
+            f"pairs are at or above {int(HEALTH_THRESHOLD_PCT*100)}% of their "
+            f"{HEALTH_BASELINE_DAYS}d baseline."
+        )
+        return
+
+    # Log block
+    log_lines.append(
+        f"[HEALTH] '{today.isoformat()}': {len(drops)} signal drop(s) below "
+        f"{int(HEALTH_THRESHOLD_PCT*100)}% of {HEALTH_BASELINE_DAYS}d baseline:"
+    )
+    for d in drops:
+        log_lines.append(
+            f"  [HEALTH DROP] {d['game_name']} / {d['source']}: today={d['today']} "
+            f"vs baseline avg {d['baseline_avg']}/day"
+        )
+
+    # v0028 (2026-08-28): also persist the drop set to AppSetting so the
+    # /admin/health-drops endpoint AND scheduled monitoring crons can
+    # pull the last-run summary without re-scanning the DB. The
+    # sentimentpulse morning-scan cron already runs in the agent and
+    # will pick this up on its next fire; we intentionally don't try to
+    # call an in-app notification from droplet code because the droplet
+    # has no direct notification transport.
+    try:
+        import json as _json
+        from models import AppSetting
+        snapshot = _json.dumps({
+            "generated_at": today.isoformat(),
+            "drops": drops,
+        })
+        existing = db.query(AppSetting).filter(
+            AppSetting.key == "ingest_last_health_drops"
+        ).first()
+        if existing is None:
+            db.add(AppSetting(key="ingest_last_health_drops", value=snapshot))
+        else:
+            existing.value = snapshot
+        db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.info("health-drop snapshot persist failed: %s", exc)
+        db.rollback()
+
+
 def _step8_write_log(log_lines: list, errors: list) -> None:
     """Append a structured run record to logs/ingest_YYYY-MM-DD.log."""
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -2253,6 +2454,24 @@ def _bulk_save_posts(
                 body=pd.get("body"),
                 keywords=keywords,
             )
+        # v0028 (2026-08-28): post_date fallback. Dashboards, digest, and
+        # the /admin/daily-raw-counts diag all group by
+        # func.date(RawPost.post_date) and EXCLUDE NULL post_date rows.
+        # Portfolio audit (2026-08-28) showed 12.5% of Steam forum rows
+        # ship with post_date=None (Steam's DOM sometimes omits
+        # data-timestamp; our fallback text parser doesn't match every
+        # locale/format). Those rows were silently invisible on every
+        # dashboard even though they existed in the DB.
+        #
+        # Fallback rule: when the source didn't provide a post_date, use
+        # collected_at (which is set to `now()` at ingest time) so the row
+        # lands on the day it was collected. This is worse than a real
+        # post timestamp but strictly better than being invisible. Applied
+        # universally so every source gets consistent behavior.
+        _post_date = pd.get("post_date")
+        if _post_date is None:
+            from datetime import datetime as _dt
+            _post_date = _dt.utcnow()
         row = RawPost(
             game_id=game_id,
             source=source,
@@ -2262,7 +2481,7 @@ def _bulk_save_posts(
             body=pd.get("body"),
             url=pd.get("url"),
             upvotes=pd.get("upvotes", 0),
-            post_date=pd.get("post_date"),
+            post_date=_post_date,
             # Steam Reviews ground-truth vote (2026-07-29, migration 0014).
             # None for all non-Steam-Review sources.
             voted_up=pd.get("voted_up"),

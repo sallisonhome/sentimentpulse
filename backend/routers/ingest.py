@@ -3330,3 +3330,113 @@ def daily_raw_counts(
         }
     finally:
         db.close()
+
+
+@router.get("/admin/health-drops")
+def health_drops(
+    baseline_days: int = Query(7, ge=3, le=30),
+    check_date: Optional[str] = Query(None, description="ISO date, default today UTC"),
+    min_baseline: float = Query(3.0, description="Only flag sources with baseline >= this many/day"),
+    min_active_days: int = Query(3, description="Baseline must be active on >= this many days"),
+    threshold_pct: float = Query(0.5, description="Flag when check_date < threshold_pct * baseline_avg"),
+):
+    """v0028 (2026-08-28): per-(game, source) health-drop detector.
+
+    Computes rolling `baseline_days` SIGNAL-tier volume (signal +
+    dedicated_sub only, no drift, no noise) for every active game and
+    every source, then compares `check_date` (default today UTC) against
+    that baseline. Flags any (game, source) pair where the check-date
+    volume is below `threshold_pct` of the baseline average, when the
+    baseline itself is meaningful (>=`min_baseline`/day active on
+    >=`min_active_days` of the window).
+
+    Returns
+    -------
+    drops : list[dict{game_id, game_name, source, baseline_avg,
+                      check_date_count, delta_pct, active_days}]
+    checked_date : str
+    baseline_window : list[str] of dates used
+    """
+    from datetime import date as _date, timedelta as _td
+    from sqlalchemy import func
+    from models import Game, RawPost
+    from database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        today = _date.today() if not check_date else _date.fromisoformat(check_date)
+        baseline_start = today - _td(days=baseline_days)
+        baseline_end = today - _td(days=1)
+        baseline_dates = [
+            (baseline_start + _td(days=i)).isoformat()
+            for i in range(baseline_days)
+        ]
+
+        # Pull tier-filtered per-(game, source, day) counts across the
+        # whole baseline + check window in ONE query. Cheaper than
+        # per-game round-trips.
+        q = (
+            db.query(
+                RawPost.game_id,
+                RawPost.source,
+                func.date(RawPost.post_date).label("day"),
+                func.count(RawPost.id).label("cnt"),
+            )
+            .filter(RawPost.post_date.isnot(None))
+            .filter(RawPost.relevance_tier.in_(("signal", "dedicated_sub")))
+            .filter(func.date(RawPost.post_date) >= str(baseline_start))
+            .filter(func.date(RawPost.post_date) <= str(today))
+            .group_by(RawPost.game_id, RawPost.source, func.date(RawPost.post_date))
+        )
+        # Materialize into a lookup: (game_id, source) -> {day: cnt}
+        from collections import defaultdict
+        counts: dict[tuple[int, str], dict[str, int]] = defaultdict(dict)
+        for r in q.all():
+            src = r.source.value if hasattr(r.source, "value") else str(r.source)
+            counts[(r.game_id, src)][str(r.day)] = int(r.cnt or 0)
+
+        # Only look at active games so we don't flag hidden ones
+        active_games = db.query(Game).filter(Game.is_active == True).all()  # noqa: E712
+
+        drops: list[dict] = []
+        for game in active_games:
+            for src in ("reddit", "reddit_comment", "bluesky", "steam_forum",
+                        "steam_review", "dtf"):
+                key = (game.id, src)
+                if key not in counts:
+                    continue
+                per_day = counts[key]
+                baseline_vals = [per_day.get(d, 0) for d in baseline_dates]
+                active_days = sum(1 for v in baseline_vals if v > 0)
+                avg = sum(baseline_vals) / len(baseline_vals) if baseline_vals else 0
+                check_count = per_day.get(today.isoformat(), 0)
+                if avg < min_baseline or active_days < min_active_days:
+                    continue
+                if check_count >= avg * threshold_pct:
+                    continue
+                delta_pct = ((check_count - avg) / avg * 100) if avg > 0 else 0
+                drops.append({
+                    "game_id": game.id,
+                    "game_name": game.name,
+                    "source": src,
+                    "baseline_avg": round(avg, 1),
+                    "check_date_count": check_count,
+                    "delta_pct": round(delta_pct, 1),
+                    "active_days": active_days,
+                })
+
+        # Sort by severity (biggest baseline first — those matter most)
+        drops.sort(key=lambda d: -d["baseline_avg"])
+
+        return {
+            "checked_date": today.isoformat(),
+            "baseline_window": [baseline_start.isoformat(), baseline_end.isoformat()],
+            "baseline_days": baseline_days,
+            "threshold_pct": threshold_pct,
+            "min_baseline": min_baseline,
+            "min_active_days": min_active_days,
+            "n_drops": len(drops),
+            "drops": drops,
+        }
+    finally:
+        db.close()

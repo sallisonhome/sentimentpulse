@@ -42,7 +42,14 @@ BLUESKY_BASE = "https://bsky.social"
 BLUESKY_USER_AGENT = "SentimentPulse/1.0 (Saber Interactive game intel)"
 BLUESKY_SEARCH_PATH = "/xrpc/app.bsky.feed.searchPosts"
 
-BLUESKY_MAX_PAGES = 3
+# v0028 (2026-08-28): raised from 3 -> 10 to cover Gamescom-week press
+# volume on titles like Stuntman: Hollywood (Vandal, Viretec, IGN,
+# GameSpot, Saber PR all posted the Jurassic World reveal on the same
+# day). Pre-v0028 daily ingest hard-capped at 3 pages x 100 = 300
+# posts/game, which truncated real press coverage during major beats.
+# 10 pages x 100 = 1000 max, still cheap on Bluesky's rate limits
+# (1-sec courtesy delay between pages = ~10 sec worst case per game).
+BLUESKY_MAX_PAGES = 10
 
 _BASE_HEADERS = {
     "User-Agent": BLUESKY_USER_AGENT,

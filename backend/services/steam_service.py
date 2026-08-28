@@ -453,15 +453,24 @@ def scrape_forum_threads(
         # is orthogonal to the sort. Once the streak crosses the
         # threshold, later rows on this page (and every subsequent page)
         # are all older — stop.
+        #
+        # v0028 (2026-08-28): unknown-timestamp (lp is None) rows no
+        # longer force a reset. Previously a stale row followed by a
+        # single unknown row would reset the streak; now the streak
+        # is preserved across unknown rows so a page like
+        # [OUT, OUT, OUT, OUT, UNKNOWN, OUT] still short-circuits
+        # cleanly after seeing 5 out-of-window rows. We still err on the
+        # side of VISITING unknown rows (they're kept in thread_refs),
+        # we just don't let them mask a stale streak.
         if since_epoch is not None:
             for r in new_refs:
                 if r["is_sticky"]:
                     continue
                 lp = r["lastpost_ts"]
                 if lp is None:
-                    # Unknown age — don't change the streak. Better to
-                    # visit than to bail incorrectly.
-                    consecutive_stale_nonsticky = 0
+                    # v0028: unknown age — don't advance the streak, but
+                    # don't reset it either. The row is still queued to
+                    # be visited.
                     continue
                 if lp < since_epoch:
                     consecutive_stale_nonsticky += 1
@@ -770,6 +779,12 @@ def _scrape_single_thread(
     if op is not None:
         op_ts = op["ts_epoch"]
         if since_epoch is None or op_ts is None or op_ts >= since_epoch:
+            # v0028 (2026-08-28): _bulk_save_posts now injects
+            # collected_at as the post_date fallback for rows Steam
+            # doesn't stamp with data-timestamp. Ship NULL here to keep
+            # the parser honest about "Steam gave us no timestamp" and
+            # let the save layer resolve it consistently for every row.
+            # See lessons.md 2026-08-28 rule 4.
             posts.append({
                 "external_id": f"forum_{thread_id}_op",
                 "author": op["author"],

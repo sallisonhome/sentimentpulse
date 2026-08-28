@@ -1341,3 +1341,29 @@ Global polluted count should be 0 or very small (a small remainder is OK when a 
 GET /api/ingest/admin/daily-raw-counts?days=14
 ```
 `reddit_comment` daily totals should be **stable across all portfolio titles** (no more per-game zero days). Overall daily ingestion should show a small but real bump in Reddit submissions (press coverage that used to be dropped now landing). Watch for a matching bump in the drift ratio — the extra admits are legitimate content, not pollution, so drift % should stay flat.
+
+
+---
+
+## 2026-08-28 — Silent data loss from NULL post_date; ingestion health drops go undetected (v0028)
+
+**Problem.** Steve flagged Gamescom-week post volume looked lower than expected on multiple titles. Portfolio-wide audit (baseline Aug 20-26 vs Aug 27) surfaced two structural bugs beneath the individual-title complaints:
+
+1. **~12.5% of Steam forum posts had `post_date=NULL`** (up to 54% on Crysis 3, 50% on Stuntman, 43% on HITMAN Classic). Steam's DOM sometimes omits `data-timestamp` on comment elements, and our text-parse fallback doesn't match every locale/format. Every dashboard, digest, and diag query groups by `func.date(post_date)` and filters NULL out — those rows were silently invisible.
+2. **Silent per-(game, source) signal drops.** Hellraiser Revival had zero signal-tier posts across every source on Aug 27 despite a 26-96/day baseline. The daily cron logged "0 saved (fetched X)" for every step, but nothing distinguished "quiet day" from "the fetcher broke." Half a dozen other titles had similar drops.
+
+**Fix (v0028).**
+
+- **`_bulk_save_posts` fallback:** when a payload has `post_date=None`, insert `utcnow()` instead. Rule: no `RawPost` row should ever be persisted with `post_date=NULL`. Applied to every source, not just Steam forum. Locked in by `tests/test_v0028_post_date_fallback.py`.
+- **Distinguishing zero-log lines** at every step (Step 2 reviews, Step 3 forum, Step 4 Reddit, Step 4b Bluesky, Step 4c DTF). Two variants: `ZERO FETCH` (source returned nothing — quiet day, credentials expired, or upstream down) vs `ZERO SAVE` (fetched >0 but all duplicates or filtered — steady state).
+- **`_run_health_drop_check`** runs at the end of every ingest. Compares today's signal-tier volume per (game, source) against a 7d rolling baseline; flags pairs where the baseline is meaningful (≥3/day active on ≥3 days) AND today is <50% of baseline. Emits a `[HEALTH DROP]` block into `log_lines` (which flows to `diag/log` and the daily log file) and persists a JSON snapshot to `AppSetting.ingest_last_health_drops`. Locked in by `tests/test_v0028_health_drops.py`.
+- **`GET /api/ingest/admin/health-drops`** endpoint returns the same computation on demand (with configurable thresholds), so scheduled monitoring crons and dashboards can poll it.
+- **Steam forum short-circuit hardening:** unknown-timestamp rows no longer reset the stale streak. Pages like `[OUT, OUT, OUT, OUT, UNKNOWN, OUT]` now short-circuit cleanly instead of visiting every stale row after the unknown.
+- **Bluesky cap raised:** `limit` 100 → 500 and `BLUESKY_MAX_PAGES` 3 → 10. Daily per-game ceiling goes from 300 → 1,000, so Gamescom press bursts on titles like Stuntman: Hollywood aren't truncated.
+
+**Non-negotiable rules going forward.**
+
+1. **No `RawPost` row is ever inserted with `post_date=NULL`.** All source scrapers may ship None; `_bulk_save_posts` is the single point that resolves it to `utcnow()`. Any new source integration or migration MUST run `test_v0028_post_date_fallback.py` before merge.
+2. **Every ingest step ends with a distinguishing log line when saving zero rows.** `ZERO FETCH` vs `ZERO SAVE` at minimum. Silent `return 0, 0` is banned outside of pre-flight guards. If you add a new step, copy the pattern from Step 3.
+3. **Every ingest run ends with a health-drop check.** `_run_health_drop_check` is called from the `finally` block of `run_ingestion`; do not remove that call. If the check itself raises, the exception is logged and appended to `errors[]` but never breaks the run.
+4. **Any per-(game, source) drop below 50% of its 7d baseline is an operator-visible alert.** Both the log block and the AppSetting snapshot must be populated on every run so the sentimentpulse morning-scan cron can read the snapshot and notify. If we ever add push/email notifications, wire them off the same snapshot — do not re-compute drops in a second code path.
