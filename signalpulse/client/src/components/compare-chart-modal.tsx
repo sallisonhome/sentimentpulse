@@ -93,8 +93,7 @@ export function CompareChartModal({ open, onOpenChange, board, candidates }: Com
   const [generated, setGenerated] = useState(false);
 
   const selectedIds = slots.filter((s): s is number => s != null);
-  const label = board === "wishlist" ? "Wishlist Total" : "Cumulative Revenue";
-  const metricNoun = board === "wishlist" ? "wishlist counts" : "revenue";
+  const metricNoun = board === "wishlist" ? "daily wishlist adds" : "daily revenue";
 
   const queries = [0, 1, 2].map((i) => {
     const id = slots[i];
@@ -161,21 +160,18 @@ export function CompareChartModal({ open, onOpenChange, board, candidates }: Com
 
   function handleExportCsv() {
     const activeSlots = [0, 1, 2].filter((i) => slots[i] != null);
+    const dailyLabel = board === "revenue" ? "Daily Revenue" : "Daily Wishlist Adds";
     const headerCells = [
       "Date",
-      ...activeSlots.flatMap((i) => [
-        csvField(`${titleFor(slots[i])} - ${label}`),
-        csvField(`${titleFor(slots[i])} - Daily Change`),
-      ]),
+      ...activeSlots.flatMap((i) => [csvField(`${titleFor(slots[i])} - ${dailyLabel}`)]),
     ];
     const lines = [headerCells.join(",")];
     for (const row of filtered) {
       const cells = [
         row.date,
         ...activeSlots.flatMap((i) => {
-          const cum = row[`s${i}_cum`];
           const delta = row[`s${i}_delta`];
-          return [cum == null ? "" : String(cum), delta == null ? "" : String(delta)];
+          return [delta == null ? "" : String(delta)];
         }),
       ];
       lines.push(cells.join(","));
@@ -218,7 +214,7 @@ export function CompareChartModal({ open, onOpenChange, board, candidates }: Com
               Compare Titles — {board === "wishlist" ? "Wishlist" : "Revenue"}
             </DialogTitle>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Choose up to three titles to overlay their {metricNoun} on one chart
+              Choose up to three titles to overlay {metricNoun} on one chart
             </p>
           </div>
           {chartReady && filtered.length > 0 && (
@@ -397,9 +393,9 @@ export function CompareChartModal({ open, onOpenChange, board, candidates }: Com
                   {[0, 1, 2].map((i) =>
                     slots[i] == null ? null : (
                       <Line
-                        key={i}
+                        key={`line-${i}`}
                         type="monotone"
-                        dataKey={`s${i}_cum`}
+                        dataKey={`s${i}_delta`}
                         name={titleFor(slots[i])}
                         stroke={SLOT_COLORS[i]}
                         strokeWidth={2}
