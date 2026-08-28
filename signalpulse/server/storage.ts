@@ -18,6 +18,7 @@ import {
   type YoutubeVideoDaily, type InsertYoutubeVideoDaily, youtubeVideoDaily,
   type ForecastRevision, type InsertForecastRevision, forecastRevisions,
   type LaunchForecastSnapshot, type InsertLaunchForecastSnapshot, launchForecastSnapshots,
+  type WishlistConversionBenchmark, type InsertWishlistConversionBenchmark, wishlistConversionBenchmarks,
   type AppSetting, type InsertAppSetting, appSettings,
   type LeaderboardEmailRecipient, type InsertLeaderboardEmailRecipient, leaderboardEmailRecipients,
 } from "@shared/schema";
@@ -286,6 +287,18 @@ function initializeDatabase() {
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS launch_forecast_unique_product ON launch_forecast_snapshots(product_id);
+
+    CREATE TABLE IF NOT EXISTS wishlist_conversion_benchmarks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      pre_release_wishlist_count INTEGER NOT NULL,
+      day30_base_units_sold INTEGER NOT NULL,
+      day30_conversion_pct REAL NOT NULL,
+      locked_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS wishlist_conversion_benchmark_unique_product ON wishlist_conversion_benchmarks(product_id);
 
     CREATE TABLE IF NOT EXISTS forecast_revisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -650,6 +663,15 @@ export interface IStorage {
   // Only for deliberate rate-recalibration migrations — never called from
   // normal request-serving code paths.
   forceUpdateLaunchForecastSnapshot(data: InsertLaunchForecastSnapshot): LaunchForecastSnapshot;
+
+  // ─── Wishlist Conversion Benchmark (v3.33) ─────────────────────────────
+  // Idempotent write — does nothing if a benchmark already exists for
+  // productId. Returns the row that now exists (freshly-created or
+  // pre-existing). Locked forever once written.
+  upsertWishlistConversionBenchmarkIfMissing(
+    data: InsertWishlistConversionBenchmark,
+  ): WishlistConversionBenchmark;
+  getWishlistConversionBenchmark(productId: number): WishlistConversionBenchmark | null;
 
   // App Settings
   getAllSettings(): AppSetting[];
@@ -1981,6 +2003,31 @@ export class DatabaseStorage implements IStorage {
       })
       .where(eq(launchForecastSnapshots.productId, data.productId))
       .returning().get();
+  }
+
+  // ─── Wishlist Conversion Benchmark (v3.33) ────────────────────────────
+  //
+  // Written exactly once per product, the first time
+  // lockWishlistConversionBenchmarks() (server/ingestion.ts) observes the
+  // day-30 window closed (getSteamActualFirstMonthBaseUnits() non-null) AND
+  // a non-null pre-release wishlist count. Never rewritten — mirrors the
+  // launch forecast snapshot pattern above.
+  upsertWishlistConversionBenchmarkIfMissing(
+    data: InsertWishlistConversionBenchmark,
+  ): WishlistConversionBenchmark {
+    const existing = db.select().from(wishlistConversionBenchmarks)
+      .where(eq(wishlistConversionBenchmarks.productId, data.productId)).get();
+    if (existing) return existing;
+    const now = this.now();
+    return db.insert(wishlistConversionBenchmarks).values({
+      ...data,
+      createdAt: now,
+    }).returning().get();
+  }
+
+  getWishlistConversionBenchmark(productId: number): WishlistConversionBenchmark | null {
+    return db.select().from(wishlistConversionBenchmarks)
+      .where(eq(wishlistConversionBenchmarks.productId, productId)).get() ?? null;
   }
 
   // ─── App Settings ───────────────────────────────────────────────────────────

@@ -548,6 +548,46 @@ export const insertLaunchForecastSnapshotSchema = createInsertSchema(launchForec
 export type InsertLaunchForecastSnapshot = z.infer<typeof insertLaunchForecastSnapshotSchema>;
 export type LaunchForecastSnapshot = typeof launchForecastSnapshots.$inferSelect;
 
+// ─── Wishlist Conversion Benchmark (v3.33) ──────────────────────────────────
+//
+// PDP "Pre-Release Wishlist → Units Sold Conversion" card metrics.
+// Metric 1 (LTD conversion, 6mo+ post-release) is computed LIVE at request
+// time from existing data (steamActualCumulativeUnits ÷ preLaunchNet) and
+// needs no storage — see the PDP handler in server/routes.ts. Metric 2
+// (Day-30 conversion benchmark) must be LOCKED forever the first time the
+// day-30 window closes, so it needs this table. Written exactly once per
+// product, the first time lockWishlistConversionBenchmarks()
+// (server/ingestion.ts) observes getSteamActualFirstMonthBaseUnits()
+// returning non-null AND a non-null pre-release wishlist count. Never
+// rewritten after that — mirrors the launchForecastSnapshots pattern above.
+export const wishlistConversionBenchmarks = sqliteTable("wishlist_conversion_benchmarks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  // The pre-release wishlist count (steamWishlistSummary.preLaunchNet) used
+  // as the denominator — recorded so future audits can reconstruct exactly
+  // what the locked percentage was computed against.
+  preReleaseWishlistCount: integer("pre_release_wishlist_count").notNull(),
+  // Base-game net units sold in [releaseDate, releaseDate+30d) — the fixed
+  // window getSteamActualFirstMonthBaseUnits() sums.
+  day30BaseUnitsSold: integer("day30_base_units_sold").notNull(),
+  // day30BaseUnitsSold ÷ preReleaseWishlistCount × 100, rounded to 2 decimals.
+  day30ConversionPct: real("day30_conversion_pct").notNull(),
+  // ISO YYYY-MM-DD date this benchmark was locked (normally releaseDate+30
+  // days, but could be later if ingestion wasn't run exactly on that day).
+  lockedAt: text("locked_at").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueProduct: uniqueIndex("wishlist_conversion_benchmark_unique_product").on(table.productId),
+}));
+
+export const insertWishlistConversionBenchmarkSchema = createInsertSchema(wishlistConversionBenchmarks).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type InsertWishlistConversionBenchmark = z.infer<typeof insertWishlistConversionBenchmarkSchema>;
+export type WishlistConversionBenchmark = typeof wishlistConversionBenchmarks.$inferSelect;
+
 // ─── Forecast Revisions ─────────────────────────────────────────────────────
 
 export const forecastRevisions = sqliteTable("forecast_revisions", {

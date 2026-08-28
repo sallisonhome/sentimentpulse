@@ -140,6 +140,7 @@ const OPS_TOKEN_PATHS = new Set([
   "/api/ingestion/run-sales",
   "/api/ingestion/run-public-wishlist",
   "/api/ingestion/run-partner-wishlist",
+  "/api/ingestion/run-wishlist-conversion-benchmarks",
   "/api/ingestion/status",
   "/api/ingestion/manual-status",
   "/api/steam/session",

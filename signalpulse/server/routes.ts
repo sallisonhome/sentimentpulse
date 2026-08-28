@@ -13,6 +13,7 @@ import {
   runSalesIngestionNow,
   runPublicWishlistIngestionNow,
   runPartnerWishlistIngestionNow,
+  runWishlistConversionBenchmarkLockNow,
 } from "./ingestion";
 import {
   getWishlistLeaderboardRows,
@@ -73,6 +74,25 @@ function computeSteamFirstMonthForecast(
 ): number | null {
   const wl = getForecastingWishlistCount(summary, releaseDate);
   return wl != null ? Math.round(wl * STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER) : null;
+}
+
+/**
+ * v3.33: add N calendar months to an ISO YYYY-MM-DD date, clamping the day
+ * to the target month's last day (e.g. Jan 31 + 1mo -> Feb 28/29). Used for
+ * the PDP wishlist-conversion card's "6 months post-release" LTD gate.
+ * Deliberately calendar-month arithmetic (not a fixed 180/182-day count) to
+ * match how "6 months post release" reads to a person looking at a
+ * release-date calendar. Do not "simplify" this to day-count math — the
+ * clamp exists so month-end release dates don't roll into the wrong month.
+ */
+function addMonthsClamped(dateStr: string, months: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const targetMonthIndex = m - 1 + months; // 0-based
+  const targetYear = y + Math.floor(targetMonthIndex / 12);
+  const targetMonth = ((targetMonthIndex % 12) + 12) % 12; // 0-11
+  const lastDayOfTargetMonth = new Date(Date.UTC(targetYear, targetMonth + 1, 0)).getUTCDate();
+  const clampedDay = Math.min(d, lastDayOfTargetMonth);
+  return new Date(Date.UTC(targetYear, targetMonth, clampedDay)).toISOString().split("T")[0];
 }
 
 export async function registerRoutes(
@@ -555,6 +575,36 @@ export async function registerRoutes(
           }
         : null;
 
+      // v3.33: Pre-Release Wishlist → Units Sold Conversion metrics for the
+      // Steam Wishlist card.
+      //   Metric 1 (LTD, dynamic) — shown once 6 months post-release, then
+      //   updates daily as steamActualCumulativeUnits (already computed
+      //   above) grows. Computed live here every request, no storage.
+      //   Metric 2 (Day-30, locked benchmark) — shown once the day-30
+      //   window has closed; frozen forever by lockWishlistConversionBenchmarks()
+      //   (server/ingestion.ts) the first time that happens, so this is a
+      //   pure read of whatever is (or isn't yet) in the benchmark table.
+      const preReleaseWishlistCount = steamWishlistSummary.preLaunchNet ?? null;
+      const sixMonthGateDate = releaseDateForSummary ? addMonthsClamped(releaseDateForSummary, 6) : null;
+      const todayForGates = new Date().toISOString().split("T")[0];
+      const isSixMonthsPostRelease = !!(sixMonthGateDate && todayForGates >= sixMonthGateDate);
+      const ltdConversionPct = (isSixMonthsPostRelease
+          && steamActualCumulativeUnits != null
+          && preReleaseWishlistCount != null
+          && preReleaseWishlistCount > 0)
+        ? Math.round((steamActualCumulativeUnits / preReleaseWishlistCount) * 10000) / 100
+        : null;
+      const wishlistConversionBenchmark = storage.getWishlistConversionBenchmark(id);
+      const wishlistConversion = {
+        preReleaseWishlistCount,
+        sixMonthGateDate,
+        ltdUnitsSold: isSixMonthsPostRelease ? steamActualCumulativeUnits : null,
+        ltdConversionPct,
+        day30UnitsSold: wishlistConversionBenchmark?.day30BaseUnitsSold ?? null,
+        day30ConversionPct: wishlistConversionBenchmark?.day30ConversionPct ?? null,
+        day30LockedAt: wishlistConversionBenchmark?.lockedAt ?? null,
+      };
+
       res.json({
         ...product,
         gmvFactor: pdpGmvFactor,
@@ -588,6 +638,9 @@ export async function registerRoutes(
         // v3.32 (2026-08-19): Bull/Bear Month-1 conversion scenario pair for
         // the PDP forecast toggle. See list endpoint for full explanation.
         forecastScenarios: pdpForecastScenarios,
+        // v3.33: Pre-Release Wishlist → Units Sold Conversion metrics for
+        // the Steam Wishlist card (see comment above where it's computed).
+        wishlistConversion,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -2409,6 +2462,27 @@ export async function registerRoutes(
     try {
       const result = await runPartnerWishlistIngestionNow();
       res.json({ message: "Wishlist Leaderboard partner-API-key ingestion completed", ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    } finally {
+      ingestionInFlight = false;
+    }
+  });
+
+  // v3.33: pure DB read/write backfill for the PDP wishlist-conversion
+  // benchmark (no external API calls). Guarded by ingestionInFlight anyway
+  // to avoid racing a concurrent full ingestion run's own step 6.
+  app.post("/api/ingestion/run-wishlist-conversion-benchmarks", async (_req, res) => {
+    if (ingestionInFlight) {
+      return res.status(409).json({
+        error: "Ingestion already in progress",
+        message: "Another ingestion run is currently executing. Retry in a moment.",
+      });
+    }
+    ingestionInFlight = true;
+    try {
+      const result = await runWishlistConversionBenchmarkLockNow();
+      res.json({ message: "Wishlist conversion benchmark lock backfill completed", ...result });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || String(err) });
     } finally {

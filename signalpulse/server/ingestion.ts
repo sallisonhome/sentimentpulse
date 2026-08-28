@@ -1504,6 +1504,68 @@ function recalculateForecasts(): IngestionResult {
   };
 }
 
+// ─── Wishlist Conversion Benchmark Lock (v3.33) ───────────────────────────
+//
+// PDP "Pre-Release Wishlist → Units Sold Conversion" card, Metric 2 (Day-30
+// benchmark). Metric 1 (LTD conversion) needs no locking — it's computed
+// live in server/routes.ts on every PDP request. This function only
+// handles Metric 2: the first time a product's day-30 post-release sales
+// window closes (getSteamActualFirstMonthBaseUnits returns non-null) AND a
+// pre-release wishlist count exists, lock the conversion % forever via
+// storage.upsertWishlistConversionBenchmarkIfMissing (idempotent — a no-op
+// if already locked). Products without either input are silently skipped
+// and retried on the next daily run until both are available.
+function lockWishlistConversionBenchmarks(): IngestionResult {
+  const products = storage.getAllProducts();
+  const today = new Date().toISOString().split("T")[0];
+  let locked = 0;
+
+  for (const product of products) {
+    try {
+      // Already locked — never touch again.
+      if (storage.getWishlistConversionBenchmark(product.id)) continue;
+
+      // Use the same authoritative release date the PDP uses (PLS "Release"
+      // milestone actualDate, falling back to products.release_date) so the
+      // 30-day window matches what the card itself is built on.
+      const releaseDate = storage.getProductReleaseDate(product.id);
+      if (!releaseDate || releaseDate > today) continue; // not released yet
+
+      // Day-30 window must be fully closed with actual sales data.
+      const day30Units = storage.getSteamActualFirstMonthBaseUnits(product.id, releaseDate, 30);
+      if (day30Units == null) continue; // window not closed, or no sales data yet
+
+      // Denominator MUST be the same preLaunchNet the wishlist card displays
+      // ("Steam Pre-Release Wishlist Count") — never fall back to a
+      // different wishlist figure for a released title.
+      const wishlistSummary = storage.getSteamWishlistSummary(product.id, releaseDate);
+      const preLaunch = wishlistSummary.preLaunchNet;
+      if (!preLaunch || preLaunch <= 0) continue; // no denominator, can't lock a ratio
+
+      const pct = Math.round((day30Units / preLaunch) * 10000) / 100; // 2 decimal places
+
+      storage.upsertWishlistConversionBenchmarkIfMissing({
+        productId: product.id,
+        preReleaseWishlistCount: preLaunch,
+        day30BaseUnitsSold: day30Units,
+        day30ConversionPct: pct,
+        lockedAt: today,
+      });
+      locked++;
+    } catch (err) {
+      log(`Wishlist conversion benchmark lock error for product ${product.id}: ${err}`, "ingestion");
+    }
+  }
+
+  return {
+    source: "wishlist_conversion_benchmark",
+    status: "success",
+    message: `Locked day-30 wishlist conversion benchmark for ${locked} newly-eligible product(s)`,
+    productsProcessed: locked,
+    dataPointsAdded: locked,
+  };
+}
+
 // ─── Main Ingestion Runner ───────────────────────────────────────────────────
 
 export async function runIngestion(): Promise<IngestionRunResult> {
@@ -1579,6 +1641,13 @@ export async function runIngestion(): Promise<IngestionRunResult> {
   const forecastResult = recalculateForecasts();
   results.push(forecastResult);
   log(`Forecasts: ${forecastResult.message}`, "ingestion");
+
+  // 6. Lock day-30 wishlist conversion benchmarks (v3.33) for any product
+  // whose day-30 post-release window newly closed since the last run.
+  log("Locking day-30 wishlist conversion benchmarks...", "ingestion");
+  const wishlistConversionResult = lockWishlistConversionBenchmarks();
+  results.push(wishlistConversionResult);
+  log(`Wishlist conversion benchmarks: ${wishlistConversionResult.message}`, "ingestion");
 
   const completedAt = new Date().toISOString();
   const totalProductsProcessed = results.reduce((sum, r) => sum + (r.productsProcessed || 0), 0);
@@ -1702,6 +1771,32 @@ export async function runPartnerWishlistIngestionNow(): Promise<IngestionRunResu
   };
   persistManualIngestionRun("ingestion_last_run_partner", out);
   log(`Manual partner-key wishlist ingestion complete: ${result.message}`, "ingestion");
+  return out;
+}
+
+/**
+ * Wishlist Conversion Benchmark lock — pure DB read/write, no external API
+ * calls (unlike the two triggers above). Lets Settings/ops trigger a
+ * one-off backfill of the day-30 locked benchmark (v3.33 PDP wishlist card,
+ * Metric 2) for every currently-eligible released title immediately, e.g.
+ * right after deploying the feature, instead of waiting for the next
+ * 03:00 America/New_York cron tick. Safe to call any time — idempotent,
+ * only ever writes NEW rows for products with no existing benchmark.
+ */
+export async function runWishlistConversionBenchmarkLockNow(): Promise<IngestionRunResult> {
+  const startedAt = new Date().toISOString();
+  log("Manual trigger: wishlist conversion benchmark lock backfill...", "ingestion");
+  const result = lockWishlistConversionBenchmarks();
+  const completedAt = new Date().toISOString();
+  const out: IngestionRunResult = {
+    startedAt,
+    completedAt,
+    results: [result],
+    totalProductsProcessed: result.productsProcessed || 0,
+    totalDataPointsAdded: result.dataPointsAdded || 0,
+  };
+  persistManualIngestionRun("ingestion_last_run_wishlist_conversion_benchmark", out);
+  log(`Manual wishlist conversion benchmark lock complete: ${result.message}`, "ingestion");
   return out;
 }
 

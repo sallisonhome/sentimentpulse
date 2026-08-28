@@ -11,7 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useState, useEffect } from "react";
 import {
   ArrowLeft, Edit2, ChevronDown, ChevronRight, Info, AlertTriangle, BarChart3, Plus, Clock,
-  Upload, DollarSign, Trash2
+  Upload, DollarSign, Trash2, Lock
 } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
 import { AddProductDialog } from "@/components/add-product-dialog";
@@ -339,6 +339,71 @@ export default function ProductDetail() {
                   </div>
                 </div>
               </div>
+
+              {/* v3.33: Pre-Release Wishlist → Units Sold Conversion metrics.
+                  Metric 1 (LTD, dynamic) shows once 6 months post-release and
+                  updates daily as more units sell. Metric 2 (Day-30, locked)
+                  shows once the day-30 window closes and never changes again
+                  — it's a fixed benchmark, not a live number. Either, both,
+                  or neither cell can render depending on where the title is
+                  in its post-release lifecycle. */}
+              {(() => {
+                const wc = product.wishlistConversion as {
+                  preReleaseWishlistCount: number | null;
+                  sixMonthGateDate: string | null;
+                  ltdUnitsSold: number | null;
+                  ltdConversionPct: number | null;
+                  day30UnitsSold: number | null;
+                  day30ConversionPct: number | null;
+                  day30LockedAt: string | null;
+                } | null | undefined;
+
+                if (!wc) return null;
+                const showLtd = wc.ltdConversionPct != null;
+                const showDay30 = wc.day30ConversionPct != null;
+                if (!showLtd && !showDay30) return null;
+
+                return (
+                  <div className="grid grid-cols-2 gap-4 border-t pt-3">
+                    {showLtd && (
+                      <div>
+                        <div className="text-xs text-muted-foreground">
+                          Pre-Release Wishlist → Units Sold Conversion (LTD)
+                        </div>
+                        <div
+                          className="text-lg font-semibold tabular-nums mt-0.5"
+                          data-testid="text-wishlist-conversion-ltd"
+                        >
+                          {wc.ltdConversionPct!.toFixed(2)}%
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5">
+                          {formatNumber(wc.ltdUnitsSold)} LTD units ÷{" "}
+                          {formatNumber(wc.preReleaseWishlistCount)} pre-release wishlists — updates daily
+                        </div>
+                      </div>
+                    )}
+                    {showDay30 && (
+                      <div>
+                        <div className="text-xs text-muted-foreground flex items-center gap-1">
+                          Units Sold in First 30 Days vs. Pre-Release Wishlist
+                          <Lock className="h-3 w-3" data-testid="icon-wishlist-conversion-day30-locked" />
+                        </div>
+                        <div
+                          className="text-lg font-semibold tabular-nums mt-0.5"
+                          data-testid="text-wishlist-conversion-day30"
+                        >
+                          {wc.day30ConversionPct!.toFixed(2)}%
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5">
+                          {formatNumber(wc.day30UnitsSold)} units in first 30 days ÷{" "}
+                          {formatNumber(wc.preReleaseWishlistCount)} pre-release wishlists — benchmark,
+                          locked {wc.day30LockedAt}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Sparkline wrapped in ClickablePreview so clicking anywhere
                   opens the detail chart (which includes PLS event overlays). */}
