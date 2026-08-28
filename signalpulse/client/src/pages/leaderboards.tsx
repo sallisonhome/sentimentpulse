@@ -23,9 +23,11 @@ import {
   BarChart3,
   Trophy,
   Gamepad2,
+  LineChart,
 } from "lucide-react";
 import { LeaderboardBanner } from "@/components/leaderboard-banner";
 import { ChartDetailModal } from "@/components/chart-detail-modal";
+import { CompareChartModal, type CompareCandidate } from "@/components/compare-chart-modal";
 import { formatNumber, formatCurrency } from "@/lib/utils";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -297,6 +299,7 @@ export default function Leaderboards() {
     dir: "desc",
   });
   const [chartModal, setChartModal] = useState<{ productId: number; title: string; dataType: "steamWishlist" | "steamRevenueDaily" } | null>(null);
+  const [compareOpen, setCompareOpen] = useState(false);
 
   const { data: rows, isLoading: rowsLoading } = useQuery<WishlistLeaderboardRow[]>({
     queryKey: ["/api/leaderboards/wishlist"],
@@ -368,6 +371,13 @@ export default function Leaderboards() {
     navigate(`/?board=${value}`);
   }
 
+  const compareCandidates: CompareCandidate[] = useMemo(() => {
+    if (board === "revenue") {
+      return (revenueRows ?? []).map((r) => ({ productId: r.productId, title: r.title }));
+    }
+    return (rows ?? []).map((r) => ({ productId: r.productId, title: r.title }));
+  }, [board, rows, revenueRows]);
+
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <LeaderboardBanner
@@ -379,18 +389,31 @@ export default function Leaderboards() {
         }
       />
 
-      <Tabs value={board} onValueChange={handleTabChange} className="mb-5">
-        <TabsList>
-          <TabsTrigger value="wishlist" data-testid="tab-wishlist">
-            <Trophy className="h-3.5 w-3.5 mr-1.5" />
-            Wishlist Leaderboard
-          </TabsTrigger>
-          <TabsTrigger value="revenue" data-testid="tab-revenue">
-            <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
-            Revenue Leaderboard
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+        <Tabs value={board} onValueChange={handleTabChange}>
+          <TabsList>
+            <TabsTrigger value="wishlist" data-testid="tab-wishlist">
+              <Trophy className="h-3.5 w-3.5 mr-1.5" />
+              Wishlist Leaderboard
+            </TabsTrigger>
+            <TabsTrigger value="revenue" data-testid="tab-revenue">
+              <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
+              Revenue Leaderboard
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-8 text-xs gap-1.5"
+          disabled={compareCandidates.length === 0}
+          onClick={() => setCompareOpen(true)}
+          data-testid="button-open-compare"
+        >
+          <LineChart className="h-3.5 w-3.5" />
+          Compare Titles
+        </Button>
+      </div>
 
       {board === "revenue" ? (
         revenueRowsLoading ? (
@@ -600,6 +623,13 @@ export default function Leaderboards() {
           releaseDate={null}
         />
       )}
+
+      <CompareChartModal
+        open={compareOpen}
+        onOpenChange={setCompareOpen}
+        board={board}
+        candidates={compareCandidates}
+      />
     </div>
   );
 }
