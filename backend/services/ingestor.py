@@ -2258,13 +2258,16 @@ def _run_health_drop_check(db: Session, log_lines: list, errors: list) -> None:
     today's count is <50% of baseline is flagged. Flagged pairs get:
       1. A HEALTH DROP block appended to log_lines (so it appears in
          diag/log and the daily log file).
-      2. An in-app notification, one per run, listing the drops.
+      2. A JSON snapshot persisted to AppSetting for the monitoring
+         cron / admin endpoint to consume.
 
     Non-fatal by contract: caller wraps this in try/except.
+
+    Reuses module-level `func`, `Game`, `RawPost` — do NOT re-import
+    them here (pre-deploy check_ingestor_health.py forbids local
+    imports that shadow module-level ones, see lessons.md 2026-08-14).
     """
     from datetime import date as _date, timedelta as _td
-    from sqlalchemy import func
-    from models import Game, RawPost
     from collections import defaultdict
 
     today = _date.today()
