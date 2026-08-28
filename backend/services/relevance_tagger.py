@@ -64,11 +64,25 @@ GENERAL_SUBS: frozenset[str] = frozenset({
     "hellraiser", "halo", "ghostbusters", "jurassicpark", "johnwick",
     "jurassicworld", "jurassicmemes", "jurassicworldevo",
     "jurassicworldevol2", "jurassicworldalive",
-    "clivebarker", "cenobites", "hellraiserthegame",
+    # v0028 (2026-08-28): `hellraiserthegame` REMOVED from GENERAL_SUBS.
+    # Steve confirmed r/hellraiserthegame is Hellraiser Revival's DEDICATED
+    # game community (the equivalent of r/HalloweenTVG or r/SpaceMarine_2
+    # — posts there are ~100% about the game). Aug 14's expansion swept it
+    # in with the movie-IP subs (r/hellraiser, r/clivebarker) which was
+    # wrong: without dedicated_sub tagging, r/hellraiserthegame posts had
+    # to keyword-match through the strict two-token gate to be admitted,
+    # dropping Hellraiser's signal-tier reddit from a Halloween-comparable
+    # rate to a handful/week. Movie-IP subs correctly STAY in GENERAL_SUBS.
+    "clivebarker", "cenobites",
     # Publisher / dev / catalog subs — posts here are often about the studio
     # or an unrelated title in their catalog, not the focal game.
+    #
+    # v0028 (2026-08-28): `worldwarzthegame` REMOVED. Same reasoning as
+    # `hellraiserthegame`: WWZ's dedicated community, misclassified as
+    # publisher/catalog. Keep `saberinteractive` and `bossteamgames` in
+    # GENERAL_SUBS — those are multi-game publisher accounts.
     "spacemarine", "saberinteractive", "bossteamgames",
-    "gearsofwar", "xboxgamepass", "lionsgate", "worldwarzthegame",
+    "gearsofwar", "xboxgamepass", "lionsgate",
     # (2026-08-17) Focus Entertainment publisher sub — carries WWZ AND
     # Insurgency: Sandstorm announcements plus a large catalog of unrelated
     # titles (Warhammer, Aliens Dark Descent, Atomfall, GreedFall, etc.).

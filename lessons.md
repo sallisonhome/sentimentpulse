@@ -1367,3 +1367,36 @@ GET /api/ingest/admin/daily-raw-counts?days=14
 2. **Every ingest step ends with a distinguishing log line when saving zero rows.** `ZERO FETCH` vs `ZERO SAVE` at minimum. Silent `return 0, 0` is banned outside of pre-flight guards. If you add a new step, copy the pattern from Step 3.
 3. **Every ingest run ends with a health-drop check.** `_run_health_drop_check` is called from the `finally` block of `run_ingestion`; do not remove that call. If the check itself raises, the exception is logged and appended to `errors[]` but never breaks the run.
 4. **Any per-(game, source) drop below 50% of its 7d baseline is an operator-visible alert.** Both the log block and the AppSetting snapshot must be populated on every run so the sentimentpulse morning-scan cron can read the snapshot and notify. If we ever add push/email notifications, wire them off the same snapshot — do not re-compute drops in a second code path.
+
+---
+
+## 2026-08-28 (v0028 addendum) — Dedicated game subs must not be in GENERAL_SUBS
+
+**Problem.** Steve reported Hellraiser Revival, Stuntman: Hollywood, and Turok: Origins showed very light post volume vs Halloween and Silent Hill Townfall despite Hellraiser being live in pre-purchase with an active community. Portfolio audit:
+
+| Title | Reddit raw | Reddit signal | Signal ratio |
+|---|---:|---:|---:|
+| Halloween: The Game | 1,649 | 1,637 | 99% |
+| SILENT HILL: Townfall | 650 | 641 | 99% |
+| **Hellraiser Revival** | 2,085 | **8** | **0.4%** |
+| **Stuntman: Hollywood** | 4,866 | **5** | **0.1%** |
+| **Turok: Origins** | 2,322 | **18** | **0.8%** |
+
+**Root cause.** On 2026-08-14 a well-intentioned GENERAL_SUBS expansion swept **`hellraiserthegame` and `worldwarzthegame`** into GENERAL_SUBS alongside movie-IP subs like `r/hellraiser` and `r/clivebarker`. Those two are the DEDICATED game communities (equivalent to `r/HalloweenTVG` for Halloween, `r/SpaceMarine_2` for SM2) — posts there are ~100% about the game. GENERAL_SUBS membership forces every post through the strict two-token keyword gate; without a distinctive keyword variant, they were dropped or downgraded to noise, and never got the `dedicated_sub` tag that powers Step 4a's comment fetch. Hellraiser's signal-tier reddit collapsed from Halloween-comparable to 8/week; comment ingest to 70/week (Halloween: 5,254/week).
+
+Stuntman and Turok are separately low-volume because their real dedicated subs are tiny (r/turok = 710 subs, no dedicated Stuntman sub exists) — that is a legitimate low-signal state, not a bug.
+
+**Fix (v0028 addendum).**
+- Removed `hellraiserthegame` and `worldwarzthegame` from `GENERAL_SUBS` in `services/relevance_tagger.py`.
+- Kept `hellraiser`, `clivebarker`, `cenobites` in `GENERAL_SUBS` — those ARE broader IP subs.
+- Removed `worldwarzthegame` from three OTHER games' subreddit configs (Toxic Commando, Turok, Jurassic Park) so WWZ posts there can't leak into their dedicated_sub buckets. This is the crucial cleanup step: whenever a sub moves out of GENERAL_SUBS, every OTHER game that lists it must have it removed from that game's subreddit config, or WWZ posts will get tagged dedicated_sub for the wrong game.
+- Locked in by `TestDedicatedGameSubsNotInGeneralSubs_v0028` in `tests/test_relevance_tagger_general_subs.py`.
+
+**Non-negotiable rule going forward (rule 5).**
+
+**A subreddit whose primary conversation IS a single game must NEVER be in `GENERAL_SUBS`.** Two rules of thumb:
+
+1. If the sub's name ends in "thegame", "TVG", "_2", or otherwise names a single specific game — that's a dedicated sub. Don't put it in GENERAL_SUBS.
+2. If the sub is named after an IP, franchise, publisher, or studio ("hellraiser", "clivebarker", "warhammer40k", "gearsofwar", "saberinteractive") — that's IP-adjacent and belongs in GENERAL_SUBS with keyword gating.
+
+**Corollary:** if you EVER remove a sub from `GENERAL_SUBS`, you MUST also remove it from every other game's subreddit config where it appears as a peripheral / cross-title catch. Otherwise posts on the freshly-un-gated sub will be admitted as dedicated_sub content for whatever game happens to fetch them first — the exact false-positive tagging pattern this policy was designed to prevent.
