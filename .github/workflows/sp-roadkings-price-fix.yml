@@ -1,0 +1,31 @@
+name: SP Road Kings Price Fix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Set Road Kings (id=20) target_retail_price_usd to 39.99
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            DB=/opt/sentimentpulse/signalpulse/data.db
+
+            echo "── before ──"
+            sqlite3 "$DB" "SELECT id, title, target_retail_price_usd FROM products WHERE id = 20;"
+
+            sqlite3 "$DB" "UPDATE products SET target_retail_price_usd = 39.99, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = 20 AND title = 'Road Kings'; SELECT changes() AS rows_updated;"
+
+            echo "── after ──"
+            sqlite3 "$DB" "SELECT id, title, target_retail_price_usd, updated_at FROM products WHERE id = 20;"
+          EOF
