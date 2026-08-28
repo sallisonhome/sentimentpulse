@@ -3240,6 +3240,7 @@ def purge_orphaned_sentiment_records():
 def daily_raw_counts(
     days: int = Query(30, ge=1, le=180, description="Look back this many days"),
     game_id: Optional[int] = Query(None, description="Scope to one game; empty = all active"),
+    include_tier: bool = Query(False, description="Break down by relevance_tier for v0028 debugging"),
 ):
     """v0026 (2026-08-27): diagnostic — per-day RawPost totals by source
     AND drift split. Bypasses every dashboard filter (no _NOT_DRIFT, no
@@ -3292,11 +3293,40 @@ def daily_raw_counts(
             b["total_raw"] += r["total_raw"]
             b["drift"] += r["drift"]
             b["non_drift"] += r["non_drift"]
+
+        # v0028 (2026-08-28): optional tier breakdown so we can prove
+        # whether a per-title dashboard "gap" between raw and displayed
+        # volume is drift+noise correctly-filtered content vs a real
+        # attribution bug that's dropping signal-tier posts.
+        tier_rows = []
+        if include_tier:
+            tq = (
+                db.query(
+                    day_expr,
+                    RawPost.source,
+                    RawPost.relevance_tier,
+                    func.count(RawPost.id).label("cnt"),
+                )
+                .filter(RawPost.post_date.isnot(None))
+                .filter(func.date(RawPost.post_date) >= str(cutoff))
+            )
+            if game_id is not None:
+                tq = tq.filter(RawPost.game_id == game_id)
+            tq = tq.group_by(day_expr, RawPost.source, RawPost.relevance_tier)
+            for r in tq.all():
+                tier_rows.append({
+                    "date": str(r.day),
+                    "source": r.source.value if hasattr(r.source, "value") else str(r.source),
+                    "tier": r.relevance_tier,
+                    "count": int(r.cnt or 0),
+                })
+
         return {
             "days": days,
             "game_id": game_id,
             "rows": rows,
             "totals_by_day": totals_by_day,
+            "tier_rows": tier_rows,
         }
     finally:
         db.close()
