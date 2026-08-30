@@ -1,0 +1,116 @@
+name: One-off Turok Origins LTD backfill (2026-08-30)
+
+# One-time historical backfill for Turok: Origins (game_id 23) from the Dec 12, 2024
+# The Game Awards reveal through today, across Reddit + Reddit comments + Bluesky
+# + Steam Forums. Uses backend/scripts/historical_backfill.py, which is idempotent
+# (dedupes on RawPost.external_id) so safe to re-run.
+#
+# Manual trigger only (workflow_dispatch). Should be removed after successful run
+# via a follow-up commit — leaving one-off workflows around is a lessons.md issue
+# because they can be accidentally re-run.
+#
+# CRITICAL: adding/removing this workflow file will trigger `deploy.yml` because
+# .github/workflows/*.yml is outside `signalpulse/**` (lessons.md 2026-08-30).
+# The add commit is unavoidable; time the remove commit for AFTER the backfill
+# completes and AFTER the next scheduled ingest fire has landed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "ISO start date (YYYY-MM-DD)"
+        required: true
+        default: "2024-12-12"
+      dry_run:
+        description: "Dry run (print what would be fetched, don't write)"
+        required: false
+        default: "false"
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Run historical_backfill.py for Turok Origins
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Prep SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Wait for live ingest to finish before starting
+        run: |
+          for i in {1..60}; do
+            state=$(curl -s --max-time 15 "http://104.236.239.46/api/ingest/status" \
+              | python3 -c "import json,sys; print(json.load(sys.stdin).get('is_running', False))" \
+              || echo "unknown")
+            echo "attempt $i: is_running=$state"
+            if [ "$state" = "False" ]; then
+              echo "Live ingest complete, proceeding to backfill."
+              break
+            fi
+            if [ "$i" = "60" ]; then
+              echo "ERROR: live ingest still running after 60 minutes; aborting."
+              exit 1
+            fi
+            sleep 60
+          done
+
+      - name: Run backfill on droplet
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 bash -s << 'EOF'
+            set -euo pipefail
+            cd /opt/sentimentpulse/backend
+            source .venv/bin/activate
+
+            echo "## Backfill Turok Origins (game_id 23) from ${{ inputs.start_date }} ##"
+            echo "Started at: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+            # Log to a file we can grep later; also tee to stdout so GH Actions shows progress.
+            mkdir -p /var/log/sentimentpulse
+            LOGFILE="/var/log/sentimentpulse/turok_ltd_backfill_$(date -u +%Y%m%d_%H%M%S).log"
+
+            python scripts/historical_backfill.py \
+              --game-ids 23 \
+              --start-date ${{ inputs.start_date }} \
+              2>&1 | tee -a "$LOGFILE"
+
+            echo ""
+            echo "## Completed at: $(date -u +'%Y-%m-%d %H:%M:%S UTC') ##"
+            echo "## Log saved to: $LOGFILE ##"
+          EOF
+
+      - name: Report final counts
+        run: |
+          curl -s --max-time 30 \
+            "http://104.236.239.46/api/ingest/admin/daily-raw-counts?days=650&game_id=23&include_tier=true" \
+            | python3 -c "
+          import json, sys
+          from collections import defaultdict
+          d = json.load(sys.stdin)
+          by_src = defaultdict(int)
+          by_tier = defaultdict(int)
+          for r in d.get('rows', []):
+              by_src[r['source']] += r['total_raw']
+          for r in d.get('tier_rows', []):
+              by_tier[r['tier']] += r['count']
+          print('=== Turok Origins post-backfill (LTD from Dec 12, 2024) ===')
+          print('By source:')
+          for s, n in sorted(by_src.items(), key=lambda x: -x[1]):
+              print(f'  {s:<16} {n:>7,}')
+          print()
+          print('By tier:')
+          for t, n in sorted(by_tier.items(), key=lambda x: -x[1]):
+              print(f'  {t:<16} {n:>7,}')
+          "
+
+      - name: Cleanup SSH
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519

@@ -1400,3 +1400,64 @@ Stuntman and Turok are separately low-volume because their real dedicated subs a
 2. If the sub is named after an IP, franchise, publisher, or studio ("hellraiser", "clivebarker", "warhammer40k", "gearsofwar", "saberinteractive") — that's IP-adjacent and belongs in GENERAL_SUBS with keyword gating.
 
 **Corollary:** if you EVER remove a sub from `GENERAL_SUBS`, you MUST also remove it from every other game's subreddit config where it appears as a peripheral / cross-title catch. Otherwise posts on the freshly-un-gated sub will be admitted as dedicated_sub content for whatever game happens to fetch them first — the exact false-positive tagging pattern this policy was designed to prevent.
+
+---
+
+## 2026-08-30 — Deploy isolation: what does and doesn't restart the SentimentPulse ingestion
+
+**Question Steve asked (verbatim):** "If I push an update to signal pulse while a sentiment pulse ingestion is running does that trigger a sentiment pulse ingestion restart?"
+
+**Follow-up context:** the `signalpulse/` code lives NESTED inside the `sentimentpulse` repo (single-repo monorepo). That naturally raises the concern that any SignalPulse push could destabilize an in-flight SentimentPulse ingest.
+
+**Answer: SignalPulse code pushes are properly isolated from SentimentPulse restarts. Repo-root or backend paths are not.**
+
+The two workflows are configured with mirror-image path filters:
+
+- `.github/workflows/deploy.yml` (SentimentPulse backend + frontend + gtmstudio + triptracker):
+  - `on.push.paths-ignore: ['signalpulse/**']`
+  - Restarts every systemd unit installed on the droplet except signalpulse (via `systemctl restart` in a loop over installed units).
+  - **This restart kills the running APScheduler and any in-flight ingestion**, which then gets caught up later by `misfire_grace_time=43200` (12h).
+- `.github/workflows/signalpulse-deploy.yml`:
+  - `on.push.paths: ['signalpulse/**', '.github/workflows/signalpulse-deploy.yml']`
+  - Restarts ONLY `signalpulse.service`.
+
+Serialization: both share `concurrency: deploy-droplet, cancel-in-progress: false`, so if they overlap, one waits for the other. Neither cross-restarts the other's service.
+
+### Verified worked example — 2026-08-30 morning
+
+Three commits between 12:09 and 12:19 UTC. Each mapped exactly as designed:
+
+| Commit | Files touched | deploy.yml fired? | signalpulse-deploy.yml fired? | Restarted |
+|---|---|---|---|---|
+| `36101de` Add LTD Units column | `signalpulse/client/...`, `signalpulse/server/...` | NO (all under signalpulse/**) | YES | signalpulse only |
+| `a2ed43e` Add diagnostic workflow | `.github/workflows/sp-verify-ltd-units.yml` | YES | NO | all droplet units incl. sentimentpulse |
+| `c16071a` Remove diagnostic workflow | `.github/workflows/sp-verify-ltd-units.yml` | YES | NO | all droplet units incl. sentimentpulse |
+
+The SignalPulse feature push at 12:10 UTC did NOT interrupt the SentimentPulse ingest. The two diagnostic-workflow commits at 12:15 and 12:18 UTC did — because `.github/workflows/*.yml` is a repo-root path, not under `signalpulse/**`.
+
+### Non-negotiable rule going forward
+
+**Any file outside `signalpulse/**` counts as a SentimentPulse change and WILL restart the ingestion.** Specifically:
+
+- Anything under `.github/workflows/*.yml` (even if the workflow is topically about SignalPulse — e.g. `sp-*.yml`, `signalpulse-*.yml`)
+- Anything under `backend/`, `frontend/`, `gtm/`, `triptracker/`, `launcher/`, `genrepulse/`, `discussions/`
+- Any root-level file (`deploy.sh`, `docker-compose.yml`, `PLAN.md`, `CLAUDE.md`, `lessons.md`, `.env.example`, etc.)
+
+If a change is topically about SignalPulse but touches a file outside `signalpulse/**`, it will still restart the SentimentPulse ingest.
+
+### QA rule for the agent
+
+Before pushing anything during a running ingestion, list the files in the diff. If ANY file is outside `signalpulse/**`, warn the user that the push will restart the ingest and offer to defer until after the run completes. Check ingest state with `curl -s http://104.236.239.46/api/ingest/status | jq .is_running` before pushing when in doubt.
+
+### Optional widening (not applied — proposing for future consideration)
+
+We could widen `deploy.yml`'s `paths-ignore` to also skip SignalPulse-scoped workflow files:
+
+```yaml
+paths-ignore:
+  - 'signalpulse/**'
+  - '.github/workflows/signalpulse-deploy.yml'
+  - '.github/workflows/sp-*.yml'
+```
+
+Trade-off: today those `sp-*` diagnostic workflows fire on `workflow_dispatch` and don't need a droplet redeploy to be usable (they just need to be present in `.github/workflows/` on GitHub). Adding/removing them via commit does NOT require a droplet restart to make them work. So the wider `paths-ignore` is safe and would eliminate this class of accidental ingest interruption. Not applying yet — flagging for the user to decide.
