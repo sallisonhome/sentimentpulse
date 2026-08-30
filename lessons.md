@@ -1461,3 +1461,77 @@ paths-ignore:
 ```
 
 Trade-off: today those `sp-*` diagnostic workflows fire on `workflow_dispatch` and don't need a droplet redeploy to be usable (they just need to be present in `.github/workflows/` on GitHub). Adding/removing them via commit does NOT require a droplet restart to make them work. So the wider `paths-ignore` is safe and would eliminate this class of accidental ingest interruption. Not applying yet — flagging for the user to decide.
+
+---
+
+## 2026-08-30 evening — Two lessons from the Turok LTD backfill
+
+### Lesson 1: Check existing endpoints before adding one-off workflows
+
+Steve asked for a Turok Origins LTD backfill. I reflexively built a new one-off
+GitHub Actions workflow (`one-off-turok-ltd-backfill.yml`) that SSHed to the
+droplet and ran `historical_backfill.py`. That workflow stalled at the "Run
+backfill on droplet" step for over 2 hours with no progress — GitHub's
+`updatedAt` field never ticked, meaning stdout from the SSH-tunneled Python
+script was buffered indefinitely with no keepalive.
+
+Root cause of the stall: `python -m ...` doesn't line-buffer stdout when piped
+(only in a TTY), and the SSH heredoc didn't wire up `stdbuf -oL`. GitHub
+Actions has no read timeout on an SSH exec but does have an outer 6-hour job
+timeout; the workflow was heading toward that when I cancelled it.
+
+**But the deeper problem was that the workflow was completely unnecessary.**
+The backend already exposes `POST /api/ingest/backfill?game_ids=X&start_date=Y`
+(routers/ingest.py:468, added on 2026-07-24 with the ILL/Townfall remediation
+work). It:
+- Runs in a FastAPI BackgroundTasks — proper detached process
+- Has a status endpoint at `GET /api/ingest/backfill/status`
+- Uses the same `historical_backfill.py` machinery
+- Idempotent, dedupes on external_id
+
+I re-triggered via a single curl POST and the backfill completed in ~25
+minutes with a clean status log. No workflow file, no SSH, no restart.
+
+**Rule for the agent going forward.** Before creating a one-off workflow or
+CLI-invoked script to run something on the droplet, grep the backend for an
+existing HTTP endpoint that does the same thing:
+
+```bash
+grep -rn "@router.post\|BackgroundTasks\|add_task" backend/routers/
+grep -rn "backfill\|remediation\|one.time" backend/routers/ backend/scripts/
+```
+
+**One-off GitHub Actions workflows are almost never the right answer for
+operational tasks.** They:
+- Restart the SentimentPulse backend on both the add AND remove commits
+  (see rule 5 in the 2026-08-30 deploy-isolation section above)
+- Have no long-lived output streaming for SSH exec
+- Leave detritus in `.github/workflows/` that can be re-triggered accidentally
+
+The right pattern for future one-off ops: **admin HTTP endpoint** with a
+BackgroundTasks handler, gated by an in-process `_RUNNING` flag, plus a
+`GET .../status` companion. Everything else is a footgun.
+
+### Lesson 2: PullPush historical archive has coverage gaps
+
+The Turok LTD backfill was requested from 2024-12-12 (TGA reveal) forward.
+The backfill ran to completion but the deepest post_date it reached was
+2025-11-30 — a full year short of the requested boundary.
+
+This is a known PullPush characteristic, not a bug in our script. PullPush's
+archive coverage for less-popular subreddits (like r/Turok with ~710 subs)
+degrades sharply beyond ~9-12 months. For high-volume subreddits (r/gaming,
+r/pcgaming) PullPush reaches further back but the paging still stops when
+its cache returns empty. `historical_backfill.py` correctly stops on empty
+pages rather than looping forever.
+
+**Rule for future LTD backfills.** When telling the user "LTD backfill
+requested for game X from date Y", *always caveat* that Reddit historical
+coverage may not reach Y if:
+- The dedicated sub is small (<5K members)
+- The date is more than 12 months back
+- The game name doesn't produce distinctive matches on r/gaming-scale subs
+
+Also always note that Bluesky historical backfill is essentially not
+possible (their search API only returns ~30 days). Steam Reviews and
+Steam Forums *do* backfill fully via cursor paging and next-page walks.

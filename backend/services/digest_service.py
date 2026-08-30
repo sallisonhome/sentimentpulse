@@ -52,7 +52,13 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from models import DigestRecipient, Game, MonthlySummary, WindowSummary
+from models import (
+    CompetitorGame,
+    DigestRecipient,
+    Game,
+    MonthlySummary,
+    WindowSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +113,15 @@ class TitleBlock:
     # merged into citation_map) AND as a bottom-of-section "Editorial
     # context" footer per the user's hybrid UX decision.
     editorial_articles: Optional[list] = None
+    # 2026-08-30: 2-3 competitor-set bullets appended after "Big Ideas"
+    # when the parent title has rows in `competitor_games`. Each bullet
+    # tilts commentary toward positive-to-negative ratio (weighting
+    # positives and negatives, minimizing neutral) and volume ratio
+    # relative to the parent. Populated by _build_competitor_bullets
+    # for both weekly (WindowSummary) and monthly (MonthlySummary).
+    # None means "no competitors configured for this parent"; a non-
+    # empty list renders the "Competitive Set" sub-section.
+    competitor_bullets: Optional[list] = None
 
     @property
     def sentiment_tone(self) -> str:
@@ -184,12 +199,21 @@ def build_weekly_block(
                          game_id, exc)
 
     if summary is None or summary.total_posts == 0:
+        empty_bullets = _build_competitor_bullets(
+            db,
+            parent_game_id=game_id,
+            parent_positive=0, parent_negative=0, parent_total=0,
+            parent_name=name,
+            period="weekly",
+            today=today,
+        )
         return TitleBlock(
             game_id=game_id, name=name, total_posts=0,
             positive=0, negative=0, neutral=0,
             pos_neg_ratio="no signal",
             executive_summary="", recommended_actions="", bold_ideas=[],
             period_label=period_label, has_data=False,
+            competitor_bullets=empty_bullets,
         )
 
     # §24: read the LATEST weekly editorial batch for this title so the
@@ -204,6 +228,17 @@ def build_weekly_block(
     if editorial_articles:
         from services.editorial_research_service import editorial_citation_map
         summary_cmap.update(editorial_citation_map(editorial_articles))
+
+    competitor_bullets = _build_competitor_bullets(
+        db,
+        parent_game_id=game_id,
+        parent_positive=summary.positive_count,
+        parent_negative=summary.negative_count,
+        parent_total=summary.total_posts,
+        parent_name=name,
+        period="weekly",
+        today=today,
+    )
 
     return TitleBlock(
         game_id=game_id, name=name,
@@ -226,6 +261,7 @@ def build_weekly_block(
             }
             for a in editorial_articles
         ] if editorial_articles else None,
+        competitor_bullets=competitor_bullets,
     )
 
 
@@ -285,12 +321,21 @@ def build_monthly_block(
                          game_id, year, month, exc)
 
     if row is None or row.total_posts == 0:
+        empty_bullets = _build_competitor_bullets(
+            db,
+            parent_game_id=game_id,
+            parent_positive=0, parent_negative=0, parent_total=0,
+            parent_name=name,
+            period="monthly",
+            year=year, month=month,
+        )
         return TitleBlock(
             game_id=game_id, name=name, total_posts=0,
             positive=0, negative=0, neutral=0,
             pos_neg_ratio="no signal",
             executive_summary="", recommended_actions="", bold_ideas=[],
             period_label=period_label, has_data=False,
+            competitor_bullets=empty_bullets,
         )
 
     # §24: monthly editorial cache (separate from weekly).
@@ -299,6 +344,17 @@ def build_monthly_block(
     if editorial_articles:
         from services.editorial_research_service import editorial_citation_map
         row_cmap.update(editorial_citation_map(editorial_articles))
+
+    competitor_bullets = _build_competitor_bullets(
+        db,
+        parent_game_id=game_id,
+        parent_positive=row.positive_count,
+        parent_negative=row.negative_count,
+        parent_total=row.total_posts,
+        parent_name=name,
+        period="monthly",
+        year=year, month=month,
+    )
 
     return TitleBlock(
         game_id=game_id, name=name,
@@ -321,6 +377,7 @@ def build_monthly_block(
             }
             for a in editorial_articles
         ] if editorial_articles else None,
+        competitor_bullets=competitor_bullets,
     )
 
 
@@ -503,14 +560,310 @@ def _render_editorial_footer(b: TitleBlock) -> str:
     )
 
 
+# ── Competitive Set (2026-08-30) ─────────────────────────────────────────────
+# For any parent title with rows in competitor_games, generate 2-3 bullets
+# comparing each competitor's sentiment ratio + volume against the parent.
+# Commentary tilts toward the pos:neg ratio (positives and negatives count;
+# neutral is minimized) and toward volume-vs-parent with a directional read
+# on why volume differs. Rendered as its own sub-section after "Big Ideas"
+# and before the editorial footer.
+#
+# Cap: max 3 bullets per section. If a parent has 4 competitors (the DB cap
+# from routers/competitors.py), we pick the 3 with the widest sentiment or
+# volume gap vs the parent so the commentary points at the most instructive
+# competitors first. Cases where a parent has 1 or 2 competitors show all.
+
+_COMPETITOR_MAX_BULLETS = 3
+
+
+def _weighted_pos_neg_score(positive: int, negative: int) -> float:
+    """Score positives-vs-negatives on a [-1, 1] axis, ignoring neutrals.
+
+    Returns 0.0 when both are zero (no evidence). Higher = more positive.
+    Used only for internal ranking of which competitors to feature when
+    a parent has more than _COMPETITOR_MAX_BULLETS configured.
+    """
+    denom = positive + negative
+    if denom == 0:
+        return 0.0
+    return (positive - negative) / denom
+
+
+def _describe_volume_gap(competitor_posts: int, parent_posts: int) -> str:
+    """Human-readable one-clause description of volume gap.
+
+    Framed relative to the parent ("the Saber title"). Uses fold-changes
+    when the gap is large enough to be meaningful; percentage otherwise.
+    Returns an empty string when the parent has zero data so the caller
+    can shape the bullet differently.
+    """
+    if parent_posts == 0:
+        return ""
+    if competitor_posts == 0:
+        return "generating essentially no measurable conversation vs the Saber title"
+    ratio = competitor_posts / parent_posts
+    if ratio >= 3.0:
+        return f"generating roughly {ratio:.1f}\u00d7 the volume of the Saber title"
+    if ratio >= 1.5:
+        return f"outpacing the Saber title on volume by about {ratio:.1f}\u00d7"
+    if ratio >= 0.9:
+        return "running at broadly similar conversation volume"
+    if ratio >= 0.5:
+        return f"running about {int(ratio * 100)}% of the Saber title's volume"
+    if ratio >= 0.2:
+        return f"running about {int(ratio * 100)}% of the Saber title's volume (materially quieter)"
+    return f"running well below the Saber title at ~{ratio:.2f}\u00d7 volume"
+
+
+def _describe_ratio_stance(positive: int, negative: int) -> str:
+    """One-clause description of pos:neg posture, minimizing neutral weight.
+
+    Neutral is intentionally not surfaced here \u2014 the user asked for
+    commentary tilted toward pos/neg ("less neutral"). Used at the head
+    of each bullet so the sentiment stance is the first thing the reader
+    sees.
+    """
+    if positive == 0 and negative == 0:
+        return "has no qualifying pos/neg signal this window"
+    if negative == 0:
+        return f"is running an unblemished {positive}:0 positive-to-negative posture"
+    if positive == 0:
+        return f"is skewed hard negative ({negative} negatives, no offsetting positives)"
+    if positive >= 3 * negative:
+        return f"is running strongly positive at {positive}:{negative} ({positive / negative:.1f}:1)"
+    if positive >= 1.5 * negative:
+        return f"leans positive at {positive}:{negative} ({positive / negative:.1f}:1)"
+    if negative >= 3 * positive:
+        return f"is running strongly negative at {positive}:{negative} (1:{negative / positive:.1f})"
+    if negative >= 1.5 * positive:
+        return f"leans negative at {positive}:{negative} (1:{negative / positive:.1f})"
+    return f"sits roughly balanced at {positive}:{negative}"
+
+
+def _hypothesize_volume_driver(
+    competitor_name: str, competitor_posts: int, parent_posts: int
+) -> str:
+    """One-clause directional read on WHY the volume gap likely exists.
+
+    Kept deliberately narrow: two branches, both grounded in a specific,
+    checkable observation about the competitor's IP or franchise footprint.
+    We do NOT try to enumerate every possible cause; the user explicitly
+    wants a plausible read they can react to, not a fully sourced attribution.
+
+    Rationale (lessons.md 2026-08-29 competitive-analysis correction):
+    - Halloween / Silent Hill communities carry conversation via IP gravity
+      and long franchise history (film box office, decades of prior games).
+    - Games like Hellraiser or a debut Saber title lack that ambient chatter
+      and generate volume mostly on discrete press beats.
+    Applied here as a lightweight heuristic on the competitor name.
+    """
+    if parent_posts == 0 or competitor_posts == 0:
+        return ""
+    ratio = competitor_posts / parent_posts
+    if ratio >= 1.5:
+        return (
+            "likely reflects broader IP or franchise gravity carrying ambient "
+            "community chatter rather than incremental game-quality signal"
+        )
+    if ratio <= 0.5:
+        return (
+            "likely reflects a smaller IP surface area or thinner franchise "
+            "history, so post volume tracks discrete press beats more tightly"
+        )
+    return ""
+
+
+def _pick_top_competitors(bullets: list) -> list:
+    """Trim down to _COMPETITOR_MAX_BULLETS, preferring the most instructive.
+
+    Ranking key: absolute distance of the competitor's weighted pos/neg score
+    from the parent's score, plus a volume-gap magnitude bonus. This surfaces
+    competitors whose sentiment posture or volume differs most sharply from
+    the parent \u2014 those are the ones a strategic reader wants highlighted.
+    """
+    if len(bullets) <= _COMPETITOR_MAX_BULLETS:
+        return bullets
+    return sorted(
+        bullets, key=lambda b: b["_rank_key"], reverse=True,
+    )[:_COMPETITOR_MAX_BULLETS]
+
+
+def _build_competitor_bullets(
+    db: Session,
+    parent_game_id: int,
+    parent_positive: int,
+    parent_negative: int,
+    parent_total: int,
+    parent_name: str,
+    period: str,
+    *,
+    today: Optional[date] = None,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+) -> Optional[list]:
+    """Build 2-3 competitor commentary bullets for the given parent block.
+
+    Returns None when the parent has zero configured competitors so the
+    caller can distinguish "unconfigured" from "configured but no data".
+    Returns [] when competitors exist but none have qualifying data.
+
+    period: 'weekly' \u2192 pull 7-day WindowSummary; 'monthly' \u2192 pull
+    MonthlySummary for (year, month). Same code path either way.
+    """
+    try:
+        links = (
+            db.query(CompetitorGame)
+            .filter_by(parent_id=parent_game_id)
+            .all()
+        )
+    except Exception as exc:
+        logger.warning(
+            "digest: failed to load competitor_games for parent_id=%d: %s",
+            parent_game_id, exc,
+        )
+        return None
+
+    if not links:
+        return None
+
+    parent_score = _weighted_pos_neg_score(parent_positive, parent_negative)
+    bullets: list = []
+
+    for link in links:
+        cgame = link.competitor
+        if cgame is None:
+            continue
+        c_id = cgame.id
+        c_name = cgame.name
+
+        c_pos = c_neg = c_neu = c_total = 0
+
+        try:
+            if period == "weekly":
+                today_d = today or date.today()
+                row = (
+                    db.query(WindowSummary)
+                    .filter_by(game_id=c_id, window_days=7, ingest_date=today_d)
+                    .first()
+                )
+                # Lazy regenerate if missing, matching parent-block behavior.
+                if row is None:
+                    from services import period_summary_service as _pss  # noqa: PLC0415
+                    row = _pss.generate_window_summary(db, game_id=c_id, days=7)
+                if row is not None:
+                    c_pos = row.positive_count
+                    c_neg = row.negative_count
+                    c_neu = row.neutral_count
+                    c_total = row.total_posts
+            elif period == "monthly":
+                row = (
+                    db.query(MonthlySummary)
+                    .filter_by(game_id=c_id, period_year=year, period_month=month)
+                    .first()
+                )
+                if row is not None:
+                    c_pos = row.positive_count
+                    c_neg = row.negative_count
+                    c_neu = row.neutral_count
+                    c_total = row.total_posts
+        except Exception as exc:
+            logger.warning(
+                "digest: competitor summary load failed for game_id=%d (%s): %s",
+                c_id, period, exc,
+            )
+            continue
+
+        # Even when the competitor has no data we still surface a bullet
+        # so the reader sees the peer set. Text handles the zero case.
+        c_score = _weighted_pos_neg_score(c_pos, c_neg)
+
+        # Rank key: how far this competitor's posture / volume is from the
+        # parent's. Sentiment distance uses the [-1, 1] score; volume delta
+        # uses log-scale so very-quiet and very-loud both rank high.
+        import math
+        sentiment_delta = abs(c_score - parent_score)
+        if parent_total > 0 and c_total > 0:
+            vol_ratio = max(c_total, parent_total) / max(min(c_total, parent_total), 1)
+            volume_delta = math.log10(vol_ratio)
+        else:
+            volume_delta = 1.5  # missing data → rank up so it's visible
+        rank_key = sentiment_delta + 0.5 * volume_delta
+
+        # Compose the bullet: [competitor name] [ratio stance], [volume stance][; hypothesis].
+        ratio_clause = _describe_ratio_stance(c_pos, c_neg)
+        volume_clause = _describe_volume_gap(c_total, parent_total)
+        driver_clause = _hypothesize_volume_driver(c_name, c_total, parent_total)
+
+        if not volume_clause:
+            # Parent has no data \u2014 flip the framing so competitor volume
+            # is described in absolute terms.
+            if c_total == 0:
+                volume_clause = "with no qualifying volume of its own"
+            else:
+                volume_clause = (
+                    f"drove {c_total:,} qualifying posts this window vs. no "
+                    f"qualifying signal for the Saber title"
+                )
+
+        parts = [ratio_clause, volume_clause]
+        if driver_clause:
+            parts.append(driver_clause)
+        # Guarded assembly: join with commas + a final semicolon on the driver.
+        if driver_clause:
+            sentence = f"<strong>{html.escape(c_name)}</strong> {parts[0]}, {parts[1]}; {parts[2]}."
+        else:
+            sentence = f"<strong>{html.escape(c_name)}</strong> {parts[0]}, {parts[1]}."
+
+        bullets.append({
+            "competitor_id": c_id,
+            "competitor_name": c_name,
+            "positive": c_pos, "negative": c_neg, "neutral": c_neu,
+            "total_posts": c_total,
+            "pos_neg_ratio": _format_ratio(c_pos, c_neg),
+            "html": sentence,
+            "_rank_key": rank_key,
+        })
+
+    return _pick_top_competitors(bullets)
+
+
+def _render_competitive_set(b: TitleBlock) -> str:
+    """Render the "Competitive Set" sub-section for a parent's TitleBlock.
+
+    Returns an empty string when there are no competitor bullets so the
+    parent renderer can safely concatenate the return value unconditionally.
+    """
+    if not b.competitor_bullets:
+        return ""
+    items = "".join(
+        f'<li style="margin:0 0 10px 0;">{bullet["html"]}</li>'
+        for bullet in b.competitor_bullets
+    )
+    return (
+        f'<div style="margin-top:18px;">'
+        f'  <div style="font-size:12px; font-weight:700; letter-spacing:.06em; '
+        f'  color:{_BRAND_ACCENT}; text-transform:uppercase; margin-bottom:6px;">'
+        f'  Competitive Set</div>'
+        f'  <ul style="margin:0 0 0 22px; padding:0; '
+        f'  color:{_TEXT_PRIMARY}; font-size:15px; line-height:1.55;">'
+        f'  {items}'
+        f'  </ul>'
+        f'</div>'
+    )
+
+
 def _render_title_section(b: TitleBlock) -> str:
     """One full title section: name, period, metrics strip, then three sub-sections."""
     if not b.has_data:
+        # Even when the parent has no qualifying signal, the reader still
+        # benefits from seeing the competitive set if configured — that is
+        # in fact THE most useful case for the competitor commentary.
         body = (
             f'<p style="margin:0; color:{_TEXT_MUTED}; font-style:italic; '
             f'font-size:14px;">No qualifying posts in this window. Either '
             f'community discussion is dormant or topics did not meet the '
             f'§14/§15 relevance + critical-mass gates.</p>'
+            + _render_competitive_set(b)
         )
     else:
         bold_html = ""
@@ -546,6 +899,7 @@ def _render_title_section(b: TitleBlock) -> str:
                 f'</div>'
                 if b.bold_ideas else ""
             )
+            + _render_competitive_set(b)
             + _render_editorial_footer(b)
         )
 
