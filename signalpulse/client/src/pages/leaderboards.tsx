@@ -72,6 +72,7 @@ interface RevenueLeaderboardRow {
   revenueDeltaPct24h: number | null;
   dlcUnits24h: number | null;
   dlcRevenue24h: number | null;
+  ltdUnitsSold: number | null;
   ltdRevenueUsd: number | null;
   revenue30d: number | null;
   revenueDelta30dUsd: number | null;
@@ -113,6 +114,7 @@ type RevenueSortKey =
   | "revenueDeltaPct24h"
   | "dlcUnits24h"
   | "dlcRevenue24h"
+  | "ltdUnitsSold"
   | "ltdRevenueUsd"
   | "revenue30d"
   | "revenueDelta30dUsd"
@@ -447,6 +449,7 @@ export default function Leaderboards() {
                     <SortableHead label="24h Rev Δ%" sortKey="revenueDeltaPct24h" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="24h DLC Units" sortKey="dlcUnits24h" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="24h DLC Revenue" sortKey="dlcRevenue24h" activeSort={revenueSort} onSort={handleRevenueSort} />
+                    <SortableHead label="LTD Units" sortKey="ltdUnitsSold" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="LTD Revenue" sortKey="ltdRevenueUsd" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="30d Revenue" sortKey="revenue30d" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="30d Rev Δ$" sortKey="revenueDelta30dUsd" activeSort={revenueSort} onSort={handleRevenueSort} />
@@ -481,6 +484,7 @@ export default function Leaderboards() {
                       <TableCell><PercentDeltaValue value={row.revenueDeltaPct24h} /></TableCell>
                       <TableCell className="tabular-nums">{formatNumber(row.dlcUnits24h)}</TableCell>
                       <TableCell className="tabular-nums">{formatCurrency(row.dlcRevenue24h)}</TableCell>
+                      <TableCell className="tabular-nums">{formatNumber(row.ltdUnitsSold)}</TableCell>
                       <TableCell className="tabular-nums">{formatCurrency(row.ltdRevenueUsd)}</TableCell>
                       <TableCell className="tabular-nums">{formatCurrency(row.revenue30d)}</TableCell>
                       <TableCell><CurrencyDeltaValue value={row.revenueDelta30dUsd} /></TableCell>

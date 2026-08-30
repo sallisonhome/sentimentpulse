@@ -195,6 +195,10 @@ export interface RevenueLeaderboardRow {
   revenueDeltaPct24h: number | null;
   dlcUnits24h: number | null;
   dlcRevenue24h: number | null;
+  /** Lifetime BASE net units sold to-date. Base-only (matches units24h /
+   * dlcUnits24h being tracked per-SKU-group) -- does NOT include DLC attach
+   * units, so dividing ltdRevenueUsd (base+dlc) by this is not a clean ASP. */
+  ltdUnitsSold: number | null;
   ltdRevenueUsd: number | null;
   revenue30d: number | null;
   revenueDelta30dUsd: number | null;
@@ -326,6 +330,7 @@ export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
       revenueDeltaPct24h: hasAnyHistory ? pctChange(baseRevYesterday, baseRevDayBefore) : null,
       dlcUnits24h: hasAnyHistory ? dlcUnitsYesterday : null,
       dlcRevenue24h: hasAnyHistory ? round2(dlcRevYesterday) : null,
+      ltdUnitsSold: hasAnyHistory ? summary.baseNetUnits : null,
       ltdRevenueUsd: hasAnyHistory ? ltdRevenueUsd : null,
       revenue30d: any30dRow ? round2(revenue30d) : hasAnyHistory ? 0 : null,
       revenueDelta30dUsd: any30dRow || anyPrior30dRow ? round2(revenue30d - revenuePrior30d) : null,
