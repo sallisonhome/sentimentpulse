@@ -1,0 +1,64 @@
+name: SP PLS Insert Hellraiser+Stuntman gamescom 2026 batch (one-off)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  insert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Insert gamescom 2026 PLS milestones
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          DB=/opt/sentimentpulse/signalpulse/data.db
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+          echo "== Renumber Hellraiser (product 7) Release Day placeholder 118 -> 120 to keep chronological order =="
+          sqlite3 "$DB" "
+            UPDATE pls_milestones SET sort_order = 120, updated_at = '$NOW'
+            WHERE id = 185 AND product_id = 7;
+          "
+
+          echo "== Insert Hellraiser: Revival (product_id=7) gamescom 2026 press coverage =="
+          sqlite3 "$DB" "
+            INSERT INTO pls_milestones (product_id, category, name, target_date, actual_date, is_default, sort_order, created_at, updated_at)
+            VALUES
+              (7, 'press_coverage', 'GameSpot gamescom 2026 hands-on preview: Goes Out Of Its Way To Ensure You are Uncomfortable', '2026-08-27', '2026-08-27', 0, 118, '$NOW', '$NOW'),
+              (7, 'press_coverage', 'Niche Gamer gamescom 2026 preview: Hellraiser finally gets a proper game', '2026-08-30', '2026-08-30', 0, 119, '$NOW', '$NOW');
+          "
+
+          echo "== Insert Stuntman: Hollywood (product_id=5) gamescom 2026 Jurassic World reveal =="
+          sqlite3 "$DB" "
+            INSERT INTO pls_milestones (product_id, category, name, target_date, actual_date, is_default, sort_order, created_at, updated_at)
+            VALUES
+              (5, 'video', 'Jurassic World Trailer (Xbox at Gamescom 2026 Broadcast)', '2026-08-27', '2026-08-27', 0, 105, '$NOW', '$NOW'),
+              (5, 'press_coverage', 'IXBT.games coverage: Jurassic World dinosaur stunts revealed for Stuntman: Hollywood at gamescom 2026', '2026-08-30', '2026-08-30', 0, 106, '$NOW', '$NOW');
+          "
+
+          echo ""
+          echo "── Verification: Hellraiser (product 7), most recent 6 ──"
+          sqlite3 -header -column "$DB" "
+            SELECT id, category, name, actual_date, sort_order
+            FROM pls_milestones
+            WHERE product_id = 7 AND deleted_at IS NULL
+            ORDER BY sort_order DESC LIMIT 6;
+          "
+
+          echo ""
+          echo "── Verification: Stuntman (product 5), most recent 6 ──"
+          sqlite3 -header -column "$DB" "
+            SELECT id, category, name, actual_date, sort_order
+            FROM pls_milestones
+            WHERE product_id = 5 AND deleted_at IS NULL
+            ORDER BY sort_order DESC LIMIT 6;
+          "
+          REMOTEEOF
