@@ -1,0 +1,195 @@
+name: Deploy Partnerships
+
+# Partnerships-only deploy (kickoff: PR 2/7, 2026-08-31).
+#
+# Partnerships lives inside the sentimentpulse monorepo at partnerships/, but
+# it's an independent Node app with its own systemd unit (partnerships.service,
+# port 5002). Mirrors the signalpulse-deploy.yml pattern so a partnerships-only
+# change doesn't trigger a full sentimentpulse+gtmstudio+triptracker+signalpulse
+# rebuild.
+#
+# Concurrency: shares the 'deploy-droplet' group with deploy.yml and
+# signalpulse-deploy.yml so if multiple workflows trigger on the same push,
+# they serialize instead of racing npm installs on the shared filesystem.
+#
+# Required secrets (already configured on the sentimentpulse repo):
+#   DROPLET_SSH_KEY — ed25519 private key whose pubkey is in
+#                     /root/.ssh/authorized_keys on the droplet.
+#
+# Note: deploy.yml has paths-ignore: ['partnerships/**', 'signalpulse/**'] so
+# a partnerships-only push doesn't fire the big deploy. When a PR touches
+# partnerships AND something else, both workflows fire; the concurrency group
+# serializes them.
+#
+# What's provisioned on-droplet if missing:
+#   - /etc/partnerships/env (mode 600) — placeholder; DATABASE_URL is added
+#     in PR 3 (schema + SignalPulse sync).
+#   - /etc/systemd/system/partnerships.service — created by deploy.sh; this
+#     workflow only patches EnvironmentFile if the unit predates it.
+
+"on":
+  push:
+    branches: [main]
+    paths:
+      - 'partnerships/**'
+      - '.github/workflows/partnerships-deploy.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull, build, restart partnerships on droplet
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "bash -s" <<'REMOTEEOF'
+          set -euo pipefail
+
+          REPO_DIR=/opt/sentimentpulse
+          APP_DIR="${REPO_DIR}/partnerships"
+
+          echo "== Preflight =="
+          # Tolerant preflight: if partnerships/ hasn't been merged to main yet
+          # (e.g. this workflow got dispatched before PR 1 landed), exit clean
+          # instead of failing. Once the scaffold is on main this becomes a
+          # normal build+restart.
+          if [ ! -d "$APP_DIR" ] || [ ! -f "$APP_DIR/package.json" ]; then
+            echo "partnerships/ not yet present on main — nothing to deploy. Exiting clean."
+            exit 0
+          fi
+
+          echo ""
+          echo "== HEAD before pull =="
+          cd "$REPO_DIR"
+          git log --oneline -1
+
+          echo ""
+          echo "== git pull =="
+          git fetch --quiet origin main
+          git reset --hard origin/main
+          echo "HEAD now: $(git log --oneline -1)"
+
+          echo ""
+          echo "== npm install (partnerships) =="
+          cd "$APP_DIR"
+          npm install --no-audit --no-fund
+
+          echo ""
+          echo "== npm run build =="
+          npm run build
+
+          echo ""
+          echo "== Cache-bust: touch dist/public/index.html =="
+          for html in "${APP_DIR}/dist/public/index.html"; do
+            if [ -f "$html" ]; then
+              touch "$html" && echo "touched $html"
+            else
+              echo "skip (missing): $html"
+            fi
+          done
+
+          echo ""
+          echo "== Ensure /etc/partnerships/env exists =="
+          mkdir -p /etc/partnerships
+          if [ ! -f /etc/partnerships/env ]; then
+            cat > /etc/partnerships/env <<'ENVEOF'
+          # Partnerships env — populated by partnerships-deploy.yml.
+          # DATABASE_URL will be added once PR 3 (schema + SignalPulse sync) lands.
+          ENVEOF
+            chmod 600 /etc/partnerships/env
+            echo "created /etc/partnerships/env"
+          else
+            echo "/etc/partnerships/env already present"
+          fi
+
+          echo ""
+          echo "== Ensure partnerships.service unit exists =="
+          UNIT=/etc/systemd/system/partnerships.service
+          if [ ! -f "$UNIT" ]; then
+            cat > "$UNIT" <<'UNITEOF'
+          [Unit]
+          Description=Partnerships API
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/opt/sentimentpulse/partnerships
+          Environment="NODE_ENV=production"
+          Environment="PORT=5002"
+          EnvironmentFile=-/etc/partnerships/env
+          ExecStart=/usr/bin/node dist/index.cjs
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+          UNITEOF
+            systemctl daemon-reload
+            systemctl enable partnerships
+            echo "installed partnerships.service"
+          else
+            echo "partnerships.service already installed"
+          fi
+
+          echo ""
+          echo "== Restart partnerships.service =="
+          systemctl restart partnerships
+          sleep 3
+          if systemctl is-active --quiet partnerships; then
+            echo "partnerships: active"
+          else
+            echo "partnerships: FAILED"
+            systemctl status partnerships --no-pager -n 30 || true
+            exit 1
+          fi
+
+          echo ""
+          echo "== Loopback smoke test =="
+          CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
+              http://127.0.0.1:5002/api/health || echo "000")
+          echo "127.0.0.1:5002/api/health -> ${CODE}"
+          if [ "$CODE" != "200" ]; then
+            echo "ERR: partnerships not responding 200 on :5002 after restart"
+            exit 1
+          fi
+
+          echo ""
+          echo "-- /api/health response:"
+          curl -sS --max-time 5 http://127.0.0.1:5002/api/health || echo "HEALTH ERR"
+          echo ""
+
+          echo ""
+          echo "== Reload nginx (in case /partnerships/ block was added this deploy) =="
+          if nginx -t 2>&1 | tail -5; then
+            systemctl reload nginx
+            echo "nginx reloaded"
+          else
+            echo "WARN: nginx -t failed; leaving current config running"
+          fi
+
+          echo ""
+          echo "== External smoke test via nginx =="
+          EXT=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
+              -H "Host: 104.236.239.46" \
+              http://127.0.0.1/partnerships/api/health || echo "000")
+          echo "nginx -> /partnerships/api/health -> ${EXT}"
+          if [ "$EXT" != "200" ]; then
+            echo "WARN: nginx did not return 200 for /partnerships/api/health — check /etc/nginx/sites-available/sentimentpulse has the /partnerships/ block."
+          fi
+
+          echo ""
+          echo "== DONE =="
+          REMOTEEOF

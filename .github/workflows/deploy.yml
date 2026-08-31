@@ -39,6 +39,7 @@ on:
     # also fires — concurrency group 'deploy-droplet' serializes them.
     paths-ignore:
       - 'signalpulse/**'
+      - 'partnerships/**'
   workflow_dispatch:
 
 concurrency:
