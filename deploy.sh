@@ -110,6 +110,17 @@ npm config set registry https://registry.npmjs.org/
 npm install
 npm run build
 
+# ── 8b. Partnerships (Node.js/Express) ───────────────────────────────
+echo "[8b/11] Building Partnerships..."
+if [ -d "$APP_DIR/partnerships" ]; then
+  cd "$APP_DIR/partnerships"
+  npm config set registry https://registry.npmjs.org/
+  npm install
+  npm run build
+else
+  echo "  ⚠  partnerships/ not present in this checkout — skipping."
+fi
+
 # ── 9. Systemd services ────────────────────────────────────────────────────
 echo "[9/11] Creating systemd services..."
 
@@ -192,11 +203,46 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+# Partnerships (Node.js/Express on port 5002)
+# Reads /etc/partnerships/env (populated by partnerships-deploy.yml) for
+# DATABASE_URL and, once PR 6 lands, saber-auth vars. EnvironmentFile is
+# tolerant (-) so the service still starts if the env file hasn't been
+# provisioned yet on a fresh droplet.
+mkdir -p /etc/partnerships
+if [ ! -f /etc/partnerships/env ]; then
+  cat > /etc/partnerships/env << 'ENVEOF'
+# Partnerships env — populated by partnerships-deploy.yml on next deploy.
+# DATABASE_URL will be added once PR 3 (schema + SignalPulse sync) lands.
+ENVEOF
+  chmod 600 /etc/partnerships/env
+fi
+
+cat > /etc/systemd/system/partnerships.service << 'EOF'
+[Unit]
+Description=Partnerships API
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/sentimentpulse/partnerships
+Environment="NODE_ENV=production"
+Environment="PORT=5002"
+EnvironmentFile=-/etc/partnerships/env
+ExecStart=/usr/bin/node dist/index.cjs
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
-systemctl enable sentimentpulse signalpulse triptracker
+systemctl enable sentimentpulse signalpulse triptracker partnerships
 systemctl restart sentimentpulse
 systemctl restart signalpulse
 systemctl restart triptracker
+systemctl restart partnerships
 
 # ── 10. Nginx ───────────────────────────────────────────────────────────────
 echo "[10/11] Configuring Nginx..."
@@ -315,6 +361,31 @@ server {
         proxy_read_timeout 120s;
         client_max_body_size 25M;
     }
+
+    # Partnerships — static frontend
+    location ~ ^/partnerships/assets/ {
+        alias /opt/sentimentpulse/partnerships/dist/public/assets/;
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files \$uri =404;
+    }
+
+    location /partnerships/ {
+        alias /opt/sentimentpulse/partnerships/dist/public/;
+        index index.html;
+        try_files \$uri \$uri/ /partnerships/index.html;
+        add_header Cache-Control "no-cache, must-revalidate";
+    }
+
+    # Partnerships API (Node/Express on port 5002)
+    location /partnerships/api/ {
+        proxy_pass http://127.0.0.1:5002/api/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_read_timeout 120s;
+    }
 }
 EOF
 
@@ -336,6 +407,7 @@ echo "  SignalPulse:      http://${SERVER_IP}/signal/"
 echo "  Trip Tracker:     http://${SERVER_IP}/trips/"
 echo "  Genre Pulse:      http://${SERVER_IP}/genrepulse/"
 echo "  GTM Studio:       http://${SERVER_IP}/gtm/"
+echo "  Partnerships:     http://${SERVER_IP}/partnerships/"
 echo ""
 echo "  Services:"
 echo "    systemctl status gtmstudio"
