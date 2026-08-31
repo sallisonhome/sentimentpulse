@@ -231,12 +231,23 @@ def build_weekly_block(
         from services.editorial_research_service import editorial_citation_map
         summary_cmap.update(editorial_citation_map(editorial_articles))
 
+    # 2026-08-30 (Halloween/Rideshare contamination fix): override the
+    # WindowSummary's tier-agnostic totals with dedicated-community-only
+    # totals so the parent metrics strip agrees with the chart and volume
+    # commentary. Both numbers now count the same posts: those in the
+    # game's dedicated Reddit sub + Steam Forum + Steam Reviews. Broad-
+    # keyword Bluesky/general-sub matches don't reach either.
+    d_pos, d_neg, d_neu = _load_dedicated_pos_neg_neu_totals(
+        db, game_id, days=7, today=today,
+    )
+    d_total = d_pos + d_neg + d_neu
+
     competitor_bullets = _build_competitor_bullets(
         db,
         parent_game_id=game_id,
-        parent_positive=summary.positive_count,
-        parent_negative=summary.negative_count,
-        parent_total=summary.total_posts,
+        parent_positive=d_pos,
+        parent_negative=d_neg,
+        parent_total=d_total,
         parent_name=name,
         period="weekly",
         today=today,
@@ -244,11 +255,11 @@ def build_weekly_block(
 
     return TitleBlock(
         game_id=game_id, name=name,
-        total_posts=summary.total_posts,
-        positive=summary.positive_count,
-        negative=summary.negative_count,
-        neutral=summary.neutral_count,
-        pos_neg_ratio=_format_ratio(summary.positive_count, summary.negative_count),
+        total_posts=d_total,
+        positive=d_pos,
+        negative=d_neg,
+        neutral=d_neu,
+        pos_neg_ratio=_format_ratio(d_pos, d_neg),
         executive_summary=summary.executive_summary or "",
         recommended_actions=summary.recommended_actions or "",
         bold_ideas=list(summary.bold_ideas or []),
@@ -703,6 +714,59 @@ def _describe_ratio_stance(positive: int, negative: int) -> str:
     if negative >= 1.5 * positive:
         return f"leans negative at 1:{negative / positive:.1f}"
     return "sits roughly balanced"
+
+
+def _load_dedicated_pos_neg_neu_totals(
+    db: Session, game_id: int, days: int, today: date
+) -> tuple[int, int, int]:
+    """Return (positive, negative, neutral) counts of `dedicated_sub`-tier
+    posts for the last `days` days ending on `today`.
+
+    Used to override WindowSummary's tier-agnostic totals in the digest's
+    parent metrics strip, so the header numbers agree with the chart and
+    caption. Also used when parent volume is fed into the caption / bullet
+    ranking. Missing rows contribute zero.
+    """
+    from models import RawPost, SentimentRecord, SentimentEnum as _SE  # noqa: PLC0415
+    from sqlalchemy import func as _func  # noqa: PLC0415
+
+    try:
+        from routers.dashboard import _NOT_DRIFT  # noqa: PLC0415
+    except Exception:
+        _NOT_DRIFT = True  # type: ignore[assignment]
+
+    start_day = today - timedelta(days=days - 1)
+    pos = neg = neu = 0
+
+    try:
+        q = (
+            db.query(SentimentRecord.sentiment, _func.count(RawPost.id).label("cnt"))
+            .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(
+                RawPost.game_id == game_id,
+                RawPost.post_date.isnot(None),
+                _func.date(RawPost.post_date) >= start_day,
+                _func.date(RawPost.post_date) <= today,
+                RawPost.relevance_tier == "dedicated_sub",
+            )
+        )
+        if _NOT_DRIFT is not True:
+            q = q.filter(_NOT_DRIFT)
+        for r in q.group_by(SentimentRecord.sentiment).all():
+            s = getattr(r.sentiment, "value", str(r.sentiment))
+            if s == "positive":
+                pos = int(r.cnt or 0)
+            elif s == "negative":
+                neg = int(r.cnt or 0)
+            elif s == "neutral":
+                neu = int(r.cnt or 0)
+    except Exception as exc:
+        logger.warning(
+            "digest: dedicated totals load failed for game_id=%d: %s",
+            game_id, exc,
+        )
+
+    return pos, neg, neu
 
 
 def _load_daily_pos_neg_series(
