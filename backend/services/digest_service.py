@@ -781,11 +781,16 @@ def _render_trend_png_data_uri(
     """Render a 28-day daily trend PNG (parent + up to N competitors, pos+neg
     only) and return an inline data:image/png;base64 URI.
 
-    Layout: translucent thin lines for raw daily points + bold 7-day rolling
-    average overlays. This is the 2026-08-30 evening fix for the "any so
-    linear" complaint — 4 weekly buckets was too coarse and only 3 points
-    of connection between them read as jagged. 28 daily points give a real
-    trend shape.
+    Layout: ONE line per title — a 7-day rolling average of daily post
+    counts. So a section with 3 competitors + 1 parent renders 4 lines
+    total.
+
+    History: first cut used 4 weekly buckets which read as jagged. Second
+    cut added translucent raw-daily lines under the smoothed overlay,
+    giving 2 lines per title (6 for a parent+3 competitors). Reviewer
+    (Steve, 2026-08-30) correctly called that out as unreadable — no
+    context on why there were 6 lines for 3 titles. Third cut (this)
+    keeps only the smoothed line per title.
     """
     if not competitors or not parent_daily:
         return ""
@@ -814,9 +819,7 @@ def _render_trend_png_data_uri(
         parent_color = "#1a3a5c"
         competitor_colors = ["#b91c1c", "#0d9488", "#a16207", "#7c3aed"]
 
-        # Parent: translucent daily + bold 7d rolling
-        ax.plot(parent_days, parent_counts,
-                linewidth=0.9, color=parent_color, alpha=0.35, zorder=2)
+        # ONE line per title — 7-day rolling average.
         ax.plot(parent_days, parent_smooth,
                 linewidth=2.4, color=parent_color, alpha=1.0, zorder=4,
                 label=parent_name)
@@ -826,18 +829,26 @@ def _render_trend_png_data_uri(
             days = [d for d, _ in comp["daily"]]
             counts = [c for _, c in comp["daily"]]
             smooth = _smooth_7d(counts)
-            ax.plot(days, counts,
-                    linewidth=0.8, color=c_color, alpha=0.30, zorder=2)
             ax.plot(days, smooth,
-                    linewidth=1.9, color=c_color, alpha=0.95, zorder=3,
+                    linewidth=2.1, color=c_color, alpha=0.95, zorder=3,
                     label=comp["name"])
 
+        # Title + subtitle stacked. `pad` reserves vertical space above the
+        # axes for both lines; the subtitle sits just below the title.
         ax.set_title(
-            "Daily post volume, last 28 days \u2014 parent vs. competitors "
-            "(7-day rolling average; pos + neg only)",
-            fontsize=9.5, color="#1f2937", loc="left", pad=10,
+            "Daily post volume, last 28 days \u2014 one line per title",
+            fontsize=10, color="#1f2937", loc="left", pad=22,
         )
-        ax.set_ylabel("Qualifying posts / day", fontsize=8.5, color="#6b7280")
+        ax.text(
+            0, 1.04,
+            "Each line is a 7-day rolling average of that title's daily "
+            "pos+neg post count.",
+            transform=ax.transAxes,
+            fontsize=8, color="#6b7280",
+            verticalalignment="bottom",
+        )
+        ax.set_ylabel("Qualifying posts / day (7-day avg)",
+                      fontsize=8.5, color="#6b7280")
         ax.tick_params(axis="both", labelsize=8.5, colors="#6b7280")
 
         # X-axis: daily minor ticks, major every 4 days
