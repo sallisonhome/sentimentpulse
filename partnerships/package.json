@@ -1,6 +1,6 @@
 {
   "name": "partnerships",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -13,23 +13,25 @@
     "db:push": "drizzle-kit push"
   },
   "dependencies": {
+    "better-sqlite3": "^11.3.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "drizzle-orm": "^0.39.3",
     "drizzle-zod": "^0.7.0",
     "express": "^5.0.1",
-    "pg": "^8.16.3",
+    "nanoid": "^5.0.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "recharts": "^2.15.2",
     "wouter": "^3.3.5",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.0",
     "@types/node": "20.19.27",
-    "@types/pg": "^8.11.10",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.7.0",

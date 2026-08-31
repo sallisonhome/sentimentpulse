@@ -1,65 +1,38 @@
-import express, { type Request, type Response, type NextFunction } from "express";
+import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
-import { createServer } from "http";
 import { registerRoutes } from "./routes";
-import { serveStatic } from "./static";
+import { initSchema } from "./db";
+import { serveStatic, setupVite } from "./static";
 import { log } from "./log";
 
+const PORT = Number(process.env.PORT || 5002);
 const app = express();
-const httpServer = createServer(app);
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+app.use(cors());
 app.use(cookieParser());
 
-app.use(
-  cors({
-    origin: true,
-    credentials: true,
-  }),
-);
+// Init the SQLite schema (idempotent).
+initSchema();
 
-// Lightweight request logger (mirrors triptracker / signalpulse pattern)
-app.use((req, _res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  _res.on("finish", () => {
-    if (path.startsWith("/api")) {
-      log(`${req.method} ${path} ${_res.statusCode} ${Date.now() - start}ms`);
-    }
-  });
-  next();
-});
+// API routes
+registerRoutes(app);
 
+// Static / SPA
 async function main() {
-  await registerRoutes(app);
-
-  // Error handler
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    log(`error: ${err.message}`);
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // Static serving in production; Vite dev middleware would go here if we
-  // ever want single-process dev. For now `npm run dev` runs the API only,
-  // and the Vite client is run separately via `vite` during dev.
   if (process.env.NODE_ENV === "production") {
     serveStatic(app);
+  } else {
+    await setupVite(app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  const host = process.env.HOST || "127.0.0.1";
-  const port = parseInt(process.env.PORT || "5002", 10);
-
-  httpServer.listen(port, host, () => {
-    log(`partnerships listening on http://${host}:${port}`);
+  app.listen(PORT, "0.0.0.0", () => {
+    log(`partnerships listening on :${PORT}`);
   });
 }
 
 main().catch((err) => {
-  log(`fatal: ${err.message}`);
+  // eslint-disable-next-line no-console
+  console.error("[partnerships] fatal", err);
   process.exit(1);
 });
