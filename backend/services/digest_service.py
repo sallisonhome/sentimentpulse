@@ -781,16 +781,19 @@ def _render_trend_png_data_uri(
     """Render a 28-day daily trend PNG (parent + up to N competitors, pos+neg
     only) and return an inline data:image/png;base64 URI.
 
-    Layout: ONE line per title — a 7-day rolling average of daily post
-    counts. So a section with 3 competitors + 1 parent renders 4 lines
-    total.
+    Layout: ONE line per title showing ACTUAL daily post counts (not a
+    rolling average). Parent + up to 3 competitors = up to 4 lines total.
 
-    History: first cut used 4 weekly buckets which read as jagged. Second
-    cut added translucent raw-daily lines under the smoothed overlay,
-    giving 2 lines per title (6 for a parent+3 competitors). Reviewer
-    (Steve, 2026-08-30) correctly called that out as unreadable — no
-    context on why there were 6 lines for 3 titles. Third cut (this)
-    keeps only the smoothed line per title.
+    History (kept as a note so the next reviewer doesn't cycle back):
+      * v1: 4 weekly buckets \u2014 too coarse, read as jagged 3-segment lines.
+      * v2: raw daily + 7-day rolling overlay per title (2 lines per
+        title, 6 for a parent+3 comps) \u2014 unreadable, no legend note.
+      * v3: only the 7-day rolling line per title \u2014 hid spikes /
+        drops that map to real press beats, launch events, Gamescom, etc.
+      * v4 (this): raw daily counts, one line per title. Spike-visible
+        \u2014 which is the whole point of a launch-tracking dashboard.
+        Subtitle explicitly says these are daily counts so nobody has
+        to guess the smoothing.
     """
     if not competitors or not parent_daily:
         return ""
@@ -810,7 +813,6 @@ def _render_trend_png_data_uri(
     try:
         parent_days = [d for d, _ in parent_daily]
         parent_counts = [c for _, c in parent_daily]
-        parent_smooth = _smooth_7d(parent_counts)
 
         fig, ax = plt.subplots(figsize=(7.2, 3.2), dpi=140)
         fig.patch.set_facecolor("#ffffff")
@@ -819,19 +821,20 @@ def _render_trend_png_data_uri(
         parent_color = "#1a3a5c"
         competitor_colors = ["#b91c1c", "#0d9488", "#a16207", "#7c3aed"]
 
-        # ONE line per title — 7-day rolling average.
-        ax.plot(parent_days, parent_smooth,
-                linewidth=2.4, color=parent_color, alpha=1.0, zorder=4,
-                label=parent_name)
+        # ONE line per title, plotting ACTUAL daily counts. Small circle
+        # markers at each point make individual day spikes obvious \u2014
+        # e.g. a Gamescom trailer day, a launch beat, a Reddit AMA spike.
+        ax.plot(parent_days, parent_counts,
+                linewidth=2.0, color=parent_color, alpha=1.0, zorder=4,
+                marker="o", markersize=3.2, label=parent_name)
 
         for i, comp in enumerate(competitors):
             c_color = competitor_colors[i % len(competitor_colors)]
             days = [d for d, _ in comp["daily"]]
             counts = [c for _, c in comp["daily"]]
-            smooth = _smooth_7d(counts)
-            ax.plot(days, smooth,
-                    linewidth=2.1, color=c_color, alpha=0.95, zorder=3,
-                    label=comp["name"])
+            ax.plot(days, counts,
+                    linewidth=1.7, color=c_color, alpha=0.95, zorder=3,
+                    marker="o", markersize=2.8, label=comp["name"])
 
         # Title + subtitle stacked. `pad` reserves vertical space above the
         # axes for both lines; the subtitle sits just below the title.
@@ -841,14 +844,14 @@ def _render_trend_png_data_uri(
         )
         ax.text(
             0, 1.04,
-            "Each line is a 7-day rolling average of that title's daily "
-            "pos+neg post count.",
+            "Each line is that title's actual daily pos+neg post count "
+            "(no smoothing) so spikes from press beats or launch events "
+            "are visible.",
             transform=ax.transAxes,
             fontsize=8, color="#6b7280",
             verticalalignment="bottom",
         )
-        ax.set_ylabel("Qualifying posts / day (7-day avg)",
-                      fontsize=8.5, color="#6b7280")
+        ax.set_ylabel("Qualifying posts / day", fontsize=8.5, color="#6b7280")
         ax.tick_params(axis="both", labelsize=8.5, colors="#6b7280")
 
         # X-axis: daily minor ticks, major every 4 days
