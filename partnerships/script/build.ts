@@ -5,13 +5,16 @@ import { rm, readFile } from "fs/promises";
 // Server deps that we want bundled into dist/index.cjs to reduce cold-start
 // openat(2) syscalls. Everything else stays external and loads from
 // node_modules at runtime.
+// Kept small on purpose: better-sqlite3 is a native module and MUST stay
+// external (esbuild can't bundle .node addons). Same for anything with a
+// runtime require of dynamic paths.
 const allowlist = [
   "cookie-parser",
   "cors",
   "drizzle-orm",
   "drizzle-zod",
   "express",
-  "pg",
+  "nanoid",
   "zod",
 ];
 

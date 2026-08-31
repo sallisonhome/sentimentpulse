@@ -1,56 +1,79 @@
-# Partnerships
+# Saber Publishing Partnerships
 
-Saber Publishing Partnerships Dashboard — a sub-app in the Saber Intelligence
-Suite. Full specification lives in
-[`docs/partnerships/README.md`](../docs/partnerships/README.md).
+Sub-app of the Saber Intelligence Suite. Tracks value-add revenue and marketing
+partnerships across every Saber title.
 
-## Stack
+## Ports & Paths
 
-Mirrors `triptracker/` and `signalpulse/`:
+- **Port:** 5002 (SignalPulse 5000, Trip Tracker 5001, Partnerships 5002)
+- **Public URL:** `http://104.236.239.46/partnerships/`
+- **API prefix:** `/partnerships/api/`
+- **Data:** SQLite at `/opt/sentimentpulse/partnerships/data.db`
+- **SignalPulse source of titles:** read-only handle on
+  `/opt/sentimentpulse/signalpulse/data.db` (override with `SIGNALPULSE_DB_PATH`)
 
-- **Server:** Node 20 + Express 5 + TypeScript (tsx in dev, esbuild bundle in prod)
-- **Client:** React 18 + Vite + Tailwind
-- **DB:** Postgres via Drizzle ORM
-- **Auth (planned):** saber-auth (staged `both` → `saber`, same as SignalPulse)
+## Full spec
+
+See [docs/partnerships/README.md](../docs/partnerships/README.md).
 
 ## Local dev
 
 ```bash
 cd partnerships
 npm install
-npm run dev            # API on http://127.0.0.1:5002 (PORT overridable)
-# in a second shell for the client:
-npx vite               # Vite dev server, proxied under /partnerships/ in prod
+# Point at a local SignalPulse DB (or leave unset — the app degrades to
+# an empty title list and stays green)
+export SIGNALPULSE_DB_PATH=../signalpulse/data.db
+npx tsx server/index.ts
+# → http://127.0.0.1:5002/
 ```
 
-Health check:
+For a production-mode build + serve:
 
 ```bash
-curl http://127.0.0.1:5002/api/health
-# → { "ok": true, "app": "partnerships", "version": "0.1.0", "time": "..." }
+npm run build
+PORT=5002 NODE_ENV=production node dist/index.cjs
 ```
 
-## Production
+## Endpoints
 
-Behind nginx at `http://104.236.239.46/partnerships/`:
+Read:
 
-- Static assets served from `/opt/sentimentpulse/partnerships/dist/public/`
-- API proxied at `/partnerships/api/*` → `127.0.0.1:5002/api/*`
-- Systemd unit: `partnerships.service` (added in the deploy-wiring PR)
-- Deploy workflow: `.github/workflows/partnerships-deploy.yml` (added in the
-  deploy-wiring PR)
+- `GET /api/health`
+- `GET /api/titles` — SignalPulse products projected
+- `GET /api/titles/:id`
+- `GET /api/dashboard` — 12-column rollup, hides titles with no opportunities
+- `GET /api/pdp/:productId` — header total, ring chart, 4 quadrants, In Discussion summary
 
-## What's here today (scaffold PR)
+Write:
 
-- Build tooling (`package.json`, `tsconfig.json`, `vite.config.ts`,
-  `tailwind.config.ts`, `postcss.config.js`, `drizzle.config.ts`,
-  `components.json`, `script/build.ts`)
-- Express server with `GET /api/health` and a placeholder `GET /api/titles`
-- Empty Vite/React client that pings health and renders a "coming soon" shell
-- Empty Drizzle schema (`shared/schema.ts`) — populated in PR 3
+- `POST/PATCH/DELETE /api/opportunities[/:id]` — Incremental, CE, Marketing (soft-delete via DELETE with `{reason}`)
+- `POST/PATCH/DELETE /api/retail-partners[/:id]` — Physical Retail Partners
+- `POST /api/ce-items` / `DELETE /api/ce-items/:id` — Items inside a Collector's Edition
 
-## What's coming next
+All writes validated with drizzle-zod. Every create / update / soft-delete is
+mirrored into `opportunity_audit_log`.
 
-See [`docs/partnerships/README.md`](../docs/partnerships/README.md#follow-up-prs)
-for the 7-PR follow-up plan. Immediate next PR is **deploy wiring** (nginx +
-systemd + GitHub Actions workflow).
+## Schema
+
+- `opportunities` — one row per opportunity, `bucket` in {IncrementalRevenue, PhysicalRetail, MarketingOpportunity, CollectorsEdition}
+- `physical_retail_partners` — one row per partner per title
+- `collectors_edition_items` — child rows inside a CE opportunity (+Item widget)
+- `opportunity_audit_log` — append-only audit trail
+
+See `shared/schema.ts` for the full source of truth.
+
+## Design
+
+Dark chrome matches the launcher palette (`#0a0c10` bg, `#141720` surface).
+Accent is teal (`#14b8a6`), distinct from every existing sub-app.
+
+PDP quadrants use a deep-navy panel matching the Hellraiser Revival mockup at
+`docs/partnerships/pdp-quadrant-mockup.jpg`, with the quadrant order locked to
+the mockup: Physical Retail (top-left), Incremental Revenue (top-right),
+Physical Collectors Editions (bottom-left), Marketing Opportunities (bottom-right).
+
+## Auth
+
+Currently unauthenticated. Saber auth wiring lands in a separate PR that flips
+the whole suite together (mirrors the SignalPulse/TripTracker rollout).

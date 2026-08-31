@@ -1,12 +1,47 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Partnerships palette — deliberately blends the Saber Suite launcher's dark
+ * chrome (bg #0a0c10, surfaces #141720) with the deep-navy quadrant panels
+ * from the Hellraiser Revival PDP mockup. Accent is teal (#14b8a6) so it
+ * reads as distinct from SignalPulse amber, TripTracker purple, GenrePulse
+ * cyan, GTM orange, and SentimentPulse green.
+ */
 :root {
   color-scheme: dark;
-  font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
-    Cantarell, sans-serif;
+
+  --bg: #0a0c10;
+  --surface: #141720;
+  --surface-2: #1c2030;
+  --surface-3: #232838;
+  --border: #232838;
+  --border-strong: #2f3548;
+
+  --text: #e8e9ed;
+  --text-muted: #9096ad;
+  --text-dim: #6b7188;
+
+  /* Deep navy quadrant panels — pulled directly from the mockup */
+  --panel: #12244a;
+  --panel-header: #1a3067;
+  --panel-border: #244084;
+
+  --accent: #14b8a6; /* teal */
+  --accent-glow: rgba(20, 184, 166, 0.12);
+
+  --secured: #22c55e;
+  --secured-bg: rgba(34, 197, 94, 0.12);
+  --discussion: #f59e0b;
+  --discussion-bg: rgba(245, 158, 11, 0.12);
+  --danger: #ef4444;
+  --danger-bg: rgba(239, 68, 68, 0.12);
+
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    sans-serif;
 }
 
 html,
@@ -17,4 +52,110 @@ body,
 
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+/* Scrollbars — dark, subtle */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* Small utility layers */
+@layer components {
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium;
+  }
+  .chip-secured {
+    background: var(--secured-bg);
+    color: var(--secured);
+  }
+  .chip-discussion {
+    background: var(--discussion-bg);
+    color: var(--discussion);
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium;
+    background: var(--accent);
+    color: #0a0c10;
+  }
+  .btn-primary:hover {
+    filter: brightness(1.05);
+  }
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover {
+    background: var(--surface-3);
+  }
+  .input,
+  .select,
+  .textarea {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    width: 100%;
+  }
+  .input:focus,
+  .select:focus,
+  .textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+  .label {
+    @apply text-xs font-medium uppercase tracking-wider;
+    color: var(--text-dim);
+  }
+  /* Deep-navy quadrant matching the mockup */
+  .quadrant {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 320px;
+  }
+  .quadrant-header {
+    background: var(--panel-header);
+    padding: 0.6rem 1rem;
+    text-align: center;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    font-size: 0.75rem;
+    color: #fff;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  .quadrant-body {
+    flex: 1;
+    padding: 0.9rem 1rem;
+    color: #cbd5f5;
+    font-size: 0.85rem;
+  }
 }
