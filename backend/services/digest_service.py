@@ -562,32 +562,54 @@ def _render_editorial_footer(b: TitleBlock) -> str:
     )
 
 
-# ── Competitive Set (2026-08-30, revised evening) ────────────────────────────
-# For any parent title with rows in competitor_games, render a compact
-# section with:
+# ── Competitive Set (2026-08-30, v3 — evening feedback) ──────────────────────
+# For any parent title with rows in competitor_games, render:
 #
-#   1. A pre-rendered 4-week trend PNG (parent + each competitor, pos+neg
-#      posts only). PNG is inline data URI so no external hosting needed.
-#      SVG isn't viable in email (Yahoo/Gmail/Outlook strip it).
-#   2. ONE short caption sentence describing the aggregate volume gap.
-#      Replaces the paragraph-length repeated-driver text from the first cut.
-#   3. 1-2 TOPIC-MOMENTUM bullets per featured competitor (max 3 competitors
-#      featured), showing what specific topics have positive/negative
-#      momentum for that peer this week. Sourced from TopicTrend rows with
-#      generic-label filtering, plus a WindowSummary.top_*_topics fallback.
+#   1. A pre-rendered PNG line chart showing the last 28 DAILY post-volume
+#      points for parent + up to 3 competitors, with a bold 7-day trailing
+#      average overlaid on translucent daily lines. Inline data URI.
+#   2. One short caption sentence stating the aggregate volume gap.
+#   3. Per featured competitor:
+#        (a) ONE volume-vs-parent bullet naming that specific competitor's
+#            weekly volume delta relative to the Saber title.
+#        (b) ONE topic-momentum bullet naming what specific positive AND/OR
+#            negative topics have real momentum for that peer this week.
 #
-# Rationale (2026-08-30 evening user feedback): the initial per-competitor
-# format was repeating the same generic IP-gravity clause on every bullet.
-# Volume commentary belongs in a chart + one caption; the rest of the
-# section should tell the reader what people are actually talking about
-# for each peer.
+# Topic-quality safeguards (2026-08-30 evening user feedback: "Halloween
+# Nights Horror" was surfacing with only 2 mentions against 10,669 total
+# Halloween posts because velocity + trend_direction alone was driving
+# promotion):
+#
+#   * Absolute mention floor of 5 — a topic with 1-4 mentions never
+#     enters a bullet. Filters out fringe noise like "Halloween Nights
+#     Horror" (2 mentions) or "Turkish Language Support Request" (1).
+#   * Relative floor of 1% of the competitor's weekly total — for
+#     high-volume peers like Halloween (10k+ posts) the effective floor
+#     jumps to ~100+ mentions, which correctly blocks anything that
+#     isn't a real community topic.
+#   * Sort order is (mention_count desc, velocity desc, rising first),
+#     not (rising first, velocity desc, mention_count desc). A topic
+#     with 200 stable mentions must beat a topic with 2 rising mentions.
+#   * Per-title blocklists for known-wrong labels (e.g. Halloween Nights
+#     Horror is Universal Studios' theme-park event, not the game).
+#   * Generic labels ("General Discussion", "General Positive Sentiment",
+#     etc.) are still filtered as before.
 
-# Maximum competitors we generate topic bullets for. All are drawn on the
-# chart and summarised in the aggregate caption regardless.
 _COMPETITOR_MAX_FEATURED = 3
 
-# Topic labels that carry no information — filtered so we prefer specific
-# ones. Match is case-insensitive.
+# Minimum mention count for a topic to be surfaced in a bullet.
+_TOPIC_ABSOLUTE_FLOOR = 5
+
+# Fraction of the competitor's total weekly posts a topic must represent.
+_TOPIC_RELATIVE_FLOOR = 0.01
+
+# Boost required for "(rising)" tag to appear next to a topic. The velocity
+# unit is mentions-per-day averaged over the trailing week, so a topic
+# rising by ≥1.0 posts/day is meaningful; anything below is noise.
+_RISING_VELOCITY_THRESHOLD = 1.0
+
+# Generic topic labels — filtered so we prefer specific ones. Match is
+# case-insensitive on stripped input.
 _GENERIC_TOPIC_LABELS = {
     "general discussion",
     "general positive sentiment",
@@ -613,6 +635,30 @@ _GENERIC_TOPIC_LABELS = {
     "n/a",
 }
 
+# Per-game blocklist for topic labels that a human reader knows are
+# meaningfully wrong for that game — e.g. Halloween: The Game (id=140)
+# consistently surfaces "Halloween Nights Horror" (Universal Studios'
+# Halloween Horror Nights theme-park event) which has nothing to do
+# with the video game. This is a targeted override on top of the
+# generic + floor filters; when we spot a false-positive we add it
+# here rather than trying to invent a general rule.
+#
+# Match is case-insensitive on stripped input. Add a note next to each
+# entry explaining why it's blocked so future maintainers know what
+# real-world topic it refers to.
+_TOPIC_BLOCKLIST_BY_GAME: dict[int, set[str]] = {
+    # Halloween: The Game (game_id 140):
+    140: {
+        "halloween nights horror",   # Universal Studios theme-park event
+        "halloween horror nights",   # Universal Studios theme-park event
+        "hhn",                       # Common HHN abbreviation
+        "halloween 20 amazon",       # Halloween 2018 movie DVD/streaming chatter
+        "halloween meme culture",    # Real-world holiday meme content
+        "halloween event timing",    # Real-world holiday calendar chatter
+        "halloween theme & atmosphere",  # Ambiguous — hard to disambiguate
+    },
+}
+
 
 def _is_specific_topic(label) -> bool:
     """True if `label` is worth surfacing (not generic boilerplate)."""
@@ -622,6 +668,14 @@ def _is_specific_topic(label) -> bool:
     if not stripped:
         return False
     return stripped.lower() not in _GENERIC_TOPIC_LABELS
+
+
+def _is_blocked_for_game(label: str, game_id: int) -> bool:
+    """True if `label` is on the per-game blocklist for `game_id`."""
+    if not label or not isinstance(label, str):
+        return False
+    blocked = _TOPIC_BLOCKLIST_BY_GAME.get(game_id, set())
+    return label.strip().lower() in blocked
 
 
 def _weighted_pos_neg_score(positive: int, negative: int) -> float:
@@ -651,119 +705,146 @@ def _describe_ratio_stance(positive: int, negative: int) -> str:
     return "sits roughly balanced"
 
 
-def _load_weekly_pos_neg_series(
-    db: Session, game_id: int, weeks: int, today: date
-) -> list[int]:
-    """Return a length-`weeks` list of (positive + negative) post counts,
-    one entry per calendar week ending on `today`. Oldest first.
+def _load_daily_pos_neg_series(
+    db: Session, game_id: int, days: int, today: date
+) -> list[tuple[date, int]]:
+    """Return a length-`days` list of (day, pos+neg count) tuples ending on
+    `today`. Oldest first. Missing days contribute zero.
 
-    Uses DailySummary rows so this doesn't require WindowSummaries beyond
-    the current one. Missing days contribute zero.
+    Uses RawPost + SentimentRecord (matching routers/dashboard.py
+    competitor-timeseries endpoint from 2026-07-27) so the chart series
+    is consistent with the on-dashboard chart. Filters out drift-flagged
+    posts and NULL-post_date rows.
     """
-    from models import DailySummary  # noqa: PLC0415
-    from sqlalchemy import and_ as _and  # noqa: PLC0415
+    from models import RawPost, SentimentRecord, SentimentEnum as _SE  # noqa: PLC0415
+    from sqlalchemy import func as _func  # noqa: PLC0415
 
-    series: list[int] = []
-    for w in range(weeks - 1, -1, -1):
-        week_end = today - timedelta(days=7 * w)
-        week_start = week_end - timedelta(days=6)
-        try:
-            rows = (
-                db.query(DailySummary)
-                .filter(
-                    _and(
-                        DailySummary.game_id == game_id,
-                        DailySummary.summary_date >= week_start,
-                        DailySummary.summary_date <= week_end,
-                    )
-                )
-                .all()
+    try:
+        from routers.dashboard import _NOT_DRIFT  # noqa: PLC0415
+    except Exception:
+        _NOT_DRIFT = True  # type: ignore[assignment]
+
+    start_day = today - timedelta(days=days - 1)
+    all_days = [start_day + timedelta(days=i) for i in range(days)]
+    day_counts: dict[date, int] = {d: 0 for d in all_days}
+
+    try:
+        day_expr = _func.date(RawPost.post_date).label("day")
+        q = (
+            db.query(day_expr, _func.count(RawPost.id).label("cnt"))
+            .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(
+                RawPost.game_id == game_id,
+                RawPost.post_date.isnot(None),
+                _func.date(RawPost.post_date) >= start_day,
+                _func.date(RawPost.post_date) <= today,
+                SentimentRecord.sentiment.in_([
+                    _SE.positive, _SE.negative,
+                ]),
             )
-            wk_total = sum(
-                (r.positive_count or 0) + (r.negative_count or 0) for r in rows
-            )
-        except Exception as exc:
-            logger.warning(
-                "digest: weekly series load failed for game_id=%d week ending %s: %s",
-                game_id, week_end.isoformat(), exc,
-            )
-            wk_total = 0
-        series.append(wk_total)
-    return series
+        )
+        if _NOT_DRIFT is not True:
+            q = q.filter(_NOT_DRIFT)
+        for r in q.group_by(day_expr).all():
+            d = r.day
+            if isinstance(d, str):
+                try:
+                    y, m, dd = d.split("-")
+                    d = date(int(y), int(m), int(dd))
+                except Exception:
+                    continue
+            if d in day_counts:
+                day_counts[d] = int(r.cnt or 0)
+    except Exception as exc:
+        logger.warning(
+            "digest: daily series load failed for game_id=%d: %s", game_id, exc,
+        )
+
+    return [(d, day_counts[d]) for d in all_days]
+
+
+def _smooth_7d(series: list[int]) -> list[float]:
+    """Trailing 7-day moving average. First 6 points use a shorter window."""
+    out: list[float] = []
+    for i in range(len(series)):
+        window = series[max(0, i - 6): i + 1]
+        out.append(sum(window) / len(window) if window else 0.0)
+    return out
 
 
 def _render_trend_png_data_uri(
     parent_name: str,
-    parent_series: list[int],
+    parent_daily: list[tuple[date, int]],
     competitors: list[dict],
     today: date,
 ) -> str:
-    """Render a 4-week trend PNG (parent + up to N competitors, pos+neg only)
-    and return an inline `data:image/png;base64,...` URI ready to drop into
-    <img src=...>.
+    """Render a 28-day daily trend PNG (parent + up to N competitors, pos+neg
+    only) and return an inline data:image/png;base64 URI.
 
-    Falls back to an empty string when rendering fails so the caller can
-    silently skip the chart rather than crashing the whole digest build.
+    Layout: translucent thin lines for raw daily points + bold 7-day rolling
+    average overlays. This is the 2026-08-30 evening fix for the "any so
+    linear" complaint — 4 weekly buckets was too coarse and only 3 points
+    of connection between them read as jagged. 28 daily points give a real
+    trend shape.
     """
-    if not competitors:
+    if not competitors or not parent_daily:
         return ""
 
     try:
         import io
         import base64
-        # Force headless Agg backend before importing pyplot; matplotlib
-        # otherwise probes the environment for a display.
         import matplotlib
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt  # noqa: E402
+        import matplotlib.dates as mdates  # noqa: E402
         from matplotlib.ticker import MaxNLocator  # noqa: E402
     except Exception as exc:
         logger.warning("digest: matplotlib import failed: %s", exc)
         return ""
 
     try:
-        weeks = len(parent_series)
-        # Build x-axis labels: "Wk of MMM DD" for each week
-        x_labels: list[str] = []
-        for w in range(weeks - 1, -1, -1):
-            week_end = today - timedelta(days=7 * w)
-            week_start = week_end - timedelta(days=6)
-            x_labels.append(week_start.strftime("%b %d"))
+        parent_days = [d for d, _ in parent_daily]
+        parent_counts = [c for _, c in parent_daily]
+        parent_smooth = _smooth_7d(parent_counts)
 
-        fig, ax = plt.subplots(figsize=(6.4, 2.6), dpi=140)
+        fig, ax = plt.subplots(figsize=(7.2, 3.2), dpi=140)
         fig.patch.set_facecolor("#ffffff")
         ax.set_facecolor("#ffffff")
 
-        # Palette — parent uses the digest's brand accent; competitors get
-        # a small curated ramp that reads well on white.
         parent_color = "#1a3a5c"
         competitor_colors = ["#b91c1c", "#0d9488", "#a16207", "#7c3aed"]
 
-        x = list(range(weeks))
-
-        # Parent line first so it sits behind competitor markers when they
-        # coincide (parent is the point of comparison).
-        ax.plot(
-            x, parent_series,
-            marker="o", markersize=5, linewidth=2.2,
-            color=parent_color, label=parent_name, zorder=3,
-        )
+        # Parent: translucent daily + bold 7d rolling
+        ax.plot(parent_days, parent_counts,
+                linewidth=0.9, color=parent_color, alpha=0.35, zorder=2)
+        ax.plot(parent_days, parent_smooth,
+                linewidth=2.4, color=parent_color, alpha=1.0, zorder=4,
+                label=parent_name)
 
         for i, comp in enumerate(competitors):
             c_color = competitor_colors[i % len(competitor_colors)]
-            ax.plot(
-                x, comp["series"],
-                marker="o", markersize=4, linewidth=1.8,
-                color=c_color, label=comp["name"], zorder=2, alpha=0.95,
-            )
+            days = [d for d, _ in comp["daily"]]
+            counts = [c for _, c in comp["daily"]]
+            smooth = _smooth_7d(counts)
+            ax.plot(days, counts,
+                    linewidth=0.8, color=c_color, alpha=0.30, zorder=2)
+            ax.plot(days, smooth,
+                    linewidth=1.9, color=c_color, alpha=0.95, zorder=3,
+                    label=comp["name"])
 
-        # Axes & styling
-        ax.set_title("4-week post volume — parent vs. competitors (pos + neg only)",
-                     fontsize=10, color="#1f2937", loc="left", pad=10)
-        ax.set_ylabel("Qualifying posts / week", fontsize=8.5, color="#6b7280")
+        ax.set_title(
+            "Daily post volume, last 28 days \u2014 parent vs. competitors "
+            "(7-day rolling average; pos + neg only)",
+            fontsize=9.5, color="#1f2937", loc="left", pad=10,
+        )
+        ax.set_ylabel("Qualifying posts / day", fontsize=8.5, color="#6b7280")
         ax.tick_params(axis="both", labelsize=8.5, colors="#6b7280")
-        ax.set_xticks(x)
-        ax.set_xticklabels(x_labels)
+
+        # X-axis: daily minor ticks, major every 4 days
+        ax.xaxis.set_major_locator(mdates.DayLocator(interval=4))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        ax.xaxis.set_minor_locator(mdates.DayLocator())
+
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.spines["left"].set_color("#e5e7eb")
@@ -776,25 +857,24 @@ def _render_trend_png_data_uri(
             plt.FuncFormatter(lambda v, _: f"{int(v):,}")
         )
 
-        # Legend below the plot area to avoid crowding the lines
         legend = ax.legend(
-            loc="upper center", bbox_to_anchor=(0.5, -0.28),
+            loc="upper center", bbox_to_anchor=(0.5, -0.22),
             ncol=min(len(competitors) + 1, 3),
             frameon=False, fontsize=8.5, handlelength=1.5,
         )
         for text in legend.get_texts():
             text.set_color("#1f2937")
 
-        # Ensure y-axis starts at 0 so gaps are honest.
-        y_max = max(
-            [max(parent_series or [0])]
-            + [max(c["series"] or [0]) for c in competitors]
-        )
+        y_max_candidates = [max(parent_counts or [0])]
+        for c in competitors:
+            counts = [n for _, n in c["daily"]]
+            if counts:
+                y_max_candidates.append(max(counts))
+        y_max = max(y_max_candidates) if y_max_candidates else 5
         ax.set_ylim(bottom=0, top=max(y_max * 1.15, 5))
 
         plt.tight_layout()
         buf = io.BytesIO()
-        # Reasonable email-safe size: ~640px wide, 260px tall.
         fig.savefig(buf, format="png", bbox_inches="tight", dpi=140,
                     facecolor="#ffffff", edgecolor="none")
         plt.close(fig)
@@ -812,11 +892,11 @@ def _render_trend_png_data_uri(
 def _volume_caption_sentence(
     parent_name: str, parent_total: int, comp_rows: list,
 ) -> str:
-    """ONE short caption describing the aggregate volume gap. Complements the
-    chart — the chart already carries the visual, this just states the ratio.
+    """ONE short caption describing the aggregate volume gap.
 
-    No per-competitor driver-hypothesis; that repetition is what the
-    first-cut Competitive Set got wrong.
+    No per-competitor driver-hypothesis repetition — the individual
+    competitor volume commentary is now handled by a dedicated
+    per-competitor bullet inside the section.
     """
     if not comp_rows:
         return ""
@@ -843,47 +923,132 @@ def _volume_caption_sentence(
     if combined_ratio >= 3.0:
         return (
             f"Peer set generated {_fmt(total_comp)} qualifying posts this "
-            f"week — roughly {combined_ratio:.1f}× the Saber title's "
-            f"{_fmt(parent_total)}."
+            f"week \u2014 roughly {combined_ratio:.1f}\u00d7 the Saber "
+            f"title's {_fmt(parent_total)}."
         )
     if combined_ratio >= 1.5:
         return (
             f"Peer set generated {_fmt(total_comp)} qualifying posts this "
-            f"week — about {combined_ratio:.1f}× the Saber title's "
-            f"{_fmt(parent_total)}."
+            f"week \u2014 about {combined_ratio:.1f}\u00d7 the Saber "
+            f"title's {_fmt(parent_total)}."
         )
     if combined_ratio >= 0.9:
         return (
             f"Peer set generated {_fmt(total_comp)} qualifying posts this "
-            f"week — roughly on par with the Saber title's {_fmt(parent_total)}."
+            f"week \u2014 roughly on par with the Saber title's "
+            f"{_fmt(parent_total)}."
         )
     if combined_ratio >= 0.5:
         return (
             f"Peer set generated {_fmt(total_comp)} qualifying posts this "
-            f"week — about {int(combined_ratio * 100)}% of the Saber title's "
-            f"{_fmt(parent_total)}."
+            f"week \u2014 about {int(combined_ratio * 100)}% of the Saber "
+            f"title's {_fmt(parent_total)}."
         )
     return (
-        f"Peer set generated {_fmt(total_comp)} qualifying posts this week — "
-        f"well below the Saber title's {_fmt(parent_total)} "
-        f"(~{combined_ratio:.2f}×)."
+        f"Peer set generated {_fmt(total_comp)} qualifying posts this week "
+        f"\u2014 well below the Saber title's {_fmt(parent_total)} "
+        f"(~{combined_ratio:.2f}\u00d7)."
     )
+
+
+def _competitor_volume_bullet(
+    competitor_name: str,
+    competitor_total: int,
+    parent_total: int,
+) -> str:
+    """ONE volume-vs-parent bullet for a specific competitor.
+
+    Restored 2026-08-30 evening — the chart carries the trend visually, but
+    Steve asked for per-title volume commentary alongside it so a scanning
+    reader gets the number without having to eyeball the chart. Wording
+    varies by scale so this doesn't read like the old repeated clause.
+    """
+    escaped = html.escape(competitor_name)
+    if parent_total == 0:
+        if competitor_total == 0:
+            return f"<strong>{escaped}</strong> \u2014 no qualifying volume this window."
+        return (
+            f"<strong>{escaped}</strong> \u2014 {competitor_total:,} qualifying "
+            f"posts vs. no qualifying signal for the Saber title."
+        )
+    if competitor_total == 0:
+        return (
+            f"<strong>{escaped}</strong> \u2014 essentially quiet this week "
+            f"(0 vs. {parent_total:,} for the Saber title)."
+        )
+    ratio = competitor_total / parent_total
+    if ratio >= 3.0:
+        return (
+            f"<strong>{escaped}</strong> \u2014 {competitor_total:,} posts, "
+            f"{ratio:.1f}\u00d7 the Saber title's {parent_total:,}."
+        )
+    if ratio >= 1.5:
+        return (
+            f"<strong>{escaped}</strong> \u2014 {competitor_total:,} posts, "
+            f"outpacing the Saber title's {parent_total:,} by "
+            f"{ratio:.1f}\u00d7."
+        )
+    if ratio >= 0.9:
+        return (
+            f"<strong>{escaped}</strong> \u2014 {competitor_total:,} posts, "
+            f"roughly on par with the Saber title's {parent_total:,}."
+        )
+    if ratio >= 0.5:
+        pct = int(ratio * 100)
+        return (
+            f"<strong>{escaped}</strong> \u2014 {competitor_total:,} posts, "
+            f"about {pct}% of the Saber title's {parent_total:,}."
+        )
+    pct = int(ratio * 100)
+    return (
+        f"<strong>{escaped}</strong> \u2014 {competitor_total:,} posts, well "
+        f"below the Saber title's {parent_total:,} (~{pct}%)."
+    )
+
+
+def _rank_topic_candidate(t) -> tuple:
+    """Sort key. New order (2026-08-30 evening): mention_count is primary
+    so high-count stable topics beat low-count rising ones.
+    """
+    return (
+        -(t.mention_count or 0),
+        -(t.velocity or 0.0),
+        0 if getattr(t.trend_direction, "value", str(t.trend_direction)) == "rising" else 1,
+    )
+
+
+def _passes_topic_floor(
+    mention_count: int, competitor_total: int,
+) -> bool:
+    """A topic must clear both an absolute floor and a share-of-title floor.
+
+    See module-level constants for the tuning. Together these block the
+    "Halloween Nights Horror at 2 mentions vs 10,669 total posts" bug
+    from 2026-08-30 evening.
+    """
+    if (mention_count or 0) < _TOPIC_ABSOLUTE_FLOOR:
+        return False
+    if competitor_total > 0:
+        share = mention_count / competitor_total
+        if share < _TOPIC_RELATIVE_FLOOR:
+            return False
+    return True
 
 
 def _competitor_topic_sentence(
     db: Session,
     competitor_id: int,
     competitor_name: str,
+    competitor_total: int,
     week_start: date,
     row,  # WindowSummary or MonthlySummary
 ) -> str:
     """Return ONE topic-momentum sentence for a single competitor.
 
-    Prefers TopicTrend rows updated since `week_start`, filters out generic
-    labels, ranks (rising desc, velocity desc, mention_count desc). Falls
-    back to WindowSummary.top_positive_topics / top_negative_topics labels
-    when TopicTrend has nothing specific. Emits a stance-only note when
-    both paths are empty.
+    Applies the absolute + relative mention floors, per-title blocklist,
+    and generic-label filter before picking. When no topic qualifies,
+    emits a stance-only fallback so the reader still knows where the
+    peer stands.
     """
     positive_topic = None
     negative_topic = None
@@ -906,29 +1071,28 @@ def _competitor_topic_sentence(
         )
         trend_rows = []
 
-    def _rank(t):
-        td = getattr(t.trend_direction, "value", str(t.trend_direction))
+    def _eligible(t) -> bool:
         return (
-            0 if td == "rising" else 1,
-            -(t.velocity or 0.0),
-            -(t.mention_count or 0),
+            _is_specific_topic(t.topic_label)
+            and not _is_blocked_for_game(t.topic_label, competitor_id)
+            and _passes_topic_floor(t.mention_count or 0, competitor_total)
         )
 
     positive_cands = sorted(
         [
             t for t in trend_rows
             if getattr(t.sentiment, "value", str(t.sentiment)) == "positive"
-            and _is_specific_topic(t.topic_label)
+            and _eligible(t)
         ],
-        key=_rank,
+        key=_rank_topic_candidate,
     )
     negative_cands = sorted(
         [
             t for t in trend_rows
             if getattr(t.sentiment, "value", str(t.sentiment)) == "negative"
-            and _is_specific_topic(t.topic_label)
+            and _eligible(t)
         ],
-        key=_rank,
+        key=_rank_topic_candidate,
     )
 
     if positive_cands:
@@ -938,49 +1102,53 @@ def _competitor_topic_sentence(
         negative_topic = negative_cands[0].topic_label
         negative_velocity = negative_cands[0].velocity or 0.0
 
-    # WindowSummary fallback
+    # WindowSummary fallback — same filters
     if not positive_topic and row is not None:
         for label in (row.top_positive_topics or []):
-            if _is_specific_topic(label):
+            if (
+                _is_specific_topic(label)
+                and not _is_blocked_for_game(label, competitor_id)
+            ):
                 positive_topic = label
                 break
     if not negative_topic and row is not None:
         for label in (row.top_negative_topics or []):
-            if _is_specific_topic(label):
+            if (
+                _is_specific_topic(label)
+                and not _is_blocked_for_game(label, competitor_id)
+            ):
                 negative_topic = label
                 break
 
     escaped_name = html.escape(competitor_name)
 
+    def _rising_marker(velocity: float) -> str:
+        return " (rising)" if velocity >= _RISING_VELOCITY_THRESHOLD else ""
+
     if positive_topic and negative_topic:
         return (
-            f"<strong>{escaped_name}</strong> — positive momentum on "
-            f"<em>{html.escape(positive_topic)}</em>"
-            f"{' (rising)' if positive_velocity >= 0.5 else ''}; "
+            f"<strong>{escaped_name}</strong> \u2014 positive momentum on "
+            f"<em>{html.escape(positive_topic)}</em>{_rising_marker(positive_velocity)}; "
             f"negative pressure on "
-            f"<em>{html.escape(negative_topic)}</em>"
-            f"{' (rising)' if negative_velocity >= 0.5 else ''}."
+            f"<em>{html.escape(negative_topic)}</em>{_rising_marker(negative_velocity)}."
         )
     if positive_topic:
         return (
-            f"<strong>{escaped_name}</strong> — positive momentum on "
-            f"<em>{html.escape(positive_topic)}</em>"
-            f"{' (rising)' if positive_velocity >= 0.5 else ''}; "
-            f"no material negative theme surfaced this window."
+            f"<strong>{escaped_name}</strong> \u2014 positive momentum on "
+            f"<em>{html.escape(positive_topic)}</em>{_rising_marker(positive_velocity)}; "
+            f"no material negative theme met the reporting floor this window."
         )
     if negative_topic:
         return (
-            f"<strong>{escaped_name}</strong> — negative pressure on "
-            f"<em>{html.escape(negative_topic)}</em>"
-            f"{' (rising)' if negative_velocity >= 0.5 else ''}; "
-            f"no material positive theme surfaced this window."
+            f"<strong>{escaped_name}</strong> \u2014 negative pressure on "
+            f"<em>{html.escape(negative_topic)}</em>{_rising_marker(negative_velocity)}; "
+            f"no material positive theme met the reporting floor this window."
         )
-    # Nothing specific
     pos = getattr(row, "positive_count", 0) if row is not None else 0
     neg = getattr(row, "negative_count", 0) if row is not None else 0
     return (
-        f"<strong>{escaped_name}</strong> — {_describe_ratio_stance(pos, neg)}; "
-        f"no specific topic momentum surfaced this week."
+        f"<strong>{escaped_name}</strong> \u2014 {_describe_ratio_stance(pos, neg)}; "
+        f"no specific topic momentum cleared the reporting floor this week."
     )
 
 
@@ -1001,14 +1169,10 @@ def _build_competitor_bullets(
 
     Returns None when the parent has zero configured competitors so the
     caller can distinguish "unconfigured" from "configured but no data".
-    Otherwise returns a list of bullet dicts. The first bullet is always
-    a chart+caption bundle {kind: 'chart', chart_data_uri: ..., html: caption};
-    subsequent bullets are topic-momentum sentences {kind: 'topic', ...}.
-
-    period: 'weekly' → pull 7-day WindowSummary + last-4-week DailySummary
-            trend + last-7-day TopicTrend;
-            'monthly' → pull MonthlySummary + last-4-month trend + first-of-
-            month topic cutoff.
+    Otherwise the first bullet is always a chart bundle
+    {kind: 'chart', chart_data_uri, html: caption}. Subsequent bullets
+    alternate: 'volume' (per-competitor volume) then 'topic' (per-
+    competitor topic momentum), one pair per featured competitor.
     """
     try:
         links = (
@@ -1028,7 +1192,7 @@ def _build_competitor_bullets(
 
     today_d = today or date.today()
 
-    # Pass 1: gather (row, name, id, pos, neg, total, 4-week series) per competitor
+    # Pass 1: gather per-competitor row + daily series
     comp_rows: list[dict] = []
     for link in links:
         cgame = link.competitor
@@ -1074,17 +1238,15 @@ def _build_competitor_bullets(
             )
             continue
 
-        # 4-week pos+neg series for the chart. Weekly uses calendar weeks
-        # ending on today; monthly uses today as well since DailySummary
-        # is day-grained.
+        # 28-day daily series for the chart
         try:
-            series = _load_weekly_pos_neg_series(db, c_id, weeks=4, today=today_d)
+            daily = _load_daily_pos_neg_series(db, c_id, days=28, today=today_d)
         except Exception as exc:
             logger.warning(
-                "digest: series load failed for game_id=%d: %s",
+                "digest: daily series load failed for game_id=%d: %s",
                 c_id, exc,
             )
-            series = [0, 0, 0, 0]
+            daily = [(today_d - timedelta(days=27 - i), 0) for i in range(28)]
 
         comp_rows.append({
             "competitor_id": c_id,
@@ -1093,14 +1255,13 @@ def _build_competitor_bullets(
             "total_posts": c_total,
             "pos_neg_ratio": _format_ratio(c_pos, c_neg),
             "row": row,
-            "series": series,
+            "daily": daily,
         })
 
     if not comp_rows:
         return []
 
-    # Rank comps by (sentiment distance from parent) + (log volume gap) so
-    # the topic bullets feature the most instructive peers first.
+    # Rank comps by (sentiment distance from parent) + (log volume gap)
     import math as _math
     parent_score = _weighted_pos_neg_score(parent_positive, parent_negative)
     for r in comp_rows:
@@ -1123,12 +1284,12 @@ def _build_competitor_bullets(
     bullets: list[dict] = []
 
     # Bullet 0: chart + caption
-    parent_series = _load_weekly_pos_neg_series(
-        db, parent_game_id, weeks=4, today=today_d,
+    parent_daily = _load_daily_pos_neg_series(
+        db, parent_game_id, days=28, today=today_d,
     )
     chart_uri = _render_trend_png_data_uri(
-        parent_name, parent_series,
-        [{"name": r["competitor_name"], "series": r["series"]} for r in comp_rows],
+        parent_name, parent_daily,
+        [{"name": r["competitor_name"], "daily": r["daily"]} for r in comp_rows],
         today_d,
     )
     caption = _volume_caption_sentence(parent_name, parent_total, comp_rows)
@@ -1138,7 +1299,7 @@ def _build_competitor_bullets(
         "html": caption,
     })
 
-    # Bullets 1..N: one topic-momentum sentence per featured competitor
+    # Bullets 1..N: per featured competitor, ONE volume bullet + ONE topic bullet
     if period == "weekly":
         week_start = today_d - timedelta(days=6)
     else:
@@ -1148,18 +1309,26 @@ def _build_competitor_bullets(
             week_start = today_d - timedelta(days=30)
 
     for r in featured:
-        sent_html = _competitor_topic_sentence(
-            db,
-            competitor_id=r["competitor_id"],
-            competitor_name=r["competitor_name"],
-            week_start=week_start,
-            row=r["row"],
-        )
+        bullets.append({
+            "kind": "volume",
+            "competitor_id": r["competitor_id"],
+            "competitor_name": r["competitor_name"],
+            "html": _competitor_volume_bullet(
+                r["competitor_name"], r["total_posts"], parent_total,
+            ),
+        })
         bullets.append({
             "kind": "topic",
             "competitor_id": r["competitor_id"],
             "competitor_name": r["competitor_name"],
-            "html": sent_html,
+            "html": _competitor_topic_sentence(
+                db,
+                competitor_id=r["competitor_id"],
+                competitor_name=r["competitor_name"],
+                competitor_total=r["total_posts"],
+                week_start=week_start,
+                row=r["row"],
+            ),
         })
 
     return bullets
@@ -1168,15 +1337,16 @@ def _build_competitor_bullets(
 def _render_competitive_set(b: TitleBlock) -> str:
     """Render the "Competitive Set" sub-section for a parent's TitleBlock.
 
-    Returns an empty string when there are no competitor bullets so the
-    parent renderer can safely concatenate the return value unconditionally.
+    Chart at the top, then aggregate caption, then per-competitor
+    (volume bullet + topic bullet) pairs grouped visually.
     """
     if not b.competitor_bullets:
         return ""
 
     chart_html = ""
     caption_html = ""
-    topic_bullets: list[str] = []
+    per_comp_groups: dict[int, dict[str, str]] = {}
+    per_comp_order: list[int] = []
 
     for bullet in b.competitor_bullets:
         kind = bullet.get("kind")
@@ -1186,7 +1356,7 @@ def _render_competitive_set(b: TitleBlock) -> str:
                 chart_html = (
                     f'<div style="margin:8px 0 12px 0; text-align:left;">'
                     f'  <img src="{uri}" '
-                    f'    alt="4-week post volume — parent vs. competitors" '
+                    f'    alt="Daily post volume, last 28 days \u2014 parent vs. competitors" '
                     f'    style="max-width:100%; height:auto; display:block; '
                     f'    border:1px solid {_BORDER}; border-radius:6px;">'
                     f'</div>'
@@ -1197,17 +1367,40 @@ def _render_competitive_set(b: TitleBlock) -> str:
                     f'<p style="margin:0 0 12px 0; color:{_TEXT_PRIMARY}; '
                     f'font-size:14px; line-height:1.5;">{cap}</p>'
                 )
-        else:  # 'topic'
-            topic_bullets.append(
-                f'<li style="margin:0 0 10px 0;">{bullet["html"]}</li>'
+        elif kind in ("volume", "topic"):
+            cid = bullet.get("competitor_id")
+            if cid is None:
+                continue
+            if cid not in per_comp_groups:
+                per_comp_groups[cid] = {}
+                per_comp_order.append(cid)
+            per_comp_groups[cid][kind] = bullet["html"]
+
+    # Render each competitor as its own <li> containing both bullets so
+    # they visually group together (volume line, then topic line).
+    items_html_parts: list[str] = []
+    for cid in per_comp_order:
+        group = per_comp_groups[cid]
+        vol_html = group.get("volume") or ""
+        topic_html = group.get("topic") or ""
+        item = (
+            f'<li style="margin:0 0 12px 0;">'
+            f'  <div>{vol_html}</div>'
+        )
+        if topic_html:
+            item += (
+                f'  <div style="margin-top:4px; color:{_TEXT_MUTED}; '
+                f'font-size:14px; line-height:1.5;">{topic_html}</div>'
             )
+        item += "</li>"
+        items_html_parts.append(item)
 
     bullets_ul = ""
-    if topic_bullets:
+    if items_html_parts:
         bullets_ul = (
             f'<ul style="margin:0 0 0 22px; padding:0; '
             f'color:{_TEXT_PRIMARY}; font-size:15px; line-height:1.55;">'
-            f'{"".join(topic_bullets)}'
+            f'{"".join(items_html_parts)}'
             f'</ul>'
         )
 
