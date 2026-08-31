@@ -12,7 +12,10 @@ import type { ViteDevServer } from "vite";
  * something sensible without nginx.
  */
 export function serveStatic(app: Express): void {
-  const distDir = path.resolve(import.meta.dirname, "..", "dist", "public");
+  // esbuild bundles this to CJS; `import.meta.dirname` is empty in that
+  // format. Use process.cwd() instead — systemd sets WorkingDirectory to the
+  // partnerships root, and `npm run build` is always run from there in dev.
+  const distDir = path.resolve(process.cwd(), "dist", "public");
 
   if (!fs.existsSync(distDir)) {
     // eslint-disable-next-line no-console
@@ -57,7 +60,7 @@ export async function setupVite(app: Express): Promise<void> {
     try {
       const url = req.originalUrl;
       const template = fs.readFileSync(
-        path.resolve(import.meta.dirname, "..", "client", "index.html"),
+        path.resolve(process.cwd(), "client", "index.html"),
         "utf-8",
       );
       const html = await vite.transformIndexHtml(url, template);
