@@ -172,7 +172,67 @@ jobs:
           echo ""
 
           echo ""
-          echo "== Reload nginx (in case /partnerships/ block was added this deploy) =="
+
+          echo ""
+          echo "== Ensure /partnerships/ nginx block is installed =="
+          # 2026-08-31: main deploy.yml uses inline steps and never invokes
+          # deploy.sh, so the /partnerships/ location block was never written.
+          # Install it here idempotently — write a snippet, inject an
+          # include{} into the main site's server{} block.
+          SITE=""
+          for cand in /etc/nginx/sites-available/sentimentpulse /etc/nginx/sites-available/default; do
+            [ -f "$cand" ] && SITE="$cand" && break
+          done
+          if [ -z "$SITE" ]; then
+            echo "WARN: no nginx site file found; skipping /partnerships/ install"
+          else
+            mkdir -p /etc/nginx/snippets
+            cat > /etc/nginx/snippets/partnerships-locations.conf <<'NGXEOF'
+          # Managed by partnerships-deploy.yml — include from the main site.
+          location ~ ^/partnerships/assets/ {
+              alias /opt/sentimentpulse/partnerships/dist/public/assets/;
+              expires 1y;
+              add_header Cache-Control "public, max-age=31536000, immutable";
+              try_files $uri =404;
+          }
+          location /partnerships/api/ {
+              proxy_pass http://127.0.0.1:5002/api/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_read_timeout 120s;
+          }
+          location /partnerships/ {
+              alias /opt/sentimentpulse/partnerships/dist/public/;
+              index index.html;
+              try_files $uri $uri/ /partnerships/index.html;
+              add_header Cache-Control "no-cache, must-revalidate";
+          }
+          NGXEOF
+            echo "wrote /etc/nginx/snippets/partnerships-locations.conf"
+            if grep -q "snippets/partnerships-locations.conf" "$SITE"; then
+              echo "include already present in $SITE"
+            else
+              awk -v inc='    include snippets/partnerships-locations.conf;' '
+                { lines[NR] = $0 }
+                END {
+                  last = 0
+                  for (i = 1; i <= NR; i++) if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) last = i
+                  for (i = 1; i <= NR; i++) {
+                    if (i == last) print inc
+                    print lines[i]
+                  }
+                }
+              ' "$SITE" > "$SITE.new" && mv "$SITE.new" "$SITE"
+              echo "injected include into $SITE"
+            fi
+            # Kill any earlier accidental attempt at http{}-level install.
+            rm -f /etc/nginx/conf.d/partnerships.conf
+          fi
+
+          echo ""
+          echo "== Reload nginx =="
           if nginx -t 2>&1 | tail -5; then
             systemctl reload nginx
             echo "nginx reloaded"
