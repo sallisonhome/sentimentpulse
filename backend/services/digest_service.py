@@ -715,6 +715,17 @@ def _load_daily_pos_neg_series(
     competitor-timeseries endpoint from 2026-07-27) so the chart series
     is consistent with the on-dashboard chart. Filters out drift-flagged
     posts and NULL-post_date rows.
+
+    2026-08-30 (Halloween contamination fix): restricts to
+    `relevance_tier = 'dedicated_sub'` only. Non-dedicated `signal`-tier
+    matches on ambiguous keywords (e.g. the word "halloween" alone,
+    "world war z" matching the film) inflated Bluesky counts for
+    calendar-word / franchise-name titles. Dedicated subreddits + Steam
+    Forum + Steam Reviews are game-communities by construction, so
+    restricting the chart to `dedicated_sub` gives an honest picture of
+    the actual game community's activity. Bluesky is intentionally
+    dropped from this chart series \u2014 it's a high-noise source for
+    single-word game names.
     """
     from models import RawPost, SentimentRecord, SentimentEnum as _SE  # noqa: PLC0415
     from sqlalchemy import func as _func  # noqa: PLC0415
@@ -738,6 +749,7 @@ def _load_daily_pos_neg_series(
                 RawPost.post_date.isnot(None),
                 _func.date(RawPost.post_date) >= start_day,
                 _func.date(RawPost.post_date) <= today,
+                RawPost.relevance_tier == "dedicated_sub",
                 SentimentRecord.sentiment.in_([
                     _SE.positive, _SE.negative,
                 ]),
@@ -844,11 +856,12 @@ def _render_trend_png_data_uri(
         )
         ax.text(
             0, 1.04,
-            "Each line is that title's actual daily pos+neg post count "
-            "(no smoothing) so spikes from press beats or launch events "
-            "are visible.",
+            "Actual daily pos+neg post count in each title's dedicated "
+            "game communities (Reddit game subs + Steam Forum + Steam "
+            "Reviews). Excludes broad-keyword matches from Bluesky/general "
+            "subs so calendar/franchise-word chatter doesn't inflate volume.",
             transform=ax.transAxes,
-            fontsize=8, color="#6b7280",
+            fontsize=7.5, color="#6b7280",
             verticalalignment="bottom",
         )
         ax.set_ylabel("Qualifying posts / day", fontsize=8.5, color="#6b7280")
@@ -1262,11 +1275,17 @@ def _build_competitor_bullets(
             )
             daily = [(today_d - timedelta(days=27 - i), 0) for i in range(28)]
 
+        # "this week" volume = last 7 days of the dedicated-only daily
+        # series. Consistent with the chart and immune to Bluesky/general-
+        # sub keyword-match inflation.
+        week_total_dedicated = sum(count for _, count in daily[-7:])
+
         comp_rows.append({
             "competitor_id": c_id,
             "competitor_name": c_name,
             "positive": c_pos, "negative": c_neg, "neutral": c_neu,
-            "total_posts": c_total,
+            "total_posts": c_total,  # summary-based total (all tiers), kept for ranking
+            "week_total_dedicated": week_total_dedicated,  # matches chart
             "pos_neg_ratio": _format_ratio(c_pos, c_neg),
             "row": row,
             "daily": daily,
@@ -1301,12 +1320,21 @@ def _build_competitor_bullets(
     parent_daily = _load_daily_pos_neg_series(
         db, parent_game_id, days=28, today=today_d,
     )
+    parent_week_dedicated = sum(count for _, count in parent_daily[-7:])
     chart_uri = _render_trend_png_data_uri(
         parent_name, parent_daily,
         [{"name": r["competitor_name"], "daily": r["daily"]} for r in comp_rows],
         today_d,
     )
-    caption = _volume_caption_sentence(parent_name, parent_total, comp_rows)
+    # Caption uses dedicated-only week totals so numbers match the chart.
+    caption_rows = [
+        {"competitor_name": r["competitor_name"],
+         "total_posts": r["week_total_dedicated"]}
+        for r in comp_rows
+    ]
+    caption = _volume_caption_sentence(
+        parent_name, parent_week_dedicated, caption_rows,
+    )
     bullets.append({
         "kind": "chart",
         "chart_data_uri": chart_uri,
@@ -1328,7 +1356,9 @@ def _build_competitor_bullets(
             "competitor_id": r["competitor_id"],
             "competitor_name": r["competitor_name"],
             "html": _competitor_volume_bullet(
-                r["competitor_name"], r["total_posts"], parent_total,
+                r["competitor_name"],
+                r["week_total_dedicated"],
+                parent_week_dedicated,
             ),
         })
         bullets.append({
