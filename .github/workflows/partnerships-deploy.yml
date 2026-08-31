@@ -189,7 +189,9 @@ jobs:
             mkdir -p /etc/nginx/snippets
             cat > /etc/nginx/snippets/partnerships-locations.conf <<'NGXEOF'
           # Managed by partnerships-deploy.yml — include from the main site.
-          location ~ ^/partnerships/assets/ {
+          # Use ^~ so this exact-prefix beats the regex `.js|.css` cache rules
+          # from other conf.d snippets, and use `alias` for the path rewrite.
+          location ^~ /partnerships/assets/ {
               alias /opt/sentimentpulse/partnerships/dist/public/assets/;
               expires 1y;
               add_header Cache-Control "public, max-age=31536000, immutable";
