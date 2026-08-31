@@ -49,6 +49,14 @@ python-dotenv==1.0.1
 aiofiles==23.2.1
 pyyaml==6.0.1
 
+
+# ── Chart rendering (weekly digest Competitive Set trend PNG) ────────────────
+# Server-renders a 4-week trend chart per parent-with-competitors into an
+# inline PNG data URI. SVG isn't viable in email (Yahoo, Gmail, and Outlook
+# all strip it), so we rasterize at build time. Uses Agg backend (no
+# GUI/display needed on the droplet).
+matplotlib>=3.8.0
+
 # ── Testing ───────────────────────────────────────────────────────────────────
 pytest==8.3.1
 pytest-asyncio==0.23.7

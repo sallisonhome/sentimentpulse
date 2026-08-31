@@ -57,6 +57,8 @@ from models import (
     DigestRecipient,
     Game,
     MonthlySummary,
+    SentimentEnum,
+    TopicTrend,
     WindowSummary,
 )
 
@@ -560,132 +562,426 @@ def _render_editorial_footer(b: TitleBlock) -> str:
     )
 
 
-# ── Competitive Set (2026-08-30) ─────────────────────────────────────────────
-# For any parent title with rows in competitor_games, generate 2-3 bullets
-# comparing each competitor's sentiment ratio + volume against the parent.
-# Commentary tilts toward the pos:neg ratio (positives and negatives count;
-# neutral is minimized) and toward volume-vs-parent with a directional read
-# on why volume differs. Rendered as its own sub-section after "Big Ideas"
-# and before the editorial footer.
+# ── Competitive Set (2026-08-30, revised evening) ────────────────────────────
+# For any parent title with rows in competitor_games, render a compact
+# section with:
 #
-# Cap: max 3 bullets per section. If a parent has 4 competitors (the DB cap
-# from routers/competitors.py), we pick the 3 with the widest sentiment or
-# volume gap vs the parent so the commentary points at the most instructive
-# competitors first. Cases where a parent has 1 or 2 competitors show all.
+#   1. A pre-rendered 4-week trend PNG (parent + each competitor, pos+neg
+#      posts only). PNG is inline data URI so no external hosting needed.
+#      SVG isn't viable in email (Yahoo/Gmail/Outlook strip it).
+#   2. ONE short caption sentence describing the aggregate volume gap.
+#      Replaces the paragraph-length repeated-driver text from the first cut.
+#   3. 1-2 TOPIC-MOMENTUM bullets per featured competitor (max 3 competitors
+#      featured), showing what specific topics have positive/negative
+#      momentum for that peer this week. Sourced from TopicTrend rows with
+#      generic-label filtering, plus a WindowSummary.top_*_topics fallback.
+#
+# Rationale (2026-08-30 evening user feedback): the initial per-competitor
+# format was repeating the same generic IP-gravity clause on every bullet.
+# Volume commentary belongs in a chart + one caption; the rest of the
+# section should tell the reader what people are actually talking about
+# for each peer.
 
-_COMPETITOR_MAX_BULLETS = 3
+# Maximum competitors we generate topic bullets for. All are drawn on the
+# chart and summarised in the aggregate caption regardless.
+_COMPETITOR_MAX_FEATURED = 3
+
+# Topic labels that carry no information — filtered so we prefer specific
+# ones. Match is case-insensitive.
+_GENERIC_TOPIC_LABELS = {
+    "general discussion",
+    "general positive sentiment",
+    "general negative sentiment",
+    "general neutral sentiment",
+    "general gameplay talk",
+    "general gameplay",
+    "gameplay",
+    "discussion",
+    "general",
+    "general chat",
+    "general comment",
+    "general comments",
+    "general talk",
+    "positive sentiment",
+    "negative sentiment",
+    "neutral sentiment",
+    "other",
+    "miscellaneous",
+    "misc",
+    "unlabeled",
+    "unlabelled",
+    "n/a",
+}
+
+
+def _is_specific_topic(label) -> bool:
+    """True if `label` is worth surfacing (not generic boilerplate)."""
+    if not label or not isinstance(label, str):
+        return False
+    stripped = label.strip()
+    if not stripped:
+        return False
+    return stripped.lower() not in _GENERIC_TOPIC_LABELS
 
 
 def _weighted_pos_neg_score(positive: int, negative: int) -> float:
-    """Score positives-vs-negatives on a [-1, 1] axis, ignoring neutrals.
-
-    Returns 0.0 when both are zero (no evidence). Higher = more positive.
-    Used only for internal ranking of which competitors to feature when
-    a parent has more than _COMPETITOR_MAX_BULLETS configured.
-    """
+    """Score positives-vs-negatives on a [-1, 1] axis, ignoring neutrals."""
     denom = positive + negative
     if denom == 0:
         return 0.0
     return (positive - negative) / denom
 
 
-def _describe_volume_gap(competitor_posts: int, parent_posts: int) -> str:
-    """Human-readable one-clause description of volume gap.
-
-    Framed relative to the parent ("the Saber title"). Uses fold-changes
-    when the gap is large enough to be meaningful; percentage otherwise.
-    Returns an empty string when the parent has zero data so the caller
-    can shape the bullet differently.
-    """
-    if parent_posts == 0:
-        return ""
-    if competitor_posts == 0:
-        return "generating essentially no measurable conversation vs the Saber title"
-    ratio = competitor_posts / parent_posts
-    if ratio >= 3.0:
-        return f"generating roughly {ratio:.1f}\u00d7 the volume of the Saber title"
-    if ratio >= 1.5:
-        return f"outpacing the Saber title on volume by about {ratio:.1f}\u00d7"
-    if ratio >= 0.9:
-        return "running at broadly similar conversation volume"
-    if ratio >= 0.5:
-        return f"running about {int(ratio * 100)}% of the Saber title's volume"
-    if ratio >= 0.2:
-        return f"running about {int(ratio * 100)}% of the Saber title's volume (materially quieter)"
-    return f"running well below the Saber title at ~{ratio:.2f}\u00d7 volume"
-
-
 def _describe_ratio_stance(positive: int, negative: int) -> str:
-    """One-clause description of pos:neg posture, minimizing neutral weight.
-
-    Neutral is intentionally not surfaced here \u2014 the user asked for
-    commentary tilted toward pos/neg ("less neutral"). Used at the head
-    of each bullet so the sentiment stance is the first thing the reader
-    sees.
-    """
+    """One-clause description of pos:neg posture, without surfacing neutral."""
     if positive == 0 and negative == 0:
         return "has no qualifying pos/neg signal this window"
     if negative == 0:
-        return f"is running an unblemished {positive}:0 positive-to-negative posture"
+        return f"is running an unblemished {positive}:0 posture"
     if positive == 0:
         return f"is skewed hard negative ({negative} negatives, no offsetting positives)"
     if positive >= 3 * negative:
-        return f"is running strongly positive at {positive}:{negative} ({positive / negative:.1f}:1)"
+        return f"is running strongly positive at {positive / negative:.1f}:1"
     if positive >= 1.5 * negative:
-        return f"leans positive at {positive}:{negative} ({positive / negative:.1f}:1)"
+        return f"leans positive at {positive / negative:.1f}:1"
     if negative >= 3 * positive:
-        return f"is running strongly negative at {positive}:{negative} (1:{negative / positive:.1f})"
+        return f"is running strongly negative at 1:{negative / positive:.1f}"
     if negative >= 1.5 * positive:
-        return f"leans negative at {positive}:{negative} (1:{negative / positive:.1f})"
-    return f"sits roughly balanced at {positive}:{negative}"
+        return f"leans negative at 1:{negative / positive:.1f}"
+    return "sits roughly balanced"
 
 
-def _hypothesize_volume_driver(
-    competitor_name: str, competitor_posts: int, parent_posts: int
+def _load_weekly_pos_neg_series(
+    db: Session, game_id: int, weeks: int, today: date
+) -> list[int]:
+    """Return a length-`weeks` list of (positive + negative) post counts,
+    one entry per calendar week ending on `today`. Oldest first.
+
+    Uses DailySummary rows so this doesn't require WindowSummaries beyond
+    the current one. Missing days contribute zero.
+    """
+    from models import DailySummary  # noqa: PLC0415
+    from sqlalchemy import and_ as _and  # noqa: PLC0415
+
+    series: list[int] = []
+    for w in range(weeks - 1, -1, -1):
+        week_end = today - timedelta(days=7 * w)
+        week_start = week_end - timedelta(days=6)
+        try:
+            rows = (
+                db.query(DailySummary)
+                .filter(
+                    _and(
+                        DailySummary.game_id == game_id,
+                        DailySummary.summary_date >= week_start,
+                        DailySummary.summary_date <= week_end,
+                    )
+                )
+                .all()
+            )
+            wk_total = sum(
+                (r.positive_count or 0) + (r.negative_count or 0) for r in rows
+            )
+        except Exception as exc:
+            logger.warning(
+                "digest: weekly series load failed for game_id=%d week ending %s: %s",
+                game_id, week_end.isoformat(), exc,
+            )
+            wk_total = 0
+        series.append(wk_total)
+    return series
+
+
+def _render_trend_png_data_uri(
+    parent_name: str,
+    parent_series: list[int],
+    competitors: list[dict],
+    today: date,
 ) -> str:
-    """One-clause directional read on WHY the volume gap likely exists.
+    """Render a 4-week trend PNG (parent + up to N competitors, pos+neg only)
+    and return an inline `data:image/png;base64,...` URI ready to drop into
+    <img src=...>.
 
-    Kept deliberately narrow: two branches, both grounded in a specific,
-    checkable observation about the competitor's IP or franchise footprint.
-    We do NOT try to enumerate every possible cause; the user explicitly
-    wants a plausible read they can react to, not a fully sourced attribution.
-
-    Rationale (lessons.md 2026-08-29 competitive-analysis correction):
-    - Halloween / Silent Hill communities carry conversation via IP gravity
-      and long franchise history (film box office, decades of prior games).
-    - Games like Hellraiser or a debut Saber title lack that ambient chatter
-      and generate volume mostly on discrete press beats.
-    Applied here as a lightweight heuristic on the competitor name.
+    Falls back to an empty string when rendering fails so the caller can
+    silently skip the chart rather than crashing the whole digest build.
     """
-    if parent_posts == 0 or competitor_posts == 0:
+    if not competitors:
         return ""
-    ratio = competitor_posts / parent_posts
-    if ratio >= 1.5:
-        return (
-            "likely reflects broader IP or franchise gravity carrying ambient "
-            "community chatter rather than incremental game-quality signal"
+
+    try:
+        import io
+        import base64
+        # Force headless Agg backend before importing pyplot; matplotlib
+        # otherwise probes the environment for a display.
+        import matplotlib
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt  # noqa: E402
+        from matplotlib.ticker import MaxNLocator  # noqa: E402
+    except Exception as exc:
+        logger.warning("digest: matplotlib import failed: %s", exc)
+        return ""
+
+    try:
+        weeks = len(parent_series)
+        # Build x-axis labels: "Wk of MMM DD" for each week
+        x_labels: list[str] = []
+        for w in range(weeks - 1, -1, -1):
+            week_end = today - timedelta(days=7 * w)
+            week_start = week_end - timedelta(days=6)
+            x_labels.append(week_start.strftime("%b %d"))
+
+        fig, ax = plt.subplots(figsize=(6.4, 2.6), dpi=140)
+        fig.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#ffffff")
+
+        # Palette — parent uses the digest's brand accent; competitors get
+        # a small curated ramp that reads well on white.
+        parent_color = "#1a3a5c"
+        competitor_colors = ["#b91c1c", "#0d9488", "#a16207", "#7c3aed"]
+
+        x = list(range(weeks))
+
+        # Parent line first so it sits behind competitor markers when they
+        # coincide (parent is the point of comparison).
+        ax.plot(
+            x, parent_series,
+            marker="o", markersize=5, linewidth=2.2,
+            color=parent_color, label=parent_name, zorder=3,
         )
-    if ratio <= 0.5:
-        return (
-            "likely reflects a smaller IP surface area or thinner franchise "
-            "history, so post volume tracks discrete press beats more tightly"
+
+        for i, comp in enumerate(competitors):
+            c_color = competitor_colors[i % len(competitor_colors)]
+            ax.plot(
+                x, comp["series"],
+                marker="o", markersize=4, linewidth=1.8,
+                color=c_color, label=comp["name"], zorder=2, alpha=0.95,
+            )
+
+        # Axes & styling
+        ax.set_title("4-week post volume — parent vs. competitors (pos + neg only)",
+                     fontsize=10, color="#1f2937", loc="left", pad=10)
+        ax.set_ylabel("Qualifying posts / week", fontsize=8.5, color="#6b7280")
+        ax.tick_params(axis="both", labelsize=8.5, colors="#6b7280")
+        ax.set_xticks(x)
+        ax.set_xticklabels(x_labels)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#e5e7eb")
+        ax.spines["bottom"].set_color("#e5e7eb")
+        ax.grid(True, axis="y", linestyle="-", linewidth=0.5,
+                color="#e5e7eb", alpha=0.7)
+        ax.set_axisbelow(True)
+        ax.yaxis.set_major_locator(MaxNLocator(integer=True, nbins=5))
+        ax.yaxis.set_major_formatter(
+            plt.FuncFormatter(lambda v, _: f"{int(v):,}")
         )
-    return ""
+
+        # Legend below the plot area to avoid crowding the lines
+        legend = ax.legend(
+            loc="upper center", bbox_to_anchor=(0.5, -0.28),
+            ncol=min(len(competitors) + 1, 3),
+            frameon=False, fontsize=8.5, handlelength=1.5,
+        )
+        for text in legend.get_texts():
+            text.set_color("#1f2937")
+
+        # Ensure y-axis starts at 0 so gaps are honest.
+        y_max = max(
+            [max(parent_series or [0])]
+            + [max(c["series"] or [0]) for c in competitors]
+        )
+        ax.set_ylim(bottom=0, top=max(y_max * 1.15, 5))
+
+        plt.tight_layout()
+        buf = io.BytesIO()
+        # Reasonable email-safe size: ~640px wide, 260px tall.
+        fig.savefig(buf, format="png", bbox_inches="tight", dpi=140,
+                    facecolor="#ffffff", edgecolor="none")
+        plt.close(fig)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except Exception as exc:
+        logger.warning("digest: trend PNG render failed: %s", exc)
+        try:
+            plt.close("all")
+        except Exception:
+            pass
+        return ""
 
 
-def _pick_top_competitors(bullets: list) -> list:
-    """Trim down to _COMPETITOR_MAX_BULLETS, preferring the most instructive.
+def _volume_caption_sentence(
+    parent_name: str, parent_total: int, comp_rows: list,
+) -> str:
+    """ONE short caption describing the aggregate volume gap. Complements the
+    chart — the chart already carries the visual, this just states the ratio.
 
-    Ranking key: absolute distance of the competitor's weighted pos/neg score
-    from the parent's score, plus a volume-gap magnitude bonus. This surfaces
-    competitors whose sentiment posture or volume differs most sharply from
-    the parent \u2014 those are the ones a strategic reader wants highlighted.
+    No per-competitor driver-hypothesis; that repetition is what the
+    first-cut Competitive Set got wrong.
     """
-    if len(bullets) <= _COMPETITOR_MAX_BULLETS:
-        return bullets
-    return sorted(
-        bullets, key=lambda b: b["_rank_key"], reverse=True,
-    )[:_COMPETITOR_MAX_BULLETS]
+    if not comp_rows:
+        return ""
+
+    total_comp = sum(r["total_posts"] for r in comp_rows)
+    n_comps = len(comp_rows)
+
+    def _fmt(n: int) -> str:
+        return f"{n:,}"
+
+    if parent_total == 0:
+        if total_comp == 0:
+            return (
+                f"Peer set of {n_comps} tracked competitor"
+                f"{'s' if n_comps != 1 else ''} generated no qualifying "
+                f"conversation this week either."
+            )
+        return (
+            f"Peer set generated {_fmt(total_comp)} qualifying posts this "
+            f"week vs. no qualifying signal for the Saber title."
+        )
+
+    combined_ratio = total_comp / parent_total
+    if combined_ratio >= 3.0:
+        return (
+            f"Peer set generated {_fmt(total_comp)} qualifying posts this "
+            f"week — roughly {combined_ratio:.1f}× the Saber title's "
+            f"{_fmt(parent_total)}."
+        )
+    if combined_ratio >= 1.5:
+        return (
+            f"Peer set generated {_fmt(total_comp)} qualifying posts this "
+            f"week — about {combined_ratio:.1f}× the Saber title's "
+            f"{_fmt(parent_total)}."
+        )
+    if combined_ratio >= 0.9:
+        return (
+            f"Peer set generated {_fmt(total_comp)} qualifying posts this "
+            f"week — roughly on par with the Saber title's {_fmt(parent_total)}."
+        )
+    if combined_ratio >= 0.5:
+        return (
+            f"Peer set generated {_fmt(total_comp)} qualifying posts this "
+            f"week — about {int(combined_ratio * 100)}% of the Saber title's "
+            f"{_fmt(parent_total)}."
+        )
+    return (
+        f"Peer set generated {_fmt(total_comp)} qualifying posts this week — "
+        f"well below the Saber title's {_fmt(parent_total)} "
+        f"(~{combined_ratio:.2f}×)."
+    )
+
+
+def _competitor_topic_sentence(
+    db: Session,
+    competitor_id: int,
+    competitor_name: str,
+    week_start: date,
+    row,  # WindowSummary or MonthlySummary
+) -> str:
+    """Return ONE topic-momentum sentence for a single competitor.
+
+    Prefers TopicTrend rows updated since `week_start`, filters out generic
+    labels, ranks (rising desc, velocity desc, mention_count desc). Falls
+    back to WindowSummary.top_positive_topics / top_negative_topics labels
+    when TopicTrend has nothing specific. Emits a stance-only note when
+    both paths are empty.
+    """
+    positive_topic = None
+    negative_topic = None
+    positive_velocity = 0.0
+    negative_velocity = 0.0
+
+    try:
+        trend_rows = (
+            db.query(TopicTrend)
+            .filter(
+                TopicTrend.game_id == competitor_id,
+                TopicTrend.last_seen >= week_start,
+            )
+            .all()
+        )
+    except Exception as exc:
+        logger.warning(
+            "digest: TopicTrend query failed for game_id=%d: %s",
+            competitor_id, exc,
+        )
+        trend_rows = []
+
+    def _rank(t):
+        td = getattr(t.trend_direction, "value", str(t.trend_direction))
+        return (
+            0 if td == "rising" else 1,
+            -(t.velocity or 0.0),
+            -(t.mention_count or 0),
+        )
+
+    positive_cands = sorted(
+        [
+            t for t in trend_rows
+            if getattr(t.sentiment, "value", str(t.sentiment)) == "positive"
+            and _is_specific_topic(t.topic_label)
+        ],
+        key=_rank,
+    )
+    negative_cands = sorted(
+        [
+            t for t in trend_rows
+            if getattr(t.sentiment, "value", str(t.sentiment)) == "negative"
+            and _is_specific_topic(t.topic_label)
+        ],
+        key=_rank,
+    )
+
+    if positive_cands:
+        positive_topic = positive_cands[0].topic_label
+        positive_velocity = positive_cands[0].velocity or 0.0
+    if negative_cands:
+        negative_topic = negative_cands[0].topic_label
+        negative_velocity = negative_cands[0].velocity or 0.0
+
+    # WindowSummary fallback
+    if not positive_topic and row is not None:
+        for label in (row.top_positive_topics or []):
+            if _is_specific_topic(label):
+                positive_topic = label
+                break
+    if not negative_topic and row is not None:
+        for label in (row.top_negative_topics or []):
+            if _is_specific_topic(label):
+                negative_topic = label
+                break
+
+    escaped_name = html.escape(competitor_name)
+
+    if positive_topic and negative_topic:
+        return (
+            f"<strong>{escaped_name}</strong> — positive momentum on "
+            f"<em>{html.escape(positive_topic)}</em>"
+            f"{' (rising)' if positive_velocity >= 0.5 else ''}; "
+            f"negative pressure on "
+            f"<em>{html.escape(negative_topic)}</em>"
+            f"{' (rising)' if negative_velocity >= 0.5 else ''}."
+        )
+    if positive_topic:
+        return (
+            f"<strong>{escaped_name}</strong> — positive momentum on "
+            f"<em>{html.escape(positive_topic)}</em>"
+            f"{' (rising)' if positive_velocity >= 0.5 else ''}; "
+            f"no material negative theme surfaced this window."
+        )
+    if negative_topic:
+        return (
+            f"<strong>{escaped_name}</strong> — negative pressure on "
+            f"<em>{html.escape(negative_topic)}</em>"
+            f"{' (rising)' if negative_velocity >= 0.5 else ''}; "
+            f"no material positive theme surfaced this window."
+        )
+    # Nothing specific
+    pos = getattr(row, "positive_count", 0) if row is not None else 0
+    neg = getattr(row, "negative_count", 0) if row is not None else 0
+    return (
+        f"<strong>{escaped_name}</strong> — {_describe_ratio_stance(pos, neg)}; "
+        f"no specific topic momentum surfaced this week."
+    )
 
 
 def _build_competitor_bullets(
@@ -701,14 +997,18 @@ def _build_competitor_bullets(
     year: Optional[int] = None,
     month: Optional[int] = None,
 ) -> Optional[list]:
-    """Build 2-3 competitor commentary bullets for the given parent block.
+    """Build the Competitive Set payload for the given parent block.
 
     Returns None when the parent has zero configured competitors so the
     caller can distinguish "unconfigured" from "configured but no data".
-    Returns [] when competitors exist but none have qualifying data.
+    Otherwise returns a list of bullet dicts. The first bullet is always
+    a chart+caption bundle {kind: 'chart', chart_data_uri: ..., html: caption};
+    subsequent bullets are topic-momentum sentences {kind: 'topic', ...}.
 
-    period: 'weekly' \u2192 pull 7-day WindowSummary; 'monthly' \u2192 pull
-    MonthlySummary for (year, month). Same code path either way.
+    period: 'weekly' → pull 7-day WindowSummary + last-4-week DailySummary
+            trend + last-7-day TopicTrend;
+            'monthly' → pull MonthlySummary + last-4-month trend + first-of-
+            month topic cutoff.
     """
     try:
         links = (
@@ -726,9 +1026,10 @@ def _build_competitor_bullets(
     if not links:
         return None
 
-    parent_score = _weighted_pos_neg_score(parent_positive, parent_negative)
-    bullets: list = []
+    today_d = today or date.today()
 
+    # Pass 1: gather (row, name, id, pos, neg, total, 4-week series) per competitor
+    comp_rows: list[dict] = []
     for link in links:
         cgame = link.competitor
         if cgame is None:
@@ -736,17 +1037,16 @@ def _build_competitor_bullets(
         c_id = cgame.id
         c_name = cgame.name
 
+        row = None
         c_pos = c_neg = c_neu = c_total = 0
 
         try:
             if period == "weekly":
-                today_d = today or date.today()
                 row = (
                     db.query(WindowSummary)
                     .filter_by(game_id=c_id, window_days=7, ingest_date=today_d)
                     .first()
                 )
-                # Lazy regenerate if missing, matching parent-block behavior.
                 if row is None:
                     from services import period_summary_service as _pss  # noqa: PLC0415
                     row = _pss.generate_window_summary(db, game_id=c_id, days=7)
@@ -756,16 +1056,17 @@ def _build_competitor_bullets(
                     c_neu = row.neutral_count
                     c_total = row.total_posts
             elif period == "monthly":
-                row = (
+                mrow = (
                     db.query(MonthlySummary)
                     .filter_by(game_id=c_id, period_year=year, period_month=month)
                     .first()
                 )
-                if row is not None:
-                    c_pos = row.positive_count
-                    c_neg = row.negative_count
-                    c_neu = row.neutral_count
-                    c_total = row.total_posts
+                if mrow is not None:
+                    c_pos = mrow.positive_count
+                    c_neg = mrow.negative_count
+                    c_neu = mrow.neutral_count
+                    c_total = mrow.total_posts
+                row = mrow
         except Exception as exc:
             logger.warning(
                 "digest: competitor summary load failed for game_id=%d (%s): %s",
@@ -773,58 +1074,95 @@ def _build_competitor_bullets(
             )
             continue
 
-        # Even when the competitor has no data we still surface a bullet
-        # so the reader sees the peer set. Text handles the zero case.
-        c_score = _weighted_pos_neg_score(c_pos, c_neg)
+        # 4-week pos+neg series for the chart. Weekly uses calendar weeks
+        # ending on today; monthly uses today as well since DailySummary
+        # is day-grained.
+        try:
+            series = _load_weekly_pos_neg_series(db, c_id, weeks=4, today=today_d)
+        except Exception as exc:
+            logger.warning(
+                "digest: series load failed for game_id=%d: %s",
+                c_id, exc,
+            )
+            series = [0, 0, 0, 0]
 
-        # Rank key: how far this competitor's posture / volume is from the
-        # parent's. Sentiment distance uses the [-1, 1] score; volume delta
-        # uses log-scale so very-quiet and very-loud both rank high.
-        import math
-        sentiment_delta = abs(c_score - parent_score)
-        if parent_total > 0 and c_total > 0:
-            vol_ratio = max(c_total, parent_total) / max(min(c_total, parent_total), 1)
-            volume_delta = math.log10(vol_ratio)
-        else:
-            volume_delta = 1.5  # missing data → rank up so it's visible
-        rank_key = sentiment_delta + 0.5 * volume_delta
-
-        # Compose the bullet: [competitor name] [ratio stance], [volume stance][; hypothesis].
-        ratio_clause = _describe_ratio_stance(c_pos, c_neg)
-        volume_clause = _describe_volume_gap(c_total, parent_total)
-        driver_clause = _hypothesize_volume_driver(c_name, c_total, parent_total)
-
-        if not volume_clause:
-            # Parent has no data \u2014 flip the framing so competitor volume
-            # is described in absolute terms.
-            if c_total == 0:
-                volume_clause = "with no qualifying volume of its own"
-            else:
-                volume_clause = (
-                    f"drove {c_total:,} qualifying posts this window vs. no "
-                    f"qualifying signal for the Saber title"
-                )
-
-        parts = [ratio_clause, volume_clause]
-        if driver_clause:
-            parts.append(driver_clause)
-        # Guarded assembly: join with commas + a final semicolon on the driver.
-        if driver_clause:
-            sentence = f"<strong>{html.escape(c_name)}</strong> {parts[0]}, {parts[1]}; {parts[2]}."
-        else:
-            sentence = f"<strong>{html.escape(c_name)}</strong> {parts[0]}, {parts[1]}."
-
-        bullets.append({
+        comp_rows.append({
             "competitor_id": c_id,
             "competitor_name": c_name,
             "positive": c_pos, "negative": c_neg, "neutral": c_neu,
             "total_posts": c_total,
             "pos_neg_ratio": _format_ratio(c_pos, c_neg),
-            "html": sentence,
-            "_rank_key": rank_key,
+            "row": row,
+            "series": series,
         })
 
-    return _pick_top_competitors(bullets)
+    if not comp_rows:
+        return []
+
+    # Rank comps by (sentiment distance from parent) + (log volume gap) so
+    # the topic bullets feature the most instructive peers first.
+    import math as _math
+    parent_score = _weighted_pos_neg_score(parent_positive, parent_negative)
+    for r in comp_rows:
+        c_score = _weighted_pos_neg_score(r["positive"], r["negative"])
+        sent_delta = abs(c_score - parent_score)
+        if parent_total > 0 and r["total_posts"] > 0:
+            vol_ratio = (
+                max(r["total_posts"], parent_total)
+                / max(min(r["total_posts"], parent_total), 1)
+            )
+            vol_delta = _math.log10(vol_ratio)
+        else:
+            vol_delta = 1.5
+        r["_rank_key"] = sent_delta + 0.5 * vol_delta
+
+    featured = sorted(comp_rows, key=lambda r: -r["_rank_key"])[
+        :_COMPETITOR_MAX_FEATURED
+    ]
+
+    bullets: list[dict] = []
+
+    # Bullet 0: chart + caption
+    parent_series = _load_weekly_pos_neg_series(
+        db, parent_game_id, weeks=4, today=today_d,
+    )
+    chart_uri = _render_trend_png_data_uri(
+        parent_name, parent_series,
+        [{"name": r["competitor_name"], "series": r["series"]} for r in comp_rows],
+        today_d,
+    )
+    caption = _volume_caption_sentence(parent_name, parent_total, comp_rows)
+    bullets.append({
+        "kind": "chart",
+        "chart_data_uri": chart_uri,
+        "html": caption,
+    })
+
+    # Bullets 1..N: one topic-momentum sentence per featured competitor
+    if period == "weekly":
+        week_start = today_d - timedelta(days=6)
+    else:
+        try:
+            week_start = date(year, month, 1)
+        except Exception:
+            week_start = today_d - timedelta(days=30)
+
+    for r in featured:
+        sent_html = _competitor_topic_sentence(
+            db,
+            competitor_id=r["competitor_id"],
+            competitor_name=r["competitor_name"],
+            week_start=week_start,
+            row=r["row"],
+        )
+        bullets.append({
+            "kind": "topic",
+            "competitor_id": r["competitor_id"],
+            "competitor_name": r["competitor_name"],
+            "html": sent_html,
+        })
+
+    return bullets
 
 
 def _render_competitive_set(b: TitleBlock) -> str:
@@ -835,19 +1173,52 @@ def _render_competitive_set(b: TitleBlock) -> str:
     """
     if not b.competitor_bullets:
         return ""
-    items = "".join(
-        f'<li style="margin:0 0 10px 0;">{bullet["html"]}</li>'
-        for bullet in b.competitor_bullets
-    )
+
+    chart_html = ""
+    caption_html = ""
+    topic_bullets: list[str] = []
+
+    for bullet in b.competitor_bullets:
+        kind = bullet.get("kind")
+        if kind == "chart":
+            uri = bullet.get("chart_data_uri") or ""
+            if uri:
+                chart_html = (
+                    f'<div style="margin:8px 0 12px 0; text-align:left;">'
+                    f'  <img src="{uri}" '
+                    f'    alt="4-week post volume — parent vs. competitors" '
+                    f'    style="max-width:100%; height:auto; display:block; '
+                    f'    border:1px solid {_BORDER}; border-radius:6px;">'
+                    f'</div>'
+                )
+            cap = bullet.get("html") or ""
+            if cap:
+                caption_html = (
+                    f'<p style="margin:0 0 12px 0; color:{_TEXT_PRIMARY}; '
+                    f'font-size:14px; line-height:1.5;">{cap}</p>'
+                )
+        else:  # 'topic'
+            topic_bullets.append(
+                f'<li style="margin:0 0 10px 0;">{bullet["html"]}</li>'
+            )
+
+    bullets_ul = ""
+    if topic_bullets:
+        bullets_ul = (
+            f'<ul style="margin:0 0 0 22px; padding:0; '
+            f'color:{_TEXT_PRIMARY}; font-size:15px; line-height:1.55;">'
+            f'{"".join(topic_bullets)}'
+            f'</ul>'
+        )
+
     return (
         f'<div style="margin-top:18px;">'
         f'  <div style="font-size:12px; font-weight:700; letter-spacing:.06em; '
         f'  color:{_BRAND_ACCENT}; text-transform:uppercase; margin-bottom:6px;">'
         f'  Competitive Set</div>'
-        f'  <ul style="margin:0 0 0 22px; padding:0; '
-        f'  color:{_TEXT_PRIMARY}; font-size:15px; line-height:1.55;">'
-        f'  {items}'
-        f'  </ul>'
+        f'  {chart_html}'
+        f'  {caption_html}'
+        f'  {bullets_ul}'
         f'</div>'
     )
 

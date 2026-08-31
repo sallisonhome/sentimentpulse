@@ -1,42 +1,82 @@
 """Regression tests for the Competitive Set feature in weekly + monthly digests.
 
 Feature: 2026-08-30 (Steve request).
+Revised same day (evening): chart PNG + short caption + topic-momentum
+bullets, replacing the paragraph-length per-competitor volume bullets.
 
 Contract locked in by this test file:
 
   1. When a parent title has no rows in competitor_games, TitleBlock
      .competitor_bullets is None and no "Competitive Set" section renders.
-  2. When a parent has 1-3 competitors, each becomes exactly one bullet,
-     in the order they appear in the DB.
-  3. When a parent has >3 competitors, the top 3 by widest sentiment / volume
-     gap are surfaced (rank key from _pick_top_competitors).
-  4. Each bullet leads with the competitor NAME in <strong>, then a
-     pos-vs-neg posture clause (no neutral weight surfaced), then a
-     volume-vs-parent clause. Only when the volume ratio is >=1.5x or
-     <=0.5x is a driver hypothesis appended.
-  5. A parent block with no data (has_data=False) still renders the
-     Competitive Set when competitors are configured — that's the most
-     useful case for the feature.
+  2. When a parent has 1+ competitors, the FIRST bullet is always a chart
+     bundle ({kind: 'chart', chart_data_uri, html: caption}). The caption
+     summarises aggregate volume in ONE sentence — no per-competitor
+     driver-hypothesis repetition.
+  3. Every subsequent bullet is a topic-momentum sentence for ONE competitor
+     (max _COMPETITOR_MAX_FEATURED featured). Each leads with the
+     competitor NAME in <strong> then describes what specific topics have
+     positive/negative momentum this week.
+  4. Generic topic labels ("General Discussion", "General Positive
+     Sentiment", etc.) are filtered out via _is_specific_topic so the
+     bullets surface concrete hooks.
+  5. Rendered HTML contains the word "neutral" ZERO times — commentary
+     stays tilted toward pos/neg per Steve's "less neutral" ask.
+  6. When both TopicTrend and WindowSummary.top_*_topics have nothing
+     specific for a competitor, the topic bullet emits a stance-only
+     fallback so the reader still knows where the peer stands.
 """
-from datetime import date
+from datetime import date, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
 from services.digest_service import (
-    _COMPETITOR_MAX_BULLETS,
+    _COMPETITOR_MAX_FEATURED,
     _build_competitor_bullets,
+    _competitor_topic_sentence,
     _describe_ratio_stance,
-    _describe_volume_gap,
-    _hypothesize_volume_driver,
-    _pick_top_competitors,
+    _is_specific_topic,
     _render_competitive_set,
-    TitleBlock,
+    _volume_caption_sentence,
     _weighted_pos_neg_score,
+    TitleBlock,
 )
 
 
-# ── Pure-function guardrails ─────────────────────────────────────────────────
+# ── Pure helpers ─────────────────────────────────────────────────────────────
+
+class TestIsSpecificTopic:
+    def test_none_and_empty(self):
+        assert _is_specific_topic(None) is False
+        assert _is_specific_topic("") is False
+        assert _is_specific_topic("   ") is False
+
+    def test_generic_labels_rejected(self):
+        for lbl in [
+            "General Discussion",
+            "general discussion",
+            "General Positive Sentiment",
+            "General Gameplay Talk",
+            "Discussion",
+            "Other",
+            "N/A",
+        ]:
+            assert _is_specific_topic(lbl) is False, lbl
+
+    def test_specific_labels_accepted(self):
+        for lbl in [
+            "Halloween Content Posts",
+            "Killer Gameplay",
+            "Silent Hill Franchise",
+            "Halloween 20 Amazon",
+            "Survivor Gameplay",
+        ]:
+            assert _is_specific_topic(lbl) is True, lbl
+
+    def test_case_insensitive_and_whitespace_tolerant(self):
+        assert _is_specific_topic("  GENERAL DISCUSSION  ") is False
+        assert _is_specific_topic("  Killer Gameplay  ") is True
+
 
 class TestWeightedPosNegScore:
     def test_zero_when_no_evidence(self):
@@ -58,115 +98,169 @@ class TestDescribeRatioStance:
         assert "unblemished" in s and "15:0" in s
 
     def test_strongly_positive(self):
-        s = _describe_ratio_stance(50, 5)
-        assert "strongly positive" in s
+        assert "strongly positive" in _describe_ratio_stance(50, 5)
 
     def test_leans_positive(self):
-        s = _describe_ratio_stance(20, 10)
-        assert "leans positive" in s
+        assert "leans positive" in _describe_ratio_stance(20, 10)
 
     def test_balanced(self):
-        s = _describe_ratio_stance(10, 9)
-        assert "roughly balanced" in s
+        assert "roughly balanced" in _describe_ratio_stance(10, 9)
 
     def test_leans_negative(self):
-        s = _describe_ratio_stance(10, 20)
-        assert "leans negative" in s
+        assert "leans negative" in _describe_ratio_stance(10, 20)
 
     def test_strongly_negative(self):
-        s = _describe_ratio_stance(5, 50)
-        assert "strongly negative" in s
+        assert "strongly negative" in _describe_ratio_stance(5, 50)
 
     def test_never_surfaces_neutral(self):
-        # The whole point of this function: no mention of neutrals in any branch.
         for pos, neg in [(0, 0), (10, 0), (0, 10), (5, 5), (100, 3), (3, 100)]:
             assert "neutral" not in _describe_ratio_stance(pos, neg).lower()
 
 
-class TestDescribeVolumeGap:
-    def test_parent_has_no_data(self):
-        # Parent zero-total returns empty so the caller can flip framing.
-        assert _describe_volume_gap(500, 0) == ""
+# ── Aggregate volume caption ─────────────────────────────────────────────────
 
-    def test_competitor_has_no_data(self):
-        assert "essentially no measurable" in _describe_volume_gap(0, 500)
+class TestVolumeCaptionSentence:
+    def test_empty_comps(self):
+        assert _volume_caption_sentence("P", 100, []) == ""
 
-    def test_three_x_or_more(self):
-        assert "×" in _describe_volume_gap(3000, 1000)
-        assert "3." in _describe_volume_gap(3000, 1000)
+    def test_parent_zero_comps_active(self):
+        s = _volume_caption_sentence(
+            "P", 0, [{"total_posts": 500}, {"total_posts": 300}],
+        )
+        assert "500" in s or "800" in s
+        assert "no qualifying signal for the Saber title" in s
 
-    def test_similar_volume(self):
-        assert "broadly similar" in _describe_volume_gap(950, 1000)
+    def test_big_gap_uses_fold_notation(self):
+        s = _volume_caption_sentence(
+            "P", 100, [{"total_posts": 500}, {"total_posts": 700}],
+        )
+        # 1200 / 100 = 12.0×
+        assert "×" in s
+        assert "12" in s or "12.0" in s
+        # Only ONE sentence total (no repeated clause)
+        # Rough proxy: single terminal period, or up to a couple.
+        assert s.count(". ") <= 1
 
-    def test_materially_quieter(self):
-        assert "materially quieter" in _describe_volume_gap(250, 1000)
+    def test_on_par(self):
+        s = _volume_caption_sentence(
+            "P", 1000, [{"total_posts": 500}, {"total_posts": 500}],
+        )
+        assert "on par" in s or "similar" in s or "1,000" in s
+
+    def test_never_mentions_neutral(self):
+        s = _volume_caption_sentence(
+            "P", 100, [{"total_posts": 500}, {"total_posts": 700}],
+        )
+        assert "neutral" not in s.lower()
 
 
-class TestHypothesizeVolumeDriver:
-    def test_returns_empty_when_ratio_is_close(self):
-        assert _hypothesize_volume_driver("X", 900, 1000) == ""
+# ── Topic momentum sentence ──────────────────────────────────────────────────
 
-    def test_ip_gravity_hypothesis_when_competitor_dominates(self):
-        s = _hypothesize_volume_driver("Halloween: The Game", 5000, 1000)
-        assert "IP" in s and "franchise" in s
+def _mk_topic(label, sentiment_str, velocity=0.5, mention_count=10,
+              trend_direction_str="rising"):
+    t = MagicMock()
+    t.topic_label = label
+    t.velocity = velocity
+    t.mention_count = mention_count
+    # Enum-like objects have .value; support that path
+    sentiment_mock = MagicMock()
+    sentiment_mock.value = sentiment_str
+    t.sentiment = sentiment_mock
+    trend_mock = MagicMock()
+    trend_mock.value = trend_direction_str
+    t.trend_direction = trend_mock
+    return t
 
-    def test_smaller_ip_hypothesis_when_competitor_lags(self):
-        s = _hypothesize_volume_driver("Some Indie Horror", 200, 1000)
-        assert "smaller IP" in s or "thinner franchise" in s
 
-    def test_no_hypothesis_when_either_side_has_zero(self):
-        assert _hypothesize_volume_driver("X", 0, 1000) == ""
-        assert _hypothesize_volume_driver("X", 1000, 0) == ""
+class TestCompetitorTopicSentence:
+    def _mk_db(self, trend_rows):
+        db = MagicMock()
+        q = MagicMock()
+        q.filter.return_value.all.return_value = trend_rows
+        db.query.return_value = q
+        return db
 
-
-# ── Ranking behaviour ────────────────────────────────────────────────────────
-
-class TestPickTopCompetitors:
-    def test_returns_all_when_at_or_below_cap(self):
-        bullets = [{"_rank_key": i} for i in range(_COMPETITOR_MAX_BULLETS)]
-        assert _pick_top_competitors(bullets) == bullets
-
-    def test_prefers_higher_rank_key(self):
-        bullets = [
-            {"competitor_id": 1, "_rank_key": 0.1, "html": "A"},
-            {"competitor_id": 2, "_rank_key": 0.9, "html": "B"},
-            {"competitor_id": 3, "_rank_key": 0.5, "html": "C"},
-            {"competitor_id": 4, "_rank_key": 0.7, "html": "D"},
+    def test_positive_and_negative_topic_packed_into_one_bullet(self):
+        trend = [
+            _mk_topic("Killer Gameplay", "negative", velocity=0.9,
+                      mention_count=20, trend_direction_str="rising"),
+            _mk_topic("Halloween Content Posts", "positive", velocity=0.7,
+                      mention_count=15, trend_direction_str="rising"),
+            _mk_topic("General Discussion", "positive", velocity=5.0,
+                      mention_count=100),  # generic — filtered
         ]
-        got = _pick_top_competitors(bullets)
-        assert len(got) == 3
-        got_ids = [b["competitor_id"] for b in got]
-        # 2 (0.9), 4 (0.7), 3 (0.5) — sentiment-1 competitor A drops off.
-        assert got_ids == [2, 4, 3]
+        db = self._mk_db(trend)
+        row = MagicMock()
+        row.top_positive_topics = []
+        row.top_negative_topics = []
+        row.positive_count = 30
+        row.negative_count = 15
+
+        s = _competitor_topic_sentence(
+            db, competitor_id=140, competitor_name="Halloween: The Game",
+            week_start=date(2026, 8, 24), row=row,
+        )
+        assert "<strong>Halloween: The Game</strong>" in s
+        assert "Halloween Content Posts" in s
+        assert "Killer Gameplay" in s
+        assert "General Discussion" not in s
+        assert "positive momentum" in s
+        assert "negative pressure" in s
+        # Never says "neutral"
+        assert "neutral" not in s.lower()
+
+    def test_rising_marker_only_when_velocity_high(self):
+        trend = [
+            _mk_topic("Halloween Content Posts", "positive", velocity=0.15,
+                      trend_direction_str="stable"),
+        ]
+        db = self._mk_db(trend)
+        row = MagicMock()
+        row.top_positive_topics = []
+        row.top_negative_topics = []
+        row.positive_count = 5
+        row.negative_count = 1
+        s = _competitor_topic_sentence(
+            db, 140, "Halloween: The Game", date(2026, 8, 24), row,
+        )
+        assert "Halloween Content Posts" in s
+        # velocity 0.15 < 0.5 → no rising marker
+        assert "(rising)" not in s
+
+    def test_falls_back_to_window_summary_top_topics(self):
+        # No TopicTrend rows → use row.top_positive_topics fallback
+        db = self._mk_db([])
+        row = MagicMock()
+        row.top_positive_topics = ["General Discussion", "Halloween Builds"]
+        row.top_negative_topics = ["General Gameplay Talk", "Killer Gameplay"]
+        row.positive_count = 10
+        row.negative_count = 5
+        s = _competitor_topic_sentence(
+            db, 140, "Halloween: The Game", date(2026, 8, 24), row,
+        )
+        assert "Halloween Builds" in s  # first specific label
+        assert "Killer Gameplay" in s
+        # Generic labels skipped
+        assert "General Discussion" not in s
+
+    def test_no_specific_topic_falls_back_to_stance(self):
+        db = self._mk_db([])
+        row = MagicMock()
+        row.top_positive_topics = ["General Discussion"]
+        row.top_negative_topics = ["General Gameplay Talk"]
+        row.positive_count = 3
+        row.negative_count = 8
+        s = _competitor_topic_sentence(
+            db, 140, "Halloween: The Game", date(2026, 8, 24), row,
+        )
+        assert "leans negative" in s
+        assert "no specific topic momentum" in s
 
 
-# ── End-to-end bullet builder with mocked DB ─────────────────────────────────
+# ── End-to-end build with mocked DB ──────────────────────────────────────────
 
-def _make_mock_game(gid: int, name: str):
-    g = MagicMock()
-    g.id = gid
-    g.name = name
-    return g
-
-
-def _make_mock_link(parent_id: int, competitor):
-    link = MagicMock()
-    link.parent_id = parent_id
-    link.competitor = competitor
-    return link
-
-
-def _make_mock_windowsummary(pos, neg, neu, total):
-    row = MagicMock()
-    row.positive_count = pos
-    row.negative_count = neg
-    row.neutral_count = neu
-    row.total_posts = total
-    return row
-
-
-class TestBuildCompetitorBulletsWeekly:
-    def test_returns_none_when_no_competitors(self, monkeypatch):
+class TestBuildCompetitorBullets:
+    def test_returns_none_when_no_competitors(self):
         db = MagicMock()
         db.query.return_value.filter_by.return_value.all.return_value = []
         out = _build_competitor_bullets(
@@ -179,79 +273,63 @@ class TestBuildCompetitorBulletsWeekly:
         )
         assert out is None
 
-    def test_hellraiser_v_halloween_style_case(self, monkeypatch):
-        """
-        Realistic case: Hellraiser (small IP) has three competitors
-        including Halloween (huge IP) — commentary should flag Halloween
-        as generating multiples of the parent's volume and hypothesize
-        IP-gravity as the driver.
-        """
+    def test_first_bullet_is_chart_kind(self, monkeypatch):
+        # Minimal mock DB: 1 competitor, no window summary data
         db = MagicMock()
+        cgame = MagicMock()
+        cgame.id = 140
+        cgame.name = "Halloween: The Game"
+        link = MagicMock()
+        link.competitor = cgame
 
-        halloween = _make_mock_game(140, "Halloween: The Game")
-        townfall = _make_mock_game(139, "SILENT HILL: Townfall")
-        ill = _make_mock_game(138, "ILL")
-        links = [
-            _make_mock_link(21, halloween),
-            _make_mock_link(21, townfall),
-            _make_mock_link(21, ill),
-        ]
+        # Track which queries have been made so we can return the right
+        # shape each time. There are many queries: CompetitorGame,
+        # WindowSummary, TopicTrend, DailySummary.
+        query_state = {"i": 0}
 
-        # First query: competitor_games links.
-        # Subsequent queries: WindowSummary for each competitor.
-        # We stage them by intercepting db.query itself.
-        summaries = {
-            140: _make_mock_windowsummary(pos=1637, neg=100, neu=200, total=1937),
-            139: _make_mock_windowsummary(pos=800, neg=50, neu=100, total=950),
-            138: _make_mock_windowsummary(pos=10, neg=5, neu=3, total=18),
-        }
-
-        call_state = {"idx": 0}
-
-        def fake_query(model):
+        def _query(model):
             q = MagicMock()
-            if call_state["idx"] == 0:
-                # First call: CompetitorGame lookup by parent_id.
-                q.filter_by.return_value.all.return_value = links
+            name = getattr(model, "__name__", str(model))
+            if name.endswith("CompetitorGame"):
+                q.filter_by.return_value.all.return_value = [link]
+            elif name.endswith("WindowSummary"):
+                # Return a stubbed WindowSummary row
+                row = MagicMock()
+                row.positive_count = 100
+                row.negative_count = 40
+                row.neutral_count = 30
+                row.total_posts = 170
+                row.top_positive_topics = ["Halloween Content Posts"]
+                row.top_negative_topics = ["Killer Gameplay"]
+                q.filter_by.return_value.first.return_value = row
+            elif name.endswith("TopicTrend"):
+                q.filter.return_value.all.return_value = []
+            elif name.endswith("DailySummary"):
+                # Series loader queries DailySummary via .filter(...).all()
+                q.filter.return_value.all.return_value = []
             else:
-                # Subsequent calls: WindowSummary for a specific game.
-                # Extract the game_id from the filter_by kwargs.
-                def _first():
-                    kwargs = q.filter_by.call_args.kwargs
-                    gid = kwargs.get("game_id")
-                    return summaries.get(gid)
-                q.filter_by.return_value.first.side_effect = _first
-            call_state["idx"] += 1
+                q.filter.return_value.all.return_value = []
+                q.filter_by.return_value.first.return_value = None
             return q
 
-        db.query.side_effect = fake_query
+        db.query.side_effect = _query
 
         out = _build_competitor_bullets(
             db,
             parent_game_id=21,
-            parent_positive=8, parent_negative=2, parent_total=56,
+            parent_positive=10, parent_negative=2, parent_total=20,
             parent_name="Hellraiser Revival",
             period="weekly",
             today=date(2026, 8, 30),
         )
-
-        assert out is not None
-        assert len(out) == 3
-        names = [b["competitor_name"] for b in out]
-        assert set(names) == {"Halloween: The Game", "SILENT HILL: Townfall", "ILL"}
-
-        halloween_bullet = next(b for b in out if b["competitor_name"] == "Halloween: The Game")
-        # Halloween has 1637 pos vs 100 neg → strongly positive.
-        assert "strongly positive" in halloween_bullet["html"]
-        # Volume: 1937 / 56 = ~34.6× → 3.0× threshold hit.
-        assert "×" in halloween_bullet["html"]
-        # Driver: >=1.5× ratio → IP-gravity hypothesis fires.
-        assert "IP" in halloween_bullet["html"] or "franchise" in halloween_bullet["html"]
-
-        ill_bullet = next(b for b in out if b["competitor_name"] == "ILL")
-        # ILL has 18 posts, parent has 56 → volume ratio 0.32 (materially quieter).
-        # Should include the "smaller IP" hypothesis.
-        assert "smaller IP" in ill_bullet["html"] or "thinner franchise" in ill_bullet["html"]
+        assert out is not None and len(out) >= 2
+        assert out[0]["kind"] == "chart"
+        # Chart URI may be empty (matplotlib fails in test) but the caption must exist
+        assert "html" in out[0]
+        # At least one topic bullet
+        topic_bullets = [b for b in out[1:] if b.get("kind") == "topic"]
+        assert len(topic_bullets) >= 1
+        assert "<strong>Halloween: The Game</strong>" in topic_bullets[0]["html"]
 
 
 class TestRenderCompetitiveSet:
@@ -276,7 +354,7 @@ class TestRenderCompetitiveSet:
         )
         assert _render_competitive_set(b) == ""
 
-    def test_renders_ul_with_bullets(self):
+    def test_renders_img_and_bullets(self):
         b = TitleBlock(
             game_id=1, name="X", total_posts=100,
             positive=50, negative=20, neutral=30,
@@ -284,29 +362,28 @@ class TestRenderCompetitiveSet:
             executive_summary="", recommended_actions="", bold_ideas=[],
             period_label="", has_data=True,
             competitor_bullets=[
-                {"competitor_id": 2, "competitor_name": "C1",
-                 "positive": 10, "negative": 5, "neutral": 3, "total_posts": 18,
-                 "pos_neg_ratio": "2.0:1",
-                 "html": "<strong>C1</strong> leans positive at 10:5",
-                 "_rank_key": 0.5},
-                {"competitor_id": 3, "competitor_name": "C2",
-                 "positive": 20, "negative": 30, "neutral": 5, "total_posts": 55,
-                 "pos_neg_ratio": "1:1.5",
-                 "html": "<strong>C2</strong> leans negative at 20:30",
-                 "_rank_key": 0.3},
+                {
+                    "kind": "chart",
+                    "chart_data_uri": "data:image/png;base64,AAAA",
+                    "html": "Peer set generated 500 posts, 5× the Saber title's 100.",
+                },
+                {
+                    "kind": "topic",
+                    "competitor_id": 2, "competitor_name": "C1",
+                    "html": "<strong>C1</strong> — positive momentum on <em>X</em>.",
+                },
             ],
         )
         html_out = _render_competitive_set(b)
         assert "Competitive Set" in html_out
-        assert "<ul" in html_out and "</ul>" in html_out
-        assert html_out.count("<li") == 2
+        assert '<img src="data:image/png;base64,AAAA"' in html_out
+        assert 'alt="4-week post volume' in html_out
+        assert '<p ' in html_out and "5× the Saber title" in html_out
         assert "<strong>C1</strong>" in html_out
-        assert "<strong>C2</strong>" in html_out
+        assert "<ul" in html_out and "</ul>" in html_out
 
-    def test_bullet_never_surfaces_neutral_count(self):
-        """Contract: bullets tilt commentary AWAY from neutral. The rendered
-        HTML must not include the word 'neutral' or a neutral count.
-        """
+    def test_renders_without_chart_when_uri_empty(self):
+        # Chart render failed → no <img> but caption + bullets still render.
         b = TitleBlock(
             game_id=1, name="X", total_posts=100,
             positive=50, negative=20, neutral=30,
@@ -314,14 +391,32 @@ class TestRenderCompetitiveSet:
             executive_summary="", recommended_actions="", bold_ideas=[],
             period_label="", has_data=True,
             competitor_bullets=[
-                {"competitor_id": 2, "competitor_name": "C1",
-                 "positive": 10, "negative": 5, "neutral": 100, "total_posts": 115,
-                 "pos_neg_ratio": "2.0:1",
-                 # Real rendered bullet from _build_competitor_bullets:
-                 "html": "<strong>C1</strong> leans positive at 10:5 (2.0:1), "
-                         "running about 115% of the Saber title's volume.",
-                 "_rank_key": 0.5},
+                {"kind": "chart", "chart_data_uri": "",
+                 "html": "Peer set generated 500 posts."},
+                {"kind": "topic", "competitor_id": 2, "competitor_name": "C1",
+                 "html": "<strong>C1</strong> — leans positive."},
             ],
         )
         html_out = _render_competitive_set(b)
-        assert "neutral" not in html_out.lower()
+        assert "<img" not in html_out
+        assert "Peer set generated 500 posts" in html_out
+        assert "<strong>C1</strong>" in html_out
+
+    def test_never_surfaces_neutral(self):
+        # Even when the underlying data has neutrals, rendered HTML never
+        # exposes the word 'neutral' — enforces the "less neutral" contract.
+        b = TitleBlock(
+            game_id=1, name="X", total_posts=100,
+            positive=50, negative=20, neutral=30,
+            pos_neg_ratio="2.5:1",
+            executive_summary="", recommended_actions="", bold_ideas=[],
+            period_label="", has_data=True,
+            competitor_bullets=[
+                {"kind": "chart", "chart_data_uri": "",
+                 "html": "Peer set generated 500 posts."},
+                {"kind": "topic", "competitor_id": 2, "competitor_name": "C1",
+                 "html": "<strong>C1</strong> — positive momentum on <em>Kills</em>; "
+                         "negative pressure on <em>Perks</em>."},
+            ],
+        )
+        assert "neutral" not in _render_competitive_set(b).lower()
