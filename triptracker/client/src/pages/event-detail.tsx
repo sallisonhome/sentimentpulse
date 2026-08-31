@@ -137,34 +137,47 @@ function ExecSummaryPanel({ eventId }: { eventId: number }) {
   const canDownload = !!summary && (sourceDocuments?.length ?? 0) >= 1;
 
   async function handleDownloadPdf() {
+    // 2026-08-31: switched from fetch()+blob()+URL.createObjectURL() to a
+    // direct anchor navigation. Chrome's Safe Browsing was intercepting the
+    // blob-URL download on the bare-IP HTTP host (`104.236.239.46`) and
+    // leaving the file in the "Unconfirmed *.crdownload" state — the file
+    // was a valid PDF, but Chrome refused to finalize it. A direct GET on the
+    // same URL trips no such intercept, because the browser treats it as a
+    // normal navigation-initiated download (Content-Disposition: attachment
+    // is already set by the server, so the tab never actually navigates away).
+    //
+    // We still do a lightweight pre-flight HEAD to surface server errors
+    // (404/409/500) as a toast, rather than silently opening a broken tab.
     if (downloading) return;
     setDownloading(true);
     try {
-      const res = await fetch(`${API_BASE}/api/events/${eventId}/executive-pdf`);
-      if (!res.ok) {
+      const url = `${API_BASE}/api/events/${eventId}/executive-pdf`;
+      const probe = await fetch(url, { method: "HEAD" });
+      if (!probe.ok) {
+        // Fall back to a full GET to read the JSON error body (HEAD doesn't
+        // return a body). Errors are 400/404/409/500 with { message }.
         let message = "Could not generate the report.";
         try {
-          const body = await res.json();
-          if (body?.message) message = body.message;
+          const err = await fetch(url).then((r) => r.json());
+          if (err?.message) message = err.message;
         } catch {
           /* non-JSON error body */
         }
         throw new Error(message);
       }
-      const blob = await res.blob();
-      // Prefer the server-provided filename from Content-Disposition.
-      const disposition = res.headers.get("Content-Disposition") || "";
-      const match = disposition.match(/filename="?([^"]+)"?/);
-      const filename = match?.[1] || "trip-report.pdf";
-
-      const url = window.URL.createObjectURL(blob);
+      // Direct navigation: browser downloads the file per its own
+      // Content-Disposition header, avoiding the Safe Browsing intercept
+      // that flagged the blob-URL path.
       const a = document.createElement("a");
       a.href = url;
-      a.download = filename;
+      a.rel = "noopener";
+      // No .download attribute — the server sets the filename via
+      // Content-Disposition, and letting the browser use that (rather than
+      // a client-supplied one) avoids the "unconfirmed download" state
+      // where Chrome can't reconcile the two.
       document.body.appendChild(a);
       a.click();
       a.remove();
-      window.URL.revokeObjectURL(url);
     } catch (err: any) {
       toast({
         title: "Download failed",
