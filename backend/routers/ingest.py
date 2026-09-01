@@ -1370,7 +1370,32 @@ def trigger_reclassify_sentiments(
     background_tasks: BackgroundTasks,
     game_id: Optional[int] = Query(None, description="Optional single-game scope"),
     source: Optional[str] = Query(None, description="Optional source filter"),
-    days: int = Query(30, ge=1, le=365, description="Only reclassify records processed within this window"),
+    days: int = Query(
+        30, ge=1, le=365,
+        description=(
+            "Legacy mode: reclassify records whose processed_at is within "
+            "this window. Ignored when post_days_ago_start / "
+            "post_days_ago_end are set."
+        ),
+    ),
+    post_days_ago_start: Optional[int] = Query(
+        None, ge=0, le=3650,
+        description=(
+            "v0032 (2026-09-01): post-date range mode — lower bound (inclusive), "
+            "in days ago from today. Filters on COALESCE(post_date, collected_at). "
+            "When paired with post_days_ago_end, reclassifies exactly the posts "
+            "in that authored-date window. Overrides `days` when set."
+        ),
+    ),
+    post_days_ago_end: Optional[int] = Query(
+        None, ge=1, le=3650,
+        description=(
+            "v0032 (2026-09-01): post-date range mode — upper bound (inclusive), "
+            "in days ago from today. Must be >= post_days_ago_start. "
+            "e.g. post_days_ago_start=8 & post_days_ago_end=30 covers posts "
+            "authored 8-30 days ago."
+        ),
+    ),
     confirm: str = Query(..., description="Must equal 'YES_RECLASSIFY' to run"),
 ):
     """Reclassify existing SentimentRecords in place with the current rules.
@@ -1379,6 +1404,23 @@ def trigger_reclassify_sentiments(
     NEW settings-driven thresholds to existing rows without re-fetching
     posts — title+body are already in the DB. Also applies the Steam
     Review voted_up hard rule where applicable.
+
+    Two scoping modes:
+
+      1. Legacy (`days=N`): reclassifies SentimentRecords whose
+         processed_at >= today-N. Gotcha: this filters by when the row
+         was LAST processed, not when the underlying post was authored,
+         so re-running reclass resets processed_at and later reclass
+         calls silently re-process the same rows. See v0032 rationale.
+
+      2. Post-date window (`post_days_ago_start` + `post_days_ago_end`,
+         v0032): reclassifies SentimentRecords whose parent RawPost's
+         COALESCE(post_date, collected_at) falls in a specific ago-window.
+         Use this to backfill a specific historical range without
+         re-touching already-reclassified rows. e.g. today's first
+         reclass covered days=7 (post_date last 7 days); the follow-up
+         to reach 30 days total is post_days_ago_start=8,
+         post_days_ago_end=30.
 
     Safe:
       * Requires confirm='YES_RECLASSIFY'.
@@ -1394,12 +1436,38 @@ def trigger_reclassify_sentiments(
     if _RECLASSIFY_STATE["running"]:
         return {"status": "skipped", "reason": "already_running"}
 
-    background_tasks.add_task(_run_reclassify, game_id, source, days)
+    # v0032: validate the post-window pair. Both must be set together, and
+    # end must be >= start. If neither is set, fall back to legacy `days`.
+    post_window_mode = (post_days_ago_start is not None or post_days_ago_end is not None)
+    if post_window_mode:
+        if post_days_ago_start is None or post_days_ago_end is None:
+            return {
+                "status": "refused",
+                "reason": (
+                    "post_days_ago_start and post_days_ago_end must be set "
+                    "together (post-window mode)"
+                ),
+            }
+        if post_days_ago_end < post_days_ago_start:
+            return {
+                "status": "refused",
+                "reason": (
+                    f"post_days_ago_end ({post_days_ago_end}) must be >= "
+                    f"post_days_ago_start ({post_days_ago_start})"
+                ),
+            }
+
+    background_tasks.add_task(
+        _run_reclassify, game_id, source, days,
+        post_days_ago_start, post_days_ago_end,
+    )
     return {
         "status": "started",
         "game_id": game_id,
         "source": source,
-        "days": days,
+        "days": days if not post_window_mode else None,
+        "post_days_ago_start": post_days_ago_start,
+        "post_days_ago_end": post_days_ago_end,
     }
 
 
@@ -1423,9 +1491,22 @@ _RECLASSIFY_STATE = {
 }
 
 
-def _run_reclassify(game_id: Optional[int], source: Optional[str], days: int) -> None:
+def _run_reclassify(
+    game_id: Optional[int],
+    source: Optional[str],
+    days: int,
+    post_days_ago_start: Optional[int] = None,
+    post_days_ago_end: Optional[int] = None,
+) -> None:
     """Background worker: walk sentiment_records in chunks and re-classify each
-    RawPost using the current settings. Updates SentimentRecord in place."""
+    RawPost using the current settings. Updates SentimentRecord in place.
+
+    v0032 (2026-09-01): when both post_days_ago_start and post_days_ago_end
+    are provided, filter by RawPost's COALESCE(post_date, collected_at)
+    within that ago-window instead of by SentimentRecord.processed_at.
+    Lets ops backfill a specific historical range without silently
+    re-processing rows whose processed_at was reset by an earlier reclass.
+    """
     from datetime import date as _date, datetime as _dt, timedelta as _td
     from database import SessionLocal
     from models import Game, RawPost, SentimentRecord, SentimentEnum, SourceEnum
@@ -1443,14 +1524,33 @@ def _run_reclassify(game_id: Optional[int], source: Optional[str], days: int) ->
 
     try:
         load_model()
-        since = _date.today() - _td(days=days)
         db = SessionLocal()
         try:
             q = (
                 db.query(SentimentRecord, RawPost)
                 .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
-                .filter(sfunc.date(SentimentRecord.processed_at) >= since)
             )
+            # v0032: two mutually-exclusive scoping modes.
+            if post_days_ago_start is not None and post_days_ago_end is not None:
+                # Post-date window mode. Filter by post authored-date.
+                # Per lessons.md 2026-08-27: use COALESCE(post_date,
+                # collected_at) for any "recent posts" filter.
+                today = _date.today()
+                # ago_end is the LOWER bound date (further in the past);
+                # ago_start is the UPPER bound (more recent).
+                bound_lower = today - _td(days=post_days_ago_end)
+                bound_upper = today - _td(days=post_days_ago_start)
+                coalesced = sfunc.coalesce(
+                    RawPost.post_date, RawPost.collected_at,
+                )
+                q = q.filter(
+                    sfunc.date(coalesced) >= bound_lower,
+                    sfunc.date(coalesced) <= bound_upper,
+                )
+            else:
+                # Legacy mode: processed_at window.
+                since = _date.today() - _td(days=days)
+                q = q.filter(sfunc.date(SentimentRecord.processed_at) >= since)
             if game_id is not None:
                 q = q.filter(RawPost.game_id == game_id)
             if source is not None:
