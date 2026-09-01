@@ -1535,3 +1535,167 @@ coverage may not reach Y if:
 Also always note that Bluesky historical backfill is essentially not
 possible (their search API only returns ~30 days). Steam Reviews and
 Steam Forums *do* backfill fully via cursor paging and next-page walks.
+
+---
+
+## 2026-09-01 — Road Kings contamination + deploy-cancel outage
+
+Three lessons from a single incident that started as a data-quality issue
+and cascaded into a `/sentiment/` outage.
+
+### Lesson 1: New game configs need per-sub relevance-tier audit before ingest
+
+**What happened.** Road Kings (game_id=152, pre-launch, `steam_app_id=2141130`)
+was seeded with 29 subreddits and `distinctive_keywords=None`. The subreddit
+list included:
+
+- Real-industry subs: `Truckers`, `Trucking`, `LogitechG`, `logitech`, `Fanatec`
+- Competitor game subs: `trucksim`, `EuroTruck2`, `Americantrucksim`,
+  `americantruck` (ETS2 & ATS communities)
+- Saber's OWN other truck-sim games: `snowrunner`, `Mudrunner`, `RoadCraft`,
+  `Expeditions` — each has its own `game_id`
+
+None of these subs were in `GENERAL_SUBS`, so the relevance tagger auto-
+tagged every submission from them as `dedicated_sub` for Road Kings, and
+`_step4a_reddit_comments` inherited the tier for every comment via
+`override_tier`.
+
+Verified damage: **6,567 posts** (5,499 comments + 1,068 submissions)
+mistagged as Road Kings `dedicated_sub` over 30 days. Sample of 20 in a row:
+100% were trucking-industry chatter, steering-wheel troubleshooting, or
+ETS2/ATS/SnowRunner content. Zero were about Road Kings.
+
+The dashboards, spike detection, digest — everything reading
+`relevance_tier IN ('dedicated_sub','signal')` — was polluted.
+
+**Rule for the agent going forward.** When a new game is added to the
+portfolio, **before enabling ingestion** validate its subreddit list against
+these three failure modes:
+
+1. **Real-industry subs** (peripheral brands, professional communities) →
+   MUST be in `GENERAL_SUBS` or removed from the game config. Examples:
+   `Truckers`, `LogitechG`, `Fanatec`, `nursing`, `photography`.
+2. **Competitor game subs** (dominant topic is a different game) → MUST
+   be in `GENERAL_SUBS`. Add per-sub entries to `DOMINANT_TOPIC_KEYWORDS`
+   when the competitor game has a distinctive vocabulary. Examples for
+   Road Kings' family: `trucksim`, `snowrunner`, `Mudrunner`.
+3. **Publisher / catalog subs** (multi-game accounts) → MUST be in
+   `GENERAL_SUBS`. Already covered for `saberinteractive`, `bossteamgames`,
+   `focusentertainment`.
+
+Pre-launch games are ESPECIALLY exposed because they have zero real
+community — every "match" from a broad sub is a false positive.
+`distinctive_keywords` MUST be set on any pre-launch game before enabling
+ingestion, since the derived-from-name fallback for a phrase like
+"Road Kings" matches thousands of unrelated real-world mentions.
+
+Quick audit query for any new game:
+
+```bash
+curl -sS "http://104.236.239.46/api/games/$GID" | python3 -c "
+import json,sys
+from pathlib import Path
+sys.path.insert(0, 'backend')
+from services.relevance_tagger import GENERAL_SUBS
+g = json.load(sys.stdin)
+subs = g.get('subreddits', []) or []
+kws = g.get('distinctive_keywords')
+print(f'{g[\"name\"]}  keywords={\"SET\" if kws else \"MISSING (danger for pre-launch)\"}')
+print()
+print('Subs and their gating:')
+for s in subs:
+    gated = 'GENERAL (keyword-gated)' if s.lower() in GENERAL_SUBS else '*** AUTO-DEDICATED ***'
+    print(f'  {s:30s} {gated}')"
+```
+
+Any sub tagged `*** AUTO-DEDICATED ***` needs sanity: is it truly a
+Road-Kings-only community, or is it a competitor / industry / peripheral
+sub that will pollute the tier?
+
+### Lesson 2: Reddit-comment tier inheritance amplifies parent tagging bugs 5×
+
+**What happened.** The 6,567 mistagged posts break down as 5,499 comments
+and 1,068 submissions — a **5.1× amplification ratio**. Because
+`_step4a_reddit_comments` uses `override_tier` set to the parent
+submission's tier, a single mistagged parent thread in a broad sub pulls
+in its entire comment tree as `dedicated_sub` without ANY keyword check.
+
+Same bug pattern hit Hellraiser on 2026-08-30 (Halloween contamination
+via Bluesky) and Turok on 2026-08-14 (competitor-sub false positives)
+— every time, comments are the multiplier that makes the eventual
+dashboards look broken.
+
+**Rule for the agent going forward.** When investigating any relevance-tier
+data-quality issue, always look at the volume ratio of `reddit` vs
+`reddit_comment` tier-inflated rows. If comments are >2× submissions in
+a contamination pattern, the fix MUST include a code change to
+`GENERAL_SUBS` (or `DOMINANT_TOPIC_KEYWORDS`) that prevents the parent
+submissions from being mistagged in the first place. Only fixing the
+current game's config leaves the underlying subs still able to auto-
+`dedicated_sub` for any future game whose config includes them.
+
+The retag endpoint `POST /api/ingest/relevance/backfill?game_id=X&only_
+unclassified=false` handles the historical cleanup automatically once
+the code fix is deployed — it re-runs `tag_post()` against every row
+and Pass 2 re-inherits comments from freshly-retagged parents. Verified
+today: 6,233 posts flipped from `dedicated_sub` to `noise` in ~30s.
+
+### Lesson 3: NEVER cancel an in-flight deploy without knowing which step it's on
+
+**What happened.** After pushing the GENERAL_SUBS fix, deploy `33514372191`
+started. An earlier ingest was still running (34/40 games). To protect
+the ingest I cancelled the deploy via `gh run cancel` at 46 seconds in.
+
+**That cancel took down `/sentiment/` for ~1 hour.**
+
+The SSH heredoc in `deploy.yml` runs steps in order:
+
+1. `git reset --hard origin/main` (line ~133 — happens IMMEDIATELY)
+2. `pip install` + `alembic upgrade head`
+3. Backfill scripts (keyword lists, seed data)
+4. `## SentimentPulse frontend build ##` — `cd frontend && npm install
+   && npm run build`  (rewrites `frontend/dist/`)
+5. `## restart services ##` (line ~597)
+
+The 46-second cancel landed mid-way through the build stack, AFTER the
+`git reset --hard` had wiped local changes and possibly BEFORE the
+frontend build had completed. `set -euo pipefail` was active so the
+script exited immediately when SSH got SIGKILLed, leaving
+`/opt/sentimentpulse/frontend/dist/` in an unbootable state. Nginx
+returned 403 for `/sentiment/` because either `index.html` was missing
+or dir permissions were wrong.
+
+The fix was to re-run the deploy workflow (via `gh workflow run
+deploy.yml`) and let it complete cleanly. `/sentiment/` came back at
+200 as soon as the frontend build finished.
+
+**Rule for the agent going forward.**
+
+- **Do NOT `gh run cancel` a deploy that is past the "## git pull ##"
+  step.** Once `git reset --hard` runs, the only clean recovery is
+  another completed deploy.
+- If you find yourself needing to cancel a deploy that's already
+  running to protect a concurrent operation, the correct move is:
+  1. Let the deploy finish (it takes 2-4 min end-to-end)
+  2. Deal with the concurrent-operation impact as a separate problem
+  3. If the concurrent op MUST NOT be interrupted, **the belt-and-
+     suspenders fix (deploy-time wait + resume marker)** already
+     written for tonight's push handles this without needing a cancel.
+- If a cancel IS somehow the only option (e.g. deploy is stuck), be
+  ready to immediately re-trigger `gh workflow run deploy.yml` to
+  put the droplet back into a coherent state. Do NOT wait for the
+  next natural push to fix it — every minute is downtime.
+
+Concrete check-before-cancel:
+
+```bash
+# See how far the deploy has gotten
+gh run view $RUN_ID -R sallisonhome/sentimentpulse --json databaseId,status,jobs | \
+  python3 -c "import json,sys; d=json.load(sys.stdin); \
+    print(f'age={d[\"jobs\"][0][\"startedAt\"]}')"
+# If age > ~20 seconds, the git reset has already happened. DO NOT CANCEL.
+```
+
+The right answer to "deploy is going to clobber my ingest" is to
+build the wait-guard (see `deploy.yml` change queued for tonight's push)
+— NOT to cancel individual deploys reactively.
