@@ -17,51 +17,56 @@ jobs:
 
       - name: Inspect
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
-            set -euo pipefail
-            cd /opt/sentimentpulse/backend
-            source .venv/bin/activate
+          cat > /tmp/inspect.sh << 'OUTER_EOF'
+          set -euo pipefail
+          cd /opt/sentimentpulse/backend
+          source .venv/bin/activate
 
-            echo "-- 1. Build weekly digest directly via Python (bypasses nginx timeout) --"
-            python3 <<'PY'
-import time
-from datetime import date
-from database import SessionLocal
-from services.digest_service import build_weekly_digest, PRIORITY_TITLES
+          echo "-- 1. Build weekly digest directly via Python --"
+          python3 - << 'PY_EOF'
+          import time
+          from datetime import date
+          from database import SessionLocal
+          from services.digest_service import build_weekly_digest, PRIORITY_TITLES
 
-db = SessionLocal()
-try:
-    t0 = time.time()
-    built = build_weekly_digest(db, today=date.today())
-    dt = time.time() - t0
-    html = built["html"]
-    print(f"BUILD OK in {dt:.1f}s  html_len={len(html):,}")
-    print(f"'Competitive Set' occurrences: {html.count('Competitive Set')}")
-    print(f"chart images (data:image/png): {html.count('data:image/png')}")
-    print(f"'competitor' mentions: {html.lower().count('competitor')}")
-    for gid, name in [(21, "Hellraiser"), (23, "Turok"), (130, "Stuntman")]:
-        idx = html.find(name)
-        if idx < 0:
-            print(f"  {name}: NOT in digest")
-            continue
-        next_idx = len(html)
-        for gid2, name2 in PRIORITY_TITLES:
-            if name2 == name: continue
-            i2 = html.find(name2, idx + 1)
-            if i2 > 0 and i2 < next_idx: next_idx = i2
-        section = html[idx:next_idx]
-        has_cs = "Competitive Set" in section
-        has_chart = "data:image/png" in section
-        print(f"  {name} (id={gid}): section_len={len(section):,} has_competitive_set={has_cs} has_chart_img={has_chart}")
-        if has_cs and not has_chart:
-            cs_idx = section.find("Competitive Set")
-            print(f"    BUG_CANDIDATE: CS section exists but no chart. Text after 'Competitive Set':")
-            print("    " + section[cs_idx:cs_idx+500].replace("\n", " ")[:400])
-finally:
-    db.close()
-PY
+          db = SessionLocal()
+          try:
+              t0 = time.time()
+              built = build_weekly_digest(db, today=date.today())
+              dt = time.time() - t0
+              html = built["html"]
+              print(f"BUILD OK in {dt:.1f}s  html_len={len(html):,}")
+              print(f"'Competitive Set' occurrences: {html.count('Competitive Set')}")
+              print(f"chart images (data:image/png): {html.count('data:image/png')}")
+              print(f"'competitor' mentions: {html.lower().count('competitor')}")
+              for gid, name in [(21, "Hellraiser"), (23, "Turok"), (130, "Stuntman")]:
+                  idx = html.find(name)
+                  if idx < 0:
+                      print(f"  {name}: NOT in digest")
+                      continue
+                  next_idx = len(html)
+                  for gid2, name2 in PRIORITY_TITLES:
+                      if name2 == name:
+                          continue
+                      i2 = html.find(name2, idx + 1)
+                      if i2 > 0 and i2 < next_idx:
+                          next_idx = i2
+                  section = html[idx:next_idx]
+                  has_cs = "Competitive Set" in section
+                  has_chart = "data:image/png" in section
+                  print(f"  {name} (id={gid}): section_len={len(section):,} has_competitive_set={has_cs} has_chart_img={has_chart}")
+                  if has_cs and not has_chart:
+                      cs_idx = section.find("Competitive Set")
+                      print(f"    BUG_CANDIDATE: CS section exists but no chart. Text after 'Competitive Set':")
+                      print("    " + section[cs_idx:cs_idx+500].replace("\n", " ")[:400])
+          finally:
+              db.close()
+          PY_EOF
 
-            echo ""
-            echo "-- 2. Journal for digest/chart/matplotlib since yesterday --"
-            journalctl -u sentimentpulse --no-pager --since "yesterday" 2>&1 | grep -iE "digest|competitive|render_trend|matplotlib" | tail -40 || echo "(no relevant journal lines)"
-          EOF
+          echo ""
+          echo "-- 2. Journal for digest/chart/matplotlib since yesterday --"
+          journalctl -u sentimentpulse --no-pager --since "yesterday" 2>&1 | grep -iE "digest|competitive|render_trend|matplotlib" | tail -40 || echo "(no relevant journal lines)"
+          OUTER_EOF
+          chmod +x /tmp/inspect.sh
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new /tmp/inspect.sh root@104.236.239.46:/tmp/inspect.sh
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 "bash /tmp/inspect.sh"
