@@ -46,6 +46,15 @@ function DeckIcon(p: IconProps) {
     </svg>
   );
 }
+function HandshakeIcon(p: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M11 17l2 2a1 1 0 003-3" />
+      <path d="M14 14l2.5 2.5a1 1 0 003-3l-3.88-3.88a3 3 0 00-4.24 0l-.88.88a1 1 0 01-1.42 0l-2.62-2.62a1 1 0 010-1.42l1.5-1.5a3 3 0 014.24 0L14 7" />
+      <path d="M2 15l3.5 3.5a1 1 0 003-3l-3.5-3.5a1 1 0 00-1.42 0L2 13.58a1 1 0 000 1.42z" />
+    </svg>
+  );
+}
 function LayersIcon(p: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" {...p}>
@@ -70,6 +79,7 @@ const apps: NavItem[] = [
   { href: "/trips/", label: "Trip & Meeting Tracker", Icon: PinIcon, external: true },
   { href: "/genrepulse/", label: "Genre Pulse", Icon: ChartIcon, external: true },
   { href: "/gtm/", label: "GTM Studio", Icon: DeckIcon, external: false }, // active app
+  { href: "/partnerships/", label: "Publishing Partnerships", Icon: HandshakeIcon, external: true },
 ];
 
 export function Sidebar() {

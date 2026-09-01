@@ -8,7 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { IngestModal } from "@/components/ingest-modal";
 import {
-  CalendarDays, LayoutDashboard, Map, UploadCloud, ArrowRightLeft, Home
+  CalendarDays, LayoutDashboard, Map, UploadCloud, ArrowRightLeft, Home, Handshake
 } from "lucide-react";
 
 const navItems = [
@@ -79,6 +79,9 @@ export function AppSidebar() {
           </a>
           <a href="/gtm/" className="flex items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded">
             <ArrowRightLeft className="w-3.5 h-3.5" />GTM Studio
+          </a>
+          <a href="/partnerships/" className="flex items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded">
+            <Handshake className="w-3.5 h-3.5" />Publishing Partnerships
           </a>
           <a href="/" className="flex items-center gap-2 px-1 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded">
             <Home className="w-3.5 h-3.5" />Suite Home

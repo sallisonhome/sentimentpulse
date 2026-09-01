@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { useTheme } from "./theme-provider";
 import { useQuery } from "@tanstack/react-query";
-import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon } from "lucide-react";
+import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon, Handshake } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -211,6 +211,13 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
           >
             <ArrowRightLeft className="h-3.5 w-3.5 shrink-0" />
             {!sidebarCollapsed && <span>Genre Pulse</span>}
+          </a>
+          <a
+            href="/partnerships/"
+            className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+          >
+            <Handshake className="h-3.5 w-3.5 shrink-0" />
+            {!sidebarCollapsed && <span>Publishing Partnerships</span>}
           </a>
           <a
             href="/gtm/"
