@@ -612,6 +612,43 @@ def fetch_editorial_for_title(
             derived_pub = urlparse(final_url).netloc.lower()
             if not derived_pub or "news.google.com" in derived_pub:
                 derived_pub = (cand.get("publication", "") or "").lower()
+            # v0031 (2026-09-01): guard against UNIQUE violations.
+            # Two candidates can resolve to the same final_url (Google News
+            # redirects, tracking-param variants, mirror publications), and
+            # a prior digest run may have already saved this url for the
+            # same (game_id, scope, cycle_start). Blind db.add() + commit
+            # raises sqlite3.IntegrityError which poisons the whole
+            # Session and cascades into every subsequent query on it —
+            # observed 2026-09-01: dropped Competitive Set charts on
+            # Hellraiser / Turok / Stuntman for the Monday digest send.
+            #
+            # Two-layer defense:
+            #   1. In-batch dedup by final_url
+            #   2. Per-row DB existence check before add()
+            if final_url in {s.url for s in saved}:
+                logger.info(
+                    "editorial: skipping in-batch duplicate url game_id=%d url=%s",
+                    game_id, final_url,
+                )
+                continue
+            existing_row = (
+                db.query(EditorialArticle)
+                .filter_by(
+                    game_id=game_id,
+                    scope=scope,
+                    cycle_start=cycle_start,
+                    url=final_url,
+                )
+                .first()
+            )
+            if existing_row is not None:
+                logger.info(
+                    "editorial: cross-batch duplicate url already in DB "
+                    "game_id=%d cite=%s url=%s (reusing)",
+                    game_id, existing_row.cite, final_url,
+                )
+                saved.append(existing_row)
+                continue
             row = EditorialArticle(
                 game_id=game_id,
                 scope=scope,
@@ -644,7 +681,14 @@ def fetch_editorial_for_title(
             "Editorial fetch: no successful articles for game_id=%d after %d candidates",
             game_id, len(candidates),
         )
-        db.commit()
+        try:
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.warning(
+                "editorial: empty-batch commit rolled back (game_id=%d): %s",
+                game_id, exc,
+            )
         return []
 
     # Per §24 minimum: if we got fewer than _MIN_ARTICLE_COUNT, we still
@@ -654,7 +698,24 @@ def fetch_editorial_for_title(
             "Editorial fetch: only %d articles saved for game_id=%d (below target %d)",
             len(saved), game_id, target_count,
         )
-    db.commit()
+    # v0031 (2026-09-01): wrap commit in try/rollback. Belt-and-suspenders
+    # — even with the dedup checks above, a concurrent digest run or a
+    # rare race could still race us to the UNIQUE index. Rolling back on
+    # the commit failure keeps the Session clean so downstream digest
+    # steps (competitor_bullets loader, WindowSummary fetch) don't blow
+    # up with 'transaction has been rolled back' cascades.
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning(
+            "editorial: commit failed (game_id=%d), rolled back to protect session: %s",
+            game_id, exc,
+        )
+        # Return the previously-committed cross-batch rows we found (they're
+        # already in the DB) plus best-effort refresh of what we can.
+        recovered = [s for s in saved if s.id is not None]
+        return recovered
     for row in saved:
         db.refresh(row)
     logger.info(

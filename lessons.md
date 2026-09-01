@@ -1699,3 +1699,103 @@ gh run view $RUN_ID -R sallisonhome/sentimentpulse --json databaseId,status,jobs
 The right answer to "deploy is going to clobber my ingest" is to
 build the wait-guard (see `deploy.yml` change queued for tonight's push)
 — NOT to cancel individual deploys reactively.
+
+---
+
+## 2026-09-01 afternoon — Digest chart drop (session poisoning cascade)
+
+**Problem.** Steve reported that the Tuesday weekly digest send arrived
+without the Competitive Set trend charts. The parent-child relationships
+(Hellraiser + 3 competitors, Turok + 2, Stuntman + 1) were configured,
+the chart-rendering code path was intact, and matplotlib worked locally.
+But `Competitive Set` sections were silently missing from all parents in
+the sent email.
+
+**Root cause.** `_fetch_editorial_articles` (called during
+`build_weekly_block` for every priority title) does a blind
+`db.add(row)` + `db.commit()` for each Google News candidate. Two
+candidates can resolve to the same `final_url` after Playwright chases
+redirects (Google News tracking URLs, mirror publications, or a URL
+already saved by an earlier partial run). The UNIQUE index on
+`editorial_articles(game_id, scope, cycle_start, url)` then raises
+`sqlite3.IntegrityError` on commit.
+
+Once one flush raises, **every subsequent query on the same
+SQLAlchemy Session errors with "transaction has been rolled back due
+to a previous exception"** — including the completely unrelated
+`db.query(CompetitorGame).filter_by(parent_id=X).all()` call in
+`_build_competitor_bullets`. That query hits its `except Exception`
+block and returns `None`, so the parent's `TitleBlock.competitor_bullets`
+becomes `None`. `_render_competitive_set` returns an empty string when
+`competitor_bullets` is falsy, and the chart + volume bullets +
+topic bullets all silently disappear from the digest HTML.
+
+The user-visible symptom (missing charts) had nothing to do with the
+chart-rendering code. It was a bug in a completely different service
+that poisoned the shared Session.
+
+**Verification.** Wrote `sp-digest-inspect.yml` workflow that SSHes prod
+and calls `build_weekly_digest` inline with a fresh `SessionLocal()`.
+That run succeeded with 3/3 Competitive Set sections and 3/3 chart
+images because the fresh Session hadn't been poisoned by earlier
+digest activity. Journal grep on `sentimentpulse.service` for `digest`
++ `Competitive` since yesterday surfaced dozens of
+`UNIQUE constraint failed: editorial_articles.game_id, ...` traces
+followed by `failed to load competitor_games for parent_id=X`.
+
+**Fix (v0031).**
+
+1. **`editorial_research_service.fetch_editorial_for_title` dedupes
+   within the fetch loop.** Before `db.add(row)`, check
+   `final_url in {s.url for s in saved}` (in-batch dedup) AND
+   `db.query(EditorialArticle).filter_by(game_id, scope, cycle_start,
+   url=final_url).first()` (cross-batch dedup — same URL from a prior
+   partial run). If either match, skip the add and reuse the existing
+   row for the returned list.
+2. **The final `db.commit()` is wrapped in try/rollback.** If a race or
+   an edge case we didn't cover still triggers IntegrityError, we
+   rollback the Session so downstream digest steps don't cascade.
+3. **`digest_service._build_competitor_bullets` recovers from a
+   poisoned Session.** The initial `db.query(CompetitorGame)` is now
+   in a try/except that, on the "transaction has been rolled back"
+   pattern, calls `db.rollback()` and retries the query once. Only
+   returns `None` if the retry also fails.
+
+**Non-negotiable rules going forward.**
+
+1. **Never blind-`db.add()` + commit against a table with a compound
+   UNIQUE index.** Always check for the existing row first (in-batch
+   set of already-added URLs AND a DB query for cross-batch collisions).
+   If you must catch the IntegrityError, wrap the commit in
+   `try / except / rollback` so the Session survives.
+
+2. **Every service that reads from a shared Session inside the digest
+   build path (or any other multi-step pipeline sharing a Session)
+   must handle "transaction has been rolled back" as a recoverable
+   error, not a return-None error.** Pattern: on the first query
+   failure, call `db.rollback()` then retry the query once. Only give
+   up on second failure. Silent None-returns caused Steve to receive
+   a broken digest and no error alert — the log lines existed but
+   nothing surfaced them.
+
+3. **When the user reports a UI regression that doesn't reproduce in
+   isolation, look for cross-request state pollution.** Charts
+   rendered fine in the fresh `build_weekly_digest` call inline; they
+   failed only when the digest was built in a Session that had done
+   other work first. Session-shared state (SQLAlchemy transactions,
+   connection pools, module-level singletons) is the usual suspect.
+
+4. **Any change to editorial upsert logic runs the full
+   `test_v0031_digest_chart_hardening.py` suite before push.** The
+   three tests lock in the dedup + rollback + competitor-bullets
+   retry behavior.
+
+**How to verify.** After deploy, run the `SP Digest Inspect` workflow
+and confirm the output shows:
+  ```
+  'Competitive Set' occurrences: 3
+  chart images (data:image/png): 3
+  ```
+Then let Monday morning's 7 AM ET scheduled send happen naturally and
+confirm the received email carries all three Competitive Set sections
+with charts (visual check).

@@ -1265,18 +1265,45 @@ def _build_competitor_bullets(
     alternate: 'volume' (per-competitor volume) then 'topic' (per-
     competitor topic momentum), one pair per featured competitor.
     """
-    try:
-        links = (
+    # v0031 (2026-09-01): recover from session poisoning. If an earlier
+    # digest step (e.g. editorial fetch) left the Session in a rolled-back
+    # state, the naive query below fails with
+    # 'transaction has been rolled back due to a previous exception'
+    # and returns None — which silently drops the ENTIRE Competitive Set
+    # section (chart + bullets) from the digest email. Root-caused today
+    # after Steve reported charts missing from the Tuesday digest send.
+    # We now rollback and retry once so a poisoned Session doesn't
+    # cascade into UI regressions.
+    def _query_links():
+        return (
             db.query(CompetitorGame)
             .filter_by(parent_id=parent_game_id)
             .all()
         )
+
+    try:
+        links = _query_links()
     except Exception as exc:
+        # First attempt failed — likely session-poisoning from an earlier
+        # step. Rollback to clear the aborted transaction and try again.
         logger.warning(
-            "digest: failed to load competitor_games for parent_id=%d: %s",
+            "digest: first competitor_games load failed for parent_id=%d, "
+            "rolling back Session and retrying: %s",
             parent_game_id, exc,
         )
-        return None
+        try:
+            db.rollback()
+            links = _query_links()
+            logger.info(
+                "digest: retry after rollback succeeded for parent_id=%d",
+                parent_game_id,
+            )
+        except Exception as exc2:
+            logger.error(
+                "digest: retry after rollback ALSO failed for parent_id=%d: %s",
+                parent_game_id, exc2,
+            )
+            return None
 
     if not links:
         return None
