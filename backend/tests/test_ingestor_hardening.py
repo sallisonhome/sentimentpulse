@@ -194,3 +194,74 @@ def test_no_skip_policy_finish_all_games():
         "Phase A should carry a v0023-era comment explaining the no-skip "
         "policy so nobody re-introduces the old skip 'safety net'."
     )
+
+
+# ── v0029 (2026-09-01) resume-on-restart tests ───────────────────────────────
+
+
+def test_should_resume_returns_false_when_no_state():
+    """No prior state = nothing to resume."""
+    assert ingestor._should_resume_prior_run(None, "2026-09-01T12:00:00+00:00") is False
+
+
+def test_should_resume_returns_false_when_state_missing_started():
+    """Malformed state (no run_started_at) = don't resume."""
+    state = {"run_id": "x", "games_completed_ids": [1, 2]}
+    assert ingestor._should_resume_prior_run(state, "2026-09-01T12:00:00+00:00") is False
+
+
+def test_should_resume_returns_true_within_window():
+    """State within 6h of now = resume."""
+    from datetime import datetime, timedelta, timezone as tz
+    now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=tz.utc)
+    started = (now - timedelta(hours=1)).isoformat()
+    state = {
+        "run_id": started,
+        "run_started_at": started,
+        "games_completed_ids": [1, 2, 3],
+    }
+    assert ingestor._should_resume_prior_run(state, now.isoformat()) is True
+
+
+def test_should_resume_returns_false_past_window():
+    """State older than 6h = stale, treat as fresh run (avoids yesterday's
+    marker bleeding into tomorrow's cron)."""
+    from datetime import datetime, timedelta, timezone as tz
+    now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=tz.utc)
+    started = (now - timedelta(hours=7)).isoformat()
+    state = {
+        "run_id": started,
+        "run_started_at": started,
+        "games_completed_ids": [1, 2, 3],
+    }
+    assert ingestor._should_resume_prior_run(state, now.isoformat()) is False
+
+
+def test_should_resume_returns_false_when_started_in_future():
+    """Clock skew safety: if run_started_at is in the future, don't resume."""
+    from datetime import datetime, timedelta, timezone as tz
+    now = datetime(2026, 9, 1, 12, 0, 0, tzinfo=tz.utc)
+    started = (now + timedelta(minutes=5)).isoformat()
+    state = {
+        "run_id": started,
+        "run_started_at": started,
+        "games_completed_ids": [1],
+    }
+    assert ingestor._should_resume_prior_run(state, now.isoformat()) is False
+
+
+def test_should_resume_returns_false_when_started_unparseable():
+    state = {
+        "run_id": "not-a-timestamp",
+        "run_started_at": "not-a-timestamp",
+        "games_completed_ids": [1],
+    }
+    assert ingestor._should_resume_prior_run(state, "2026-09-01T12:00:00+00:00") is False
+
+
+def test_resume_window_constant_is_reasonable():
+    """Window must be shorter than daily cron interval (24h) so tomorrow's
+    ingest doesn't inherit today's stale marker."""
+    assert 60 * 60 <= ingestor._RESUME_WINDOW_S <= 12 * 60 * 60, (
+        f"_RESUME_WINDOW_S={ingestor._RESUME_WINDOW_S}s must be between 1h and 12h"
+    )

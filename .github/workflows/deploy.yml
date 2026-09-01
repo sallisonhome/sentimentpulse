@@ -594,12 +594,54 @@ jobs:
             rm -f /tmp/spa_index_no_cache.conf.new
 
             echo ""
+            echo "## wait for in-flight ingest before restarting sentimentpulse ##"
+            # v0029 (2026-09-01): before restarting sentimentpulse.service we
+            # give an in-flight ingest up to _WAIT_MAX_MIN to finish so the
+            # restart doesn't clobber it. Combined with the resume marker in
+            # services/ingestor.py this makes deploys ingest-safe: either we
+            # wait it out here, OR (on hard timeout / crash) the next cron
+            # trigger resumes from the last completed game.
+            #
+            # Only sentimentpulse owns the ingest scheduler; the other services
+            # (gtmstudio / triptracker / signalpulse / partnerships) restart
+            # immediately. sentimentpulse's status endpoint answers on
+            # 127.0.0.1:8000 (nginx-proxied at /api/ingest/status externally).
+            _WAIT_MAX_MIN=20
+            _WAIT_INTERVAL_S=15
+            _WAIT_MAX_ITERS=$(( _WAIT_MAX_MIN * 60 / _WAIT_INTERVAL_S ))
+            _waited=0
+            # Use inline python -c with a semicolon-joined body (no leading
+            # indentation, no multiline heredoc) to sidestep YAML block-scalar
+            # indentation traps. See lessons.md §deploy heredoc caveats.
+            _parse_running='import json,sys;\ntry:\n d=json.loads(sys.stdin.read())\nexcept Exception:\n d={}\nprint(str(d.get("is_running",False)).lower())'
+            _parse_games='import json,sys;\ntry:\n d=json.loads(sys.stdin.read())\nexcept Exception:\n d={}\nprint(d.get("games_processed","?"))'
+            while [ "$_waited" -lt "$_WAIT_MAX_ITERS" ]; do
+              _ingest_json=$(curl -sS --max-time 8 http://127.0.0.1:8000/api/ingest/status 2>/dev/null || echo '{}')
+              _is_running=$(printf '%s' "$_ingest_json" | python3 -c "$(printf '%b' "$_parse_running")" 2>/dev/null || echo "false")
+              if [ "$_is_running" != "true" ]; then
+                if [ "$_waited" -eq 0 ]; then
+                  echo "ingest not running; proceeding immediately"
+                else
+                  echo "ingest finished after $((_waited * _WAIT_INTERVAL_S))s; proceeding"
+                fi
+                break
+              fi
+              _games=$(printf '%s' "$_ingest_json" | python3 -c "$(printf '%b' "$_parse_games")" 2>/dev/null || echo "?")
+              echo "ingest is_running=true (games_processed=$_games); waiting $_WAIT_INTERVAL_S s ($((_waited * _WAIT_INTERVAL_S))s elapsed, max $((_WAIT_MAX_MIN * 60))s)"
+              sleep "$_WAIT_INTERVAL_S"
+              _waited=$(( _waited + 1 ))
+            done
+            if [ "$_waited" -ge "$_WAIT_MAX_ITERS" ]; then
+              echo "WARNING: waited full $_WAIT_MAX_MIN min and ingest still reports is_running=true; restarting anyway. The next scheduled trigger will resume via services/ingestor.py's resume marker."
+            fi
+
+            echo ""
             echo "## restart services ##"
             # Match service unit lines like 'sentimentpulse.service enabled enabled'.
             # Escape the literal '.' in the regex so '^name.service' doesn't false-positive,
             # AND use awk to test field 1 exactly (more reliable than grep on the full row).
             installed_units=$(systemctl list-unit-files --type=service --no-legend | awk '{print $1}')
-            for svc in sentimentpulse gtmstudio triptracker signalpulse; do
+            for svc in sentimentpulse gtmstudio triptracker signalpulse partnerships; do
               if echo "$installed_units" | grep -qx "${svc}.service"; then
                 systemctl restart "$svc"
                 sleep 2
