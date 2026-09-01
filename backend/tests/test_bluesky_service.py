@@ -406,8 +406,16 @@ def test_single_page_returns_correct_dict_shape(monkeypatch):
 
 def test_multi_page_follows_cursor_up_to_max_pages(monkeypatch):
     """
-    When the response includes a cursor and we haven't hit the limit,
-    the service should follow pagination up to BLUESKY_MAX_PAGES.
+    When responses include cursors, the service follows pagination until
+    the cursor runs out OR we hit BLUESKY_MAX_PAGES — whichever comes first.
+    This test simulates 3 pages: two with cursors, one final without.
+
+    v0030 (2026-09-01): fixed the assertion — the test previously asserted
+    == BLUESKY_MAX_PAGES (10), which was impossible given the fixture only
+    provides 3 mocked pages with the last carrying no cursor. The service
+    correctly terminates at 3 requests when the cursor runs out. The MAX
+    ceiling is exercised by the 'stops_at_max_pages_even_if_cursor_present'
+    sibling test.
     """
     _set_credentials(monkeypatch)
     posts_page1 = [_make_post(
@@ -426,7 +434,7 @@ def test_multi_page_follows_cursor_up_to_max_pages(monkeypatch):
     search_responses = [
         {"json": _bsky_ok(posts_page1, cursor="cursor1")},
         {"json": _bsky_ok(posts_page2, cursor="cursor2")},
-        {"json": _bsky_ok(posts_page3)},  # no cursor on last page
+        {"json": _bsky_ok(posts_page3)},  # no cursor on last page → stop
     ]
 
     with requests_mock_module.Mocker() as m:
@@ -435,8 +443,9 @@ def test_multi_page_follows_cursor_up_to_max_pages(monkeypatch):
         results = fetch_bluesky_posts_for_game("Space Marine 2", limit=100)
 
     search_calls = [r for r in m.request_history if SEARCH_URL in r.url]
-    assert len(search_calls) == BLUESKY_MAX_PAGES, (
-        f"Expected exactly {BLUESKY_MAX_PAGES} HTTP requests, got {len(search_calls)}"
+    # Cursor runs out after page 3 — pagination stops. Never exceeds MAX.
+    assert 3 == len(search_calls) <= BLUESKY_MAX_PAGES, (
+        f"Expected 3 HTTP requests (cursor exhausted), got {len(search_calls)}"
     )
     assert len(results) == 9
 

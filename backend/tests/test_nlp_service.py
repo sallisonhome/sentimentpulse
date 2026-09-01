@@ -12,11 +12,15 @@ from unittest.mock import patch
 
 @pytest.fixture(autouse=True)
 def use_vader(monkeypatch):
-    """Ensure nlp_service uses VADER for all tests in this module."""
+    """Ensure nlp_service uses VADER for all tests in this module.
+
+    v0030 (2026-09-01): the RoBERTa model handle was renamed from `_model`
+    to `_pipeline` (and there is no `_tokenizer` singleton — the pipeline
+    owns it). Test fixture updated to match the current module contract.
+    """
     import services.nlp_service as nlp
     monkeypatch.setattr(nlp, "_use_vader", True)
-    monkeypatch.setattr(nlp, "_model", None)
-    monkeypatch.setattr(nlp, "_tokenizer", None)
+    monkeypatch.setattr(nlp, "_pipeline", None)
     yield
 
 
@@ -81,15 +85,26 @@ class TestClassifyBatch:
 
 class TestLoadModel:
     def test_load_model_falls_back_to_vader_on_import_error(self, monkeypatch):
+        """When the transformer pipeline can't load, fall back to VADER.
+
+        v0030 (2026-09-01): load_model was refactored to use
+        `transformers.pipeline(...)` and wraps everything in try/except.
+        In the test venv `transformers` is intentionally not installed,
+        so the inline `from transformers import pipeline as hf_pipeline`
+        inside load_model() will raise ImportError — exactly the fallback
+        path this test is guarding. We just need to confirm the fallback
+        actually fires and _use_vader ends up True.
+
+        Also disables lightweight_nlp so we're not hitting the early-return
+        VADER path (that would give a false pass).
+        """
         import services.nlp_service as nlp
-        monkeypatch.setattr(nlp, "_model", None)
-        monkeypatch.setattr(nlp, "_tokenizer", None)
+        from config import settings
+        monkeypatch.setattr(settings, "lightweight_nlp", False)
+        monkeypatch.setattr(nlp, "_pipeline", None)
         monkeypatch.setattr(nlp, "_use_vader", False)
 
-        with patch("services.nlp_service.AutoTokenizer") as mock_tok, \
-             patch("services.nlp_service.AutoModelForSequenceClassification") as mock_model:
-            mock_tok.from_pretrained.side_effect = OSError("Model not found")
-            nlp.load_model()
+        nlp.load_model()  # transformers import raises → except block → VADER
 
         assert nlp._use_vader is True
 

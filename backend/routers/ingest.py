@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -3440,3 +3440,152 @@ def health_drops(
         }
     finally:
         db.close()
+
+
+# ─── Stale SentimentRecord cleanup (v0030, 2026-09-01) ────────────────────
+
+@router.post("/sentiment/cleanup_noise", status_code=200)
+def cleanup_noise_sentiment(
+    game_id: Optional[int] = Query(
+        None,
+        description=(
+            "Optional. Clean only this game's stale records. When omitted, "
+            "walks every game in the portfolio (recommended)."
+        ),
+    ),
+    dry_run: bool = Query(
+        True,
+        description=(
+            "When true (default), reports how many SentimentRecord rows "
+            "WOULD be deleted per game/source but makes no changes. Set "
+            "to false to actually delete."
+        ),
+    ),
+    confirm: str = Query(
+        "",
+        description=(
+            "When dry_run=false, must be 'YES_DELETE_NOISE_SENTIMENT' to "
+            "actually delete. Guards against accidental portfolio-wide "
+            "deletion."
+        ),
+    ),
+    db: Session = Depends(get_db),
+):
+    """
+    Delete SentimentRecord rows attached to RawPosts whose relevance_tier
+    is currently 'noise'. These are stale — the row was classified when
+    the RawPost was on the dedicated_sub/signal tier, but a subsequent
+    keyword-list / GENERAL_SUBS retag flipped it to noise. Leaving the
+    SentimentRecord in place puts a phantom positive/negative label on a
+    post that is not about the game (verified: Road Kings had 5,425
+    such comments on trucking-industry / Logitech / ETS2-ATS threads).
+
+    Idempotent: running twice deletes the same set of records only once
+    since the second pass finds nothing to delete. The endpoint also
+    resets `raw_posts.is_relevant` to False on the affected rows so the
+    next ingest run does not try to reclassify them; the tier-aware
+    admission gate (v0030) would filter them out anyway, but setting
+    is_relevant=False lets subsequent audits count the row correctly.
+
+    Returns per-game stats: {game_id, name, source_breakdown,
+    total_deleted}.
+    """
+    from models import Game as _Game, RawPost as _RawPost
+    from models import SentimentRecord as _SR
+
+    if not dry_run and confirm != "YES_DELETE_NOISE_SENTIMENT":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Pass ?confirm=YES_DELETE_NOISE_SENTIMENT with dry_run=false "
+                "to actually delete records."
+            ),
+        )
+
+    if game_id is not None:
+        target = db.query(_Game).filter_by(id=game_id).first()
+        if not target:
+            raise HTTPException(status_code=404, detail="Game not found.")
+        target_ids = [game_id]
+    else:
+        target_ids = [g.id for g in db.query(_Game.id).all()]
+
+    per_game: list[dict] = []
+    grand_total = 0
+
+    for gid in target_ids:
+        game = db.query(_Game).filter_by(id=gid).first()
+        if not game:
+            continue
+
+        # Find every SentimentRecord attached to a noise-tier RawPost for
+        # this game. Do it as a subquery so the aggregation and the actual
+        # delete both operate on the same set.
+        base_q = (
+            db.query(_SR.id, _RawPost.source)
+            .join(_RawPost, _SR.raw_post_id == _RawPost.id)
+            .filter(_RawPost.game_id == gid)
+            .filter(_RawPost.relevance_tier == "noise")
+        )
+        rows = base_q.all()
+        if not rows:
+            per_game.append({
+                "game_id": gid,
+                "name": game.name,
+                "source_breakdown": {},
+                "total": 0,
+            })
+            continue
+
+        breakdown: dict[str, int] = {}
+        sr_ids: list[int] = []
+        raw_ids_by_source: dict[str, list[int]] = {}
+        # Fetch raw_post_ids in a second pass so we can flip is_relevant.
+        raw_pairs = (
+            db.query(_SR.id, _SR.raw_post_id, _RawPost.source)
+            .join(_RawPost, _SR.raw_post_id == _RawPost.id)
+            .filter(_RawPost.game_id == gid)
+            .filter(_RawPost.relevance_tier == "noise")
+            .all()
+        )
+        for sr_id, rp_id, src in raw_pairs:
+            src_name = src.value if hasattr(src, "value") else str(src)
+            breakdown[src_name] = breakdown.get(src_name, 0) + 1
+            sr_ids.append(sr_id)
+            raw_ids_by_source.setdefault(src_name, []).append(rp_id)
+
+        total = len(sr_ids)
+        grand_total += total
+
+        if not dry_run and sr_ids:
+            # Chunked delete to avoid PG parameter limits on very large IN().
+            CHUNK = 5000
+            for i in range(0, len(sr_ids), CHUNK):
+                chunk = sr_ids[i:i + CHUNK]
+                db.query(_SR).filter(_SR.id.in_(chunk)).delete(
+                    synchronize_session=False
+                )
+            # Flip is_relevant=False on all affected raw posts so future
+            # ingest passes don't try to reclassify them.
+            all_raw_ids = [rp_id for src_list in raw_ids_by_source.values()
+                           for rp_id in src_list]
+            for i in range(0, len(all_raw_ids), CHUNK):
+                chunk = all_raw_ids[i:i + CHUNK]
+                db.query(_RawPost).filter(_RawPost.id.in_(chunk)).update(
+                    {"is_relevant": False}, synchronize_session=False
+                )
+            db.commit()
+
+        per_game.append({
+            "game_id": gid,
+            "name": game.name,
+            "source_breakdown": breakdown,
+            "total": total,
+        })
+
+    return {
+        "dry_run": dry_run,
+        "games_processed": len(target_ids),
+        "grand_total": grand_total,
+        "per_game": per_game,
+    }

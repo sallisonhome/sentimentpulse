@@ -38,7 +38,8 @@ def get_posts(
             "Filter by relevance_tier. Values: 'signal' (dedicated_sub + "
             "keyword matches), 'noise' (broad-sub no-match), 'dedicated_sub' "
             "(dedicated-source only), 'keyword_match' (broad-sub match only), "
-            "'unclassified' (untagged). Default None returns everything."
+            "'unclassified' (untagged), 'all' (include noise too). Default "
+            "omits noise-tier posts — pass 'all' to include them."
         ),
     ),
     date_from: Optional[str] = Query(
@@ -106,6 +107,12 @@ def get_posts(
             )
         q = q.filter(RawPost.source == src)
 
+    # v0030 (2026-09-01): the default view now HIDES noise-tier posts — they
+    # are broad-sub posts that failed the keyword gate and are not about the
+    # game (verified: Road Kings had 5,425 mistagged reddit_comment rows on
+    # trucking-industry / peripheral subs). Pass ?relevance=noise to see only
+    # noise; pass ?relevance=all to include noise in the mix. All other
+    # values behave as before.
     if relevance:
         # 'signal' is a convenience alias meaning "anything we'd surface
         # to analytics": dedicated_sub OR keyword-matched broad-sub post.
@@ -118,14 +125,26 @@ def get_posts(
             q = q.filter(RawPost.relevance_tier.is_(None))
         elif relevance in ("dedicated_sub", "noise"):
             q = q.filter(RawPost.relevance_tier == relevance)
+        elif relevance == "all":
+            # No filter — include every tier including noise.
+            pass
         else:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"Invalid relevance '{relevance}'. Valid values: "
-                    "signal, keyword_match, dedicated_sub, noise, unclassified"
+                    "signal, keyword_match, dedicated_sub, noise, "
+                    "unclassified, all"
                 ),
             )
+    else:
+        # v0030: default = exclude noise. This is a behavior change from
+        # "return everything when no filter is set" — the previous default
+        # surfaced mistagged posts to the UI. Callers who want the old
+        # behavior pass ?relevance=all explicitly.
+        q = q.filter(
+            (RawPost.relevance_tier != "noise") | RawPost.relevance_tier.is_(None)
+        )
 
     if days is not None:
         # Convenience filter: last N days by COALESCE(post_date, collected_at).

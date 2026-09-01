@@ -499,11 +499,21 @@ class TestClassifyWithGateV2:
         'Lone White Wolf 🐺' with no body:
           - combined = "Lone White Wolf 🐺" → 3 substantive tokens → signal=medium
           - body is empty → only title classified
-          - model returns positive 0.9, but medium cap → 0.6
-          - 0.6 < 0.70 floor → demoted to neutral
-          - original_label = 'positive' (or whatever model returns)
+          - model returns positive 0.9
+          - medium signal cap (settings.sentiment_medium_signal_cap) truncates score
+          - if capped score < confidence_floor → demoted to neutral
+
+        v0030 (2026-09-01): behavior is now driven by two config knobs:
+          settings.sentiment_medium_signal_cap    (was hardcoded 0.6, now 0.68)
+          settings.sentiment_confidence_floor     (was hardcoded 0.70, now 0.55)
+        With current defaults 0.9 caps to 0.68 which is ABOVE the 0.55 floor,
+        so the label is retained. Test now force-sets the floor to 0.70 to
+        exercise the demote-to-neutral path deterministically — that's the
+        behavior the regression is guarding.
         """
         import services.nlp_service as nlp
+        from config import settings
+        monkeypatch.setattr(settings, "sentiment_confidence_floor", 0.70)
         # Mock classify_sentiment to return high-confidence positive (pre-cap)
         monkeypatch.setattr(
             nlp, "classify_sentiment",
@@ -514,7 +524,7 @@ class TestClassifyWithGateV2:
 
         # Signal should be medium (3 tokens)
         assert result["signal_quality"] == "medium"
-        # Final label must be neutral (0.6 capped score < 0.70 floor)
+        # Final label must be neutral (medium-cap score < 0.70 floor)
         assert result["label"] == "neutral"
         assert result["score"] == 0.5
         # Original label recorded
@@ -665,7 +675,12 @@ class TestClassifyWithGateV2:
     # ── Return structure validation ────────────────────────────────────────────
 
     def test_return_dict_has_all_keys(self, monkeypatch):
-        """classify_with_gate_v2 returns all six §18 keys."""
+        """classify_with_gate_v2 returns all §18 keys.
+
+        v0030 (2026-09-01): schema updated — `original_score` was added
+        on 2026-07-29 alongside `original_label` so audit tooling can
+        report both the demoted-from label AND the demoted-from score.
+        """
         import services.nlp_service as nlp
         monkeypatch.setattr(
             nlp, "classify_sentiment",
@@ -674,7 +689,8 @@ class TestClassifyWithGateV2:
         from services.nlp_service import classify_with_gate_v2
         result = classify_with_gate_v2("Great game!", "")
         expected_keys = {"label", "score", "signal_quality", "language",
-                         "original_label", "sentiment_conflict", "applied_rules"}
+                         "original_label", "original_score",
+                         "sentiment_conflict", "applied_rules"}
         assert set(result.keys()) == expected_keys
 
     # ── classify_batch_with_gate_v2 smoke tests ───────────────────────────────

@@ -20,12 +20,15 @@ class TestHealth:
 # ── Publisher ──────────────────────────────────────────────────────────────────
 
 class TestPublisher:
+    """v0030 (2026-09-01): endpoint path corrected from stale '/publishers/me'
+    to '/publisher' (singular, no /me suffix) — verified against prod.
+    """
     def test_no_publisher_returns_404(self, client):
-        r = client.get("/api/publishers/me")
+        r = client.get("/api/publisher")
         assert r.status_code == 404
 
     def test_publisher_returned_when_seeded(self, client, publisher):
-        r = client.get("/api/publishers/me")
+        r = client.get("/api/publisher")
         assert r.status_code == 200
         data = r.json()
         assert data["name"] == "Acme Games"
@@ -274,6 +277,14 @@ class TestIngest:
         assert isinstance(data["last_run_errors"], list)
 
     def test_ingest_run_returns_202(self, client):
+        """POST /api/ingest/run dispatches ingestion to a background task
+        and returns 202 immediately. Response status is 'started' unless
+        another ingest is already running (then 'skipped'/'already_running').
+
+        v0030 (2026-09-01): assertion updated — the endpoint now returns
+        'started' for a fresh trigger; the older 'completed' response was
+        removed when the ingest was moved to a background task on 2026-06-15.
+        """
         from unittest.mock import patch
         with patch("routers.ingest.run_ingestion", return_value={
             "status": "completed",
@@ -284,4 +295,4 @@ class TestIngest:
             r = client.post("/api/ingest/run")
         assert r.status_code == 202
         data = r.json()
-        assert data["status"] in ("completed", "skipped", "already_running")
+        assert data["status"] in ("started", "skipped", "already_running")

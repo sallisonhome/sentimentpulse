@@ -135,6 +135,14 @@ class TestBuildWeeklyBlock:
         assert block.pos_neg_ratio == "no signal"
 
     def test_uses_cached_window_summary_when_present(self, db):
+        """v0030 (2026-09-01): build_weekly_block now overrides WindowSummary
+        totals with a dedicated-tier RawPost/SentimentRecord aggregation
+        (added 2026-08-30 for the Halloween contamination fix). Since the
+        test only seeds a WindowSummary row and no dedicated posts, we
+        patch `_load_dedicated_pos_neg_neu_totals` to echo the seeded
+        WindowSummary values — which is what the block's metrics strip
+        expects.
+        """
         _seed_game(db, 1, "Test Game", 100)
         _seed_window_summary(
             db, 1, ingest_date=date(2026, 6, 24),
@@ -144,7 +152,10 @@ class TestBuildWeeklyBlock:
         from unittest.mock import patch
         with patch(
             "services.period_summary_service.generate_window_summary",
-        ) as mock_gen:
+        ) as mock_gen, patch(
+            "services.digest_service._load_dedicated_pos_neg_neu_totals",
+            return_value=(30, 5, 15),
+        ):
             block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 24))
             assert mock_gen.call_count == 0
         assert block.has_data is True
@@ -154,6 +165,11 @@ class TestBuildWeeklyBlock:
         assert block.pos_neg_ratio == "6.0:1"
 
     def test_generates_when_no_cache(self, db):
+        """v0030 (2026-09-01): patch `_load_dedicated_pos_neg_neu_totals`
+        alongside the WindowSummary mock — build_weekly_block reads dedicated-
+        tier totals to override WindowSummary values (Halloween contamination
+        fix, 2026-08-30).
+        """
         _seed_game(db, 1, "Test Game", 100)
         from unittest.mock import MagicMock, patch
         fake = MagicMock(spec=WindowSummary)
@@ -167,7 +183,10 @@ class TestBuildWeeklyBlock:
         with patch(
             "services.period_summary_service.generate_window_summary",
             return_value=fake,
-        ) as mock_gen:
+        ) as mock_gen, patch(
+            "services.digest_service._load_dedicated_pos_neg_neu_totals",
+            return_value=(15, 3, 2),
+        ):
             block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 24))
             mock_gen.assert_called_once()
         assert block.has_data is True
@@ -256,10 +275,19 @@ class TestMarkdownConverter:
 
 class TestRenderDigest:
     def test_metrics_strip_includes_all_counts_and_ratio(self, db):
+        """v0030 (2026-09-01): patch `_load_dedicated_pos_neg_neu_totals`
+        to echo the seeded WindowSummary totals so the block reflects the
+        seeded values (build_weekly_block otherwise overrides them).
+        """
+        from unittest.mock import patch
         _seed_game(db, 1, "Test Game", 100)
         _seed_window_summary(db, 1, ingest_date=date(2026, 6, 24),
                              positive=22, negative=3, neutral=11, total=36)
-        block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 24))
+        with patch(
+            "services.digest_service._load_dedicated_pos_neg_neu_totals",
+            return_value=(22, 3, 11),
+        ):
+            block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 24))
         strip = ds._render_metrics_strip(block)
         # Counts present
         assert "36" in strip

@@ -205,6 +205,115 @@ _STUCK_RUN_THRESHOLD_S = 500 * 60  # 500 minutes
 _RUN_WALLCLOCK_BUDGET_S = 150 * 60  # 150 minutes
 
 
+# ── Resume-on-restart state ──────────────────────────────────────────────────
+#
+# v0029 (2026-09-01): if a deploy or crash kills run_ingestion() mid-run,
+# the next scheduled trigger currently restarts from game #1 and re-touches
+# every game. Per-source cursors + external-id dedup mean most of that work
+# is cheap, but the wall-clock cost still adds ~15-30 minutes to the fresh
+# run.
+#
+# This adds a resume marker: after each game finishes Phase A, we record
+# its ID in AppSetting['ingest_run_state']. If the ingest is triggered
+# again within _RESUME_WINDOW_S of the previous run's start, we treat it
+# as a *resume* and skip games already completed in that run.
+#
+# Bounded by the resume window so tomorrow's daily cron never accidentally
+# skips games because yesterday's run marker was still on disk. When a run
+# finishes cleanly the state is cleared, so this only matters for
+# interrupted runs.
+_RESUME_STATE_KEY = "ingest_run_state"
+_RESUME_WINDOW_S = 6 * 60 * 60  # 6 hours
+
+
+def _load_run_state(db: Session) -> Optional[dict]:
+    """Read the persisted mid-run resume marker, or None if absent/invalid.
+
+    Returned dict has:
+      * run_id (str): ISO-8601 timestamp of when the run first started
+      * run_started_at (str): same as run_id, kept as a separate field for
+        clarity when reading logs.
+      * games_completed_ids (list[int]): games whose Phase A already ran
+    """
+    try:
+        from models import AppSetting  # noqa: PLC0415
+        row = db.query(AppSetting).filter_by(key=_RESUME_STATE_KEY).first()
+        if not row or not row.value:
+            return None
+        import json as _json  # noqa: PLC0415
+        state = _json.loads(row.value)
+        if not isinstance(state, dict):
+            return None
+        if "run_id" not in state or "games_completed_ids" not in state:
+            return None
+        return state
+    except Exception as exc:
+        logger.warning("_load_run_state: %s", exc)
+        return None
+
+
+def _save_run_state(
+    db: Session, run_id: str, games_completed_ids: list[int],
+    run_started_at: str,
+) -> None:
+    """Persist the resume marker. Uses its own commit so an outer rollback
+    doesn't erase progress. Silent on failure — resume is an optimization.
+    """
+    try:
+        from models import AppSetting  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+        payload = _json.dumps({
+            "run_id": run_id,
+            "run_started_at": run_started_at,
+            "games_completed_ids": games_completed_ids,
+        })
+        row = db.query(AppSetting).filter_by(key=_RESUME_STATE_KEY).first()
+        if row is None:
+            row = AppSetting(key=_RESUME_STATE_KEY, value=payload)
+            db.add(row)
+        else:
+            row.value = payload
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("_save_run_state: %s", exc)
+
+
+def _clear_run_state(db: Session) -> None:
+    """Wipe the resume marker. Called when a run finishes cleanly so the
+    next trigger starts fresh."""
+    try:
+        from models import AppSetting  # noqa: PLC0415
+        row = db.query(AppSetting).filter_by(key=_RESUME_STATE_KEY).first()
+        if row is not None:
+            db.delete(row)
+            db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("_clear_run_state: %s", exc)
+
+
+def _should_resume_prior_run(state: Optional[dict], now_iso: str) -> bool:
+    """Decide whether to reuse the prior state or start a fresh run.
+
+    Reuse only when the prior run_started_at is within _RESUME_WINDOW_S of
+    now. Anything older is treated as stale (e.g. yesterday's abandoned
+    state) and cleared.
+    """
+    if not state:
+        return False
+    started = state.get("run_started_at")
+    if not started:
+        return False
+    try:
+        started_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+        now_dt = datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+        age_s = (now_dt - started_dt).total_seconds()
+        return 0 <= age_s <= _RESUME_WINDOW_S
+    except Exception:
+        return False
+
+
 def _reclaim_stuck_lock_if_needed() -> None:
     """Clear the is_running flag when the previous run is clearly dead.
 
@@ -299,7 +408,8 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         return {"status": "skipped", "reason": "already_running"}
 
     _status["is_running"] = True
-    _status["last_run_at"] = datetime.now(timezone.utc).isoformat()
+    _now_iso = datetime.now(timezone.utc).isoformat()
+    _status["last_run_at"] = _now_iso
     # Reset counters so mid-run observers see progress on THIS run, not
     # stale numbers from the prior finally-block write.
     _status["games_processed"] = 0
@@ -331,6 +441,35 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
     _reset_gist_cache()
 
     db = SessionLocal()
+
+    # v0029 (2026-09-01): decide whether we're resuming a partially-
+    # completed prior run. If we are, we keep the prior run_id and the
+    # list of already-processed game IDs so Phase A can skip them.
+    # Otherwise we start a fresh run and clear any stale state.
+    _prior_state = _load_run_state(db)
+    if _should_resume_prior_run(_prior_state, _now_iso):
+        _current_run_id = _prior_state["run_id"]
+        _run_started_iso = _prior_state.get("run_started_at", _current_run_id)
+        _games_completed_ids: list[int] = list(
+            _prior_state.get("games_completed_ids", [])
+        )
+        logger.info(
+            "run_ingestion: resuming prior run_id=%s (started %s) with "
+            "%d game(s) already completed in Phase A. Skipping those.",
+            _current_run_id, _run_started_iso, len(_games_completed_ids),
+        )
+    else:
+        _current_run_id = _now_iso
+        _run_started_iso = _now_iso
+        _games_completed_ids = []
+        _clear_run_state(db)
+        logger.info(
+            "run_ingestion: fresh run_id=%s (no resumable prior state).",
+            _current_run_id,
+        )
+    _status["current_run_id"] = _current_run_id
+    _status["resumed"] = bool(_games_completed_ids)
+
     try:
         # ── Step 1: game discovery ────────────────────────────────────────────
         active_games = _step1_discover_games(db, log_lines, errors)
@@ -493,6 +632,21 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 logger.warning(msg)
                 log_lines.append(msg)
 
+            # v0029 (2026-09-01): skip games whose Phase A already completed
+            # under the current run_id (see resume state above). This is what
+            # makes 'resume from where the deploy killed us' work — the counter
+            # visible to /api/ingest/status reflects the RESUMED position, not
+            # a fresh 0/N.
+            if game.id in _games_completed_ids:
+                log_lines.append(
+                    f"[Phase A] '{game.name}' already completed in this run "
+                    f"(run_id={_current_run_id}); skipping."
+                )
+                # Still advance the heartbeat counter so operators see the run
+                # progressing past the resumed games.
+                _status["games_processed"] = i
+                continue
+
             try:
                 (game_posts, r_f, b_f, sr_f, sf_f, d_f) = _safe_run_steps_2_to_4b(game)
                 per_game_posts[game.id] = per_game_posts.get(game.id, 0) + game_posts
@@ -501,6 +655,15 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 steam_review_fetched_total += sr_f
                 steam_forum_fetched_total += sf_f
                 dtf_fetched_total += d_f
+                # v0029: record this game's completion so a subsequent restart
+                # skips it. Only track successful runs — if the try block above
+                # raised, we want the next attempt to retry this game.
+                if game.id not in _games_completed_ids:
+                    _games_completed_ids.append(game.id)
+                    _save_run_state(
+                        db, _current_run_id, _games_completed_ids,
+                        _run_started_iso,
+                    )
             except Exception as exc:
                 msg = f"Unhandled error processing game '{game.name}': {exc}"
                 errors.append(msg)
@@ -837,6 +1000,15 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.exception("health-drop check failed: %s", exc)
             errors.append(f"health-drop check failed: {exc}")
+
+        # v0029 (2026-09-01): the run completed all phases. Clear the resume
+        # marker so tomorrow's cron starts fresh. If the process was killed
+        # before reaching here, the marker stays and the next trigger
+        # resumes.
+        try:
+            _clear_run_state(db)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("failed to clear resume state on clean exit: %s", exc)
 
         db.close()
         _status["is_running"] = False
@@ -1649,10 +1821,17 @@ def _step5_classify_sentiment(
     # thread. Applying the §14 title/body keyword gate to comments would
     # filter out 90%+ (comments say 'looks great' or 'RE vibes' without
     # restating the game name), which is the exact bug Steve flagged.
+    #
+    # v0030 (2026-09-01, Road Kings mistagging fix): only Steam sources are
+    # unconditionally auto-admitted. Reddit comments and reddit submissions
+    # both defer to the v3 relevance tagger's tier verdict. Comments whose
+    # parent thread is noise-tier now go through the same keyword-gate as
+    # any other noise-tier post — previously they were classified regardless
+    # (comment says 'Thanks for this explanation' → tagged positive for a
+    # game the commenter has never heard of).
     _AUTO_ADMIT_SOURCES = {
         SourceEnum.steam_review,
         SourceEnum.steam_forum,
-        SourceEnum.reddit_comment,
     }
     relevant_posts: list[RawPost] = []
     irrelevant_posts: list[RawPost] = []
@@ -1673,6 +1852,12 @@ def _step5_classify_sentiment(
         # Before this fix, Step 5 was throwing out ~97% of SM2's Reddit
         # submissions from r/Spacemarine because the body text didn't
         # restate 'space marine 2' — defeating the tier system.
+        #
+        # v0030 (2026-09-01): this branch now also applies to reddit_comment,
+        # so a comment whose parent was mistagged as noise gets keyword-gated
+        # instead of blindly classified. Comments on truly game-verified
+        # parents keep their signal/dedicated_sub tier (via override_tier at
+        # ingest time) and admit as before.
         if post.relevance_tier in ("signal", "dedicated_sub"):
             relevant_posts.append(post)
             continue

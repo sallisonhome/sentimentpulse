@@ -85,10 +85,27 @@ def client(db):
     mock_scheduler.start    = MagicMock()
     mock_scheduler.shutdown = MagicMock()
 
+    # v0030 (2026-09-01): main.py's lifespan uses main.SessionLocal directly
+    # (not FastAPI's get_db dependency) for the startup keyword-check and
+    # publisher-seed logic. Without patching, it talks to the local dev DB
+    # file which may lack columns like games.distinctive_keywords and
+    # produces spurious "Startup keyword check failed" errors that cascade
+    # into 404s. Point SessionLocal at the same in-memory engine the test
+    # is using so lifespan sees a fully-migrated schema.
+    def override_session_local():
+        # Return a Session bound to the test's in-memory engine.
+        return db.get_bind()  # unused — SessionLocal is a callable
+
+    from sqlalchemy.orm import sessionmaker
+    test_session_local = sessionmaker(
+        autocommit=False, autoflush=False, bind=db.get_bind()
+    )
+
     with (
         patch("main.load_model"),
         patch("main.create_scheduler", return_value=mock_scheduler),
         patch("main.Base.metadata.create_all"),   # don't touch the prod DB file
+        patch("main.SessionLocal", test_session_local),
     ):
         with TestClient(app, raise_server_exceptions=True) as c:
             yield c

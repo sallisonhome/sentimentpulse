@@ -248,6 +248,79 @@ def _truncate(text: str) -> str:
     return text[:_MAX_INPUT_CHARS] if text else ""
 
 
+# v0030 (2026-09-01, Road Kings mistagging fix): social-nicety phrases that
+# have no product sentiment but score positive/negative on the model because
+# of the polite words alone. Applied as a pre-classifier gate. Case-
+# insensitive substring match on the trimmed lowercase text — if the *entire*
+# text is essentially one of these phrases (allowing a few extra
+# stopwords/punctuation), return neutral immediately.
+#
+# Deliberately conservative: only phrases that are meaningless without more
+# context. "Thanks for this explanation" scored positive 0.68 because
+# 'thanks' is high-valence; "I hope it was enough to help make sense of it"
+# scored positive 0.68 because 'hope' + 'help' are high-valence. Neither
+# tells us anything about the game the parent thread is about.
+_SOCIAL_NICETY_PATTERNS: tuple[str, ...] = (
+    "thanks", "thank you", "thanks for", "thx",
+    "appreciate", "much appreciated", "appreciated",
+    "cheers", "noted", "got it", "gotcha",
+    "you too", "same to you", "agreed", "i agree",
+    "lol", "lmao", "rofl", "haha", "nice", "cool", "ok", "okay",
+    "yes", "no", "yep", "nope", "yup", "yeah", "sure", "maybe",
+    "sorry", "my bad", "np", "you're welcome", "welcome",
+)
+
+
+def _is_social_nicety(text: str) -> bool:
+    """Return True when *text* is short and consists mostly of a social
+    nicety phrase with no substantive product content.
+
+    Conservative: only fires when the trimmed text length is <=40 chars
+    AND contains one of the nicety phrases as a whole word AND, after
+    removing that phrase, <=15 chars of residue remain. Longer text is
+    never treated as a nicety even if it starts with 'Thanks' because
+    the rest of the message might carry real signal.
+
+    Called from classify_with_gate_v2 / classify_batch_with_gate_v2 as a
+    layer before the model runs. Returns neutral 0.5 immediately when true.
+    """
+    if not text:
+        return False
+    stripped = text.strip().lower()
+    # Fast fail on anything long — a message longer than a tweet fragment
+    # can't be pure nicety.
+    if len(stripped) > 60:
+        return False
+    # Whole-word check to avoid "thanks" matching inside "thanksgiving" etc.
+    import re as _re  # noqa: PLC0415
+    for phrase in _SOCIAL_NICETY_PATTERNS:
+        pattern = r"\b" + _re.escape(phrase) + r"\b"
+        if _re.search(pattern, stripped):
+            # Also require the nicety to be a *dominant* part of the text:
+            # after removing it, count substantive tokens in the residue.
+            # "Thanks" → residue "" → nicety.
+            # "Thanks for this explanation" → residue "for this explanation"
+            #   → substantive tokens = 1 ("explanation") → still nicety.
+            # "Thanks for the patch update but crashes remain" → residue
+            #   "for the patch update but crashes remain" → substantive =
+            #   {patch, update, crashes, remain} = 4 → NOT nicety.
+            residue = _re.sub(pattern, " ", stripped)
+            # Strip common punctuation, then count substantive (=length>=3
+            # non-stopword) tokens using the same tokenizer as the rest of
+            # the sentiment gate.
+            try:
+                from services.sentiment_gate import count_substantive_tokens as _cst  # noqa: PLC0415
+                residue_tokens = _cst(residue)
+            except Exception:  # pragma: no cover — tokenizer path failure
+                residue_tokens = len([w for w in residue.split() if len(w) >= 3])
+            # <=1 substantive token means the residue is essentially
+            # stopwords + one connector word ("for this explanation" →
+            # 'explanation'), so the nicety still dominates.
+            if residue_tokens <= 1:
+                return True
+    return False
+
+
 # ── §18 PR #11: Full trust-chain gate (Layers 1-5 inc. Layer 4 lexicon) ────────
 
 def classify_with_gate_v2(title: str, body: str) -> dict:
@@ -308,6 +381,24 @@ def classify_with_gate_v2(title: str, body: str) -> dict:
             "original_label": None,
             "sentiment_conflict": False,
             "applied_rules": [],
+        }
+
+    # ── v0030 (2026-09-01): social-nicety pre-classifier gate ─────────────────
+    # A short comment that is essentially "thanks / cool / lol / got it"
+    # etc. scores strongly on the RoBERTa model because of the polite
+    # words alone, but tells us nothing about the game the parent thread
+    # is about. Force neutral before the model runs. Runs BEFORE language
+    # detection because langdetect returns 'und' on 1-3 word inputs
+    # (which is where niceties actually live).
+    if _is_social_nicety(combined):
+        return {
+            "label": "neutral",
+            "score": 0.5,
+            "signal_quality": "low",
+            "language": "en",  # niceties are always English by pattern
+            "original_label": None,
+            "sentiment_conflict": False,
+            "applied_rules": ["v0030_social_nicety"],
         }
 
     # ── (a) Language detection on combined text ───────────────────────────────
@@ -433,6 +524,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
     combined_texts: list[str] = []
     languages: list[str] = []
     signal_qualities: list[str] = []
+    nicety_flags: list[bool] = []  # v0030: True when _is_social_nicety fired
 
     for item in items:
         title = (item.get("title") or "").strip()
@@ -453,6 +545,11 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
         else:
             signal_qualities.append("high")
 
+        # v0030: social-nicety pre-classifier gate (parallel to single-item path).
+        # Runs regardless of detected language because langdetect returns
+        # 'und' on 1-3 word inputs — which is where niceties actually live.
+        nicety_flags.append(_is_social_nicety(combined))
+
     # ── Build the flat list of texts to classify ──────────────────────────────
     # For items that need classification (non-empty, English, non-low signal),
     # we classify both title and body independently.  Items that short-circuit
@@ -467,7 +564,7 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
         lang = languages[i]
         sq = signal_qualities[i]
 
-        if not combined or lang != "en" or sq == "low":
+        if not combined or lang != "en" or sq == "low" or nicety_flags[i]:
             # Will short-circuit — push placeholders to keep indices aligned
             flat_texts.append("")   # title slot
             flat_texts.append("")   # body slot
@@ -502,6 +599,21 @@ def classify_batch_with_gate_v2(items: list[dict]) -> list[dict]:
                 "original_label": None,
                 "sentiment_conflict": False,
                 "applied_rules": [],
+            })
+            continue
+
+        # v0030: nicety gate short-circuits BEFORE the language check
+        # because langdetect returns 'und' on 1-3 word inputs — which
+        # is where niceties actually live.
+        if nicety_flags[i]:
+            output.append({
+                "label": "neutral",
+                "score": 0.5,
+                "signal_quality": "low",
+                "language": "en",  # niceties are always English by pattern
+                "original_label": None,
+                "sentiment_conflict": False,
+                "applied_rules": ["v0030_social_nicety"],
             })
             continue
 
