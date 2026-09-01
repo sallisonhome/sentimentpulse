@@ -298,3 +298,89 @@ class TestDedicatedGameSubsNotInGeneralSubs_v0028:
         """r/clivebarker MUST stay in GENERAL_SUBS \u2014 author sub, broader
         than one game."""
         assert "clivebarker" in {g.lower() for g in GENERAL_SUBS}
+
+
+class TestGeneralSubsExpansion_2026_09_01_road_kings:
+    """
+    Every sub added on 2026-09-01 (Road Kings contamination fix) must be
+    in GENERAL_SUBS so it's keyword-gated instead of automatic dedicated_sub.
+
+    Context: Road Kings' subreddit config included real-industry subs
+    (Truckers, Trucking, LogitechG, logitech, Fanatec) and competitor
+    truck-sim game subs (trucksim, EuroTruck2, Americantrucksim,
+    americantruck, snowrunner, Mudrunner, RoadCraft, Expeditions). Without
+    keyword-gating, 6,567 non-game posts (100% trucking-industry chatter,
+    steering wheel troubleshooting, or ETS2/ATS/SnowRunner content) got
+    tagged as dedicated_sub for Road Kings and inherited to comments.
+    """
+
+    NEW_ADDITIONS = [
+        # Competitor truck-sim game subs
+        "trucksim", "eurotruck2", "americantrucksim", "americantruck",
+        # Saber's OWN other truck-sim games
+        "snowrunner", "mudrunner", "roadcraft", "expeditions",
+        # Real trucking industry
+        "truckers", "trucking",
+        # Peripherals (steering wheels)
+        "logitechg", "logitech", "fanatec",
+    ]
+
+    def test_all_new_subs_in_general_subs(self):
+        for sub in self.NEW_ADDITIONS:
+            assert sub in GENERAL_SUBS, (
+                f"Sub {sub!r} must be in GENERAL_SUBS to force keyword-gating "
+                f"for Road Kings and any future game whose config includes it."
+            )
+
+    def test_truckers_post_without_keyword_is_noise(self):
+        """A trucking-industry post in r/Truckers must NOT tag as
+        dedicated_sub for Road Kings (or any game) — the sub is real
+        industry chatter, not game community."""
+        tier, matched = tag_post(
+            source=SourceEnum.reddit,
+            url="https://www.reddit.com/r/Truckers/comments/xyz/hours_question/",
+            title="OTR flatbed hours-of-service question",
+            body="I usually stay out 6 to 8 weeks at a time. What company are you with?",
+            keywords=["road kings game", "roadkings"],
+        )
+        assert tier == "noise", f"Expected noise, got {tier}"
+        assert matched == []
+
+    def test_logitech_wheel_post_without_keyword_is_noise(self):
+        """A steering-wheel troubleshooting post in r/LogitechG must NOT
+        auto-admit as Road Kings signal."""
+        tier, matched = tag_post(
+            source=SourceEnum.reddit,
+            url="https://www.reddit.com/r/LogitechG/comments/xyz/wheel_dead/",
+            title="Wheel isn't getting power",
+            body="Do you have any idea what my problem would be?",
+            keywords=["road kings game", "roadkings"],
+        )
+        assert tier == "noise"
+
+    def test_snowrunner_post_without_keyword_is_noise(self):
+        """A SnowRunner-specific post in r/snowrunner must NOT auto-admit
+        as Road Kings signal — SnowRunner is a separate Saber game with
+        its own game_id."""
+        tier, matched = tag_post(
+            source=SourceEnum.reddit,
+            url="https://www.reddit.com/r/snowrunner/comments/xyz/save_bug/",
+            title="Save file corrupted after latest patch",
+            body="Anyone else losing progress? Reinstalled but the save is still corrupted.",
+            keywords=["road kings game", "roadkings"],
+        )
+        assert tier == "noise"
+
+    def test_real_road_kings_content_in_trucksim_admits_as_signal(self):
+        """When a Road Kings-specific post genuinely appears in r/trucksim
+        (a competitor sub), keyword-gating admits it as signal — we lose
+        nothing by adding trucksim to GENERAL_SUBS."""
+        tier, matched = tag_post(
+            source=SourceEnum.reddit,
+            url="https://www.reddit.com/r/trucksim/comments/xyz/rk_gameplay/",
+            title="First look at Road Kings gameplay footage",
+            body="The Road Kings trailer just dropped and the truck models look amazing.",
+            keywords=["road kings game", "roadkings", "road kings gameplay"],
+        )
+        assert tier == "signal", f"Expected signal, got {tier}"
+        assert "road kings gameplay" in matched or "road kings game" in matched

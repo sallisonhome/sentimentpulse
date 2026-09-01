@@ -135,6 +135,33 @@ GENERAL_SUBS: frozenset[str] = frozenset({
     "dinosaurs", "paleontology", "naturewasmetal", "galapagos",
     "primalcarnage", "theisle", "pathoftitans", "ark", "playark",
     "scifi", "indigenousgaming", "n64",
+    # v0030 (2026-09-01) Road Kings contamination fix. Road Kings' config
+    # listed real-industry subs (Truckers, Trucking, LogitechG, logitech,
+    # Fanatec — peripherals + trucking-industry chatter, zero game
+    # content) plus competitor truck-sim game subs (trucksim, EuroTruck2,
+    # Americantrucksim, americantruck, snowrunner, Mudrunner, RoadCraft,
+    # Expeditions). Without keyword-gating every submission in those subs
+    # tagged as dedicated_sub for Road Kings and every comment inherited
+    # via _step4a_reddit_comments — 6,567 mistagged posts in the last
+    # 30 days, 100% non-game content in samples.
+    #
+    # These subs are permanent noise-risks for ANY future game whose
+    # config includes them (esp. pre-launch games where every mention
+    # is speculation, not community). Adding to GENERAL_SUBS forces the
+    # keyword gate for all games, retroactively fixes Road Kings' bad
+    # data on retag, and prevents the same failure mode on any future
+    # game.
+    #
+    # trucksim / EuroTruck2 / Americantrucksim / americantruck: ETS2 &
+    #   ATS communities — dominant topic is those two games.
+    # snowrunner / Mudrunner / RoadCraft / Expeditions: Saber's OWN
+    #   other truck-sim games, each with its own game_id.
+    # Truckers / Trucking: real trucking industry subs, no game content.
+    # LogitechG / logitech / Fanatec: peripheral (steering wheel) subs.
+    "trucksim", "eurotruck2", "americantrucksim", "americantruck",
+    "snowrunner", "mudrunner", "roadcraft", "expeditions",
+    "truckers", "trucking",
+    "logitechg", "logitech", "fanatec",
 })
 
 _SUB_RE = re.compile(r"/r/([^/]+)/", re.IGNORECASE)
