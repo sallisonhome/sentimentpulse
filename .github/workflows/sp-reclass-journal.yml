@@ -1,0 +1,17 @@
+name: SP Reclass Journal
+on: workflow_dispatch
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Journal
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s << 'REMOTE'
+            journalctl -u sentimentpulse --since "3 hours ago" | grep -iE "reclassify|reclass|processed [0-9]|label_flips|finished|completed" | tail -40
+          REMOTE
