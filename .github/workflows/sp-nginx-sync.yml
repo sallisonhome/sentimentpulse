@@ -1,0 +1,80 @@
+name: SP Nginx Sync
+
+# Syncs the versioned nginx config at repo:nginx/sentimentpulse.conf to the
+# droplet's live path /etc/nginx/sites-enabled/sentimentpulse and reloads
+# nginx if the config validates. Idempotent — a no-op when the file is
+# already identical.
+#
+# Manual-only. Deploys should NOT change nginx config; when the config
+# actually changes, run this workflow explicitly after merging the change.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.DROPLET_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Copy config to droplet + validate + reload
+        run: |
+          # Copy to a staging path so we can diff before installing.
+          scp -i ~/.ssh/id_ed25519 \
+            nginx/sentimentpulse.conf \
+            root@${{ secrets.DROPLET_HOST }}:/tmp/sentimentpulse.conf.staged
+
+          ssh -i ~/.ssh/id_ed25519 root@${{ secrets.DROPLET_HOST }} << 'REMOTE'
+            set -euo pipefail
+
+            LIVE=/etc/nginx/sites-enabled/sentimentpulse
+            STAGED=/tmp/sentimentpulse.conf.staged
+            BACKUP=/etc/nginx/sites-enabled/sentimentpulse.bak.$(date +%Y%m%d-%H%M%S)
+
+            echo "── Diff (live vs staged) ──"
+            if diff -q "$LIVE" "$STAGED" > /dev/null 2>&1; then
+              echo "No changes — live config is already up to date. Exiting."
+              rm -f "$STAGED"
+              exit 0
+            fi
+            diff -u "$LIVE" "$STAGED" || true
+
+            echo ""
+            echo "── Backing up live config to $BACKUP ──"
+            cp "$LIVE" "$BACKUP"
+
+            echo ""
+            echo "── Installing staged config to $LIVE ──"
+            cp "$STAGED" "$LIVE"
+
+            echo ""
+            echo "── nginx -t ──"
+            if ! nginx -t; then
+              echo "ERROR: nginx -t failed after install. Rolling back."
+              cp "$BACKUP" "$LIVE"
+              nginx -t
+              exit 1
+            fi
+
+            echo ""
+            echo "── systemctl reload nginx ──"
+            systemctl reload nginx
+            echo "nginx reloaded successfully."
+
+            echo ""
+            echo "── Smoke tests ──"
+            for path in / /changelog.html /SUITE_CHANGELOG.md; do
+              CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost$path")
+              echo "  GET $path -> $CODE"
+            done
+
+            rm -f "$STAGED"
+          REMOTE
