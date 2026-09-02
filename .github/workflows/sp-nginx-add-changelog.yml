@@ -2,8 +2,10 @@ name: SP Nginx Add Changelog Routes
 
 # One-shot idempotent surgery: adds the two exact-match location blocks
 # needed for the launcher's What's New page to the LIVE nginx config,
-# without touching anything else. Guards on presence — running twice is
-# a no-op.
+# without touching anything else. Idempotent — running twice is a no-op.
+#
+# The Python surgery script lives at scripts/nginx_insert_changelog_routes.py
+# so YAML indentation doesn't break it.
 
 on:
   workflow_dispatch:
@@ -12,6 +14,8 @@ jobs:
   add:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
@@ -19,7 +23,13 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Insert /changelog.html + /SUITE_CHANGELOG.md routes
+      - name: Copy insert script to droplet
+        run: |
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              scripts/nginx_insert_changelog_routes.py \
+              root@104.236.239.46:/tmp/nginx_insert_changelog_routes.py
+
+      - name: Insert routes + reload nginx
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
               root@104.236.239.46 bash -s << 'REMOTE'
@@ -29,7 +39,8 @@ jobs:
             BACKUP=/etc/nginx/sites-enabled/sentimentpulse.bak.$(date +%Y%m%d-%H%M%S)
 
             if grep -q "location = /changelog.html" "$LIVE"; then
-              echo "Routes already present — nothing to do."
+              echo "Changelog routes already present in live config — nothing to do."
+              rm -f /tmp/nginx_insert_changelog_routes.py
               exit 0
             fi
 
@@ -37,49 +48,16 @@ jobs:
             cp "$LIVE" "$BACKUP"
 
             echo ""
-            echo "── Inserting new location blocks after 'location = /index.html' ──"
-            # Uses Python to do an exact-anchor insert. The anchor:
-            #   location = /index.html {
-            #       root /opt/sentimentpulse/launcher;
-            #   }
-            # After the closing } we insert the two new location blocks.
-            python3 - "$LIVE" << 'PY'
-            import re, sys
-            path = sys.argv[1]
-            src = open(path).read()
-            anchor = (
-                '    location = /index.html {\n'
-                '        root /opt/sentimentpulse/launcher;\n'
-                '    }\n'
-            )
-            insert = (
-                '    # Suite-wide What\'s New page + its markdown source. Both are\n'
-                '    # served directly from the checkout under /opt/sentimentpulse/.\n'
-                '    location = /changelog.html {\n'
-                '        root /opt/sentimentpulse/launcher;\n'
-                '        add_header Cache-Control "no-cache, must-revalidate";\n'
-                '    }\n'
-                '    location = /SUITE_CHANGELOG.md {\n'
-                '        alias /opt/sentimentpulse/SUITE_CHANGELOG.md;\n'
-                '        default_type text/markdown;\n'
-                '        add_header Cache-Control "no-cache, must-revalidate";\n'
-                '    }\n'
-            )
-            if anchor not in src:
-                print("ERROR: could not find launcher anchor; refusing to modify.")
-                sys.exit(1)
-            new = src.replace(anchor, anchor + insert, 1)
-            with open(path, 'w') as f:
-                f.write(new)
-            print(f"Inserted {insert.count(chr(10))} lines.")
-            PY
+            echo "── Running surgical insert ──"
+            python3 /tmp/nginx_insert_changelog_routes.py "$LIVE"
 
             echo ""
             echo "── nginx -t ──"
             if ! nginx -t; then
-              echo "ERROR: nginx -t failed. Rolling back."
+              echo "ERROR: nginx -t failed after insert. Rolling back."
               cp "$BACKUP" "$LIVE"
               nginx -t
+              rm -f /tmp/nginx_insert_changelog_routes.py
               exit 1
             fi
 
@@ -94,4 +72,6 @@ jobs:
               CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost$path")
               echo "  GET $path -> $CODE"
             done
+
+            rm -f /tmp/nginx_insert_changelog_routes.py
           REMOTE
