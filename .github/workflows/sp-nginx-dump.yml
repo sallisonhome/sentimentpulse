@@ -1,0 +1,28 @@
+name: SP Nginx Dump
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: scp live conf
+        run: |
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46:/etc/nginx/sites-enabled/sentimentpulse \
+              /tmp/live_nginx.conf
+          echo "── head ──"
+          head -20 /tmp/live_nginx.conf
+          echo "── full length ──"
+          wc -l /tmp/live_nginx.conf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live_nginx_sentimentpulse_conf
+          path: /tmp/live_nginx.conf
