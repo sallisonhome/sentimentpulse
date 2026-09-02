@@ -23,16 +23,17 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H ${{ secrets.DROPLET_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Copy config to droplet + validate + reload
         run: |
           # Copy to a staging path so we can diff before installing.
-          scp -i ~/.ssh/id_ed25519 \
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             nginx/sentimentpulse.conf \
-            root@${{ secrets.DROPLET_HOST }}:/tmp/sentimentpulse.conf.staged
+            root@104.236.239.46:/tmp/sentimentpulse.conf.staged
 
-          ssh -i ~/.ssh/id_ed25519 root@${{ secrets.DROPLET_HOST }} << 'REMOTE'
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s << 'REMOTE'
             set -euo pipefail
 
             LIVE=/etc/nginx/sites-enabled/sentimentpulse
