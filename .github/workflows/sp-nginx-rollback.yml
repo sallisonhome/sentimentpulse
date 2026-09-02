@@ -1,0 +1,57 @@
+name: SP Nginx Rollback
+
+# Emergency rollback: restore /etc/nginx/sites-enabled/sentimentpulse
+# from the most recent .bak.YYYYMMDD-HHMMSS backup created by the
+# sp-nginx-sync workflow, then reload nginx.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Restore latest backup + reload nginx
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s << 'REMOTE'
+            set -euo pipefail
+
+            LIVE=/etc/nginx/sites-enabled/sentimentpulse
+            LATEST_BAK=$(ls -1t /etc/nginx/sites-enabled/sentimentpulse.bak.* 2>/dev/null | head -1)
+
+            if [ -z "$LATEST_BAK" ]; then
+              echo "ERROR: no backup files found under /etc/nginx/sites-enabled/sentimentpulse.bak.*"
+              exit 1
+            fi
+
+            echo "── Latest backup: $LATEST_BAK ──"
+            diff -u "$LIVE" "$LATEST_BAK" | head -60 || true
+
+            echo ""
+            echo "── Restoring $LATEST_BAK -> $LIVE ──"
+            cp "$LATEST_BAK" "$LIVE"
+
+            echo ""
+            echo "── nginx -t ──"
+            nginx -t
+
+            echo ""
+            echo "── systemctl reload nginx ──"
+            systemctl reload nginx
+            echo "nginx reloaded."
+
+            echo ""
+            echo "── Smoke tests ──"
+            for path in / /sentiment/ /signal/ /partnerships/; do
+              CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost$path")
+              echo "  GET $path -> $CODE"
+            done
+          REMOTE
