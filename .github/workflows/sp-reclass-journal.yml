@@ -13,5 +13,9 @@ jobs:
       - name: Journal
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s << 'REMOTE'
-            journalctl -u sentimentpulse --since "3 hours ago" | grep -iE "reclassify|reclass|processed [0-9]|label_flips|finished|completed" | tail -40
+            echo "── recent reclass INFO/ERROR events ──"
+            journalctl -u sentimentpulse --since "5 hours ago" --no-pager | grep -iE "reclassif|reclass|flipped|steam_hardrule|170004|170,004|165|168|169" | tail -60
+            echo ""
+            echo "── last 40 restarts / startups ──"
+            journalctl -u sentimentpulse --since "5 hours ago" --no-pager | grep -iE "Started|Stopping|Stopped|Booting|reclassif.*completed|reclassif.*started|db=|reddit_comment" | tail -60
           REMOTE
