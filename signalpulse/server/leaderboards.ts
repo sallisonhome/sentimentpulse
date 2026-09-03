@@ -48,6 +48,10 @@ export interface WishlistLeaderboardRow {
   wishlistTotal: number | null;
   wishlistDelta1d: number | null;
   wishlistAdds7d: number | null;
+  /** % change in gross wishlistAdds: latest day vs prior day */
+  wishlistAdds1dPct: number | null;
+  /** % change in gross wishlistAdds: current 7-day window vs prior 7-day window */
+  wishlistAdds7dPct: number | null;
   followersTotal: number | null;
   followersDelta1d: number | null;
   rankCurrent: number | null;
@@ -84,6 +88,46 @@ export function getWishlistLeaderboardRows(): WishlistLeaderboardRow[] {
     const rank7dAgo = storage.getSteamWishlistRankDaysAgo(p.id, 7);
     const igdbLatest = storage.getLatestIgdbHype(p.id);
 
+    // Fetch reporting rows once for both pct-delta computations below.
+    const reportingRows = storage.getSteamWishlistReporting(p.id); // ascending by date
+
+    // ── 1d gross adds % change (latest day vs prior day) ────────────────────
+    let wishlistAdds1dPct: number | null = null;
+    if (reportingRows.length >= 2) {
+      const latest = reportingRows[reportingRows.length - 1];
+      const prior  = reportingRows[reportingRows.length - 2];
+      wishlistAdds1dPct = pctChange(latest.wishlistAdds, prior.wishlistAdds);
+    }
+
+    // ── 7d gross adds % change (current 7-day window vs prior 7-day window) ─
+    let wishlistAdds7dPct: number | null = null;
+    if (reportingRows.length >= 1) {
+      const latestDate = reportingRows[reportingRows.length - 1].date;
+      // Current window: [latestDate-6 .. latestDate] (7 days inclusive)
+      const curStart = new Date(`${latestDate}T00:00:00Z`);
+      curStart.setUTCDate(curStart.getUTCDate() - 6);
+      const curStartStr = curStart.toISOString().slice(0, 10);
+      // Prior window: [latestDate-13 .. latestDate-7] (7 days inclusive)
+      const priorStart = new Date(`${latestDate}T00:00:00Z`);
+      priorStart.setUTCDate(priorStart.getUTCDate() - 13);
+      const priorStartStr = priorStart.toISOString().slice(0, 10);
+      const priorEnd = new Date(`${latestDate}T00:00:00Z`);
+      priorEnd.setUTCDate(priorEnd.getUTCDate() - 7);
+      const priorEndStr = priorEnd.toISOString().slice(0, 10);
+
+      let cur7dAdds  = 0;
+      let prev7dAdds = 0;
+      let hasCur   = false;
+      let hasPrev  = false;
+      for (const r of reportingRows) {
+        if (r.date >= curStartStr && r.date <= latestDate)   { cur7dAdds  += r.wishlistAdds; hasCur  = true; }
+        if (r.date >= priorStartStr && r.date <= priorEndStr) { prev7dAdds += r.wishlistAdds; hasPrev = true; }
+      }
+      if (hasCur || hasPrev) {
+        wishlistAdds7dPct = pctChange(cur7dAdds, prev7dAdds);
+      }
+    }
+
     const rankCurrent = rankLatest?.rank ?? null;
     const rankPast = rank7dAgo?.rank ?? null;
     // Rank is 1-based, lower = better. A positive delta means the title
@@ -100,6 +144,8 @@ export function getWishlistLeaderboardRows(): WishlistLeaderboardRow[] {
       wishlistTotal: wishlistSummary.lifetimeNet,
       wishlistDelta1d: wishlistSummary.dayOverDayDelta,
       wishlistAdds7d: storage.getSteamWishlistAdds7dTotal(p.id),
+      wishlistAdds1dPct,
+      wishlistAdds7dPct,
       followersTotal: followersLatest?.followerCount ?? null,
       followersDelta1d: followersLatest?.dailyDelta ?? null,
       rankCurrent,

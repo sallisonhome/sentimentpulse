@@ -40,6 +40,8 @@ interface WishlistLeaderboardRow {
   wishlistTotal: number | null;
   wishlistDelta1d: number | null;
   wishlistAdds7d: number | null;
+  wishlistAdds1dPct: number | null;
+  wishlistAdds7dPct: number | null;
   followersTotal: number | null;
   followersDelta1d: number | null;
   rankCurrent: number | null;
@@ -101,6 +103,8 @@ type SortKey =
   | "wishlistTotal"
   | "wishlistDelta1d"
   | "wishlistAdds7d"
+  | "wishlistAdds1dPct"
+  | "wishlistAdds7dPct"
   | "followersTotal"
   | "followersDelta1d"
   | "rankCurrent"
@@ -556,7 +560,9 @@ export default function Leaderboards() {
                   <TableHead className="w-[56px] text-center">Chart</TableHead>
                   <SortableHead label="Total WL" sortKey="wishlistTotal" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="1D WL Δ" sortKey="wishlistDelta1d" activeSort={sort} onSort={handleSort} />
+                  <SortableHead label="1D Adds Δ%" sortKey="wishlistAdds1dPct" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="7D WL Adds" sortKey="wishlistAdds7d" activeSort={sort} onSort={handleSort} />
+                  <SortableHead label="7D Adds Δ%" sortKey="wishlistAdds7dPct" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="Total Followers" sortKey="followersTotal" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="1D Follower Δ" sortKey="followersDelta1d" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="Rank" sortKey="rankCurrent" activeSort={sort} onSort={handleSort} />
@@ -581,7 +587,9 @@ export default function Leaderboards() {
                     </TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.wishlistTotal)}</TableCell>
                     <TableCell><DeltaValue value={row.wishlistDelta1d} /></TableCell>
+                    <TableCell><PercentDeltaValue value={row.wishlistAdds1dPct} /></TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.wishlistAdds7d)}</TableCell>
+                    <TableCell><PercentDeltaValue value={row.wishlistAdds7dPct} /></TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.followersTotal)}</TableCell>
                     <TableCell><DeltaValue value={row.followersDelta1d} /></TableCell>
                     <TableCell className="tabular-nums">
