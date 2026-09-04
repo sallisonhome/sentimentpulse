@@ -633,10 +633,20 @@ function fetchPrimarySkusForCampaigns(
   const out = new Map();
   if (!campaignIds.length) return out;
   const placeholders = campaignIds.map(() => "?").join(",");
-  // Case-insensitive match: some sheets have inconsistent capitalization
-  // between the game_label header and the SKU rows (RoadCraft vs Roadcraft
-  // was the trigger case). LOWER() on both sides keeps the strict exact-
-  // match spirit while surviving that class of sheet drift.
+  // Pull EVERY SKU that could plausibly be the base game for each
+  // campaign in the batch, then rank them per campaign in application
+  // code. Ranking beats SQL-only matching because the sheets use several
+  // conventions that a single WHERE clause can't cleanly express:
+  //
+  //   Convention A  content_name == game_label (SM2 sheet, Gamescom)
+  //   Convention B  case drift    ("RoadCraft" vs "Roadcraft")
+  //   Convention C  punctuation drift ("Insurgency: Sandstorm" vs
+  //                                     "Insurgency Sandstorm")
+  //   Convention D  "<game_label> Base Game" (Expeditions sheet)
+  //   Convention E  literal "Base Game" row (Toxic Commando sheet)
+  //
+  // Priority: A > B > C > D > E. Only one of these is picked per
+  // campaign; ties inside a rank fall to the higher-discount row.
   const rows = sqlite
     .prepare(
       `SELECT s.campaign_id,
@@ -648,23 +658,54 @@ function fetchPrimarySkusForCampaigns(
          FROM sku_lines s
          JOIN campaigns c ON c.id = s.campaign_id
         WHERE s.campaign_id IN (${placeholders})
-          AND LOWER(s.content_name) = LOWER(c.game_label)
           AND s.current_srp_usd IS NOT NULL
           AND s.promo_srp_usd IS NOT NULL`,
     )
     .all(...campaignIds) as any[];
-  // Multiple rows per campaign_id are possible if a sheet has dupes; keep
-  // the highest discount as tiebreaker.
+
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[:,\-]/g, " ").replace(/\s+/g, " ").trim();
+
+  // Per-campaign best pick: (rank, discount) DESC. Lower rank = better
+  // convention match.
+  type Pick = {
+    rank: number;
+    row: any;
+  };
+  const best = new Map<number, Pick>();
+
   for (const r of rows) {
-    const prev = out.get(r.campaign_id);
-    if (!prev || r.discount_pct > prev.discount_pct) {
-      out.set(r.campaign_id, {
-        content_name: r.content_name,
-        current_srp_usd: r.current_srp_usd,
-        promo_srp_usd: r.promo_srp_usd,
-        discount_pct: r.discount_pct,
-      });
+    const cn = (r.content_name ?? "").trim();
+    const gl = (r.game_label ?? "").trim();
+    if (!cn || !gl) continue;
+
+    const cnL = cn.toLowerCase();
+    const glL = gl.toLowerCase();
+    let rank = 0;
+    if (cn === gl) rank = 5; // A: exact
+    else if (cnL === glL) rank = 4; // B: case drift
+    else if (norm(cn) === norm(gl)) rank = 3; // C: punctuation drift
+    else if (cnL === `${glL} base game`) rank = 2; // D
+    else if (cnL === "base game") rank = 1; // E
+    else continue;
+
+    const prev = best.get(r.campaign_id);
+    if (
+      !prev ||
+      rank > prev.rank ||
+      (rank === prev.rank && r.discount_pct > prev.row.discount_pct)
+    ) {
+      best.set(r.campaign_id, { rank, row: r });
     }
+  }
+
+  for (const [cid, pick] of best) {
+    out.set(cid, {
+      content_name: pick.row.content_name,
+      current_srp_usd: pick.row.current_srp_usd,
+      promo_srp_usd: pick.row.promo_srp_usd,
+      discount_pct: pick.row.discount_pct,
+    });
   }
   return out;
 }
