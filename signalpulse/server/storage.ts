@@ -24,7 +24,7 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, and, desc, isNull, isNotNull, asc, gte, lte } from "drizzle-orm";
+import { eq, and, desc, isNull, isNotNull, asc, gte, lte, notInArray, inArray } from "drizzle-orm";
 
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -491,7 +491,26 @@ export interface SteamRevenueByReleaseSplit {
   latestDate: string | null;
 }
 
-// ─── Storage Interface ───────────────────────────────────────────────────────
+/**
+ * Deterministic promo-event name used as the uniqueness key for
+ * upsertPromoPlsMilestones() and readable by humans on the PLS chart.
+ *
+ * Format: `"{program} (Steam · {start}→{end})"`
+ *
+ * Locked at 2026-09-04. Never change the format after events have been
+ * synced — the whole idempotency contract depends on names staying stable
+ * across syncs. If the format needs to evolve, do it in a migration that
+ * renames every existing category='promotion' row in the same commit.
+ */
+export function buildPromoName(
+  program: string,
+  startDate: string,
+  endDate: string,
+): string {
+  return `${program} (Steam · ${startDate}→${endDate})`;
+}
+
+// ─── Storage Interface ───────────────────────────────────────────────────────────────────
 
 export interface IStorage {
   // Products
@@ -631,6 +650,10 @@ export interface IStorage {
   createPlsMilestone(data: InsertPlsMilestone): PlsMilestone;
   updatePlsMilestone(id: number, data: Partial<InsertPlsMilestone>): PlsMilestone | undefined;
   deletePlsMilestone(id: number): void;
+  upsertPromoPlsMilestones(
+    productId: number,
+    events: Array<{ program: string; start_date: string; end_date: string }>,
+  ): { created: number; updated: number; softDeleted: number; unSoftDeleted: number };
 
   // YouTube Links
   getYoutubeLinks(milestoneId: number): YoutubeLink[];
@@ -1840,6 +1863,121 @@ export class DatabaseStorage implements IStorage {
     db.update(plsMilestones)
       .set({ deletedAt: now })
       .where(eq(plsMilestones.id, id)).run();
+  }
+
+  /**
+   * Cross-app promo sync: upsert a set of Steam-promo PLS milestones for a
+   * single product from the Promo Calendar's ingested schedule. Called by
+   * `/api/promo-support/sync-steam-pls-events` (ops-token-gated).
+   *
+   * Behaviour is deterministic + idempotent:
+   *   - `category = "promotion"` (existing enum value; the 2026-08-11 lesson
+   *     warned about literal-name lookups elsewhere in this file — the only
+   *     literal-name search today is `name === "Release"` in
+   *     getProductReleaseDate(), which our `"{program} (Steam · ...)"`
+   *     names cannot collide with).
+   *   - Uniqueness key: (productId, category='promotion', name). The name
+   *     encodes program + start + end so re-uploading the same sheet
+   *     produces the same names → same rows → no dupes.
+   *   - For every incoming event: INSERT if the name doesn't exist,
+   *     UPDATE `updatedAt` if it does (keeps a bump so recent syncs can be
+   *     audited from the timestamp), un-soft-delete if `deletedAt IS NOT NULL`.
+   *   - For every existing `category='promotion'` row on this product whose
+   *     name is NOT in the incoming set: soft-delete via `deletedAt = now`.
+   *     This is how a campaign removed from the current sheet upload
+   *     disappears from the PLS chart. (Prior soft-deleted rows we leave
+   *     alone — they stay soft-deleted.)
+   *   - `targetDate = actualDate = start_date`; `isDefault = false`;
+   *     `sortOrder = 0`.
+   *
+   * Return counts describe what changed:
+   *   { created, updated, softDeleted, unSoftDeleted }
+   */
+  upsertPromoPlsMilestones(
+    productId: number,
+    events: Array<{ program: string; start_date: string; end_date: string }>,
+  ): { created: number; updated: number; softDeleted: number; unSoftDeleted: number } {
+    const now = this.now();
+
+    // Build the deterministic name for each incoming event.
+    const incoming = events.map((ev) => ({
+      name: buildPromoName(ev.program, ev.start_date, ev.end_date),
+      program: ev.program,
+      start_date: ev.start_date,
+      end_date: ev.end_date,
+    }));
+    const incomingNames = new Set(incoming.map((e) => e.name));
+
+    // Load every existing promotion row on this product, including
+    // soft-deleted ones (so we can un-soft-delete if the campaign returns).
+    const existing = db
+      .select()
+      .from(plsMilestones)
+      .where(
+        and(
+          eq(plsMilestones.productId, productId),
+          eq(plsMilestones.category, "promotion"),
+        ),
+      )
+      .all();
+
+    const byName = new Map<string, PlsMilestone>();
+    for (const row of existing) byName.set(row.name, row);
+
+    let created = 0;
+    let updated = 0;
+    let unSoftDeleted = 0;
+
+    for (const ev of incoming) {
+      const hit = byName.get(ev.name);
+      if (!hit) {
+        db.insert(plsMilestones)
+          .values({
+            productId,
+            category: "promotion",
+            name: ev.name,
+            targetDate: ev.start_date,
+            actualDate: ev.start_date,
+            isDefault: false,
+            sortOrder: 0,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .run();
+        created++;
+      } else if (hit.deletedAt) {
+        db.update(plsMilestones)
+          .set({ deletedAt: null, updatedAt: now })
+          .where(eq(plsMilestones.id, hit.id))
+          .run();
+        unSoftDeleted++;
+      } else {
+        // Row exists and is live — just bump updatedAt so operators can see
+        // that a sync touched it, no other fields need changing (name
+        // itself encodes start/end/program).
+        db.update(plsMilestones)
+          .set({ updatedAt: now })
+          .where(eq(plsMilestones.id, hit.id))
+          .run();
+        updated++;
+      }
+    }
+
+    // Soft-delete: any currently-live promotion row on this product whose
+    // name isn't in the incoming set was removed from the Promo Calendar
+    // sheet. Skip rows that are already soft-deleted (they stay dead).
+    let softDeleted = 0;
+    for (const row of existing) {
+      if (row.deletedAt) continue;
+      if (incomingNames.has(row.name)) continue;
+      db.update(plsMilestones)
+        .set({ deletedAt: now, updatedAt: now })
+        .where(eq(plsMilestones.id, row.id))
+        .run();
+      softDeleted++;
+    }
+
+    return { created, updated, softDeleted, unSoftDeleted };
   }
 
   // ─── YouTube Links ───────────────────────────────────────────────────────────

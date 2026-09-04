@@ -111,16 +111,21 @@ export function readAuthMode(): AuthMode {
 // the deploy smoke test, which reads authMode/authReady from this route).
 const EXEMPT_PATHS = new Set(["/api/auth/verify", "/api/health", "/api/config"]);
 
-// Cross-app support endpoints called by sibling Saber Suite services
-// (currently the Promo Calendar) over loopback. These are strictly
-// read-only and never leak PII — they return aggregated Steam metrics or
-// active-promo tuples keyed on Steam AppID. Whitelisted so the sibling
-// service doesn't need a human JWT session to enrich its own views.
+// Cross-app READ-ONLY support endpoints called by sibling Saber Suite
+// services (currently the Promo Calendar) over loopback. These return
+// aggregated Steam metrics or active-promo tuples keyed on Steam AppID
+// and never leak PII, so they don't need a human JWT session.
 //
-// If a new caller ever needs write access, DO NOT add it here — use the
-// OPS_TOKEN_PATHS mechanism below instead.
+// WRITE endpoints under /api/promo-support/ go through OPS_TOKEN_PATHS
+// below (must be listed by exact path AND require a valid x-ops-token
+// header). Do NOT widen this list to a prefix.
+const EXEMPT_PATHS_READ_ONLY_CROSS_APP = new Set([
+  // Promo Calendar → Steam revenue for one AppID + window
+  "/api/promo-support/steam-revenue",
+  // Promo Calendar → same, batched (many AppID+window tuples in one call)
+  "/api/promo-support/steam-revenue-batch",
+]);
 const EXEMPT_PREFIXES = [
-  "/api/promo-support/", // Promo Calendar → Steam revenue by AppID + window
   "/api/onpromo/", // SignalPulse's OWN SPA reads this too, but it is
                     // safe to expose unauthenticated: it only returns
                     // {steam_app_id → [{platform, end_date}]} tuples,
@@ -129,6 +134,7 @@ const EXEMPT_PREFIXES = [
 
 function isExempt(req: Request): boolean {
   if (EXEMPT_PATHS.has(req.path)) return true;
+  if (EXEMPT_PATHS_READ_ONLY_CROSS_APP.has(req.path)) return true;
   for (const pfx of EXEMPT_PREFIXES) {
     if (req.path.startsWith(pfx)) return true;
   }
@@ -163,6 +169,9 @@ const OPS_TOKEN_PATHS = new Set([
   "/api/ingestion/status",
   "/api/ingestion/manual-status",
   "/api/steam/session",
+  // Cross-app write from Promo Calendar: sync Steam-promo PLS milestones
+  // for one product. See server/promo-support-routes.ts.
+  "/api/promo-support/sync-steam-pls-events",
 ]);
 
 function hasValidOpsToken(req: Request): boolean {

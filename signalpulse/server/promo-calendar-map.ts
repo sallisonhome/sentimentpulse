@@ -23,7 +23,10 @@ export const STEAM_APPID_TO_PROMO_CODE: Record<number, string> = {
   // Expeditions: A MudRunner Game
   2477340: "EXPE",
   // RoadCraft
-  2698150: "ROADCRAFT",
+  // RoadCraft (verified 2026-09-04 against Steam store page + SteamDB;
+  // earlier value 2698150 was wrong and caused the On Promo badge on the
+  // SignalPulse RoadCraft PDP to silently miss its promo lookups).
+  2104890: "ROADCRAFT",
   // John Carpenter's Toxic Commando (pre-launch — AppID confirmed on Steam
   // store; update if it changes at launch).
   2157830: "TOXIC COMMANDO",
