@@ -32,6 +32,7 @@ export default function CalendarPage() {
 
   const me = useAsync(() => api.me(), []);
   const cals = useAsync(() => api.calendars(), []);
+  const liveNow = useAsync(() => api.liveNow(today), [today]);
   const nextUp = useAsync(() => api.nextUp(3, today), [today]);
   const nextMulti = useAsync(() => api.nextUpMulti(3, today), [today]);
 
@@ -51,8 +52,47 @@ export default function CalendarPage() {
   const noLiveMulti = nextMulti.data && !nextMulti.data.beats.some((b) => b.is_active);
   const nextMultiFirst = nextMulti.data?.beats[0];
 
+  const liveBeats = liveNow.data?.beats || [];
+  const liveTop = liveBeats.slice(0, 3);
+  const liveMore = Math.max(0, liveBeats.length - liveTop.length);
+
   return (
     <Shell active="calendar" crumbs={[{ label: "Promo Calendar", href: "/" }, { label: "Calendar" }]}>
+      <Section
+        title="Promos Live Now"
+        right={
+          liveNow.loading ? (
+            <span className="sub">Loading…</span>
+          ) : liveBeats.length > 0 ? (
+            <span className="sub">
+              {liveBeats.length} campaign{liveBeats.length === 1 ? "" : "s"} in flight on {todayHuman(today)} · Steam first
+              {liveMore > 0 && (
+                <>
+                  {" · "}
+                  <a href="#/live" className="link">View all {liveBeats.length} →</a>
+                </>
+              )}
+            </span>
+          ) : (
+            <span className="sub">Nothing live on {todayHuman(today)}</span>
+          )
+        }
+      >
+        {liveNow.loading ? (
+          <Skeleton height={120} count={1} />
+        ) : liveNow.error ? (
+          <ErrorBanner error={liveNow.error} />
+        ) : liveTop.length === 0 ? (
+          <div className="empty" style={{ padding: "20px 24px" }}>
+            <p>No campaigns currently in flight. Check back after the next scheduled sale window.</p>
+          </div>
+        ) : (
+          <div className="strip-grid">
+            {liveTop.map((b) => <BeatCard key={b.campaign_id} beat={b} />)}
+          </div>
+        )}
+      </Section>
+
       <Section
         title="Next Up"
         right={<span className="sub">Server-anchored on {todayHuman(today)} · next 3 beats across all platforms</span>}

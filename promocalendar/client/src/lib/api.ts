@@ -220,6 +220,12 @@ export const api = {
   nextUp: (limit = 3, today?: string) =>
     j<{ beats: Beat[] }>(`/api/${CALENDAR}/next-up${q({ limit, today })}`),
 
+  // All currently-in-flight beats (Steam-biased, soonest-ending first). No
+  // limit — the front-page section slices client-side and links to a full
+  // list route for the rest.
+  liveNow: (today?: string) =>
+    j<{ beats: Beat[] }>(`/api/${CALENDAR}/live-now${q({ today })}`),
+
   nextUpMulti: (limit = 3, today?: string, platform?: string) =>
     j<{ beats: MultiTitleBeat[] }>(
       `/api/${CALENDAR}/next-up/multi-title${q({ limit, today, platform })}`,

@@ -1,6 +1,7 @@
 import { Router, Route, Switch, useParams } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import CalendarPage from "./pages/CalendarPage";
+import LiveNowPage from "./pages/LiveNowPage";
 import TitlesPage from "./pages/TitlesPage";
 import TitleDetailPage from "./pages/TitleDetailPage";
 import { PlatformsIndex, PlatformDetail } from "./pages/PlatformsPage";
@@ -41,6 +42,7 @@ export default function App() {
       <Router hook={useHashLocation}>
         <Switch>
           <Route path="/" component={CalendarPage} />
+          <Route path="/live" component={LiveNowPage} />
           <Route path="/titles" component={TitlesPage} />
           <Route path="/titles/:code" component={TitleRoute} />
           <Route path="/platforms" component={PlatformsIndex} />

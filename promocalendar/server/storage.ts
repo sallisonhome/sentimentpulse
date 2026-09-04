@@ -513,6 +513,37 @@ export function nextUpForCalendar(
   return rows.map((r) => shapeBeat(r, today));
 }
 
+/**
+ * ALL campaigns currently in-flight (start_date <= today <= end_date). No
+ * limit — powers the "Promos Live Now" surface which shows the top few
+ * inline plus a "view all" affordance.
+ *
+ * Sort: Steam-biased first, then soonest-ending. This matches the treatment
+ * elsewhere in the app that assumes Steam is the primary revenue channel and
+ * therefore the highest-signal cards to surface when we can only show a few.
+ *   1. Steam campaigns before non-Steam.
+ *   2. Within a platform group, campaigns ending soonest come first
+ *      (max urgency — they roll off the badge soon).
+ *   3. Deterministic tiebreaker by campaign id.
+ */
+export function liveNowForCalendar(
+  calendar: CalendarId,
+  today: string,
+): NextUpBeat[] {
+  const rows = sqlite
+    .prepare(
+      `SELECT id, game_code, game_label, platform, program, start_date, end_date, max_discount_pct
+       FROM campaigns
+       WHERE calendar = ? AND start_date <= ? AND end_date >= ?
+       ORDER BY
+         CASE WHEN platform = 'Steam' THEN 0 ELSE 1 END,
+         end_date ASC,
+         id ASC`,
+    )
+    .all(calendar, today, today) as any[];
+  return rows.map((r) => shapeBeat(r, today));
+}
+
 function shapeBeat(r: any, today: string): NextUpBeat {
   const daysUntil = Math.round(
     (Date.parse(r.start_date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) /

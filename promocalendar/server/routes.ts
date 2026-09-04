@@ -19,6 +19,7 @@ import {
   listEvents,
   listGames,
   listUploads,
+  liveNowForCalendar,
   nextUpForCalendar,
   nextUpForGame,
   nextUpForPlatform,
@@ -195,6 +196,20 @@ export function registerRoutes(app: Express): void {
   });
 
   // ─── Next Up ─────────────────────────────────────────────────────────────
+  // All in-flight campaigns (start <= today <= end). Steam-biased, then
+  // soonest-ending first. Same shape as /next-up so the client can reuse
+  // BeatCard without special-casing.
+  app.get("/api/:calendar/live-now", (req, res) => {
+    const cal = requireCalendar(req, res);
+    if (!cal) return;
+    const today = serverToday((req.query.today as string) || null);
+    res.json({
+      calendar: cal,
+      today,
+      beats: liveNowForCalendar(cal, today),
+    });
+  });
+
   // All three variants take `?limit=N&today=YYYY-MM-DD`.
   // `today` is a testing/demo override; defaults to server date.
   app.get("/api/:calendar/next-up", (req, res) => {
