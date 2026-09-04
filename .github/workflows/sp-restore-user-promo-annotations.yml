@@ -1,0 +1,108 @@
+name: SignalPulse — restore user-created promotion annotations
+
+# ONE-SHOT RECOVERY workflow, 2026-09-04.
+#
+# On 2026-09-04 the initial rollout of the Promo Calendar → SignalPulse
+# PLS sync soft-deleted 206 user-created `category='promotion'` rows
+# (manual "Steam Summer Sale 2026 — Start" annotations Steve had added
+# via the PLS section's "Add Promotion" button). The sync should have
+# only touched its own sync-created rows.
+#
+# Same push that added this workflow also fixed the sync (see
+# storage.ts:isSyncOwnedPromoName). This workflow un-soft-deletes the
+# 206 orphaned user rows by clearing deleted_at on every
+# category='promotion' row whose name does NOT match the sync-owned
+# pattern.
+#
+# Idempotent — safe to re-run. Only clears rows where deleted_at IS NOT
+# NULL AND name does not match the sync-owned pattern, so it can never
+# resurrect a row a user or the sync legitimately soft-deleted later.
+#
+# workflow_dispatch only. Delete this file once the recovery is
+# confirmed successful.
+
+"on":
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Un-soft-delete user-created promotion annotations
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "bash -s" <<'REMOTEEOF'
+          set -euo pipefail
+
+          DB=/opt/sentimentpulse/signalpulse/data.db
+          if [ ! -f "$DB" ]; then
+            echo "ERR: $DB not found"
+            exit 1
+          fi
+
+          # sqlite3 GLOB uses ? for single char and * for any sequence, but
+          # for consistent behavior we use REGEXP via LIKE with the exact
+          # unicode middot separator that buildPromoName() emits.
+          # Sync-owned name pattern: "% (Steam · YYYY-MM-DD→YYYY-MM-DD)"
+          # LIKE with two 10-char wildcards matches YYYY-MM-DD dates.
+          SYNC_PATTERN='% (Steam · __________→__________)'
+
+          echo "== Preview: rows to be restored =="
+          sqlite3 "$DB" <<SQL
+          .headers on
+          .mode column
+          SELECT
+              product_id,
+              category,
+              substr(name, 1, 60) AS name_preview,
+              substr(deleted_at, 1, 19) AS deleted_at
+          FROM pls_milestones
+          WHERE category = 'promotion'
+            AND deleted_at IS NOT NULL
+            AND name NOT LIKE '${SYNC_PATTERN}' ESCAPE '\\'
+          ORDER BY product_id, name
+          LIMIT 30;
+          SQL
+
+          echo ""
+          echo "== Count of rows to restore =="
+          COUNT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM pls_milestones WHERE category='promotion' AND deleted_at IS NOT NULL AND name NOT LIKE '${SYNC_PATTERN}' ESCAPE '\\';")
+          echo "  will restore: ${COUNT} row(s)"
+
+          echo ""
+          echo "== Count of sync-owned rows we will NOT touch =="
+          SYNC_COUNT=$(sqlite3 "$DB" "SELECT COUNT(*) FROM pls_milestones WHERE category='promotion' AND name LIKE '${SYNC_PATTERN}' ESCAPE '\\';")
+          SYNC_DELETED=$(sqlite3 "$DB" "SELECT COUNT(*) FROM pls_milestones WHERE category='promotion' AND deleted_at IS NOT NULL AND name LIKE '${SYNC_PATTERN}' ESCAPE '\\';")
+          echo "  sync-owned rows total: ${SYNC_COUNT} (${SYNC_DELETED} soft-deleted)"
+
+          echo ""
+          echo "== Executing restore =="
+          sqlite3 "$DB" "UPDATE pls_milestones SET deleted_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE category='promotion' AND deleted_at IS NOT NULL AND name NOT LIKE '${SYNC_PATTERN}' ESCAPE '\\';"
+
+          echo ""
+          echo "== Post-restore counts =="
+          POST_LIVE=$(sqlite3 "$DB" "SELECT COUNT(*) FROM pls_milestones WHERE category='promotion' AND deleted_at IS NULL;")
+          POST_DELETED=$(sqlite3 "$DB" "SELECT COUNT(*) FROM pls_milestones WHERE category='promotion' AND deleted_at IS NOT NULL;")
+          POST_USER=$(sqlite3 "$DB" "SELECT COUNT(*) FROM pls_milestones WHERE category='promotion' AND deleted_at IS NULL AND name NOT LIKE '${SYNC_PATTERN}' ESCAPE '\\';")
+          POST_SYNC_LIVE=$(sqlite3 "$DB" "SELECT COUNT(*) FROM pls_milestones WHERE category='promotion' AND deleted_at IS NULL AND name LIKE '${SYNC_PATTERN}' ESCAPE '\\';")
+
+          echo "  live promotion rows total:  ${POST_LIVE}"
+          echo "    - user-created:           ${POST_USER}"
+          echo "    - sync-owned:             ${POST_SYNC_LIVE}"
+          echo "  soft-deleted rows remaining: ${POST_DELETED}"
+
+          echo ""
+          echo "== DONE =="
+          REMOTEEOF

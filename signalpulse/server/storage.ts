@@ -510,6 +510,28 @@ export function buildPromoName(
   return `${program} (Steam · ${startDate}→${endDate})`;
 }
 
+/**
+ * Recognize a PLS milestone name as one that WAS created by
+ * upsertPromoPlsMilestones() (i.e. `sync-owned`). Used to keep the sync
+ * from ever touching a user-created promotion row — e.g. a manually
+ * entered "Steam Summer Sale 2026 — Start" annotation must survive a
+ * sync that doesn't include it in the incoming set.
+ *
+ * Deliberately conservative: matches the literal ` (Steam · ` separator
+ * and the ISO-date range trailer. A future rename migration for the name
+ * format MUST update this regex in the same commit or the sync will
+ * start orphaning its own rows.
+ *
+ * Introduced 2026-09-04 after the initial rollout soft-deleted 206
+ * user-created promotion annotations. See lessons.md.
+ */
+const SYNC_OWNED_PROMO_NAME_RE =
+  / \(Steam · \d{4}-\d{2}-\d{2}→\d{4}-\d{2}-\d{2}\)$/;
+
+export function isSyncOwnedPromoName(name: string): boolean {
+  return SYNC_OWNED_PROMO_NAME_RE.test(name);
+}
+
 // ─── Storage Interface ───────────────────────────────────────────────────────────────────
 
 export interface IStorage {
@@ -1963,13 +1985,23 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    // Soft-delete: any currently-live promotion row on this product whose
-    // name isn't in the incoming set was removed from the Promo Calendar
-    // sheet. Skip rows that are already soft-deleted (they stay dead).
+    // Soft-delete: any currently-live SYNC-OWNED promotion row on this
+    // product whose name isn't in the incoming set was removed from the
+    // Promo Calendar sheet. Skip:
+    //   - rows that are already soft-deleted (they stay dead)
+    //   - rows in the incoming set (they were just handled above)
+    //   - rows whose name doesn't match the sync-owned format
+    //     (these are USER-CREATED promotion annotations — e.g. a manual
+    //     "Steam Summer Sale 2026 — Start" milestone — that the sync
+    //     never created and must never touch).
+    //
+    // Introduced 2026-09-04 after the initial rollout wiped 206 user
+    // annotations. See lessons.md.
     let softDeleted = 0;
     for (const row of existing) {
       if (row.deletedAt) continue;
       if (incomingNames.has(row.name)) continue;
+      if (!isSyncOwnedPromoName(row.name)) continue;
       db.update(plsMilestones)
         .set({ deletedAt: now, updatedAt: now })
         .where(eq(plsMilestones.id, row.id))
