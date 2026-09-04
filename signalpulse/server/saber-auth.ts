@@ -111,8 +111,27 @@ export function readAuthMode(): AuthMode {
 // the deploy smoke test, which reads authMode/authReady from this route).
 const EXEMPT_PATHS = new Set(["/api/auth/verify", "/api/health", "/api/config"]);
 
+// Cross-app support endpoints called by sibling Saber Suite services
+// (currently the Promo Calendar) over loopback. These are strictly
+// read-only and never leak PII — they return aggregated Steam metrics or
+// active-promo tuples keyed on Steam AppID. Whitelisted so the sibling
+// service doesn't need a human JWT session to enrich its own views.
+//
+// If a new caller ever needs write access, DO NOT add it here — use the
+// OPS_TOKEN_PATHS mechanism below instead.
+const EXEMPT_PREFIXES = [
+  "/api/promo-support/", // Promo Calendar → Steam revenue by AppID + window
+  "/api/onpromo/", // SignalPulse's OWN SPA reads this too, but it is
+                    // safe to expose unauthenticated: it only returns
+                    // {steam_app_id → [{platform, end_date}]} tuples,
+                    // no PII.
+];
+
 function isExempt(req: Request): boolean {
   if (EXEMPT_PATHS.has(req.path)) return true;
+  for (const pfx of EXEMPT_PREFIXES) {
+    if (req.path.startsWith(pfx)) return true;
+  }
   // Static assets, HMR, the SPA HTML shell — not our concern.
   if (!req.path.startsWith("/api/")) return true;
   return false;
