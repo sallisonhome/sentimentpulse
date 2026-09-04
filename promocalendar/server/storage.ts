@@ -510,18 +510,22 @@ export function nextUpForCalendar(
   limit: number,
   today: string,
 ): NextUpBeat[] {
+  // Next Up = STRICTLY FUTURE (start_date > today). In-flight beats belong
+  // on the Promos Live Now surface (liveNowForCalendar), not Next Up. A
+  // campaign cannot be both simultaneously — that would double-count it on
+  // the landing page and produce a live-badged card under a "Next Up" label.
+  //
+  // Changed 2026-09-04 after user flagged live-badged cards appearing in
+  // the Next Up rows. See lessons.md.
   const rows = sqlite
     .prepare(
       `SELECT id, game_code, game_label, platform, program, start_date, end_date, max_discount_pct
        FROM campaigns
-       WHERE calendar = ? AND end_date >= ?
-       ORDER BY
-         CASE WHEN start_date <= ? THEN 0 ELSE 1 END,
-         start_date ASC,
-         end_date ASC
+       WHERE calendar = ? AND start_date > ?
+       ORDER BY start_date ASC, end_date ASC, id ASC
        LIMIT ?`,
     )
-    .all(calendar, today, today, limit) as any[];
+    .all(calendar, today, limit) as any[];
   return rows.map((r) => shapeBeat(r, today));
 }
 
@@ -611,7 +615,11 @@ export function nextUpMultiTitle(
   opts: { platform?: string; minTitles?: number } = {},
 ): MultiTitleBeat[] {
   const minTitles = opts.minTitles ?? 2;
-  const clauses = ["calendar = ?", "end_date >= ?"];
+  // Next Up multi-title = STRICTLY FUTURE (start_date > today). Same reason
+  // as nextUpForCalendar above: in-flight multi-title events belong on the
+  // Promos Live Now surface, and duplicating them here produces cards
+  // labelled "Next Up" that are actually live-badged. Changed 2026-09-04.
+  const clauses = ["calendar = ?", "start_date > ?"];
   const params: any[] = [calendar, today];
   if (opts.platform) {
     clauses.push("platform = ?");
@@ -619,7 +627,6 @@ export function nextUpMultiTitle(
   }
 
   // Step 1: find qualifying (program, platform, start, end) tuples with 2+ titles.
-  // Sort using the same rule as single-title Next Up.
   const groupSql = `
     SELECT program, platform, start_date, end_date,
            COUNT(DISTINCT game_code) AS title_count,
@@ -629,15 +636,12 @@ export function nextUpMultiTitle(
     WHERE ${clauses.join(" AND ")}
     GROUP BY program, platform, start_date, end_date
     HAVING title_count >= ?
-    ORDER BY
-      CASE WHEN start_date <= ? THEN 0 ELSE 1 END,
-      start_date ASC,
-      end_date ASC
+    ORDER BY start_date ASC, end_date ASC
     LIMIT ?
   `;
   const groups = sqlite
     .prepare(groupSql)
-    .all(...params, minTitles, today, limit) as any[];
+    .all(...params, minTitles, limit) as any[];
 
   if (!groups.length) return [];
 
