@@ -9,6 +9,7 @@ import EventDetailPage from "./pages/EventDetailPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import SettingsPage from "./pages/SettingsPage";
 import { Shell } from "./components/Shell";
+import { ThemeProvider } from "./components/theme-provider";
 
 function TitleRoute() {
   const { code } = useParams<{ code: string }>();
@@ -36,19 +37,21 @@ function NotFound() {
 
 export default function App() {
   return (
-    <Router hook={useHashLocation}>
-      <Switch>
-        <Route path="/" component={CalendarPage} />
-        <Route path="/titles" component={TitlesPage} />
-        <Route path="/titles/:code" component={TitleRoute} />
-        <Route path="/platforms" component={PlatformsIndex} />
-        <Route path="/platforms/:platform" component={PlatformRoute} />
-        <Route path="/events" component={EventsPage} />
-        <Route path="/events/:key" component={EventRoute} />
-        <Route path="/analytics" component={AnalyticsPage} />
-        <Route path="/settings" component={SettingsPage} />
-        <Route component={NotFound} />
-      </Switch>
-    </Router>
+    <ThemeProvider>
+      <Router hook={useHashLocation}>
+        <Switch>
+          <Route path="/" component={CalendarPage} />
+          <Route path="/titles" component={TitlesPage} />
+          <Route path="/titles/:code" component={TitleRoute} />
+          <Route path="/platforms" component={PlatformsIndex} />
+          <Route path="/platforms/:platform" component={PlatformRoute} />
+          <Route path="/events" component={EventsPage} />
+          <Route path="/events/:key" component={EventRoute} />
+          <Route path="/analytics" component={AnalyticsPage} />
+          <Route path="/settings" component={SettingsPage} />
+          <Route component={NotFound} />
+        </Switch>
+      </Router>
+    </ThemeProvider>
   );
 }

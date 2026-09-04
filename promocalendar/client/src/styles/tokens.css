@@ -33,8 +33,39 @@
   color-scheme: dark;
 }
 
+/*
+ * Light mode. Precedence:
+ *   html.light  — explicit user choice (via ThemeProvider / suite_theme).
+ *   html.dark   — explicit dark; overrides prefers-color-scheme.
+ *   otherwise   — follow prefers-color-scheme system pref.
+ * Class rules come FIRST because they need to beat the media-query block.
+ */
+html.light {
+  --bg: #f7f7fa;
+  --surface: #ffffff;
+  --surface-2: #f2f3f7;
+  --surface-hover: #e9ebf2;
+  --border: #dfe2ec;
+  --border-strong: #c8ccdb;
+  --border-hover: #6366f1;
+  --text: #16181f;
+  --text-muted: #5b6072;
+  --text-dim: #8a8fa3;
+  --primary: #4f46e5;
+  --primary-hover: #6366f1;
+  --primary-glow: rgba(99,102,241,0.10);
+  --live: #dc2626;
+  --live-glow: rgba(220,38,38,0.10);
+  --steam: #0891b2;
+  --ms: #059669;
+  --sony: #7c3aed;
+  --ok: #059669;
+  --warn: #b45309;
+  color-scheme: light;
+}
+
 @media (prefers-color-scheme: light) {
-  :root {
+  html:not(.dark):not(.light) {
     --bg: #f7f7fa;
     --surface: #ffffff;
     --surface-2: #f2f3f7;
@@ -143,6 +174,15 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .top-right .today { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; }
 .top-right .today em { color: var(--primary); font-style: normal; font-weight: 600; }
 .avatar { width: 28px; height: 28px; border-radius: 50%; background: var(--surface-hover); display: grid; place-items: center; font-size: 11px; font-weight: 700; color: var(--text); }
+.theme-toggle {
+  width: 28px; height: 28px; border-radius: 8px;
+  display: grid; place-items: center;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--text-muted); cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.theme-toggle:hover { background: var(--surface-hover); color: var(--text); border-color: var(--border-strong); }
+.theme-toggle svg { width: 15px; height: 15px; }
 
 /* Primitives */
 .chip {
@@ -750,9 +790,37 @@ table.term td .microbar span { display: block; height: 100%; background: linear-
 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
 
-/* ─── Light mode ─── */
+/* ─── Light mode overrides (class-first, then system fallback) ─── */
+html.light {
+  --bg: #f5f6f9;
+  --surface: #ffffff;
+  --surface-2: #eef0f5;
+  --surface-hover: #e8ebf2;
+  --border: #dfe2ea;
+  --border-strong: #c9cddb;
+  --text: #1a1c22;
+  --text-muted: #5b607a;
+  --text-dim: #8b90a5;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-glow: rgba(79,70,229,0.08);
+  --live: #dc2626;
+}
+html.light .chip.plat-steam { color: #0891b2; }
+html.light .chip.plat-ms    { color: #047857; }
+html.light .chip.plat-sony  { color: #6d28d9; }
+html.light .chip.live       { color: #b91c1c; }
+html.light .day-chip.plat-steam { color: #0e7490; }
+html.light .day-chip.plat-ms    { color: #065f46; }
+html.light .day-chip.plat-sony  { color: #5b21b6; }
+html.light table.term tr.live td { background: rgba(220,38,38,0.05); }
+html.light .live-pill { color: #991b1b; }
+html.light .live-pill .max { color: #7f1d1d; }
+html.light .pdp-card td .pctc { color: #dc2626; }
+html.light .bar { color: white; }
+
 @media (prefers-color-scheme: light) {
-  :root {
+  html:not(.dark):not(.light) {
     --bg: #f5f6f9;
     --surface: #ffffff;
     --surface-2: #eef0f5;
@@ -767,16 +835,16 @@ table.term td .microbar span { display: block; height: 100%; background: linear-
     --primary-glow: rgba(79,70,229,0.08);
     --live: #dc2626;
   }
-  .chip.plat-steam { color: #0891b2; }
-  .chip.plat-ms    { color: #047857; }
-  .chip.plat-sony  { color: #6d28d9; }
-  .chip.live       { color: #b91c1c; }
-  .day-chip.plat-steam { color: #0e7490; }
-  .day-chip.plat-ms    { color: #065f46; }
-  .day-chip.plat-sony  { color: #5b21b6; }
-  table.term tr.live td { background: rgba(220,38,38,0.05); }
-  .live-pill { color: #991b1b; }
-  .live-pill .max { color: #7f1d1d; }
-  .pdp-card td .pctc { color: #dc2626; }
-  .bar { color: white; }
+  html:not(.dark):not(.light) .chip.plat-steam { color: #0891b2; }
+  html:not(.dark):not(.light) .chip.plat-ms    { color: #047857; }
+  html:not(.dark):not(.light) .chip.plat-sony  { color: #6d28d9; }
+  html:not(.dark):not(.light) .chip.live       { color: #b91c1c; }
+  html:not(.dark):not(.light) .day-chip.plat-steam { color: #0e7490; }
+  html:not(.dark):not(.light) .day-chip.plat-ms    { color: #065f46; }
+  html:not(.dark):not(.light) .day-chip.plat-sony  { color: #5b21b6; }
+  html:not(.dark):not(.light) table.term tr.live td { background: rgba(220,38,38,0.05); }
+  html:not(.dark):not(.light) .live-pill { color: #991b1b; }
+  html:not(.dark):not(.light) .live-pill .max { color: #7f1d1d; }
+  html:not(.dark):not(.light) .pdp-card td .pctc { color: #dc2626; }
+  html:not(.dark):not(.light) .bar { color: white; }
 }

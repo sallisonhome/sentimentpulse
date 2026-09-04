@@ -5,6 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark light" />
     <title>Promo Calendar — Saber Suite</title>
+    <script>
+      // Set html.light / html.dark synchronously to prevent flash-of-wrong-theme
+      // before React mounts. Reads the same suite_theme key SignalPulse and
+      // SentimentPulse use so the whole suite stays in sync.
+      (function () {
+        try {
+          var saved = localStorage.getItem("suite_theme");
+          var theme;
+          if (saved === "light" || saved === "dark") {
+            theme = saved;
+          } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            theme = "dark";
+          } else {
+            theme = "light";
+          }
+          document.documentElement.classList.add(theme);
+        } catch (e) {}
+      })();
+    </script>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='2'%3E%3Crect x='3' y='4' width='18' height='17' rx='2'/%3E%3Cpath d='M3 10h18M8 2v4M16 2v4'/%3E%3C/svg%3E" />
   </head>
   <body>
