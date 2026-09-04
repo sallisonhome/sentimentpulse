@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Shell } from "../components/Shell";
 import { api } from "../lib/api";
 import { useAsync, usePersistedState } from "../lib/hooks";
@@ -37,15 +37,47 @@ export default function CalendarPage() {
   // Timeline window — defaults to 6 months centered on today. The Gantt
   // spans every campaign back to 2022 by default, which produces an
   // unreadably dense bar strip; this control lets the user narrow to
-  // 6/9/12mo presets or set custom bounds. Persisted so returns to the
-  // page remember the choice.
-  const [tlRange, setTlRange] = usePersistedState<TimelineRange>(
-    "promocal.timeline.range",
-    (() => {
+  // 6/9/12mo presets or set custom bounds. Persisted directly via
+  // localStorage since usePersistedState only supports string values.
+  const [tlRange, setTlRange] = useState<TimelineRange>(() => {
+    const fallback = (() => {
       const r = rangeForPreset("6mo", today);
-      return { preset: "6mo", start: r.start, end: r.end } as TimelineRange;
-    })(),
-  );
+      return { preset: "6mo" as const, start: r.start, end: r.end };
+    })();
+    if (typeof window === "undefined") return fallback;
+    try {
+      const raw = window.localStorage.getItem("promocal.timeline.range");
+      if (!raw) return fallback;
+      const parsed = JSON.parse(raw) as TimelineRange;
+      if (
+        parsed &&
+        typeof parsed.preset === "string" &&
+        typeof parsed.start === "string" &&
+        typeof parsed.end === "string"
+      ) {
+        // Preset windows are anchored on today — recompute so a stored
+        // '6mo' from yesterday still snaps to today's window on load.
+        if (parsed.preset !== "custom") {
+          const r = rangeForPreset(parsed.preset, today);
+          return { preset: parsed.preset, start: r.start, end: r.end };
+        }
+        return parsed;
+      }
+      return fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        "promocal.timeline.range",
+        JSON.stringify(tlRange),
+      );
+    } catch {
+      /* quota / private mode */
+    }
+  }, [tlRange]);
 
   const me = useAsync(() => api.me(), []);
   const cals = useAsync(() => api.calendars(), []);
