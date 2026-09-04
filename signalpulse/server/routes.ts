@@ -26,6 +26,7 @@ import { getHeldDigestWeek, getHeldDigestMissing } from "./leaderboard-digest-we
 import express from "express";
 import { handleResendInboundWebhook, sendReply, forwardToPersonalInbox } from "./inbound-email";
 import { registerOnPromoRoutes } from "./on-promo-routes";
+import { registerPromoSupportRoutes } from "./promo-support-routes";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -113,6 +114,11 @@ export async function registerRoutes(
   // returns [] on any upstream failure so an outage never breaks a
   // SignalPulse page).
   registerOnPromoRoutes(app);
+
+  // Cross-app support endpoints for Promo Calendar (reverse direction of
+  // the On-Promo badge): Promo Calendar queries these to enrich its own
+  // cards with Steam revenue during in-flight windows.
+  registerPromoSupportRoutes(app);
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
 

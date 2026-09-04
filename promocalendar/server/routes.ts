@@ -29,6 +29,8 @@ import {
 } from "./storage.js";
 import { CALENDARS, CALENDAR_LABELS, type CalendarId } from "../shared/schema.js";
 import { callerEmail, isUploaderReq, requireUploader } from "./auth.js";
+import { steamAppIdForCode } from "./signalpulse-map.js";
+import { getSteamRevenueForWindow } from "./signalpulse-client.js";
 
 // Excel files can be big. 20 MB ceiling.
 const upload = multer({
@@ -197,16 +199,52 @@ export function registerRoutes(app: Express): void {
 
   // ─── Next Up ─────────────────────────────────────────────────────────────
   // All in-flight campaigns (start <= today <= end). Steam-biased, then
-  // soonest-ending first. Same shape as /next-up so the client can reuse
-  // BeatCard without special-casing.
-  app.get("/api/:calendar/live-now", (req, res) => {
+  // soonest-ending first. Same shape as /next-up plus optional Steam
+  // revenue enrichment for Steam beats — sums net/gross USD from beat
+  // start_date through today via SignalPulse's steam-revenue endpoint.
+  //
+  // Never fails the request on SignalPulse errors: on failure the extra
+  // fields are simply omitted so the client falls back to "—".
+  app.get("/api/:calendar/live-now", async (req, res) => {
     const cal = requireCalendar(req, res);
     if (!cal) return;
     const today = serverToday((req.query.today as string) || null);
+    const beats = liveNowForCalendar(cal, today);
+
+    // Enrich Steam beats in parallel (bounded by number of concurrent live
+    // beats — realistically <20; signalpulse-client also caches 60s so a
+    // rapid page refresh doesn't hammer the backend).
+    const enriched = await Promise.all(
+      beats.map(async (b) => {
+        if (b.platform !== "Steam") return b;
+        const appid = steamAppIdForCode(b.game_code);
+        if (!appid) return b;
+        try {
+          const rev = await getSteamRevenueForWindow(
+            appid,
+            b.start_date,
+            today,
+          );
+          if (!rev) return b;
+          return {
+            ...b,
+            steam_current_net_revenue_usd: rev.net_revenue_usd,
+            steam_current_gross_revenue_usd: rev.gross_revenue_usd,
+            steam_current_days_covered: rev.days_covered,
+          };
+        } catch {
+          // Belt-and-suspenders: signalpulse-client already swallows
+          // errors, but be defensive here so one bad response never
+          // takes down the /live-now response.
+          return b;
+        }
+      }),
+    );
+
     res.json({
       calendar: cal,
       today,
-      beats: liveNowForCalendar(cal, today),
+      beats: enriched,
     });
   });
 

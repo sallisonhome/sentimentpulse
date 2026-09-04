@@ -211,6 +211,26 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 }
 .chip.game { font-weight: 600; color: var(--text); }
 .chip.discount { font-variant-numeric: tabular-nums; }
+.chip.steam-rev {
+  color: #6ee7b7;
+  background: rgba(16,185,129,0.10);
+  border-color: rgba(16,185,129,0.35);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  gap: 4px;
+}
+.chip.steam-rev .steam-rev-label {
+  font-size: 10px; font-weight: 500;
+  color: rgba(110,231,183,0.75);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+html.light .chip.steam-rev {
+  color: #047857;
+  background: rgba(5,150,105,0.08);
+  border-color: rgba(5,150,105,0.3);
+}
+html.light .chip.steam-rev .steam-rev-label { color: rgba(4,120,87,0.75); }
 
 .pct { font-variant-numeric: tabular-nums; font-weight: 700; letter-spacing: -0.01em; }
 .pct.xl { font-size: 26px; color: var(--text); }

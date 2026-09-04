@@ -435,6 +435,18 @@ export interface NextUpBeat {
   max_discount_pct: number;
   days_until_start: number; // negative if in-flight
   is_active: boolean; // start_date <= today <= end_date
+  // Optional Steam revenue enrichment (only populated for in-flight Steam
+  // beats where SignalPulse has data). Sums net + gross revenue from
+  // start_date through today (server-anchored) so the number matches what
+  // shows up on SignalPulse's Steam Revenue Leaderboard cumulatively.
+  //
+  // null when SignalPulse is unreachable / has no rows yet / not a Steam
+  // beat. Callers must render "—" or hide the chip in that case, never
+  // display $0 unless days_covered > 0 confirms there really are zero
+  // sales in the window.
+  steam_current_net_revenue_usd?: number | null;
+  steam_current_gross_revenue_usd?: number | null;
+  steam_current_days_covered?: number | null;
 }
 
 /**

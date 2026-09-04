@@ -76,6 +76,15 @@ export interface Beat {
   max_discount_pct: number;
   days_until_start: number;
   is_active: boolean;
+  // Optional Steam revenue enrichment — only present when the beat is a
+  // currently in-flight Steam campaign AND SignalPulse has rows in the
+  // window. `days_covered = 0` means SignalPulse knows about the title
+  // but the sales pipeline hasn't reported any rows yet; render "—" in
+  // that case rather than "$0.00" so a data lag never looks like zero
+  // performance.
+  steam_current_net_revenue_usd?: number | null;
+  steam_current_gross_revenue_usd?: number | null;
+  steam_current_days_covered?: number | null;
 }
 
 export interface MultiTitleBeat {
