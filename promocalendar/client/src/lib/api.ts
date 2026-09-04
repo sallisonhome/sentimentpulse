@@ -85,6 +85,16 @@ export interface Beat {
   steam_current_net_revenue_usd?: number | null;
   steam_current_gross_revenue_usd?: number | null;
   steam_current_days_covered?: number | null;
+  // The base-game SKU (content_name == game_label) if the sheet had one.
+  // Cards render strike-through SRP + promo price + exact discount when
+  // present, and fall back to "up to {max_discount_pct}%" when null
+  // (DLC-only sales like Countdown Add-on Sale, etc.).
+  primary_sku?: {
+    content_name: string;
+    current_srp_usd: number;
+    promo_srp_usd: number;
+    discount_pct: number;
+  } | null;
 }
 
 export interface MultiTitleBeat {

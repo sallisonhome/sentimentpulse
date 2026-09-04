@@ -447,6 +447,21 @@ export interface NextUpBeat {
   steam_current_net_revenue_usd?: number | null;
   steam_current_gross_revenue_usd?: number | null;
   steam_current_days_covered?: number | null;
+  // The BASE-GAME SKU on this campaign, if the sheet had one. Detection
+  // rule: SKU whose content_name exactly equals the campaign's game_label.
+  // Cards use this to show real prices (strike-through SRP + promo price +
+  // exact discount) instead of the vaguer "up to X%".
+  //
+  // null when the sale is DLC-only (e.g. "Add-on Sale" campaigns where
+  // every SKU is a pack or season pass and no SKU matches the base game).
+  // Callers must fall back to the "up to {max_discount_pct}%" framing in
+  // that case, per the 2026-09-04 rule.
+  primary_sku?: {
+    content_name: string;
+    current_srp_usd: number;
+    promo_srp_usd: number;
+    discount_pct: number;
+  } | null;
 }
 
 /**
@@ -476,7 +491,7 @@ export function nextUpForGame(
        LIMIT ?`,
     )
     .all(calendar, game_code, today, limit) as any[];
-  return rows.map((r) => shapeBeat(r, today));
+  return shapeBeatsWithPrimarySku(rows, today);
 }
 
 /**
@@ -501,7 +516,7 @@ export function nextUpForPlatform(
        LIMIT ?`,
     )
     .all(calendar, platform, today, limit) as any[];
-  return rows.map((r) => shapeBeat(r, today));
+  return shapeBeatsWithPrimarySku(rows, today);
 }
 
 /**
@@ -529,7 +544,7 @@ export function nextUpForCalendar(
        LIMIT ?`,
     )
     .all(calendar, today, limit) as any[];
-  return rows.map((r) => shapeBeat(r, today));
+  return shapeBeatsWithPrimarySku(rows, today);
 }
 
 /**
@@ -560,7 +575,7 @@ export function liveNowForCalendar(
          id ASC`,
     )
     .all(calendar, today, today) as any[];
-  return rows.map((r) => shapeBeat(r, today));
+  return shapeBeatsWithPrimarySku(rows, today);
 }
 
 /**
@@ -589,10 +604,79 @@ export function liveNowForGame(
          id ASC`,
     )
     .all(calendar, game_code, today, today) as any[];
-  return rows.map((r) => shapeBeat(r, today));
+  return shapeBeatsWithPrimarySku(rows, today);
 }
 
-function shapeBeat(r: any, today: string): NextUpBeat {
+/**
+ * Look up the base-game SKU (content_name == game_label) for a batch of
+ * campaign IDs in ONE query. Returns a Map<campaign_id, sku|null>.
+ * Callers hand the map to shapeBeat() so per-card price display doesn't
+ * fan out to N follow-up queries. Uses ROW_NUMBER over (discount_pct DESC,
+ * id ASC) so if a base-game SKU appears twice on the same campaign
+ * (unlikely but harmless) we keep the higher-discount row.
+ *
+ * A campaign missing an exact-match base-game SKU (DLC-only "Add-on Sale"
+ * etc.) simply has no entry in the map; callers treat that as null and
+ * fall back to the vaguer "up to X%" framing on the card.
+ *
+ * Added 2026-09-04 for the strike-through price treatment on per-title
+ * beat cards.
+ */
+function fetchPrimarySkusForCampaigns(
+  campaignIds: number[],
+): Map<number, {
+  content_name: string;
+  current_srp_usd: number;
+  promo_srp_usd: number;
+  discount_pct: number;
+} | null> {
+  const out = new Map();
+  if (!campaignIds.length) return out;
+  const placeholders = campaignIds.map(() => "?").join(",");
+  const rows = sqlite
+    .prepare(
+      `SELECT s.campaign_id,
+              s.content_name,
+              s.current_srp_usd,
+              s.promo_srp_usd,
+              s.discount_pct,
+              c.game_label
+         FROM skus s
+         JOIN campaigns c ON c.id = s.campaign_id
+        WHERE s.campaign_id IN (${placeholders})
+          AND s.content_name = c.game_label
+          AND s.current_srp_usd IS NOT NULL
+          AND s.promo_srp_usd IS NOT NULL`,
+    )
+    .all(...campaignIds) as any[];
+  // Multiple rows per campaign_id are possible if a sheet has dupes; keep
+  // the highest discount as tiebreaker.
+  for (const r of rows) {
+    const prev = out.get(r.campaign_id);
+    if (!prev || r.discount_pct > prev.discount_pct) {
+      out.set(r.campaign_id, {
+        content_name: r.content_name,
+        current_srp_usd: r.current_srp_usd,
+        promo_srp_usd: r.promo_srp_usd,
+        discount_pct: r.discount_pct,
+      });
+    }
+  }
+  return out;
+}
+
+function shapeBeat(
+  r: any,
+  today: string,
+  primarySku?:
+    | {
+        content_name: string;
+        current_srp_usd: number;
+        promo_srp_usd: number;
+        discount_pct: number;
+      }
+    | null,
+): NextUpBeat {
   const daysUntil = Math.round(
     (Date.parse(r.start_date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) /
       86400000,
@@ -608,7 +692,20 @@ function shapeBeat(r: any, today: string): NextUpBeat {
     max_discount_pct: r.max_discount_pct,
     days_until_start: daysUntil,
     is_active: r.start_date <= today && r.end_date >= today,
+    primary_sku: primarySku ?? null,
   };
+}
+
+/**
+ * Apply base-game-SKU enrichment to a batch of raw campaign rows and
+ * shape them into NextUpBeat[]. Every caller that returned NextUpBeats
+ * from a rows list is a candidate; we ran one JOIN per row before, now
+ * ONE JOIN for the whole batch.
+ */
+function shapeBeatsWithPrimarySku(rows: any[], today: string): NextUpBeat[] {
+  const ids = rows.map((r) => r.id);
+  const skuMap = fetchPrimarySkusForCampaigns(ids);
+  return rows.map((r) => shapeBeat(r, today, skuMap.get(r.id) ?? null));
 }
 
 // ─── Next Up: Multi-Title Promos ─────────────────────────────────────────────

@@ -11,10 +11,7 @@ export function BeatCard({ beat }: { beat: Beat }) {
           <div className="title">{beat.game_label}</div>
           <div className="meta">{beat.program}</div>
         </div>
-        <div className="disc">
-          {pct(beat.max_discount_pct)}
-          <small>up to</small>
-        </div>
+        <BeatPriceBlock beat={beat} />
       </div>
       <div className="chips">
         <PlatformChip platform={beat.platform} />
@@ -24,6 +21,55 @@ export function BeatCard({ beat }: { beat: Beat }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Per-title price block on the right side of a BeatCard.
+ *
+ * When the campaign has a base-game SKU (server-detected via
+ * primary_sku), we show the real prices from the sheet:
+ *   $59.99  (strike, muted)
+ *   $17.99  (prominent, accent color)
+ *   −70%   (small chip)
+ *
+ * When the campaign is DLC-only (no base-game SKU), we keep the older
+ * "up to X%" framing since there is no single price that represents
+ * the sale. Group / multi-title cards keep the "up to" framing always;
+ * see MultiBeatCard below.
+ *
+ * Added 2026-09-04 per user request — the plain "70% up to" number was
+ * abstract; a strike-through SRP + real promo price ties the sale to a
+ * concrete dollar amount the reader can act on.
+ */
+function BeatPriceBlock({ beat }: { beat: Beat }) {
+  const sku = beat.primary_sku;
+  if (!sku) {
+    return (
+      <div className="disc">
+        {pct(beat.max_discount_pct)}
+        <small>up to</small>
+      </div>
+    );
+  }
+  const off = Math.round(sku.discount_pct * 100);
+  return (
+    <div className="disc price" title={`Base game: ${sku.content_name}`}>
+      <div className="price-was">{fmtUsdPrice(sku.current_srp_usd)}</div>
+      <div className="price-now">{fmtUsdPrice(sku.promo_srp_usd)}</div>
+      <div className="price-off">−{off}%</div>
+    </div>
+  );
+}
+
+/**
+ * USD price with 2 decimals unless the trailing digits are all zeros
+ * (e.g. $17.997 → $17.99 truncated; $60.00 → $60). Sheet data occasionally
+ * has 4-decimal artefacts from Excel rounding — truncate at 2.
+ */
+function fmtUsdPrice(n: number): string {
+  const rounded = Math.round(n * 100) / 100;
+  if (Number.isInteger(rounded)) return `$${rounded}`;
+  return `$${rounded.toFixed(2)}`;
 }
 
 /**
