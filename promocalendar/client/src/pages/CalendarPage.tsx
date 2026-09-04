@@ -6,6 +6,11 @@ import { getToday } from "../lib/today";
 import { BeatCard, MultiBeatCard } from "../components/BeatCard";
 import { MonthGrid } from "../components/MonthGrid";
 import { Gantt } from "../components/Gantt";
+import {
+  TimelineRangeControl,
+  rangeForPreset,
+  type TimelineRange,
+} from "../components/TimelineRangeControl";
 import { Section, Skeleton, ErrorBanner, EmptyNoUpload, SegToggle } from "../components/misc";
 import { todayHuman } from "../lib/today";
 import { PlatformChip } from "../components/chips";
@@ -29,6 +34,18 @@ export default function CalendarPage() {
     const [y, m] = today.split("-").map(Number);
     return { y, m };
   });
+  // Timeline window — defaults to 6 months centered on today. The Gantt
+  // spans every campaign back to 2022 by default, which produces an
+  // unreadably dense bar strip; this control lets the user narrow to
+  // 6/9/12mo presets or set custom bounds. Persisted so returns to the
+  // page remember the choice.
+  const [tlRange, setTlRange] = usePersistedState<TimelineRange>(
+    "promocal.timeline.range",
+    (() => {
+      const r = rangeForPreset("6mo", today);
+      return { preset: "6mo", start: r.start, end: r.end } as TimelineRange;
+    })(),
+  );
 
   const me = useAsync(() => api.me(), []);
   const cals = useAsync(() => api.calendars(), []);
@@ -39,6 +56,16 @@ export default function CalendarPage() {
   // Grid month events (fetch a broad live+upcoming window)
   const evs = useAsync(() => api.events({ when: "all", today }), [today]);
   const monthEvents = useMemo(() => (evs.data?.events || []), [evs.data]);
+  // Timeline-scoped subset: any event overlapping [tlRange.start, tlRange.end].
+  // Filtering happens client-side because the events endpoint already returns
+  // everything and we don't want a second network roundtrip on preset changes.
+  const timelineEvents = useMemo(() => {
+    if (!monthEvents.length) return monthEvents;
+    const { start, end } = tlRange;
+    return monthEvents.filter(
+      (e) => e.end_date >= start && e.start_date <= end,
+    );
+  }, [monthEvents, tlRange]);
 
   const activeUpload = cals.data?.calendars.find((c) => c.id === "saber")?.active_upload;
   if (cals.data && !activeUpload) {
@@ -137,6 +164,20 @@ export default function CalendarPage() {
         />
       </div>
 
+      {view === "timeline" && !evs.loading && !evs.error && (
+        <div className="timeline-header">
+          <TimelineRangeControl
+            value={tlRange}
+            today={today}
+            onChange={setTlRange}
+          />
+          <div className="timeline-caption">
+            {timelineEvents.length} of {monthEvents.length} events ·{" "}
+            {tlRange.start} → {tlRange.end}
+          </div>
+        </div>
+      )}
+
       {evs.loading ? (
         <Skeleton height={400} />
       ) : evs.error ? (
@@ -160,7 +201,7 @@ export default function CalendarPage() {
           }}
         />
       ) : (
-        <Gantt events={monthEvents} today={today} games={GAMES} />
+        <Gantt events={timelineEvents} today={today} games={GAMES} />
       )}
 
       {view === "grid" && monthEvents.length > 0 && (
