@@ -49,8 +49,6 @@ export default function CalendarPage() {
     );
   }
 
-  const noLiveMulti = nextMulti.data && !nextMulti.data.beats.some((b) => b.is_active);
-  const nextMultiFirst = nextMulti.data?.beats[0];
 
   const liveBeats = liveNow.data?.beats || [];
   const liveTop = liveBeats.slice(0, 3);
@@ -121,18 +119,9 @@ export default function CalendarPage() {
             <p>No multi-title events on the calendar right now.</p>
           </div>
         ) : (
-          <>
-            {noLiveMulti && nextMultiFirst && (
-              <div className="top-live-strip">
-                <span className="chip" style={{ background: "var(--surface-2)" }}>
-                  No live multi-title promos right now — next is <strong style={{ color: "var(--text)", marginLeft: 4 }}>{nextMultiFirst.program}</strong> in {nextMultiFirst.days_until_start} days
-                </span>
-              </div>
-            )}
-            <div className="strip-grid">
-              {nextMulti.data.beats.map((b) => <MultiBeatCard key={b.event_key} beat={b} />)}
-            </div>
-          </>
+          <div className="strip-grid">
+            {nextMulti.data.beats.map((b) => <MultiBeatCard key={b.event_key} beat={b} />)}
+          </div>
         )}
       </Section>
 
