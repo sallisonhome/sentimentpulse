@@ -1,0 +1,101 @@
+name: Promo Calendar — seed initial fixture
+
+# One-shot seeder: uploads the committed test fixture
+# (promocalendar/scripts/fixtures/Promo-Schedule-Saber.xlsx) into the
+# live Promo Calendar on the droplet, so the app has real data on first
+# open. Runs via workflow_dispatch only.
+#
+# Once you upload the actual current-quarter sheet through the Settings
+# page in the UI, this workflow is no longer needed (a new upload
+# supersedes older ones via the calendar's active-upload pointer).
+
+"on":
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Upload fixture via loopback (bypasses saber-auth)
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "bash -s" <<'REMOTEEOF'
+          set -euo pipefail
+
+          APP_DIR=/opt/sentimentpulse/promocalendar
+          FIXTURE="${APP_DIR}/scripts/fixtures/Promo-Schedule-Saber.xlsx"
+
+          if [ ! -f "$FIXTURE" ]; then
+            echo "ERR: fixture not present at $FIXTURE"
+            exit 1
+          fi
+
+          echo "== Fixture size =="
+          ls -la "$FIXTURE"
+
+          echo ""
+          echo "== Existing calendar state before upload =="
+          curl -sS --max-time 6 http://127.0.0.1:5003/api/calendars | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          for c in d.get('calendars', []):
+              au = c.get('active_upload')
+              if au:
+                  print(f\"  {c['id']}: {au.get('campaigns_count')} campaigns, uploaded {au.get('uploaded_at')}\")
+              else:
+                  print(f\"  {c['id']}: NO active upload\")
+          "
+
+          echo ""
+          echo "== Uploading fixture as allison@saber3d.com =="
+          RESP=$(curl -sS --max-time 60 \
+            -X POST \
+            -H "X-Saber-User: allison@saber3d.com" \
+            -F "file=@${FIXTURE}" \
+            http://127.0.0.1:5003/api/saber/upload)
+          echo "$RESP" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          u = d.get('upload', {})
+          print(f\"upload id: {u.get('id')}\")
+          print(f\"campaigns: {u.get('campaigns_count')}\")
+          print(f\"events (sku lines): {u.get('events_count')}\")
+          w = u.get('parse_warnings', [])
+          print(f\"parse warnings: {len(w)}\")
+          "
+
+          echo ""
+          echo "== Calendar state after upload =="
+          curl -sS --max-time 6 http://127.0.0.1:5003/api/calendars | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          for c in d.get('calendars', []):
+              au = c.get('active_upload')
+              if au:
+                  print(f\"  {c['id']}: {au.get('campaigns_count')} campaigns, {au.get('events_count')} sku lines, uploaded {au.get('uploaded_at')}\")
+          "
+
+          echo ""
+          echo "== Next Up multi-title (top 3) =="
+          curl -sS --max-time 6 http://127.0.0.1:5003/api/saber/next-up/multi-title | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          for e in d.get('events', [])[:3]:
+              print(f\"  {e.get('program')} on {e.get('platform')}: {len(e.get('titles', []))} titles, {e.get('start_date')} -> {e.get('end_date')}\")
+          "
+
+          echo ""
+          echo "== DONE =="
+          REMOTEEOF
