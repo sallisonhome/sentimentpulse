@@ -644,8 +644,15 @@ function fetchPrimarySkusForCampaigns(
   //                                     "Insurgency Sandstorm")
   //   Convention D  "<game_label> Base Game" (Expeditions sheet)
   //   Convention E  literal "Base Game" row (Toxic Commando sheet)
+  //   Convention F  full commercial title (Sony/Xbox often use e.g.
+  //                 "Expeditions: A MudRunner Game" vs game_label
+  //                 "Expeditions"). Fuzzy: normalized content_name
+  //                 STARTS WITH normalized game_label followed by a
+  //                 word boundary, and does NOT contain any of the
+  //                 DLC keywords below. Picked as the LOWEST rank so
+  //                 it only wins when no cleaner convention matched.
   //
-  // Priority: A > B > C > D > E. Only one of these is picked per
+  // Priority: A > B > C > D > E > F. Only one of these is picked per
   // campaign; ties inside a rank fall to the higher-discount row.
   const rows = sqlite
     .prepare(
@@ -666,6 +673,70 @@ function fetchPrimarySkusForCampaigns(
   const norm = (s: string) =>
     s.toLowerCase().replace(/[:,\-]/g, " ").replace(/\s+/g, " ").trim();
 
+  // DLC / edition / bundle keywords that disqualify a SKU from being a
+  // fuzzy Convention-F base-game match. Order matters only for grep-ability;
+  // matched as any-of.
+  //
+  // Deliberately conservative:
+  //   "Base Game" is NOT here — we WANT "<title> Base Game" to still match
+  //     the full-title prefix rule; that would already be caught as rank D
+  //     when the game_label happens to be the short form, but on sheets
+  //     that use only the full commercial title (Sony EXPE) the D rule
+  //     doesn't apply and F is the safety net.
+  //   "Bundle" IS here — a bundle isn't the base game.
+  const DLC_TOKENS = [
+    "season pass",
+    "year pass",
+    "year 1 pass",
+    "year 2 pass",
+    "season 1",
+    "season 2",
+    "season 3",
+    "anniversary",
+    "anniversary edition",
+    "ultra edition",
+    "supreme edition",
+    "deluxe edition",
+    "gold edition",
+    "complete edition",
+    "legendary edition",
+    "cosmetic pack",
+    "chapter pack",
+    "champion pack",
+    "dlc",
+    "bundle",
+    "year pass",
+    "season pass",
+    "battle pass",
+    "cosmetic",
+    "add on",
+    "add-on",
+    "addon",
+    "expansion",
+  ];
+
+  const looksLikeDlc = (cnL: string): boolean => {
+    for (const tok of DLC_TOKENS) {
+      if (cnL.includes(tok)) return true;
+    }
+    return false;
+  };
+
+  // Convention-F test: normalized content_name starts with normalized
+  // game_label followed by a word boundary, and the SKU doesn't look like
+  // DLC. Word-boundary check prevents 'Insurgency' from matching
+  // 'Insurgencyverse Deluxe' etc.; requires the char after the prefix to
+  // be whitespace or end-of-string.
+  const isFullTitlePrefix = (cnL: string, glL: string): boolean => {
+    const cnN = norm(cnL);
+    const glN = norm(glL);
+    if (cnN.length <= glN.length) return false;
+    if (!cnN.startsWith(glN)) return false;
+    const boundary = cnN.charAt(glN.length);
+    if (boundary !== " ") return false;
+    return !looksLikeDlc(cnL);
+  };
+
   // Per-campaign best pick: (rank, discount) DESC. Lower rank = better
   // convention match.
   type Pick = {
@@ -682,20 +753,31 @@ function fetchPrimarySkusForCampaigns(
     const cnL = cn.toLowerCase();
     const glL = gl.toLowerCase();
     let rank = 0;
-    if (cn === gl) rank = 5; // A: exact
-    else if (cnL === glL) rank = 4; // B: case drift
-    else if (norm(cn) === norm(gl)) rank = 3; // C: punctuation drift
-    else if (cnL === `${glL} base game`) rank = 2; // D
-    else if (cnL === "base game") rank = 1; // E
+    if (cn === gl) rank = 6; // A: exact
+    else if (cnL === glL) rank = 5; // B: case drift
+    else if (norm(cn) === norm(gl)) rank = 4; // C: punctuation drift
+    else if (cnL === `${glL} base game`) rank = 3; // D
+    else if (cnL === "base game") rank = 2; // E
+    else if (isFullTitlePrefix(cnL, glL)) rank = 1; // F: full title
     else continue;
 
     const prev = best.get(r.campaign_id);
-    if (
-      !prev ||
-      rank > prev.rank ||
-      (rank === prev.rank && r.discount_pct > prev.row.discount_pct)
-    ) {
+    // For Convention F specifically, when multiple non-DLC candidates
+    // tie at rank 1 (e.g. EXPE Sony has both 'Expeditions: A MudRunner
+    // Game' AND 'Expeditions: A MudRunner Game Supreme Edition' — the
+    // latter would be excluded by DLC_TOKENS via 'supreme edition', but
+    // if two truly-parallel base-tier candidates exist, prefer the
+    // SHORTEST name as the canonical base title.
+    if (!prev || rank > prev.rank) {
       best.set(r.campaign_id, { rank, row: r });
+    } else if (rank === prev.rank) {
+      const prevCn = String(prev.row.content_name);
+      if (
+        cn.length < prevCn.length ||
+        (cn.length === prevCn.length && r.discount_pct > prev.row.discount_pct)
+      ) {
+        best.set(r.campaign_id, { rank, row: r });
+      }
     }
   }
 
