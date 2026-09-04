@@ -12,12 +12,29 @@
 export const CALENDAR = "saber" as const;
 
 /**
- * Absolute base for API calls. Empty string = same-origin. In a preview
- * deployment we set this to `__PORT_5003__` at build time so
- * `deploy_website` can rewrite it to a proxied URL that reaches the
- * backend running on port 5003 in the sandbox.
+ * Absolute base for API calls. Order of precedence:
+ *
+ *   1. `VITE_API_BASE` build-time env var (used by preview deploys that
+ *      need to point the SPA at a different origin, e.g. a
+ *      `__PORT_5003__` placeholder that `deploy_website` rewrites).
+ *   2. Runtime inference from `window.location.pathname`: on the droplet
+ *      the SPA is served at `/promo/`, so `/api/foo` needs to be
+ *      rewritten to `/promo/api/foo` to reach the backend through nginx.
+ *      In local dev on `http://localhost:5003/` the pathname is `/`, so
+ *      no prefix is added.
+ *   3. Empty string = same-origin `/api/*` (fallback).
  */
-const API_BASE: string = (import.meta as any).env?.VITE_API_BASE ?? "";
+function inferApiBase(): string {
+  const envBase = (import.meta as any).env?.VITE_API_BASE;
+  if (envBase) return envBase;
+  if (typeof window === "undefined") return "";
+  const pathname = window.location.pathname || "";
+  // Match a leading /<mount>/ prefix (currently only /promo/ on prod).
+  const m = pathname.match(/^\/(promo)(?:\/|$)/);
+  return m ? `/${m[1]}` : "";
+}
+
+const API_BASE: string = inferApiBase();
 function u(path: string): string {
   return `${API_BASE}${path}`;
 }
