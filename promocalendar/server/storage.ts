@@ -450,10 +450,16 @@ export interface NextUpBeat {
 }
 
 /**
- * Next N upcoming (or currently-live) beats for a single title, across every
- * platform. Server anchors on `today` so this self-updates as beats pass.
- * Beats where `end_date >= today` are eligible. In-flight beats come first
- * (sorted by end date), then upcoming (sorted by start date).
+ * Next N STRICTLY-FUTURE beats for a single title, across every platform.
+ * Server anchors on `today` so this self-updates as beats pass.
+ *
+ * In-flight beats (start_date <= today <= end_date) are deliberately
+ * excluded — they belong on a Live Now surface, not Next Up. A campaign
+ * cannot be both a live promo and "next up" simultaneously; showing it in
+ * both surfaces produces a live-badged card under a "Next Up" label.
+ *
+ * Changed 2026-09-04 for parity with nextUpForCalendar/nextUpMultiTitle
+ * after the same bug was flagged at the PDP level. See lessons.md.
  */
 export function nextUpForGame(
   calendar: CalendarId,
@@ -465,20 +471,20 @@ export function nextUpForGame(
     .prepare(
       `SELECT id, game_code, game_label, platform, program, start_date, end_date, max_discount_pct
        FROM campaigns
-       WHERE calendar = ? AND game_code = ? AND end_date >= ?
-       ORDER BY
-         CASE WHEN start_date <= ? THEN 0 ELSE 1 END,  -- in-flight first
-         start_date ASC,
-         end_date ASC
+       WHERE calendar = ? AND game_code = ? AND start_date > ?
+       ORDER BY start_date ASC, end_date ASC, id ASC
        LIMIT ?`,
     )
-    .all(calendar, game_code, today, today, limit) as any[];
+    .all(calendar, game_code, today, limit) as any[];
   return rows.map((r) => shapeBeat(r, today));
 }
 
 /**
- * Next N upcoming beats for a specific platform, across every title in the
- * calendar. Powers each platform view's "Next Up" strip.
+ * Next N STRICTLY-FUTURE beats for a specific platform, across every title
+ * in the calendar. Powers each platform view's "Next Up" strip.
+ *
+ * Same rationale as nextUpForGame above — in-flight beats are excluded
+ * because they belong on Live Now, not Next Up. Changed 2026-09-04.
  */
 export function nextUpForPlatform(
   calendar: CalendarId,
@@ -490,14 +496,11 @@ export function nextUpForPlatform(
     .prepare(
       `SELECT id, game_code, game_label, platform, program, start_date, end_date, max_discount_pct
        FROM campaigns
-       WHERE calendar = ? AND platform = ? AND end_date >= ?
-       ORDER BY
-         CASE WHEN start_date <= ? THEN 0 ELSE 1 END,
-         start_date ASC,
-         end_date ASC
+       WHERE calendar = ? AND platform = ? AND start_date > ?
+       ORDER BY start_date ASC, end_date ASC, id ASC
        LIMIT ?`,
     )
-    .all(calendar, platform, today, today, limit) as any[];
+    .all(calendar, platform, today, limit) as any[];
   return rows.map((r) => shapeBeat(r, today));
 }
 
