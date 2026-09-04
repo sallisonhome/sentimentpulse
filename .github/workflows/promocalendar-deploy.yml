@@ -49,9 +49,14 @@ jobs:
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Pull, build, restart promocalendar on droplet
+        env:
+          # Same shared secret SignalPulse uses. Promo Calendar's PLS-sync
+          # helper passes this as x-ops-token when it POSTs to
+          # SignalPulse's /api/promo-support/sync-steam-pls-events.
+          OPS_TOKEN_SECRET: ${{ secrets.INGESTION_OPS_TOKEN }}
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-              root@104.236.239.46 "bash -s" <<'REMOTEEOF'
+              root@104.236.239.46 "OPS_TOKEN_SECRET='${OPS_TOKEN_SECRET}' bash -s" <<'REMOTEEOF'
           set -euo pipefail
 
           REPO_DIR=/opt/sentimentpulse
@@ -102,7 +107,7 @@ jobs:
           done
 
           echo ""
-          echo "== Ensure /etc/promocalendar/env exists =="
+          echo "== Ensure /etc/promocalendar/env exists + has INGESTION_OPS_TOKEN =="
           mkdir -p /etc/promocalendar
           if [ ! -f /etc/promocalendar/env ]; then
             cat > /etc/promocalendar/env <<'ENVEOF'
@@ -110,6 +115,11 @@ jobs:
           # PROMO_ADMIN_UPLOADER_EMAILS: comma-separated allowlist override.
           # Default list is hard-coded in server/auth.ts; only override here
           # to add/remove uploaders WITHOUT a code change + redeploy.
+          #
+          # INGESTION_OPS_TOKEN is injected fresh on every deploy from the
+          # GitHub secret of the same name (same value SignalPulse uses).
+          # Promo Calendar sends it as x-ops-token when it POSTs to
+          # SignalPulse's /api/promo-support/sync-steam-pls-events.
           #
           # Example (uncomment + edit to override):
           # PROMO_ADMIN_UPLOADER_EMAILS=allison@saber3d.com,karch@saber3d.com,cmartin@saber3d.com,aiones@saber3d.com,akrupkin@saber3d.com
@@ -119,6 +129,20 @@ jobs:
           else
             echo "/etc/promocalendar/env already present"
           fi
+
+          # Refresh INGESTION_OPS_TOKEN on every deploy so a rotation on the
+          # SignalPulse side propagates without a manual droplet edit. Also
+          # writes the key on first-deploy branches where the env file was
+          # just created without it.
+          if [ -n "$OPS_TOKEN_SECRET" ]; then
+            # Strip any existing line then append the fresh value.
+            sed -i '/^INGESTION_OPS_TOKEN=/d' /etc/promocalendar/env
+            printf 'INGESTION_OPS_TOKEN=%s\n' "$OPS_TOKEN_SECRET" >> /etc/promocalendar/env
+            echo "wrote INGESTION_OPS_TOKEN to /etc/promocalendar/env"
+          else
+            echo "WARN: INGESTION_OPS_TOKEN secret not provided; PLS sync will emit warnings."
+          fi
+          chmod 600 /etc/promocalendar/env
 
           echo ""
           echo "== Ensure promocalendar.service unit exists =="

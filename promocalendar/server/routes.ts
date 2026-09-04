@@ -31,6 +31,7 @@ import { CALENDARS, CALENDAR_LABELS, type CalendarId } from "../shared/schema.js
 import { callerEmail, isUploaderReq, requireUploader } from "./auth.js";
 import { steamAppIdForCode } from "./signalpulse-map.js";
 import { getSteamRevenueForWindow } from "./signalpulse-client.js";
+import { syncSteamPlsEvents } from "./sync-pls-events.js";
 
 // Excel files can be big. 20 MB ceiling.
 const upload = multer({
@@ -110,6 +111,14 @@ export function registerRoutes(app: Express): void {
           uploadedBy,
           parseResult,
         );
+
+        // Sync every Steam campaign in the new active upload to SignalPulse
+        // PLS milestones (category='promotion'). Runs synchronously so the
+        // upload response body shows exactly what happened. Never throws —
+        // errors are surfaced in `pls_sync.warnings` and the upload still
+        // returns 201.
+        const plsSync = await syncSteamPlsEvents(cal);
+
         res.status(201).json({
           upload: uploadRow,
           parse: {
@@ -119,6 +128,7 @@ export function registerRoutes(app: Express): void {
             sheets_processed: parseResult.sheets_processed,
             sheets_skipped: parseResult.sheets_skipped,
           },
+          pls_sync: plsSync,
         });
       } catch (e: any) {
         console.error("ingest failed:", e);

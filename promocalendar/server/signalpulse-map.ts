@@ -16,8 +16,11 @@ export const PROMO_CODE_TO_STEAM_APPID: Record<string, number> = {
   ISS: 581320,
   // Expeditions: A MudRunner Game
   EXPE: 2477340,
-  // RoadCraft
-  ROADCRAFT: 2698150,
+  // RoadCraft (verified against Steam store page + SteamDB; earlier value
+  // 2698150 was wrong and silently produced found:false for every
+  // RoadCraft revenue lookup and broke the On Promo badge on the
+  // SignalPulse RoadCraft PDP).
+  ROADCRAFT: 2104890,
   // John Carpenter's Toxic Commando (verified against Steam store page)
   "TOXIC COMMANDO": 2157830,
 };
