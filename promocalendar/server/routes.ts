@@ -20,6 +20,7 @@ import {
   listGames,
   listUploads,
   liveNowForCalendar,
+  liveNowForGame,
   nextUpForCalendar,
   nextUpForGame,
   nextUpForPlatform,
@@ -297,6 +298,51 @@ export function registerRoutes(app: Express): void {
       game_code,
       today,
       beats: nextUpForGame(cal, game_code, limit, today),
+    });
+  });
+
+  // PDP-scoped Live Now. Same Steam-revenue enrichment behavior as
+  // /api/:calendar/live-now above — Steam beats get
+  // steam_current_{net,gross}_revenue_usd + steam_current_days_covered
+  // via SignalPulse's /api/promo-support/steam-revenue endpoint. Errors
+  // fall through: extra fields omitted, chip degrades to "—".
+  // Added 2026-09-04 alongside the strict-future PDP Next Up fix.
+  app.get("/api/:calendar/games/:game_code/live-now", async (req, res) => {
+    const cal = requireCalendar(req, res);
+    if (!cal) return;
+    const game_code = req.params.game_code;
+    const today = serverToday((req.query.today as string) || null);
+    const beats = liveNowForGame(cal, game_code, today);
+
+    const enriched = await Promise.all(
+      beats.map(async (b) => {
+        if (b.platform !== "Steam") return b;
+        const appid = steamAppIdForCode(b.game_code);
+        if (!appid) return b;
+        try {
+          const rev = await getSteamRevenueForWindow(
+            appid,
+            b.start_date,
+            today,
+          );
+          if (!rev) return b;
+          return {
+            ...b,
+            steam_current_net_revenue_usd: rev.net_revenue_usd,
+            steam_current_gross_revenue_usd: rev.gross_revenue_usd,
+            steam_current_days_covered: rev.days_covered,
+          };
+        } catch {
+          return b;
+        }
+      }),
+    );
+
+    res.json({
+      calendar: cal,
+      game_code,
+      today,
+      beats: enriched,
     });
   });
 

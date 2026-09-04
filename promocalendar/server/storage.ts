@@ -563,6 +563,35 @@ export function liveNowForCalendar(
   return rows.map((r) => shapeBeat(r, today));
 }
 
+/**
+ * ALL currently in-flight campaigns for a SINGLE title (start_date <= today
+ * <= end_date). Powers the title-detail (PDP) "Live Now" strip — mirrors
+ * liveNowForCalendar's Steam-biased ordering so the PDP treatment stays
+ * consistent with the landing page.
+ *
+ * Added 2026-09-04 as the counterpart to the strict-future PDP Next Up
+ * fix: with in-flight beats removed from Next Up, we need a first-class
+ * PDP surface to show what's active right now for the title.
+ */
+export function liveNowForGame(
+  calendar: CalendarId,
+  game_code: string,
+  today: string,
+): NextUpBeat[] {
+  const rows = sqlite
+    .prepare(
+      `SELECT id, game_code, game_label, platform, program, start_date, end_date, max_discount_pct
+       FROM campaigns
+       WHERE calendar = ? AND game_code = ? AND start_date <= ? AND end_date >= ?
+       ORDER BY
+         CASE WHEN platform = 'Steam' THEN 0 ELSE 1 END,
+         end_date ASC,
+         id ASC`,
+    )
+    .all(calendar, game_code, today, today) as any[];
+  return rows.map((r) => shapeBeat(r, today));
+}
+
 function shapeBeat(r: any, today: string): NextUpBeat {
   const daysUntil = Math.round(
     (Date.parse(r.start_date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) /

@@ -22,6 +22,9 @@ export default function TitleDetailPage({ code }: { code: string }) {
 
   const campaigns = useAsync(() => api.campaigns({ game_code: code }), [code]);
   const nextUp = useAsync(() => api.nextUpGame(code, 3, today), [code, today]);
+  // Live Now for this title — mirrors the front-page treatment. Steam beats
+  // get revenue-so-far enrichment via /api/:cal/games/:code/live-now.
+  const liveNow = useAsync(() => api.liveNowGame(code, today), [code, today]);
 
   const filtered = useMemo(() => {
     const all = campaigns.data?.campaigns || [];
@@ -93,6 +96,42 @@ export default function TitleDetailPage({ code }: { code: string }) {
           </div>
         </div>
       </div>
+
+      {(() => {
+        const beats = liveNow.data?.beats || [];
+        const top = beats.slice(0, 3);
+        const more = Math.max(0, beats.length - top.length);
+        if (liveNow.loading) {
+          return (
+            <Section title="Promos Live Now" right={<span className="sub">—</span>}>
+              <Skeleton height={120} />
+            </Section>
+          );
+        }
+        if (liveNow.error) {
+          return (
+            <Section title="Promos Live Now" right={<span className="sub">—</span>}>
+              <ErrorBanner error={liveNow.error} />
+            </Section>
+          );
+        }
+        if (!beats.length) return null;
+        return (
+          <Section
+            title="Promos Live Now"
+            right={
+              <span className="sub">
+                {beats.length} campaign{beats.length === 1 ? "" : "s"} in flight for {code}
+                {more > 0 ? ` · showing top ${top.length}, Steam first` : ""}
+              </span>
+            }
+          >
+            <div className="strip-grid">
+              {top.map((b) => <BeatCard key={b.campaign_id} beat={b} />)}
+            </div>
+          </Section>
+        );
+      })()}
 
       <Section title={`Next Up for ${code}`} right={<span className="sub">Next 3 beats across all platforms</span>}>
         {nextUp.loading ? (

@@ -250,6 +250,13 @@ export const api = {
       `/api/${CALENDAR}/games/${encodeURIComponent(code)}/next-up${q({ limit, today })}`,
     ),
 
+  // PDP-scoped Live Now with the same Steam-revenue enrichment as the
+  // calendar-level liveNow above.
+  liveNowGame: (code: string, today?: string) =>
+    j<{ beats: Beat[] }>(
+      `/api/${CALENDAR}/games/${encodeURIComponent(code)}/live-now${q({ today })}`,
+    ),
+
   events: (opts: {
     when?: "upcoming" | "live" | "past" | "all";
     platform?: string;
