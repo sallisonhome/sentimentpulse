@@ -25,6 +25,7 @@ import { sendWeeklyLeaderboardDigest } from "./leaderboard-digest";
 import { getHeldDigestWeek, getHeldDigestMissing } from "./leaderboard-digest-weekly";
 import express from "express";
 import { handleResendInboundWebhook, sendReply, forwardToPersonalInbox } from "./inbound-email";
+import { registerOnPromoRoutes } from "./on-promo-routes";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -103,6 +104,15 @@ export async function registerRoutes(
   // Seed on startup
   seedDatabase();
   storage.seedDefaultSettings();
+
+  // ─── Cross-app "On Promo" badge (Promo Calendar bridge) ───────────────────
+  // Read-only endpoints that proxy the Promo Calendar backend (port 5003)
+  // and power the on-promo badge on the leaderboards, PDP, and Dashboard
+  // summary card. See server/on-promo-routes.ts for the route definitions
+  // and server/promo-calendar-client.ts for the client (cached, try/catch,
+  // returns [] on any upstream failure so an outage never breaks a
+  // SignalPulse page).
+  registerOnPromoRoutes(app);
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
 

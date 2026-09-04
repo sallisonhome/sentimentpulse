@@ -28,14 +28,21 @@ import {
 import { LeaderboardBanner } from "@/components/leaderboard-banner";
 import { ChartDetailModal } from "@/components/chart-detail-modal";
 import { CompareChartModal, type CompareCandidate } from "@/components/compare-chart-modal";
+import { OnPromoBadge } from "@/components/OnPromoBadge";
 import { formatNumber, formatCurrency } from "@/lib/utils";
+
+// Shared shape for the /api/onpromo/all response — used by both boards to
+// render an OnPromoBadge under each row's game title. Fetched once per
+// page load and looked up by steamAppId; leaderboard rows without a
+// mapped AppID (or with no active promos) simply render nothing.
+type OnPromoAll = Record<string, { platform: string; end_date: string }[]>;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface WishlistLeaderboardRow {
   productId: number;
   title: string;
-  steamAppId: string;
+  steamAppId: string; // Steam AppID as a string — looked up in /api/onpromo/all
   headerImage: string;
   wishlistTotal: number | null;
   wishlistDelta1d: number | null;
@@ -327,6 +334,18 @@ export default function Leaderboards() {
     enabled: board === "revenue",
   });
 
+  // Cross-app "On Promo" badges. One shared query for BOTH boards — the
+  // response is a small object keyed by Steam AppID, so the per-row
+  // lookup is O(1). Uses 60s staleTime to match the server-side cache in
+  // promo-calendar-client.ts and never blocks the leaderboard render:
+  // while this query is loading, `onPromo` is undefined and every row
+  // simply renders no badge (identical to the pre-feature baseline).
+  const { data: onPromo } = useQuery<OnPromoAll>({
+    queryKey: ["/api/onpromo/all"],
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+  });
+
   const sortedRows = useMemo(() => {
     if (!rows) return [];
     const copy = [...rows];
@@ -464,16 +483,28 @@ export default function Leaderboards() {
                   {sortedRevenueRows.map((row) => (
                     <TableRow key={row.productId} data-testid={`row-revenue-leaderboard-${row.productId}`}>
                       <TableCell>
-                        <div className="flex items-center gap-3">
-                          <GameKeyart headerImage={row.headerImage} title={row.title} />
-                          <span className="font-medium text-sm truncate">{row.title}</span>
-                          {row.isStale && (
-                            <span
-                              className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0"
-                              title={`24h/30d figures as of ${row.asOfDate} — ingestion is running behind (check the Steam cookie)`}
-                              data-testid={`indicator-stale-${row.productId}`}
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center gap-3">
+                            <GameKeyart headerImage={row.headerImage} title={row.title} />
+                            <span className="font-medium text-sm truncate">{row.title}</span>
+                            {row.isStale && (
+                              <span
+                                className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0"
+                                title={`24h/30d figures as of ${row.asOfDate} — ingestion is running behind (check the Steam cookie)`}
+                                data-testid={`indicator-stale-${row.productId}`}
+                              />
+                            )}
+                          </div>
+                          {/* On-Promo badge — renders nothing when the title has no active promos.
+                              Wrapped in a flex row so the badge shrinks to its content instead of
+                              stretching to the table cell width. */}
+                          {onPromo?.[row.steamAppId]?.length ? (
+                            <OnPromoBadge
+                              promos={onPromo[row.steamAppId]}
+                              className="w-fit"
+                              testId={`badge-on-promo-revenue-${row.productId}`}
                             />
-                          )}
+                          ) : null}
                         </div>
                       </TableCell>
                       <TableCell className="text-center">
@@ -574,9 +605,21 @@ export default function Leaderboards() {
                 {sortedRows.map((row) => (
                   <TableRow key={row.productId} data-testid={`row-leaderboard-${row.productId}`}>
                     <TableCell>
-                      <div className="flex items-center gap-3">
-                        <GameKeyart headerImage={row.headerImage} title={row.title} />
-                        <span className="font-medium text-sm truncate">{row.title}</span>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-3">
+                          <GameKeyart headerImage={row.headerImage} title={row.title} />
+                          <span className="font-medium text-sm truncate">{row.title}</span>
+                        </div>
+                        {/* On-Promo badge — renders nothing when the title has no active promos.
+                            Wrapped in a flex row so the badge shrinks to its content instead of
+                            stretching to the table cell width. */}
+                        {onPromo?.[row.steamAppId]?.length ? (
+                          <OnPromoBadge
+                            promos={onPromo[row.steamAppId]}
+                            className="w-fit"
+                            testId={`badge-on-promo-wishlist-${row.productId}`}
+                          />
+                        ) : null}
                       </div>
                     </TableCell>
                     <TableCell className="text-center">

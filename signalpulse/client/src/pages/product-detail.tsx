@@ -21,6 +21,7 @@ import { ChartDetailModal, type ChartDataType } from "@/components/chart-detail-
 import { SparklineChart, type TimeSeriesDataPoint, SectionSparkline } from "@/components/time-series-chart";
 import { SteamSalesCard } from "@/components/steam-sales-card";
 import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
+import { OnPromoBadge } from "@/components/OnPromoBadge";
 import { ALL_PLATFORMS } from "@shared/schema";
 import { useQuery as useChartQuery } from "@tanstack/react-query";
 import { useForecastScenario, type ForecastScenario } from "@/hooks/use-forecast-scenario";
@@ -64,6 +65,18 @@ export default function ProductDetail() {
   const { data: product, isLoading } = useQuery<any>({
     queryKey: ["/api/products", productId],
     staleTime: PRODUCT_QUERY_STALE_TIME_MS,
+    refetchOnWindowFocus: true,
+  });
+
+  // Cross-app "On Promo" fetch. Keyed on the product's Steam AppID (which
+  // isn't known until the /api/products/:id query above resolves), so
+  // enabled is gated on `product?.steamAppId`. Renders nothing on the
+  // page while loading or empty — the badge component itself handles the
+  // empty-state case.
+  const { data: promos } = useQuery<{ platform: string; end_date: string }[]>({
+    queryKey: ["/api/onpromo", product?.steamAppId ?? ""],
+    enabled: !!product?.steamAppId,
+    staleTime: 60_000,
     refetchOnWindowFocus: true,
   });
 
@@ -164,7 +177,16 @@ export default function ProductDetail() {
 
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-xl font-semibold" data-testid="text-product-title">{product.title}</h1>
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="text-xl font-semibold" data-testid="text-product-title">{product.title}</h1>
+          {/* On-Promo badge — sized `md` so it reads as a proper header chip
+              rather than a meta-row tag, and renders nothing when empty. */}
+          <OnPromoBadge
+            promos={promos ?? []}
+            size="md"
+            testId="badge-on-promo-pdp"
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-2 text-xs text-muted-foreground">
           <span>
             Publisher: <strong className="text-foreground">{product.publisher}</strong>
@@ -174,6 +196,7 @@ export default function ProductDetail() {
               </Badge>
             )}
           </span>
+
           <span>Release: <strong className="text-foreground">{formatDate(product.releaseDate)}</strong></span>
           <span>Genre: <strong className="text-foreground">{product.genre}</strong></span>
           <span>Format: <strong className="text-foreground">{getPlayerFormatLabel(product.playerFormat)}</strong></span>

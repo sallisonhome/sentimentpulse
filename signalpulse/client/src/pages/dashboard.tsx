@@ -9,6 +9,7 @@ import { Calendar, Users, Gamepad2, ExternalLink } from "lucide-react";
 import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
 import { useForecastScenario, type ForecastScenario } from "@/hooks/use-forecast-scenario";
 import { ForecastScenarioToggle } from "@/components/forecast-scenario-toggle";
+import { OnPromoNowCard } from "@/components/OnPromoNowCard";
 import { queryClient } from "@/lib/queryClient";
 import { SHARED_WISHLIST_FIELDS, PRODUCT_QUERY_STALE_TIME_MS } from "@/lib/shared-product-fields";
 
@@ -90,6 +91,14 @@ export default function Dashboard() {
             Each card is now scoped to its own product via
             PerProductScenario below, so toggling one product's
             preference no longer flips every other title. */}
+      </div>
+
+      {/* Cross-app "On Promo Now" summary. Compact card at the top of the
+          Dashboard listing every Saber title currently on promo across any
+          platform. Reads from /api/onpromo/all (Promo Calendar bridge) and
+          renders its own empty state — safe to always mount. */}
+      <div className="mb-4">
+        <OnPromoNowCard products={products} />
       </div>
 
       {(!products || products.length === 0) ? (
