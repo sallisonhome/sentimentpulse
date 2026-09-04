@@ -641,7 +641,7 @@ function fetchPrimarySkusForCampaigns(
               s.promo_srp_usd,
               s.discount_pct,
               c.game_label
-         FROM skus s
+         FROM sku_lines s
          JOIN campaigns c ON c.id = s.campaign_id
         WHERE s.campaign_id IN (${placeholders})
           AND s.content_name = c.game_label
