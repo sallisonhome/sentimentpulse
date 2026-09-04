@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, FileText, TrendingUp, MessageSquare, Settings, ArrowRightLeft, Home, Handshake } from 'lucide-react'
+import { LayoutDashboard, FileText, TrendingUp, MessageSquare, Settings, ArrowRightLeft, Home, Handshake, Calendar } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 const NAV_ITEMS = [
@@ -81,6 +81,13 @@ export default function Sidebar() {
         >
           <Handshake className="h-4 w-4" />
           Publishing Partnerships
+        </a>
+        <a
+          href="/promo/"
+          className="flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+        >
+          <Calendar className="h-4 w-4" />
+          Promo Calendar
         </a>
         <a
           href="/"

@@ -64,6 +64,14 @@ function LayersIcon(p: IconProps) {
     </svg>
   );
 }
+function CalendarIcon(p: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <rect x="3" y="4" width="18" height="17" rx="2" />
+      <path d="M3 10h18M8 2v4M16 2v4" />
+    </svg>
+  );
+}
 
 type NavItem = {
   href: string;
@@ -80,6 +88,7 @@ const apps: NavItem[] = [
   { href: "/genrepulse/", label: "Genre Pulse", Icon: ChartIcon, external: true },
   { href: "/gtm/", label: "GTM Studio", Icon: DeckIcon, external: false }, // active app
   { href: "/partnerships/", label: "Publishing Partnerships", Icon: HandshakeIcon, external: true },
+  { href: "/promo/", label: "Promo Calendar", Icon: CalendarIcon, external: true },
 ];
 
 export function Sidebar() {
