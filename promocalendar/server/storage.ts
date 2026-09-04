@@ -633,6 +633,10 @@ function fetchPrimarySkusForCampaigns(
   const out = new Map();
   if (!campaignIds.length) return out;
   const placeholders = campaignIds.map(() => "?").join(",");
+  // Case-insensitive match: some sheets have inconsistent capitalization
+  // between the game_label header and the SKU rows (RoadCraft vs Roadcraft
+  // was the trigger case). LOWER() on both sides keeps the strict exact-
+  // match spirit while surviving that class of sheet drift.
   const rows = sqlite
     .prepare(
       `SELECT s.campaign_id,
@@ -644,7 +648,7 @@ function fetchPrimarySkusForCampaigns(
          FROM sku_lines s
          JOIN campaigns c ON c.id = s.campaign_id
         WHERE s.campaign_id IN (${placeholders})
-          AND s.content_name = c.game_label
+          AND LOWER(s.content_name) = LOWER(c.game_label)
           AND s.current_srp_usd IS NOT NULL
           AND s.promo_srp_usd IS NOT NULL`,
     )
