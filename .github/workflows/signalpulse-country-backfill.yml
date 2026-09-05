@@ -49,14 +49,15 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 <<'EOF'
             set -euo pipefail
-            echo "── Session status ──"
-            resp=$(curl -sS http://127.0.0.1:5000/api/steam/session)
-            echo "$resp"
-            configured=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('configured', False))")
-            if [ "$configured" != "True" ]; then
-              echo "ERROR: Steamworks session not configured. Backfill aborted."
+            echo "── Session status (direct sqlite; avoids auth) ──"
+            DB=/opt/sentimentpulse/signalpulse/data.db
+            has_cookie=$(sqlite3 "$DB" "SELECT CASE WHEN LENGTH(cookie_value) > 0 THEN 1 ELSE 0 END FROM steamworks_sessions WHERE id = 'default';")
+            if [ "$has_cookie" != "1" ]; then
+              echo "ERROR: No Steamworks session cookie in $DB. Backfill aborted."
               exit 1
             fi
+            last_verified=$(sqlite3 "$DB" "SELECT last_verified_at, last_verified_result FROM steamworks_sessions WHERE id = 'default';")
+            echo "  Cookie present.  Last verify: $last_verified"
           EOF
 
       - name: Run monthly country backfill
@@ -65,9 +66,10 @@ jobs:
           FROM_MONTH: ${{ github.event.inputs.from_month }}
           TO_MONTH: ${{ github.event.inputs.to_month }}
           ONLY_PRODUCT_ID: ${{ github.event.inputs.only_product_id }}
+          OPS_TOKEN: ${{ secrets.INGESTION_OPS_TOKEN }}
         run: |
           ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
-              DRY_RUN="$DRY_RUN" FROM_MONTH="$FROM_MONTH" TO_MONTH="$TO_MONTH" ONLY_PRODUCT_ID="$ONLY_PRODUCT_ID" \
+              DRY_RUN="$DRY_RUN" FROM_MONTH="$FROM_MONTH" TO_MONTH="$TO_MONTH" ONLY_PRODUCT_ID="$ONLY_PRODUCT_ID" OPS_TOKEN="$OPS_TOKEN" \
               bash -s <<'EOF'
             set -euo pipefail
 
@@ -187,9 +189,10 @@ jobs:
 
                 # Portal fetch with a 30s cap; retry once on failure
                 for attempt in 1 2; do
-                  resp=$(curl -sS --max-time 30 -X POST "$API/api/products/$pid/steam/portal-fetch" \
+                  resp=$(curl -sS --max-time 30 -X POST "$API/api/ops/portal-fetch" \
                               -H "Content-Type: application/json" \
-                              -d "{\"dateStart\":\"$start_date\",\"dateEnd\":\"$end_date\"}" 2>&1) || {
+                              -H "x-ops-token: $OPS_TOKEN" \
+                              -d "{\"product_id\":$pid,\"dateStart\":\"$start_date\",\"dateEnd\":\"$end_date\"}" 2>&1) || {
                     if [ $attempt -eq 1 ]; then
                       echo "curl-fail attempt=1 retrying in 5s" | tee -a "$LOG"
                       sleep 5

@@ -172,6 +172,12 @@ const OPS_TOKEN_PATHS = new Set([
   // Cross-app write from Promo Calendar: sync Steam-promo PLS milestones
   // for one product. See server/promo-support-routes.ts.
   "/api/promo-support/sync-steam-pls-events",
+  // v3.30 (2026-09-05): purpose-built ops route for the Sales-by-Country
+  // monthly backfill workflow. Body: {product_id, dateStart, dateEnd}.
+  // Internally calls the same fetchPortalPage + upserts as the human
+  // portal-fetch endpoint, but doesn't require a JWT session. See
+  // routes.ts /api/ops/portal-fetch.
+  "/api/ops/portal-fetch",
 ]);
 
 function hasValidOpsToken(req: Request): boolean {

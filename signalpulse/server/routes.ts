@@ -1900,6 +1900,97 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Ops route: portal-fetch for automation (v3.30, 2026-09-05) ──────
+  //
+  // Same behavior as POST /api/products/:id/steam/portal-fetch (single
+  // range fetch + upserts into steam_sales_daily AND
+  // steam_sales_by_country_period), but takes product_id in the body so
+  // it can live at a static path that the OPS_TOKEN_PATHS whitelist can
+  // match by exact-path lookup. Only reachable when the caller presents
+  // a valid x-ops-token header matching INGESTION_OPS_TOKEN.
+  //
+  // Used by the Sales-by-Country monthly backfill workflow.
+  app.post("/api/ops/portal-fetch", async (req, res) => {
+    try {
+      const productId = Number(req.body?.product_id);
+      if (!Number.isFinite(productId)) return res.status(400).json({ error: "product_id required (number)" });
+      const product = storage.getProduct(productId);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      if (!product.steamAppId) return res.status(400).json({ error: "Product has no steamAppId" });
+
+      const dateStart = String(req.body?.dateStart ?? "").trim();
+      const dateEnd = String(req.body?.dateEnd ?? "").trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStart) || !/^\d{4}-\d{2}-\d{2}$/.test(dateEnd)) {
+        return res.status(400).json({ error: "dateStart and dateEnd required (YYYY-MM-DD)" });
+      }
+
+      const session = storage.getSteamworksSession("default");
+      if (!session) return res.status(400).json({ error: "No Steamworks session cookie configured" });
+
+      const { fetchPortalPage, portalToSalesRows, portalToCountryRows } = await import("./steamworks-portal");
+      const result = await fetchPortalPage({
+        appId: Number(product.steamAppId),
+        dateStart,
+        dateEnd,
+        cookieHeader: session.cookieValue,
+      });
+      if (!result.ok || !result.parsed) {
+        return res.status(502).json({ ok: false, error: result.error, httpStatus: result.httpStatus });
+      }
+
+      const batchId = `ops-portal-${productId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const rows = portalToSalesRows(result.parsed, productId, dateEnd, batchId);
+      const countryGranularity = detectGranularity(dateStart, dateEnd);
+      const countryRows = portalToCountryRows(
+        result.parsed,
+        productId,
+        dateStart,
+        dateEnd,
+        countryGranularity,
+      );
+      const countryResult = countryRows.length > 0
+        ? storage.upsertSteamSalesByCountry(countryRows)
+        : { inserted: 0, updated: 0 };
+
+      storage.createSteamSalesUploadBatch({
+        id: batchId,
+        productId,
+        filename: `ops-portal-${dateStart}-to-${dateEnd}.html`,
+        fileBytes: result.htmlBytes ?? 0,
+        reportDateStart: dateStart,
+        reportDateEnd: dateEnd,
+        publisherName: null,
+        rowsParsed: 1,
+        rowsIngested: rows.length,
+        rowsSkipped: 0,
+        skippedReason: null,
+        uploadedBy: "ops-automation",
+      });
+      const upsertResult = rows.length > 0
+        ? storage.upsertSteamSalesRows(rows)
+        : { inserted: 0, updated: 0 };
+
+      res.json({
+        ok: true,
+        product_id: productId,
+        product_title: product.title,
+        batchId,
+        dateStart,
+        dateEnd,
+        rowsIngested: rows.length,
+        rowsInserted: upsertResult.inserted,
+        rowsUpdated: upsertResult.updated,
+        countryRowsIngested: countryRows.length,
+        countryRowsInserted: countryResult.inserted,
+        countryRowsUpdated: countryResult.updated,
+        countryGranularity,
+      });
+    } catch (err: any) {
+      console.error(`[routes] /api/ops/portal-fetch error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── Sales by Country API (v3.30, 2026-09-05) ──────────────────────────
   //
   // Aggregate per-country revenue/units for a product across an arbitrary
