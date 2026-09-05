@@ -119,8 +119,9 @@ jobs:
               title=$(echo "$row" | cut -d'|' -f2)
               appid=$(echo "$row" | cut -d'|' -f3)
 
-              # Earliest ingested day for this product (if any)
-              earliest_row=$(sqlite3 "$DB" "SELECT MIN(sale_date) FROM steam_sales_daily WHERE product_id = $pid;")
+              # Earliest ingested day for this product (if any).
+              # (Column is `date`, not `sale_date` — verified in schema.ts.)
+              earliest_row=$(sqlite3 "$DB" "SELECT MIN(date) FROM steam_sales_daily WHERE product_id = $pid;")
               if [ -z "$earliest_row" ] || [ "$earliest_row" = "" ]; then
                 # No sales history at all — probably a pre-launch title. Skip.
                 echo "  [skip] pid=$pid title=$title appid=$appid — no steam_sales_daily rows yet" | tee -a "$LOG"
