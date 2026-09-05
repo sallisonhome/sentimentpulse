@@ -1,0 +1,97 @@
+name: SignalPulse — Portal HTML dump (diagnostic)
+
+# One-shot diagnostic: fetch a Steamworks app-details page and dump the
+# raw HTML slice for the salesregion_panel1 (units) and salesregion_panel3
+# (revenue) panels to the workflow log so we can see exactly how country
+# rows are rendered and fix the parser.
+#
+# Usage: workflow_dispatch with app_id + date_start + date_end.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_id:
+        description: "Steam AppID (e.g. 2183900 for SM2)"
+        required: true
+        default: "2183900"
+      date_start:
+        description: "Start date YYYY-MM-DD"
+        required: true
+        default: "2026-08-01"
+      date_end:
+        description: "End date YYYY-MM-DD"
+        required: true
+        default: "2026-08-31"
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Fetch and dump panel HTML
+        env:
+          APP_ID: ${{ github.event.inputs.app_id }}
+          DATE_START: ${{ github.event.inputs.date_start }}
+          DATE_END: ${{ github.event.inputs.date_end }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
+              APP_ID="$APP_ID" DATE_START="$DATE_START" DATE_END="$DATE_END" \
+              bash -s <<'EOF'
+            set -euo pipefail
+            DB=/opt/sentimentpulse/signalpulse/data.db
+            COOKIE=$(sqlite3 "$DB" "SELECT cookie_value FROM steamworks_sessions WHERE id='default';")
+            if [ -z "$COOKIE" ]; then
+              echo "No cookie configured. Aborting."; exit 1
+            fi
+
+            URL="https://partner.steampowered.com/app/details/${APP_ID}/?dateStart=${DATE_START}&dateEnd=${DATE_END}&priorDateStart=2025-08-01&priorDateEnd=2025-08-31&alignPriorAnnual=Immediate&submit=Update"
+            echo "Fetching: $URL"
+
+            HTML=$(mktemp)
+            curl -sS \
+                 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36" \
+                 -H "Cookie: $COOKIE" \
+                 --max-time 30 \
+                 "$URL" > "$HTML"
+
+            echo ""
+            echo "── File size ──"
+            wc -c "$HTML"
+            echo ""
+
+            for PANEL in salesregion_panel1 salesregion_panel3 activationsregion_panel1 activationsregion_panel3; do
+              echo ""
+              echo "════════════════════════════════════════════════════"
+              echo " PANEL: $PANEL"
+              echo "════════════════════════════════════════════════════"
+              # Extract everything from the panel class through the next 8000 chars
+              python3 -c "
+import re, sys
+with open('$HTML', 'r', encoding='utf-8', errors='replace') as f:
+    html = f.read()
+idx = html.find('class=\"$PANEL\"')
+if idx == -1:
+    print('PANEL NOT FOUND')
+else:
+    slice_ = html[idx:idx+8000]
+    # Print first 20 <tr>...</tr> blocks
+    trs = re.findall(r'<tr[^>]*>.*?</tr>', slice_, re.DOTALL)
+    print(f'Found {len(trs)} <tr> rows in panel slice (showing first 8):')
+    print()
+    for i, tr in enumerate(trs[:8]):
+        # Compact
+        compact = re.sub(r'\s+', ' ', tr).strip()
+        print(f'[{i}] {compact[:600]}')
+        print()
+"
+            done
+
+            rm -f "$HTML"
+          EOF
