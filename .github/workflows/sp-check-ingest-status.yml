@@ -1,0 +1,78 @@
+name: SignalPulse — check ingest status (safe read-only)
+
+# One-shot read-only status probe, 2026-09-05. Checks running/queued
+# ingest jobs before starting a country backfill so we don't collide.
+# No credentials read, no writes, no external HTTP.
+# Delete after this run.
+
+"on":
+  workflow_dispatch:
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Read job/backfill state from droplet
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "bash -s" <<'REMOTEEOF'
+          set -euo pipefail
+
+          # SentimentPulse DB(s)
+          echo "== SentimentPulse ingest-tracking (running jobs) =="
+          SP_DB=/opt/sentimentpulse/frontend/data/sentimentpulse.db
+          if [ -f "$SP_DB" ]; then
+            echo "-- tables in SentimentPulse DB --"
+            sqlite3 "$SP_DB" ".tables" | tr ' ' '\n' | grep -iE "job|ingest|backfill|queue|scan|status" | head -20
+            echo ""
+            for T in ingest_jobs backfill_jobs jobs discovery_jobs ingestion_status; do
+              CNT=$(sqlite3 "$SP_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='$T';" 2>/dev/null || echo 0)
+              if [ "$CNT" = "1" ]; then
+                echo "-- $T recent rows --"
+                sqlite3 "$SP_DB" ".mode column" ".headers on" "SELECT * FROM $T ORDER BY rowid DESC LIMIT 8;" 2>&1 | head -20 || true
+                echo ""
+              fi
+            done
+          else
+            echo "no SentimentPulse DB at $SP_DB"
+            find /opt -maxdepth 4 -name "*.db" 2>/dev/null | head -20
+          fi
+
+          echo ""
+          echo "== SignalPulse ingest-tracking =="
+          SG_DB=/opt/sentimentpulse/signalpulse/data.db
+          echo "-- signalpulse tables that look ingest-related --"
+          sqlite3 "$SG_DB" ".tables" | tr ' ' '\n' | grep -iE "job|ingest|backfill|batch|queue|status" | head -20
+          echo ""
+          # Any active backfill jobs?
+          for T in backfill_jobs steam_sales_backfill_jobs steam_wishlist_backfill_jobs ingestion_status; do
+            CNT=$(sqlite3 "$SG_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='$T';" 2>/dev/null || echo 0)
+            if [ "$CNT" = "1" ]; then
+              echo "-- $T recent 5 rows --"
+              sqlite3 "$SG_DB" ".mode column" ".headers on" "SELECT * FROM $T ORDER BY rowid DESC LIMIT 5;" 2>&1 | head -14 || true
+              echo ""
+            fi
+          done
+
+          echo ""
+          echo "== Systemd unit status for both apps =="
+          systemctl is-active sentimentpulse promocalendar signalpulse 2>&1 || true
+          echo ""
+          echo "== journalctl last 30 lines: sentimentpulse (filter for ingest/scan/backfill) =="
+          journalctl -u sentimentpulse --no-pager -n 200 2>&1 | grep -iE "ingest|backfill|scan|running|complete|start" | tail -15 || echo "(no recent ingest lines)"
+          echo ""
+          echo "== journalctl last 30 lines: signalpulse (filter for ingest/backfill) =="
+          journalctl -u signalpulse --no-pager -n 200 2>&1 | grep -iE "ingest|backfill|portal|fetch" | tail -15 || echo "(no recent ingest lines)"
+
+          echo ""
+          echo "== Any node processes actively running long-form work? =="
+          ps -eo pid,etime,pcpu,pmem,comm,args | grep -iE "node|python" | grep -viE "grep|systemd" | head -12
+
+          echo ""
+          echo "== DONE =="
+          REMOTEEOF
