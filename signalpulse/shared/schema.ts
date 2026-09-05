@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, uniqueIndex, index } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -203,6 +203,80 @@ export const insertSteamSalesUploadBatchSchema = createInsertSchema(steamSalesUp
 
 export type InsertSteamSalesUploadBatch = z.infer<typeof insertSteamSalesUploadBatchSchema>;
 export type SteamSalesUploadBatch = typeof steamSalesUploadBatches.$inferSelect;
+
+// ─── Steam Sales By Country (period aggregates from portal HTML) ───────────
+//
+// v3.30 (2026-09-05): Powers the Sales-by-Country pages on SignalPulse
+// (top-nav) and Promo Calendar (PDP). Populated by extending the same
+// portal-HTML fetch that already runs daily (via steamworks-portal.ts) —
+// no new external calls: the country panels are on the SAME page we
+// already download for units + revenue.
+//
+// The Steamworks portal returns TOTALS for whatever date range is in the
+// URL. So each row represents "country X's units + revenue across the
+// period [period_start, period_end]". Historical backfill writes
+// granularity='month' rows (one fetch per month per product); the daily
+// portal cron continues to write granularity='day' rows for the previous
+// day. Both live in this table; the API sums whichever rows overlap the
+// requested range and prefers finer granularity when both are present.
+//
+// Uniqueness key locked at (product_id, period_start, period_end,
+// country_iso) — re-fetching the same range is a no-op upsert.
+export const steamSalesByCountryPeriod = sqliteTable(
+  "steam_sales_by_country_period",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    productId: integer("product_id").notNull(),
+    // Inclusive ISO date bounds. For granularity='day' both equal the same
+    // date; for 'month' they're the first + last day of the calendar month.
+    periodStart: text("period_start").notNull(),
+    periodEnd: text("period_end").notNull(),
+    // 'day' | 'month' | 'custom'. The API prefers day > month > custom
+    // when overlapping rows exist for the same date range.
+    granularity: text("granularity").notNull().default("month"),
+    // ISO-3166 alpha-2 code as parsed from Steamworks portal country_code
+    // params (US, CA, DE, JP, CN, etc.). Uppercase. Empty string when the
+    // portal reports an 'Unknown' row (rare, kept so totals reconcile).
+    countryIso: text("country_iso").notNull(),
+    // Human-readable name as rendered by Steamworks (e.g. 'United States').
+    // Cached so the UI doesn't need a separate ISO→name lookup.
+    countryName: text("country_name").notNull(),
+    // Steam units + revenue for this country over this period.
+    units: integer("units").notNull().default(0),
+    revenueUsd: real("revenue_usd").notNull().default(0),
+    // Retail (CD-key) activations for this country over this period. Kept
+    // separate from units so the UI can show pure Steam sales cleanly.
+    activations: integer("activations").notNull().default(0),
+    activationRevenueUsd: real("activation_revenue_usd").notNull().default(0),
+    source: text("source").notNull().default("portal_fetch"),
+    fetchedAt: text("fetched_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => ({
+    uniquePeriodCountry: uniqueIndex("steam_sales_country_unique").on(
+      table.productId,
+      table.periodStart,
+      table.periodEnd,
+      table.countryIso,
+    ),
+    productPeriodIdx: index("steam_sales_country_by_product_period").on(
+      table.productId,
+      table.periodStart,
+      table.periodEnd,
+    ),
+  }),
+);
+
+export const insertSteamSalesByCountrySchema = createInsertSchema(
+  steamSalesByCountryPeriod,
+).omit({
+  id: true,
+  fetchedAt: true,
+  updatedAt: true,
+});
+
+export type InsertSteamSalesByCountry = z.infer<typeof insertSteamSalesByCountrySchema>;
+export type SteamSalesByCountry = typeof steamSalesByCountryPeriod.$inferSelect;
 
 // ─── Steamworks Session Cookies (for Focus portal-page fetcher) ─────────────
 //

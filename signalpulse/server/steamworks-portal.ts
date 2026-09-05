@@ -64,8 +64,29 @@ export interface ParsedPortalPage {
   periodDlcRevenueUsd: number | null;
   // Per-SKU breakdown from the same box
   perSkuRows: PerSkuRow[];
+  // Per-country breakdown from the four `salesregion_panelN` /
+  // `activationsregion_panelN` tables. Aggregated across all countries for
+  // the URL's date range. `units` + `revenueUsd` come from the Sales
+  // panels (panel1 = units, panel3 = revenue), `activations` +
+  // `activationRevenueUsd` from the Activations panels (panel1 = units,
+  // panel3 = revenue). Countries are joined on ISO code.
+  //
+  // Added v3.30 (2026-09-05) to power the Sales-by-Country pages on
+  // SignalPulse + Promo Calendar. See shared/schema.ts
+  // `steam_sales_by_country_period` for storage.
+  countryBreakdown: CountryBreakdownRow[];
   // Raw HTML head for debugging (first 1KB)
   rawExcerpt?: string;
+}
+
+export interface CountryBreakdownRow {
+  /** ISO 3166-1 alpha-2 country code as reported by Steamworks. */
+  countryIso: string;
+  countryName: string;
+  units: number;
+  revenueUsd: number;
+  activations: number;
+  activationRevenueUsd: number;
 }
 
 export interface PerSkuRow {
@@ -184,6 +205,7 @@ export function parsePortalHtml(html: string, appId: number): ParsedPortalPage {
     periodDlcUnits: null,
     periodDlcRevenueUsd: null,
     perSkuRows: [],
+    countryBreakdown: [],
     rawExcerpt: html.slice(0, 1000),
   };
 
@@ -248,7 +270,152 @@ export function parsePortalHtml(html: string, appId: number): ParsedPortalPage {
   const periodLabelMatch = html.match(/units\s+sold,\s*([^(<]+?)\s*(?:\(|<)/i);
   if (periodLabelMatch) result.periodLabel = periodLabelMatch[1].trim();
 
+  // Per-country breakdown. Verified against a real SM2 portal fetch on
+  // 2026-09-05 (see one-shot probe removed after inspection).
+  //
+  // The country data lives in FOUR sibling <table> elements inside
+  // <div class="salesregion_panelN"> and <div class="activationsregion_panelN">
+  // wrappers:
+  //   - salesregion_panel1        → Country / Units / Percent of Units
+  //   - salesregion_panel3        → Country / Revenue / Percent of Revenue
+  //   - activationsregion_panel1  → Country / Activations / % of Activations
+  //   - activationsregion_panel3  → Country / Activation Revenue / %
+  //
+  // Each row is a <tr> with a leading <td> containing an anchor of the
+  // shape <a href="...country.php?countryCode=XX...">Country Name</a>
+  // followed by two data <td> cells (value, then percent). Panels also
+  // contain "breakdownParent" rows for the region-level totals (Africa,
+  // Central Asia, etc.) which we skip; only rows with a countryCode= URL
+  // param count.
+  result.countryBreakdown = extractCountryBreakdown(html);
+
   return result;
+}
+
+/**
+ * Extract the merged per-country breakdown from a Steamworks app-details
+ * HTML page. Reads the four `salesregion_panel*` / `activationsregion_panel*`
+ * tables, keys rows by ISO code, and returns one row per country with
+ * {units, revenueUsd, activations, activationRevenueUsd} — zero for any
+ * panel where that country didn't appear.
+ *
+ * Robustness:
+ *   - Rows without a `countryCode=` parameter (region roll-ups like Africa,
+ *     Central Asia) are skipped by design; they'd double-count the country
+ *     rows they contain.
+ *   - HTML entities in the country name (&amp;, &#39;) are decoded.
+ *   - Numeric cells with commas, currency prefixes, or percent suffixes are
+ *     stripped down to a plain float; unparseable cells default to 0.
+ *   - If a panel is missing entirely, its metric stays 0 across all
+ *     countries — downstream callers can still trust the ISO set is complete.
+ */
+export function extractCountryBreakdown(html: string): CountryBreakdownRow[] {
+  type Rows = Map<string, CountryBreakdownRow>;
+  const rows: Rows = new Map();
+
+  const upsert = (iso: string, name: string, patch: Partial<CountryBreakdownRow>) => {
+    const key = iso.toUpperCase();
+    if (!rows.has(key)) {
+      rows.set(key, {
+        countryIso: key,
+        countryName: name,
+        units: 0,
+        revenueUsd: 0,
+        activations: 0,
+        activationRevenueUsd: 0,
+      });
+    }
+    const row = rows.get(key)!;
+    // Prefer a filled name over an empty one; don't overwrite with '' if
+    // the country later appears in a panel without a rendered name.
+    if (patch.countryName && (!row.countryName || row.countryName.length < patch.countryName.length)) {
+      row.countryName = patch.countryName;
+    }
+    if (patch.units != null) row.units = patch.units;
+    if (patch.revenueUsd != null) row.revenueUsd = patch.revenueUsd;
+    if (patch.activations != null) row.activations = patch.activations;
+    if (patch.activationRevenueUsd != null) row.activationRevenueUsd = patch.activationRevenueUsd;
+  };
+
+  const panels: Array<{
+    className: string;
+    metric: "units" | "revenueUsd" | "activations" | "activationRevenueUsd";
+  }> = [
+    { className: "salesregion_panel1", metric: "units" },
+    { className: "salesregion_panel3", metric: "revenueUsd" },
+    { className: "activationsregion_panel1", metric: "activations" },
+    { className: "activationsregion_panel3", metric: "activationRevenueUsd" },
+  ];
+
+  for (const panel of panels) {
+    const panelHtml = extractPanelHtml(html, panel.className);
+    if (!panelHtml) continue;
+    for (const row of extractCountryRowsFromPanel(panelHtml)) {
+      upsert(row.iso, row.name, { [panel.metric]: row.value });
+    }
+  }
+
+  // Sort by revenue DESC then units DESC so the UI has a natural default
+  // ordering even without a table sort applied.
+  return Array.from(rows.values()).sort((a, b) => {
+    if (b.revenueUsd !== a.revenueUsd) return b.revenueUsd - a.revenueUsd;
+    return b.units - a.units;
+  });
+}
+
+/**
+ * Slice the sub-HTML for a `salesregion_panelN` or `activationsregion_panelN`
+ * <div> from a full page. Non-greedy grab up to the next
+ * `<div class="...region_panel" or end-of-panels container; we deliberately
+ * over-grab and rely on extractCountryRowsFromPanel's per-row regex to
+ * filter noise, so the exact terminator doesn't matter.
+ */
+function extractPanelHtml(html: string, className: string): string | null {
+  const openIdx = html.indexOf(`class="${className}"`);
+  if (openIdx === -1) return null;
+  // Grab a generous slice — the panels are ~20KB max in the SM2 sample.
+  return html.slice(openIdx, openIdx + 60000);
+}
+
+/**
+ * Pull one row per country from a panel HTML slice. Regex targets the
+ * exact shape emitted by Steamworks:
+ *   <td><a href="...country.php?countryCode=XX&...">Country Name</a></td>
+ *   <td ...>value</td>
+ *   <td ...>pct%</td>
+ *
+ * Region roll-up rows (Africa, Central Asia, ...) have no countryCode
+ * query param, so they naturally fall out of the match set.
+ */
+function extractCountryRowsFromPanel(
+  panelHtml: string,
+): Array<{ iso: string; name: string; value: number }> {
+  const results: Array<{ iso: string; name: string; value: number }> = [];
+  const rx =
+    /<td[^>]*>\s*<a[^>]*countryCode=([A-Z]{2})[^>]*>([^<]+)<\/a>\s*<\/td>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = rx.exec(panelHtml)) !== null) {
+    const iso = m[1].toUpperCase();
+    const name = decodeHtmlEntities(m[2].trim());
+    const value = parseNumericCell(m[3]);
+    results.push({ iso, name, value });
+  }
+  return results;
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function parseNumericCell(raw: string): number {
+  const clean = raw.replace(/[$,%\s]/g, "").trim();
+  const n = parseFloat(clean);
+  return Number.isFinite(n) ? n : 0;
 }
 
 /**

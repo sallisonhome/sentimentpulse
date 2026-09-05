@@ -6,6 +6,7 @@ import {
   type SteamPrepurchaseDaily, type InsertSteamPrepurchase, steamPrepurchaseDaily,
   type SteamSalesDaily, type InsertSteamSalesDaily, steamSalesDaily,
   type SteamSalesUploadBatch, type InsertSteamSalesUploadBatch, steamSalesUploadBatches,
+  type SteamSalesByCountry, type InsertSteamSalesByCountry, steamSalesByCountryPeriod,
   type SteamworksSession, type InsertSteamworksSession, steamworksSessions,
   type SteamFollowersDaily, type InsertSteamFollowers, steamFollowersDaily,
   type SteamWishlistRankDaily, type InsertSteamWishlistRank, steamWishlistRankDaily,
@@ -151,6 +152,33 @@ function initializeDatabase() {
       FOREIGN KEY (product_id) REFERENCES products(id)
     );
     CREATE INDEX IF NOT EXISTS steam_sales_batches_product_idx ON steam_sales_upload_batches(product_id, created_at DESC);
+
+    -- v3.30 (2026-09-05): per-country sales aggregates from the same portal
+    -- HTML the daily cron already downloads. See shared/schema.ts and
+    -- server/steamworks-portal.ts (parsePortalHtml → countryBreakdown).
+    -- Uniqueness key locked at (product_id, period_start, period_end,
+    -- country_iso) so re-fetching the same window is a no-op upsert.
+    CREATE TABLE IF NOT EXISTS steam_sales_by_country_period (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      period_start TEXT NOT NULL,
+      period_end TEXT NOT NULL,
+      granularity TEXT NOT NULL DEFAULT 'month',
+      country_iso TEXT NOT NULL,
+      country_name TEXT NOT NULL,
+      units INTEGER NOT NULL DEFAULT 0,
+      revenue_usd REAL NOT NULL DEFAULT 0,
+      activations INTEGER NOT NULL DEFAULT 0,
+      activation_revenue_usd REAL NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'portal_fetch',
+      fetched_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS steam_sales_country_unique
+      ON steam_sales_by_country_period(product_id, period_start, period_end, country_iso);
+    CREATE INDEX IF NOT EXISTS steam_sales_country_by_product_period
+      ON steam_sales_by_country_period(product_id, period_start, period_end);
 
     -- Steamworks session cookies for portal-page fetcher (Focus titles).
     CREATE TABLE IF NOT EXISTS steamworks_sessions (
@@ -602,6 +630,14 @@ export interface IStorage {
   ): number | null;
   upsertSteamSalesRows(rows: InsertSteamSalesDaily[]): { inserted: number; updated: number };
   deleteSteamSalesByBatch(batchId: string): number;
+
+  // Steam Sales by Country (period aggregates from portal HTML). See
+  // shared/schema.ts steam_sales_by_country_period.
+  upsertSteamSalesByCountry(rows: InsertSteamSalesByCountry[]): { inserted: number; updated: number };
+  getSteamSalesByCountry(
+    productId: number,
+    opts?: { since?: string; until?: string; granularity?: "day" | "month" | "custom" | "any" },
+  ): SteamSalesByCountry[];
 
   // Steam Sales upload batches (audit trail for CSV uploads)
   createSteamSalesUploadBatch(data: InsertSteamSalesUploadBatch): SteamSalesUploadBatch;
@@ -1425,6 +1461,87 @@ export class DatabaseStorage implements IStorage {
     db.delete(steamSalesUploadBatches)
       .where(eq(steamSalesUploadBatches.id, batchId)).run();
     return res.changes as number;
+  }
+
+  // ─── Steam Sales By Country (period aggregates from portal HTML) ────────
+  //
+  // Mirrors upsertSteamSalesRows semantics: bulk transaction, insert-or-
+  // update on the (product_id, period_start, period_end, country_iso)
+  // unique index. Re-fetching the same date-range window for the same
+  // product is a no-op UPDATE, so re-running the monthly cron / backfill
+  // is safe.
+
+  upsertSteamSalesByCountry(
+    rows: InsertSteamSalesByCountry[],
+  ): { inserted: number; updated: number } {
+    const now = this.now();
+    let inserted = 0;
+    let updated = 0;
+    const runOne = (r: InsertSteamSalesByCountry) => {
+      try {
+        db.insert(steamSalesByCountryPeriod).values({
+          ...r,
+          fetchedAt: now,
+          updatedAt: now,
+        }).run();
+        inserted++;
+      } catch (err: any) {
+        if (err.code === "SQLITE_CONSTRAINT_UNIQUE") {
+          db.update(steamSalesByCountryPeriod)
+            .set({
+              granularity: r.granularity,
+              countryName: r.countryName,
+              units: r.units,
+              revenueUsd: r.revenueUsd,
+              activations: r.activations,
+              activationRevenueUsd: r.activationRevenueUsd,
+              source: r.source,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(steamSalesByCountryPeriod.productId, r.productId),
+              eq(steamSalesByCountryPeriod.periodStart, r.periodStart),
+              eq(steamSalesByCountryPeriod.periodEnd, r.periodEnd),
+              eq(steamSalesByCountryPeriod.countryIso, r.countryIso),
+            )).run();
+          updated++;
+        } else {
+          throw err;
+        }
+      }
+    };
+    const tx = sqlite.transaction(() => {
+      for (const r of rows) runOne(r);
+    });
+    tx();
+    return { inserted, updated };
+  }
+
+  /**
+   * Read rows for a product overlapping [since, until]. Overlap = the row's
+   * [period_start, period_end] intersects the requested window. Callers
+   * typically then aggregate in application code across granularity levels.
+   *
+   * When granularity='any' (default), all granularities are returned; the
+   * caller can prefer 'day' > 'month' > 'custom' when overlaps exist.
+   */
+  getSteamSalesByCountry(
+    productId: number,
+    opts?: { since?: string; until?: string; granularity?: "day" | "month" | "custom" | "any" },
+  ): SteamSalesByCountry[] {
+    const conds = [eq(steamSalesByCountryPeriod.productId, productId)];
+    if (opts?.since) conds.push(gte(steamSalesByCountryPeriod.periodEnd, opts.since));
+    if (opts?.until) conds.push(lte(steamSalesByCountryPeriod.periodStart, opts.until));
+    if (opts?.granularity && opts.granularity !== "any") {
+      conds.push(eq(steamSalesByCountryPeriod.granularity, opts.granularity));
+    }
+    return db.select().from(steamSalesByCountryPeriod)
+      .where(and(...conds))
+      .orderBy(
+        asc(steamSalesByCountryPeriod.periodStart),
+        asc(steamSalesByCountryPeriod.countryIso),
+      )
+      .all();
   }
 
   // ─── Steam Sales Upload Batches ──────────────────────────────────────────
