@@ -1,0 +1,248 @@
+name: SignalPulse — Sales by Country monthly backfill
+
+# One-shot workflow: for every SignalPulse product with a steamAppId, walk
+# calendar months from the product's first-ingested-sales-day through last
+# month, calling the portal-fetch endpoint once per month. Each fetch
+# writes both steam_sales_daily rows AND steam_sales_by_country_period rows
+# (per the v3.30 ingestion wiring), so this catches up the country table
+# on the historic months that only ever had monthly aggregates.
+#
+# Safe to re-run: portal-fetch upserts by (product_id, period_start,
+# period_end, country_iso) so re-fetching the same month is idempotent.
+#
+# Runtime estimate: ~3s/fetch × 12 months × 4-5 products = 3-4 minutes
+# (varies with title age).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true = list what WOULD run and exit without fetching"
+        required: false
+        default: "false"
+      from_month:
+        description: "Optional YYYY-MM lower bound override (skip earlier months even if data exists)"
+        required: false
+        default: ""
+      to_month:
+        description: "Optional YYYY-MM upper bound override (default: previous full month)"
+        required: false
+        default: ""
+      only_product_id:
+        description: "Optional single product_id to backfill (default: all products with steamAppId)"
+        required: false
+        default: ""
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sanity check — Steamworks session configured
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 <<'EOF'
+            set -euo pipefail
+            echo "── Session status ──"
+            resp=$(curl -sS http://127.0.0.1:5000/api/steam/session)
+            echo "$resp"
+            configured=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('configured', False))")
+            if [ "$configured" != "True" ]; then
+              echo "ERROR: Steamworks session not configured. Backfill aborted."
+              exit 1
+            fi
+          EOF
+
+      - name: Run monthly country backfill
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          FROM_MONTH: ${{ github.event.inputs.from_month }}
+          TO_MONTH: ${{ github.event.inputs.to_month }}
+          ONLY_PRODUCT_ID: ${{ github.event.inputs.only_product_id }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" FROM_MONTH="$FROM_MONTH" TO_MONTH="$TO_MONTH" ONLY_PRODUCT_ID="$ONLY_PRODUCT_ID" \
+              bash -s <<'EOF'
+            set -euo pipefail
+
+            DRY_RUN="${DRY_RUN:-false}"
+            FROM_MONTH="${FROM_MONTH:-}"
+            TO_MONTH="${TO_MONTH:-}"
+            ONLY_PRODUCT_ID="${ONLY_PRODUCT_ID:-}"
+
+            DB=/opt/sentimentpulse/signalpulse/data.db
+            API=http://127.0.0.1:5000
+            LOG=/tmp/country-backfill-$(date +%Y%m%d-%H%M%S).log
+
+            echo "── Country backfill starting ──" | tee -a "$LOG"
+            echo "  dry_run=$DRY_RUN  from=$FROM_MONTH  to=$TO_MONTH  only=$ONLY_PRODUCT_ID" | tee -a "$LOG"
+            echo "  db=$DB  api=$API  log=$LOG" | tee -a "$LOG"
+
+            # ── 1. Discover products with steamAppId ──────────────────────
+            product_filter=""
+            if [ -n "$ONLY_PRODUCT_ID" ]; then
+              product_filter="AND id = $ONLY_PRODUCT_ID"
+            fi
+            products=$(sqlite3 -separator "|" "$DB" "SELECT id, title, steam_app_id FROM products WHERE steam_app_id IS NOT NULL $product_filter ORDER BY id;")
+            if [ -z "$products" ]; then
+              echo "No products found. Exiting."
+              exit 0
+            fi
+
+            echo ""
+            echo "── Products to process ──" | tee -a "$LOG"
+            echo "$products" | tee -a "$LOG"
+
+            # ── 2. Compute default upper bound (previous full month) ─────
+            if [ -z "$TO_MONTH" ]; then
+              TO_MONTH=$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)
+            fi
+            echo ""
+            echo "  Effective upper bound: $TO_MONTH" | tee -a "$LOG"
+
+            # ── 3. For each product, discover the earliest month with a sales row ──
+            total_fetches=0
+            total_products=0
+            declare -A PLAN  # product_id => "YYYY-MM YYYY-MM YYYY-MM ..."
+
+            IFS=$'\n'
+            for row in $products; do
+              pid=$(echo "$row" | cut -d'|' -f1)
+              title=$(echo "$row" | cut -d'|' -f2)
+              appid=$(echo "$row" | cut -d'|' -f3)
+
+              # Earliest ingested day for this product (if any)
+              earliest_row=$(sqlite3 "$DB" "SELECT MIN(sale_date) FROM steam_sales_daily WHERE product_id = $pid;")
+              if [ -z "$earliest_row" ] || [ "$earliest_row" = "" ]; then
+                # No sales history at all — probably a pre-launch title. Skip.
+                echo "  [skip] pid=$pid title=$title appid=$appid — no steam_sales_daily rows yet" | tee -a "$LOG"
+                continue
+              fi
+
+              start_month=$(echo "$earliest_row" | cut -c1-7)
+              # Apply from_month override if set and later than start_month
+              if [ -n "$FROM_MONTH" ] && [ "$FROM_MONTH" \> "$start_month" ]; then
+                start_month="$FROM_MONTH"
+              fi
+
+              echo "  pid=$pid title=$title appid=$appid earliest=$earliest_row start=$start_month to=$TO_MONTH" | tee -a "$LOG"
+
+              # Generate month list from start_month to TO_MONTH inclusive
+              months=""
+              cur="$start_month"
+              while [ "$cur" \< "$TO_MONTH" ] || [ "$cur" = "$TO_MONTH" ]; do
+                months="$months $cur"
+                # Increment month
+                y=$(echo "$cur" | cut -d'-' -f1)
+                m=$(echo "$cur" | cut -d'-' -f2 | sed 's/^0//')
+                m=$((m + 1))
+                if [ $m -gt 12 ]; then
+                  m=1
+                  y=$((y + 1))
+                fi
+                cur=$(printf "%04d-%02d" "$y" "$m")
+              done
+              PLAN[$pid]="$months"
+              n=$(echo "$months" | wc -w)
+              total_fetches=$((total_fetches + n))
+              total_products=$((total_products + 1))
+            done
+
+            echo ""
+            echo "── Plan summary ──" | tee -a "$LOG"
+            echo "  products=$total_products  total_month_fetches=$total_fetches  eta=$((total_fetches * 3))s" | tee -a "$LOG"
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo ""
+              echo "DRY_RUN=true — exiting without fetching."
+              for pid in "${!PLAN[@]}"; do
+                echo "  pid=$pid months: ${PLAN[$pid]}" | tee -a "$LOG"
+              done
+              exit 0
+            fi
+
+            # ── 4. Execute: month-by-month portal-fetch per product ────
+            echo ""
+            echo "── Fetching ──" | tee -a "$LOG"
+
+            ok=0
+            fail=0
+            for pid in "${!PLAN[@]}"; do
+              months="${PLAN[$pid]}"
+              for month in $months; do
+                y=$(echo "$month" | cut -d'-' -f1)
+                m=$(echo "$month" | cut -d'-' -f2)
+                # First day of month
+                start_date="$month-01"
+                # Last day of month
+                end_date=$(date -u -d "$start_date +1 month -1 day" +%Y-%m-%d)
+
+                echo -n "  pid=$pid $start_date → $end_date ... " | tee -a "$LOG"
+
+                # Portal fetch with a 30s cap; retry once on failure
+                for attempt in 1 2; do
+                  resp=$(curl -sS --max-time 30 -X POST "$API/api/products/$pid/steam/portal-fetch" \
+                              -H "Content-Type: application/json" \
+                              -d "{\"dateStart\":\"$start_date\",\"dateEnd\":\"$end_date\"}" 2>&1) || {
+                    if [ $attempt -eq 1 ]; then
+                      echo "curl-fail attempt=1 retrying in 5s" | tee -a "$LOG"
+                      sleep 5
+                      continue
+                    fi
+                    echo "FAIL (curl): $resp" | tee -a "$LOG"
+                    fail=$((fail + 1))
+                    break
+                  }
+                  # Parse result
+                  status=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ok', False))" 2>/dev/null || echo "parse-fail")
+                  if [ "$status" = "True" ]; then
+                    rows_ing=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rowsIngested', 0))")
+                    country_ing=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('countryRowsIngested', 0))")
+                    echo "OK sales=$rows_ing country_rows=$country_ing" | tee -a "$LOG"
+                    ok=$((ok + 1))
+                    break
+                  else
+                    if [ $attempt -eq 1 ]; then
+                      echo "not-ok attempt=1 retrying in 5s ($resp)" | tee -a "$LOG"
+                      sleep 5
+                      continue
+                    fi
+                    echo "FAIL: $resp" | tee -a "$LOG"
+                    fail=$((fail + 1))
+                    break
+                  fi
+                done
+
+                # Gentle on Steamworks: 1s between fetches
+                sleep 1
+              done
+            done
+
+            echo ""
+            echo "── Backfill complete ──" | tee -a "$LOG"
+            echo "  ok=$ok  fail=$fail  log=$LOG" | tee -a "$LOG"
+
+            # ── 5. Post-backfill audit ─────────────────────────────────
+            echo ""
+            echo "── steam_sales_by_country_period after backfill ──" | tee -a "$LOG"
+            sqlite3 -header "$DB" "
+              SELECT p.title, sbc.granularity, COUNT(*) AS rows, COUNT(DISTINCT sbc.country_iso) AS countries,
+                     MIN(sbc.period_start) AS earliest, MAX(sbc.period_end) AS latest
+              FROM steam_sales_by_country_period sbc
+              JOIN products p ON p.id = sbc.product_id
+              GROUP BY sbc.product_id, sbc.granularity
+              ORDER BY p.title, sbc.granularity;
+            " | tee -a "$LOG"
+
+            if [ $fail -gt 0 ]; then
+              echo ""
+              echo "⚠ $fail fetches failed. Check log: $LOG"
+              exit 1
+            fi
+          EOF
