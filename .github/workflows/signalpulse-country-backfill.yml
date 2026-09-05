@@ -113,6 +113,9 @@ jobs:
             total_products=0
             declare -A PLAN  # product_id => "YYYY-MM YYYY-MM YYYY-MM ..."
 
+            # Save IFS so we can restore it before the fetching loop (which
+            # relies on word-splitting on whitespace, not newlines).
+            SAVED_IFS="$IFS"
             IFS=$'\n'
             for row in $products; do
               pid=$(echo "$row" | cut -d'|' -f1)
@@ -156,6 +159,12 @@ jobs:
               total_fetches=$((total_fetches + n))
               total_products=$((total_products + 1))
             done
+            # Restore default word-splitting BEFORE the fetching loop so
+            # `for month in $months` splits on whitespace (not just newlines).
+            # Bug hit 2026-09-05: without this restore, the whole space-
+            # separated month string was treated as a single value and the
+            # very first fetch failed with `date: invalid date`.
+            IFS="$SAVED_IFS"
 
             echo ""
             echo "── Plan summary ──" | tee -a "$LOG"
