@@ -2000,7 +2000,7 @@ export async function registerRoutes(
   //
   // Response is normalized: one row per country_iso with units, revenue_usd,
   // asp_usd, and pct_of_total.
-  app.get("/api/products/:id/sales-by-country", (req, res) => {
+  app.get("/api/products/:id/sales-by-country", async (req, res) => {
     try {
       const productId = Number(req.params.id);
       if (!Number.isFinite(productId)) return res.status(400).json({ error: "Bad product id" });
@@ -2012,74 +2012,17 @@ export async function registerRoutes(
       if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) return res.status(400).json({ error: "since must be YYYY-MM-DD" });
       if (until && !/^\d{4}-\d{2}-\d{2}$/.test(until)) return res.status(400).json({ error: "until must be YYYY-MM-DD" });
 
-      // Pull day-level rows first. For any date in the window that is NOT
-      // covered by a day-level row, fall back to month-level rows whose
-      // period intersects the window. 'custom' rows only used when nothing
-      // else covers that period.
-      const dayRows = storage.getSteamSalesByCountry(productId, { since, until, granularity: "day" });
-      const monthRows = storage.getSteamSalesByCountry(productId, { since, until, granularity: "month" });
-      const customRows = storage.getSteamSalesByCountry(productId, { since, until, granularity: "custom" });
-
-      // Build a Set of dates covered by day rows to know which months to
-      // include partially or fully. Simpler heuristic for v1: if ANY day row
-      // exists in a month, prefer day-level totals for that month; otherwise
-      // use the month row. Custom rows only used when neither exists.
-      const dayMonthsCovered = new Set<string>();
-      for (const r of dayRows) dayMonthsCovered.add(r.periodStart.slice(0, 7));
-
-      const monthsCoveredByMonthRows = new Set<string>();
-      for (const r of monthRows) monthsCoveredByMonthRows.add(r.periodStart.slice(0, 7));
-
-      // Aggregate per-country.
-      type Agg = { iso: string; name: string; units: number; revenue: number };
-      const byCountry = new Map<string, Agg>();
-      const push = (iso: string, name: string, u: number, r: number) => {
-        const cur = byCountry.get(iso);
-        if (cur) { cur.units += u; cur.revenue += r; }
-        else byCountry.set(iso, { iso, name, units: u, revenue: r });
-      };
-
-      for (const r of dayRows) push(r.countryIso, r.countryName, r.units, r.revenueUsd);
-      for (const r of monthRows) {
-        const key = r.periodStart.slice(0, 7);
-        if (dayMonthsCovered.has(key)) continue; // day rows win
-        push(r.countryIso, r.countryName, r.units, r.revenueUsd);
-      }
-      for (const r of customRows) {
-        const key = r.periodStart.slice(0, 7);
-        if (dayMonthsCovered.has(key) || monthsCoveredByMonthRows.has(key)) continue;
-        push(r.countryIso, r.countryName, r.units, r.revenueUsd);
-      }
-
-      const totalRevenue = Array.from(byCountry.values()).reduce((s, r) => s + r.revenue, 0);
-      const totalUnits = Array.from(byCountry.values()).reduce((s, r) => s + r.units, 0);
-
-      const countries = Array.from(byCountry.values())
-        .map(r => ({
-          country_iso: r.iso,
-          country_name: r.name,
-          units: r.units,
-          revenue_usd: r.revenue,
-          asp_usd: r.units > 0 ? r.revenue / r.units : 0,
-          pct_of_total: totalRevenue > 0 ? r.revenue / totalRevenue : 0,
-        }))
-        .sort((a, b) => b.revenue_usd - a.revenue_usd);
-
+      // v3.32 (2026-09-05): delegate to the shared reconciliation helper.
+      // Applies steam_sales_daily authoritative totals against per-country
+      // share (pct_of_revenue) rows so country totals reconcile exactly.
+      const { computeSalesByCountry } = await import("./promo-support-routes");
+      const result = computeSalesByCountry(productId, since, until);
       res.json({
         product_id: productId,
         product_title: product.title,
         since: since ?? null,
         until: until ?? null,
-        total_units: totalUnits,
-        total_revenue_usd: totalRevenue,
-        asp_usd: totalUnits > 0 ? totalRevenue / totalUnits : 0,
-        countries_count: countries.length,
-        source_row_counts: {
-          day: dayRows.length,
-          month: monthRows.length,
-          custom: customRows.length,
-        },
-        countries,
+        ...result,
       });
     } catch (err: any) {
       console.error(`[routes] sales-by-country error: ${err.message}`);
@@ -2089,57 +2032,37 @@ export async function registerRoutes(
 
   // Cross-product aggregate: sum sales-by-country across every product with
   // a steamAppId. Feeds the top-nav Sales by Country page in SignalPulse.
-  app.get("/api/sales-by-country/aggregate", (req, res) => {
+  app.get("/api/sales-by-country/aggregate", async (req, res) => {
     try {
       const since = String(req.query.since ?? "").trim() || undefined;
       const until = String(req.query.until ?? "").trim() || undefined;
       if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) return res.status(400).json({ error: "since must be YYYY-MM-DD" });
       if (until && !/^\d{4}-\d{2}-\d{2}$/.test(until)) return res.status(400).json({ error: "until must be YYYY-MM-DD" });
 
+      // v3.32: use the shared reconciliation helper per product so the
+      // aggregate is a true sum of per-product reconciled totals.
+      const { computeSalesByCountry } = await import("./promo-support-routes");
       const products = storage.getAllProducts().filter(p => p.steamAppId);
 
       type Agg = { iso: string; name: string; units: number; revenue: number };
       const byCountry = new Map<string, Agg>();
-      const perProduct: Array<{ product_id: number; product_title: string; total_revenue_usd: number; total_units: number; source_row_counts: { day: number; month: number; custom: number } }> = [];
+      const perProduct: Array<{ product_id: number; product_title: string; total_revenue_usd: number; total_units: number; days_with_shares: number; days_in_window: number; shares_source: string }> = [];
 
       for (const p of products) {
-        const dayRows = storage.getSteamSalesByCountry(p.id, { since, until, granularity: "day" });
-        const monthRows = storage.getSteamSalesByCountry(p.id, { since, until, granularity: "month" });
-        const customRows = storage.getSteamSalesByCountry(p.id, { since, until, granularity: "custom" });
-
-        const dayMonthsCovered = new Set<string>();
-        for (const r of dayRows) dayMonthsCovered.add(r.periodStart.slice(0, 7));
-        const monthsCoveredByMonthRows = new Set<string>();
-        for (const r of monthRows) monthsCoveredByMonthRows.add(r.periodStart.slice(0, 7));
-
-        let productUnits = 0;
-        let productRevenue = 0;
-        const acc = (iso: string, name: string, u: number, r: number) => {
-          const cur = byCountry.get(iso);
-          if (cur) { cur.units += u; cur.revenue += r; }
-          else byCountry.set(iso, { iso, name, units: u, revenue: r });
-          productUnits += u;
-          productRevenue += r;
-        };
-
-        for (const r of dayRows) acc(r.countryIso, r.countryName, r.units, r.revenueUsd);
-        for (const r of monthRows) {
-          const key = r.periodStart.slice(0, 7);
-          if (dayMonthsCovered.has(key)) continue;
-          acc(r.countryIso, r.countryName, r.units, r.revenueUsd);
+        const r = computeSalesByCountry(p.id, since, until);
+        for (const c of r.countries) {
+          const cur = byCountry.get(c.country_iso);
+          if (cur) { cur.units += c.units; cur.revenue += c.revenue_usd; }
+          else byCountry.set(c.country_iso, { iso: c.country_iso, name: c.country_name, units: c.units, revenue: c.revenue_usd });
         }
-        for (const r of customRows) {
-          const key = r.periodStart.slice(0, 7);
-          if (dayMonthsCovered.has(key) || monthsCoveredByMonthRows.has(key)) continue;
-          acc(r.countryIso, r.countryName, r.units, r.revenueUsd);
-        }
-
         perProduct.push({
           product_id: p.id,
           product_title: p.title,
-          total_revenue_usd: productRevenue,
-          total_units: productUnits,
-          source_row_counts: { day: dayRows.length, month: monthRows.length, custom: customRows.length },
+          total_revenue_usd: r.total_revenue_usd,
+          total_units: r.total_units,
+          days_with_shares: r.days_with_shares,
+          days_in_window: r.days_in_window,
+          shares_source: r.shares_source,
         });
       }
 

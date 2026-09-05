@@ -248,6 +248,16 @@ export const steamSalesByCountryPeriod = sqliteTable(
     // separate from units so the UI can show pure Steam sales cleanly.
     activations: integer("activations").notNull().default(0),
     activationRevenueUsd: real("activation_revenue_usd").notNull().default(0),
+    // v3.32 (2026-09-05): SHARE columns — primary source of truth for
+    // country-level splits. 0..1 fractions (0.419 = 41.9%). Nullable
+    // because rows written before v3.32 don't have them; when null, the
+    // API falls back to computing shares from units/revenue_usd.
+    // Consumers should compute per-country revenue as
+    //   pctOfRevenue * <authoritative steam_sales_daily total for window>
+    // to avoid parseNumericCell's K/M suffix truncation bug on the raw
+    // dollar cells.
+    pctOfUnits: real("pct_of_units"),
+    pctOfRevenue: real("pct_of_revenue"),
     source: text("source").notNull().default("portal_fetch"),
     fetchedAt: text("fetched_at").notNull(),
     updatedAt: text("updated_at").notNull(),

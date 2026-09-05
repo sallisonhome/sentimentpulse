@@ -170,6 +170,11 @@ function initializeDatabase() {
       revenue_usd REAL NOT NULL DEFAULT 0,
       activations INTEGER NOT NULL DEFAULT 0,
       activation_revenue_usd REAL NOT NULL DEFAULT 0,
+      -- v3.32 (2026-09-05): country share fields, 0..1 fractions. Nullable
+      -- so rows written pre-v3.32 stay untouched; API falls back to
+      -- units/revenue_usd shares in that case.
+      pct_of_units REAL,
+      pct_of_revenue REAL,
       source TEXT NOT NULL DEFAULT 'portal_fetch',
       fetched_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -431,6 +436,9 @@ function runMigrations() {
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_requested_at", "refresh_requested_at TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_token_value", "refresh_token_value TEXT");
   migrateAddColumnIfMissing("launch_forecast_snapshots", "ps5_prepurchase_count_at_lock", "ps5_prepurchase_count_at_lock INTEGER");
+  // v3.32 (2026-09-05)
+  migrateAddColumnIfMissing("steam_sales_by_country_period", "pct_of_units", "pct_of_units REAL");
+  migrateAddColumnIfMissing("steam_sales_by_country_period", "pct_of_revenue", "pct_of_revenue REAL");
 }
 
 initializeDatabase();
@@ -1495,6 +1503,10 @@ export class DatabaseStorage implements IStorage {
               revenueUsd: r.revenueUsd,
               activations: r.activations,
               activationRevenueUsd: r.activationRevenueUsd,
+              // v3.32: overwrite pct fields on re-ingest, including with
+              // null when the current fetch didn't include a share cell.
+              pctOfUnits: r.pctOfUnits ?? null,
+              pctOfRevenue: r.pctOfRevenue ?? null,
               source: r.source,
               updatedAt: now,
             })

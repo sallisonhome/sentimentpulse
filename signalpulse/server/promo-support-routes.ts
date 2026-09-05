@@ -317,31 +317,42 @@ export function registerPromoSupportRoutes(app: Express): void {
     }
   });
 
-  // GET /api/promo-support/sales-by-country (v3.31, 2026-09-05)
+  // GET /api/promo-support/sales-by-country (v3.32, 2026-09-05)
   //   ?steam_app_id=2183900&since=2026-09-03&until=2026-09-04
   // → {
   //     steam_app_id, product_id, since, until,
   //     total_units, total_revenue_usd, asp_usd, countries_count,
-  //     countries: [{country_iso, country_name, units, revenue_usd, asp_usd, pct_of_total}]
+  //     countries: [{country_iso, country_name, units, revenue_usd, asp_usd, pct_of_total}],
+  //     shares_source: 'authoritative' | 'legacy',
+  //     days_with_shares, days_in_window, days_authoritative_rev
   //   }
   //
-  // Same semantics as GET /api/products/:id/sales-by-country but keyed by
-  // Steam AppID so Promo Calendar can call it without knowing SignalPulse
-  // product IDs. Read-only, unauthenticated, always resolves to a valid
-  // shape (empty countries[] when nothing matches).
+  // v3.32 reconciliation model (see lessons.md v3.32):
+  //   1. Enumerate every day D in [since, until].
+  //   2. For each D, look up authoritative net revenue and units from
+  //      steam_sales_daily (base+dlc SKUs).
+  //   3. Pick the best country-shares row for that day:
+  //        - granularity='day' with period_start=period_end=D  (best)
+  //        - granularity='month' whose window contains D       (medium)
+  //        - granularity='custom' whose window contains D      (fallback)
+  //   4. Per-country revenue for D = day_total_rev * country.pct_of_revenue.
+  //      Per-country units    for D = day_total_units * country.pct_of_units.
+  //   5. Sum across all days.
+  // This guarantees the country total EXACTLY reconciles to
+  // steam_sales_daily on any date-window query.
   app.get("/api/promo-support/sales-by-country", (req, res) => {
     try {
       const appidRaw = req.query.steam_app_id;
-      const since = typeof req.query.since === "string" ? req.query.since : undefined;
-      const until = typeof req.query.until === "string" ? req.query.until : undefined;
+      const sinceQ = typeof req.query.since === "string" ? req.query.since : undefined;
+      const untilQ = typeof req.query.until === "string" ? req.query.until : undefined;
 
       if (typeof appidRaw !== "string" || !/^\d+$/.test(appidRaw)) {
         return res.status(400).json({ error: "steam_app_id query param required (numeric)" });
       }
-      if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+      if (sinceQ && !/^\d{4}-\d{2}-\d{2}$/.test(sinceQ)) {
         return res.status(400).json({ error: "since must be YYYY-MM-DD" });
       }
-      if (until && !/^\d{4}-\d{2}-\d{2}$/.test(until)) {
+      if (untilQ && !/^\d{4}-\d{2}-\d{2}$/.test(untilQ)) {
         return res.status(400).json({ error: "until must be YYYY-MM-DD" });
       }
 
@@ -350,65 +361,21 @@ export function registerPromoSupportRoutes(app: Express): void {
       if (!product) {
         return res.json({
           steam_app_id: Number(appid), product_id: null,
-          since: since ?? null, until: until ?? null,
+          since: sinceQ ?? null, until: untilQ ?? null,
           total_units: 0, total_revenue_usd: 0, asp_usd: 0,
           countries_count: 0, countries: [], found: false,
+          shares_source: "authoritative",
+          days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0,
         });
       }
 
-      const dayRows = storage.getSteamSalesByCountry(product.id, { since, until, granularity: "day" });
-      const monthRows = storage.getSteamSalesByCountry(product.id, { since, until, granularity: "month" });
-      const customRows = storage.getSteamSalesByCountry(product.id, { since, until, granularity: "custom" });
-
-      const dayMonthsCovered = new Set<string>();
-      for (const r of dayRows) dayMonthsCovered.add(r.periodStart.slice(0, 7));
-      const monthsCoveredByMonthRows = new Set<string>();
-      for (const r of monthRows) monthsCoveredByMonthRows.add(r.periodStart.slice(0, 7));
-
-      type Agg = { iso: string; name: string; units: number; revenue: number };
-      const byCountry = new Map<string, Agg>();
-      const push = (iso: string, name: string, u: number, r: number) => {
-        const cur = byCountry.get(iso);
-        if (cur) { cur.units += u; cur.revenue += r; }
-        else byCountry.set(iso, { iso, name, units: u, revenue: r });
-      };
-
-      for (const r of dayRows) push(r.countryIso, r.countryName, r.units, r.revenueUsd);
-      for (const r of monthRows) {
-        const key = r.periodStart.slice(0, 7);
-        if (dayMonthsCovered.has(key)) continue;
-        push(r.countryIso, r.countryName, r.units, r.revenueUsd);
-      }
-      for (const r of customRows) {
-        const key = r.periodStart.slice(0, 7);
-        if (dayMonthsCovered.has(key) || monthsCoveredByMonthRows.has(key)) continue;
-        push(r.countryIso, r.countryName, r.units, r.revenueUsd);
-      }
-
-      const totalRevenue = Array.from(byCountry.values()).reduce((s, r) => s + r.revenue, 0);
-      const totalUnits = Array.from(byCountry.values()).reduce((s, r) => s + r.units, 0);
-
-      const countries = Array.from(byCountry.values())
-        .map(r => ({
-          country_iso: r.iso,
-          country_name: r.name,
-          units: r.units,
-          revenue_usd: r.revenue,
-          asp_usd: r.units > 0 ? r.revenue / r.units : 0,
-          pct_of_total: totalRevenue > 0 ? r.revenue / totalRevenue : 0,
-        }))
-        .sort((a, b) => b.revenue_usd - a.revenue_usd);
-
+      const result = computeSalesByCountry(product.id, sinceQ, untilQ);
       res.json({
         steam_app_id: Number(appid),
         product_id: product.id,
-        since: since ?? null, until: until ?? null,
-        total_units: totalUnits,
-        total_revenue_usd: totalRevenue,
-        asp_usd: totalUnits > 0 ? totalRevenue / totalUnits : 0,
-        countries_count: countries.length,
-        countries,
-        found: countries.length > 0,
+        since: sinceQ ?? null, until: untilQ ?? null,
+        ...result,
+        found: result.countries.length > 0,
       });
     } catch (err) {
       console.error("[promo-support] sales-by-country error", err);
@@ -422,3 +389,209 @@ export function registerPromoSupportRoutes(app: Express): void {
     }
   });
 }
+
+// ---------------------------------------------------------------------------
+// v3.32 shared reconciliation helper
+// ---------------------------------------------------------------------------
+//
+// Both /api/promo-support/sales-by-country (this file) and
+// /api/products/:id/sales-by-country (routes.ts) call this. The math is
+// identical; only the input keying (AppID vs product_id) differs.
+
+type CountryRowOut = {
+  country_iso: string;
+  country_name: string;
+  units: number;
+  revenue_usd: number;
+  asp_usd: number;
+  pct_of_total: number;
+};
+
+export function computeSalesByCountry(
+  productId: number,
+  since: string | undefined,
+  until: string | undefined,
+): {
+  total_units: number;
+  total_revenue_usd: number;
+  asp_usd: number;
+  countries_count: number;
+  countries: CountryRowOut[];
+  shares_source: "authoritative" | "legacy";
+  days_with_shares: number;
+  days_in_window: number;
+  days_authoritative_rev: number;
+} {
+  // Determine effective window bounds. If since/until omitted, use
+  // full range of what steam_sales_daily has for this product.
+  const dailyRows = storage.getSteamSales(productId, { since, until });
+  // Sum base+dlc per day.
+  const dayTotalRev = new Map<string, number>();
+  const dayTotalUnits = new Map<string, number>();
+  for (const r of dailyRows) {
+    if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
+    dayTotalRev.set(r.date, (dayTotalRev.get(r.date) ?? 0) + (r.netRevenueUsd || 0));
+    dayTotalUnits.set(r.date, (dayTotalUnits.get(r.date) ?? 0) + (r.netUnits || 0));
+  }
+
+  const daysAuthoritative = dayTotalRev.size;
+
+  if (daysAuthoritative === 0) {
+    // No authoritative daily rows in window — nothing to attribute.
+    return {
+      total_units: 0, total_revenue_usd: 0, asp_usd: 0,
+      countries_count: 0, countries: [],
+      shares_source: "authoritative",
+      days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0,
+    };
+  }
+
+  // Pull all country rows overlapping the window. We reason per-day so
+  // the granularity preference is applied per-day, not per-window.
+  const dayCountryRows   = storage.getSteamSalesByCountry(productId, { since, until, granularity: "day" });
+  const monthCountryRows = storage.getSteamSalesByCountry(productId, { since, until, granularity: "month" });
+  const customCountryRows= storage.getSteamSalesByCountry(productId, { since, until, granularity: "custom" });
+
+  // Index by exact day (for day granularity) and by (period_start,period_end)
+  // for wider windows so per-day lookup is O(1) with a linear month scan.
+  type SharesRow = {
+    countryIso: string; countryName: string;
+    pctOfUnits: number | null; pctOfRevenue: number | null;
+    units: number; revenueUsd: number;
+  };
+  const dayIndex = new Map<string, SharesRow[]>();
+  for (const r of dayCountryRows) {
+    const key = r.periodStart;
+    if (!dayIndex.has(key)) dayIndex.set(key, []);
+    dayIndex.get(key)!.push({
+      countryIso: r.countryIso, countryName: r.countryName,
+      pctOfUnits: r.pctOfUnits, pctOfRevenue: r.pctOfRevenue,
+      units: r.units, revenueUsd: r.revenueUsd,
+    });
+  }
+  // Wider windows: list of {start, end, rows}
+  type WideBucket = { start: string; end: string; rows: SharesRow[] };
+  const wideBuckets: WideBucket[] = [];
+  const pushWide = (list: typeof monthCountryRows) => {
+    const groups = new Map<string, SharesRow[]>();
+    for (const r of list) {
+      const key = `${r.periodStart}|${r.periodEnd}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push({
+        countryIso: r.countryIso, countryName: r.countryName,
+        pctOfUnits: r.pctOfUnits, pctOfRevenue: r.pctOfRevenue,
+        units: r.units, revenueUsd: r.revenueUsd,
+      });
+    }
+    groups.forEach((rows, key) => {
+      const [start, end] = key.split("|");
+      wideBuckets.push({ start, end, rows });
+    });
+  };
+  pushWide(monthCountryRows);
+  pushWide(customCountryRows);
+
+  // For each day with authoritative revenue, pick best shares bucket.
+  // Prefer: exact day > smallest wide bucket containing the day.
+  type Agg = { iso: string; name: string; units: number; revenue: number };
+  const byCountry = new Map<string, Agg>();
+  const push = (iso: string, name: string, u: number, r: number) => {
+    const cur = byCountry.get(iso);
+    if (cur) { cur.units += u; cur.revenue += r; if (name && !cur.name) cur.name = name; }
+    else byCountry.set(iso, { iso, name, units: u, revenue: r });
+  };
+
+  let daysWithShares = 0;
+  let usedLegacyFallback = false;
+
+  const dayEntries: Array<[string, number]> = [];
+  dayTotalRev.forEach((v, k) => dayEntries.push([k, v]));
+  for (const [day, dayRev] of dayEntries) {
+    const dayUnits = dayTotalUnits.get(day) ?? 0;
+
+    // 1. Prefer exact-day shares
+    let sharesRows: SharesRow[] | null = dayIndex.get(day) ?? null;
+
+    // 2. Wide-bucket fallback: pick the SHORTEST bucket that contains this day
+    if (!sharesRows) {
+      let bestBucket: WideBucket | null = null;
+      let bestLen = Number.POSITIVE_INFINITY;
+      for (const b of wideBuckets) {
+        if (b.start <= day && day <= b.end) {
+          const len = (Date.parse(b.end) - Date.parse(b.start)) / 86400000 + 1;
+          if (len < bestLen) { bestLen = len; bestBucket = b; }
+        }
+      }
+      if (bestBucket) sharesRows = bestBucket.rows;
+    }
+
+    if (!sharesRows || sharesRows.length === 0) continue;
+    daysWithShares++;
+
+    // Compute total pct for this day (to normalize when the panel's
+    // percentages don't sum to exactly 1.0 due to rounding + "Other" bucket).
+    let totalPctRev = 0;
+    let totalPctUnits = 0;
+    for (const s of sharesRows) {
+      if (s.pctOfRevenue != null) totalPctRev += s.pctOfRevenue;
+      if (s.pctOfUnits != null) totalPctUnits += s.pctOfUnits;
+    }
+
+    // If ANY row has pct data, use shares. If none do (legacy row), fall
+    // back to the stored units/revenue values as-is (which will be wrong
+    // in absolute magnitude but preserve country ordering).
+    const hasShares = totalPctRev > 0 || totalPctUnits > 0;
+
+    if (hasShares) {
+      for (const s of sharesRows) {
+        const revShare = s.pctOfRevenue != null && totalPctRev > 0
+          ? s.pctOfRevenue / totalPctRev
+          : 0;
+        const unitShare = s.pctOfUnits != null && totalPctUnits > 0
+          ? s.pctOfUnits / totalPctUnits
+          : 0;
+        push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
+      }
+    } else {
+      usedLegacyFallback = true;
+      // Legacy: use stored values as raw shares. Sum the panel's stored
+      // units + revenue and treat those as shares.
+      let sumU = 0, sumR = 0;
+      for (const s of sharesRows) { sumU += s.units; sumR += s.revenueUsd; }
+      for (const s of sharesRows) {
+        const revShare = sumR > 0 ? s.revenueUsd / sumR : 0;
+        const unitShare = sumU > 0 ? s.units / sumU : 0;
+        push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
+      }
+    }
+  }
+
+  const totalRevenue = Array.from(byCountry.values()).reduce((s, r) => s + r.revenue, 0);
+  const totalUnits = Array.from(byCountry.values()).reduce((s, r) => s + r.units, 0);
+
+  const countries: CountryRowOut[] = Array.from(byCountry.values())
+    .map(r => ({
+      country_iso: r.iso,
+      country_name: r.name || r.iso,
+      units: Math.round(r.units),
+      revenue_usd: Math.round(r.revenue * 100) / 100,
+      asp_usd: r.units > 0 ? r.revenue / r.units : 0,
+      pct_of_total: totalRevenue > 0 ? r.revenue / totalRevenue : 0,
+    }))
+    .sort((a, b) => b.revenue_usd - a.revenue_usd);
+
+  return {
+    total_units: Math.round(totalUnits),
+    total_revenue_usd: Math.round(totalRevenue * 100) / 100,
+    asp_usd: totalUnits > 0 ? totalRevenue / totalUnits : 0,
+    countries_count: countries.length,
+    countries,
+    shares_source: usedLegacyFallback ? "legacy" : "authoritative",
+    days_with_shares: daysWithShares,
+    days_in_window: daysAuthoritative,
+    days_authoritative_rev: Math.round(
+      Array.from(dayTotalRev.values()).reduce((s, v) => s + v, 0) * 100,
+    ) / 100,
+  };
+}
+

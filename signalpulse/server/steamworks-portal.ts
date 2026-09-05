@@ -87,6 +87,18 @@ export interface CountryBreakdownRow {
   revenueUsd: number;
   activations: number;
   activationRevenueUsd: number;
+  /**
+   * v3.32 (2026-09-05) share fields — the primary source of truth for
+   * country-level splits going forward. Value 0..1 (i.e. 41.9% is 0.419).
+   * null when the portal did not render a percent cell for that panel.
+   *
+   * Downstream consumers should compute per-country revenue as
+   *   pctOfRevenue * <authoritative daily-sales total for the window>
+   * rather than trusting `revenueUsd` above, which can be truncated when
+   * Steamworks renders large numbers with a K/M suffix.
+   */
+  pctOfUnits: number | null;
+  pctOfRevenue: number | null;
 }
 
 export interface PerSkuRow {
@@ -323,6 +335,8 @@ export function extractCountryBreakdown(html: string): CountryBreakdownRow[] {
         revenueUsd: 0,
         activations: 0,
         activationRevenueUsd: 0,
+        pctOfUnits: null,
+        pctOfRevenue: null,
       });
     }
     const row = rows.get(key)!;
@@ -335,23 +349,35 @@ export function extractCountryBreakdown(html: string): CountryBreakdownRow[] {
     if (patch.revenueUsd != null) row.revenueUsd = patch.revenueUsd;
     if (patch.activations != null) row.activations = patch.activations;
     if (patch.activationRevenueUsd != null) row.activationRevenueUsd = patch.activationRevenueUsd;
+    if (patch.pctOfUnits != null) row.pctOfUnits = patch.pctOfUnits;
+    if (patch.pctOfRevenue != null) row.pctOfRevenue = patch.pctOfRevenue;
   };
 
   const panels: Array<{
     className: string;
-    metric: "units" | "revenueUsd" | "activations" | "activationRevenueUsd";
+    valueMetric: "units" | "revenueUsd" | "activations" | "activationRevenueUsd";
+    // v3.32: which share field (if any) does this panel's pct cell map to?
+    // The units panel's pct is pctOfUnits; the revenue panel's pct is
+    // pctOfRevenue. Activations panels have their own pcts but we don't
+    // currently expose them as separate shares (activationRevenueUsd is
+    // rarely populated by Steamworks).
+    pctMetric: "pctOfUnits" | "pctOfRevenue" | null;
   }> = [
-    { className: "salesregion_panel1", metric: "units" },
-    { className: "salesregion_panel3", metric: "revenueUsd" },
-    { className: "activationsregion_panel1", metric: "activations" },
-    { className: "activationsregion_panel3", metric: "activationRevenueUsd" },
+    { className: "salesregion_panel1", valueMetric: "units",         pctMetric: "pctOfUnits"    },
+    { className: "salesregion_panel3", valueMetric: "revenueUsd",    pctMetric: "pctOfRevenue" },
+    { className: "activationsregion_panel1", valueMetric: "activations", pctMetric: null },
+    { className: "activationsregion_panel3", valueMetric: "activationRevenueUsd", pctMetric: null },
   ];
 
   for (const panel of panels) {
     const panelHtml = extractPanelHtml(html, panel.className);
     if (!panelHtml) continue;
     for (const row of extractCountryRowsFromPanel(panelHtml)) {
-      upsert(row.iso, row.name, { [panel.metric]: row.value });
+      const patch: Partial<CountryBreakdownRow> = { [panel.valueMetric]: row.value };
+      if (panel.pctMetric && row.pct != null) {
+        (patch as Record<string, number>)[panel.pctMetric] = row.pct;
+      }
+      upsert(row.iso, row.name, patch);
     }
   }
 
@@ -373,8 +399,25 @@ export function extractCountryBreakdown(html: string): CountryBreakdownRow[] {
 function extractPanelHtml(html: string, className: string): string | null {
   const openIdx = html.indexOf(`class="${className}"`);
   if (openIdx === -1) return null;
-  // Grab a generous slice — the panels are ~20KB max in the SM2 sample.
-  return html.slice(openIdx, openIdx + 60000);
+  // v3.32 (2026-09-05): slice up to the panel's own </table> to prevent
+  // panel-bleed into the next panel. Prior to this fix we grabbed a fixed
+  // 60KB window, which overlapped adjacent panels (sales_panel1 into
+  // sales_panel3, sales_panel3 into activations_panel1). Since the row
+  // regex matches any country row and the caller's outer loop pins the
+  // metric ('units' vs 'revenueUsd' vs ...), rows from the WRONG panel got
+  // written to the current metric, and last-writer-won — which is why
+  // stored SM2 US 'units' = 315,610 (that's actually revenue) and stored
+  // US 'revenueUsd' = 4,891 (that's actually activations). Bounding to
+  // </table> keeps each iteration inside its own panel.
+  const searchWindow = html.slice(openIdx, openIdx + 200_000);
+  const closeMatch = /<\/table>/i.exec(searchWindow);
+  if (!closeMatch) {
+    // Fallback: if the panel is malformed / no </table> in-window,
+    // fall back to a MUCH smaller window (25KB — large enough for a
+    // 250-country table, small enough to reduce bleed risk).
+    return html.slice(openIdx, openIdx + 25_000);
+  }
+  return searchWindow.slice(0, closeMatch.index + closeMatch[0].length);
 }
 
 /**
@@ -386,19 +429,37 @@ function extractPanelHtml(html: string, className: string): string | null {
  *
  * Region roll-up rows (Africa, Central Asia, ...) have no countryCode
  * query param, so they naturally fall out of the match set.
+ *
+ * v3.32 (2026-09-05): also captures the pct cell (third <td>). Callers
+ * that care about the share (revenue-share, unit-share) read `pct`;
+ * callers that care about the raw value read `value`. The pct value is
+ * the authoritative share because Steamworks renders raw dollars with
+ * thousand separators that are also currency-formatted ("$315,610"),
+ * which parses cleanly, BUT for high-revenue titles Steamworks may
+ * abbreviate ($1.23M / $850K), which parseNumericCell silently drops the
+ * suffix on. The pct field never has this problem — it's always a plain
+ * '41.9%' cell.
  */
 function extractCountryRowsFromPanel(
   panelHtml: string,
-): Array<{ iso: string; name: string; value: number }> {
-  const results: Array<{ iso: string; name: string; value: number }> = [];
+): Array<{ iso: string; name: string; value: number; pct: number | null }> {
+  const results: Array<{ iso: string; name: string; value: number; pct: number | null }> = [];
   const rx =
-    /<td[^>]*>\s*<a[^>]*countryCode=([A-Z]{2})[^>]*>([^<]+)<\/a>\s*<\/td>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>/gi;
+    /<td[^>]*>\s*<a[^>]*countryCode=([A-Z]{2})[^>]*>([^<]+)<\/a>\s*<\/td>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>(?:\s*<td[^>]*>\s*([^<]+?)\s*<\/td>)?/gi;
   let m: RegExpExecArray | null;
   while ((m = rx.exec(panelHtml)) !== null) {
     const iso = m[1].toUpperCase();
     const name = decodeHtmlEntities(m[2].trim());
     const value = parseNumericCell(m[3]);
-    results.push({ iso, name, value });
+    const pctRaw = m[4];
+    let pct: number | null = null;
+    if (pctRaw != null) {
+      // pctRaw like '41.9%' — strip % and parse. Convert to fraction (0..1).
+      const cleaned = pctRaw.replace(/[%\s,]/g, "").trim();
+      const parsed = parseFloat(cleaned);
+      if (Number.isFinite(parsed)) pct = parsed / 100;
+    }
+    results.push({ iso, name, value, pct });
   }
   return results;
 }
@@ -495,11 +556,18 @@ export function portalToCountryRows(
 ): InsertSteamSalesByCountry[] {
   const rows: InsertSteamSalesByCountry[] = [];
   for (const c of parsed.countryBreakdown ?? []) {
+    // v3.32: keep a country row if ANY signal is non-zero — including the
+    // share fields. A country with 0 units/revenue but a nonzero pct means
+    // the panel rendered a rounded-to-zero cell but the underlying share
+    // was small-but-positive (e.g. 0.05%). Better to keep the share than
+    // drop the row.
     if (
       c.units === 0 &&
       c.revenueUsd === 0 &&
       c.activations === 0 &&
-      c.activationRevenueUsd === 0
+      c.activationRevenueUsd === 0 &&
+      (c.pctOfUnits ?? 0) === 0 &&
+      (c.pctOfRevenue ?? 0) === 0
     ) {
       continue;
     }
@@ -514,6 +582,8 @@ export function portalToCountryRows(
       revenueUsd: c.revenueUsd,
       activations: c.activations,
       activationRevenueUsd: c.activationRevenueUsd,
+      pctOfUnits: c.pctOfUnits,
+      pctOfRevenue: c.pctOfRevenue,
       source: "portal_fetch",
     });
   }
