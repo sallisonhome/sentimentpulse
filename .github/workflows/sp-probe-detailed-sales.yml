@@ -27,7 +27,7 @@ jobs:
           set -euo pipefail
 
           DB=/opt/sentimentpulse/signalpulse/data.db
-          KEY=$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='steam_api_key' LIMIT 1;")
+          KEY=$(sqlite3 "$DB" "SELECT value FROM app_settings WHERE key='steam_api_key' LIMIT 1;")
           KEY_LEN=${#KEY}
           echo "== API key configured: length ${KEY_LEN} =="
           if [ "$KEY_LEN" -lt 20 ]; then
