@@ -1,12 +1,5 @@
 name: SignalPulse — Portal HTML dump (diagnostic)
 
-# One-shot diagnostic: fetch a Steamworks app-details page and dump the
-# raw HTML slice for the salesregion_panel1 (units) and salesregion_panel3
-# (revenue) panels to the workflow log so we can see exactly how country
-# rows are rendered and fix the parser.
-#
-# Usage: workflow_dispatch with app_id + date_start + date_end.
-
 on:
   workflow_dispatch:
     inputs:
@@ -43,7 +36,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
               APP_ID="$APP_ID" DATE_START="$DATE_START" DATE_END="$DATE_END" \
-              bash -s <<'EOF'
+              bash -s <<'REMOTE_EOF'
             set -euo pipefail
             DB=/opt/sentimentpulse/signalpulse/data.db
             COOKIE=$(sqlite3 "$DB" "SELECT cookie_value FROM steamworks_sessions WHERE id='default';")
@@ -54,7 +47,7 @@ jobs:
             URL="https://partner.steampowered.com/app/details/${APP_ID}/?dateStart=${DATE_START}&dateEnd=${DATE_END}&priorDateStart=2025-08-01&priorDateEnd=2025-08-31&alignPriorAnnual=Immediate&submit=Update"
             echo "Fetching: $URL"
 
-            HTML=$(mktemp)
+            HTML=/tmp/portal-dump.html
             curl -sS \
                  -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36" \
                  -H "Cookie: $COOKIE" \
@@ -62,36 +55,31 @@ jobs:
                  "$URL" > "$HTML"
 
             echo ""
-            echo "── File size ──"
-            wc -c "$HTML"
+            echo "File size: $(wc -c < $HTML) bytes"
             echo ""
 
-            for PANEL in salesregion_panel1 salesregion_panel3 activationsregion_panel1 activationsregion_panel3; do
-              echo ""
-              echo "════════════════════════════════════════════════════"
-              echo " PANEL: $PANEL"
-              echo "════════════════════════════════════════════════════"
-              # Extract everything from the panel class through the next 8000 chars
-              python3 -c "
-import re, sys
-with open('$HTML', 'r', encoding='utf-8', errors='replace') as f:
-    html = f.read()
-idx = html.find('class=\"$PANEL\"')
-if idx == -1:
-    print('PANEL NOT FOUND')
-else:
-    slice_ = html[idx:idx+8000]
-    # Print first 20 <tr>...</tr> blocks
-    trs = re.findall(r'<tr[^>]*>.*?</tr>', slice_, re.DOTALL)
-    print(f'Found {len(trs)} <tr> rows in panel slice (showing first 8):')
-    print()
-    for i, tr in enumerate(trs[:8]):
-        # Compact
-        compact = re.sub(r'\s+', ' ', tr).strip()
-        print(f'[{i}] {compact[:600]}')
-        print()
-"
-            done
-
-            rm -f "$HTML"
-          EOF
+            # Write the Python parser to a separate file to avoid quoting hell.
+            cat > /tmp/parse-dump.py <<'PY_EOF'
+            import re, sys, os
+            html = open("/tmp/portal-dump.html", "r", encoding="utf-8", errors="replace").read()
+            for panel in ("salesregion_panel1","salesregion_panel3","activationsregion_panel1","activationsregion_panel3"):
+                print("")
+                print("=" * 68)
+                print(" PANEL: %s" % panel)
+                print("=" * 68)
+                idx = html.find('class="%s"' % panel)
+                if idx == -1:
+                    print("  NOT FOUND")
+                    continue
+                slice_ = html[idx:idx+15000]
+                trs = re.findall(r"<tr[^>]*>.*?</tr>", slice_, re.DOTALL)
+                print("  Found %d <tr> rows in panel slice (showing first 10):" % len(trs))
+                print("")
+                for i, tr in enumerate(trs[:10]):
+                    compact = re.sub(r"\s+", " ", tr).strip()
+                    print("  [%d] %s" % (i, compact[:900]))
+                    print("")
+            PY_EOF
+            python3 /tmp/parse-dump.py
+            rm -f "$HTML" /tmp/parse-dump.py
+          REMOTE_EOF
