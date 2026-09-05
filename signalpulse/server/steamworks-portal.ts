@@ -23,7 +23,7 @@
 //     &priorDateStart=YYYY-MM-DD&priorDateEnd=YYYY-MM-DD
 //     &alignPriorAnnual=Immediate&submit=Update
 
-import type { InsertSteamSalesDaily } from "@shared/schema";
+import type { InsertSteamSalesDaily, InsertSteamSalesByCountry } from "@shared/schema";
 
 export interface PortalFetchOptions {
   appId: number;
@@ -463,6 +463,58 @@ export function portalToSalesRows(
       grossRevenueUsd: parsed.periodDlcRevenueUsd ?? 0,
       source: "portal_fetch",
       batchId,
+    });
+  }
+  return rows;
+}
+
+/**
+ * Convert the per-country breakdown from a parsed portal page into insert
+ * rows for `steam_sales_by_country_period`. One row per country appearing
+ * in ANY of the 4 country panels (sales-units, sales-revenue,
+ * activations-units, activations-revenue). Countries whose row is all
+ * zeros across every metric are dropped so the table doesn't accumulate
+ * pointless noise.
+ *
+ * `granularity` tells downstream aggregation how to prefer overlapping
+ * rows: 'day' > 'month' > 'custom'. Callers should pass:
+ *   - 'day'    when the URL date range is exactly one day
+ *   - 'month'  when the range covers a full calendar month
+ *   - 'custom' for anything else (backfill runs, ad-hoc UI fetches)
+ *
+ * Added v3.30 (2026-09-05) alongside portalToSalesRows() so the same
+ * fetchPortalPage() result populates both the daily sales table and the
+ * new by-country table with zero extra HTTP fetches.
+ */
+export function portalToCountryRows(
+  parsed: ParsedPortalPage,
+  productId: number,
+  periodStart: string,
+  periodEnd: string,
+  granularity: "day" | "month" | "custom",
+): InsertSteamSalesByCountry[] {
+  const rows: InsertSteamSalesByCountry[] = [];
+  for (const c of parsed.countryBreakdown ?? []) {
+    if (
+      c.units === 0 &&
+      c.revenueUsd === 0 &&
+      c.activations === 0 &&
+      c.activationRevenueUsd === 0
+    ) {
+      continue;
+    }
+    rows.push({
+      productId,
+      periodStart,
+      periodEnd,
+      granularity,
+      countryIso: c.countryIso,
+      countryName: c.countryName,
+      units: c.units,
+      revenueUsd: c.revenueUsd,
+      activations: c.activations,
+      activationRevenueUsd: c.activationRevenueUsd,
+      source: "portal_fetch",
     });
   }
   return rows;

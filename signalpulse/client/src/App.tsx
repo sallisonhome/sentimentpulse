@@ -11,6 +11,7 @@ import Leaderboards from "@/pages/leaderboards";
 import ProductDetail from "@/pages/product-detail";
 import Settings from "@/pages/settings";
 import Inbox from "@/pages/inbox";
+import SalesByCountry from "@/pages/sales-by-country";
 import NotFound from "@/pages/not-found";
 import { useEffect, useState } from "react";
 import { AddProductDialog } from "@/components/add-product-dialog";
@@ -27,6 +28,7 @@ function AppRouter() {
         <Route path="/products/:id" component={ProductDetail} />
         <Route path="/settings" component={Settings} />
         <Route path="/inbox" component={Inbox} />
+        <Route path="/sales-by-country" component={SalesByCountry} />
         <Route component={NotFound} />
       </Switch>
       <AddProductDialog open={addProductOpen} onOpenChange={setAddProductOpen} />
