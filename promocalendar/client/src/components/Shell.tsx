@@ -122,6 +122,13 @@ export function Shell({
           </svg>
           <span>SignalPulse</span>
         </a>
+        <a className="nav-item cross-app" href="/genrepulse/">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M3 12h18M12 3a15 15 0 010 18M12 3a15 15 0 000 18" />
+          </svg>
+          <span>Genre Pulse</span>
+        </a>
         <a className="nav-item cross-app" href="/trips/">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" />
