@@ -400,6 +400,9 @@ export interface GameSummary {
   game_label: string;
   campaign_count: number;
   platforms: string[];
+  // v3.31 (2026-09-05): resolved via server/signalpulse-map. Null for game
+  // codes without a Steam AppID mapping (e.g. Sony-only titles).
+  steam_app_id: number | null;
 }
 
 export function listGames(calendar: CalendarId): GameSummary[] {
@@ -414,11 +417,19 @@ export function listGames(calendar: CalendarId): GameSummary[] {
        ORDER BY game_label ASC`,
     )
     .all(calendar) as any[];
+  // v3.31 (2026-09-05): enrich with steam_app_id from signalpulse-map so
+  // clients (e.g. TitleDetailPage's Sales by Country panel) can call
+  // SignalPulse's per-AppID endpoints without a second round-trip.
+  // Lazy require to keep the browser bundler happy — signalpulse-map is
+  // server-only.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { steamAppIdForCode } = require("./signalpulse-map.js") as typeof import("./signalpulse-map.js");
   return rows.map((r) => ({
     game_code: r.game_code,
     game_label: r.game_label,
     campaign_count: r.campaign_count,
     platforms: (r.platforms || "").split(",").filter(Boolean).sort(),
+    steam_app_id: steamAppIdForCode(r.game_code),
   }));
 }
 

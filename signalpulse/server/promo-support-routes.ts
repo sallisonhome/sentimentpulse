@@ -316,4 +316,109 @@ export function registerPromoSupportRoutes(app: Express): void {
       });
     }
   });
+
+  // GET /api/promo-support/sales-by-country (v3.31, 2026-09-05)
+  //   ?steam_app_id=2183900&since=2026-09-03&until=2026-09-04
+  // → {
+  //     steam_app_id, product_id, since, until,
+  //     total_units, total_revenue_usd, asp_usd, countries_count,
+  //     countries: [{country_iso, country_name, units, revenue_usd, asp_usd, pct_of_total}]
+  //   }
+  //
+  // Same semantics as GET /api/products/:id/sales-by-country but keyed by
+  // Steam AppID so Promo Calendar can call it without knowing SignalPulse
+  // product IDs. Read-only, unauthenticated, always resolves to a valid
+  // shape (empty countries[] when nothing matches).
+  app.get("/api/promo-support/sales-by-country", (req, res) => {
+    try {
+      const appidRaw = req.query.steam_app_id;
+      const since = typeof req.query.since === "string" ? req.query.since : undefined;
+      const until = typeof req.query.until === "string" ? req.query.until : undefined;
+
+      if (typeof appidRaw !== "string" || !/^\d+$/.test(appidRaw)) {
+        return res.status(400).json({ error: "steam_app_id query param required (numeric)" });
+      }
+      if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since)) {
+        return res.status(400).json({ error: "since must be YYYY-MM-DD" });
+      }
+      if (until && !/^\d{4}-\d{2}-\d{2}$/.test(until)) {
+        return res.status(400).json({ error: "until must be YYYY-MM-DD" });
+      }
+
+      const appid = appidRaw;
+      const product = storage.getAllProducts().find((p) => p.steamAppId === appid);
+      if (!product) {
+        return res.json({
+          steam_app_id: Number(appid), product_id: null,
+          since: since ?? null, until: until ?? null,
+          total_units: 0, total_revenue_usd: 0, asp_usd: 0,
+          countries_count: 0, countries: [], found: false,
+        });
+      }
+
+      const dayRows = storage.getSteamSalesByCountry(product.id, { since, until, granularity: "day" });
+      const monthRows = storage.getSteamSalesByCountry(product.id, { since, until, granularity: "month" });
+      const customRows = storage.getSteamSalesByCountry(product.id, { since, until, granularity: "custom" });
+
+      const dayMonthsCovered = new Set<string>();
+      for (const r of dayRows) dayMonthsCovered.add(r.periodStart.slice(0, 7));
+      const monthsCoveredByMonthRows = new Set<string>();
+      for (const r of monthRows) monthsCoveredByMonthRows.add(r.periodStart.slice(0, 7));
+
+      type Agg = { iso: string; name: string; units: number; revenue: number };
+      const byCountry = new Map<string, Agg>();
+      const push = (iso: string, name: string, u: number, r: number) => {
+        const cur = byCountry.get(iso);
+        if (cur) { cur.units += u; cur.revenue += r; }
+        else byCountry.set(iso, { iso, name, units: u, revenue: r });
+      };
+
+      for (const r of dayRows) push(r.countryIso, r.countryName, r.units, r.revenueUsd);
+      for (const r of monthRows) {
+        const key = r.periodStart.slice(0, 7);
+        if (dayMonthsCovered.has(key)) continue;
+        push(r.countryIso, r.countryName, r.units, r.revenueUsd);
+      }
+      for (const r of customRows) {
+        const key = r.periodStart.slice(0, 7);
+        if (dayMonthsCovered.has(key) || monthsCoveredByMonthRows.has(key)) continue;
+        push(r.countryIso, r.countryName, r.units, r.revenueUsd);
+      }
+
+      const totalRevenue = Array.from(byCountry.values()).reduce((s, r) => s + r.revenue, 0);
+      const totalUnits = Array.from(byCountry.values()).reduce((s, r) => s + r.units, 0);
+
+      const countries = Array.from(byCountry.values())
+        .map(r => ({
+          country_iso: r.iso,
+          country_name: r.name,
+          units: r.units,
+          revenue_usd: r.revenue,
+          asp_usd: r.units > 0 ? r.revenue / r.units : 0,
+          pct_of_total: totalRevenue > 0 ? r.revenue / totalRevenue : 0,
+        }))
+        .sort((a, b) => b.revenue_usd - a.revenue_usd);
+
+      res.json({
+        steam_app_id: Number(appid),
+        product_id: product.id,
+        since: since ?? null, until: until ?? null,
+        total_units: totalUnits,
+        total_revenue_usd: totalRevenue,
+        asp_usd: totalUnits > 0 ? totalRevenue / totalUnits : 0,
+        countries_count: countries.length,
+        countries,
+        found: countries.length > 0,
+      });
+    } catch (err) {
+      console.error("[promo-support] sales-by-country error", err);
+      res.json({
+        steam_app_id: null, product_id: null,
+        since: null, until: null,
+        total_units: 0, total_revenue_usd: 0, asp_usd: 0,
+        countries_count: 0, countries: [], found: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  });
 }

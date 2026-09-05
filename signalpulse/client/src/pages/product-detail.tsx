@@ -22,6 +22,13 @@ import { SparklineChart, type TimeSeriesDataPoint, SectionSparkline } from "@/co
 import { SteamSalesCard } from "@/components/steam-sales-card";
 import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
 import { OnPromoBadge } from "@/components/OnPromoBadge";
+import {
+  SalesByCountry,
+  RangeChips,
+  rangeFor,
+  type RangeKey,
+  type SalesByCountryData,
+} from "@/components/SalesByCountry";
 import { ALL_PLATFORMS } from "@shared/schema";
 import { useQuery as useChartQuery } from "@tanstack/react-query";
 import { useForecastScenario, type ForecastScenario } from "@/hooks/use-forecast-scenario";
@@ -45,12 +52,20 @@ export default function ProductDetail() {
     steamWishlist: true,
     steamPrepurchase: true,
     steamSales: true,
+    salesByCountry: true,
     ps5Wishlist: true,
     ps5Prepurchase: true,
     ps5Forecast: true,
     dynamicForecasts: true,
     pls: true,
   });
+
+  // ─── Sales by Country (v3.31, 2026-09-05) ────────────────────────
+  // Per-title breakdown. Default range: 90d (matches the top-nav page's
+  // default; PDP tends to be visited for recency questions).
+  const [sbcRange, setSbcRange] = useState<RangeKey>("90d");
+  const [sbcCustomSince, setSbcCustomSince] = useState<string>("");
+  const [sbcCustomUntil, setSbcCustomUntil] = useState<string>("");
 
   const toggleSection = (key: string) => {
     setOpenSections(prev => ({ ...prev, [key]: !prev[key] }));
@@ -78,6 +93,25 @@ export default function ProductDetail() {
     enabled: !!product?.steamAppId,
     staleTime: 60_000,
     refetchOnWindowFocus: true,
+  });
+
+  // Per-title Sales by Country fetch. Enabled only after the product
+  // query resolves (need the id in the URL). Rebuilds the range from the
+  // range chip state each render — rangeFor is pure.
+  const sbcRangeSpec = rangeFor(sbcRange, sbcCustomSince, sbcCustomUntil);
+  const sbcQueryEnabled = !!productId && (sbcRange !== "custom" || (!!sbcCustomSince && !!sbcCustomUntil));
+  const { data: sbcData, isLoading: sbcLoading, error: sbcError } = useQuery<SalesByCountryData & { since: string | null; until: string | null; product_id: number; product_title: string }>({
+    queryKey: ["sales-by-country-product", productId, sbcRangeSpec.since ?? "", sbcRangeSpec.until ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (sbcRangeSpec.since) p.set("since", sbcRangeSpec.since);
+      if (sbcRangeSpec.until) p.set("until", sbcRangeSpec.until);
+      const res = await fetch(`/signal/api/products/${productId}/sales-by-country?${p.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    enabled: sbcQueryEnabled,
+    staleTime: 5 * 60 * 1000,
   });
 
   // v3.35 (2026-08-20): single source of truth sync -- whenever this PDP's
@@ -478,6 +512,46 @@ export default function ProductDetail() {
                   : null
               }
             />
+          </CollapsibleSection>
+        )}
+
+        {/* ─── Sales by Country (v3.31, 2026-09-05) ─────────────────── */}
+        {hasSteam && product.steamAppId && (
+          <CollapsibleSection
+            title="Sales by Country"
+            sectionKey="salesByCountry"
+            open={openSections.salesByCountry}
+            onToggle={toggleSection}
+            rightContent={
+              sbcData ? (
+                <span className="text-xs text-muted-foreground">
+                  {sbcData.countries_count} countries · {sbcRangeSpec.label}
+                </span>
+              ) : null
+            }
+          >
+            <div className="space-y-3">
+              <RangeChips
+                value={sbcRange}
+                onChange={setSbcRange}
+                customSince={sbcCustomSince}
+                customUntil={sbcCustomUntil}
+                onCustomChange={(s, u) => { setSbcCustomSince(s); setSbcCustomUntil(u); }}
+              />
+              {sbcError && (
+                <div className="rounded-md border border-destructive/50 p-3 text-xs text-destructive">
+                  Failed to load country data: {(sbcError as Error).message}
+                </div>
+              )}
+              <SalesByCountry
+                data={sbcData}
+                isLoading={sbcLoading}
+                worldAtlasUrl={`${import.meta.env.BASE_URL}world-atlas-110m.json`}
+                emptyMessage="No country data ingested for this range yet. Try widening to LTD to see historic monthly rows."
+                mapHeight={340}
+                showKpis={true}
+              />
+            </div>
           </CollapsibleSection>
         )}
 

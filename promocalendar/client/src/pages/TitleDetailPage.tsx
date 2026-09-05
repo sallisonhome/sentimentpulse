@@ -7,6 +7,7 @@ import { BeatCard } from "../components/BeatCard";
 import { PlatformChip, StatusChip } from "../components/chips";
 import { Section, Skeleton, ErrorBanner, SegToggle } from "../components/misc";
 import { fmtRange, pct, durationDays, parseISO } from "../lib/format";
+import { SalesByCountryPanel, type LastPromoWindow } from "../components/SalesByCountryPanel";
 
 type View = "cards" | "table";
 type PlatFilter = "All" | "Sony" | "Microsoft" | "Steam";
@@ -146,6 +147,32 @@ export default function TitleDetailPage({ code }: { code: string }) {
           <div className="empty" style={{ padding: 20 }}><p>No upcoming beats for this title.</p></div>
         )}
       </Section>
+
+      {/* ─── Sales by Country (v3.31, 2026-09-05) ───────────────── */}
+      {gameMeta?.steam_app_id ? (
+        <Section
+          title="Sales by Country"
+          right={<span className="sub">Steam per-country revenue · filters below</span>}
+        >
+          <SalesByCountryPanel
+            steamAppId={gameMeta.steam_app_id}
+            today={today}
+            lastPromo={(() => {
+              // Compute the most-recently-ENDED campaign strictly before today.
+              const all = campaigns.data?.campaigns || [];
+              const past = all.filter((c) => c.end_date < today);
+              if (past.length === 0) return null;
+              past.sort((a, b) => b.end_date.localeCompare(a.end_date));
+              const last = past[0];
+              return {
+                since: last.start_date,
+                until: last.end_date,
+                label: `Last promo · ${last.program} (${last.platform})`,
+              } as LastPromoWindow;
+            })()}
+          />
+        </Section>
+      ) : null}
 
       <div className="section-h" style={{ marginTop: 10 }}>
         <h2 style={{ fontSize: 20, letterSpacing: "-0.01em", textTransform: "none" }}>

@@ -124,6 +124,10 @@ const EXEMPT_PATHS_READ_ONLY_CROSS_APP = new Set([
   "/api/promo-support/steam-revenue",
   // Promo Calendar → same, batched (many AppID+window tuples in one call)
   "/api/promo-support/steam-revenue-batch",
+  // Promo Calendar → per-country sales breakdown for one AppID + window
+  // (v3.31, 2026-09-05). Same posture: read-only, aggregate country-level
+  // totals, no PII, safe to expose unauthenticated over loopback + nginx.
+  "/api/promo-support/sales-by-country",
 ]);
 const EXEMPT_PREFIXES = [
   "/api/onpromo/", // SignalPulse's OWN SPA reads this too, but it is

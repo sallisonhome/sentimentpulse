@@ -169,6 +169,10 @@ export interface GameSummary {
   game_label: string;
   campaign_count: number;
   platforms: string[];
+  // v3.31 (2026-09-05): resolved by server/signalpulse-map. null when the
+  // game code has no Steam AppID mapping (e.g. console-only titles). Feeds
+  // the TitleDetailPage Sales-by-Country panel.
+  steam_app_id: number | null;
 }
 
 export interface FiltersResponse {

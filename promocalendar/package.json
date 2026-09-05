@@ -4,7 +4,7 @@
   "type": "module",
   "license": "MIT",
   "private": true,
-  "description": "Saber Promo Calendars \u2014 sub-app in the Saber Intelligence Suite.",
+  "description": "Saber Promo Calendars — sub-app in the Saber Intelligence Suite.",
   "scripts": {
     "dev": "NODE_ENV=development tsx server/index.ts",
     "build": "tsx script/build.ts",
@@ -17,26 +17,31 @@
     "better-sqlite3": "^11.3.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
+    "d3-geo": "^3.1.1",
     "drizzle-orm": "^0.39.3",
     "drizzle-zod": "^0.7.0",
+    "exceljs": "^4.4.0",
     "express": "^5.0.1",
+    "multer": "^1.4.5-lts.1",
     "nanoid": "^5.0.7",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.15.2",
+    "topojson-client": "^3.1.0",
     "wouter": "^3.3.5",
-    "zod": "^3.24.2",
-    "exceljs": "^4.4.0",
-    "multer": "^1.4.5-lts.1"
+    "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.11",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
+    "@types/d3-geo": "^3.1.1",
     "@types/express": "^5.0.0",
+    "@types/multer": "^1.4.11",
     "@types/node": "20.19.27",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
+    "@types/topojson-client": "^3.1.5",
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.20",
     "drizzle-kit": "^0.31.8",
@@ -45,7 +50,6 @@
     "tailwindcss": "^3.4.17",
     "tsx": "^4.20.5",
     "typescript": "5.6.3",
-    "vite": "^7.3.0",
-    "@types/multer": "^1.4.11"
+    "vite": "^7.3.0"
   }
 }
