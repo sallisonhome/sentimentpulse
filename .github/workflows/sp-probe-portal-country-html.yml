@@ -61,11 +61,11 @@ jobs:
           # suspenders: even though the country/heatmap section is
           # non-monetary geo data, if there's an adjacent revenue cell
           # in the excerpt we don't want to leak it.
-          python3 <<'PYEOF'
-          import re
+          TMP_PATH="$TMP" python3 <<'PYEOF'
+          import re, os
           from pathlib import Path
 
-          html = Path(__file__).parent.joinpath('__x__').read_text() if False else Path("$TMP".strip()).read_text()
+          html = Path(os.environ['TMP_PATH']).read_text()
 
           # Redact anything that looks like a monetary value.
           def redact(text):
