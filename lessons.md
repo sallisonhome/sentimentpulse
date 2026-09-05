@@ -1937,3 +1937,36 @@ with soft-delete (not hard-delete). Had I chosen hard-delete on the
 first commit, the 206 rows would be gone permanently. This is why
 soft-delete + a restore path is worth the extra column even when
 "nobody's going to remove things from the schedule".
+
+
+## 2026-09-05 — Cross-app endpoint semantics can shift under you
+
+**What happened.** The SignalPulse "On Promo" chip on the dashboard,
+leaderboards, and product PDPs went silent for every title, even ones
+that were actively on sale. It looked broken but every layer of the
+chain was up and returning 200s.
+
+**Root cause.** On 2026-09-04, Promo Calendar's own `/next-up` PDP
+endpoint was changed to STRICTLY exclude in-flight beats
+(`start_date > today`) — an intentional fix to keep the PDP's Next Up
+strip from including campaigns already running. A separate `/live-now`
+endpoint was added for the currently-active beats. SignalPulse's
+`promo-calendar-client.ts` was still calling `/next-up` and filtering
+by `is_active`, so the moment `/next-up` stopped including active beats
+the filter yielded zero every time.
+
+**Lessons.**
+- **Cross-app HTTP contracts need a canary that fails LOUDLY when
+  semantics change.** A read-only endpoint returning 200 with a valid
+  shape is not enough — a shape that silently drops the field you were
+  filtering on looks identical to "no data today".
+- **When you change the semantics of a shared endpoint, grep the
+  monorepo for callers before shipping.** `nextUpForGame` was changed
+  for the calendar's own PDP; the SignalPulse caller wasn't audited.
+- **"Every layer is 200" ≠ "chain is healthy."** The diagnostic that
+  found this was running the calendar's own `/campaigns?status=active`
+  and comparing counts against `/next-up`; the discrepancy (17 vs 0)
+  was the smoking gun.
+- **`/next-up` and `/live-now` are two different questions** and every
+  UI badge that says "on promo" or "currently discounted" wants
+  `/live-now`. Reserve `/next-up` for "what's coming".

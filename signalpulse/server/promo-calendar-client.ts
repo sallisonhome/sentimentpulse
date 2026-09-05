@@ -102,7 +102,17 @@ export async function getActivePromosFor(
 
   let beats: NextUpBeat[] = [];
   try {
-    const url = `${PROMO_CALENDAR_BASE_URL}/api/saber/games/${encodeURIComponent(code)}/next-up?today=${today}`;
+    // v3.30 (2026-09-05): switched from /next-up to /live-now.
+    //
+    // Backstory: on 2026-09-04, the Promo Calendar's /next-up endpoint was
+    // changed to STRICTLY exclude in-flight beats (start_date > today), so
+    // it only returns future beats now. SignalPulse's On Promo badge
+    // depends on currently-active beats — filtering /next-up by
+    // `is_active` therefore yields zero, and every chip disappeared even
+    // when titles were actively on sale. The correct endpoint is
+    // /live-now, which returns exactly the currently in-flight beats and
+    // was added as the counterpart to that Next Up change.
+    const url = `${PROMO_CALENDAR_BASE_URL}/api/saber/games/${encodeURIComponent(code)}/live-now?today=${today}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     let res: Response;
@@ -126,9 +136,11 @@ export async function getActivePromosFor(
     return [];
   }
 
-  // Filter to currently in-flight only. Upcoming beats don't count for the
-  // "On Promo" badge — those show elsewhere in the Promo Calendar UI.
-  const active = beats.filter((b) => b.is_active === true);
+  // /live-now returns only currently in-flight beats — no need to filter
+  // by `is_active` (the endpoint's contract IS "active right now"). We
+  // still defensively treat any beat present in the response as active
+  // even if the shape lacks the flag.
+  const active = beats.filter((b) => b.is_active !== false);
 
   // Deduplicate by platform: if a title has two overlapping Steam sales
   // (e.g. Autumn Sale + a franchise sale), collapse to one entry and keep
