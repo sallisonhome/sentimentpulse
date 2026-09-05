@@ -1,0 +1,194 @@
+name: SignalPulse — Sales by Country daily window backfill
+
+# Walks a specific date range day-by-day for every product with a
+# steamAppId (or a single --only_product_id). Each fetch uses
+# `dateStart == dateEnd == YYYY-MM-DD` so `detectGranularity` classifies
+# it as "day" and the country ingestion writes per-day rows to
+# steam_sales_by_country_period with granularity='day'.
+#
+# Purpose: the monthly country backfill only covers full previous months,
+# so days in the current month (e.g. Sept 1-4 while it's still Sept 5)
+# get orphaned. This workflow fills that gap.
+#
+# Runtime: ~2.5s/day/product. For 4 days × 11 products = ~2 minutes.
+#
+# Idempotent: portal-fetch upserts by (product_id, period_start,
+# period_end, country_iso, granularity).
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_date:
+        description: "Start date YYYY-MM-DD (inclusive). Required."
+        required: true
+      to_date:
+        description: "End date YYYY-MM-DD (inclusive). Required."
+        required: true
+      only_product_id:
+        description: "Optional single product_id (default: all with steamAppId)"
+        required: false
+        default: ""
+      dry_run:
+        description: "true = plan only, no fetches"
+        required: false
+        default: "false"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Sanity check — Steamworks session configured
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 <<'EOF'
+            set -euo pipefail
+            DB=/opt/sentimentpulse/signalpulse/data.db
+            has_cookie=$(sqlite3 "$DB" "SELECT CASE WHEN LENGTH(cookie_value) > 0 THEN 1 ELSE 0 END FROM steamworks_sessions WHERE id = 'default';")
+            if [ "$has_cookie" != "1" ]; then
+              echo "ERROR: No Steamworks session cookie. Aborting."
+              exit 1
+            fi
+            echo "Session cookie present."
+          EOF
+
+      - name: Run daily window backfill
+        env:
+          FROM_DATE: ${{ github.event.inputs.from_date }}
+          TO_DATE: ${{ github.event.inputs.to_date }}
+          ONLY_PRODUCT_ID: ${{ github.event.inputs.only_product_id }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          OPS_TOKEN: ${{ secrets.INGESTION_OPS_TOKEN }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
+              FROM_DATE="$FROM_DATE" TO_DATE="$TO_DATE" ONLY_PRODUCT_ID="$ONLY_PRODUCT_ID" DRY_RUN="$DRY_RUN" OPS_TOKEN="$OPS_TOKEN" \
+              bash -s <<'EOF'
+            set -euo pipefail
+
+            FROM_DATE="${FROM_DATE:-}"
+            TO_DATE="${TO_DATE:-}"
+            ONLY_PRODUCT_ID="${ONLY_PRODUCT_ID:-}"
+            DRY_RUN="${DRY_RUN:-false}"
+
+            if [ -z "$FROM_DATE" ] || [ -z "$TO_DATE" ]; then
+              echo "ERROR: from_date and to_date required" >&2
+              exit 2
+            fi
+
+            DB=/opt/sentimentpulse/signalpulse/data.db
+            API=http://127.0.0.1:5000
+            LOG=/tmp/country-daily-window-$(date +%Y%m%d-%H%M%S).log
+
+            echo "── Daily window backfill ──" | tee -a "$LOG"
+            echo "  from=$FROM_DATE  to=$TO_DATE  only=$ONLY_PRODUCT_ID  dry_run=$DRY_RUN" | tee -a "$LOG"
+            echo "  log=$LOG" | tee -a "$LOG"
+
+            # Build day list
+            DAYS=""
+            cur="$FROM_DATE"
+            while [ "$cur" \< "$TO_DATE" ] || [ "$cur" = "$TO_DATE" ]; do
+              DAYS="$DAYS $cur"
+              cur=$(date -u -d "$cur +1 day" +%Y-%m-%d)
+            done
+            day_count=$(echo "$DAYS" | wc -w)
+            echo "  days: $DAYS ($day_count total)" | tee -a "$LOG"
+
+            # Products
+            product_filter=""
+            if [ -n "$ONLY_PRODUCT_ID" ]; then
+              product_filter="AND id = $ONLY_PRODUCT_ID"
+            fi
+            products=$(sqlite3 -separator "|" "$DB" "SELECT id, title, steam_app_id FROM products WHERE steam_app_id IS NOT NULL $product_filter ORDER BY id;")
+            if [ -z "$products" ]; then
+              echo "No products found."; exit 0
+            fi
+            product_count=$(echo "$products" | wc -l)
+            total_fetches=$((day_count * product_count))
+            echo "  products=$product_count  total_fetches=$total_fetches  eta=$((total_fetches * 3))s" | tee -a "$LOG"
+
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "" | tee -a "$LOG"
+              echo "DRY_RUN=true — plan:" | tee -a "$LOG"
+              echo "$products" | tee -a "$LOG"
+              exit 0
+            fi
+
+            ok=0
+            fail=0
+
+            SAVED_IFS="$IFS"
+            IFS=$'\n'
+            for row in $products; do
+              pid=$(echo "$row" | cut -d'|' -f1)
+              title=$(echo "$row" | cut -d'|' -f2)
+              appid=$(echo "$row" | cut -d'|' -f3)
+              IFS="$SAVED_IFS"
+
+              echo "" | tee -a "$LOG"
+              echo "── pid=$pid title=$title appid=$appid ──" | tee -a "$LOG"
+
+              for day in $DAYS; do
+                echo -n "  $day ... " | tee -a "$LOG"
+                for attempt in 1 2; do
+                  resp=$(curl -sS --max-time 30 -X POST "$API/api/ops/portal-fetch" \
+                              -H "Content-Type: application/json" \
+                              -H "x-ops-token: $OPS_TOKEN" \
+                              -d "{\"product_id\":$pid,\"dateStart\":\"$day\",\"dateEnd\":\"$day\"}" 2>&1) || {
+                    if [ $attempt -eq 1 ]; then
+                      echo "curl-fail retry" | tee -a "$LOG"; sleep 5; continue
+                    fi
+                    echo "FAIL(curl): $resp" | tee -a "$LOG"
+                    fail=$((fail + 1)); break
+                  }
+                  status=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ok', False))" 2>/dev/null || echo "parse-fail")
+                  if [ "$status" = "True" ]; then
+                    rows_ing=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('rowsIngested', 0))")
+                    country_ing=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('countryRowsIngested', 0))")
+                    echo "OK sales=$rows_ing country_rows=$country_ing" | tee -a "$LOG"
+                    ok=$((ok + 1)); break
+                  else
+                    if [ $attempt -eq 1 ]; then
+                      echo "not-ok retry ($resp)" | tee -a "$LOG"; sleep 5; continue
+                    fi
+                    echo "FAIL: $resp" | tee -a "$LOG"
+                    fail=$((fail + 1)); break
+                  fi
+                done
+                sleep 1
+              done
+              IFS=$'\n'
+            done
+            IFS="$SAVED_IFS"
+
+            echo "" | tee -a "$LOG"
+            echo "── Complete: ok=$ok  fail=$fail ──" | tee -a "$LOG"
+
+            echo "" | tee -a "$LOG"
+            echo "── steam_sales_by_country_period audit (day granularity in window) ──" | tee -a "$LOG"
+            sqlite3 -header "$DB" "
+              SELECT p.title,
+                     COUNT(*) AS country_rows,
+                     COUNT(DISTINCT sbc.country_iso) AS countries,
+                     COUNT(DISTINCT sbc.period_start) AS days_covered,
+                     MIN(sbc.period_start) AS earliest_day,
+                     MAX(sbc.period_end) AS latest_day
+              FROM steam_sales_by_country_period sbc
+              JOIN products p ON p.id = sbc.product_id
+              WHERE sbc.granularity = 'day'
+                AND sbc.period_start >= '$FROM_DATE'
+                AND sbc.period_end <= '$TO_DATE'
+              GROUP BY sbc.product_id
+              ORDER BY p.title;
+            " | tee -a "$LOG"
+
+            if [ $fail -gt 0 ]; then
+              echo "⚠ $fail fetches failed"
+              exit 1
+            fi
+          EOF
