@@ -413,6 +413,127 @@ function initializeDatabase() {
       FOREIGN KEY (message_id) REFERENCES inbound_messages(id)
     );
     CREATE INDEX IF NOT EXISTS inbound_attachments_message_idx ON inbound_attachments(message_id);
+
+    -- ── Amazon Retail app (2026-09-06) ────────────────────────────────────
+    -- 8 tables backing the SignalPulse Amazon Retail app + Saber Amazon
+    -- Leaderboard tab. See shared/schema.ts for the Drizzle-typed
+    -- authoritative definitions (this block mirrors them for boot-time
+    -- CREATE IF NOT EXISTS installation on both fresh and existing DBs).
+
+    CREATE TABLE IF NOT EXISTS amazon_asin_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      asin TEXT NOT NULL,
+      is_auto INTEGER NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      is_switch2 INTEGER NOT NULL DEFAULT 0,
+      match_score REAL,
+      discovered_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_asin_map_unique_product_platform ON amazon_asin_map(product_id, platform);
+    CREATE INDEX IF NOT EXISTS amazon_asin_map_product_idx ON amazon_asin_map(product_id);
+
+    CREATE TABLE IF NOT EXISTS amazon_chart_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      raw_rank INTEGER,
+      asin TEXT NOT NULL,
+      title TEXT NOT NULL,
+      price REAL,
+      rating REAL,
+      ratings_total INTEGER,
+      image_url TEXT,
+      link TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_chart_snap_unique_day_platform_rank ON amazon_chart_snapshots(snapshot_date, platform, rank);
+    CREATE INDEX IF NOT EXISTS amazon_chart_snap_by_asin_idx ON amazon_chart_snapshots(asin, snapshot_date);
+
+    CREATE TABLE IF NOT EXISTS amazon_also_bought_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date TEXT NOT NULL,
+      source_asin TEXT NOT NULL,
+      rank_position INTEGER NOT NULL,
+      recommended_asin TEXT NOT NULL,
+      title TEXT NOT NULL,
+      price REAL,
+      rating REAL,
+      ratings_total INTEGER,
+      main_bsr INTEGER,
+      image_url TEXT,
+      link TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_also_bought_unique_day_source_pos ON amazon_also_bought_daily(snapshot_date, source_asin, rank_position);
+    CREATE INDEX IF NOT EXISTS amazon_also_bought_by_source_idx ON amazon_also_bought_daily(source_asin, snapshot_date);
+
+    CREATE TABLE IF NOT EXISTS amazon_product_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date TEXT NOT NULL,
+      asin TEXT NOT NULL,
+      buybox_price REAL,
+      buybox_seller TEXT,
+      buybox_is_amazon INTEGER,
+      is_prime INTEGER,
+      stock_status TEXT,
+      main_bsr INTEGER,
+      sub_bsrs_json TEXT,
+      rating REAL,
+      ratings_total INTEGER,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_product_daily_unique_day_asin ON amazon_product_daily(snapshot_date, asin);
+
+    CREATE TABLE IF NOT EXISTS amazon_movers_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      asin TEXT NOT NULL,
+      title TEXT NOT NULL,
+      rank_change INTEGER,
+      image_url TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_movers_unique_day_platform_rank ON amazon_movers_daily(snapshot_date, platform, rank);
+
+    CREATE TABLE IF NOT EXISTS amazon_keyword_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date TEXT NOT NULL,
+      keyword TEXT NOT NULL,
+      results_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_keyword_unique_day_keyword ON amazon_keyword_daily(snapshot_date, keyword);
+
+    CREATE TABLE IF NOT EXISTS amazon_new_releases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      asin TEXT NOT NULL,
+      title TEXT NOT NULL,
+      first_seen_date TEXT,
+      image_url TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_new_releases_unique_day_platform_rank ON amazon_new_releases(snapshot_date, platform, rank);
+
+    CREATE TABLE IF NOT EXISTS amazon_ingest_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      job_name TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL,
+      credits_used INTEGER,
+      credits_remaining INTEGER,
+      rows_written INTEGER,
+      error_message TEXT
+    );
   `);
 }
 
