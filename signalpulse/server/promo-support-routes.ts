@@ -528,31 +528,12 @@ export function computeSalesByCountry(
     if (!sharesRows || sharesRows.length === 0) continue;
     daysWithShares++;
 
-    // v3.33 (2026-09-05): ASP capping + reconciliation.
-    //
-    // Naively multiplying dayUnits by pctOfUnits and dayRev by pctOfRevenue
-    // independently produces absurd per-country ASPs on smaller titles —
-    // e.g. South Africa 29 units / $165k revenue = $5,700 ASP — because
-    // pct_of_units and pct_of_revenue come from SEPARATE Steamworks panels
-    // whose rank orderings for a country can diverge sharply.
-    //
-    // Fix:
-    //   1. Compute the day's authoritative title ASP.
-    //   2. For each country compute raw units = dayUnits * pct_of_units
-    //      and raw revenue = dayRev * pct_of_revenue.
-    //   3. Clip each country's ASP to [0.35x, 1.75x] of the title ASP.
-    //      Countries outside band get their revenue clipped to
-    //      units * capped_asp.
-    //   4. Renormalize revenue so the sum of clipped country revenues
-    //      equals dayRev exactly (preserves the authoritative total).
-    //
-    // The 0.35–1.75 band matches Steam's real regional-pricing spread:
-    // CN/RU/BR/TR/ID at ~0.5–0.7x US, most EU/JP at 1.0–1.2x, a few
-    // Nordic/AU at 1.1–1.3x. Anything outside this band is a panel-rank
-    // artefact, not real pricing.
-    const ASP_FLOOR_MULT = 0.35;
-    const ASP_CEIL_MULT  = 1.75;
-
+    // v3.33 (2026-09-05): per-day units + raw revenue accumulation.
+    // ASP capping + reconciliation now happens ONCE at the window level
+    // after all days are aggregated (see "Window-level ASP cap" below).
+    // Doing it per-day + renormalizing every day was unstable: clipped
+    // rows got scaled back UP when sumClipped < dayRev, pushing them back
+    // above the ceiling.
     let totalPctRev = 0;
     let totalPctUnits = 0;
     for (const s of sharesRows) {
@@ -561,9 +542,6 @@ export function computeSalesByCountry(
     }
     const hasShares = totalPctRev > 0 || totalPctUnits > 0;
 
-    // Fall-back path (legacy rows with no pct columns): treat stored
-    // units + revenue as raw shares. Same capping is applied below.
-    let rawTuples: Array<{ iso: string; name: string; units: number; revenue: number }> = [];
     if (hasShares) {
       for (const s of sharesRows) {
         const revShare = s.pctOfRevenue != null && totalPctRev > 0
@@ -573,12 +551,7 @@ export function computeSalesByCountry(
           ? s.pctOfUnits / totalPctUnits
           : 0;
         if (revShare === 0 && unitShare === 0) continue;
-        rawTuples.push({
-          iso: s.countryIso,
-          name: s.countryName,
-          units: dayUnits * unitShare,
-          revenue: dayRev * revShare,
-        });
+        push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
       }
     } else {
       usedLegacyFallback = true;
@@ -588,44 +561,67 @@ export function computeSalesByCountry(
         const revShare = sumR > 0 ? s.revenueUsd / sumR : 0;
         const unitShare = sumU > 0 ? s.units / sumU : 0;
         if (revShare === 0 && unitShare === 0) continue;
-        rawTuples.push({
-          iso: s.countryIso,
-          name: s.countryName,
-          units: dayUnits * unitShare,
-          revenue: dayRev * revShare,
-        });
+        push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
       }
     }
+  }
 
-    if (rawTuples.length === 0) continue;
+  // ---------------------------------------------------------------------
+  // v3.33 (2026-09-05): window-level ASP cap + renormalization.
+  // ---------------------------------------------------------------------
+  // pct_of_units and pct_of_revenue come from separate Steamworks panels;
+  // their per-country ranks can diverge sharply so naive multiplication
+  // yields absurd per-country ASPs (e.g. ZA 29 units / \$165k = \$5,700).
+  //
+  // The fix works on aggregated (window-level) country totals rather than
+  // per day so we can iterate to a stable answer:
+  //   1. Compute window-level title ASP from the authoritative totals
+  //      (sum of steam_sales_daily net rev / net units in the window).
+  //   2. Clip each country's implied ASP to [0.35x, 1.75x] the title ASP;
+  //      out-of-band revenue -> units * capped_asp.
+  //   3. Renormalize revenue so sum matches sum(dayRev). Renormalization
+  //      can push some values back out of band, so re-clip + re-normalize.
+  //   4. Repeat up to N iterations (converges within 3-5 passes typically
+  //      because clip step is monotone).
+  //
+  // The band 0.35 - 1.75 covers Steam's real regional-pricing spread:
+  // CN/RU/BR/TR/ID at ~0.5-0.7x US, most EU/JP at 1.0-1.2x, a few
+  // Nordic/AU at 1.1-1.3x. Anything outside is a panel-rank artefact.
+  const ASP_FLOOR_MULT = 0.35;
+  const ASP_CEIL_MULT  = 1.75;
+  const MAX_ITER = 8;
 
-    // Compute title ASP for this day.
-    const titleAsp = dayUnits > 0 ? dayRev / dayUnits : 0;
-    if (titleAsp > 0) {
-      const aspFloor = titleAsp * ASP_FLOOR_MULT;
-      const aspCeil  = titleAsp * ASP_CEIL_MULT;
-      // Step 1: clip revenue based on per-country implied ASP.
-      for (const t of rawTuples) {
-        if (t.units <= 0) {
-          // Zero-unit country — discard its "revenue" claim; we can't
-          // attribute revenue to zero units without infinite ASP.
-          t.revenue = 0;
-          continue;
+  const authoritativeWindowRev = Array.from(dayTotalRev.values()).reduce((s, v) => s + v, 0);
+  const authoritativeWindowUnits = Array.from(dayTotalUnits.values()).reduce((s, v) => s + v, 0);
+  const titleAsp = authoritativeWindowUnits > 0
+    ? authoritativeWindowRev / authoritativeWindowUnits
+    : 0;
+
+  if (titleAsp > 0 && byCountry.size > 0) {
+    const aspFloor = titleAsp * ASP_FLOOR_MULT;
+    const aspCeil  = titleAsp * ASP_CEIL_MULT;
+    for (let iter = 0; iter < MAX_ITER; iter++) {
+      // Step 1: clip
+      let clippedAny = false;
+      byCountry.forEach((agg) => {
+        if (agg.units <= 0) {
+          if (agg.revenue !== 0) { agg.revenue = 0; clippedAny = true; }
+          return;
         }
-        const impliedAsp = t.revenue / t.units;
-        if (impliedAsp < aspFloor) t.revenue = t.units * aspFloor;
-        else if (impliedAsp > aspCeil) t.revenue = t.units * aspCeil;
+        const impliedAsp = agg.revenue / agg.units;
+        if (impliedAsp < aspFloor) { agg.revenue = agg.units * aspFloor; clippedAny = true; }
+        else if (impliedAsp > aspCeil) { agg.revenue = agg.units * aspCeil; clippedAny = true; }
+      });
+      // Step 2: renormalize revenue so sum matches authoritative window rev.
+      let sumRev = 0;
+      byCountry.forEach((a) => { sumRev += a.revenue; });
+      if (sumRev > 0 && Math.abs(sumRev - authoritativeWindowRev) > 0.01) {
+        const scale = authoritativeWindowRev / sumRev;
+        byCountry.forEach((a) => { a.revenue *= scale; });
       }
-      // Step 2: renormalize revenue so sum matches authoritative dayRev.
-      const sumClipped = rawTuples.reduce((s, t) => s + t.revenue, 0);
-      if (sumClipped > 0) {
-        const scale = dayRev / sumClipped;
-        for (const t of rawTuples) t.revenue *= scale;
-      }
-    }
-
-    for (const t of rawTuples) {
-      push(t.iso, t.name, t.units, t.revenue);
+      // Convergence check: if nothing was clipped, all ASPs are in-band
+      // and the renormalize was a no-op (or nearly so). Stop.
+      if (!clippedAny) break;
     }
   }
 
