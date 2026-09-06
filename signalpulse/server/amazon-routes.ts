@@ -509,6 +509,41 @@ export function registerAmazonRoutes(app: Express): void {
       .limit(50).all();
     res.json({ rows });
   });
+
+  // Ops diagnostic: list every pinned ASIN with today's product-row status.
+  // Powers "which ASINs are failing the products job?" without needing DB SSH.
+  app.get("/api/amazon/ingest/pin-status", (_req, res) => {
+    const today = new Date().toISOString().split("T")[0];
+    const pins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const todayRows = db.select().from(amazonProductDaily)
+      .where(eq(amazonProductDaily.snapshotDate, today)).all();
+    const rowsByAsin = new Map(todayRows.map((r) => [r.asin, r]));
+    const products = storage.getAllProducts();
+    const productById = new Map(products.map((p) => [p.id, p]));
+    const out = pins.map((pin) => {
+      const row = rowsByAsin.get(pin.asin);
+      const product = productById.get(pin.productId);
+      return {
+        productId: pin.productId,
+        productTitle: product?.title ?? null,
+        platform: pin.platform,
+        asin: pin.asin,
+        matchScore: pin.matchScore,
+        isAuto: pin.isAuto,
+        hasTodayRow: !!row,
+        mainBsr: row?.mainBsr ?? null,
+        buyboxPrice: row?.buyboxPrice ?? null,
+        stockStatus: row?.stockStatus ?? null,
+      };
+    });
+    res.json({
+      snapshotDate: today,
+      totalPins: pins.length,
+      withData: out.filter((r) => r.hasTodayRow).length,
+      missing: out.filter((r) => !r.hasTodayRow).length,
+      rows: out,
+    });
+  });
 }
 
 function safeJson(s: string | null | undefined): unknown {
