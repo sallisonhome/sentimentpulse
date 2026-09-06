@@ -528,20 +528,42 @@ export function computeSalesByCountry(
     if (!sharesRows || sharesRows.length === 0) continue;
     daysWithShares++;
 
-    // Compute total pct for this day (to normalize when the panel's
-    // percentages don't sum to exactly 1.0 due to rounding + "Other" bucket).
+    // v3.33 (2026-09-05): ASP capping + reconciliation.
+    //
+    // Naively multiplying dayUnits by pctOfUnits and dayRev by pctOfRevenue
+    // independently produces absurd per-country ASPs on smaller titles —
+    // e.g. South Africa 29 units / $165k revenue = $5,700 ASP — because
+    // pct_of_units and pct_of_revenue come from SEPARATE Steamworks panels
+    // whose rank orderings for a country can diverge sharply.
+    //
+    // Fix:
+    //   1. Compute the day's authoritative title ASP.
+    //   2. For each country compute raw units = dayUnits * pct_of_units
+    //      and raw revenue = dayRev * pct_of_revenue.
+    //   3. Clip each country's ASP to [0.35x, 1.75x] of the title ASP.
+    //      Countries outside band get their revenue clipped to
+    //      units * capped_asp.
+    //   4. Renormalize revenue so the sum of clipped country revenues
+    //      equals dayRev exactly (preserves the authoritative total).
+    //
+    // The 0.35–1.75 band matches Steam's real regional-pricing spread:
+    // CN/RU/BR/TR/ID at ~0.5–0.7x US, most EU/JP at 1.0–1.2x, a few
+    // Nordic/AU at 1.1–1.3x. Anything outside this band is a panel-rank
+    // artefact, not real pricing.
+    const ASP_FLOOR_MULT = 0.35;
+    const ASP_CEIL_MULT  = 1.75;
+
     let totalPctRev = 0;
     let totalPctUnits = 0;
     for (const s of sharesRows) {
       if (s.pctOfRevenue != null) totalPctRev += s.pctOfRevenue;
       if (s.pctOfUnits != null) totalPctUnits += s.pctOfUnits;
     }
-
-    // If ANY row has pct data, use shares. If none do (legacy row), fall
-    // back to the stored units/revenue values as-is (which will be wrong
-    // in absolute magnitude but preserve country ordering).
     const hasShares = totalPctRev > 0 || totalPctUnits > 0;
 
+    // Fall-back path (legacy rows with no pct columns): treat stored
+    // units + revenue as raw shares. Same capping is applied below.
+    let rawTuples: Array<{ iso: string; name: string; units: number; revenue: number }> = [];
     if (hasShares) {
       for (const s of sharesRows) {
         const revShare = s.pctOfRevenue != null && totalPctRev > 0
@@ -550,19 +572,60 @@ export function computeSalesByCountry(
         const unitShare = s.pctOfUnits != null && totalPctUnits > 0
           ? s.pctOfUnits / totalPctUnits
           : 0;
-        push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
+        if (revShare === 0 && unitShare === 0) continue;
+        rawTuples.push({
+          iso: s.countryIso,
+          name: s.countryName,
+          units: dayUnits * unitShare,
+          revenue: dayRev * revShare,
+        });
       }
     } else {
       usedLegacyFallback = true;
-      // Legacy: use stored values as raw shares. Sum the panel's stored
-      // units + revenue and treat those as shares.
       let sumU = 0, sumR = 0;
       for (const s of sharesRows) { sumU += s.units; sumR += s.revenueUsd; }
       for (const s of sharesRows) {
         const revShare = sumR > 0 ? s.revenueUsd / sumR : 0;
         const unitShare = sumU > 0 ? s.units / sumU : 0;
-        push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
+        if (revShare === 0 && unitShare === 0) continue;
+        rawTuples.push({
+          iso: s.countryIso,
+          name: s.countryName,
+          units: dayUnits * unitShare,
+          revenue: dayRev * revShare,
+        });
       }
+    }
+
+    if (rawTuples.length === 0) continue;
+
+    // Compute title ASP for this day.
+    const titleAsp = dayUnits > 0 ? dayRev / dayUnits : 0;
+    if (titleAsp > 0) {
+      const aspFloor = titleAsp * ASP_FLOOR_MULT;
+      const aspCeil  = titleAsp * ASP_CEIL_MULT;
+      // Step 1: clip revenue based on per-country implied ASP.
+      for (const t of rawTuples) {
+        if (t.units <= 0) {
+          // Zero-unit country — discard its "revenue" claim; we can't
+          // attribute revenue to zero units without infinite ASP.
+          t.revenue = 0;
+          continue;
+        }
+        const impliedAsp = t.revenue / t.units;
+        if (impliedAsp < aspFloor) t.revenue = t.units * aspFloor;
+        else if (impliedAsp > aspCeil) t.revenue = t.units * aspCeil;
+      }
+      // Step 2: renormalize revenue so sum matches authoritative dayRev.
+      const sumClipped = rawTuples.reduce((s, t) => s + t.revenue, 0);
+      if (sumClipped > 0) {
+        const scale = dayRev / sumClipped;
+        for (const t of rawTuples) t.revenue *= scale;
+      }
+    }
+
+    for (const t of rawTuples) {
+      push(t.iso, t.name, t.units, t.revenue);
     }
   }
 
