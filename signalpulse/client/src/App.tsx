@@ -12,6 +12,8 @@ import ProductDetail from "@/pages/product-detail";
 import Settings from "@/pages/settings";
 import Inbox from "@/pages/inbox";
 import SalesByCountry from "@/pages/sales-by-country";
+import AmazonIndex from "@/pages/amazon";
+import AmazonProductDetail from "@/pages/amazon/product-detail";
 import NotFound from "@/pages/not-found";
 import { useEffect, useState } from "react";
 import { AddProductDialog } from "@/components/add-product-dialog";
@@ -29,6 +31,11 @@ function AppRouter() {
         <Route path="/settings" component={Settings} />
         <Route path="/inbox" component={Inbox} />
         <Route path="/sales-by-country" component={SalesByCountry} />
+        {/* Amazon Retail app: /amazon lands on Charts; /amazon/:section
+            picks the other sub-tabs; /amazon/product/:asin drills in. */}
+        <Route path="/amazon/product/:asin" component={AmazonProductDetail} />
+        <Route path="/amazon/:section" component={AmazonIndex} />
+        <Route path="/amazon" component={AmazonIndex} />
         <Route component={NotFound} />
       </Switch>
       <AddProductDialog open={addProductOpen} onOpenChange={setAddProductOpen} />
