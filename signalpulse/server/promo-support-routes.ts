@@ -365,7 +365,7 @@ export function registerPromoSupportRoutes(app: Express): void {
           total_units: 0, total_revenue_usd: 0, asp_usd: 0,
           countries_count: 0, countries: [], found: false,
           shares_source: "authoritative",
-          days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0,
+          days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0, total_units_authoritative: 0,
         });
       }
 
@@ -421,6 +421,7 @@ export function computeSalesByCountry(
   days_with_shares: number;
   days_in_window: number;
   days_authoritative_rev: number;
+  total_units_authoritative: number;
 } {
   // Determine effective window bounds. If since/until omitted, use
   // full range of what steam_sales_daily has for this product.
@@ -442,7 +443,7 @@ export function computeSalesByCountry(
       total_units: 0, total_revenue_usd: 0, asp_usd: 0,
       countries_count: 0, countries: [],
       shares_source: "authoritative",
-      days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0,
+      days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0, total_units_authoritative: 0,
     };
   }
 
@@ -597,11 +598,24 @@ export function computeSalesByCountry(
     ? authoritativeWindowRev / authoritativeWindowUnits
     : 0;
 
+  // v3.33.2: first renormalize UNITS so per-country units sum exactly to
+  // steam_sales_daily's authoritative window units. Steamworks unit-panel
+  // pct sometimes doesn't sum to 100% (missing "Other" bucket, rounding at
+  // 0.1%). This scaling closes that gap on the units side.
+  if (authoritativeWindowUnits > 0 && byCountry.size > 0) {
+    let sumU = 0;
+    byCountry.forEach(a => { sumU += a.units; });
+    if (sumU > 0 && Math.abs(sumU - authoritativeWindowUnits) > 0.5) {
+      const scale = authoritativeWindowUnits / sumU;
+      byCountry.forEach(a => { a.units *= scale; });
+    }
+  }
+
   if (titleAsp > 0 && byCountry.size > 0) {
     const aspFloor = titleAsp * ASP_FLOOR_MULT;
     const aspCeil  = titleAsp * ASP_CEIL_MULT;
     for (let iter = 0; iter < MAX_ITER; iter++) {
-      // Step 1: clip
+      // Step 1: clip revenue based on per-country implied ASP.
       let clippedAny = false;
       byCountry.forEach((agg) => {
         if (agg.units <= 0) {
@@ -639,8 +653,16 @@ export function computeSalesByCountry(
     }))
     .sort((a, b) => b.revenue_usd - a.revenue_usd);
 
+  // v3.33.2 (2026-09-05): authoritative unit total from steam_sales_daily.
+  // We compute it here so callers can compare against total_units (the sum
+  // of per-country attributed units) and see any small drift caused by
+  // Steamworks unit-panel percentages not summing to exactly 100%.
+  let authoritativeWindowUnitsTot = 0;
+  dayTotalUnits.forEach(v => { authoritativeWindowUnitsTot += v; });
+
   return {
     total_units: Math.round(totalUnits),
+    total_units_authoritative: Math.round(authoritativeWindowUnitsTot),
     total_revenue_usd: Math.round(totalRevenue * 100) / 100,
     asp_usd: totalUnits > 0 ? totalRevenue / totalUnits : 0,
     countries_count: countries.length,
