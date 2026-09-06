@@ -30,6 +30,7 @@ on:
           - also_bought
           - asin_discovery
           - asin_search_discovery
+          - pin_status
 
 concurrency:
   group: deploy-droplet
@@ -80,6 +81,12 @@ jobs:
               run_one "$j"
               sleep 3
             done
+          elif [ "$JOB" = "pin_status" ]; then
+            echo ""
+            echo "=========================================="
+            echo "Pin status (per-ASIN products-job coverage today):"
+            echo "=========================================="
+            $SSH "curl -sS -H 'x-ops-token: ${OPS_TOKEN}' 'http://127.0.0.1:${PORT}/api/amazon/ingest/pin-status'" | python3 -m json.tool
           else
             run_one "$JOB"
           fi
