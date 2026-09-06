@@ -184,12 +184,31 @@ const OPS_TOKEN_PATHS = new Set([
   "/api/ops/portal-fetch",
 ]);
 
+// Path prefixes that accept the ops token. Use for endpoint groups that have
+// variable path parameters (:job, :platform, etc.) where a literal Set
+// lookup won't match. The Amazon ingest trigger is
+// /api/amazon/ingest/run/:job — six distinct paths (charts, products,
+// movers, keywords, new_releases, also_bought) that should all accept the
+// ops token so scheduled workflows and this app's own cron self-trigger
+// endpoints can drive them without a human JWT.
+const OPS_TOKEN_PREFIXES = [
+  "/api/amazon/ingest/run/",
+];
+
 function hasValidOpsToken(req: Request): boolean {
   const expected = process.env.INGESTION_OPS_TOKEN;
   if (!expected) return false;
   const provided = req.headers["x-ops-token"];
   if (typeof provided !== "string" || provided.length === 0) return false;
   return provided === expected;
+}
+
+function isOpsTokenPath(path: string): boolean {
+  if (OPS_TOKEN_PATHS.has(path)) return true;
+  for (const pfx of OPS_TOKEN_PREFIXES) {
+    if (path.startsWith(pfx)) return true;
+  }
+  return false;
 }
 
 interface SaberContext {
@@ -263,7 +282,7 @@ export function createSaberAuthMiddleware(): {
   ): Promise<void> => {
     if (isExempt(req)) return next();
 
-    if (OPS_TOKEN_PATHS.has(req.path) && hasValidOpsToken(req)) {
+    if (isOpsTokenPath(req.path) && hasValidOpsToken(req)) {
       (req as Request & { saberUser?: unknown }).saberUser = {
         userId: "ops-automation",
         email: "ops-automation@internal",
