@@ -2366,6 +2366,14 @@ export class DatabaseStorage implements IStorage {
       { key: "perplexity_api_key", label: "Perplexity API Key", category: "api_keys", isSecret: true },
       { key: "twitch_client_id", label: "Twitch Client ID (IGDB)", category: "api_keys", isSecret: false },
       { key: "twitch_client_secret", label: "Twitch Client Secret (IGDB)", category: "api_keys", isSecret: true },
+      // Amazon Retail app (2026-09-06) — Rainforest API key powers the Saber
+      // Amazon Leaderboard tab plus the full Amazon Retail sub-app suite
+      // (Charts, Buy Box Monitor, Reviews Pulse, Movers & Shakers, Search
+      // SOV, New Releases). Follows the same pattern as youtube_api_key /
+      // perplexity_api_key: Settings-page-managed, isSecret=true, empty
+      // default. Runtime reader falls back to process.env.RAINFOREST_API_KEY
+      // for local dev.
+      { key: "rainforest_api_key", label: "Rainforest API Key (Amazon Retail)", category: "api_keys", isSecret: true },
       { key: "app_password", label: "App Password", category: "general", isSecret: true },
       { key: "resend_api_key", label: "Resend API Key", category: "email", isSecret: true },
       { key: "resend_from", label: "Resend From Address", category: "email", isSecret: false, value: "onboarding@resend.dev" },

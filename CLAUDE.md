@@ -868,3 +868,44 @@ New tests under `backend/tests/test_section_26.py`:
 The canonical truth-and-accuracy, QA, and command-execution rules for this repo live in [`PRINCIPLES.md`](./PRINCIPLES.md). When in doubt, that file is the source of truth. Priority order on conflict: **Truth > QA > Style.**
 
 The sections above contain project-specific operational details that remain in effect alongside `PRINCIPLES.md`.
+
+---
+
+## SignalPulse — API Key Storage Convention (always-on)
+
+**All runtime API keys are stored in the `app_settings` SQLite table on the deployed droplet — NEVER in git, NEVER in `.env.example`, NEVER hardcoded.** The Settings page in the SignalPulse UI is the entry point for setting/rotating them. Code reads them at runtime via `storage.getSetting("<key>")?.value` (see `server/igdb.ts`, `server/sonar-client.ts`, `server/leaderboard-digest.ts` for the canonical pattern).
+
+Defaults are seeded (empty) by `seedDefaultSettings()` in `server/storage.ts` at boot, so a fresh droplet shows the field on the Settings page immediately. Do NOT commit real key values into the seed defaults.
+
+### Registered app_settings keys (Saber Intelligence Suite)
+
+| Setting key                        | Service                       | Secret? |
+|------------------------------------|-------------------------------|---------|
+| `steam_api_key`                    | Steam Web API                 | yes     |
+| `steam_partner_id`                 | Steam Partner ID              | no      |
+| `sony_api_key`                     | Sony Partner Portal API       | yes     |
+| `sony_partner_id`                  | Sony Partner ID               | no      |
+| `youtube_api_key`                  | YouTube Data API              | yes     |
+| `perplexity_api_key`               | Perplexity Sonar API          | yes     |
+| `twitch_client_id`                 | Twitch/IGDB Client ID         | no      |
+| `twitch_client_secret`             | Twitch/IGDB Client Secret     | yes     |
+| `rainforest_api_key`               | Rainforest API (Amazon Retail)| yes     |
+| `resend_api_key`                   | Resend (transactional email)  | yes     |
+| `resend_from`                      | Resend From Address           | no      |
+| `resend_inbound_signing_secret`    | Resend inbound webhook secret | yes     |
+| `app_password`                     | UI gate password              | yes     |
+
+### Adding a new API key — checklist
+
+1. Add row to `seedDefaultSettings()` in `server/storage.ts` with `value: ""` (or omit `value`), `isSecret: true` for anything sensitive.
+2. Read at runtime via `storage.getSetting("your_key")?.value`. Provide a `process.env.YOUR_KEY` fallback ONLY for local dev, gated behind an "if setting is empty" check.
+3. Document the key in the table above.
+4. Enter the actual value via the Settings page on the deployed droplet — not via git, not via a commit-time script.
+5. If GitHub Actions needs the key (deploy-time only), add it as a repo secret with `gh secret set YOUR_KEY` and reference it in the workflow YAML.
+
+### Rainforest API (Amazon Retail app — 2026-09-06)
+
+- Setting key: `rainforest_api_key`
+- Powers: Saber Amazon Leaderboard tab + full Amazon Retail sub-app suite (Charts, Buy Box Monitor, Reviews Pulse, Movers & Shakers, Search SOV, New Releases).
+- Client: `server/amazon-rainforest.ts` reads via `storage.getSetting("rainforest_api_key")?.value`, falls back to `process.env.RAINFOREST_API_KEY` for local dev.
+- Rotation: Rainforest dashboard → regenerate → paste into Settings page. No redeploy required.
