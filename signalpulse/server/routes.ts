@@ -27,6 +27,7 @@ import express from "express";
 import { handleResendInboundWebhook, sendReply, forwardToPersonalInbox } from "./inbound-email";
 import { registerOnPromoRoutes } from "./on-promo-routes";
 import { registerPromoSupportRoutes } from "./promo-support-routes";
+import { registerAmazonRoutes } from "./amazon-routes";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -137,6 +138,10 @@ export async function registerRoutes(
   // the On-Promo badge): Promo Calendar queries these to enrich its own
   // cards with Steam revenue during in-flight windows.
   registerPromoSupportRoutes(app);
+
+  // Amazon Retail app (2026-09-06): all /api/amazon/* endpoints. See
+  // server/amazon-routes.ts for the full endpoint list.
+  registerAmazonRoutes(app);
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
 

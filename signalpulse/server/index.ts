@@ -4,6 +4,7 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { startWeeklyDigestCron } from "./leaderboard-digest";
 import { startIngestionCron } from "./ingestion";
+import { startAmazonIngestionCron } from "./amazon-cron";
 import { createSaberAuthMiddleware } from "./saber-auth";
 import { startSteamCookieAutoRefreshCron } from "./steam-token-refresh";
 import { storage } from "./storage";
@@ -114,6 +115,12 @@ app.get("/api/config", (_req, res) => {
   // the codebase prior to 2026-08-13 (confirmed dead code via repo-wide
   // grep) -- there was no automated daily ingestion running at all.
   startIngestionCron();
+
+  // Amazon Retail ingestion (2026-09-06): charts / products / movers /
+  // keywords / new-releases daily 07:00-07:45 America/New_York, plus
+  // Sunday 08:00 also-bought. Silently no-ops until rainforest_api_key
+  // is set in Settings (see server/amazon-cron.ts).
+  startAmazonIngestionCron();
 
   // v3.20 (2026-08-17): Steam long-lived-cookie auto-refresh -- pure HTTP,
   // no browser/Playwright required. Runs once ~2min after boot (self-heal
