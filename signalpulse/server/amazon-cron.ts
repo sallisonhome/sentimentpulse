@@ -28,9 +28,11 @@ import {
   amazonKeywordDaily,
   amazonAlsoBoughtDaily,
   amazonIngestRuns,
+  amazonCompetitorAsinMap,
   AMAZON_PLATFORM_SLUGS,
   AMAZON_CHART_NODES,
   type AmazonPlatformSlug,
+  products as productsTable,
 } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
 import {
@@ -43,6 +45,7 @@ import {
   isVideoGameSoftware,
   isRainforestConfigured,
 } from "./amazon-rainforest";
+import { listAllCompetitorRelationships, isSentimentPulseIngestRunning } from "./sentimentpulse-client";
 import { log } from "./index";
 
 // ─── Seed keyword list ──────────────────────────────────────────────────────
@@ -194,7 +197,25 @@ export async function runChartsSnapshot(): Promise<{ platforms: number; rowsWrit
 export async function runProductSnapshots(): Promise<{ asins: number; rowsWritten: number }> {
   return withRun("products", async () => {
     const snapshotDate = todayUtcDate();
-    const active = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    // Fetch both Saber pins AND competitor pins; both flow into the same
+    // amazon_product_daily table keyed on (snapshot_date, asin) so the same
+    // downstream views (Buy Box, Reviews Pulse, BSR history) apply to both.
+    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+    // Deduplicate on ASIN — a competitor could theoretically share an ASIN
+    // with a Saber pin (edge case), but we don't want to pay Rainforest twice.
+    const seenAsin = new Set<string>();
+    const active: Array<{ asin: string }> = [];
+    for (const p of saberPins) {
+      if (seenAsin.has(p.asin)) continue;
+      seenAsin.add(p.asin);
+      active.push({ asin: p.asin });
+    }
+    for (const p of compPins) {
+      if (seenAsin.has(p.asin)) continue;
+      seenAsin.add(p.asin);
+      active.push({ asin: p.asin });
+    }
     let totalCreditsUsed = 0;
     let lastCreditsRemaining = 0;
     let rowsWritten = 0;
@@ -637,6 +658,170 @@ function countIntersection(a: Set<string>, b: Set<string>): number {
   return n;
 }
 
+// ─── Job: competitor ASIN discovery (daily) ───────────────────────────
+// Pulls the parent ↔ competitor relationships from SentimentPulse
+// (games/{parent_id}/competitors), joins parents to SignalPulse products by
+// steam_app_id, then Rainforest-search-discovers ASINs for every competitor
+// on every platform. Idempotent per (sentimentpulse_game_id, platform) so
+// running daily is safe.
+//
+// Costs ~1 Rainforest credit per unmapped (competitor × platform) query.
+// Every competitor pin discovered here feeds into the daily products job
+// automatically (runProductSnapshots reads both amazon_asin_map AND
+// amazon_competitor_asin_map).
+export async function runCompetitorDiscovery(threshold = 0.6): Promise<{
+  parentsWithComps: number;
+  competitorsScanned: number;
+  queriesIssued: number;
+  mappingsInserted: number;
+  mappingsSkipped: number;
+  parentsMissingProductRow: number;
+  noMatch: number;
+  deferred?: string | undefined;
+}> {
+  return withRun("competitor_discovery", async () => {
+    // SAFETY: don't call SentimentPulse while its own daily ingest is running.
+    // SP ingest at 06:45 ET is heavy on the shared Postgres pool and network
+    // I/O; piling 20-40 GETs on top has historically wedged it (main.py:118
+    // lessons). Skip cleanly and let the next scheduled tick pick it up.
+    if (await isSentimentPulseIngestRunning()) {
+      log("competitor-discovery: SentimentPulse ingest is currently running — deferring to next scheduled slot", "amazon-cron");
+      return {
+        result: {
+          parentsWithComps: 0,
+          competitorsScanned: 0,
+          queriesIssued: 0,
+          mappingsInserted: 0,
+          mappingsSkipped: 0,
+          parentsMissingProductRow: 0,
+          noMatch: 0,
+          deferred: "sentimentpulse_ingest_running" as string | undefined,
+        },
+        creditsUsed: 0,
+        creditsRemaining: 0,
+        rowsWritten: 0,
+      };
+    }
+    // Get every parent↔competitor relationship from SentimentPulse. This
+    // performs 1 + N HTTP calls (list games, then competitors per game) on
+    // the loopback, so it is intentionally lightweight.
+    const relationships = await listAllCompetitorRelationships();
+    // Group by parent steam_app_id so we can resolve each parent to a
+    // SignalPulse product once.
+    const parentSteamIds = new Set(relationships.map((r) => r.parentSteamAppId.toString()));
+    // Look up SignalPulse products by steam_app_id in one pass.
+    const allProducts = db.select().from(productsTable).all();
+    const productBySteamId = new Map<string, typeof allProducts[number]>();
+    for (const p of allProducts) {
+      if (p.steamAppId) productBySteamId.set(p.steamAppId, p);
+    }
+
+    // Existing competitor pins to skip.
+    const existingPins = db.select().from(amazonCompetitorAsinMap).all();
+    const pinKey = (gameId: number, plat: string) => `${gameId}|${plat}`;
+    const existingByKey = new Set(existingPins.map((p) => pinKey(p.sentimentpulseGameId, p.platform)));
+
+    let queriesIssued = 0;
+    let mappingsInserted = 0;
+    let mappingsSkipped = 0;
+    let noMatch = 0;
+    let parentsMissingProductRow = 0;
+    let totalCreditsUsed = 0;
+    let lastCreditsRemaining = 0;
+    const now = nowIso();
+
+    // Track which parents have at least one SignalPulse product row for reporting.
+    const parentsWithProduct = new Set<number>();
+    for (const steamId of Array.from(parentSteamIds)) {
+      if (!productBySteamId.has(steamId)) {
+        parentsMissingProductRow += 1;
+        log(`competitor-discovery: parent steam_app_id ${steamId} has no SignalPulse product row — skipping its competitors`, "amazon-cron");
+      } else {
+        parentsWithProduct.add(productBySteamId.get(steamId)!.id);
+      }
+    }
+
+    for (const rel of relationships) {
+      const parentProduct = productBySteamId.get(rel.parentSteamAppId.toString());
+      if (!parentProduct) continue; // logged above
+      const compName = rel.competitor.name;
+      const compWords = normalizeWords(compName);
+      if (compWords.size === 0) continue;
+
+      for (const plat of AMAZON_PLATFORM_SLUGS) {
+        if (existingByKey.has(pinKey(rel.competitor.id, plat))) {
+          mappingsSkipped += 1;
+          continue;
+        }
+        const node = AMAZON_CHART_NODES[plat];
+        try {
+          const { data, creditsUsed, creditsRemaining } = await fetchSearch(compName, node.nodeId);
+          queriesIssued += 1;
+          totalCreditsUsed += creditsUsed;
+          lastCreditsRemaining = creditsRemaining;
+          const results: any[] = data?.search_results ?? [];
+          let best: { asin: string; score: number; title: string } | null = null;
+          for (const r of results.slice(0, 5)) {
+            const asin = (r.asin ?? "").toString();
+            const title = (r.title ?? "").toString();
+            if (!asin || !title) continue;
+            if (!isVideoGameSoftware(title)) continue;
+            const rWords = normalizeWords(title);
+            if (rWords.size === 0) continue;
+            const overlap = countIntersection(compWords, rWords);
+            const score = overlap / compWords.size;
+            if (score >= threshold && (best == null || score > best.score)) {
+              best = { asin, score, title };
+            }
+          }
+          if (best) {
+            db.insert(amazonCompetitorAsinMap).values({
+              sentimentpulseGameId: rel.competitor.id,
+              parentProductId: parentProduct.id,
+              name: compName,
+              steamAppId: rel.competitor.steam_app_id,
+              platform: plat,
+              asin: best.asin,
+              isAuto: true,
+              isActive: true,
+              matchScore: best.score,
+              discoveredAt: now,
+              updatedAt: now,
+            }).run();
+            existingByKey.add(pinKey(rel.competitor.id, plat));
+            mappingsInserted += 1;
+            log(`competitor-discovery matched "${compName}" (under "${parentProduct.title}") → ${plat} ${best.asin} score=${best.score.toFixed(2)}`, "amazon-cron");
+          } else {
+            noMatch += 1;
+          }
+        } catch (err) {
+          log(`competitor-discovery: "${compName}" on ${plat} failed: ${err}`, "amazon-cron");
+        }
+      }
+    }
+
+    // Dedupe count of competitors + parents for the summary.
+    const uniqueParents = new Set(relationships.map((r) => r.parentGameId));
+    const uniqueCompetitors = new Set(relationships.map((r) => r.competitor.id));
+
+    return {
+      result: {
+        parentsWithComps: uniqueParents.size,
+        competitorsScanned: uniqueCompetitors.size,
+        queriesIssued,
+        mappingsInserted,
+        mappingsSkipped,
+        parentsMissingProductRow,
+        noMatch,
+        deferred: undefined as string | undefined,
+      },
+      creditsUsed: totalCreditsUsed,
+      creditsRemaining: lastCreditsRemaining,
+      rowsWritten: mappingsInserted,
+    };
+  });
+}
+
 export type AmazonJobName =
   | "charts"
   | "products"
@@ -645,7 +830,8 @@ export type AmazonJobName =
   | "new_releases"
   | "also_bought"
   | "asin_discovery"
-  | "asin_search_discovery";
+  | "asin_search_discovery"
+  | "competitor_discovery";
 
 export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
   switch (job) {
@@ -657,6 +843,7 @@ export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
     case "also_bought":           return runAlsoBoughtWeekly();
     case "asin_discovery":        return runAsinDiscovery();
     case "asin_search_discovery": return runAsinSearchDiscovery();
+    case "competitor_discovery": return runCompetitorDiscovery();
     default:
       throw new Error(`unknown job: ${job}`);
   }
@@ -687,6 +874,17 @@ export function startAmazonIngestionCron(): void {
     const inWindow = (targetH: number, targetM: number) =>
       hour === targetH && minute >= targetM && minute <= targetM + 5;
 
+    // 04:00 ET — competitor discovery. Deliberately scheduled well BEFORE
+    // the SentimentPulse daily ingest (06:45 ET / 10:45 UTC) so we never
+    // share the SP DB pool / network window with SP's own long-running
+    // Reddit + Steam ingest. Also runs before the Amazon charts (07:00 ET)
+    // and products (07:15 ET) slots so any newly-added competitor gets an
+    // ASIN pin the same day it's added, ready for the products snapshot.
+    // Extra defense: the job itself checks GET /api/ingest/status and
+    // defers if SP ingest is running.
+    if (inWindow(4, 0) && shouldRunSlot("competitor_discovery", todayStr)) {
+      runCompetitorDiscovery().catch((err) => log(`amazon-cron competitor_discovery failed: ${err}`, "amazon-cron"));
+    }
     if (inWindow(7, 0) && shouldRunSlot("charts", todayStr)) {
       runChartsSnapshot().catch((err) => log(`amazon-cron charts failed: ${err}`, "amazon-cron"));
     }

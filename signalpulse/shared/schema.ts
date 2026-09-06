@@ -797,6 +797,30 @@ export const AMAZON_CHART_NODES: Record<AmazonPlatformSlug, { name: string; url:
 // user pinned it via the /api/amazon/asin-map POST endpoint. is_switch2 is a
 // per-row flag set when the auto-discovered Switch ASIN is a Switch 2 SKU
 // (used by the UI to show a "Switch 2" pill vs. "Switch").
+// Competitor titles from SentimentPulse (games with a parent Saber title in
+// the competitor_games join table). Kept in a separate table from
+// amazon_asin_map so the Saber-owned discovery path stays clean, and so a
+// competitor pin's parent linkage is explicit (parentProductId).
+// sentimentpulseGameId is the FK into sentimentpulse.games.id and doubles
+// as the natural key for daily sync from SentimentPulse.
+export const amazonCompetitorAsinMap = sqliteTable("amazon_competitor_asin_map", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  sentimentpulseGameId: integer("sentimentpulse_game_id").notNull(),
+  parentProductId: integer("parent_product_id").notNull(), // SignalPulse products.id of the Saber parent
+  name: text("name").notNull(),
+  steamAppId: integer("steam_app_id"),
+  platform: text("platform").notNull(), // ps5 | xbox | switch
+  asin: text("asin").notNull(),
+  isAuto: integer("is_auto", { mode: "boolean" }).notNull().default(true),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  matchScore: real("match_score"), // 0-1 confidence when auto-discovered
+  discoveredAt: text("discovered_at"),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  uniqueGamePlatform: uniqueIndex("amazon_competitor_asin_map_unique_game_platform").on(table.sentimentpulseGameId, table.platform),
+  byParentIdx: index("amazon_competitor_asin_map_by_parent_idx").on(table.parentProductId),
+}));
+
 export const amazonAsinMap = sqliteTable("amazon_asin_map", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   productId: integer("product_id").notNull(),

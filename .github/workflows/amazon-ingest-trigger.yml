@@ -30,6 +30,7 @@ on:
           - also_bought
           - asin_discovery
           - asin_search_discovery
+          - competitor_discovery
           - pin_status
 
 concurrency:

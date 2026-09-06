@@ -306,6 +306,16 @@ interface AmazonPlatformCell {
   isSwitch2: boolean;
 }
 
+interface AmazonLeaderboardCompetitor {
+  sentimentpulseGameId: number;
+  name: string;
+  platforms: {
+    ps5:    AmazonPlatformCell | null;
+    xbox:   AmazonPlatformCell | null;
+    switch: AmazonPlatformCell | null;
+  };
+}
+
 interface AmazonLeaderboardTitle {
   productId: number;
   title: string;
@@ -314,11 +324,15 @@ interface AmazonLeaderboardTitle {
     xbox:   AmazonPlatformCell | null;
     switch: AmazonPlatformCell | null;
   };
+  competitors?: AmazonLeaderboardCompetitor[];
+  noSaberAmazonPin?: boolean;
 }
 
 interface AmazonLeaderboardResponse {
   saberTitles: AmazonLeaderboardTitle[];
-  competitorTitles: AmazonLeaderboardTitle[];
+  // Flat competitor list, kept for backwards compat; the nested list under
+  // each saberTitles[i].competitors is now the primary rendering path.
+  competitorTitles: Array<AmazonLeaderboardCompetitor & { parentProductId: number; parentTitle: string | null }>;
 }
 
 // Terracotta chip color from the SignalPulse design tokens (see BUILD_BRIEF).
@@ -364,10 +378,18 @@ function AmazonPill({
 function AmazonBoardRow({ title, delta }: { title: AmazonLeaderboardTitle; delta: "1d" | "7d" | "30d" }) {
   const primaryAsin = title.platforms.ps5?.asin ?? title.platforms.xbox?.asin ?? title.platforms.switch?.asin;
   const detailHref = primaryAsin ? `/amazon/product/${primaryAsin}` : undefined;
-  const content = (
+  const competitors = title.competitors ?? [];
+  const parentRowContent = (
     <div className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer">
       <div className="min-w-0 flex-1">
-        <div className="font-medium text-sm truncate">{title.title}</div>
+        <div className="font-medium text-sm truncate">
+          {title.title}
+          {title.noSaberAmazonPin ? (
+            <span className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground font-normal">
+              not on amazon
+            </span>
+          ) : null}
+        </div>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <AmazonPill cell={title.platforms.ps5}    delta={delta} platformLabel="PS5" />
@@ -380,10 +402,50 @@ function AmazonBoardRow({ title, delta }: { title: AmazonLeaderboardTitle; delta
       </div>
     </div>
   );
-  if (detailHref) {
-    return <a href={`#${detailHref}`} data-testid={`row-amazon-saber-${title.productId}`}>{content}</a>;
-  }
-  return <div data-testid={`row-amazon-saber-${title.productId}`}>{content}</div>;
+  const parentWrapped = detailHref ? (
+    <a href={`#${detailHref}`} data-testid={`row-amazon-saber-${title.productId}`}>{parentRowContent}</a>
+  ) : (
+    <div data-testid={`row-amazon-saber-${title.productId}`}>{parentRowContent}</div>
+  );
+  return (
+    <div>
+      {parentWrapped}
+      {competitors.length > 0 ? (
+        <div className="bg-muted/30 border-t border-border/50">
+          <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+            Competitors ({competitors.length})
+          </div>
+          <div className="divide-y divide-border/50">
+            {competitors.map((c) => {
+              const compPrimaryAsin = c.platforms.ps5?.asin ?? c.platforms.xbox?.asin ?? c.platforms.switch?.asin;
+              const compHref = compPrimaryAsin ? `/amazon/product/${compPrimaryAsin}` : undefined;
+              const compContent = (
+                <div className="flex items-center justify-between gap-4 pl-8 pr-4 py-2 hover:bg-accent/40 transition-colors">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs truncate text-foreground/90">{c.name}</div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <AmazonPill cell={c.platforms.ps5}    delta={delta} platformLabel="PS5" />
+                    <AmazonPill cell={c.platforms.xbox}   delta={delta} platformLabel="Xbox" />
+                    <AmazonPill cell={c.platforms.switch} delta={delta} platformLabel="Switch" />
+                  </div>
+                </div>
+              );
+              return compHref ? (
+                <a key={c.sentimentpulseGameId} href={`#${compHref}`} data-testid={`row-amazon-competitor-${c.sentimentpulseGameId}`}>
+                  {compContent}
+                </a>
+              ) : (
+                <div key={c.sentimentpulseGameId} data-testid={`row-amazon-competitor-${c.sentimentpulseGameId}`}>
+                  {compContent}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function SaberAmazonBoard({
@@ -453,27 +515,36 @@ function SaberAmazonBoard({
         )}
       </Card>
 
-      {/* Competitor Watch */}
-      <Card className="overflow-hidden">
-        <div className="px-4 py-3 border-b bg-card flex items-center gap-2">
-          <span className="inline-block w-2 h-2 rounded-full bg-muted-foreground" aria-hidden="true" />
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Competitor Watch
-          </span>
-          <span className="text-xs text-muted-foreground ml-2">{compTitles.length} titles tracked</span>
-        </div>
-        {compTitles.length === 0 ? (
-          <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-            No competitor titles configured (Phase 2 — dedicated competitor pin table).
+      {/* Competitor Watch — flat cross-parent list (kept as a secondary
+          view; primary rendering is now nested under each Saber parent above). */}
+      {compTitles.length > 0 ? (
+        <Card className="overflow-hidden">
+          <div className="px-4 py-3 border-b bg-card flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-muted-foreground" aria-hidden="true" />
+            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              All Tracked Competitors
+            </span>
+            <span className="text-xs text-muted-foreground ml-2">{compTitles.length} pinned</span>
           </div>
-        ) : (
           <div className="divide-y">
-            {compTitles.map((t) => (
-              <AmazonBoardRow key={t.productId} title={t} delta={delta} />
+            {compTitles.map((c) => (
+              <div key={c.sentimentpulseGameId} className="flex items-center justify-between gap-4 px-4 py-2" data-testid={`row-amazon-flat-competitor-${c.sentimentpulseGameId}`}>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs truncate">{c.name}</div>
+                  {c.parentTitle ? (
+                    <div className="text-[10px] text-muted-foreground">under {c.parentTitle}</div>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <AmazonPill cell={c.platforms.ps5}    delta={delta} platformLabel="PS5" />
+                  <AmazonPill cell={c.platforms.xbox}   delta={delta} platformLabel="Xbox" />
+                  <AmazonPill cell={c.platforms.switch} delta={delta} platformLabel="Switch" />
+                </div>
+              </div>
             ))}
           </div>
-        )}
-      </Card>
+        </Card>
+      ) : null}
     </div>
   );
 }

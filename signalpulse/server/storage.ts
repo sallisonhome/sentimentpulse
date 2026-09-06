@@ -435,6 +435,23 @@ function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS amazon_asin_map_unique_product_platform ON amazon_asin_map(product_id, platform);
     CREATE INDEX IF NOT EXISTS amazon_asin_map_product_idx ON amazon_asin_map(product_id);
 
+    CREATE TABLE IF NOT EXISTS amazon_competitor_asin_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      sentimentpulse_game_id INTEGER NOT NULL,
+      parent_product_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      steam_app_id INTEGER,
+      platform TEXT NOT NULL,
+      asin TEXT NOT NULL,
+      is_auto INTEGER NOT NULL DEFAULT 1,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      match_score REAL,
+      discovered_at TEXT,
+      updated_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_competitor_asin_map_unique_game_platform ON amazon_competitor_asin_map(sentimentpulse_game_id, platform);
+    CREATE INDEX IF NOT EXISTS amazon_competitor_asin_map_by_parent_idx ON amazon_competitor_asin_map(parent_product_id);
+
     CREATE TABLE IF NOT EXISTS amazon_chart_snapshots (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       snapshot_date TEXT NOT NULL,

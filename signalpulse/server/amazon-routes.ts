@@ -18,6 +18,7 @@ import type { Express, Request, Response } from "express";
 import { db, storage } from "./storage";
 import {
   amazonAsinMap,
+  amazonCompetitorAsinMap,
   amazonChartSnapshots,
   amazonProductDaily,
   amazonAlsoBoughtDaily,
@@ -101,6 +102,67 @@ export function registerAmazonRoutes(app: Express): void {
         return row ?? null;
       };
 
+      // Also load competitor pins (from SentimentPulse) so the leaderboard
+      // can nest each competitor's rank under its parent Saber title.
+      const compPins = db.select().from(amazonCompetitorAsinMap)
+        .where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+      type CompPinLite = {
+        sentimentpulseGameId: number;
+        parentProductId: number;
+        name: string;
+        platform: string;
+        asin: string;
+      };
+      const compByParent = new Map<number, Map<number, CompPinLite[]>>();
+      for (const cp of compPins) {
+        if (!compByParent.has(cp.parentProductId)) compByParent.set(cp.parentProductId, new Map());
+        const perGame = compByParent.get(cp.parentProductId)!;
+        if (!perGame.has(cp.sentimentpulseGameId)) perGame.set(cp.sentimentpulseGameId, []);
+        perGame.get(cp.sentimentpulseGameId)!.push({
+          sentimentpulseGameId: cp.sentimentpulseGameId,
+          parentProductId: cp.parentProductId,
+          name: cp.name,
+          platform: cp.platform,
+          asin: cp.asin,
+        });
+      }
+
+      // Build per-parent competitor payload (grouped: one entry per competitor
+      // game, with platforms map inside — same shape as Saber titles).
+      const buildCompetitorsForParent = (parentProductId: number) => {
+        const perGame = compByParent.get(parentProductId);
+        if (!perGame || perGame.size === 0) return [];
+        const list: unknown[] = [];
+        perGame.forEach((pins, gameId) => {
+          const platformsPayload: Record<string, unknown> = {};
+          for (const slug of AMAZON_PLATFORM_SLUGS) {
+            const pin = pins.find((x) => x.platform === slug);
+            if (!pin) { platformsPayload[slug] = null; continue; }
+            const rowToday = lookupAsinRankOn(pin.asin, slug, today);
+            if (!rowToday) { platformsPayload[slug] = null; continue; }
+            const row1d  = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(1));
+            const row7d  = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(7));
+            const row30d = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(30));
+            platformsPayload[slug] = {
+              rank: rowToday.rank,
+              rawRank: rowToday.rawRank,
+              price: rowToday.price,
+              rating: rowToday.rating,
+              delta1d:  rankDelta(rowToday.rank, row1d ? { rank: row1d.rank } : undefined),
+              delta7d:  rankDelta(rowToday.rank, row7d ? { rank: row7d.rank } : undefined),
+              delta30d: rankDelta(rowToday.rank, row30d ? { rank: row30d.rank } : undefined),
+              asin: pin.asin,
+            };
+          }
+          list.push({
+            sentimentpulseGameId: gameId,
+            name: pins[0].name,
+            platforms: platformsPayload,
+          });
+        });
+        return list;
+      };
+
       const saberTitles: unknown[] = [];
       byProduct.forEach((productPins, productId) => {
         const p = productsById.get(productId);
@@ -130,12 +192,44 @@ export function registerAmazonRoutes(app: Express): void {
           productId,
           title: p.title,
           platforms: platformsPayload,
+          competitors: buildCompetitorsForParent(productId),
         });
       });
 
-      // No competitor-specific persistence yet — future work; return empty
-      // list so the UI can render its section unconditionally.
-      res.json({ saberTitles, competitorTitles: [] });
+      // Also emit any Saber parents that have competitors but NO Saber
+      // Amazon pin (e.g., Saber title not on Amazon yet). This keeps their
+      // competitor comp-set visible under a parent row rather than hiding.
+      const parentsWithSaberPin = new Set(saberTitles.map((t: any) => t.productId));
+      compByParent.forEach((_perGame, parentProductId) => {
+        if (parentsWithSaberPin.has(parentProductId)) return;
+        const p = productsById.get(parentProductId);
+        if (!p) return;
+        const emptyPlatforms: Record<string, null> = {};
+        for (const slug of AMAZON_PLATFORM_SLUGS) emptyPlatforms[slug] = null;
+        saberTitles.push({
+          productId: parentProductId,
+          title: p.title,
+          platforms: emptyPlatforms,
+          competitors: buildCompetitorsForParent(parentProductId),
+          noSaberAmazonPin: true,
+        });
+      });
+
+      // Also keep a flat top-level competitorTitles list for backwards
+      // compatibility with any older client that expects it.
+      const flatCompetitors: unknown[] = [];
+      compByParent.forEach((perGame, parentProductId) => {
+        const parent = productsById.get(parentProductId);
+        for (const c of buildCompetitorsForParent(parentProductId)) {
+          flatCompetitors.push({
+            ...(c as object),
+            parentProductId,
+            parentTitle: parent?.title ?? null,
+          });
+        }
+      });
+
+      res.json({ saberTitles, competitorTitles: flatCompetitors });
     } catch (err: any) {
       res.status(500).json({ error: err?.message ?? String(err) });
     }
@@ -489,7 +583,7 @@ export function registerAmazonRoutes(app: Express): void {
   // ── Ops: manual ingest + recent runs ───────────────────────────────────
   app.post("/api/amazon/ingest/run/:job", async (req, res) => {
     const job = req.params.job as AmazonJobName;
-    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "asin_discovery", "asin_search_discovery"].includes(job)) {
+    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "asin_discovery", "asin_search_discovery", "competitor_discovery"].includes(job)) {
       return res.status(400).json({ error: "unknown job" });
     }
     if (!isRainforestConfigured()) {
@@ -536,12 +630,39 @@ export function registerAmazonRoutes(app: Express): void {
         stockStatus: row?.stockStatus ?? null,
       };
     });
+    // Competitor pins (from SentimentPulse) — shown grouped by parent.
+    const compPins = db.select().from(amazonCompetitorAsinMap)
+      .where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+    const compOut = compPins.map((pin) => {
+      const row = rowsByAsin.get(pin.asin);
+      const parent = productById.get(pin.parentProductId);
+      return {
+        sentimentpulseGameId: pin.sentimentpulseGameId,
+        parentProductId: pin.parentProductId,
+        parentTitle: parent?.title ?? null,
+        name: pin.name,
+        platform: pin.platform,
+        asin: pin.asin,
+        matchScore: pin.matchScore,
+        isAuto: pin.isAuto,
+        hasTodayRow: !!row,
+        mainBsr: row?.mainBsr ?? null,
+        buyboxPrice: row?.buyboxPrice ?? null,
+        stockStatus: row?.stockStatus ?? null,
+      };
+    });
     res.json({
       snapshotDate: today,
       totalPins: pins.length,
       withData: out.filter((r) => r.hasTodayRow).length,
       missing: out.filter((r) => !r.hasTodayRow).length,
       rows: out,
+      competitors: {
+        totalPins: compPins.length,
+        withData: compOut.filter((r) => r.hasTodayRow).length,
+        missing: compOut.filter((r) => !r.hasTodayRow).length,
+        rows: compOut,
+      },
     });
   });
 }
