@@ -192,7 +192,7 @@ const OPS_TOKEN_PATHS = new Set([
 // ops token so scheduled workflows and this app's own cron self-trigger
 // endpoints can drive them without a human JWT.
 const OPS_TOKEN_PREFIXES = [
-  "/api/amazon/ingest/run/",
+  "/api/amazon/ingest/", // covers /run/:job POST and /runs GET summary
 ];
 
 function hasValidOpsToken(req: Request): boolean {
