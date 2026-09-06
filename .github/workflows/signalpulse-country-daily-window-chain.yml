@@ -20,12 +20,24 @@ on:
     workflows: ["SignalPulse — Sales by Country daily window backfill"]
     types: [completed]
 
+# v3.33.4 (2026-09-05): GITHUB_TOKEN needs actions:write to dispatch
+# another workflow. Default token is read-only.
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   fire_next:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Wait for logs to settle
+        run: |
+          # GitHub's log store takes 10-30s to become readable after a
+          # workflow_run completes. Without this pause, gh run view --log
+          # returns empty for the triggering run.
+          sleep 45
       - name: Decide next chunk and fire it
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
