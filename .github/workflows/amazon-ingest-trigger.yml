@@ -29,6 +29,7 @@ on:
           - new_releases
           - also_bought
           - asin_discovery
+          - asin_search_discovery
 
 concurrency:
   group: deploy-droplet

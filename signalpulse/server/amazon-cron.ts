@@ -29,6 +29,7 @@ import {
   amazonAlsoBoughtDaily,
   amazonIngestRuns,
   AMAZON_PLATFORM_SLUGS,
+  AMAZON_CHART_NODES,
   type AmazonPlatformSlug,
 } from "@shared/schema";
 import { and, eq } from "drizzle-orm";
@@ -505,6 +506,102 @@ export async function runAsinDiscovery(threshold = 0.6): Promise<{
   });
 }
 
+// ─── Job: search-based ASIN discovery (on-demand) ────────────────────
+// Same intent as runAsinDiscovery but expands the candidate pool from
+// "today's top-50 chart snapshot" to "Rainforest search results within the
+// platform's game category". Catches Saber titles that are on Amazon but
+// ranked below #50 (e.g. Rideshare, SnowRunner, World War Z between spikes).
+//
+// Costs ~1 Rainforest credit per (product × platform) query. Idempotent:
+// skips (product_id, platform) pairs that already have any pin. Best result
+// per platform above `threshold` wins; match_score persisted for audit.
+export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
+  productsScanned: number;
+  queriesIssued: number;
+  mappingsInserted: number;
+  mappingsSkipped: number;
+  noMatch: number;
+}> {
+  return withRun("asin_search_discovery", async () => {
+    const products = storage.getAllProducts();
+    const existingPins = db.select().from(amazonAsinMap).all();
+    const pinKey = (pid: number, plat: string) => `${pid}|${plat}`;
+    const existingByKey = new Set(existingPins.map((p) => pinKey(p.productId, p.platform)));
+
+    let queriesIssued = 0;
+    let mappingsInserted = 0;
+    let mappingsSkipped = 0;
+    let noMatch = 0;
+    let totalCreditsUsed = 0;
+    let lastCreditsRemaining = 0;
+    const now = nowIso();
+
+    for (const p of products) {
+      const pWords = normalizeWords(p.title);
+      if (pWords.size === 0) continue;
+      for (const plat of AMAZON_PLATFORM_SLUGS) {
+        if (existingByKey.has(pinKey(p.id, plat))) {
+          mappingsSkipped += 1;
+          continue;
+        }
+        const node = AMAZON_CHART_NODES[plat];
+        try {
+          const { data, creditsUsed, creditsRemaining } = await fetchSearch(p.title, node.nodeId);
+          queriesIssued += 1;
+          totalCreditsUsed += creditsUsed;
+          lastCreditsRemaining = creditsRemaining;
+          const results: any[] = data?.search_results ?? [];
+          let best: { asin: string; score: number; title: string } | null = null;
+          // Only consider top 5 results — platform category already filters
+          // most noise; going deeper wastes cycles on unrelated SKUs.
+          for (const r of results.slice(0, 5)) {
+            const asin = (r.asin ?? "").toString();
+            const title = (r.title ?? "").toString();
+            if (!asin || !title) continue;
+            // Skip accessories / consoles that a bad category leak might surface.
+            if (!isVideoGameSoftware(title)) continue;
+            const rWords = normalizeWords(title);
+            if (rWords.size === 0) continue;
+            const overlap = countIntersection(pWords, rWords);
+            const score = overlap / pWords.size;
+            if (score >= threshold && (best == null || score > best.score)) {
+              best = { asin, score, title };
+            }
+          }
+          if (best) {
+            db.insert(amazonAsinMap).values({
+              productId: p.id,
+              platform: plat,
+              asin: best.asin,
+              isAuto: true,
+              isActive: true,
+              isSwitch2: false,
+              matchScore: best.score,
+              discoveredAt: now,
+              updatedAt: now,
+            }).run();
+            existingByKey.add(pinKey(p.id, plat));
+            mappingsInserted += 1;
+            log(`asin-search-discovery matched product #${p.id} "${p.title}" → ${plat} ${best.asin} (${best.title}) score=${best.score.toFixed(2)}`, "amazon-cron");
+          } else {
+            noMatch += 1;
+            log(`asin-search-discovery no match: product #${p.id} "${p.title}" on ${plat} (${results.length} raw results)`, "amazon-cron");
+          }
+        } catch (err) {
+          log(`asin-search-discovery: product #${p.id} on ${plat} failed: ${err}`, "amazon-cron");
+        }
+      }
+    }
+
+    return {
+      result: { productsScanned: products.length, queriesIssued, mappingsInserted, mappingsSkipped, noMatch },
+      creditsUsed: totalCreditsUsed,
+      creditsRemaining: lastCreditsRemaining,
+      rowsWritten: mappingsInserted,
+    };
+  });
+}
+
 // Normalize a title into a token set for word-overlap scoring.
 // Strips edition/format words that add no signal (edition, deluxe, remaster,
 // etc.) and platform words we don't want inflating overlap (PS5, Xbox,
@@ -547,17 +644,19 @@ export type AmazonJobName =
   | "keywords"
   | "new_releases"
   | "also_bought"
-  | "asin_discovery";
+  | "asin_discovery"
+  | "asin_search_discovery";
 
 export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
   switch (job) {
-    case "charts":         return runChartsSnapshot();
-    case "products":       return runProductSnapshots();
-    case "movers":         return runMoversAndNewReleases();
-    case "new_releases":   return runMoversAndNewReleases(); // combined job
-    case "keywords":       return runKeywordSearch();
-    case "also_bought":    return runAlsoBoughtWeekly();
-    case "asin_discovery": return runAsinDiscovery();
+    case "charts":                return runChartsSnapshot();
+    case "products":              return runProductSnapshots();
+    case "movers":                return runMoversAndNewReleases();
+    case "new_releases":          return runMoversAndNewReleases(); // combined job
+    case "keywords":              return runKeywordSearch();
+    case "also_bought":           return runAlsoBoughtWeekly();
+    case "asin_discovery":        return runAsinDiscovery();
+    case "asin_search_discovery": return runAsinSearchDiscovery();
     default:
       throw new Error(`unknown job: ${job}`);
   }

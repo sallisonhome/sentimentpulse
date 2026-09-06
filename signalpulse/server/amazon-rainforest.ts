@@ -272,6 +272,18 @@ export async function fetchNewReleases(platform: AmazonPlatformSlug): Promise<Ra
 }
 
 // fetchSearch — keyword tracker for Search SOV.
-export async function fetchSearch(keyword: string): Promise<RainforestCallResult<any>> {
-  return rainforestRequest({ type: "search", search_term: keyword, amazon_domain: "amazon.com" });
+// Optional `categoryId` scopes the search to a specific Amazon browse node
+// (e.g. the PS5/Xbox/Switch bestseller nodes) so we don't pick up cross-
+// platform SKUs when discovering ASINs by title.
+export async function fetchSearch(
+  keyword: string,
+  categoryId?: string,
+): Promise<RainforestCallResult<any>> {
+  const params: Record<string, string> = {
+    type: "search",
+    search_term: keyword,
+    amazon_domain: "amazon.com",
+  };
+  if (categoryId) params.category_id = categoryId;
+  return rainforestRequest(params);
 }
