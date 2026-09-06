@@ -758,3 +758,198 @@ export const PLAYER_FORMATS = [
   { value: "multiplayer", label: "Multiplayer" },
   { value: "single_player", label: "Single Player" },
 ] as const;
+
+// ─── Amazon Retail App (2026-09-06) ─────────────────────────────────────────
+//
+// Rainforest-API-fed retail intelligence: chart positions, Buy Box monitor,
+// reviews pulse, movers & shakers, search SOV, new-release watch. Powers the
+// third tab of Leaderboards ("Saber Amazon Leaderboard") and a full top-level
+// Amazon Retail app. Ingested nightly via startAmazonIngestionCron().
+//
+// Design notes:
+// - Platforms in this module are the short slugs "ps5" | "xbox" | "switch"
+//   (NOT the ALL_PLATFORMS strings). Charts on amazon.com use one URL per
+//   platform browse node, so we key everything by these slugs.
+// - Snapshots are immutable daily rows keyed on (snapshot_date, platform,
+//   asin) or (snapshot_date, platform, rank) — delta engine reads history
+//   backwards from today to compute 1d / 7d / 30d rank movement.
+// - amazonAsinMap links a SignalPulse product_id to per-platform ASINs.
+//   Rows can be auto-discovered (is_auto=true) or user-overridden
+//   (is_auto=false). The unique index prevents duplicate mappings per
+//   (product_id, platform).
+
+export const AMAZON_PLATFORM_SLUGS = ["ps5", "xbox", "switch"] as const;
+export type AmazonPlatformSlug = typeof AMAZON_PLATFORM_SLUGS[number];
+
+// Amazon.com bestseller browse nodes (US marketplace). Node IDs and canonical
+// URLs, both consumed by the Rainforest client. Switch 2 does NOT have a
+// distinct zgbs node yet — Switch 2 titles live inside the general Nintendo
+// Switch Games chart. UI opts to filter Switch results by SKU strings that
+// indicate a Switch 2 edition ("Nintendo Switch 2", "- Switch 2", etc.).
+export const AMAZON_CHART_NODES: Record<AmazonPlatformSlug, { name: string; url: string; nodeId: string }> = {
+  ps5:    { name: "PlayStation 5 Games",   nodeId: "20972781011", url: "https://www.amazon.com/Best-Sellers-Video-Games-PlayStation-5-Consoles-Games-Accessories/zgbs/videogames/20972781011/" },
+  xbox:   { name: "Xbox Series X|S Games", nodeId: "20972814011", url: "https://www.amazon.com/Best-Sellers-Xbox-Series-X-S-Games/zgbs/videogames/20972814011/" },
+  switch: { name: "Nintendo Switch Games", nodeId: "16227133011", url: "https://www.amazon.com/Best-Sellers-Nintendo-Switch-Games/zgbs/videogames/16227133011/" },
+};
+
+// Product ↔ ASIN mapping per platform. products.id → asin per platform slug.
+// is_auto=true means Rainforest search discovered it; is_auto=false means the
+// user pinned it via the /api/amazon/asin-map POST endpoint. is_switch2 is a
+// per-row flag set when the auto-discovered Switch ASIN is a Switch 2 SKU
+// (used by the UI to show a "Switch 2" pill vs. "Switch").
+export const amazonAsinMap = sqliteTable("amazon_asin_map", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  platform: text("platform").notNull(), // ps5 | xbox | switch
+  asin: text("asin").notNull(),
+  isAuto: integer("is_auto", { mode: "boolean" }).notNull().default(true),
+  isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
+  isSwitch2: integer("is_switch2", { mode: "boolean" }).notNull().default(false),
+  matchScore: real("match_score"), // 0-1 confidence when auto-discovered
+  discoveredAt: text("discovered_at"),
+  updatedAt: text("updated_at").notNull(),
+}, (table) => ({
+  uniquePlatform: uniqueIndex("amazon_asin_map_unique_product_platform").on(table.productId, table.platform),
+  productIdx: index("amazon_asin_map_product_idx").on(table.productId),
+}));
+
+// Daily chart snapshot per platform. One row per (date, platform, rank).
+// items is the full Rainforest raw JSON for the row (title, ASIN, price,
+// rating, ratings_total, image, link). Delta engine joins today's row for a
+// given ASIN with yesterday/7-day-ago/30-day-ago rows to compute movement.
+// Daily chart snapshot per platform (SOFTWARE ONLY — hardware/peripherals
+// filtered out at ingest time by isVideoGameSoftware(); see
+// server/amazon-rainforest.ts). rank is the CONTIGUOUS 1..N software-only
+// rank we present in the UI; rawRank preserves Amazon's original position
+// so the source of truth is auditable (e.g. "we ranked this #5, Amazon
+// showed it at #7 because two headsets ranked above it").
+export const amazonChartSnapshots = sqliteTable("amazon_chart_snapshots", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(), // YYYY-MM-DD (UTC)
+  platform: text("platform").notNull(), // ps5 | xbox | switch
+  rank: integer("rank").notNull(), // contiguous software-only rank
+  rawRank: integer("raw_rank"), // Amazon's original rank before software filter
+  asin: text("asin").notNull(),
+  title: text("title").notNull(),
+  price: real("price"),
+  rating: real("rating"),
+  ratingsTotal: integer("ratings_total"),
+  imageUrl: text("image_url"),
+  link: text("link"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDayPlatformRank: uniqueIndex("amazon_chart_snap_unique_day_platform_rank").on(table.snapshotDate, table.platform, table.rank),
+  byAsinIdx: index("amazon_chart_snap_by_asin_idx").on(table.asin, table.snapshotDate),
+}));
+
+// "Also Bought" recommendations per tracked ASIN. Rainforest type=product
+// returns an also_bought[] array on many ASINs; we pull top 5 weekly (per
+// tracked ASIN; both Saber and comp titles). Refresh is weekly, not daily,
+// because this data changes slowly and per-ASIN Product calls cost credits.
+// (sourceAsin, recommendedAsin) pair is unique per snapshotDate.
+export const amazonAlsoBoughtDaily = sqliteTable("amazon_also_bought_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  sourceAsin: text("source_asin").notNull(),
+  rankPosition: integer("rank_position").notNull(), // 1..5
+  recommendedAsin: text("recommended_asin").notNull(),
+  title: text("title").notNull(),
+  price: real("price"),
+  rating: real("rating"),
+  ratingsTotal: integer("ratings_total"),
+  mainBsr: integer("main_bsr"),
+  imageUrl: text("image_url"),
+  link: text("link"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDaySourcePos: uniqueIndex("amazon_also_bought_unique_day_source_pos").on(table.snapshotDate, table.sourceAsin, table.rankPosition),
+  bySourceIdx: index("amazon_also_bought_by_source_idx").on(table.sourceAsin, table.snapshotDate),
+}));
+
+// Per-SKU daily Product endpoint pull. Powers the Buy Box & Availability
+// Monitor and the Reviews Pulse sub-apps. Missing fields are OK — the ingest
+// job stores whatever Rainforest returns and the UI tolerates nulls.
+export const amazonProductDaily = sqliteTable("amazon_product_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  asin: text("asin").notNull(),
+  buyboxPrice: real("buybox_price"),
+  buyboxSeller: text("buybox_seller"),
+  buyboxIsAmazon: integer("buybox_is_amazon", { mode: "boolean" }),
+  isPrime: integer("is_prime", { mode: "boolean" }),
+  stockStatus: text("stock_status"), // in_stock | low_stock | out_of_stock | preorder | unknown
+  mainBsr: integer("main_bsr"),
+  subBsrsJson: text("sub_bsrs_json"), // JSON: [{category, rank}]
+  rating: real("rating"),
+  ratingsTotal: integer("ratings_total"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDayAsin: uniqueIndex("amazon_product_daily_unique_day_asin").on(table.snapshotDate, table.asin),
+}));
+
+// Movers & Shakers: Amazon's own 24hr rank-gainers chart per platform.
+export const amazonMoversDaily = sqliteTable("amazon_movers_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  platform: text("platform").notNull(),
+  rank: integer("rank").notNull(),
+  asin: text("asin").notNull(),
+  title: text("title").notNull(),
+  rankChange: integer("rank_change"), // % or absolute change reported by Amazon
+  imageUrl: text("image_url"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDayPlatformRank: uniqueIndex("amazon_movers_unique_day_platform_rank").on(table.snapshotDate, table.platform, table.rank),
+}));
+
+// Franchise keyword tracker for Search SOV. keyword is the raw query.
+// results is a JSON list of the top ~10 positions returned by Rainforest
+// Search API (each entry: {rank, asin, title, is_sponsored}). Delta on
+// tracked SKU position is computed in the UI.
+export const amazonKeywordDaily = sqliteTable("amazon_keyword_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  keyword: text("keyword").notNull(),
+  resultsJson: text("results_json").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDayKeyword: uniqueIndex("amazon_keyword_unique_day_keyword").on(table.snapshotDate, table.keyword),
+}));
+
+// New Releases chart per platform. first_seen_date lets us alert on
+// competitor drops we haven't yet added to the tracker.
+export const amazonNewReleases = sqliteTable("amazon_new_releases", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  platform: text("platform").notNull(),
+  rank: integer("rank").notNull(),
+  asin: text("asin").notNull(),
+  title: text("title").notNull(),
+  firstSeenDate: text("first_seen_date"),
+  imageUrl: text("image_url"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDayPlatformRank: uniqueIndex("amazon_new_releases_unique_day_platform_rank").on(table.snapshotDate, table.platform, table.rank),
+}));
+
+// Cron run log for observability (Settings → Diagnostics can surface this).
+export const amazonIngestRuns = sqliteTable("amazon_ingest_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  jobName: text("job_name").notNull(), // charts | products | movers | keywords | new_releases | asin_discovery
+  startedAt: text("started_at").notNull(),
+  finishedAt: text("finished_at"),
+  status: text("status").notNull(), // running | ok | error
+  creditsUsed: integer("credits_used"),
+  creditsRemaining: integer("credits_remaining"),
+  rowsWritten: integer("rows_written"),
+  errorMessage: text("error_message"),
+});
+
+export type AmazonAsinMap = typeof amazonAsinMap.$inferSelect;
+export type AmazonChartSnapshot = typeof amazonChartSnapshots.$inferSelect;
+export type AmazonProductDaily = typeof amazonProductDaily.$inferSelect;
+export type AmazonMoversDaily = typeof amazonMoversDaily.$inferSelect;
+export type AmazonKeywordDaily = typeof amazonKeywordDaily.$inferSelect;
+export type AmazonNewReleases = typeof amazonNewReleases.$inferSelect;
+export type AmazonAlsoBoughtDaily = typeof amazonAlsoBoughtDaily.$inferSelect;
+export type AmazonIngestRun = typeof amazonIngestRuns.$inferSelect;

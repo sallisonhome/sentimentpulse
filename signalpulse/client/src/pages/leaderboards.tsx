@@ -24,6 +24,7 @@ import {
   Trophy,
   Gamepad2,
   LineChart,
+  ShoppingBag,
 } from "lucide-react";
 import { LeaderboardBanner } from "@/components/leaderboard-banner";
 import { ChartDetailModal } from "@/components/chart-detail-modal";
@@ -291,13 +292,206 @@ function MoverKpiCard({
   );
 }
 
+// ─── Saber Amazon Leaderboard (third tab) ──────────────────────────────────
+
+interface AmazonPlatformCell {
+  rank: number;
+  rawRank: number | null;
+  delta1d: number | null;
+  delta7d: number | null;
+  delta30d: number | null;
+  price: number | null;
+  rating: number | null;
+  asin: string;
+  isSwitch2: boolean;
+}
+
+interface AmazonLeaderboardTitle {
+  productId: number;
+  title: string;
+  platforms: {
+    ps5:    AmazonPlatformCell | null;
+    xbox:   AmazonPlatformCell | null;
+    switch: AmazonPlatformCell | null;
+  };
+}
+
+interface AmazonLeaderboardResponse {
+  saberTitles: AmazonLeaderboardTitle[];
+  competitorTitles: AmazonLeaderboardTitle[];
+}
+
+// Terracotta chip color from the SignalPulse design tokens (see BUILD_BRIEF).
+const SABER_ACCENT = "#C0553A";
+const RANK_DOWN_MUTED = "#7A9E7E";
+
+function AmazonPill({
+  cell,
+  delta,
+  platformLabel,
+}: {
+  cell: AmazonPlatformCell | null;
+  delta: "1d" | "7d" | "30d";
+  platformLabel: string;
+}) {
+  if (!cell) {
+    return (
+      <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted text-muted-foreground text-[11px] tabular-nums min-w-[92px] justify-center" title={`No SKU tracked on ${platformLabel}`}>
+        <span className="font-medium">{platformLabel}</span>
+        <span>—</span>
+      </div>
+    );
+  }
+  const deltaVal = delta === "1d" ? cell.delta1d : delta === "7d" ? cell.delta7d : cell.delta30d;
+  const showArrow = deltaVal != null && deltaVal !== 0;
+  const isUp = deltaVal != null && deltaVal > 0;
+  return (
+    <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-card border border-border text-[11px] tabular-nums min-w-[92px] justify-center">
+      <span className="font-medium text-muted-foreground">{platformLabel}</span>
+      <span className="font-semibold">#{cell.rank}</span>
+      {showArrow ? (
+        <span className="inline-flex items-center gap-0.5 font-medium" style={{ color: isUp ? SABER_ACCENT : RANK_DOWN_MUTED }}>
+          {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+          {Math.abs(deltaVal!)}
+        </span>
+      ) : (
+        <span className="text-muted-foreground">·</span>
+      )}
+    </div>
+  );
+}
+
+function AmazonBoardRow({ title, delta }: { title: AmazonLeaderboardTitle; delta: "1d" | "7d" | "30d" }) {
+  const primaryAsin = title.platforms.ps5?.asin ?? title.platforms.xbox?.asin ?? title.platforms.switch?.asin;
+  const detailHref = primaryAsin ? `/amazon/product/${primaryAsin}` : undefined;
+  const content = (
+    <div className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-sm truncate">{title.title}</div>
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <AmazonPill cell={title.platforms.ps5}    delta={delta} platformLabel="PS5" />
+        <AmazonPill cell={title.platforms.xbox}   delta={delta} platformLabel="Xbox" />
+        <AmazonPill
+          cell={title.platforms.switch}
+          delta={delta}
+          platformLabel={title.platforms.switch?.isSwitch2 ? "Switch 2" : "Switch"}
+        />
+      </div>
+    </div>
+  );
+  if (detailHref) {
+    return <a href={`#${detailHref}`} data-testid={`row-amazon-saber-${title.productId}`}>{content}</a>;
+  }
+  return <div data-testid={`row-amazon-saber-${title.productId}`}>{content}</div>;
+}
+
+function SaberAmazonBoard({
+  delta,
+  onDeltaChange,
+}: {
+  delta: "1d" | "7d" | "30d";
+  onDeltaChange: (d: "1d" | "7d" | "30d") => void;
+}) {
+  const { data, isLoading } = useQuery<AmazonLeaderboardResponse>({
+    queryKey: ["/api/amazon/leaderboard/saber"],
+  });
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-8 w-40" />
+        <Skeleton className="h-64 w-full rounded-xl" />
+      </div>
+    );
+  }
+
+  const saberTitles = data?.saberTitles ?? [];
+  const compTitles = data?.competitorTitles ?? [];
+
+  return (
+    <div className="space-y-6">
+      {/* Delta toggle top-right */}
+      <div className="flex justify-end">
+        <div className="inline-flex rounded-md border border-border p-0.5">
+          {(["1d", "7d", "30d"] as const).map((d) => (
+            <button
+              key={d}
+              onClick={() => onDeltaChange(d)}
+              className={`px-3 py-1 text-xs rounded-md transition-colors ${delta === d ? "bg-accent text-accent-foreground font-medium" : "text-muted-foreground hover:text-foreground"}`}
+              data-testid={`button-amazon-delta-${d}`}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Saber Titles */}
+      <Card className="overflow-hidden">
+        <div className="px-4 py-3 border-b bg-card flex items-center gap-2">
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{ backgroundColor: SABER_ACCENT }}
+            aria-hidden="true"
+          />
+          <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: SABER_ACCENT }}>
+            Saber Titles
+          </span>
+          <span className="text-xs text-muted-foreground ml-2">{saberTitles.length} titles tracked</span>
+        </div>
+        {saberTitles.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-muted-foreground">
+            No Saber titles pinned yet. Add ASIN mappings from the Amazon Retail app to populate this leaderboard.
+          </div>
+        ) : (
+          <div className="divide-y">
+            {saberTitles.map((t) => (
+              <AmazonBoardRow key={t.productId} title={t} delta={delta} />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* Competitor Watch */}
+      <Card className="overflow-hidden">
+        <div className="px-4 py-3 border-b bg-card flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-muted-foreground" aria-hidden="true" />
+          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Competitor Watch
+          </span>
+          <span className="text-xs text-muted-foreground ml-2">{compTitles.length} titles tracked</span>
+        </div>
+        {compTitles.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-muted-foreground">
+            No competitor titles configured (Phase 2 — dedicated competitor pin table).
+          </div>
+        ) : (
+          <div className="divide-y">
+            {compTitles.map((t) => (
+              <AmazonBoardRow key={t.productId} title={t} delta={delta} />
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────────
 
 export default function Leaderboards() {
   const [, navigate] = useLocation();
   const search = useSearch();
   const params = new URLSearchParams(search);
-  const board = params.get("board") === "revenue" ? "revenue" : "wishlist";
+  const boardParam = params.get("board");
+  const board: "wishlist" | "revenue" | "saber-amazon" =
+    boardParam === "revenue" ? "revenue"
+    : boardParam === "saber-amazon" ? "saber-amazon"
+    : "wishlist";
+  // Which delta window to show inside the platform pill on the Saber Amazon
+  // leaderboard. Persisted as component state (does not change the URL).
+  const [amazonDelta, setAmazonDelta] = useState<"1d" | "7d" | "30d">("1d");
 
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
     key: "wishlistTotal",
@@ -406,11 +600,17 @@ export default function Leaderboards() {
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <LeaderboardBanner
-        title={board === "wishlist" ? "Pre-Release Steam Wishlist Leaderboard" : "Steam Revenue Leaderboard"}
+        title={
+          board === "wishlist" ? "Pre-Release Steam Wishlist Leaderboard"
+          : board === "revenue" ? "Steam Revenue Leaderboard"
+          : "Saber Amazon Leaderboard"
+        }
         subtitle={
           board === "wishlist"
             ? "Daily-refreshed wishlist, follower, rank, and hype tracking for every unreleased Saber title on Steam"
-            : "Daily-refreshed prepurchase and post-release sales for every Saber title on Steam"
+            : board === "revenue"
+            ? "Daily-refreshed prepurchase and post-release sales for every Saber title on Steam"
+            : "Daily Amazon retail chart position for every Saber title across PS5, Xbox, and Nintendo Switch"
         }
       />
 
@@ -424,6 +624,10 @@ export default function Leaderboards() {
             <TabsTrigger value="revenue" data-testid="tab-revenue">
               <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
               Revenue Leaderboard
+            </TabsTrigger>
+            <TabsTrigger value="saber-amazon" data-testid="tab-saber-amazon">
+              <ShoppingBag className="h-3.5 w-3.5 mr-1.5" />
+              Saber Amazon Leaderboard
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -440,7 +644,12 @@ export default function Leaderboards() {
         </Button>
       </div>
 
-      {board === "revenue" ? (
+      {board === "saber-amazon" ? (
+        <SaberAmazonBoard
+          delta={amazonDelta}
+          onDeltaChange={setAmazonDelta}
+        />
+      ) : board === "revenue" ? (
         revenueRowsLoading ? (
           <div className="space-y-3">
             <Skeleton className="h-64 w-full rounded-xl" />
@@ -679,12 +888,17 @@ export default function Leaderboards() {
         />
       )}
 
-      <CompareChartModal
-        open={compareOpen}
-        onOpenChange={setCompareOpen}
-        board={board}
-        candidates={compareCandidates}
-      />
+      {/* CompareChartModal only supports steam wishlist/revenue boards —
+          on the Amazon tab we hide it. Passing a narrowed board keeps the
+          existing prop contract intact. */}
+      {board !== "saber-amazon" && (
+        <CompareChartModal
+          open={compareOpen}
+          onOpenChange={setCompareOpen}
+          board={board}
+          candidates={compareCandidates}
+        />
+      )}
     </div>
   );
 }

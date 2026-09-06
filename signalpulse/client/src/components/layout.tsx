@@ -26,6 +26,18 @@ function SignalPulseLogo() {
   );
 }
 
+// Simplified Amazon-smile mark used as the Amazon Retail sidebar icon.
+// Rendered in `currentColor` so it inherits the sidebar's active/muted
+// text color (no branded orange — the sidebar is a neutral surface).
+function AmazonSmileIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 32 32" width="14" height="14" fill="none" className={className} aria-label="Amazon Retail">
+      <path d="M4 20 Q16 30 28 20" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" fill="none" />
+      <path d="M26 18 L28.5 20 L26 22" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+    </svg>
+  );
+}
+
 export function Layout({ children, onAddProduct }: LayoutProps) {
   const { theme, toggleTheme } = useTheme();
   const [location] = useLocation();
@@ -177,6 +189,19 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
               >
                 <Globe2 className="h-3.5 w-3.5 shrink-0" />
                 {!sidebarCollapsed && <span>Sales by Country</span>}
+              </div>
+            </Link>
+            <Link href="/amazon">
+              <div
+                className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors ${
+                  location === "/amazon" || location.startsWith("/amazon/")
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                }`}
+                data-testid="link-amazon-retail"
+              >
+                <AmazonSmileIcon className="h-3.5 w-3.5 shrink-0" />
+                {!sidebarCollapsed && <span>Amazon Retail</span>}
               </div>
             </Link>
             {products?.map((p: any) => {
