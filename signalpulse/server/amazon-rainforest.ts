@@ -39,12 +39,25 @@ export function isRainforestConfigured(): boolean {
 // survives despite "Edition"; a known franchise from our tracked map always
 // survives).
 
-const FILTER_WORDS = [
-  "controller", "headset", "console", "charger", "charging", "stand",
-  "case", "cover plate", "faceplate", "cable", "membership", "subscription",
-  "gift card", "steering wheel", "arcade stick", "fight stick", "grip",
-  "screen protector", "dock", "adapter", "remote", "battery",
-  "skin", "sticker", "decal", "carrying case",
+// HARD EXCLUSIONS: these categories are NEVER games, no software-hint
+// override applies. A "DualSense Wireless Controller — Limited Edition" is
+// still a controller; a "PS5 Digital Edition" is still a console; a
+// "$10 PlayStation Store Gift Card [Digital Code]" is still a gift card.
+// The whitelist below only helps when the filter word is genuinely
+// ambiguous (e.g. "stand", "case", "grip", "skin", "remote", "battery") —
+// hardware categories that a real game title might harmlessly contain.
+const HARD_EXCLUDE_WORDS = [
+  "controller", "headset", "console", "gift card", "charger", "charging",
+  "membership", "subscription", "cable", "cover plate", "faceplate",
+  "steering wheel", "arcade stick", "fight stick", "screen protector",
+  "dock", "adapter", "docking station",
+];
+
+// SOFT EXCLUSIONS: hardware/accessory words that can appear in legitimate
+// game titles. Excluded unless a software hint is present.
+const SOFT_FILTER_WORDS = [
+  "stand", "case", "grip", "skin", "sticker", "decal", "carrying case",
+  "remote", "battery",
 ];
 
 // "Bundle" is tricky: many game bundles are software. Only exclude when the
@@ -53,8 +66,22 @@ const HARDWARE_BUNDLE_PATTERNS = [
   /console bundle/i, /controller bundle/i, /headset bundle/i,
 ];
 
+// Console SKU patterns — Amazon lists consoles inside the "Games & Accessories"
+// browse nodes with titles that don't contain the word "console" (e.g.
+// "PlayStation®5 Digital Edition – 825GB", "Xbox Series X 1TB"). These are
+// hardware and must be dropped regardless of software hints.
+const CONSOLE_SKU_PATTERNS = [
+  /playstation\W*®?\W*5\s+(?:digital\s+)?(?:edition|console|slim|pro)/i,
+  /^\s*playstation\W*®?\W*5\s+(?:digital\s+)?(?:edition|slim|pro)?\s*–?\s*\d+\s*gb/i,
+  /\bps5\s+(?:digital\s+)?(?:edition|console|slim|pro)\b/i,
+  /xbox\s+series\s+[xs]\s+\d+\s*tb/i,
+  /xbox\s+series\s+[xs]\s+console/i,
+  /nintendo\s+switch\s+2?\s*(?:oled|lite)?\s+console/i,
+  /nintendo\s+switch\s+2?\s+\d+\s*gb\s+console/i,
+];
+
 const SOFTWARE_HINTS = [
-  "edition", "deluxe", "standard", "collector", "digital", "physical",
+  "edition", "deluxe", "standard", "collector", "physical",
   "game of the year", "goty", "definitive", "complete", "gold edition",
   "premium edition", "ultimate edition",
 ];
@@ -64,19 +91,30 @@ export function isVideoGameSoftware(
   trackedFranchiseTokens: string[] = [],
 ): { keep: boolean; reason?: string } {
   const t = (title || "").toLowerCase();
-  // Whitelist: known franchise wins even if a filter word appears
-  for (const f of trackedFranchiseTokens) {
-    if (f && t.includes(f.toLowerCase())) return { keep: true };
-  }
-  // Hard hardware-bundle exclusion
+  // Hard hardware-bundle exclusion — always drops, even for tracked franchises
+  // (a "Wolverine Console Bundle" is still a console, even if "Wolverine" is tracked).
   for (const p of HARDWARE_BUNDLE_PATTERNS) {
     if (p.test(title)) return { keep: false, reason: "hardware_bundle" };
   }
-  // Filter word exclusion (unless it also has a software hint like "Edition")
-  for (const w of FILTER_WORDS) {
+  // Console SKU patterns — catch consoles that don't contain the literal
+  // word "console" (e.g. "PlayStation 5 Digital Edition – 825GB").
+  for (const p of CONSOLE_SKU_PATTERNS) {
+    if (p.test(title)) return { keep: false, reason: "console_sku" };
+  }
+  // Hard exclusions — controllers, consoles, headsets, gift cards, etc.
+  // No override; these categories are never games.
+  for (const w of HARD_EXCLUDE_WORDS) {
+    if (t.includes(w)) return { keep: false, reason: `hardware:${w}` };
+  }
+  // Whitelist for tracked franchises applies only *past* the hard exclusions.
+  for (const f of trackedFranchiseTokens) {
+    if (f && t.includes(f.toLowerCase())) return { keep: true };
+  }
+  // Soft-filter exclusion (unless title has a software hint like "Edition").
+  for (const w of SOFT_FILTER_WORDS) {
     if (t.includes(w)) {
       const hasSoftwareHint = SOFTWARE_HINTS.some((h) => t.includes(h));
-      if (!hasSoftwareHint) return { keep: false, reason: `filter_word:${w}` };
+      if (!hasSoftwareHint) return { keep: false, reason: `soft_filter:${w}` };
     }
   }
   return { keep: true };
