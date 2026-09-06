@@ -55,6 +55,13 @@ export interface SalesByCountryData {
   asp_usd: number;
   countries_count: number;
   countries: CountryRow[];
+  // v3.33.3 (2026-09-05): base + DLC split totals from steam_sales_daily.
+  // KPI strip shows these on the units card. Optional so older responses
+  // still deserialize.
+  base_units?: number;
+  dlc_units?: number;
+  base_revenue_usd?: number;
+  dlc_revenue_usd?: number;
 }
 
 // ─── ISO2 → numeric ISO map for the world-atlas join ───────────────────────
@@ -477,9 +484,19 @@ export interface KpiStripProps {
 }
 export function KpiStrip({ data, isLoading }: KpiStripProps) {
   const top = data?.countries?.[0];
+  // v3.33.3 (2026-09-05): units KPI shows Base + DLC split when the backend
+  // returned the split fields. Country table rows stay combined so per-
+  // country ASP math stays sensible; only the top-line units card breaks it
+  // out.
+  const hasSplit = data && (data.base_units != null || data.dlc_units != null);
+  const unitsCell = data
+    ? (hasSplit
+        ? { lab: "Units (Base / DLC)", val: `${fmtInt(data.base_units ?? 0)} / ${fmtInt(data.dlc_units ?? 0)}` }
+        : { lab: "Units", val: fmtInt(data.total_units) })
+    : { lab: "", val: "" };
   const cells: Array<{ lab: string; val: string }> = data ? [
     { lab: "Revenue",     val: fmtUSD(data.total_revenue_usd) },
-    { lab: "Units",       val: fmtInt(data.total_units) },
+    unitsCell,
     { lab: "ASP",         val: `$${data.asp_usd.toFixed(2)}` },
     { lab: "Top country", val: top ? `${flagOf(top.country_iso)} ${top.country_iso} · ${fmtPct(top.pct_of_total)}` : "—" },
   ] : Array.from({ length: 4 }, () => ({ lab: "", val: "" }));

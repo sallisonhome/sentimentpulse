@@ -422,17 +422,33 @@ export function computeSalesByCountry(
   days_in_window: number;
   days_authoritative_rev: number;
   total_units_authoritative: number;
+  base_units: number;
+  dlc_units: number;
+  base_revenue_usd: number;
+  dlc_revenue_usd: number;
 } {
   // Determine effective window bounds. If since/until omitted, use
   // full range of what steam_sales_daily has for this product.
   const dailyRows = storage.getSteamSales(productId, { since, until });
-  // Sum base+dlc per day.
+  // Sum base+dlc per day for the combined authoritative totals used by the
+  // country attribution algorithm. Also keep base-only and dlc-only splits
+  // (v3.33.3, 2026-09-05) so the KPI strip can show 'Base game units' and
+  // 'DLC units' separately on the card without a second query.
   const dayTotalRev = new Map<string, number>();
   const dayTotalUnits = new Map<string, number>();
+  let baseUnitsTot = 0, dlcUnitsTot = 0;
+  let baseRevTot  = 0, dlcRevTot  = 0;
   for (const r of dailyRows) {
     if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
     dayTotalRev.set(r.date, (dayTotalRev.get(r.date) ?? 0) + (r.netRevenueUsd || 0));
     dayTotalUnits.set(r.date, (dayTotalUnits.get(r.date) ?? 0) + (r.netUnits || 0));
+    if (r.skuGroup === "base") {
+      baseUnitsTot += r.netUnits || 0;
+      baseRevTot  += r.netRevenueUsd || 0;
+    } else {
+      dlcUnitsTot += r.netUnits || 0;
+      dlcRevTot  += r.netRevenueUsd || 0;
+    }
   }
 
   const daysAuthoritative = dayTotalRev.size;
@@ -444,6 +460,7 @@ export function computeSalesByCountry(
       countries_count: 0, countries: [],
       shares_source: "authoritative",
       days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0, total_units_authoritative: 0,
+      base_units: 0, dlc_units: 0, base_revenue_usd: 0, dlc_revenue_usd: 0,
     };
   }
 
@@ -673,6 +690,14 @@ export function computeSalesByCountry(
     days_authoritative_rev: Math.round(
       Array.from(dayTotalRev.values()).reduce((s, v) => s + v, 0) * 100,
     ) / 100,
+    // v3.33.3 (2026-09-05): base + DLC split totals from steam_sales_daily.
+    // Consumers can display 'Base units' and 'DLC units' separately on the
+    // KPI card without needing a second query. Country table rows stay
+    // combined (base + dlc) so ASPs remain sensible per country.
+    base_units: Math.round(baseUnitsTot),
+    dlc_units: Math.round(dlcUnitsTot),
+    base_revenue_usd: Math.round(baseRevTot * 100) / 100,
+    dlc_revenue_usd: Math.round(dlcRevTot * 100) / 100,
   };
 }
 

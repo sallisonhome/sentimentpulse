@@ -42,6 +42,11 @@ export interface SbcResponse {
   countries_count: number;
   countries: CountryRow[];
   found: boolean;
+  // v3.33.3 (2026-09-05): base + DLC unit split from steam_sales_daily.
+  base_units?: number;
+  dlc_units?: number;
+  base_revenue_usd?: number;
+  dlc_revenue_usd?: number;
 }
 
 export interface LastPromoWindow {
@@ -465,7 +470,16 @@ export function SalesByCountryPanel({ steamAppId, today, lastPromo }: SalesByCou
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: "#1e293b", borderRadius: 6, overflow: "hidden" }}>
         {[
           { lab: "Revenue", val: data ? fmtUSD(data.total_revenue_usd) : "—" },
-          { lab: "Units", val: data ? fmtInt(data.total_units) : "—" },
+          {
+            lab: (data && (data.base_units != null || data.dlc_units != null))
+              ? "Units (Base / DLC)"
+              : "Units",
+            val: data
+              ? (data.base_units != null || data.dlc_units != null)
+                  ? `${fmtInt(data.base_units ?? 0)} / ${fmtInt(data.dlc_units ?? 0)}`
+                  : fmtInt(data.total_units)
+              : "—",
+          },
           { lab: "ASP", val: data ? `$${data.asp_usd.toFixed(2)}` : "—" },
           { lab: "Top country", val: top ? `${flagOf(top.country_iso)} ${top.country_iso} · ${fmtPct(top.pct_of_total)}` : "—" },
         ].map((c, i) => (
