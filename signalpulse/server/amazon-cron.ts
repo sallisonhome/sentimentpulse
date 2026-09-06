@@ -413,22 +413,151 @@ export async function runAlsoBoughtWeekly(): Promise<{ sources: number; rowsWrit
 }
 
 // ─── Manual job dispatch (used by /api/amazon/ingest/run/:job) ─────────────
+// ─── Job: ASIN auto-discovery (on-demand) ────────────────────────────────
+// Match SignalPulse-tracked product titles against recent chart snapshots
+// to auto-populate amazon_asin_map (isAuto=true) so the daily products +
+// weekly also_bought jobs have ASINs to fetch. Zero Rainforest credits
+// consumed (pure DB join). Idempotent: only inserts asin_map rows that
+// don't already exist for a given (product_id, platform).
+//
+// Match algorithm:
+//   1. Normalize product title + all Rainforest chart titles (lowercase,
+//      strip trademark/edition suffixes, remove punctuation).
+//   2. For each product-title-word set W_p and chart-title-word set W_c:
+//      score = |W_p ∩ W_c| / |W_p| (recall against product title).
+//   3. Accept the highest-scoring chart row per platform above threshold
+//      (default 0.6). Store the score in match_score for audit.
+export async function runAsinDiscovery(threshold = 0.6): Promise<{
+  productsScanned: number;
+  candidatesConsidered: number;
+  mappingsInserted: number;
+  mappingsSkipped: number;
+}> {
+  return withRun("asin_discovery", async () => {
+    // Read every product in SignalPulse.
+    const products = storage.getAllProducts();
+    // Read the last 3 days of chart snapshots to have a robust match pool.
+    const recentCharts = db.select().from(amazonChartSnapshots).all();
+    // Existing pins so we don't clobber a manual override.
+    const existingPins = db.select().from(amazonAsinMap).all();
+    const pinKey = (pid: number, plat: string) => `${pid}|${plat}`;
+    const existingByKey = new Set(existingPins.map((p) => pinKey(p.productId, p.platform)));
+
+    // Pre-normalize chart rows keyed by platform.
+    const chartsByPlatform = new Map<string, Array<{ asin: string; words: Set<string>; title: string }>>();
+    for (const plat of AMAZON_PLATFORM_SLUGS) chartsByPlatform.set(plat, []);
+    for (const row of recentCharts) {
+      const list = chartsByPlatform.get(row.platform);
+      if (!list) continue;
+      list.push({ asin: row.asin, words: normalizeWords(row.title), title: row.title });
+    }
+
+    let candidatesConsidered = 0;
+    let mappingsInserted = 0;
+    let mappingsSkipped = 0;
+    const now = nowIso();
+
+    for (const p of products) {
+      const pWords = normalizeWords(p.title);
+      if (pWords.size === 0) continue;
+      for (const plat of AMAZON_PLATFORM_SLUGS) {
+        // Skip if we already have a pin (manual or auto) for this product+platform.
+        if (existingByKey.has(pinKey(p.id, plat))) {
+          mappingsSkipped += 1;
+          continue;
+        }
+        const candidates = chartsByPlatform.get(plat) ?? [];
+        candidatesConsidered += candidates.length;
+        let best: { asin: string; score: number; title: string } | null = null;
+        for (const c of candidates) {
+          if (c.words.size === 0) continue;
+          const overlap = countIntersection(pWords, c.words);
+          const score = overlap / pWords.size;
+          if (score >= threshold && (best == null || score > best.score)) {
+            best = { asin: c.asin, score, title: c.title };
+          }
+        }
+        if (best) {
+          db.insert(amazonAsinMap).values({
+            productId: p.id,
+            platform: plat,
+            asin: best.asin,
+            isAuto: true,
+            isActive: true,
+            isSwitch2: false,
+            matchScore: best.score,
+            discoveredAt: now,
+            updatedAt: now,
+          }).run();
+          existingByKey.add(pinKey(p.id, plat));
+          mappingsInserted += 1;
+          log(`asin-discovery matched product #${p.id} "${p.title}" → ${plat} ${best.asin} (${best.title}) score=${best.score.toFixed(2)}`, "amazon-cron");
+        }
+      }
+    }
+
+    return {
+      result: { productsScanned: products.length, candidatesConsidered, mappingsInserted, mappingsSkipped },
+      creditsUsed: 0,
+      creditsRemaining: 0, // no Rainforest call
+      rowsWritten: mappingsInserted,
+    };
+  });
+}
+
+// Normalize a title into a token set for word-overlap scoring.
+// Strips edition/format words that add no signal (edition, deluxe, remaster,
+// etc.) and platform words we don't want inflating overlap (PS5, Xbox,
+// Nintendo, Switch, physical). Keeps franchise/subtitle words.
+const DISCOVERY_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "for", "to", "on", "in", "with",
+  "edition", "deluxe", "standard", "collector", "collectors", "physical",
+  "digital", "complete", "definitive", "goty", "remaster", "remastered",
+  "gold", "premium", "ultimate", "anniversary", "game", "video", "videogame",
+  "ps5", "ps4", "playstation", "xbox", "series", "x", "s", "nintendo",
+  "switch", "2", "one", "pc", "amazon",
+]);
+
+function normalizeWords(title: string): Set<string> {
+  const cleaned = title
+    .toLowerCase()
+    .replace(/[\u00AE\u2122\u00A9]/g, "") // ® ™ ©
+    .replace(/[^a-z0-9\s]/g, " ") // punctuation -> space
+    .replace(/\s+/g, " ")
+    .trim();
+  const out = new Set<string>();
+  for (const w of cleaned.split(" ")) {
+    if (w.length < 2) continue;
+    if (DISCOVERY_STOPWORDS.has(w)) continue;
+    out.add(w);
+  }
+  return out;
+}
+
+function countIntersection(a: Set<string>, b: Set<string>): number {
+  let n = 0;
+  a.forEach((w) => { if (b.has(w)) n += 1; });
+  return n;
+}
+
 export type AmazonJobName =
   | "charts"
   | "products"
   | "movers"
   | "keywords"
   | "new_releases"
-  | "also_bought";
+  | "also_bought"
+  | "asin_discovery";
 
 export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
   switch (job) {
-    case "charts":       return runChartsSnapshot();
-    case "products":     return runProductSnapshots();
-    case "movers":       return runMoversAndNewReleases();
-    case "new_releases": return runMoversAndNewReleases(); // combined job
-    case "keywords":     return runKeywordSearch();
-    case "also_bought":  return runAlsoBoughtWeekly();
+    case "charts":         return runChartsSnapshot();
+    case "products":       return runProductSnapshots();
+    case "movers":         return runMoversAndNewReleases();
+    case "new_releases":   return runMoversAndNewReleases(); // combined job
+    case "keywords":       return runKeywordSearch();
+    case "also_bought":    return runAlsoBoughtWeekly();
+    case "asin_discovery": return runAsinDiscovery();
     default:
       throw new Error(`unknown job: ${job}`);
   }
