@@ -63,6 +63,13 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     settingKeys: ["twitch_client_id", "twitch_client_secret"],
   },
   {
+    key: "rainforest",
+    label: "Amazon Retail (Rainforest API)",
+    description: "Rainforest API key powers the Amazon Retail app + Saber Amazon Leaderboard tab \u2014 nightly chart ingestion for PS5/Xbox/Switch, per-SKU Buy Box & Reviews Pulse, weekly Also-Bought recommendations, keyword Search SOV, and Movers/New-Releases feeds. Leave unset to disable all Amazon ingestion (the cron silently no-ops and the leaderboard shows an empty state).",
+    icon: <KeyRound className="h-5 w-5" />,
+    settingKeys: ["rainforest_api_key"],
+  },
+  {
     key: "security",
     label: "App Security",
     description: "Password required to access the application.",
