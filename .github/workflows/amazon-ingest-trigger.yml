@@ -50,33 +50,13 @@ jobs:
           JOB: ${{ inputs.job }}
           OPS_TOKEN: ${{ secrets.INGESTION_OPS_TOKEN }}
         run: |
-          # Discover the port SignalPulse is listening on. PORT can live in
-          # the systemd unit Environment= line, in /etc/signalpulse/env, or
-          # fall back to the app default 5000. Read the unit first, then env
-          # file, then default.
-          PORT=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash <<'BASH'
-            set -e
-            UNIT=/etc/systemd/system/signalpulse.service
-            P=""
-            if [ -f "$UNIT" ]; then
-              P=$(grep -oE 'PORT=[0-9]+' "$UNIT" | head -1 | cut -d= -f2 || true)
-            fi
-            if [ -z "$P" ] && [ -f /etc/signalpulse/env ]; then
-              P=$(grep -E '^PORT=' /etc/signalpulse/env | head -1 | cut -d= -f2 | tr -d '"' || true)
-            fi
-            if [ -z "$P" ]; then
-              # Discover via the actually-listening port of the signalpulse process.
-              PID=$(systemctl show -p MainPID --value signalpulse)
-              if [ -n "$PID" ] && [ "$PID" != "0" ]; then
-                P=$(ss -tlnp 2>/dev/null | grep "pid=$PID," | head -1 | grep -oE ':[0-9]+' | head -1 | tr -d ':')
-              fi
-            fi
-            if [ -z "$P" ]; then
-              P=5000
-            fi
-            echo "$P"
-BASH
-          )
+          set -e
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+
+          # Discover the port SignalPulse is listening on. Chain: systemd
+          # unit Environment= line -> /etc/signalpulse/env -> live process
+          # ss lookup -> app default 5000.
+          PORT=$($SSH "UNIT=/etc/systemd/system/signalpulse.service; P=''; if [ -f \"\$UNIT\" ]; then P=\$(grep -oE 'PORT=[0-9]+' \"\$UNIT\" | head -1 | cut -d= -f2 || true); fi; if [ -z \"\$P\" ] && [ -f /etc/signalpulse/env ]; then P=\$(grep -E '^PORT=' /etc/signalpulse/env | head -1 | cut -d= -f2 | tr -d '\"' || true); fi; if [ -z \"\$P\" ]; then PID=\$(systemctl show -p MainPID --value signalpulse); if [ -n \"\$PID\" ] && [ \"\$PID\" != '0' ]; then P=\$(ss -tlnp 2>/dev/null | grep \"pid=\$PID,\" | head -1 | grep -oE ':[0-9]+' | head -1 | tr -d ':'); fi; fi; if [ -z \"\$P\" ]; then P=5000; fi; echo \$P")
           PORT=$(echo "$PORT" | tail -1 | tr -d '\r' | tr -d ' ')
           if [ -z "$PORT" ]; then
             echo "ERROR: could not discover PORT for signalpulse"
@@ -90,10 +70,7 @@ BASH
             echo "=========================================="
             echo "Triggering job: $job"
             echo "=========================================="
-            ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
-              "curl -sS -w '\nHTTP %{http_code}\n' -X POST \
-                -H 'x-ops-token: ${OPS_TOKEN}' \
-                'http://127.0.0.1:${PORT}/api/amazon/ingest/run/${job}'"
+            $SSH "curl -sS -w '\nHTTP %{http_code}\n' -X POST -H 'x-ops-token: ${OPS_TOKEN}' 'http://127.0.0.1:${PORT}/api/amazon/ingest/run/${job}'"
           }
 
           if [ "$JOB" = "first_boot" ]; then
@@ -109,7 +86,4 @@ BASH
           echo "=========================================="
           echo "Recent ingest runs (top 10):"
           echo "=========================================="
-          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
-            "curl -sS -H 'x-ops-token: ${OPS_TOKEN}' \
-              'http://127.0.0.1:${PORT}/api/amazon/ingest/runs' | \
-              python3 -c 'import sys,json; rows=json.load(sys.stdin)[\"rows\"][:10]; print(json.dumps(rows, indent=2))'"
+          $SSH "curl -sS -H 'x-ops-token: ${OPS_TOKEN}' 'http://127.0.0.1:${PORT}/api/amazon/ingest/runs'" | python3 -c 'import sys,json; rows=json.load(sys.stdin)["rows"][:10]; print(json.dumps(rows, indent=2))'
