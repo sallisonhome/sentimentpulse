@@ -1,18 +1,19 @@
 name: SignalPulse — Country daily-window sequential chain
 
-# Auto-fires the next 3 backfill chunks after the country-daily-window
-# workflow completes successfully. Reads the completed run's inputs to
-# decide which chunk to fire next; stops when the last chunk finishes.
+# Auto-fires the next chunk in the 24-month sequential backfill schedule
+# when the previous country-daily-window run completes successfully.
 #
-# Chain schedule (all authoritative day-mode country ingestion):
+# Sequence (all authoritative day-mode country ingestion):
 #   Chunk 1: 2024-09-01 → 2025-02-28  (kicked off manually)
-#   Chunk 2: 2025-03-01 → 2025-08-31  (fires when chunk 1 succeeds)
-#   Chunk 3: 2025-09-01 → 2026-02-28  (fires when chunk 2 succeeds)
-#   Chunk 4: 2026-03-01 → 2026-05-31  (fires when chunk 3 succeeds)
+#   Chunk 2: 2025-03-01 → 2025-08-31  (fires after chunk 1)
+#   Chunk 3: 2025-09-01 → 2026-02-28  (fires after chunk 2)
+#   Chunk 4: 2026-03-01 → 2026-05-31  (fires after chunk 3)
 #
-# Idempotent: if a chunk fails or is cancelled, the chain stops so the
-# operator can inspect. Re-running the failed chunk manually will restart
-# the chain from that point.
+# Decision logic: query the country-daily-window workflow's most recent
+# successful runs, pull each's `event.inputs.from_date` +
+# `event.inputs.to_date` via the workflow-run details API, find the
+# highest `to_date` in our schedule, and fire the next-in-sequence.
+# Stops when the last chunk finishes.
 
 on:
   workflow_run:
@@ -25,102 +26,95 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Decide next chunk from completed run's inputs
-        id: pick
+      - name: Decide next chunk and fire it
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
-          # Read the completed run's dispatch inputs (from_date, to_date).
-          # workflow_run's github.event carries head_repository + head_sha
-          # but not the inputs; hit the runs API to get them.
-          RUN_ID="${{ github.event.workflow_run.id }}"
-          echo "Completed run id: $RUN_ID"
-          RUN_JSON=$(gh api "/repos/${{ github.repository }}/actions/runs/$RUN_ID")
-          FROM=$(echo "$RUN_JSON" | jq -r '.display_title // ""')
-          # display_title isn't reliable; fetch the run's parameters via
-          # actions-events. Simpler: derive next chunk from the current one
-          # by looking up its inputs via jobs API.
-          # The workflow_run event doesn't expose inputs directly; we use
-          # the run's "name" convention: our workflow's display_title
-          # doesn't carry them either. Instead, list recent runs of the
-          # backfill workflow and use their created_at ordering to figure
-          # out which chunks we've done.
-          #
-          # Approach: query the last 10 backfill runs, extract each's inputs
-          # via the API, and find the highest to_date that succeeded. Fire
-          # the chunk that starts the day AFTER that to_date, capped at our
-          # sequence end (2026-05-31).
-          echo "Fetching recent backfill runs..."
-          BACKFILL_RUNS=$(gh api "/repos/${{ github.repository }}/actions/workflows/signalpulse-country-daily-window.yml/runs?per_page=20&status=success" \
-            | jq -r '.workflow_runs[] | "\(.id)"')
+          set -euo pipefail
 
-          # For each successful run, get its inputs from the run's inputs URL
-          MAX_TO=""
-          for id in $BACKFILL_RUNS; do
-            INPUTS=$(gh api "/repos/${{ github.repository }}/actions/runs/$id" | jq -r '.inputs // {}' 2>/dev/null || echo "{}")
-            # inputs may be null; try the workflow-run event payload instead
-            TO_DATE=$(gh api "/repos/${{ github.repository }}/actions/runs/$id" | jq -r '.run_attempt' > /dev/null && \
-                      gh api "/repos/${{ github.repository }}/actions/runs/$id/attempts/1" 2>/dev/null | jq -r '.triggering_actor.login' > /dev/null; echo "")
-            # Actually simplest: parse from the run's display_title which
-            # our workflow logs as "SignalPulse — Sales by Country daily
-            # window backfill" (no inputs). So we can't recover inputs
-            # this way. Fall back to the chunk schedule below.
+          # 4-chunk schedule.
+          declare -a CHUNK_FROM=("2024-09-01" "2025-03-01" "2025-09-01" "2026-03-01")
+          declare -a CHUNK_TO=(  "2025-02-28" "2025-08-31" "2026-02-28" "2026-05-31")
+
+          # Which chunks have already succeeded? Look at the last 20 runs of
+          # the country-daily-window workflow and note which (from, to)
+          # windows appear as SUCCESS. Inputs live in the event.inputs of
+          # each dispatched run; the workflow runs API returns them under
+          # .display_title only when set via `name:`, so we fetch the event
+          # payload.
+          echo "Fetching recent country-daily-window runs..."
+          RUNS_JSON=$(gh api "/repos/$REPO/actions/workflows/signalpulse-country-daily-window.yml/runs?per_page=20")
+
+          # Extract [id, conclusion, event.inputs] per run. workflow_dispatch
+          # runs put the input map at .inputs on the RunEvent, which the
+          # runs API surfaces under .event.inputs is NOT available in this
+          # endpoint. But the event that TRIGGERED the run stores its
+          # payload at /repos/.../actions/runs/{id}/attempts/1's
+          # triggering_actor / raw payload isn't there either. What DOES
+          # work: the "workflow_dispatch" event's inputs are recorded on
+          # the run object as .display_title? Actually, best is to hit
+          # /repos/{repo}/actions/runs/{id} which returns a `.name` and
+          # under `.jobs_url` we can grab the inputs from step envs.
+          #
+          # SIMPLER: our workflow prints "from=YYYY-MM-DD  to=YYYY-MM-DD"
+          # in its very first step's tee log. gh run view --log returns
+          # that for a completed run.
+
+          # Collect completed-successful runs' (from, to) via log parsing.
+          COMPLETED_TO=""
+          for run_id in $(echo "$RUNS_JSON" | jq -r '.workflow_runs[] | select(.conclusion=="success") | .id'); do
+            LOG=$(gh run view "$run_id" --log 2>/dev/null || echo "")
+            F=$(echo "$LOG" | grep -m1 -oE 'from=[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 | cut -d= -f2 || true)
+            T=$(echo "$LOG" | grep -m1 -oE 'to=[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 | cut -d= -f2 || true)
+            if [ -n "$F" ] && [ -n "$T" ]; then
+              echo "  Run $run_id succeeded: $F → $T"
+              # Track the most recent to_date completion by string sort.
+              if [ "$T" \> "$COMPLETED_TO" ]; then
+                COMPLETED_TO="$T"
+              fi
+            fi
           done
 
-          # Schedule: sequence of (from, to) pairs. We fire the NEXT one
-          # after the most recently succeeded one in this schedule.
-          CHUNKS=(
-            "2024-09-01|2025-02-28"
-            "2025-03-01|2025-08-31"
-            "2025-09-01|2026-02-28"
-            "2026-03-01|2026-05-31"
-          )
+          echo "Highest completed to_date in schedule: $COMPLETED_TO"
 
-          # Get the last-succeeded run's window from its jobs' log title
-          # (workflow logs echo "  from=$FROM_DATE  to=$TO_DATE" in the
-          # first job step). Use the completed run we were triggered by.
-          LAST_LOG=$(gh api "/repos/${{ github.repository }}/actions/runs/$RUN_ID/logs" -H "Accept: application/vnd.github+json" 2>/dev/null || echo "")
-          # gh api on logs returns a redirect to a zip; simpler to `gh run view` which handles that.
-          LAST_FROM=$(gh run view $RUN_ID --log 2>/dev/null | grep -oE 'from=[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 | cut -d= -f2 || echo "")
-          LAST_TO=$(gh run view $RUN_ID --log 2>/dev/null | grep -oE 'to=[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 | cut -d= -f2 || echo "")
-          echo "Last run window: from=$LAST_FROM to=$LAST_TO"
-
-          if [ -z "$LAST_FROM" ] || [ -z "$LAST_TO" ]; then
-            echo "Could not determine last run window; skipping chain."
-            echo "next_from=" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
+          # Find the next chunk in the schedule whose from_date is the day
+          # AFTER $COMPLETED_TO (or fire chunk 1 if none completed yet).
           NEXT_FROM=""
           NEXT_TO=""
-          for i in "${!CHUNKS[@]}"; do
-            CH="${CHUNKS[$i]}"
-            F="${CH%|*}"
-            T="${CH#*|}"
-            if [ "$F" = "$LAST_FROM" ] && [ "$T" = "$LAST_TO" ]; then
-              # Found the completed chunk. Fire i+1 if it exists.
-              NI=$((i + 1))
-              if [ $NI -lt ${#CHUNKS[@]} ]; then
-                NEXT="${CHUNKS[$NI]}"
-                NEXT_FROM="${NEXT%|*}"
-                NEXT_TO="${NEXT#*|}"
-              fi
+          for i in "${!CHUNK_FROM[@]}"; do
+            F="${CHUNK_FROM[$i]}"
+            T="${CHUNK_TO[$i]}"
+            # A chunk is "next" if it hasn't been completed AND either
+            # (a) no chunks have been completed yet, or
+            # (b) its from_date > completed_to.
+            if [ "$T" \> "$COMPLETED_TO" ]; then
+              NEXT_FROM="$F"
+              NEXT_TO="$T"
               break
             fi
           done
 
-          echo "Next chunk: from=$NEXT_FROM to=$NEXT_TO"
-          echo "next_from=$NEXT_FROM" >> "$GITHUB_OUTPUT"
-          echo "next_to=$NEXT_TO" >> "$GITHUB_OUTPUT"
+          if [ -z "$NEXT_FROM" ]; then
+            echo "All 4 chunks complete. Chain done."
+            exit 0
+          fi
 
-      - name: Fire next backfill chunk
-        if: steps.pick.outputs.next_from != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
+          # Guard: don't fire if that exact window is already in-progress.
+          IN_PROGRESS=$(echo "$RUNS_JSON" | jq -r '.workflow_runs[] | select(.status=="in_progress" or .status=="queued") | .id')
+          for pid in $IN_PROGRESS; do
+            LOG=$(gh run view "$pid" --log 2>/dev/null || echo "")
+            F=$(echo "$LOG" | grep -m1 -oE 'from=[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 | cut -d= -f2 || true)
+            T=$(echo "$LOG" | grep -m1 -oE 'to=[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1 | cut -d= -f2 || true)
+            if [ "$F" = "$NEXT_FROM" ] && [ "$T" = "$NEXT_TO" ]; then
+              echo "Next chunk ($NEXT_FROM → $NEXT_TO) already in progress as run $pid. Skipping."
+              exit 0
+            fi
+          done
+
+          echo "Firing next chunk: $NEXT_FROM → $NEXT_TO"
           gh workflow run signalpulse-country-daily-window.yml \
-            -f from_date=${{ steps.pick.outputs.next_from }} \
-            -f to_date=${{ steps.pick.outputs.next_to }} \
+            -f from_date="$NEXT_FROM" \
+            -f to_date="$NEXT_TO" \
             -f dry_run=false \
-            --repo ${{ github.repository }}
-          echo "Fired next chunk: ${{ steps.pick.outputs.next_from }} → ${{ steps.pick.outputs.next_to }}"
+            --repo "$REPO"
