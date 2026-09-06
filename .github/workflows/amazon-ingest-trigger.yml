@@ -1,0 +1,91 @@
+name: Amazon Ingest Trigger (manual)
+
+# One-shot workflow to manually trigger any of the six Amazon ingest jobs
+# without waiting for the scheduled cron slot. SSHes to the droplet and
+# curls the local ingest endpoint with the ops token (loopback + ops token
+# = bypasses the human JWT requirement).
+#
+# Also supports "first-boot" mode: runs charts → products → movers →
+# new_releases → also_bought in sequence for initial population after
+# key entry.
+#
+# Required secrets (already configured on the sentimentpulse repo):
+#   DROPLET_SSH_KEY, INGESTION_OPS_TOKEN
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: "Which Amazon ingest job to run"
+        required: true
+        default: "first_boot"
+        type: choice
+        options:
+          - first_boot
+          - charts
+          - products
+          - movers
+          - keywords
+          - new_releases
+          - also_bought
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Trigger Amazon ingest on droplet
+        env:
+          JOB: ${{ inputs.job }}
+          OPS_TOKEN: ${{ secrets.INGESTION_OPS_TOKEN }}
+        run: |
+          # Discover port from the systemd unit env file — every SignalPulse
+          # deploy writes PORT= into /etc/signalpulse/env.
+          PORT=$(ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
+            "grep -E '^PORT=' /etc/signalpulse/env | cut -d'=' -f2 | tr -d '\"'" | tr -d '\r')
+          if [ -z "$PORT" ]; then
+            echo "ERROR: could not read PORT from /etc/signalpulse/env"
+            exit 1
+          fi
+          echo "SignalPulse local port: $PORT"
+
+          run_one() {
+            local job="$1"
+            echo ""
+            echo "=========================================="
+            echo "Triggering job: $job"
+            echo "=========================================="
+            ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
+              "curl -sS -w '\nHTTP %{http_code}\n' -X POST \
+                -H 'x-ops-token: ${OPS_TOKEN}' \
+                'http://127.0.0.1:${PORT}/api/amazon/ingest/run/${job}'"
+          }
+
+          if [ "$JOB" = "first_boot" ]; then
+            for j in charts products movers new_releases also_bought; do
+              run_one "$j"
+              sleep 3
+            done
+          else
+            run_one "$JOB"
+          fi
+
+          echo ""
+          echo "=========================================="
+          echo "Recent ingest runs (top 10):"
+          echo "=========================================="
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 \
+            "curl -sS -H 'x-ops-token: ${OPS_TOKEN}' \
+              'http://127.0.0.1:${PORT}/api/amazon/ingest/runs' | \
+              python3 -c 'import sys,json; rows=json.load(sys.stdin)[\"rows\"][:10]; print(json.dumps(rows, indent=2))'"
