@@ -817,11 +817,18 @@ export const amazonAsinMap = sqliteTable("amazon_asin_map", {
 // items is the full Rainforest raw JSON for the row (title, ASIN, price,
 // rating, ratings_total, image, link). Delta engine joins today's row for a
 // given ASIN with yesterday/7-day-ago/30-day-ago rows to compute movement.
+// Daily chart snapshot per platform (SOFTWARE ONLY — hardware/peripherals
+// filtered out at ingest time by isVideoGameSoftware(); see
+// server/amazon-rainforest.ts). rank is the CONTIGUOUS 1..N software-only
+// rank we present in the UI; rawRank preserves Amazon's original position
+// so the source of truth is auditable (e.g. "we ranked this #5, Amazon
+// showed it at #7 because two headsets ranked above it").
 export const amazonChartSnapshots = sqliteTable("amazon_chart_snapshots", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   snapshotDate: text("snapshot_date").notNull(), // YYYY-MM-DD (UTC)
   platform: text("platform").notNull(), // ps5 | xbox | switch
-  rank: integer("rank").notNull(),
+  rank: integer("rank").notNull(), // contiguous software-only rank
+  rawRank: integer("raw_rank"), // Amazon's original rank before software filter
   asin: text("asin").notNull(),
   title: text("title").notNull(),
   price: real("price"),
@@ -833,6 +840,30 @@ export const amazonChartSnapshots = sqliteTable("amazon_chart_snapshots", {
 }, (table) => ({
   uniqueDayPlatformRank: uniqueIndex("amazon_chart_snap_unique_day_platform_rank").on(table.snapshotDate, table.platform, table.rank),
   byAsinIdx: index("amazon_chart_snap_by_asin_idx").on(table.asin, table.snapshotDate),
+}));
+
+// "Also Bought" recommendations per tracked ASIN. Rainforest type=product
+// returns an also_bought[] array on many ASINs; we pull top 5 weekly (per
+// tracked ASIN; both Saber and comp titles). Refresh is weekly, not daily,
+// because this data changes slowly and per-ASIN Product calls cost credits.
+// (sourceAsin, recommendedAsin) pair is unique per snapshotDate.
+export const amazonAlsoBoughtDaily = sqliteTable("amazon_also_bought_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  sourceAsin: text("source_asin").notNull(),
+  rankPosition: integer("rank_position").notNull(), // 1..5
+  recommendedAsin: text("recommended_asin").notNull(),
+  title: text("title").notNull(),
+  price: real("price"),
+  rating: real("rating"),
+  ratingsTotal: integer("ratings_total"),
+  mainBsr: integer("main_bsr"),
+  imageUrl: text("image_url"),
+  link: text("link"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDaySourcePos: uniqueIndex("amazon_also_bought_unique_day_source_pos").on(table.snapshotDate, table.sourceAsin, table.rankPosition),
+  bySourceIdx: index("amazon_also_bought_by_source_idx").on(table.sourceAsin, table.snapshotDate),
 }));
 
 // Per-SKU daily Product endpoint pull. Powers the Buy Box & Availability
@@ -920,4 +951,5 @@ export type AmazonProductDaily = typeof amazonProductDaily.$inferSelect;
 export type AmazonMoversDaily = typeof amazonMoversDaily.$inferSelect;
 export type AmazonKeywordDaily = typeof amazonKeywordDaily.$inferSelect;
 export type AmazonNewReleases = typeof amazonNewReleases.$inferSelect;
+export type AmazonAlsoBoughtDaily = typeof amazonAlsoBoughtDaily.$inferSelect;
 export type AmazonIngestRun = typeof amazonIngestRuns.$inferSelect;
