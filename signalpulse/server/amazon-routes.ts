@@ -281,10 +281,18 @@ export function registerAmazonRoutes(app: Express): void {
       .all()
       .slice(0, limit);
 
-    // Delta lookups
-    const d1  = daysAgoUtcDate(1);
-    const d7  = daysAgoUtcDate(7);
-    const d30 = daysAgoUtcDate(30);
+    // Delta lookups — offsets from `snapshotDate` (the freshest chart on
+    // file), not from literal UTC today. If the chart didn't run yet today,
+    // literal UTC deltas would compare yesterday vs yesterday and read 0
+    // for every row.
+    const dateNDaysBefore = (baseDate: string, n: number) => {
+      const d = new Date(baseDate + "T00:00:00Z");
+      d.setUTCDate(d.getUTCDate() - n);
+      return d.toISOString().split("T")[0];
+    };
+    const d1  = dateNDaysBefore(snapshotDate, 1);
+    const d7  = dateNDaysBefore(snapshotDate, 7);
+    const d30 = dateNDaysBefore(snapshotDate, 30);
 
     function findRankOn(date: string, asin: string): number | null {
       const r = db.select().from(amazonChartSnapshots)
@@ -485,8 +493,17 @@ export function registerAmazonRoutes(app: Express): void {
           .where(and(eq(amazonProductDaily.asin, pin.asin), eq(amazonProductDaily.snapshotDate, date)))
           .get();
       }
-      const r7  = findOn(daysAgoUtcDate(7));
-      const r30 = findOn(daysAgoUtcDate(30));
+      // Deltas as offsets from this pin's freshest row — not literal UTC —
+      // so a pin whose products-job row is a day stale still produces
+      // 7d/30d deltas relative to its own last row.
+      const dateNDaysBefore = (baseDate: string, n: number) => {
+        const d = new Date(baseDate + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() - n);
+        return d.toISOString().split("T")[0];
+      };
+      const baseDate = latest?.snapshotDate ?? daysAgoUtcDate(0);
+      const r7  = findOn(dateNDaysBefore(baseDate, 7));
+      const r30 = findOn(dateNDaysBefore(baseDate, 30));
       const totalNow = latest?.ratingsTotal ?? null;
       return {
         productId: pin.productId,
@@ -606,6 +623,21 @@ export function registerAmazonRoutes(app: Express): void {
     res.json({ ok: true });
   });
 
+  // Wipe every auto-discovered pin (leaves any manual pins intact). Powers
+  // the "reset auto pins" button on the Amazon ASIN Pins editor so the user
+  // can start clean before re-running discovery with tighter rules.
+  app.post("/api/amazon/asin-map/auto-clear", (_req, res) => {
+    try {
+      const before = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isAuto, true)).all();
+      db.delete(amazonAsinMap).where(eq(amazonAsinMap.isAuto, true)).run();
+      const compBefore = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isAuto, true)).all();
+      db.delete(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isAuto, true)).run();
+      res.json({ ok: true, deletedSaberPins: before.length, deletedCompetitorPins: compBefore.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? String(err) });
+    }
+  });
+
   // ── Ops: manual ingest + recent runs ───────────────────────────────────
   app.post("/api/amazon/ingest/run/:job", async (req, res) => {
     const job = req.params.job as AmazonJobName;
@@ -646,8 +678,10 @@ export function registerAmazonRoutes(app: Express): void {
       return {
         productId: pin.productId,
         productTitle: product?.title ?? null,
+        productPlatforms: safeJson(product?.platforms ?? null),
         platform: pin.platform,
         asin: pin.asin,
+        isSwitch2: pin.isSwitch2,
         matchScore: pin.matchScore,
         isAuto: pin.isAuto,
         hasTodayRow: !!row,

@@ -479,10 +479,27 @@ export async function runAsinDiscovery(threshold = 0.6): Promise<{
     let mappingsSkipped = 0;
     const now = nowIso();
 
+    // Cross-platform ASIN reuse guard (same as search variant).
+    const usedAsinsPerProduct = new Map<number, Set<string>>();
+    for (const existing of existingPins) {
+      if (!usedAsinsPerProduct.has(existing.productId)) usedAsinsPerProduct.set(existing.productId, new Set());
+      usedAsinsPerProduct.get(existing.productId)!.add(existing.asin);
+    }
+
     for (const p of products) {
       const pWords = normalizeWords(p.title);
       if (pWords.size === 0) continue;
+      // Product.platforms filter (same as search variant).
+      const productPlats: string[] = (() => {
+        try { const arr = JSON.parse(p.platforms ?? "[]"); return Array.isArray(arr) ? arr : []; } catch { return []; }
+      })();
+      const wantsPs5 = productPlats.some((x) => /ps5|playstation\s*5/i.test(x));
+      const wantsXbox = productPlats.some((x) => /xbox/i.test(x));
+      const wantsSwitch = productPlats.some((x) => /switch/i.test(x));
+      const platWanted: Record<string, boolean> = { ps5: wantsPs5, xbox: wantsXbox, switch: wantsSwitch };
+
       for (const plat of AMAZON_PLATFORM_SLUGS) {
+        if (!platWanted[plat]) continue;
         // Skip if we already have a pin (manual or auto) for this product+platform.
         if (existingByKey.has(pinKey(p.id, plat))) {
           mappingsSkipped += 1;
@@ -490,13 +507,19 @@ export async function runAsinDiscovery(threshold = 0.6): Promise<{
         }
         const candidates = chartsByPlatform.get(plat) ?? [];
         candidatesConsidered += candidates.length;
-        let best: { asin: string; score: number; title: string } | null = null;
+        const usedForThisProduct = usedAsinsPerProduct.get(p.id) ?? new Set<string>();
+        let best: { asin: string; score: number; title: string; isSwitch2: boolean } | null = null;
         for (const c of candidates) {
           if (c.words.size === 0) continue;
+          // Platform keyword must appear in the chart title.
+          const platCheck = titleMentionsPlatform(c.title, plat);
+          if (!platCheck.ok) continue;
+          if (usedForThisProduct.has(c.asin)) continue;
+          if (isAsinAncientForProduct(c.asin, p.releaseDate ?? null)) continue;
           const overlap = countIntersection(pWords, c.words);
           const score = overlap / pWords.size;
           if (score >= threshold && (best == null || score > best.score)) {
-            best = { asin: c.asin, score, title: c.title };
+            best = { asin: c.asin, score, title: c.title, isSwitch2: platCheck.isSwitch2 };
           }
         }
         if (best) {
@@ -506,14 +529,16 @@ export async function runAsinDiscovery(threshold = 0.6): Promise<{
             asin: best.asin,
             isAuto: true,
             isActive: true,
-            isSwitch2: false,
+            isSwitch2: best.isSwitch2,
             matchScore: best.score,
             discoveredAt: now,
             updatedAt: now,
           }).run();
           existingByKey.add(pinKey(p.id, plat));
+          if (!usedAsinsPerProduct.has(p.id)) usedAsinsPerProduct.set(p.id, new Set());
+          usedAsinsPerProduct.get(p.id)!.add(best.asin);
           mappingsInserted += 1;
-          log(`asin-discovery matched product #${p.id} "${p.title}" → ${plat} ${best.asin} (${best.title}) score=${best.score.toFixed(2)}`, "amazon-cron");
+          log(`asin-discovery matched product #${p.id} "${p.title}" → ${plat}${best.isSwitch2 ? " 2" : ""} ${best.asin} (${best.title}) score=${best.score.toFixed(2)}`, "amazon-cron");
         }
       }
     }
@@ -557,10 +582,34 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
     let lastCreditsRemaining = 0;
     const now = nowIso();
 
+    // No-cross-platform-reuse guard: once we pin ASIN X to product P on
+    // platform PS5, we refuse to also pin X to P on Xbox or Switch. One Amazon
+    // ASIN is one SKU on one platform — the auto-discovery kept violating
+    // this because the search API returns the same top result across nodes.
+    const usedAsinsPerProduct = new Map<number, Set<string>>();
+    for (const existing of existingPins) {
+      if (!usedAsinsPerProduct.has(existing.productId)) usedAsinsPerProduct.set(existing.productId, new Set());
+      usedAsinsPerProduct.get(existing.productId)!.add(existing.asin);
+    }
+
     for (const p of products) {
       const pWords = normalizeWords(p.title);
       if (pWords.size === 0) continue;
+      // Only run discovery for platforms this product actually lists in
+      // SignalPulse — no more "assign a Switch pin to a title that isn't on
+      // Switch just because Amazon has a Switch bundle listing that matches
+      // the words." Product.platforms is a JSON array like
+      // ["PC (Steam)", "PS5", "Xbox", "Switch 2"].
+      const productPlats: string[] = (() => {
+        try { const arr = JSON.parse(p.platforms ?? "[]"); return Array.isArray(arr) ? arr : []; } catch { return []; }
+      })();
+      const wantsPs5 = productPlats.some((x) => /ps5|playstation\s*5/i.test(x));
+      const wantsXbox = productPlats.some((x) => /xbox/i.test(x));
+      const wantsSwitch = productPlats.some((x) => /switch/i.test(x)); // covers both Switch and Switch 2
+      const platWanted: Record<string, boolean> = { ps5: wantsPs5, xbox: wantsXbox, switch: wantsSwitch };
+
       for (const plat of AMAZON_PLATFORM_SLUGS) {
+        if (!platWanted[plat]) continue;
         if (existingByKey.has(pinKey(p.id, plat))) {
           mappingsSkipped += 1;
           continue;
@@ -572,7 +621,8 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
           totalCreditsUsed += creditsUsed;
           lastCreditsRemaining = creditsRemaining;
           const results: any[] = data?.search_results ?? [];
-          let best: { asin: string; score: number; title: string } | null = null;
+          let best: { asin: string; score: number; title: string; isSwitch2: boolean } | null = null;
+          const usedForThisProduct = usedAsinsPerProduct.get(p.id) ?? new Set<string>();
           // Only consider top 5 results — platform category already filters
           // most noise; going deeper wastes cycles on unrelated SKUs.
           for (const r of results.slice(0, 5)) {
@@ -581,12 +631,19 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
             if (!asin || !title) continue;
             // Skip accessories / consoles that a bad category leak might surface.
             if (!isVideoGameSoftware(title)) continue;
+            // Reject if the Amazon title doesn't mention the target platform.
+            const platCheck = titleMentionsPlatform(title, plat);
+            if (!platCheck.ok) continue;
+            // Reject if this ASIN is already pinned to this product on another platform.
+            if (usedForThisProduct.has(asin)) continue;
+            // Reject legacy ASINs on modern products (2020+).
+            if (isAsinAncientForProduct(asin, p.releaseDate ?? null)) continue;
             const rWords = normalizeWords(title);
             if (rWords.size === 0) continue;
             const overlap = countIntersection(pWords, rWords);
             const score = overlap / pWords.size;
             if (score >= threshold && (best == null || score > best.score)) {
-              best = { asin, score, title };
+              best = { asin, score, title, isSwitch2: platCheck.isSwitch2 };
             }
           }
           if (best) {
@@ -596,14 +653,16 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
               asin: best.asin,
               isAuto: true,
               isActive: true,
-              isSwitch2: false,
+              isSwitch2: best.isSwitch2,
               matchScore: best.score,
               discoveredAt: now,
               updatedAt: now,
             }).run();
             existingByKey.add(pinKey(p.id, plat));
+            if (!usedAsinsPerProduct.has(p.id)) usedAsinsPerProduct.set(p.id, new Set());
+            usedAsinsPerProduct.get(p.id)!.add(best.asin);
             mappingsInserted += 1;
-            log(`asin-search-discovery matched product #${p.id} "${p.title}" → ${plat} ${best.asin} (${best.title}) score=${best.score.toFixed(2)}`, "amazon-cron");
+            log(`asin-search-discovery matched product #${p.id} "${p.title}" → ${plat}${best.isSwitch2 ? " 2" : ""} ${best.asin} (${best.title}) score=${best.score.toFixed(2)}`, "amazon-cron");
           } else {
             noMatch += 1;
             log(`asin-search-discovery no match: product #${p.id} "${p.title}" on ${plat} (${results.length} raw results)`, "amazon-cron");
@@ -656,6 +715,57 @@ function countIntersection(a: Set<string>, b: Set<string>): number {
   let n = 0;
   a.forEach((w) => { if (b.has(w)) n += 1; });
   return n;
+}
+
+// Platform keyword gate: reject a candidate ASIN unless its Amazon listing
+// title actually mentions the target platform. Without this the search
+// discovery happily picks up cross-platform listings from an adjacent
+// browse-node leak (e.g. matching an old PS3 SKU to a PS5 pin because the
+// title words overlap), which is the exact failure mode that produced the
+// wrong Road Kings / Tempest Rising pins.
+function titleMentionsPlatform(title: string, plat: string): { ok: boolean; isSwitch2: boolean } {
+  const t = title.toLowerCase();
+  if (plat === "ps5") {
+    // Accept PS5 / PlayStation 5. Reject bare "playstation" so PS3/PS4 don't slip through.
+    return { ok: /\bps5\b|\bplaystation\s*5\b/.test(t), isSwitch2: false };
+  }
+  if (plat === "xbox") {
+    // Accept Xbox Series X|S. Reject bare Xbox 360 / Xbox One.
+    return { ok: /\bxbox\s*series\b|\bxbox\s*x\s*\|\s*s\b|\bxbox\b(?!\s*(360|one))/.test(t), isSwitch2: false };
+  }
+  if (plat === "switch") {
+    const isSwitch2 = /\bswitch\s*2\b|\bnintendo\s*switch\s*2\b/.test(t);
+    // Accept any Nintendo Switch or Switch 2 title.
+    const ok = /\bnintendo\s*switch\b|\bswitch\b/.test(t);
+    return { ok, isSwitch2 };
+  }
+  return { ok: false, isSwitch2: false };
+}
+
+// Release-year floor: if a candidate Amazon listing was published far before
+// the SignalPulse product's release date, it can't be the SKU we want. We
+// don't have the Amazon publish year in search results by default, so use
+// the ASIN prefix as a coarse epoch signal (ASINs are lexically ordered by
+// registration date within Amazon's catalog). Cheap heuristic: block clearly
+// ancient ASINs (B0007*, B0016*, B001A*, B0075*, B008K*, B0068*) for
+// products released in 2020 or later. This kills the 2007-era Road Kings
+// (B00079HZX4) / Tempest Rising (B001AZRJGM) matches without needing extra
+// Rainforest calls. When product.releaseDate isn't set we skip the check.
+function isAsinAncientForProduct(asin: string, productReleaseDate: string | null | undefined): boolean {
+  if (!productReleaseDate) return false;
+  const year = Number(productReleaseDate.slice(0, 4));
+  if (!Number.isFinite(year) || year < 2020) return false;
+  // ASIN prefixes B0000–B008ZZ correspond roughly to 2000–2012 registrations.
+  // Modern SKUs (2020+) start at B08* and later.
+  const prefix = asin.slice(0, 3).toUpperCase();
+  const legacyPrefixes = ["B00", "B01", "B02", "B03", "B04", "B05", "B06", "B07"];
+  if (legacyPrefixes.includes(prefix)) {
+    // Prefix B08–B0D are 2020–2025+. Anything B00–B07 is likely too old for
+    // a post-2020 product SKU. Not perfect — remasters can reuse old ASINs
+    // — but the manual editor is the escape hatch for those.
+    return true;
+  }
+  return false;
 }
 
 // ─── Job: competitor ASIN discovery (daily) ───────────────────────────
@@ -748,6 +858,11 @@ export async function runCompetitorDiscovery(threshold = 0.6): Promise<{
       const compWords = normalizeWords(compName);
       if (compWords.size === 0) continue;
 
+      // Cross-platform reuse guard — same principle as the Saber path.
+      const usedForThisComp = new Set<string>(
+        existingPins.filter((x) => x.sentimentpulseGameId === rel.competitor.id).map((x) => x.asin),
+      );
+
       for (const plat of AMAZON_PLATFORM_SLUGS) {
         if (existingByKey.has(pinKey(rel.competitor.id, plat))) {
           mappingsSkipped += 1;
@@ -766,6 +881,10 @@ export async function runCompetitorDiscovery(threshold = 0.6): Promise<{
             const title = (r.title ?? "").toString();
             if (!asin || !title) continue;
             if (!isVideoGameSoftware(title)) continue;
+            // Platform keyword must appear in Amazon title.
+            if (!titleMentionsPlatform(title, plat).ok) continue;
+            // No cross-platform ASIN reuse for the same competitor.
+            if (usedForThisComp.has(asin)) continue;
             const rWords = normalizeWords(title);
             if (rWords.size === 0) continue;
             const overlap = countIntersection(compWords, rWords);
@@ -789,6 +908,7 @@ export async function runCompetitorDiscovery(threshold = 0.6): Promise<{
               updatedAt: now,
             }).run();
             existingByKey.add(pinKey(rel.competitor.id, plat));
+            usedForThisComp.add(best.asin);
             mappingsInserted += 1;
             log(`competitor-discovery matched "${compName}" (under "${parentProduct.title}") → ${plat} ${best.asin} score=${best.score.toFixed(2)}`, "amazon-cron");
           } else {

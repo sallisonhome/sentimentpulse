@@ -14,6 +14,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { SteamworksSessionSettings } from "@/components/steamworks-session-settings";
 import { ManualIngestionControls } from "@/components/manual-ingestion-controls";
+import { AmazonAsinPins } from "@/components/amazon-asin-pins";
 
 interface SettingRow {
   id: number;
@@ -338,6 +339,8 @@ export default function Settings() {
       <ManualIngestionControls />
 
       <SteamworksSessionSettings />
+
+      <AmazonAsinPins />
 
       <ManageProducts />
     </div>
