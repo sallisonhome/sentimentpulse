@@ -359,11 +359,9 @@ export function registerAmazonRoutes(app: Express): void {
           .all().map((r) => r.asin),
       );
 
-      const { data, creditsUsed, creditsRemaining } = await fetchSearch(product.title, node.nodeId);
-      const rawResults: any[] = data?.search_results ?? [];
       const pWords = normalizeWords(product.title);
 
-      const candidates = rawResults.slice(0, topN).map((r: any, idx: number) => {
+      const scoreOne = (r: any, idx: number) => {
         const asin = (r.asin ?? "").toString();
         const title = (r.title ?? "").toString();
         const item: any = {
@@ -390,10 +388,27 @@ export function registerAmazonRoutes(app: Express): void {
         if (score < threshold) { item.rejectReason = `low_score:${score.toFixed(3)}<${threshold}`; return item; }
         item.accepted = true;
         return item;
-      });
+      };
 
-      const accepted = candidates.filter((c: any) => c.accepted);
-      const bestAccepted = accepted.reduce<any>((best, c) => (best == null || c.score > best.score ? c : best), null);
+      // Pass 1: category-scoped (mirrors runAsinSearchDiscovery pass 1).
+      const pass1Res = await fetchSearch(product.title, node.nodeId);
+      const pass1Raw: any[] = pass1Res.data?.search_results ?? [];
+      const pass1Candidates = pass1Raw.slice(0, topN).map(scoreOne);
+      const pass1Accepted = pass1Candidates.filter((c: any) => c.accepted);
+      const pass1Best = pass1Accepted.reduce<any>((b, c) => (b == null || c.score > b.score ? c : b), null);
+
+      // Pass 2: unscoped fallback — always run in diagnose mode so we can see
+      // what pass 2 would return, even when pass 1 already found a match.
+      const pass2Res = await fetchSearch(product.title);
+      const pass2Raw: any[] = pass2Res.data?.search_results ?? [];
+      const pass2Candidates = pass2Raw.slice(0, topN).map(scoreOne);
+      const pass2Accepted = pass2Candidates.filter((c: any) => c.accepted);
+      const pass2Best = pass2Accepted.reduce<any>((b, c) => (b == null || c.score > b.score ? c : b), null);
+
+      // Effective outcome matches runAsinSearchDiscovery: pass1 wins if it
+      // found anything, otherwise pass2 (top-10) is the fallback.
+      const chosen = pass1Best ?? pass2Best;
+      const chosenSource = pass1Best ? "category" : (pass2Best ? "unscoped" : null);
 
       res.json({
         product: { id: product.id, title: product.title, releaseDate: product.releaseDate },
@@ -401,16 +416,25 @@ export function registerAmazonRoutes(app: Express): void {
         categoryNodeId: node.nodeId,
         threshold,
         productWords: Array.from(pWords),
-        rainforest: {
-          rawResultsCount: rawResults.length,
-          creditsUsed,
-          creditsRemaining,
+        pass1_category: {
+          rawResultsCount: pass1Raw.length,
+          creditsUsed: pass1Res.creditsUsed,
+          creditsRemaining: pass1Res.creditsRemaining,
+          candidates: pass1Candidates,
+          acceptedCount: pass1Accepted.length,
+          bestAccepted: pass1Best,
         },
-        candidates,
+        pass2_unscoped: {
+          rawResultsCount: pass2Raw.length,
+          creditsUsed: pass2Res.creditsUsed,
+          creditsRemaining: pass2Res.creditsRemaining,
+          candidates: pass2Candidates,
+          acceptedCount: pass2Accepted.length,
+          bestAccepted: pass2Best,
+        },
         summary: {
-          totalCandidates: candidates.length,
-          acceptedCount: accepted.length,
-          bestAccepted,
+          chosen,
+          chosenSource,
           alreadyPinnedAsins: Array.from(usedAsins),
         },
       });

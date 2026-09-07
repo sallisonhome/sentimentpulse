@@ -616,36 +616,66 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
         }
         const node = AMAZON_CHART_NODES[plat];
         try {
-          const { data, creditsUsed, creditsRemaining } = await fetchSearch(p.title, node.nodeId);
-          queriesIssued += 1;
-          totalCreditsUsed += creditsUsed;
-          lastCreditsRemaining = creditsRemaining;
-          const results: any[] = data?.search_results ?? [];
-          let best: { asin: string; score: number; title: string; isSwitch2: boolean } | null = null;
           const usedForThisProduct = usedAsinsPerProduct.get(p.id) ?? new Set<string>();
-          // Only consider top 5 results — platform category already filters
-          // most noise; going deeper wastes cycles on unrelated SKUs.
-          for (const r of results.slice(0, 5)) {
-            const asin = (r.asin ?? "").toString();
-            const title = (r.title ?? "").toString();
-            if (!asin || !title) continue;
-            // Skip accessories / consoles that a bad category leak might surface.
-            if (!isVideoGameSoftware(title)) continue;
-            // Reject if the Amazon title doesn't mention the target platform.
-            const platCheck = titleMentionsPlatform(title, plat);
-            if (!platCheck.ok) continue;
-            // Reject if this ASIN is already pinned to this product on another platform.
-            if (usedForThisProduct.has(asin)) continue;
-            // Reject legacy ASINs on modern products (2020+).
-            if (isAsinAncientForProduct(asin, p.releaseDate ?? null)) continue;
-            const rWords = normalizeWords(title);
-            if (rWords.size === 0) continue;
-            const overlap = countIntersection(pWords, rWords);
-            const score = overlap / pWords.size;
-            if (score >= threshold && (best == null || score > best.score)) {
-              best = { asin, score, title, isSwitch2: platCheck.isSwitch2 };
+
+          // Score up to `sliceN` raw results against the standard filter chain
+          // (isVideoGameSoftware → titleMentionsPlatform → not-already-pinned
+          // → not-ancient → word-overlap ≥ threshold) and return the best
+          // accepted candidate.
+          const scoreResults = (results: any[], sliceN: number): { asin: string; score: number; title: string; isSwitch2: boolean } | null => {
+            let best: { asin: string; score: number; title: string; isSwitch2: boolean } | null = null;
+            for (const r of results.slice(0, sliceN)) {
+              const asin = (r.asin ?? "").toString();
+              const title = (r.title ?? "").toString();
+              if (!asin || !title) continue;
+              if (!isVideoGameSoftware(title).keep) continue;
+              const platCheck = titleMentionsPlatform(title, plat);
+              if (!platCheck.ok) continue;
+              if (usedForThisProduct.has(asin)) continue;
+              if (isAsinAncientForProduct(asin, p.releaseDate ?? null)) continue;
+              const rWords = normalizeWords(title);
+              if (rWords.size === 0) continue;
+              const overlap = countIntersection(pWords, rWords);
+              const score = overlap / pWords.size;
+              if (score >= threshold && (best == null || score > best.score)) {
+                best = { asin, score, title, isSwitch2: platCheck.isSwitch2 };
+              }
             }
+            return best;
+          };
+
+          // Pass 1 — search inside the platform bestsellers category node.
+          // Cheap and works for established titles that are already on the
+          // chart. Top-5 is enough since the category already filters noise.
+          const pass1 = await fetchSearch(p.title, node.nodeId);
+          queriesIssued += 1;
+          totalCreditsUsed += pass1.creditsUsed;
+          lastCreditsRemaining = pass1.creditsRemaining;
+          const results1: any[] = pass1.data?.search_results ?? [];
+          let best = scoreResults(results1, 5);
+          let matchSource: "category" | "unscoped" = "category";
+          let unscopedRawCount = 0;
+
+          // Pass 2 — retry without the category filter when pass 1 turned up
+          // no platform-matched result. Rainforest's category_id points to
+          // the *bestsellers* node (e.g. 20972781011 = PS5 Games Best-Sellers),
+          // which excludes pre-orders and brand-new titles with no sales
+          // history. Without category we may see books/comics/movies too, but
+          // isVideoGameSoftware + titleMentionsPlatform already reject those,
+          // so this is safe. Costs +1 Rainforest search credit only when
+          // pass 1 fails. Scan top-10 to give the real SKU a chance to appear
+          // past any mixed-media results.
+          if (best == null) {
+            const pass2 = await fetchSearch(p.title);
+            queriesIssued += 1;
+            totalCreditsUsed += pass2.creditsUsed;
+            lastCreditsRemaining = pass2.creditsRemaining;
+            const results2: any[] = pass2.data?.search_results ?? [];
+            unscopedRawCount = results2.length;
+            best = scoreResults(results2, 10);
+            if (best != null) matchSource = "unscoped";
           }
+
           if (best) {
             db.insert(amazonAsinMap).values({
               productId: p.id,
@@ -662,10 +692,10 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
             if (!usedAsinsPerProduct.has(p.id)) usedAsinsPerProduct.set(p.id, new Set());
             usedAsinsPerProduct.get(p.id)!.add(best.asin);
             mappingsInserted += 1;
-            log(`asin-search-discovery matched product #${p.id} "${p.title}" → ${plat}${best.isSwitch2 ? " 2" : ""} ${best.asin} (${best.title}) score=${best.score.toFixed(2)}`, "amazon-cron");
+            log(`asin-search-discovery matched product #${p.id} "${p.title}" → ${plat}${best.isSwitch2 ? " 2" : ""} ${best.asin} (${best.title}) score=${best.score.toFixed(2)} via=${matchSource}`, "amazon-cron");
           } else {
             noMatch += 1;
-            log(`asin-search-discovery no match: product #${p.id} "${p.title}" on ${plat} (${results.length} raw results)`, "amazon-cron");
+            log(`asin-search-discovery no match: product #${p.id} "${p.title}" on ${plat} (${results1.length} category / ${unscopedRawCount} unscoped raw results)`, "amazon-cron");
           }
         } catch (err) {
           log(`asin-search-discovery: product #${p.id} on ${plat} failed: ${err}`, "amazon-cron");
