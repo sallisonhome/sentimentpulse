@@ -1,16 +1,46 @@
 name: Amazon Manual Pin
 
-# One-shot manual pin of a SignalPulse product ↔ ASIN mapping via the
-# droplet loopback. Use when Amazon PDP inspection has verified an ASIN
-# but asin_search_discovery cannot find it (franchise-IP titles crowded
-# by books/comics/movies). isAuto=false so clean_auto_pins never touches it.
+# One-shot manual pin of an ASIN mapping via the droplet loopback. Use
+# when Amazon PDP inspection has verified an ASIN but asin_search_discovery
+# cannot find it (franchise-IP titles crowded by books/comics/movies).
+# isAuto=false so clean_auto_pins never touches manual pins.
+#
+# Two modes:
+#   mode=saber       — pin ASIN to a Saber-tracked product. Provide
+#                      productId (SignalPulse products.id) + platform + asin.
+#                      Targets amazon_asin_map via POST /api/amazon/asin-map.
+#   mode=competitor  — pin ASIN to a competitor game already tracked under
+#                      some Saber parent. Provide sentimentpulseGameId +
+#                      platform + asin. parentProductId and name are inherited
+#                      from any existing row for that game so the caller only
+#                      needs the game id and the ASIN. Targets
+#                      amazon_competitor_asin_map via
+#                      POST /api/amazon/competitor-asin-map.
+#                      For a BRAND-NEW competitor with no existing row,
+#                      additionally pass parentProductId and name via the
+#                      corresponding inputs.
 
 on:
   workflow_dispatch:
     inputs:
-      productId:
-        description: 'SignalPulse product_id'
+      mode:
+        description: 'Which map to write into'
         required: true
+        default: 'saber'
+        type: choice
+        options: [saber, competitor]
+      productId:
+        description: '[saber mode] SignalPulse products.id'
+        required: false
+      sentimentpulseGameId:
+        description: '[competitor mode] sentimentpulse.games.id'
+        required: false
+      parentProductId:
+        description: '[competitor mode, new competitor only] Saber parent products.id'
+        required: false
+      name:
+        description: '[competitor mode, new competitor only] display name'
+        required: false
       platform:
         description: 'Platform slug'
         required: true
@@ -39,15 +69,43 @@ jobs:
 
       - name: Post pin
         env:
+          MODE: ${{ github.event.inputs.mode }}
           PRODUCT_ID: ${{ github.event.inputs.productId }}
+          GAME_ID: ${{ github.event.inputs.sentimentpulseGameId }}
+          PARENT_ID: ${{ github.event.inputs.parentProductId }}
+          NAME: ${{ github.event.inputs.name }}
           PLATFORM: ${{ github.event.inputs.platform }}
           ASIN: ${{ github.event.inputs.asin }}
         run: |
           set -e
           SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
-          BODY="{\"productId\":${PRODUCT_ID},\"platform\":\"${PLATFORM}\",\"asin\":\"${ASIN}\",\"isAuto\":false,\"isActive\":true}"
+
+          if [ "$MODE" = "saber" ]; then
+            if [ -z "$PRODUCT_ID" ]; then
+              echo "ERROR: mode=saber requires productId"; exit 1
+            fi
+            BODY="{\"productId\":${PRODUCT_ID},\"platform\":\"${PLATFORM}\",\"asin\":\"${ASIN}\",\"isAuto\":false,\"isActive\":true}"
+            URL="/api/amazon/asin-map"
+          elif [ "$MODE" = "competitor" ]; then
+            if [ -z "$GAME_ID" ]; then
+              echo "ERROR: mode=competitor requires sentimentpulseGameId"; exit 1
+            fi
+            # Build JSON, only including optional parent/name fields if provided.
+            BODY="{\"sentimentpulseGameId\":${GAME_ID},\"platform\":\"${PLATFORM}\",\"asin\":\"${ASIN}\",\"isAuto\":false,\"isActive\":true"
+            if [ -n "$PARENT_ID" ]; then BODY="${BODY},\"parentProductId\":${PARENT_ID}"; fi
+            if [ -n "$NAME" ]; then
+              # Escape any double quotes inside the name (rare but safe).
+              ESC_NAME=$(printf '%s' "$NAME" | sed 's/"/\\"/g')
+              BODY="${BODY},\"name\":\"${ESC_NAME}\""
+            fi
+            BODY="${BODY}}"
+            URL="/api/amazon/competitor-asin-map"
+          else
+            echo "ERROR: mode must be 'saber' or 'competitor' (got '$MODE')"; exit 1
+          fi
+
           echo "=========================================="
-          echo "POST /api/amazon/asin-map"
+          echo "POST ${URL}"
           echo "  body: ${BODY}"
           echo "=========================================="
-          $SSH "curl -sS -X POST -H 'Content-Type: application/json' -d '${BODY}' 'http://127.0.0.1:5000/api/amazon/asin-map'" | python3 -m json.tool
+          $SSH "curl -sS -X POST -H 'Content-Type: application/json' -d '${BODY}' 'http://127.0.0.1:5000${URL}'" | python3 -m json.tool

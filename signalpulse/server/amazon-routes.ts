@@ -838,6 +838,94 @@ export function registerAmazonRoutes(app: Express): void {
     }
   });
 
+  // Manual competitor ASIN pin. Mirrors POST /api/amazon/asin-map but for
+  // the competitor map (amazon_competitor_asin_map). Used when Amazon PDP
+  // inspection has verified a platform-specific ASIN for a competitor
+  // (franchise-IP crowding defeats asin_search_discovery for it too).
+  //
+  // Two shapes accepted:
+  //   { sentimentpulseGameId, platform, asin }
+  //     — upsert an ADDITIONAL platform for an already-tracked competitor.
+  //       parentProductId + name are inherited from any existing row so the
+  //       caller doesn't have to know them.
+  //   { sentimentpulseGameId, parentProductId, name, platform, asin }
+  //     — full form. Required when the competitor has no existing row yet
+  //       (i.e. brand-new competitor being added by hand).
+  // isAuto defaults to false so clean_auto_pins never touches manual pins.
+  app.post("/api/amazon/competitor-asin-map", (req: Request, res: Response) => {
+    try {
+      const body = req.body ?? {};
+      const sentimentpulseGameId = Number(body.sentimentpulseGameId);
+      const platform = String(body.platform ?? "");
+      const asin = String(body.asin ?? "").trim();
+      if (!Number.isFinite(sentimentpulseGameId) || sentimentpulseGameId <= 0) {
+        return res.status(400).json({ error: "sentimentpulseGameId required" });
+      }
+      if (!isPlatformSlug(platform)) return res.status(400).json({ error: "invalid platform" });
+      if (!asin) return res.status(400).json({ error: "asin required" });
+      const isAuto = body.isAuto == null ? false : !!body.isAuto;
+      const isActive = body.isActive == null ? true : !!body.isActive;
+      const now = new Date().toISOString();
+
+      // Look up any existing row for this game (any platform) to inherit
+      // parentProductId + name when the caller didn't supply them.
+      const anyRowForGame = db.select().from(amazonCompetitorAsinMap)
+        .where(eq(amazonCompetitorAsinMap.sentimentpulseGameId, sentimentpulseGameId))
+        .get();
+
+      let parentProductId = Number(body.parentProductId);
+      let name = body.name != null ? String(body.name) : undefined;
+      if (!Number.isFinite(parentProductId) || parentProductId <= 0) {
+        if (anyRowForGame) parentProductId = anyRowForGame.parentProductId;
+      }
+      if (name == null || name === "") {
+        if (anyRowForGame) name = anyRowForGame.name;
+      }
+      if (!Number.isFinite(parentProductId) || parentProductId <= 0) {
+        return res.status(400).json({ error: "parentProductId required (no existing row to inherit from)" });
+      }
+      if (!name) {
+        return res.status(400).json({ error: "name required (no existing row to inherit from)" });
+      }
+
+      const existing = db.select().from(amazonCompetitorAsinMap)
+        .where(and(
+          eq(amazonCompetitorAsinMap.sentimentpulseGameId, sentimentpulseGameId),
+          eq(amazonCompetitorAsinMap.platform, platform),
+        ))
+        .get();
+      if (existing) {
+        db.update(amazonCompetitorAsinMap).set({
+          asin, isAuto, isActive, matchScore: null,
+          updatedAt: now,
+        }).where(eq(amazonCompetitorAsinMap.id, existing.id)).run();
+      } else {
+        db.insert(amazonCompetitorAsinMap).values({
+          sentimentpulseGameId,
+          parentProductId,
+          name,
+          steamAppId: null,
+          platform,
+          asin,
+          isAuto,
+          isActive,
+          matchScore: null,
+          discoveredAt: isAuto ? now : null,
+          updatedAt: now,
+        }).run();
+      }
+      const row = db.select().from(amazonCompetitorAsinMap)
+        .where(and(
+          eq(amazonCompetitorAsinMap.sentimentpulseGameId, sentimentpulseGameId),
+          eq(amazonCompetitorAsinMap.platform, platform),
+        ))
+        .get();
+      res.json({ row });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? String(err) });
+    }
+  });
+
   app.delete("/api/amazon/asin-map/:id", (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid id" });
