@@ -1,0 +1,53 @@
+name: Amazon Manual Pin
+
+# One-shot manual pin of a SignalPulse product ↔ ASIN mapping via the
+# droplet loopback. Use when Amazon PDP inspection has verified an ASIN
+# but asin_search_discovery cannot find it (franchise-IP titles crowded
+# by books/comics/movies). isAuto=false so clean_auto_pins never touches it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      productId:
+        description: 'SignalPulse product_id'
+        required: true
+      platform:
+        description: 'Platform slug'
+        required: true
+        default: 'xbox'
+        type: choice
+        options: [ps5, xbox, switch]
+      asin:
+        description: 'ASIN (10 chars, verified on the actual Amazon PDP)'
+        required: true
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Post pin
+        env:
+          PRODUCT_ID: ${{ github.event.inputs.productId }}
+          PLATFORM: ${{ github.event.inputs.platform }}
+          ASIN: ${{ github.event.inputs.asin }}
+        run: |
+          set -e
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          BODY="{\"productId\":${PRODUCT_ID},\"platform\":\"${PLATFORM}\",\"asin\":\"${ASIN}\",\"isAuto\":false,\"isActive\":true}"
+          echo "=========================================="
+          echo "POST /api/amazon/asin-map"
+          echo "  body: ${BODY}"
+          echo "=========================================="
+          $SSH "curl -sS -X POST -H 'Content-Type: application/json' -d '${BODY}' 'http://127.0.0.1:5000/api/amazon/asin-map'" | python3 -m json.tool
