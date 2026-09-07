@@ -641,10 +641,11 @@ export function registerAmazonRoutes(app: Express): void {
   // ── Ops: manual ingest + recent runs ───────────────────────────────────
   app.post("/api/amazon/ingest/run/:job", async (req, res) => {
     const job = req.params.job as AmazonJobName;
-    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "asin_discovery", "asin_search_discovery", "competitor_discovery"].includes(job)) {
+    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "asin_discovery", "asin_search_discovery", "competitor_discovery", "clean_auto_pins"].includes(job)) {
       return res.status(400).json({ error: "unknown job" });
     }
-    if (!isRainforestConfigured()) {
+    // clean_auto_pins is a DB-only op; every other job hits Rainforest.
+    if (job !== "clean_auto_pins" && !isRainforestConfigured()) {
       return res.status(400).json({ error: "rainforest_api_key not set" });
     }
     try {

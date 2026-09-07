@@ -951,7 +951,8 @@ export type AmazonJobName =
   | "also_bought"
   | "asin_discovery"
   | "asin_search_discovery"
-  | "competitor_discovery";
+  | "competitor_discovery"
+  | "clean_auto_pins";
 
 export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
   switch (job) {
@@ -964,9 +965,32 @@ export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
     case "asin_discovery":        return runAsinDiscovery();
     case "asin_search_discovery": return runAsinSearchDiscovery();
     case "competitor_discovery": return runCompetitorDiscovery();
+    case "clean_auto_pins":      return runCleanAutoPins();
     default:
       throw new Error(`unknown job: ${job}`);
   }
+}
+
+// Wipe every auto-discovered pin (Saber + competitor). Manual pins kept.
+// Same effect as POST /api/amazon/asin-map/auto-clear, but reachable through
+// the ingest ops-token path so we can invoke it from the ingest-trigger
+// workflow without needing a saber JWT.
+async function runCleanAutoPins(): Promise<unknown> {
+  return withRun("clean_auto_pins", async () => {
+    const before = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isAuto, true)).all();
+    db.delete(amazonAsinMap).where(eq(amazonAsinMap.isAuto, true)).run();
+    const compBefore = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isAuto, true)).all();
+    db.delete(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isAuto, true)).run();
+    return {
+      result: {
+        deletedSaberPins: before.length,
+        deletedCompetitorPins: compBefore.length,
+      },
+      creditsUsed: 0,
+      creditsRemaining: 0,
+      rowsWritten: before.length + compBefore.length,
+    };
+  });
 }
 
 // ─── Scheduler ─────────────────────────────────────────────────────────────
