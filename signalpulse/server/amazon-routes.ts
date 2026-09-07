@@ -70,7 +70,28 @@ export function registerAmazonRoutes(app: Express): void {
   // ── Saber Amazon Leaderboard (feeds the third tab on /leaderboards) ────
   app.get("/api/amazon/leaderboard/saber", (_req, res) => {
     try {
-      const today = daysAgoUtcDate(0);
+      // "Today" means the most recent snapshot date we actually have, not
+      // literal UTC today. Charts run at 07:00 ET ≈ 11:00 UTC, so between
+      // 00:00 and 11:00 UTC (20:00 ET previous day — 07:00 ET today) the
+      // literal UTC today has no snapshot yet and the entire board would
+      // render empty. Fall back to the freshest snapshot on file so the
+      // board keeps showing yesterday's ranks until today's charts land.
+      const latestChart = db.select().from(amazonChartSnapshots)
+        .orderBy(desc(amazonChartSnapshots.snapshotDate))
+        .limit(1).get();
+      const today = latestChart?.snapshotDate ?? daysAgoUtcDate(0);
+      // Delta comparison dates are offsets from `today` (the freshest
+      // snapshot), not from literal UTC — otherwise if we're falling back
+      // to yesterday because today's charts haven't fired, the 1d delta
+      // would compare yesterday-vs-yesterday and read 0.
+      const dateNDaysBefore = (baseDate: string, n: number) => {
+        const d = new Date(baseDate + "T00:00:00Z");
+        d.setUTCDate(d.getUTCDate() - n);
+        return d.toISOString().split("T")[0];
+      };
+      const d1  = dateNDaysBefore(today, 1);
+      const d7  = dateNDaysBefore(today, 7);
+      const d30 = dateNDaysBefore(today, 30);
 
       // All active pinned ASINs, joined with product titles.
       const pins = db.select().from(amazonAsinMap)
@@ -140,9 +161,9 @@ export function registerAmazonRoutes(app: Express): void {
             if (!pin) { platformsPayload[slug] = null; continue; }
             const rowToday = lookupAsinRankOn(pin.asin, slug, today);
             if (!rowToday) { platformsPayload[slug] = null; continue; }
-            const row1d  = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(1));
-            const row7d  = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(7));
-            const row30d = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(30));
+            const row1d  = lookupAsinRankOn(pin.asin, slug, d1);
+            const row7d  = lookupAsinRankOn(pin.asin, slug, d7);
+            const row30d = lookupAsinRankOn(pin.asin, slug, d30);
             platformsPayload[slug] = {
               rank: rowToday.rank,
               rawRank: rowToday.rawRank,
@@ -173,9 +194,9 @@ export function registerAmazonRoutes(app: Express): void {
           if (!pin) { platformsPayload[slug] = null; continue; }
           const rowToday = lookupAsinRankOn(pin.asin, slug, today);
           if (!rowToday) { platformsPayload[slug] = null; continue; }
-          const row1d  = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(1));
-          const row7d  = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(7));
-          const row30d = lookupAsinRankOn(pin.asin, slug, daysAgoUtcDate(30));
+          const row1d  = lookupAsinRankOn(pin.asin, slug, d1);
+          const row7d  = lookupAsinRankOn(pin.asin, slug, d7);
+          const row30d = lookupAsinRankOn(pin.asin, slug, d30);
           platformsPayload[slug] = {
             rank: rowToday.rank,
             rawRank: rowToday.rawRank,
@@ -340,8 +361,13 @@ export function registerAmazonRoutes(app: Express): void {
       .get();
     const product = pin ? storage.getAllProducts().find((p) => p.id === pin.productId) ?? null : null;
 
-    // Today's chart position across all platforms this ASIN appears on
-    const today = daysAgoUtcDate(0);
+    // "Today's" chart position across all platforms — use the freshest
+    // snapshot on file so the product page keeps showing yesterday's rank
+    // between 00:00 UTC and 11:00 UTC when today's charts haven't fired yet.
+    const latestChartRow = db.select().from(amazonChartSnapshots)
+      .orderBy(desc(amazonChartSnapshots.snapshotDate))
+      .limit(1).get();
+    const today = latestChartRow?.snapshotDate ?? daysAgoUtcDate(0);
     const chartToday: Record<string, unknown> = {};
     for (const slug of AMAZON_PLATFORM_SLUGS) {
       const row = db.select().from(amazonChartSnapshots)
