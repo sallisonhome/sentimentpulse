@@ -41,6 +41,7 @@ import { and, eq } from "drizzle-orm";
 import {
   fetchSoftwareChart,
   fetchProduct,
+  fetchProductByUrl,
   fetchAlsoBought,
   fetchSalesEstimation,
   extractRecentSales,
@@ -421,46 +422,79 @@ export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritt
     let totalCreditsUsed = 0;
     let lastCreditsRemaining = 0;
     let rowsWritten = 0;
-    // v3.37 QA-GATE-2 probe: for the first 3 ASINs (a) call
-    // fetchFormatsEditions and log the response shape, and (b) log the
-    // bestsellers_rank[] items so we know if we have category IDs usable
-    // for a type=category top-N fallback. Total extra cost: ~3 credits
-    // (formats_editions is 1 credit per ASIN, category info is free
-    // because it comes from the type=product call we already make).
+    // v3.37 QA-GATE-3: instead of trusting one shape, dump the top-level
+    // response keys AND scan for ANY recommendation-adjacent field at
+    // top-level OR under product for a URL-based request, an asin-based
+    // request, and a formats_editions request (with retry on 503). This
+    // is the honest diagnostic that answers "does the data exist at all".
     let probeCount = 0;
     for (const asin of sourceAsins) {
       try {
         const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
         if (probeCount < 3) {
           probeCount += 1;
+          // ---- PROBE A: url= variant (some Rainforest fields only populate for URL-based requests)
           try {
-            const bsr = Array.isArray(data?.product?.bestsellers_rank) ? data.product.bestsellers_rank : [];
-            const bsrShape = bsr.slice(0, 3).map((b: any) => ({
-              keys: b && typeof b === "object" ? Object.keys(b) : [],
-              category: b?.category ?? null,
-              rank: b?.rank ?? null,
-              link: b?.link ?? null,
-              category_id: b?.category_id ?? b?.node_id ?? b?.id ?? null,
-            }));
-            log(`amazon-cron also_bought PROBE-BSR asin=${asin} bsr_count=${bsr.length} bsr_shape=${JSON.stringify(bsrShape)}`, "amazon-cron");
-          } catch (probeErr) {
-            log(`amazon-cron also_bought PROBE-BSR asin=${asin} FAILED: ${probeErr}`, "amazon-cron");
+            const urlRes = await fetchProductByUrl(asin);
+            const topKeys = urlRes.data && typeof urlRes.data === "object" ? Object.keys(urlRes.data) : [];
+            const productKeys = urlRes.data?.product && typeof urlRes.data.product === "object" ? Object.keys(urlRes.data.product) : [];
+            const rec = ["also_bought", "also_viewed", "view_to_purchase", "sponsored_products", "frequently_bought_together", "compare_with_similar", "similar_to_consider", "newer_model", "bundles", "bundle_contents", "shop_by_look"];
+            const topPresent = rec.filter((k) => (urlRes.data as any)?.[k] !== undefined);
+            const productPresent = rec.filter((k) => (urlRes.data as any)?.product?.[k] !== undefined);
+            const productLengths = Object.fromEntries(productPresent.map((k) => [k, Array.isArray((urlRes.data as any).product[k]) ? (urlRes.data as any).product[k].length : (typeof (urlRes.data as any).product[k])]));
+            log(`amazon-cron also_bought PROBE-URL asin=${asin} top_keys=${JSON.stringify(topKeys)} rec_at_top=${JSON.stringify(topPresent)} rec_in_product=${JSON.stringify(productLengths)} product_keys_count=${productKeys.length} credits_used=${urlRes.creditsUsed}`, "amazon-cron");
+          } catch (e) {
+            log(`amazon-cron also_bought PROBE-URL asin=${asin} FAILED: ${e}`, "amazon-cron");
           }
+          // ---- PROBE B: same asin= call we already made, but scan same fields
           try {
-            const feResult = await fetchFormatsEditions(asin);
-            const fe = feResult.data?.formats_editions;
-            const arr = Array.isArray(fe) ? fe : null;
-            const first = arr && arr.length > 0 ? arr[0] : null;
-            const firstKeys = first && typeof first === "object" ? Object.keys(first) : [];
-            const sample = arr ? arr.slice(0, 3).map((f: any) => ({
-              format: f?.format ?? null,
-              title: (f?.title ?? "").slice(0, 60),
-              asin: f?.asin ?? null,
-              is_current: f?.is_current_product ?? null,
-            })) : [];
-            log(`amazon-cron also_bought PROBE-FE asin=${asin} status=${feResult.data?.request_info?.success} fe_len=${arr ? arr.length : -1} first_row_keys=${JSON.stringify(firstKeys)} sample=${JSON.stringify(sample)} credits_used=${feResult.creditsUsed}`, "amazon-cron");
-          } catch (probeErr) {
-            log(`amazon-cron also_bought PROBE-FE asin=${asin} FAILED: ${probeErr}`, "amazon-cron");
+            const rec = ["also_bought", "also_viewed", "view_to_purchase", "sponsored_products", "frequently_bought_together", "compare_with_similar", "similar_to_consider", "newer_model", "bundles", "bundle_contents", "shop_by_look"];
+            const topPresent = rec.filter((k) => (data as any)?.[k] !== undefined);
+            const productPresent = rec.filter((k) => (data as any)?.product?.[k] !== undefined);
+            const productLengths = Object.fromEntries(productPresent.map((k) => [k, Array.isArray((data as any).product[k]) ? (data as any).product[k].length : (typeof (data as any).product[k])]));
+            log(`amazon-cron also_bought PROBE-ASIN asin=${asin} rec_at_top=${JSON.stringify(topPresent)} rec_in_product=${JSON.stringify(productLengths)}`, "amazon-cron");
+          } catch (e) {
+            log(`amazon-cron also_bought PROBE-ASIN asin=${asin} FAILED: ${e}`, "amazon-cron");
+          }
+          // ---- PROBE C: formats_editions with one retry on 503
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              const feResult = await fetchFormatsEditions(asin);
+              const fe = feResult.data?.formats_editions;
+              const arr = Array.isArray(fe) ? fe : null;
+              const first = arr && arr.length > 0 ? arr[0] : null;
+              const firstKeys = first && typeof first === "object" ? Object.keys(first) : [];
+              const sample = arr ? arr.slice(0, 3).map((f: any) => ({
+                format: f?.format ?? null,
+                title: (f?.title ?? "").slice(0, 60),
+                asin: f?.asin ?? null,
+                is_current: f?.is_current_product ?? null,
+              })) : [];
+              log(`amazon-cron also_bought PROBE-FE asin=${asin} attempt=${attempt} status=${feResult.data?.request_info?.success} fe_len=${arr ? arr.length : -1} first_row_keys=${JSON.stringify(firstKeys)} sample=${JSON.stringify(sample)} credits_used=${feResult.creditsUsed}`, "amazon-cron");
+              break;
+            } catch (probeErr) {
+              const msg = String(probeErr);
+              log(`amazon-cron also_bought PROBE-FE asin=${asin} attempt=${attempt} FAILED: ${msg}`, "amazon-cron");
+              if (msg.includes("503") && attempt === 1) {
+                await new Promise((r) => setTimeout(r, 3000));
+                continue;
+              }
+              break;
+            }
+          }
+          // ---- PROBE D: dump top-level Rainforest response keys AND full length of ALL arrays under data.product
+          try {
+            const topKeys = data && typeof data === "object" ? Object.keys(data) : [];
+            const productArrs: Record<string, number> = {};
+            if (data?.product && typeof data.product === "object") {
+              for (const k of Object.keys(data.product)) {
+                const v = (data.product as any)[k];
+                if (Array.isArray(v)) productArrs[k] = v.length;
+              }
+            }
+            log(`amazon-cron also_bought PROBE-TOP asin=${asin} top_keys=${JSON.stringify(topKeys)} product_arrays=${JSON.stringify(productArrs)}`, "amazon-cron");
+          } catch (e) {
+            log(`amazon-cron also_bought PROBE-TOP asin=${asin} FAILED: ${e}`, "amazon-cron");
           }
         }
         totalCreditsUsed += creditsUsed;

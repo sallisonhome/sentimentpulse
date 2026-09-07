@@ -214,6 +214,13 @@ export async function fetchProduct(asin: string): Promise<RainforestCallResult<a
   return rainforestRequest({ type: "product", asin, amazon_domain: "amazon.com" });
 }
 
+// fetchProductByUrl — QA-GATE-3 probe added 2026-09-07 to test whether
+// Rainforest returns richer recommendation carousels when the ASIN is
+// passed as a canonical /dp/ URL instead of via the `asin` parameter.
+export async function fetchProductByUrl(asin: string): Promise<RainforestCallResult<any>> {
+  return rainforestRequest({ type: "product", url: `https://www.amazon.com/dp/${asin}` });
+}
+
 // fetchAlsoBought — QA-GATE-1 probe added 2026-09-07 to verify Rainforest's
 // dedicated `type=also_bought` endpoint returns non-empty recommendation
 // arrays for game ASINs before we cut runAlsoBoughtDaily over to it.
