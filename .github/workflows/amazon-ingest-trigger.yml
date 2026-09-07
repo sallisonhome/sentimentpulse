@@ -31,6 +31,7 @@ on:
           - asin_discovery
           - asin_search_discovery
           - competitor_discovery
+          - formats_editions_fill
           - clean_auto_pins
           - pin_status
 

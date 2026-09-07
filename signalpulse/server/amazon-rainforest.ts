@@ -214,6 +214,20 @@ export async function fetchProduct(asin: string): Promise<RainforestCallResult<a
   return rainforestRequest({ type: "product", asin, amazon_domain: "amazon.com" });
 }
 
+// fetchFormatsEditions — Rainforest `type=formats_editions`. Returns every
+// format/edition variant of the given ASIN as listed on Amazon's own
+// variant carousel. This is the RIGHT tool for finding cross-platform
+// siblings of a known game SKU (e.g. given the PS5 ASIN, get Xbox / Switch
+// / Digital editions) because Amazon links these together directly rather
+// than requiring us to guess via keyword search.
+//
+// Response shape (per Rainforest docs):
+//   { formats_editions: [ { format?: string, title?: string, asin?: string,
+//                           link?: string, is_current_product?: boolean, ... }, ... ] }
+export async function fetchFormatsEditions(asin: string): Promise<RainforestCallResult<any>> {
+  return rainforestRequest({ type: "formats_editions", asin, amazon_domain: "amazon.com" });
+}
+
 // Extracts up to `limit` also_bought recommendations from a product response.
 export interface AlsoBoughtRow {
   rankPosition: number;

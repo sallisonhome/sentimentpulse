@@ -41,6 +41,7 @@ import {
   fetchMovers,
   fetchNewReleases,
   fetchSearch,
+  fetchFormatsEditions,
   extractAlsoBought,
   isVideoGameSoftware,
   isRainforestConfigured,
@@ -1002,6 +1003,7 @@ export type AmazonJobName =
   | "also_bought"
   | "asin_discovery"
   | "asin_search_discovery"
+  | "formats_editions_fill"
   | "competitor_discovery"
   | "clean_auto_pins";
 
@@ -1015,11 +1017,146 @@ export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
     case "also_bought":           return runAlsoBoughtWeekly();
     case "asin_discovery":        return runAsinDiscovery();
     case "asin_search_discovery": return runAsinSearchDiscovery();
+    case "formats_editions_fill": return runFormatsEditionsFill();
     case "competitor_discovery": return runCompetitorDiscovery();
     case "clean_auto_pins":      return runCleanAutoPins();
     default:
       throw new Error(`unknown job: ${job}`);
   }
+}
+
+// runFormatsEditionsFill — for every product with ≥1 pinned Amazon ASIN
+// but missing platform siblings, call Rainforest type=formats_editions on
+// the seed ASIN and pin the sibling-platform ASINs Amazon links to.
+//
+// Why this exists: Rainforest search (asin_search_discovery) can't find
+// franchise-IP games (Hellraiser, Halloween, John Wick, etc.) because the
+// keyword results are crowded out by books, comics, and movies. But once we
+// have ONE ASIN for a title (seeded manually via the ASIN Pin editor OR via
+// a successful search on a different platform), Amazon's own
+// formats/editions carousel links directly to every sibling platform SKU.
+//
+// Filter chain matches asin_search_discovery: isVideoGameSoftware +
+// titleMentionsPlatform + not-already-pinned + not-ancient. No score
+// threshold — the formats_editions carousel is already curated by Amazon.
+export async function runFormatsEditionsFill(): Promise<{
+  productsScanned: number;
+  seedsQueried: number;
+  mappingsInserted: number;
+  mappingsSkipped: number;
+  noMatch: number;
+}> {
+  return withRun("formats_editions_fill", async () => {
+    const allProducts = storage.getAllProducts();
+    const existingPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const pinKey = (pid: number, plat: string) => `${pid}|${plat}`;
+    const existingByKey = new Set(existingPins.map((p) => pinKey(p.productId, p.platform)));
+    const usedAsinsPerProduct = new Map<number, Set<string>>();
+    const pinsByProduct = new Map<number, typeof existingPins>();
+    for (const pin of existingPins) {
+      if (!usedAsinsPerProduct.has(pin.productId)) usedAsinsPerProduct.set(pin.productId, new Set());
+      usedAsinsPerProduct.get(pin.productId)!.add(pin.asin);
+      if (!pinsByProduct.has(pin.productId)) pinsByProduct.set(pin.productId, []);
+      pinsByProduct.get(pin.productId)!.push(pin);
+    }
+
+    const platforms: AmazonPlatformSlug[] = ["ps5", "xbox", "switch"];
+    let seedsQueried = 0;
+    let mappingsInserted = 0;
+    let mappingsSkipped = 0;
+    let noMatch = 0;
+    let totalCreditsUsed = 0;
+    let lastCreditsRemaining = 0;
+    let productsScanned = 0;
+    const now = nowIso();
+
+    for (const p of allProducts) {
+      const productPins = pinsByProduct.get(p.id) ?? [];
+      if (productPins.length === 0) continue; // no seed to expand from
+      const missingPlatforms = platforms.filter((plat) => !existingByKey.has(pinKey(p.id, plat)));
+      if (missingPlatforms.length === 0) continue; // fully covered already
+      productsScanned += 1;
+
+      // Prefer the highest-scoring pin as the seed; fall back to first.
+      // A manual pin (isAuto=false) usually has matchScore=null, so we treat
+      // null as “most trustworthy” by biasing manual pins to the front.
+      const seed = productPins
+        .slice()
+        .sort((a, b) => {
+          if (a.isAuto !== b.isAuto) return a.isAuto ? 1 : -1; // manual first
+          return (b.matchScore ?? 0) - (a.matchScore ?? 0);
+        })[0];
+
+      try {
+        const { data, creditsUsed, creditsRemaining } = await fetchFormatsEditions(seed.asin);
+        seedsQueried += 1;
+        totalCreditsUsed += creditsUsed;
+        lastCreditsRemaining = creditsRemaining;
+
+        const variants: any[] = data?.formats_editions ?? data?.formats ?? [];
+        if (!Array.isArray(variants) || variants.length === 0) {
+          noMatch += 1;
+          log(`formats-editions-fill no variants: product #${p.id} "${p.title}" from seed ${seed.asin}`, "amazon-cron");
+          continue;
+        }
+
+        const usedForThisProduct = usedAsinsPerProduct.get(p.id) ?? new Set<string>();
+
+        // For each missing platform, look for the first variant whose title
+        // mentions that platform, passes the video-game filter, isn't
+        // already-pinned, and isn't ancient. Amazon's own carousel is our
+        // signal — no word-overlap threshold needed.
+        for (const plat of missingPlatforms) {
+          let match: { asin: string; title: string; isSwitch2: boolean } | null = null;
+          for (const v of variants) {
+            const vAsin = (v.asin ?? "").toString();
+            const vTitle = (v.title ?? v.format ?? "").toString();
+            if (!vAsin || !vTitle) continue;
+            if (vAsin === seed.asin) continue; // that's the seed itself
+            if (usedForThisProduct.has(vAsin)) continue;
+            if (!isVideoGameSoftware(vTitle).keep) continue;
+            const platCheck = titleMentionsPlatform(vTitle, plat);
+            if (!platCheck.ok) continue;
+            if (isAsinAncientForProduct(vAsin, p.releaseDate ?? null)) continue;
+            match = { asin: vAsin, title: vTitle, isSwitch2: platCheck.isSwitch2 };
+            break;
+          }
+
+          if (match) {
+            db.insert(amazonAsinMap).values({
+              productId: p.id,
+              platform: plat,
+              asin: match.asin,
+              isAuto: true,
+              isActive: true,
+              isSwitch2: match.isSwitch2,
+              matchScore: 1.0, // Amazon-vouched sibling; not a keyword-overlap score
+              discoveredAt: now,
+              updatedAt: now,
+            }).run();
+            existingByKey.add(pinKey(p.id, plat));
+            usedForThisProduct.add(match.asin);
+            usedAsinsPerProduct.set(p.id, usedForThisProduct);
+            mappingsInserted += 1;
+            log(`formats-editions-fill matched product #${p.id} "${p.title}" → ${plat}${match.isSwitch2 ? " 2" : ""} ${match.asin} (${match.title}) via seed ${seed.asin}`, "amazon-cron");
+          } else {
+            mappingsSkipped += 1;
+          }
+        }
+      } catch (err) {
+        log(`formats-editions-fill: product #${p.id} seed ${seed.asin} failed: ${err}`, "amazon-cron");
+      }
+    }
+
+    log(`formats-editions-fill done: productsScanned=${productsScanned} seedsQueried=${seedsQueried} inserted=${mappingsInserted} skipped=${mappingsSkipped} noMatch=${noMatch} creditsUsed=${totalCreditsUsed} creditsRemaining=${lastCreditsRemaining}`, "amazon-cron");
+
+    return {
+      result: { productsScanned, seedsQueried, mappingsInserted, mappingsSkipped, noMatch },
+      creditsUsed: totalCreditsUsed,
+      creditsRemaining: lastCreditsRemaining,
+      rowsWritten: mappingsInserted,
+    };
+  });
 }
 
 // Wipe every auto-discovered pin (Saber + competitor). Manual pins kept.
