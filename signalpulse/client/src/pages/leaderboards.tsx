@@ -365,12 +365,11 @@ function AmazonPill({
   const deltaVal = delta === "1d" ? cell.delta1d : delta === "7d" ? cell.delta7d : cell.delta30d;
   const showArrow = deltaVal != null && deltaVal !== 0;
   const isUp = deltaVal != null && deltaVal > 0;
-  // Chart-rank cell shows "#<rank>"; BSR-fallback cell shows "BSR #<bsr>"
-  // so users can tell at a glance whether the number is a top-100
-  // category position or the store-wide BSR.
+  // Chart-source cells render as "<Platform> #<rank>" (top-100 category
+  // position); BSR-source cells render as "<Platform> BSR #<bsr>" so the
+  // platform is always visible AND the BSR marker distinguishes the two.
   const isBsr = cell.source === "bsr" || (cell.rank == null && cell.bsr != null);
   const displayNumber = isBsr ? cell.bsr : cell.rank;
-  const label = isBsr ? "BSR" : platformLabel;
   const numberTitle = isBsr
     ? `${platformLabel} — Amazon Best Sellers Rank (not on top-100 category chart)`
     : `${platformLabel} — top-100 category rank`;
@@ -380,10 +379,13 @@ function AmazonPill({
   const deltaSuffix = isBsr && deltaVal != null ? "%" : "";
   return (
     <div
-      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-card border border-border text-[11px] tabular-nums min-w-[92px] justify-center"
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-card border border-border text-[11px] tabular-nums min-w-[110px] justify-center"
       title={numberTitle}
     >
-      <span className="font-medium text-muted-foreground">{label}</span>
+      <span className="font-medium text-muted-foreground">{platformLabel}</span>
+      {isBsr ? (
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/80">BSR</span>
+      ) : null}
       <span className="font-semibold">#{displayNumber?.toLocaleString() ?? "—"}</span>
       {showArrow ? (
         <span className="inline-flex items-center gap-0.5 font-medium" style={{ color: isUp ? SABER_ACCENT : RANK_DOWN_MUTED }}>
