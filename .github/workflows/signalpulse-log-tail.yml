@@ -1,0 +1,63 @@
+name: SignalPulse Log Tail (read-only)
+
+# Read-only journalctl helper for the signalpulse systemd unit on the
+# droplet. Takes a grep pattern and a lookback window; prints matching
+# lines. Follows the sp-*.yml diagnostic pattern.
+
+on:
+  workflow_dispatch:
+    inputs:
+      grep_pattern:
+        description: 'grep -E pattern (e.g. "asin-search-discovery")'
+        required: false
+        default: ''
+      since:
+        description: 'journalctl --since window (e.g. "30 min ago", "2h ago", "today")'
+        required: false
+        default: '30 min ago'
+      lines:
+        description: 'Max lines to return (default 500, cap 5000)'
+        required: false
+        default: '500'
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  tail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Tail journalctl
+        env:
+          PATTERN: ${{ github.event.inputs.grep_pattern }}
+          SINCE: ${{ github.event.inputs.since }}
+          LINES: ${{ github.event.inputs.lines }}
+        run: |
+          set -e
+          # cap lines at 5000
+          n="${LINES:-500}"
+          if [ "$n" -gt 5000 ]; then n=5000; fi
+
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+
+          echo "=========================================="
+          echo "journalctl -u signalpulse --since '${SINCE}' --no-pager -n ${n}"
+          if [ -n "$PATTERN" ]; then
+            echo "  | grep -E '${PATTERN}'"
+          fi
+          echo "=========================================="
+
+          if [ -n "$PATTERN" ]; then
+            $SSH "journalctl -u signalpulse --since '${SINCE}' --no-pager -n ${n} | grep -E '${PATTERN}' || echo '(no matches)'"
+          else
+            $SSH "journalctl -u signalpulse --since '${SINCE}' --no-pager -n ${n}"
+          fi
