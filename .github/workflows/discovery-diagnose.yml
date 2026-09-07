@@ -1,0 +1,59 @@
+name: Amazon Discovery Diagnose
+
+# Read-only. Calls /api/amazon/ingest/discovery-diagnose from the droplet's
+# loopback with the given productId+platform and prints the JSON payload.
+# Use when asin_search_discovery reports "no match" for a title to see
+# WHICH filter dropped each candidate.
+
+on:
+  workflow_dispatch:
+    inputs:
+      productId:
+        description: 'SignalPulse product_id (e.g. 7 for Hellraiser: Revival)'
+        required: true
+      platform:
+        description: 'Platform slug'
+        required: true
+        default: 'ps5'
+        type: choice
+        options: [ps5, xbox, switch]
+      topN:
+        description: 'Raw Rainforest results to inspect (default 10, max 25)'
+        required: false
+        default: '10'
+      threshold:
+        description: 'Match score threshold (default 0.6)'
+        required: false
+        default: '0.6'
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Curl discovery-diagnose
+        env:
+          OPS_TOKEN: ${{ secrets.INGESTION_OPS_TOKEN }}
+          PRODUCT_ID: ${{ github.event.inputs.productId }}
+          PLATFORM: ${{ github.event.inputs.platform }}
+          TOP_N: ${{ github.event.inputs.topN }}
+          THRESHOLD: ${{ github.event.inputs.threshold }}
+        run: |
+          set -e
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          URL="http://127.0.0.1:5000/api/amazon/ingest/discovery-diagnose?productId=${PRODUCT_ID}&platform=${PLATFORM}&topN=${TOP_N}&threshold=${THRESHOLD}"
+          echo "=========================================="
+          echo "URL: $URL"
+          echo "=========================================="
+          $SSH "curl -sS -H 'x-ops-token: ${OPS_TOKEN}' '${URL}'" | python3 -m json.tool
