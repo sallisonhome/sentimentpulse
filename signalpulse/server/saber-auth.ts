@@ -128,6 +128,11 @@ const EXEMPT_PATHS_READ_ONLY_CROSS_APP = new Set([
   // (v3.31, 2026-09-05). Same posture: read-only, aggregate country-level
   // totals, no PII, safe to expose unauthenticated over loopback + nginx.
   "/api/promo-support/sales-by-country",
+  // Weekly leaderboard digest preview — v3.34 (2026-09-07). Read-only
+  // HTML render for operator verification before scheduling resends.
+  // Contains only aggregate rev/units/rank data that's already in the
+  // digest emails themselves; safe to expose unauthenticated.
+  "/api/leaderboards/digest/preview",
 ]);
 const EXEMPT_PREFIXES = [
   "/api/onpromo/", // SignalPulse's OWN SPA reads this too, but it is
