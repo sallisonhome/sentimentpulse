@@ -653,7 +653,7 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
           lastCreditsRemaining = pass1.creditsRemaining;
           const results1: any[] = pass1.data?.search_results ?? [];
           let best = scoreResults(results1, 5);
-          let matchSource: "category" | "unscoped" = "category";
+          let matchSource: "category" | "unscoped" | "unscoped+platform" = "category";
           let unscopedRawCount = 0;
 
           // Pass 2 — retry without the category filter when pass 1 turned up
@@ -676,6 +676,27 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
             if (best != null) matchSource = "unscoped";
           }
 
+          // Pass 3 — append platform hint words to the keyword. Franchise
+          // titles that are also books/comics/movies (Hellraiser, Halloween,
+          // John Wick, Turok, Jurassic Park, etc.) have Amazon search results
+          // dominated by non-game media even when unscoped, so the real game
+          // SKU is buried too deep to appear in top-10. Adding "PS5" /
+          // "Xbox Series X" / "Nintendo Switch" to the query shifts Amazon's
+          // relevance toward the game listing. Same downstream filter chain
+          // still gates results. Costs +1 credit only when passes 1+2 fail.
+          if (best == null) {
+            const platHint = plat === "ps5" ? "PS5"
+              : plat === "xbox" ? "Xbox Series X"
+              : "Nintendo Switch";
+            const pass3 = await fetchSearch(`${p.title} ${platHint}`);
+            queriesIssued += 1;
+            totalCreditsUsed += pass3.creditsUsed;
+            lastCreditsRemaining = pass3.creditsRemaining;
+            const results3: any[] = pass3.data?.search_results ?? [];
+            best = scoreResults(results3, 10);
+            if (best != null) matchSource = "unscoped+platform";
+          }
+
           if (best) {
             db.insert(amazonAsinMap).values({
               productId: p.id,
@@ -695,7 +716,7 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
             log(`asin-search-discovery matched product #${p.id} "${p.title}" → ${plat}${best.isSwitch2 ? " 2" : ""} ${best.asin} (${best.title}) score=${best.score.toFixed(2)} via=${matchSource}`, "amazon-cron");
           } else {
             noMatch += 1;
-            log(`asin-search-discovery no match: product #${p.id} "${p.title}" on ${plat} (${results1.length} category / ${unscopedRawCount} unscoped raw results)`, "amazon-cron");
+            log(`asin-search-discovery no match: product #${p.id} "${p.title}" on ${plat} (${results1.length} category / ${unscopedRawCount} unscoped raw results, +platform fallback also failed)`, "amazon-cron");
           }
         } catch (err) {
           log(`asin-search-discovery: product #${p.id} on ${plat} failed: ${err}`, "amazon-cron");

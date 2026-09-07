@@ -405,10 +405,20 @@ export function registerAmazonRoutes(app: Express): void {
       const pass2Accepted = pass2Candidates.filter((c: any) => c.accepted);
       const pass2Best = pass2Accepted.reduce<any>((b, c) => (b == null || c.score > b.score ? c : b), null);
 
+      // Pass 3: unscoped + platform hint words (matches runAsinSearchDiscovery).
+      const platHint = platform === "ps5" ? "PS5"
+        : platform === "xbox" ? "Xbox Series X"
+        : "Nintendo Switch";
+      const pass3Res = await fetchSearch(`${product.title} ${platHint}`);
+      const pass3Raw: any[] = pass3Res.data?.search_results ?? [];
+      const pass3Candidates = pass3Raw.slice(0, topN).map(scoreOne);
+      const pass3Accepted = pass3Candidates.filter((c: any) => c.accepted);
+      const pass3Best = pass3Accepted.reduce<any>((b, c) => (b == null || c.score > b.score ? c : b), null);
+
       // Effective outcome matches runAsinSearchDiscovery: pass1 wins if it
-      // found anything, otherwise pass2 (top-10) is the fallback.
-      const chosen = pass1Best ?? pass2Best;
-      const chosenSource = pass1Best ? "category" : (pass2Best ? "unscoped" : null);
+      // found anything, otherwise pass2, otherwise pass3.
+      const chosen = pass1Best ?? pass2Best ?? pass3Best;
+      const chosenSource = pass1Best ? "category" : (pass2Best ? "unscoped" : (pass3Best ? "unscoped+platform" : null));
 
       res.json({
         product: { id: product.id, title: product.title, releaseDate: product.releaseDate },
@@ -431,6 +441,15 @@ export function registerAmazonRoutes(app: Express): void {
           candidates: pass2Candidates,
           acceptedCount: pass2Accepted.length,
           bestAccepted: pass2Best,
+        },
+        pass3_platform_hint: {
+          keyword: `${product.title} ${platHint}`,
+          rawResultsCount: pass3Raw.length,
+          creditsUsed: pass3Res.creditsUsed,
+          creditsRemaining: pass3Res.creditsRemaining,
+          candidates: pass3Candidates,
+          acceptedCount: pass3Accepted.length,
+          bestAccepted: pass3Best,
         },
         summary: {
           chosen,
