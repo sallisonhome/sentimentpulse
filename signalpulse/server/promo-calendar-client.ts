@@ -29,8 +29,14 @@ const FETCH_TIMEOUT_MS = 2000;
 const CACHE_TTL_MS = 60_000;
 
 export interface ActivePromo {
-  platform: string; // raw Promo Calendar platform: "Steam" | "Microsoft" | "Sony" | ...
-  end_date: string; // ISO YYYY-MM-DD
+  platform: string;      // raw Promo Calendar platform: "Steam" | "Microsoft" | "Sony" | ...
+  end_date: string;      // ISO YYYY-MM-DD
+  // v3.34 (2026-09-07): richer promo fields for the weekly digest narrative.
+  // All are optional so pre-v3.34 call sites keep compiling.
+  start_date?: string;   // ISO YYYY-MM-DD
+  program?: string;      // e.g. "Steam Autumn Sales", "Publisher Sales", "Gamescom"
+  max_discount_pct?: number; // 0..1 fraction (0.6 = 60% off)
+  game_label?: string;   // Human-readable title from Promo Calendar
 }
 
 interface NextUpBeat {
@@ -216,17 +222,33 @@ export async function getActivePromosFor(
   // Deduplicate by platform: if a title has two overlapping Steam sales
   // (e.g. Autumn Sale + a franchise sale), collapse to one entry and keep
   // whichever ends LATER. Users only see "Steam through <date>" once.
-  const byPlatform = new Map<string, string>();
+  //
+  // v3.34 (2026-09-07): keep the WHOLE beat (not just end_date) so
+  // downstream (weekly digest) can render program name + discount %.
+  // When two beats share a platform, keep the one that ends later; if
+  // tied, keep the one with the higher max_discount_pct.
+  const byPlatform = new Map<string, NextUpBeat>();
   for (const b of active) {
     const existing = byPlatform.get(b.platform);
-    if (existing == null || b.end_date > existing) {
-      byPlatform.set(b.platform, b.end_date);
+    if (
+      existing == null ||
+      b.end_date > existing.end_date ||
+      (b.end_date === existing.end_date && (b.max_discount_pct ?? 0) > (existing.max_discount_pct ?? 0))
+    ) {
+      byPlatform.set(b.platform, b);
     }
   }
 
   // Sort by soonest-ending end_date first — matches the badge sentence order.
-  const result: ActivePromo[] = Array.from(byPlatform.entries())
-    .map(([platform, end_date]) => ({ platform, end_date }))
+  const result: ActivePromo[] = Array.from(byPlatform.values())
+    .map((b) => ({
+      platform: b.platform,
+      end_date: b.end_date,
+      start_date: b.start_date,
+      program: b.program,
+      max_discount_pct: b.max_discount_pct,
+      game_label: b.game_label,
+    }))
     .sort((a, b) => (a.end_date < b.end_date ? -1 : a.end_date > b.end_date ? 1 : 0));
 
   cache.set(cacheKey, { value: result, expiresAt: Date.now() + CACHE_TTL_MS });

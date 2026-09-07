@@ -21,7 +21,7 @@ import {
   getRevenueLeaderboardRows,
   getRevenueLeaderboardKpis,
 } from "./leaderboards";
-import { sendWeeklyLeaderboardDigest } from "./leaderboard-digest";
+import { sendWeeklyLeaderboardDigest, renderWeeklyDigestHtml } from "./leaderboard-digest";
 import { getHeldDigestWeek, getHeldDigestMissing } from "./leaderboard-digest-weekly";
 import express from "express";
 import { handleResendInboundWebhook, sendReply, forwardToPersonalInbox } from "./inbound-email";
@@ -2557,14 +2557,33 @@ export async function registerRoutes(
       const overrideRecipients = toParam
         ? toParam.split(",").map((e) => e.trim()).filter(Boolean)
         : undefined;
+      // v3.34 (2026-09-07): optional subjectPrefix so a resend can mark
+      // itself (e.g. "Resending Digest w/ Context From Saber Promo
+      // Calendar in SignalPulse") without changing the underlying render.
+      const subjectPrefix = (req.body?.subjectPrefix ?? req.query?.subjectPrefix) as string | undefined;
       // Manual test-send always targets the live current week and ignores
       // the hold gate — it's for verifying the render/send pipeline, not a
       // real Monday production send.
-      const result = await sendWeeklyLeaderboardDigest(undefined, overrideRecipients);
+      const result = await sendWeeklyLeaderboardDigest(undefined, overrideRecipients, subjectPrefix);
       if (!result.sent) {
         return res.status(422).json(result);
       }
       res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // v3.34 (2026-09-07): public preview endpoint so an operator can inspect
+  // the rendered weekly digest HTML for the current week WITHOUT sending.
+  // Auth-gated (same posture as the rest of /api/leaderboards).
+  app.get("/api/leaderboards/digest/preview", async (_req, res) => {
+    try {
+      const rendered = await renderWeeklyDigestHtml();
+      res
+        .status(200)
+        .setHeader("content-type", "text/html; charset=utf-8")
+        .send(rendered.html);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
