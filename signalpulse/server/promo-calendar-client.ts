@@ -60,6 +60,53 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+// ─── Health tracking (2026-09-07 hardening) ────────────────────────────────
+// This client previously failed *silently*: a Promo Calendar contract change
+// (endpoint semantics flipped) made every chip disappear with nothing but a
+// console.warn buried in droplet logs, so it went unnoticed until a human
+// spotted a missing chip against a known-live sale. This tracker gives an
+// external caller (see the /api/onpromo/_health route in on-promo-routes.ts)
+// a way to ask "is this bridge actually healthy right now" without having to
+// re-derive it from scratch the way this investigation had to.
+export interface PromoCalendarHealth {
+  lastAttemptAt: string | null; // ISO timestamp of the most recent call (success or failure)
+  lastSuccessAt: string | null;
+  lastErrorAt: string | null;
+  lastErrorKind: "none" | "network" | "http_status" | "contract_shape" | null;
+  lastErrorMessage: string | null;
+  consecutiveFailures: number;
+}
+
+const health: PromoCalendarHealth = {
+  lastAttemptAt: null,
+  lastSuccessAt: null,
+  lastErrorAt: null,
+  lastErrorKind: null,
+  lastErrorMessage: null,
+  consecutiveFailures: 0,
+};
+
+function recordSuccess(): void {
+  const now = new Date().toISOString();
+  health.lastAttemptAt = now;
+  health.lastSuccessAt = now;
+  health.consecutiveFailures = 0;
+}
+
+function recordFailure(kind: Exclude<PromoCalendarHealth["lastErrorKind"], "none" | null>, message: string): void {
+  const now = new Date().toISOString();
+  health.lastAttemptAt = now;
+  health.lastErrorAt = now;
+  health.lastErrorKind = kind;
+  health.lastErrorMessage = message;
+  health.consecutiveFailures += 1;
+}
+
+/** Snapshot of the client's health tracker. Used by GET /api/onpromo/_health. */
+export function getPromoCalendarHealth(): PromoCalendarHealth {
+  return { ...health };
+}
+
 /**
  * Return the current server date as YYYY-MM-DD in the server's local zone.
  * The Promo Calendar API is server-anchored — it accepts `today` and drops
@@ -122,14 +169,38 @@ export async function getActivePromosFor(
       clearTimeout(timer);
     }
     if (!res.ok) {
-      console.warn(`[promo-calendar] ${code} returned HTTP ${res.status}; treating as no promos`);
+      // A non-2xx from a same-host loopback call is not routine transient
+      // flakiness — it means the route moved, the service is down, or auth
+      // changed underneath us. console.error (not warn) so it isn't lost in
+      // routine log noise, and tracked so /api/onpromo/_health can surface it.
+      const msg = `${code} returned HTTP ${res.status}`;
+      console.error(`[promo-calendar] ${msg}; treating as no promos`);
+      recordFailure("http_status", msg);
       cache.set(cacheKey, { value: [], expiresAt: Date.now() + CACHE_TTL_MS });
       return [];
     }
     const body = (await res.json()) as NextUpResponse;
-    beats = Array.isArray(body?.beats) ? body.beats : [];
+    // Contract guard: this is exactly the class of bug that silently broke
+    // the badge on 2026-09-04 — the upstream endpoint kept returning 200
+    // with a shape that no longer matched what we expected. A response
+    // that lacks a `beats` array at all is a contract violation and should
+    // be loud; a response with an EMPTY `beats` array is a legitimate "no
+    // active campaigns right now" and must stay quiet.
+    if (!Array.isArray(body?.beats)) {
+      const msg = `${code} response missing/invalid "beats" array (keys: ${body && typeof body === "object" ? Object.keys(body).join(",") : typeof body})`;
+      console.error(`[promo-calendar] CONTRACT VIOLATION: ${msg}`);
+      recordFailure("contract_shape", msg);
+      cache.set(cacheKey, { value: [], expiresAt: Date.now() + CACHE_TTL_MS });
+      return [];
+    }
+    beats = body.beats;
+    recordSuccess();
   } catch (err: any) {
-    console.warn(`[promo-calendar] failed to fetch promos for ${code}: ${err?.message || err}`);
+    // Network/timeout errors ARE routine (loopback hiccup, service restart
+    // mid-deploy) — keep these at warn.
+    const msg = err?.message || String(err);
+    console.warn(`[promo-calendar] failed to fetch promos for ${code}: ${msg}`);
+    recordFailure("network", msg);
     // Cache the empty result briefly to avoid retrying every leaderboard
     // render while the promo service is down.
     cache.set(cacheKey, { value: [], expiresAt: Date.now() + CACHE_TTL_MS });
@@ -196,4 +267,17 @@ export async function getAllActivePromos(
  */
 export function __resetPromoCalendarCache(): void {
   cache.clear();
+}
+
+/**
+ * Test helper — reset the health tracker to its initial state. Not used in
+ * prod code paths.
+ */
+export function __resetPromoCalendarHealth(): void {
+  health.lastAttemptAt = null;
+  health.lastSuccessAt = null;
+  health.lastErrorAt = null;
+  health.lastErrorKind = null;
+  health.lastErrorMessage = null;
+  health.consecutiveFailures = 0;
 }

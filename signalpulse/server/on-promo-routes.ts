@@ -13,7 +13,8 @@
 // referencing the `/signal/` base path).
 
 import type { Express } from "express";
-import { getActivePromosFor, getAllActivePromos } from "./promo-calendar-client";
+import { getActivePromosFor, getAllActivePromos, getPromoCalendarHealth } from "./promo-calendar-client";
+import { STEAM_APPID_TO_PROMO_CODE } from "./promo-calendar-map";
 
 export function registerOnPromoRoutes(app: Express): void {
   // GET /api/onpromo/all
@@ -31,6 +32,48 @@ export function registerOnPromoRoutes(app: Express): void {
       // so the client stays happy.
       console.warn(`[on-promo] /all fell through: ${err?.message || err}`);
       res.json({});
+    }
+  });
+
+  // GET /api/onpromo/_health  (2026-09-07 hardening)
+  // → { bridge: PromoCalendarHealth, mappedTitleCount, activeNow: {...} }
+  //
+  // Registered BEFORE the /:steamAppId route below so Express matches this
+  // literal path first — otherwise "_health" would be parsed as a
+  // (non-numeric, harmless-but-wrong) steamAppId param.
+  //
+  // Exists because the 2026-09-04 incident (badge silently went empty for
+  // ~3 days despite a live Steam sale) took a full manual investigation to
+  // diagnose: re-cloning a stale local repo, diffing commits, and curling
+  // both the old and new upstream endpoints by hand. This route answers
+  // "is the SignalPulse ↔ Promo Calendar bridge actually healthy right now"
+  // in one call — no code archaeology required next time.
+  app.get("/api/onpromo/_health", async (_req, res) => {
+    try {
+      const [activeNow, health] = await Promise.all([
+        getAllActivePromos(),
+        Promise.resolve(getPromoCalendarHealth()),
+      ]);
+      const mappedTitleCount = Object.keys(STEAM_APPID_TO_PROMO_CODE).length;
+      const titlesWithActivePromoNow = Object.keys(activeNow).length;
+      // A healthy bridge with genuinely zero live sales looks the same as a
+      // broken bridge from the outside (both report 0 titles on promo).
+      // Flag it so a human/monitor knows to double-check against the Promo
+      // Calendar's own /live-now output before assuming it's fine.
+      const zeroActiveWarning =
+        titlesWithActivePromoNow === 0
+          ? "0 titles currently on promo — this IS the expected shape when nothing is on sale, but if a sale is known to be live, treat this as suspicious and check lastErrorKind below."
+          : null;
+      res.json({
+        bridge: health,
+        mappedTitleCount,
+        titlesWithActivePromoNow,
+        zeroActiveWarning,
+        activeNow,
+      });
+    } catch (err: any) {
+      console.error(`[on-promo] /_health itself failed: ${err?.message || err}`);
+      res.status(500).json({ error: err?.message || String(err) });
     }
   });
 
