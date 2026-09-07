@@ -6,6 +6,31 @@ session date so future agents can reconstruct context.
 
 ---
 
+## MANDATORY — READ FIRST EVERY SESSION (2026-09-07)
+
+**Two non-negotiable operating rules for every session, every task, before touching any code.**
+
+### 1. Start every session by reading BOTH `CLAUDE.md` and `lessons.md` before doing any work.
+
+No exceptions. Not "if the task looks complex." Not "if I remember the rules from last session." **Every session, first thing, both files, top to bottom.** Steve has told me this multiple times. If you skip it you will re-make mistakes that are already documented here, and Steve will (rightly) push back.
+
+When resuming a compacted session, the same rule applies — re-read both files at the top of the turn before touching any code, deploy, or verification path.
+
+### 2. Run rigorous QA BEFORE asking to push. Never ask for deploy approval until it's done.
+
+Compile-time checks (`tsc --noEmit`, `npm run build`) are the MINIMUM, not "QA." Rigorous QA means all of the following that apply to the change, executed before the `confirm_action` push prompt:
+
+1. **Live API/data probe of the new external contract.** If the change assumes an external API returns a certain shape (Rainforest, Steam, Reddit, Anthropic, Steamworks, etc.), prove it with a live request against a real ASIN / appid / URL BEFORE writing the fix. Add a temporary logging shim if needed, ship the shim as an isolated debug commit, trigger it, read the log, THEN write the fix. Never ship a fix whose correctness depends on unverified assumptions about an external response shape.
+2. **Local runtime test of the changed endpoint.** For any changed HTTP route, run the server locally (or on the sandbox), hit the route, inspect the actual JSON response. Do not rely on "the build compiled" as evidence the endpoint works.
+3. **Client-side render check for any change touching client-visible data.** If the server response shape changed, `read` the client component that consumes it and verify the fallback chain / null-guards / new field bindings actually match. Server-only edits without client verification produce blank UI even when the API is correct.
+4. **Schema-migration dry-run for any DDL change.** For `migrateAddColumnIfMissing` or any new table, verify the column actually landed on the live DB by running a `PRAGMA table_info(...)` SQL check via the read-only workflow immediately after the deploy, before claiming success.
+5. **Live-data verification post-deploy** is the FINAL gate, not the ONLY gate. The above four happen BEFORE `confirm_action`. Post-deploy verification confirms it, but a pre-push failure is much cheaper than a post-deploy rollback.
+6. **When in doubt, say so.** If a QA step is impractical (no local test harness, no way to probe the API without a secret, etc.), state that in the `confirm_action` question and let Steve decide whether to accept the gap. Never silently skip a QA gate to save time.
+
+**Cheap heuristic:** if the honest answer to "did I run rigorous QA?" is "no, just tsc + build", the answer to "can I ask to push?" is also "no." Fix the QA gap first.
+
+---
+
 ## 2026-08-18 (signalpulse) — Wishlist backfill MUST use the Steamworks Partner Financials API (steam_api_key), never HTML parsing
 
 **What happened.** After adding Twisted Tower (Steam AppID 1575990) to SignalPulse, the auto-triggered wishlist backfill on product creation only produced ONE row before the signalpulse deploy (from a subsequent commit) restarted the Node.js process and killed the in-flight background job. The dashboard showed `latestSteamWishlistCount: 5,215` when Steamworks ground truth was 147,718 (1,975 rows of pre-launch daily data, going back to first-wishlist date 2021-03-30). Steve caught it: "prior to release was over 133K but only seeing 11K wishlists in signalpulse is this because of the backfill running?" I initially proposed HTML-parsing the Steamworks partner portal via the cookie proxy as a fix — WRONG. The correct answer is to always use the pre-existing Steam Partner Financials web API (`IPartnerFinancialsService/GetAppWishlistReporting/v001/`) which requires `steam_api_key` and returns structured per-day rows with adds/deletes/purchases/gifts + per-platform, country, and language splits. The manual re-fire via `POST /api/steam/backfill/17` recovered instantly: 1,967 days queued, ~13 days/sec, latestSteamWishlistCount jumped from 5,215 → 147,718 within 60 seconds, matching Steamworks portal ground truth exactly.
