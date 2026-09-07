@@ -187,6 +187,14 @@ const OPS_TOKEN_PATHS = new Set([
   // portal-fetch endpoint, but doesn't require a JWT session. See
   // routes.ts /api/ops/portal-fetch.
   "/api/ops/portal-fetch",
+  // Amazon manual-pin workflow (amazon-manual-pin.yml) writes verified
+  // franchise-IP ASINs into the Saber map and the competitor map from a
+  // GitHub Actions runner over SSH → loopback. No browser session
+  // available; ops token gates it instead. See
+  // server/amazon-routes.ts POST /api/amazon/asin-map and
+  // POST /api/amazon/competitor-asin-map.
+  "/api/amazon/asin-map",
+  "/api/amazon/competitor-asin-map",
 ]);
 
 // Path prefixes that accept the ops token. Use for endpoint groups that have

@@ -76,6 +76,7 @@ jobs:
           NAME: ${{ github.event.inputs.name }}
           PLATFORM: ${{ github.event.inputs.platform }}
           ASIN: ${{ github.event.inputs.asin }}
+          OPS_TOKEN: ${{ secrets.INGESTION_OPS_TOKEN }}
         run: |
           set -e
           SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
@@ -108,4 +109,4 @@ jobs:
           echo "POST ${URL}"
           echo "  body: ${BODY}"
           echo "=========================================="
-          $SSH "curl -sS -X POST -H 'Content-Type: application/json' -d '${BODY}' 'http://127.0.0.1:5000${URL}'" | python3 -m json.tool
+          $SSH "curl -sS -X POST -H 'Content-Type: application/json' -H 'x-ops-token: ${OPS_TOKEN}' -d '${BODY}' 'http://127.0.0.1:5000${URL}'" | python3 -m json.tool
