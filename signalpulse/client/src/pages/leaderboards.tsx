@@ -295,8 +295,14 @@ function MoverKpiCard({
 // ─── Saber Amazon Leaderboard (third tab) ──────────────────────────────────
 
 interface AmazonPlatformCell {
-  rank: number;
+  // "chart" = pulled from amazonChartSnapshots (top-100 category rank).
+  // "bsr"   = SKU isn't top-100 on any tracked category chart, but we
+  //           still have real Amazon data from the products job
+  //           (amazonProductDaily). Cell renders as "BSR #<n>".
+  source?: "chart" | "bsr";
+  rank: number | null;
   rawRank: number | null;
+  bsr?: number | null;
   delta1d: number | null;
   delta7d: number | null;
   delta30d: number | null;
@@ -359,14 +365,30 @@ function AmazonPill({
   const deltaVal = delta === "1d" ? cell.delta1d : delta === "7d" ? cell.delta7d : cell.delta30d;
   const showArrow = deltaVal != null && deltaVal !== 0;
   const isUp = deltaVal != null && deltaVal > 0;
+  // Chart-rank cell shows "#<rank>"; BSR-fallback cell shows "BSR #<bsr>"
+  // so users can tell at a glance whether the number is a top-100
+  // category position or the store-wide BSR.
+  const isBsr = cell.source === "bsr" || (cell.rank == null && cell.bsr != null);
+  const displayNumber = isBsr ? cell.bsr : cell.rank;
+  const label = isBsr ? "BSR" : platformLabel;
+  const numberTitle = isBsr
+    ? `${platformLabel} — Amazon Best Sellers Rank (not on top-100 category chart)`
+    : `${platformLabel} — top-100 category rank`;
+  // BSR deltas are % change (bigger = better rank). Chart deltas are
+  // rank-slot change (bigger = better rank). Both semantics happen to
+  // align on "up arrow = improved", so no per-source branching needed.
+  const deltaSuffix = isBsr && deltaVal != null ? "%" : "";
   return (
-    <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-card border border-border text-[11px] tabular-nums min-w-[92px] justify-center">
-      <span className="font-medium text-muted-foreground">{platformLabel}</span>
-      <span className="font-semibold">#{cell.rank}</span>
+    <div
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-card border border-border text-[11px] tabular-nums min-w-[92px] justify-center"
+      title={numberTitle}
+    >
+      <span className="font-medium text-muted-foreground">{label}</span>
+      <span className="font-semibold">#{displayNumber?.toLocaleString() ?? "—"}</span>
       {showArrow ? (
         <span className="inline-flex items-center gap-0.5 font-medium" style={{ color: isUp ? SABER_ACCENT : RANK_DOWN_MUTED }}>
           {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-          {Math.abs(deltaVal!)}
+          {Math.abs(deltaVal!)}{deltaSuffix}
         </span>
       ) : (
         <span className="text-muted-foreground">·</span>

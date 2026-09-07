@@ -30,7 +30,7 @@ import {
   AMAZON_CHART_NODES,
   type AmazonPlatformSlug,
 } from "@shared/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lte } from "drizzle-orm";
 import { runAmazonJob, type AmazonJobName } from "./amazon-cron";
 import { isRainforestConfigured } from "./amazon-rainforest";
 
@@ -123,6 +123,32 @@ export function registerAmazonRoutes(app: Express): void {
         return row ?? null;
       };
 
+      // Fallback: SKUs with a BSR too high to make the top-100 category
+      // chart still have real Amazon data via the products job
+      // (amazonProductDaily). Look up the freshest product row on/before
+      // the requested date so cells never render blank when we have a
+      // known BSR + price. Anchors on the pin's active snapshot date
+      // rather than literal UTC for the same reason as the chart lookup.
+      const lookupAsinProductOn = (asin: string, date: string) => {
+        const row = db.select().from(amazonProductDaily)
+          .where(and(
+            eq(amazonProductDaily.asin, asin),
+            lte(amazonProductDaily.snapshotDate, date),
+          ))
+          .orderBy(desc(amazonProductDaily.snapshotDate))
+          .limit(1).get();
+        return row ?? null;
+      };
+
+      // BSR-delta helper: percent change vs prior BSR (negative = BSR
+      // dropped = SKU ranked BETTER, so we return a positive number to
+      // match the chart-rank delta semantics where positive = improved).
+      const bsrDelta = (todayBsr: number | null | undefined, priorBsr: number | null | undefined): number | null => {
+        if (todayBsr == null || priorBsr == null || priorBsr === 0) return null;
+        // Positive = BSR fell (rank improved). Round to nearest integer.
+        return Math.round(((priorBsr - todayBsr) / priorBsr) * 100);
+      };
+
       // Also load competitor pins (from SentimentPulse) so the leaderboard
       // can nest each competitor's rank under its parent Saber title.
       const compPins = db.select().from(amazonCompetitorAsinMap)
@@ -150,6 +176,10 @@ export function registerAmazonRoutes(app: Express): void {
 
       // Build per-parent competitor payload (grouped: one entry per competitor
       // game, with platforms map inside — same shape as Saber titles).
+      // Uses buildCell defined below (hoisted via const-forward-ref is not
+      // available; we redefine here rather than reorder the file). NOTE:
+      // buildCell was inlined here previously; the shared helper below is
+      // now the single source of truth for cell shape.
       const buildCompetitorsForParent = (parentProductId: number) => {
         const perGame = compByParent.get(parentProductId);
         if (!perGame || perGame.size === 0) return [];
@@ -158,22 +188,7 @@ export function registerAmazonRoutes(app: Express): void {
           const platformsPayload: Record<string, unknown> = {};
           for (const slug of AMAZON_PLATFORM_SLUGS) {
             const pin = pins.find((x) => x.platform === slug);
-            if (!pin) { platformsPayload[slug] = null; continue; }
-            const rowToday = lookupAsinRankOn(pin.asin, slug, today);
-            if (!rowToday) { platformsPayload[slug] = null; continue; }
-            const row1d  = lookupAsinRankOn(pin.asin, slug, d1);
-            const row7d  = lookupAsinRankOn(pin.asin, slug, d7);
-            const row30d = lookupAsinRankOn(pin.asin, slug, d30);
-            platformsPayload[slug] = {
-              rank: rowToday.rank,
-              rawRank: rowToday.rawRank,
-              price: rowToday.price,
-              rating: rowToday.rating,
-              delta1d:  rankDelta(rowToday.rank, row1d ? { rank: row1d.rank } : undefined),
-              delta7d:  rankDelta(rowToday.rank, row7d ? { rank: row7d.rank } : undefined),
-              delta30d: rankDelta(rowToday.rank, row30d ? { rank: row30d.rank } : undefined),
-              asin: pin.asin,
-            };
+            platformsPayload[slug] = pin ? buildCell(pin, slug) : null;
           }
           list.push({
             sentimentpulseGameId: gameId,
@@ -184,6 +199,56 @@ export function registerAmazonRoutes(app: Express): void {
         return list;
       };
 
+      // Build a cell for a pinned ASIN on a platform. Prefer the top-100
+      // chart position when the SKU is on today's chart; otherwise fall
+      // back to the freshest BSR + price from amazonProductDaily so cells
+      // never render blank when we have real Amazon data (e.g. Insurgency:
+      // Sandstorm Xbox with BSR ~62K — never on any top-100 category chart
+      // but very much a live SKU worth surfacing).
+      const buildCell = (
+        pin: { asin: string; isSwitch2?: boolean },
+        slug: string,
+      ): Record<string, unknown> | null => {
+        const rowToday = lookupAsinRankOn(pin.asin, slug, today);
+        if (rowToday) {
+          const row1d  = lookupAsinRankOn(pin.asin, slug, d1);
+          const row7d  = lookupAsinRankOn(pin.asin, slug, d7);
+          const row30d = lookupAsinRankOn(pin.asin, slug, d30);
+          return {
+            source: "chart",
+            rank: rowToday.rank,
+            rawRank: rowToday.rawRank,
+            bsr: null,
+            price: rowToday.price,
+            rating: rowToday.rating,
+            delta1d:  rankDelta(rowToday.rank, row1d ? { rank: row1d.rank } : undefined),
+            delta7d:  rankDelta(rowToday.rank, row7d ? { rank: row7d.rank } : undefined),
+            delta30d: rankDelta(rowToday.rank, row30d ? { rank: row30d.rank } : undefined),
+            asin: pin.asin,
+            isSwitch2: pin.isSwitch2 ?? false,
+          };
+        }
+        // No chart row — fall back to products BSR.
+        const prodToday = lookupAsinProductOn(pin.asin, today);
+        if (!prodToday || prodToday.mainBsr == null) return null;
+        const prod1d  = lookupAsinProductOn(pin.asin, d1);
+        const prod7d  = lookupAsinProductOn(pin.asin, d7);
+        const prod30d = lookupAsinProductOn(pin.asin, d30);
+        return {
+          source: "bsr",
+          rank: null,
+          rawRank: null,
+          bsr: prodToday.mainBsr,
+          price: prodToday.buyboxPrice,
+          rating: prodToday.rating,
+          delta1d:  bsrDelta(prodToday.mainBsr, prod1d?.mainBsr),
+          delta7d:  bsrDelta(prodToday.mainBsr, prod7d?.mainBsr),
+          delta30d: bsrDelta(prodToday.mainBsr, prod30d?.mainBsr),
+          asin: pin.asin,
+          isSwitch2: pin.isSwitch2 ?? false,
+        };
+      };
+
       const saberTitles: unknown[] = [];
       byProduct.forEach((productPins, productId) => {
         const p = productsById.get(productId);
@@ -191,23 +256,7 @@ export function registerAmazonRoutes(app: Express): void {
         const platformsPayload: Record<string, unknown> = {};
         for (const slug of AMAZON_PLATFORM_SLUGS) {
           const pin = productPins.find((x: PinLite) => x.platform === slug);
-          if (!pin) { platformsPayload[slug] = null; continue; }
-          const rowToday = lookupAsinRankOn(pin.asin, slug, today);
-          if (!rowToday) { platformsPayload[slug] = null; continue; }
-          const row1d  = lookupAsinRankOn(pin.asin, slug, d1);
-          const row7d  = lookupAsinRankOn(pin.asin, slug, d7);
-          const row30d = lookupAsinRankOn(pin.asin, slug, d30);
-          platformsPayload[slug] = {
-            rank: rowToday.rank,
-            rawRank: rowToday.rawRank,
-            price: rowToday.price,
-            rating: rowToday.rating,
-            delta1d:  rankDelta(rowToday.rank, row1d ? { rank: row1d.rank } : undefined),
-            delta7d:  rankDelta(rowToday.rank, row7d ? { rank: row7d.rank } : undefined),
-            delta30d: rankDelta(rowToday.rank, row30d ? { rank: row30d.rank } : undefined),
-            asin: pin.asin,
-            isSwitch2: pin.isSwitch2,
-          };
+          platformsPayload[slug] = pin ? buildCell(pin, slug) : null;
         }
         saberTitles.push({
           productId,
