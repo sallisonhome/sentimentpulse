@@ -50,10 +50,14 @@ export function registerOnPromoRoutes(app: Express): void {
   // in one call — no code archaeology required next time.
   app.get("/api/onpromo/_health", async (_req, res) => {
     try {
-      const [activeNow, health] = await Promise.all([
-        getAllActivePromos(),
-        Promise.resolve(getPromoCalendarHealth()),
-      ]);
+      // Sequenced, not Promise.all: getPromoCalendarHealth() resolves
+      // synchronously, so running it concurrently with getAllActivePromos()
+      // would snapshot health from BEFORE this call's own fetches land,
+      // showing stale (often all-null on a freshly restarted process)
+      // state instead of the result of the fetch this very request just
+      // triggered.
+      const activeNow = await getAllActivePromos();
+      const health = getPromoCalendarHealth();
       const mappedTitleCount = Object.keys(STEAM_APPID_TO_PROMO_CODE).length;
       const titlesWithActivePromoNow = Object.keys(activeNow).length;
       // A healthy bridge with genuinely zero live sales looks the same as a
