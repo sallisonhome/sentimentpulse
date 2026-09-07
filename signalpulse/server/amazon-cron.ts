@@ -41,6 +41,7 @@ import { and, eq } from "drizzle-orm";
 import {
   fetchSoftwareChart,
   fetchProduct,
+  fetchAlsoBought,
   fetchSalesEstimation,
   extractRecentSales,
   fetchMovers,
@@ -420,8 +421,26 @@ export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritt
     let totalCreditsUsed = 0;
     let lastCreditsRemaining = 0;
     let rowsWritten = 0;
+    // v3.37 QA-GATE-1 probe: on the first 3 ASINs, ALSO call
+    // type=also_bought and log the response shape. Zero DB writes from this
+    // block. Extra credit cost: ~3 calls. Removed in the follow-up real fix.
+    let probeCount = 0;
     for (const asin of sourceAsins) {
       try {
+        if (probeCount < 3) {
+          probeCount += 1;
+          try {
+            const probe = await fetchAlsoBought(asin);
+            const topKeys = probe.data && typeof probe.data === "object" ? Object.keys(probe.data) : [];
+            const ab = Array.isArray(probe.data?.also_bought) ? probe.data.also_bought : null;
+            const first = ab && ab.length > 0 ? ab[0] : null;
+            const firstKeys = first && typeof first === "object" ? Object.keys(first) : [];
+            const firstAsin = first?.asin ?? null;
+            log(`amazon-cron also_bought PROBE asin=${asin} status=${probe.data?.request_info?.success} top_keys=${JSON.stringify(topKeys)} also_bought_len=${ab ? ab.length : -1} first_row_keys=${JSON.stringify(firstKeys)} first_row_asin=${firstAsin} credits_used=${probe.creditsUsed}`, "amazon-cron");
+          } catch (probeErr) {
+            log(`amazon-cron also_bought PROBE asin=${asin} FAILED: ${probeErr}`, "amazon-cron");
+          }
+        }
         const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
         totalCreditsUsed += creditsUsed;
         lastCreditsRemaining = creditsRemaining;

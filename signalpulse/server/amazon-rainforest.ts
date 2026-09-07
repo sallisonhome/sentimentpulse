@@ -214,6 +214,15 @@ export async function fetchProduct(asin: string): Promise<RainforestCallResult<a
   return rainforestRequest({ type: "product", asin, amazon_domain: "amazon.com" });
 }
 
+// fetchAlsoBought — QA-GATE-1 probe added 2026-09-07 to verify Rainforest's
+// dedicated `type=also_bought` endpoint returns non-empty recommendation
+// arrays for game ASINs before we cut runAlsoBoughtDaily over to it.
+// Response shape per Rainforest docs: `{ request_info, also_bought: [ { asin,
+// title, image, link, rating?, ratings_total?, price? }, ... ] }`.
+export async function fetchAlsoBought(asin: string): Promise<RainforestCallResult<any>> {
+  return rainforestRequest({ type: "also_bought", asin, amazon_domain: "amazon.com" });
+}
+
 // fetchFormatsEditions — Rainforest `type=formats_editions`. Returns every
 // format/edition variant of the given ASIN as listed on Amazon's own
 // variant carousel. This is the RIGHT tool for finding cross-platform
