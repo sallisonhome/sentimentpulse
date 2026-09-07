@@ -175,3 +175,42 @@ Saved under `/home/user/workspace/signalpulse_onpromo_screenshots/`
   card matches what the parent nginx expects (`/promo/` today).
 - Optional: expose a Prometheus-style counter for
   `promo_calendar_client_errors_total` so backend outages are observable.
+
+## Incident: 2026-09-04 — chips silently went empty despite a live sale
+
+**What happened:** the Promo Calendar's `/api/saber/games/{code}/next-up`
+endpoint was changed to strictly exclude in-flight campaigns (future beats
+only). This client was calling `/next-up` and filtering by `is_active`,
+which now always yielded zero rows — every On Promo chip disappeared
+across all three surfaces (leaderboards, PDP, Dashboard card) even while a
+real sale was running through 2026-09-14. Nothing errored; it just quietly
+rendered the correct-looking "no titles on promo" empty state, so it went
+unnoticed until a human compared the app against a known-live sale.
+
+**Fix (v3.30, `dc5e41b`, 2026-09-05):** switched the client to
+`/api/saber/games/{code}/live-now`, which returns exactly the
+currently-in-flight beats — the correct data source for this feature.
+
+**Hardening (2026-09-07, `bfdb685` + `2f0e998`), so this class of bug can't
+hide silently again:**
+
+- `promo-calendar-client.ts` now tracks a health snapshot (last
+  success/failure timestamps, a typed error reason, consecutive-failure
+  count). A 200 response that's missing the `beats` array entirely —
+  exactly the shape of drift that caused this incident — is now a
+  distinct `console.error("CONTRACT VIOLATION: ...")` and a
+  `contract_shape` health state, separated from routine network hiccups
+  (still `console.warn`, `network` state) and from a legitimate empty
+  `beats: []` (which is NOT an error and must stay quiet).
+- New `GET /api/onpromo/_health` (registered ahead of the `:steamAppId`
+  route) reports that health snapshot plus live active-promo counts in one
+  call, with a `zeroActiveWarning` note when 0 titles show as on-promo —
+  prompting whoever's looking to check `lastErrorKind` before assuming
+  that's correct, instead of re-doing this whole investigation by hand.
+- `server/promo-calendar-client.test.ts` (6 cases, wired into `npm test`)
+  pins the `/live-now` contract so nobody can accidentally revert to
+  `/next-up`, and exercises the network / http_status / contract_shape /
+  recovery paths.
+- Verified live post-deploy: `curl .../api/onpromo/_health` shows
+  `lastErrorKind: null`, fresh `lastSuccessAt`, and 6/6 mapped titles
+  reporting active Steam promos through 2026-09-14.
