@@ -556,6 +556,28 @@ function initializeDatabase() {
       rows_written INTEGER,
       error_message TEXT
     );
+
+    -- v3.36 (2026-09-07): Per-ASIN Amazon reviews snapshots. Populated
+    -- on-demand from the PDP Reviews tab, and by any future daily
+    -- review-pulse ingest. UPSERT keyed on (asin, review_id).
+    CREATE TABLE IF NOT EXISTS amazon_product_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      review_id TEXT NOT NULL,
+      title TEXT,
+      body TEXT,
+      rating REAL,
+      review_date TEXT,
+      verified_purchase INTEGER,
+      helpful_votes INTEGER,
+      reviewer_name TEXT,
+      variant_attrs_json TEXT,
+      image_urls_json TEXT,
+      fetched_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_product_reviews_unique_asin_review ON amazon_product_reviews(asin, review_id);
+    CREATE INDEX IF NOT EXISTS amazon_product_reviews_by_asin_date_idx ON amazon_product_reviews(asin, review_date);
   `);
 }
 

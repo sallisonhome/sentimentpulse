@@ -6,7 +6,10 @@
  *   07:15 daily   runProductSnapshots()     all tracked ASINs
  *   07:30 daily   runMoversAndNewReleases() 3 platforms × 2 endpoints
  *   07:45 daily   runKeywordSearch()        7 seeded keywords
- *   08:00 Sunday  runAlsoBoughtWeekly()     all tracked ASINs, weekly refresh
+ *   08:00 daily   runAlsoBoughtDaily()      all tracked + competitor ASINs (v3.36:
+ *                                            promoted from weekly to daily; also
+ *                                            includes competitor pins so their PDPs
+ *                                            get an Also-Bought carousel too)
  *
  * Same pattern as `leaderboard-digest.ts::startWeeklyDigestCron`: a single
  * setInterval polling every 60s and comparing wall-clock hh:mm ET against
@@ -45,9 +48,12 @@ import {
   fetchSearch,
   fetchFormatsEditions,
   extractAlsoBought,
+  fetchReviews,
+  extractReviews,
   isVideoGameSoftware,
   isRainforestConfigured,
 } from "./amazon-rainforest";
+import { amazonProductReviews } from "@shared/schema";
 import { listAllCompetitorRelationships, isSentimentPulseIngestRunning } from "./sentimentpulse-client";
 import { log } from "./index";
 
@@ -392,27 +398,40 @@ export async function runKeywordSearch(): Promise<{ rowsWritten: number }> {
   });
 }
 
-// ─── Job: also-bought weekly (08:00 Sunday) ────────────────────────────────
-export async function runAlsoBoughtWeekly(): Promise<{ sources: number; rowsWritten: number }> {
+// ─── Job: also-bought daily (08:00 ET) ─────────────────────────────────────
+// v3.36 (2026-09-07): promoted from weekly to daily so per-title PDPs
+// always show a fresh "customers also bought" carousel, and expanded to
+// include competitor pins (previously we only ingested for tracked Saber
+// ASINs, so competitor PDPs came up empty). One Rainforest `type=product`
+// credit per source ASIN — same call already made daily for buybox is
+// separate, so total cost is roughly 2× the number of pinned ASINs.
+// runAlsoBoughtWeekly is kept as an alias for back-compat with the manual
+// dispatch table + workflow that referenced it.
+export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritten: number }> {
   return withRun("also_bought", async () => {
     const snapshotDate = todayUtcDate();
-    const active = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    // Union of Saber + competitor pins; dedupe by ASIN (an ASIN could
+    // theoretically be pinned as both a Saber SKU and a competitor pin,
+    // though we do not expect this in practice).
+    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+    const sourceAsins = Array.from(new Set([...saberPins, ...compPins].map((p) => p.asin)));
     let totalCreditsUsed = 0;
     let lastCreditsRemaining = 0;
     let rowsWritten = 0;
-    for (const src of active) {
+    for (const asin of sourceAsins) {
       try {
-        const { data, creditsUsed, creditsRemaining } = await fetchProduct(src.asin);
+        const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
         totalCreditsUsed += creditsUsed;
         lastCreditsRemaining = creditsRemaining;
         const alsoBought = extractAlsoBought(data, 5);
         db.delete(amazonAlsoBoughtDaily)
-          .where(and(eq(amazonAlsoBoughtDaily.snapshotDate, snapshotDate), eq(amazonAlsoBoughtDaily.sourceAsin, src.asin)))
+          .where(and(eq(amazonAlsoBoughtDaily.snapshotDate, snapshotDate), eq(amazonAlsoBoughtDaily.sourceAsin, asin)))
           .run();
         for (const ab of alsoBought) {
           db.insert(amazonAlsoBoughtDaily).values({
             snapshotDate,
-            sourceAsin: src.asin,
+            sourceAsin: asin,
             rankPosition: ab.rankPosition,
             recommendedAsin: ab.recommendedAsin,
             title: ab.title,
@@ -427,16 +446,108 @@ export async function runAlsoBoughtWeekly(): Promise<{ sources: number; rowsWrit
           rowsWritten += 1;
         }
       } catch (err) {
-        log(`amazon-cron also_bought ${src.asin} failed: ${err}`, "amazon-cron");
+        log(`amazon-cron also_bought ${asin} failed: ${err}`, "amazon-cron");
       }
     }
     return {
-      result: { sources: active.length, rowsWritten },
+      result: { sources: sourceAsins.length, rowsWritten },
       creditsUsed: totalCreditsUsed,
       creditsRemaining: lastCreditsRemaining,
       rowsWritten,
     };
   });
+}
+
+// Back-compat alias — the manual-dispatch table + amazon-manual-pin.yml
+// still reference `runAlsoBoughtWeekly` by name; callers get the new
+// daily-scope, competitor-inclusive behaviour transparently.
+export const runAlsoBoughtWeekly = runAlsoBoughtDaily;
+
+// ─── Job: reviews daily (08:15 ET) ───────────────────────────────────
+// v3.36 (2026-09-07): pulls the newest ~10 reviews for every pinned
+// ASIN (Saber + competitor). UPSERT by (asin, review_id) so re-runs
+// refresh helpful-vote counts + edited bodies without duplicating rows.
+// One Rainforest `type=reviews` credit per pinned ASIN per day. The PDP
+// Reviews tab reads straight out of the review table + can also POST to
+// force a refresh on demand.
+export async function runReviewsDaily(): Promise<{ sources: number; rowsWritten: number }> {
+  return withRun("reviews", async () => {
+    const snapshotIso = nowIso();
+    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+    const sourceAsins = Array.from(new Set([...saberPins, ...compPins].map((p) => p.asin)));
+    let totalCreditsUsed = 0;
+    let lastCreditsRemaining = 0;
+    let rowsWritten = 0;
+    for (const asin of sourceAsins) {
+      try {
+        const { data, creditsUsed, creditsRemaining } = await fetchReviews(asin, { sortBy: "most_recent" });
+        totalCreditsUsed += creditsUsed;
+        lastCreditsRemaining = creditsRemaining;
+        const reviews = extractReviews(data, 20);
+        for (const rv of reviews) {
+          upsertReviewRow(asin, rv, snapshotIso);
+          rowsWritten += 1;
+        }
+      } catch (err) {
+        log(`amazon-cron reviews ${asin} failed: ${err}`, "amazon-cron");
+      }
+    }
+    return {
+      result: { sources: sourceAsins.length, rowsWritten },
+      creditsUsed: totalCreditsUsed,
+      creditsRemaining: lastCreditsRemaining,
+      rowsWritten,
+    };
+  });
+}
+
+// Idempotent UPSERT for a single review row. Exported so the on-demand
+// PDP endpoint (`POST /api/amazon/product/:asin/reviews/refresh`) can
+// reuse the exact same write path.
+export function upsertReviewRow(
+  asin: string,
+  rv: { reviewId: string; title: string | null; body: string | null; rating: number | null; reviewDate: string | null; verifiedPurchase: boolean | null; helpfulVotes: number | null; reviewerName: string | null; variantAttrs: Array<{ name: string; value: string }> | null; imageUrls: string[] | null },
+  fetchedAtIso: string,
+): void {
+  const existing = db.select().from(amazonProductReviews)
+    .where(and(eq(amazonProductReviews.asin, asin), eq(amazonProductReviews.reviewId, rv.reviewId)))
+    .get();
+  const variantJson = rv.variantAttrs ? JSON.stringify(rv.variantAttrs) : null;
+  const imagesJson = rv.imageUrls ? JSON.stringify(rv.imageUrls) : null;
+  if (existing) {
+    db.update(amazonProductReviews)
+      .set({
+        title: rv.title,
+        body: rv.body,
+        rating: rv.rating,
+        reviewDate: rv.reviewDate,
+        verifiedPurchase: rv.verifiedPurchase,
+        helpfulVotes: rv.helpfulVotes,
+        reviewerName: rv.reviewerName,
+        variantAttrsJson: variantJson,
+        imageUrlsJson: imagesJson,
+        fetchedAt: fetchedAtIso,
+      })
+      .where(and(eq(amazonProductReviews.asin, asin), eq(amazonProductReviews.reviewId, rv.reviewId)))
+      .run();
+  } else {
+    db.insert(amazonProductReviews).values({
+      asin,
+      reviewId: rv.reviewId,
+      title: rv.title,
+      body: rv.body,
+      rating: rv.rating,
+      reviewDate: rv.reviewDate,
+      verifiedPurchase: rv.verifiedPurchase,
+      helpfulVotes: rv.helpfulVotes,
+      reviewerName: rv.reviewerName,
+      variantAttrsJson: variantJson,
+      imageUrlsJson: imagesJson,
+      fetchedAt: fetchedAtIso,
+      createdAt: fetchedAtIso,
+    }).run();
+  }
 }
 
 // ─── Manual job dispatch (used by /api/amazon/ingest/run/:job) ─────────────
@@ -1005,6 +1116,7 @@ export type AmazonJobName =
   | "keywords"
   | "new_releases"
   | "also_bought"
+  | "reviews"
   | "asin_discovery"
   | "asin_search_discovery"
   | "formats_editions_fill"
@@ -1020,6 +1132,7 @@ export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
     case "new_releases":          return runMoversAndNewReleases(); // combined job
     case "keywords":              return runKeywordSearch();
     case "also_bought":           return runAlsoBoughtWeekly();
+    case "reviews":               return runReviewsDaily();
     case "asin_discovery":        return runAsinDiscovery();
     case "asin_search_discovery": return runAsinSearchDiscovery();
     case "formats_editions_fill": return runFormatsEditionsFill();
@@ -1242,8 +1355,13 @@ export function startAmazonIngestionCron(): void {
     if (inWindow(7, 45) && shouldRunSlot("keywords", todayStr)) {
       runKeywordSearch().catch((err) => log(`amazon-cron keywords failed: ${err}`, "amazon-cron"));
     }
-    if (weekday === "Sun" && inWindow(8, 0) && shouldRunSlot("also_bought", todayStr)) {
-      runAlsoBoughtWeekly().catch((err) => log(`amazon-cron also_bought failed: ${err}`, "amazon-cron"));
+    // v3.36 (2026-09-07): daily, not Sunday-only.
+    if (inWindow(8, 0) && shouldRunSlot("also_bought", todayStr)) {
+      runAlsoBoughtDaily().catch((err) => log(`amazon-cron also_bought failed: ${err}`, "amazon-cron"));
+    }
+    // v3.36 (2026-09-07): daily review pulse per pinned ASIN.
+    if (inWindow(8, 15) && shouldRunSlot("reviews", todayStr)) {
+      runReviewsDaily().catch((err) => log(`amazon-cron reviews failed: ${err}`, "amazon-cron"));
     }
   }, 60_000);
 }

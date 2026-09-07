@@ -297,6 +297,83 @@ export function extractAlsoBought(productJson: any, limit = 5): AlsoBoughtRow[] 
   return out;
 }
 
+// ─── Reviews (v3.36, 2026-09-07) ────────────────────────────────────
+// Rainforest `type=reviews` returns up to ~10 reviews per call, newest
+// first when `sort_by=most_recent`. We keep this to 1 page per ASIN per
+// fetch — the PDP wants "top / newest", not exhaustive back-fill — so
+// each call costs 1 credit. For the daily PDP hydrator we call once per
+// pinned ASIN (Saber + competitor) on the same 08:00 slot as also-bought.
+
+export async function fetchReviews(
+  asin: string,
+  opts?: { sortBy?: "most_recent" | "most_helpful" | "top_reviews"; page?: number },
+): Promise<RainforestCallResult<any>> {
+  const params: Record<string, string> = {
+    type: "reviews",
+    asin,
+    amazon_domain: "amazon.com",
+    sort_by: opts?.sortBy ?? "most_recent",
+  };
+  if (opts?.page && opts.page > 1) params.page = String(opts.page);
+  return rainforestRequest(params);
+}
+
+export interface ReviewRow {
+  reviewId: string;
+  title: string | null;
+  body: string | null;
+  rating: number | null;
+  reviewDate: string | null;
+  verifiedPurchase: boolean | null;
+  helpfulVotes: number | null;
+  reviewerName: string | null;
+  variantAttrs: Array<{ name: string; value: string }> | null;
+  imageUrls: string[] | null;
+}
+
+export function extractReviews(reviewsJson: any, limit = 20): ReviewRow[] {
+  const cands: any[] = reviewsJson?.reviews ?? reviewsJson?.top_reviews ?? [];
+  const out: ReviewRow[] = [];
+  for (const r of cands) {
+    if (out.length >= limit) break;
+    if (!r?.id) continue;
+    const dateRaw = r.date;
+    const reviewDate = typeof dateRaw === "string"
+      ? dateRaw
+      : (dateRaw?.utc ?? dateRaw?.raw ?? null);
+    const helpful = (() => {
+      const v = r.helpful_votes;
+      if (typeof v === "number") return v;
+      if (typeof v === "string") {
+        const m = v.match(/(\d+)/);
+        return m ? Number(m[1]) : null;
+      }
+      return null;
+    })();
+    const variantAttrs: Array<{ name: string; value: string }> | null = Array.isArray(r.attributes)
+      ? r.attributes
+          .filter((a: any) => a && typeof a.name === "string")
+          .map((a: any) => ({ name: String(a.name), value: String(a.value ?? "") }))
+      : null;
+    const imageUrls: string[] | null = Array.isArray(r.images)
+      ? r.images.map((im: any) => (typeof im === "string" ? im : im?.link ?? im?.image ?? null)).filter((x: any): x is string => typeof x === "string")
+      : null;
+    out.push({
+      reviewId: String(r.id),
+      title: r.title ? String(r.title) : null,
+      body: r.body ? String(r.body) : null,
+      rating: typeof r.rating === "number" ? r.rating : null,
+      reviewDate,
+      verifiedPurchase: typeof r.verified_purchase === "boolean" ? r.verified_purchase : null,
+      helpfulVotes: helpful,
+      reviewerName: r.profile?.name ? String(r.profile.name) : (r.reviewer ? String(r.reviewer) : null),
+      variantAttrs: variantAttrs && variantAttrs.length ? variantAttrs : null,
+      imageUrls: imageUrls && imageUrls.length ? imageUrls : null,
+    });
+  }
+  return out;
+}
+
 // fetchMoversAndShakers — bestseller_type=movers_and_shakers.
 export async function fetchMovers(platform: AmazonPlatformSlug): Promise<RainforestCallResult<any>> {
   const node = AMAZON_CHART_NODES[platform];

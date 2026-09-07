@@ -983,6 +983,33 @@ export const amazonIngestRuns = sqliteTable("amazon_ingest_runs", {
   errorMessage: text("error_message"),
 });
 
+// v3.36 (2026-09-07): Per-ASIN review snapshots. Populated on-demand from
+// the PDP Reviews tab (and by any future review-pulse ingest). We store
+// one row per Amazon review id per ASIN — the same review may be updated
+// (helpful_votes / body edited) but the (asin, review_id) pair is unique.
+// Rainforest returns review_id, title, body, rating, date (ISO or free-
+// text), verified_purchase, helpful_votes, profile.name, and images[].
+// Everything is nullable because Amazon omits fields on international
+// storefronts and older reviews.
+export const amazonProductReviews = sqliteTable("amazon_product_reviews", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  asin: text("asin").notNull(),
+  reviewId: text("review_id").notNull(),
+  title: text("title"),
+  body: text("body"),
+  rating: real("rating"),
+  reviewDate: text("review_date"), // Amazon's raw "Reviewed in the United States on X" or ISO
+  verifiedPurchase: integer("verified_purchase", { mode: "boolean" }),
+  helpfulVotes: integer("helpful_votes"),
+  reviewerName: text("reviewer_name"),
+  variantAttrsJson: text("variant_attrs_json"), // JSON: e.g. [{name:"Platform", value:"PlayStation 5"}]
+  imageUrlsJson: text("image_urls_json"), // JSON: string[]
+  fetchedAt: text("fetched_at").notNull(), // when we pulled this row from Rainforest
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueAsinReview: uniqueIndex("amazon_product_reviews_unique_asin_review").on(table.asin, table.reviewId),
+}));
+
 export type AmazonAsinMap = typeof amazonAsinMap.$inferSelect;
 export type AmazonChartSnapshot = typeof amazonChartSnapshots.$inferSelect;
 export type AmazonProductDaily = typeof amazonProductDaily.$inferSelect;
@@ -991,3 +1018,4 @@ export type AmazonKeywordDaily = typeof amazonKeywordDaily.$inferSelect;
 export type AmazonNewReleases = typeof amazonNewReleases.$inferSelect;
 export type AmazonAlsoBoughtDaily = typeof amazonAlsoBoughtDaily.$inferSelect;
 export type AmazonIngestRun = typeof amazonIngestRuns.$inferSelect;
+export type AmazonProductReview = typeof amazonProductReviews.$inferSelect;

@@ -4,16 +4,29 @@
  * Four tabs: Overview / Also Bought / Rank History / Reviews.
  * Overview shows the latest scraped product record + the ASIN pin (if any)
  * + today's chart appearance. The other tabs hit their own endpoints for
- * data (rank history from /charts/:platform/history/:asin and reviews
- * from the reviews-pulse endpoint filtered client-side).
+ * data.
+ *
+ * v3.36 (2026-09-07):
+ * - server now returns a proper `product` display record for competitor
+ *   ASINs (previously null → blank page for anything not in amazon_asin_map).
+ * - `chartToday` is a single {platform, rank, rawRank} instead of a
+ *   per-platform bag → header renders correctly.
+ * - `platformBsr` + `platformBsrCategory` surface Amazon's per-platform
+ *   bestseller rank ("#30 in PlayStation 5 Games") in Overview.
+ * - RankHistory reads `data.rows` (client contract) — the server now
+ *   returns both `rows` and legacy `points`.
+ * - Reviews tab is real: reads from /reviews and can force a refresh.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { ExternalLink, ArrowLeft } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ExternalLink, ArrowLeft, RefreshCw, ShieldCheck, ThumbsUp } from "lucide-react";
+import { useState } from "react";
+import { apiRequest } from "@/lib/queryClient";
 
 interface ProductDetail {
   asin: string;
@@ -22,6 +35,7 @@ interface ProductDetail {
     platform: string | null;
     title: string;
     imageUrl: string | null;
+    link: string | null;
     productId: number | null;
     isTracked: boolean;
     isSwitch2: boolean;
@@ -38,6 +52,14 @@ interface ProductDetail {
     imageUrl: string | null;
     link: string | null;
     scrapedAt: string | null;
+    buyboxSeller: string | null;
+    buyboxIsAmazon: number | null;
+    isPrime: number | null;
+    mainBsr: number | null;
+    recentSales: number | null;
+    monthlySalesEstimate: number | null;
+    weeklySalesEstimate: number | null;
+    snapshotDate: string | null;
   } | null;
   chartToday: {
     platform: string;
@@ -46,6 +68,8 @@ interface ProductDetail {
   } | null;
   sparkline: Array<{ snapshotDate: string; rank: number; rawRank: number | null }>;
   sparklinePlatform: string | null;
+  platformBsr: number | null;
+  platformBsrCategory: string | null;
 }
 
 interface AlsoBoughtResponse {
@@ -64,6 +88,25 @@ interface RankHistoryResponse {
   platform: string;
   asin: string;
   rows: Array<{ snapshotDate: string; rank: number; rawRank: number | null }>;
+  points?: Array<{ date: string; rank: number; rawRank: number | null }>;
+}
+
+interface ReviewsResponse {
+  asin: string;
+  latestFetch: string | null;
+  reviews: Array<{
+    reviewId: string;
+    title: string | null;
+    body: string | null;
+    rating: number | null;
+    reviewDate: string | null;
+    verifiedPurchase: number | null;
+    helpfulVotes: number | null;
+    reviewerName: string | null;
+    variantAttrs: unknown;
+    imageUrls: unknown;
+    fetchedAt: string | null;
+  }>;
 }
 
 function MiniSparkline({ points }: { points: Array<{ rank: number }> }) {
@@ -104,9 +147,17 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
     queryKey: [`/api/amazon/product/${asin}/also-bought`],
   });
 
-  const title = detail?.latestProduct?.title ?? detail?.product?.title ?? `ASIN ${asin}`;
-  const image = detail?.latestProduct?.imageUrl ?? detail?.product?.imageUrl ?? null;
-  const platform = detail?.product?.platform ?? detail?.chartToday?.platform ?? detail?.sparklinePlatform;
+  const lp = detail?.latestProduct ?? null;
+  const title = lp?.title ?? detail?.product?.title ?? `ASIN ${asin}`;
+  const image = lp?.imageUrl ?? detail?.product?.imageUrl ?? null;
+  // Resolve platform for the header + rank-history tab. Prefer the pin's
+  // platform, fall back to the platform behind today's chart rank, then to
+  // whatever platform has the freshest sparkline data.
+  const platform: string | null =
+    detail?.product?.platform ??
+    detail?.chartToday?.platform ??
+    detail?.sparklinePlatform ??
+    null;
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -131,23 +182,44 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
           <div className="flex-1 min-w-0 space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-lg font-semibold truncate">{title}</h1>
-              {detail?.product?.isTracked && <Badge variant="outline" style={{ borderColor: "#C0553A", color: "#C0553A" }}>Tracked</Badge>}
-              {platform && <Badge variant="secondary" className="uppercase text-[10px]">{platform}</Badge>}
+              {detail?.product?.isTracked && (
+                <Badge variant="outline" style={{ borderColor: "#C0553A", color: "#C0553A" }}>
+                  Tracked
+                </Badge>
+              )}
+              {platform && (
+                <Badge variant="secondary" className="uppercase text-[10px]">{platform}</Badge>
+              )}
               {detail?.product?.isSwitch2 && <Badge variant="secondary">Switch 2</Badge>}
             </div>
             <div className="text-xs text-muted-foreground tabular-nums flex items-center gap-3 flex-wrap">
               <span>ASIN {asin}</span>
-              {detail?.latestProduct?.price != null && (
-                <span>${detail.latestProduct.price.toFixed(2)}{detail.latestProduct.currency && detail.latestProduct.currency !== "USD" ? ` ${detail.latestProduct.currency}` : ""}</span>
+              {lp?.price != null && (
+                <span>
+                  ${lp.price.toFixed(2)}
+                  {lp.currency && lp.currency !== "USD" ? ` ${lp.currency}` : ""}
+                </span>
               )}
-              {detail?.latestProduct?.rating != null && (
-                <span>★ {detail.latestProduct.rating.toFixed(1)} ({(detail.latestProduct.ratingsTotal ?? 0).toLocaleString()})</span>
+              {lp?.rating != null && (
+                <span>★ {lp.rating.toFixed(1)} ({(lp.ratingsTotal ?? 0).toLocaleString()})</span>
               )}
-              {detail?.chartToday && (
-                <span>Today #{detail.chartToday.rank} on {detail.chartToday.platform}</span>
+              {detail?.chartToday && detail.chartToday.platform && (
+                <span>
+                  Today #{detail.chartToday.rank} on {detail.chartToday.platform}
+                </span>
               )}
-              {detail?.latestProduct?.link && (
-                <a href={detail.latestProduct.link} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 hover:text-foreground">
+              {detail?.platformBsr != null && detail?.platformBsrCategory && (
+                <span>
+                  #{detail.platformBsr.toLocaleString()} in {detail.platformBsrCategory}
+                </span>
+              )}
+              {(lp?.link ?? detail?.product?.link) && (
+                <a
+                  href={(lp?.link ?? detail?.product?.link)!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 hover:text-foreground"
+                >
                   Amazon <ExternalLink className="h-3 w-3" />
                 </a>
               )}
@@ -170,18 +242,82 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
         </TabsList>
 
         <TabsContent value="overview" className="pt-4">
-          <Card className="p-4 text-xs text-muted-foreground">
-            {detail?.latestProduct?.availability && <div>Availability: {detail.latestProduct.availability}</div>}
-            {detail?.latestProduct?.brand && <div>Brand: {detail.latestProduct.brand}</div>}
-            {detail?.latestProduct?.scrapedAt && <div>Last scraped: {new Date(detail.latestProduct.scrapedAt).toLocaleString()}</div>}
-            {!detail?.latestProduct && <div>No product detail scraped yet.</div>}
+          <Card className="p-4 space-y-2 text-xs">
+            {!lp ? (
+              <div className="text-muted-foreground">No product detail scraped yet.</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-1.5 tabular-nums">
+                {lp.price != null && (
+                  <OverviewRow label="Buybox price" value={`$${lp.price.toFixed(2)}${lp.currency && lp.currency !== "USD" ? ` ${lp.currency}` : ""}`} />
+                )}
+                {lp.availability && <OverviewRow label="Availability" value={lp.availability} />}
+                {lp.buyboxSeller && (
+                  <OverviewRow
+                    label="Buybox seller"
+                    value={
+                      <span className="inline-flex items-center gap-1.5">
+                        {lp.buyboxSeller}
+                        {lp.buyboxIsAmazon ? (
+                          <Badge variant="outline" className="text-[9px] px-1">Amazon</Badge>
+                        ) : null}
+                        {lp.isPrime ? (
+                          <Badge variant="outline" className="text-[9px] px-1">Prime</Badge>
+                        ) : null}
+                      </span>
+                    }
+                  />
+                )}
+                {lp.rating != null && (
+                  <OverviewRow
+                    label="Rating"
+                    value={`★ ${lp.rating.toFixed(1)} (${(lp.ratingsTotal ?? 0).toLocaleString()} ratings)`}
+                  />
+                )}
+                {detail?.platformBsr != null && detail?.platformBsrCategory && (
+                  <OverviewRow
+                    label="Platform BSR"
+                    value={`#${detail.platformBsr.toLocaleString()} in ${detail.platformBsrCategory}`}
+                  />
+                )}
+                {lp.mainBsr != null && (
+                  <OverviewRow label="Main BSR" value={`#${lp.mainBsr.toLocaleString()}`} />
+                )}
+                {lp.recentSales != null && (
+                  <OverviewRow label="Recent sales" value={lp.recentSales.toLocaleString()} />
+                )}
+                {lp.monthlySalesEstimate != null && (
+                  <OverviewRow
+                    label="Monthly sales est."
+                    value={lp.monthlySalesEstimate.toLocaleString()}
+                  />
+                )}
+                {lp.weeklySalesEstimate != null && (
+                  <OverviewRow
+                    label="Weekly sales est."
+                    value={lp.weeklySalesEstimate.toLocaleString()}
+                  />
+                )}
+                {lp.brand && <OverviewRow label="Brand" value={lp.brand} />}
+                {lp.snapshotDate && (
+                  <OverviewRow label="Snapshot date" value={lp.snapshotDate} />
+                )}
+                {lp.scrapedAt && (
+                  <OverviewRow
+                    label="Last scraped"
+                    value={new Date(lp.scrapedAt).toLocaleString()}
+                  />
+                )}
+              </div>
+            )}
           </Card>
         </TabsContent>
 
         <TabsContent value="also-bought" className="pt-4">
           <Card className="overflow-hidden">
             {!alsoBought || alsoBought.recommendations.length === 0 ? (
-              <div className="p-6 text-center text-xs text-muted-foreground">No "customers also bought" data yet.</div>
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                No "customers also bought" data yet.
+              </div>
             ) : (
               <div className="divide-y">
                 {alsoBought.recommendations.map((r) => (
@@ -198,9 +334,16 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
                     )}
                     <div className="flex-1 min-w-0 text-xs">
                       <div className="font-medium truncate">{r.title ?? r.recommendedAsin}</div>
-                      <div className="text-muted-foreground text-[10px]">ASIN {r.recommendedAsin}{r.position ? ` · pos ${r.position}` : ""}</div>
+                      <div className="text-muted-foreground text-[10px]">
+                        ASIN {r.recommendedAsin}
+                        {r.position ? ` · pos ${r.position}` : ""}
+                      </div>
                     </div>
-                    {r.isTracked && <Badge variant="outline" style={{ borderColor: "#C0553A", color: "#C0553A" }}>Tracked</Badge>}
+                    {r.isTracked && (
+                      <Badge variant="outline" style={{ borderColor: "#C0553A", color: "#C0553A" }}>
+                        Tracked
+                      </Badge>
+                    )}
                   </a>
                 ))}
               </div>
@@ -209,31 +352,53 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
         </TabsContent>
 
         <TabsContent value="rank-history" className="pt-4">
-          <RankHistoryPanel platform={platform ?? "ps5"} asin={asin} />
+          <RankHistoryPanel platform={platform} asin={asin} />
         </TabsContent>
 
         <TabsContent value="reviews" className="pt-4">
-          <Card className="p-4 text-xs text-muted-foreground">
-            Review pulse for this ASIN is aggregated in the top-level Reviews view; per-ASIN review timeline is a Phase 2 refinement.
-          </Card>
+          <ReviewsPanel asin={asin} />
         </TabsContent>
       </Tabs>
     </div>
   );
 }
 
-function RankHistoryPanel({ platform, asin }: { platform: string; asin: string }) {
+function OverviewRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-4">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right">{value}</span>
+    </div>
+  );
+}
+
+function RankHistoryPanel({ platform, asin }: { platform: string | null; asin: string }) {
+  // If we don't have a platform yet, don't fire the query with a bogus slug.
+  const enabled = !!platform;
   const { data, isLoading } = useQuery<RankHistoryResponse>({
-    queryKey: [`/api/amazon/charts/${platform}/history/${asin}`],
+    queryKey: [`/api/amazon/charts/${platform ?? "ps5"}/history/${asin}`],
+    enabled,
   });
+  if (!enabled) {
+    return (
+      <Card className="p-6 text-center text-xs text-muted-foreground">
+        No platform assigned to this ASIN yet.
+      </Card>
+    );
+  }
   if (isLoading) return <Skeleton className="h-40 w-full rounded-xl" />;
-  if (!data || data.rows.length === 0) {
-    return <Card className="p-6 text-center text-xs text-muted-foreground">No rank history on {platform} yet.</Card>;
+  const rows = data?.rows ?? [];
+  if (rows.length === 0) {
+    return (
+      <Card className="p-6 text-center text-xs text-muted-foreground">
+        No rank history on {platform} yet.
+      </Card>
+    );
   }
   return (
     <Card className="overflow-hidden">
       <div className="divide-y">
-        {data.rows.map((r) => (
+        {rows.map((r) => (
           <div key={r.snapshotDate} className="flex items-center justify-between px-4 py-1.5 text-xs tabular-nums">
             <span>{r.snapshotDate}</span>
             <span>
@@ -246,5 +411,108 @@ function RankHistoryPanel({ platform, asin }: { platform: string; asin: string }
         ))}
       </div>
     </Card>
+  );
+}
+
+function ReviewsPanel({ asin }: { asin: string }) {
+  const queryClient = useQueryClient();
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const { data, isLoading } = useQuery<ReviewsResponse>({
+    queryKey: [`/api/amazon/product/${asin}/reviews`],
+  });
+
+  const refresh = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", `/api/amazon/product/${asin}/reviews/refresh`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      setRefreshError(null);
+      queryClient.invalidateQueries({ queryKey: [`/api/amazon/product/${asin}/reviews`] });
+    },
+    onError: (err: unknown) => {
+      setRefreshError(err instanceof Error ? err.message : String(err));
+    },
+  });
+
+  const reviews = data?.reviews ?? [];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          {data?.latestFetch
+            ? `Last fetched ${new Date(data.latestFetch).toLocaleString()}`
+            : "No reviews fetched for this ASIN yet."}
+          {reviews.length > 0 && ` · ${reviews.length} stored`}
+        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => refresh.mutate()}
+          disabled={refresh.isPending}
+          data-testid="button-refresh-reviews"
+        >
+          <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${refresh.isPending ? "animate-spin" : ""}`} />
+          {refresh.isPending ? "Fetching..." : "Refresh from Amazon"}
+        </Button>
+      </div>
+
+      {refreshError && (
+        <Card className="p-3 text-xs text-red-500 border-red-500/40">
+          Refresh failed: {refreshError}
+        </Card>
+      )}
+
+      {isLoading ? (
+        <Skeleton className="h-40 w-full rounded-xl" />
+      ) : reviews.length === 0 ? (
+        <Card className="p-6 text-center text-xs text-muted-foreground">
+          No reviews stored yet. Click "Refresh from Amazon" to pull the latest 20 reviews.
+        </Card>
+      ) : (
+        <div className="space-y-2">
+          {reviews.map((r) => (
+            <Card key={r.reviewId} className="p-3 space-y-1.5" data-testid={`row-review-${r.reviewId}`}>
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-2 text-xs">
+                  {r.rating != null && (
+                    <span className="tabular-nums font-medium">★ {r.rating.toFixed(1)}</span>
+                  )}
+                  {r.title && <span className="font-medium truncate">{r.title}</span>}
+                </div>
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  {r.verifiedPurchase ? (
+                    <span className="inline-flex items-center gap-1">
+                      <ShieldCheck className="h-3 w-3" />
+                      Verified
+                    </span>
+                  ) : null}
+                  {r.helpfulVotes != null && r.helpfulVotes > 0 && (
+                    <span className="inline-flex items-center gap-1 tabular-nums">
+                      <ThumbsUp className="h-3 w-3" />
+                      {r.helpfulVotes}
+                    </span>
+                  )}
+                  {r.reviewDate && <span className="tabular-nums">{r.reviewDate}</span>}
+                </div>
+              </div>
+              {r.body && (
+                <p className="text-xs text-muted-foreground leading-relaxed whitespace-pre-wrap">
+                  {r.body}
+                </p>
+              )}
+              {r.reviewerName && (
+                <div className="text-[10px] text-muted-foreground">— {r.reviewerName}</div>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
