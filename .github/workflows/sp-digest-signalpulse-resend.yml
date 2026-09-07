@@ -1,0 +1,83 @@
+name: SignalPulse Weekly Digest — Resend
+
+# Matches sp-digest-inspect pattern. SSHes to the droplet and runs a
+# short-lived Node process that imports the SignalPulse app's own
+# leaderboard-digest.ts via tsx and calls sendWeeklyLeaderboardDigest
+# directly. Bypasses HTTP auth because we're already inside the app
+# process, same posture as the cron scheduler.
+
+on:
+  workflow_dispatch:
+    inputs:
+      subject_prefix:
+        description: 'Optional subject prefix (prepended as "PREFIX — <original subject>"). Blank = no prefix.'
+        required: false
+        default: 'Resending Digest w/ Context From Saber Promo Calendar in SignalPulse'
+      recipients_override:
+        description: 'Optional comma-separated recipient override. Blank = active recipient list from DB.'
+        required: false
+        default: ''
+
+jobs:
+  resend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Resend
+        env:
+          SUBJECT_PREFIX: ${{ github.event.inputs.subject_prefix }}
+          RECIPIENTS: ${{ github.event.inputs.recipients_override }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
+              SUBJECT_PREFIX="$SUBJECT_PREFIX" RECIPIENTS="$RECIPIENTS" \
+              bash -s <<'REMOTE_EOF'
+            set -euo pipefail
+            APP_DIR=/opt/sentimentpulse/signalpulse
+            cd "$APP_DIR"
+
+            SUBJECT_PREFIX="${SUBJECT_PREFIX:-}"
+            RECIPIENTS="${RECIPIENTS:-}"
+
+            echo "── SignalPulse weekly digest resend ──"
+            echo "  subject_prefix: ${SUBJECT_PREFIX:-<none>}"
+            echo "  recipients:     ${RECIPIENTS:-<active list from DB>}"
+
+            # Convert recipients into a JS array literal (or the literal 'undefined').
+            if [ -n "$RECIPIENTS" ]; then
+              REC_JS=$(python3 -c "import json,os; print(json.dumps([x.strip() for x in os.environ['RECIPIENTS'].split(',') if x.strip()]))")
+            else
+              REC_JS="undefined"
+            fi
+            if [ -n "$SUBJECT_PREFIX" ]; then
+              PFX_JS=$(python3 -c "import json,os; print(json.dumps(os.environ['SUBJECT_PREFIX']))")
+            else
+              PFX_JS="undefined"
+            fi
+
+            # Emit a scratch TS file that imports from ./server/ and calls
+            # the function. Run via npx tsx which the app already uses in
+            # dev. This uses the SAME source path the running server uses.
+            cat > /tmp/sp-resend.ts <<TS_EOF
+            import { sendWeeklyLeaderboardDigest } from "./server/leaderboard-digest";
+            (async () => {
+              const result = await sendWeeklyLeaderboardDigest(undefined, ${REC_JS}, ${PFX_JS});
+              console.log(JSON.stringify(result, null, 2));
+              if (!result.sent) process.exit(3);
+            })().catch((e) => { console.error("EXC:", e && (e.stack || e)); process.exit(4); });
+            TS_EOF
+
+            # Move it into the app so relative imports resolve.
+            mv /tmp/sp-resend.ts "$APP_DIR/sp-resend.ts"
+            trap 'rm -f "$APP_DIR/sp-resend.ts"' EXIT
+
+            echo "── Running via tsx ──"
+            npx tsx "$APP_DIR/sp-resend.ts" 2>&1
+            echo "── Done ──"
+          REMOTE_EOF
