@@ -279,7 +279,10 @@ async function fetchPromoContext(appIds: number[]): Promise<Map<number, ActivePr
 /** Compact human string for one title's active-promo state, used inside
  * the narrative summary lines fed to Sonar. Empty string when no promos. */
 function promoLineFragment(appId: number, ctx: Map<number, ActivePromo[]>): string {
-  const promos = ctx.get(appId) ?? [];
+  // v3.34.2 (2026-09-07): Steam-only, since this digest covers Steam data.
+  const promos = (ctx.get(appId) ?? []).filter(
+    (p) => p.platform && p.platform.toLowerCase() === "steam",
+  );
   if (promos.length === 0) return "";
   const parts = promos.map((p) => {
     const disc = p.max_discount_pct != null
@@ -316,9 +319,15 @@ function renderOnPromoNowSection(
     if (Number.isFinite(n)) titleByAppId.set(n, r.title);
   }
 
+  // v3.34.2 (2026-09-07): this digest is Steam-only (wishlist + revenue
+  // are both Steam datasets), so surface only Steam promos. Sony /
+  // Microsoft promos from the Promo Calendar are still valuable context
+  // in the app itself but would be noise here.
   const rows: Array<{ appId: number; title: string; promos: ActivePromo[] }> = [];
   titleByAppId.forEach((title, appId) => {
-    const promos = promoCtx.get(appId) ?? [];
+    const promos = (promoCtx.get(appId) ?? []).filter(
+      (p) => p.platform && p.platform.toLowerCase() === "steam",
+    );
     if (promos.length > 0) rows.push({ appId, title, promos });
   });
   if (rows.length === 0) return "";
@@ -496,8 +505,8 @@ ${renderOnPromoNowSection(wlRows, revRows, promoCtx)}
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Game Rev (Wk)</th>
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">DLC Units (Wk)</th>
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">DLC Rev (Wk)</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Total Rev (Wk)</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">LTD Rev</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Total Rev (Wk, Game + DLC)</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">LTD Rev (Game + DLC)</th>
     </tr>
     ${revRowsHtml}
   </table>
