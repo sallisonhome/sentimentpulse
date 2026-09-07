@@ -416,6 +416,7 @@ export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritt
     const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
     const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
     const sourceAsins = Array.from(new Set([...saberPins, ...compPins].map((p) => p.asin)));
+    log(`amazon-cron also_bought START sources=${sourceAsins.length} (saber=${saberPins.length} comp=${compPins.length})`, "amazon-cron");
     let totalCreditsUsed = 0;
     let lastCreditsRemaining = 0;
     let rowsWritten = 0;
@@ -424,6 +425,17 @@ export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritt
         const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
         totalCreditsUsed += creditsUsed;
         lastCreditsRemaining = creditsRemaining;
+        // v3.36 debug: dump shape hints so we can see what Rainforest is
+        // actually returning for these video-game ASINs. Safe: no secrets,
+        // only key names + counts.
+        const topKeys = data && typeof data === "object" ? Object.keys(data) : [];
+        const productKeys = data?.product && typeof data.product === "object" ? Object.keys(data.product) : [];
+        const suggestKeys = productKeys.filter((k: string) => /bought|related|together|recommend|similar|frequently|also|viewed|carousel/i.test(k));
+        const abLen = Array.isArray(data?.product?.also_bought) ? data.product.also_bought.length
+          : Array.isArray(data?.also_bought) ? data.also_bought.length
+          : Array.isArray(data?.product?.frequently_bought_together) ? data.product.frequently_bought_together.length
+          : -1;
+        log(`amazon-cron also_bought DEBUG asin=${asin} top_keys=${JSON.stringify(topKeys)} product_suggest_keys=${JSON.stringify(suggestKeys)} also_bought_len=${abLen}`, "amazon-cron");
         const alsoBought = extractAlsoBought(data, 5);
         db.delete(amazonAlsoBoughtDaily)
           .where(and(eq(amazonAlsoBoughtDaily.snapshotDate, snapshotDate), eq(amazonAlsoBoughtDaily.sourceAsin, asin)))
