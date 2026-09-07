@@ -68,7 +68,10 @@ export function registerAmazonRoutes(app: Express): void {
   });
 
   // ── Saber Amazon Leaderboard (feeds the third tab on /leaderboards) ────
-  app.get("/api/amazon/leaderboard/saber", (_req, res) => {
+  // Named handler so /api/amazon/ingest/leaderboard-preview (ops-token
+  // bypass) can render the same payload for verification/debugging
+  // without needing a user JWT.
+  const handleLeaderboardSaber = (_req: Request, res: Response) => {
     try {
       // "Today" means the most recent snapshot date we actually have, not
       // literal UTC today. Charts run at 07:00 ET ≈ 11:00 UTC, so between
@@ -303,7 +306,10 @@ export function registerAmazonRoutes(app: Express): void {
     } catch (err: any) {
       res.status(500).json({ error: err?.message ?? String(err) });
     }
-  });
+  };
+  app.get("/api/amazon/leaderboard/saber", handleLeaderboardSaber);
+  // Ops-token-bypass alias for internal verification (same payload).
+  app.get("/api/amazon/ingest/leaderboard-preview", handleLeaderboardSaber);
 
   // ── Full top-50 per platform ───────────────────────────────────────────
   app.get("/api/amazon/charts/:platform", (req, res) => {
