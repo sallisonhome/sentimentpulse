@@ -501,6 +501,11 @@ function initializeDatabase() {
       sub_bsrs_json TEXT,
       rating REAL,
       ratings_total INTEGER,
+      recent_sales TEXT,
+      monthly_sales_estimate INTEGER,
+      weekly_sales_estimate INTEGER,
+      sales_estimate_bsr INTEGER,
+      sales_estimate_category TEXT,
       created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS amazon_product_daily_unique_day_asin ON amazon_product_daily(snapshot_date, asin);
@@ -577,6 +582,12 @@ function runMigrations() {
   // v3.32 (2026-09-05)
   migrateAddColumnIfMissing("steam_sales_by_country_period", "pct_of_units", "pct_of_units REAL");
   migrateAddColumnIfMissing("steam_sales_by_country_period", "pct_of_revenue", "pct_of_revenue REAL");
+  // v3.33 (2026-09-07): Amazon recent_sales + sales_estimation columns
+  migrateAddColumnIfMissing("amazon_product_daily", "recent_sales", "recent_sales TEXT");
+  migrateAddColumnIfMissing("amazon_product_daily", "monthly_sales_estimate", "monthly_sales_estimate INTEGER");
+  migrateAddColumnIfMissing("amazon_product_daily", "weekly_sales_estimate", "weekly_sales_estimate INTEGER");
+  migrateAddColumnIfMissing("amazon_product_daily", "sales_estimate_bsr", "sales_estimate_bsr INTEGER");
+  migrateAddColumnIfMissing("amazon_product_daily", "sales_estimate_category", "sales_estimate_category TEXT");
 }
 
 initializeDatabase();

@@ -38,6 +38,8 @@ import { and, eq } from "drizzle-orm";
 import {
   fetchSoftwareChart,
   fetchProduct,
+  fetchSalesEstimation,
+  extractRecentSales,
   fetchMovers,
   fetchNewReleases,
   fetchSearch,
@@ -237,6 +239,7 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
         db.delete(amazonProductDaily)
           .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, row.asin)))
           .run();
+        const recentSales = extractRecentSales(data);
         db.insert(amazonProductDaily).values({
           snapshotDate,
           asin: row.asin,
@@ -249,6 +252,7 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
           subBsrsJson: JSON.stringify(subBsrs),
           rating: p.rating ?? null,
           ratingsTotal: p.ratings_total ?? null,
+          recentSales,
           createdAt: nowIso(),
         }).run();
         rowsWritten += 1;
@@ -1004,6 +1008,7 @@ export type AmazonJobName =
   | "asin_discovery"
   | "asin_search_discovery"
   | "formats_editions_fill"
+  | "sales_estimation"
   | "competitor_discovery"
   | "clean_auto_pins";
 
@@ -1018,6 +1023,7 @@ export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
     case "asin_discovery":        return runAsinDiscovery();
     case "asin_search_discovery": return runAsinSearchDiscovery();
     case "formats_editions_fill": return runFormatsEditionsFill();
+    case "sales_estimation":      return runSalesEstimation();
     case "competitor_discovery": return runCompetitorDiscovery();
     case "clean_auto_pins":      return runCleanAutoPins();
     default:
@@ -1223,6 +1229,13 @@ export function startAmazonIngestionCron(): void {
     if (inWindow(7, 15) && shouldRunSlot("products", todayStr)) {
       runProductSnapshots().catch((err) => log(`amazon-cron products failed: ${err}`, "amazon-cron"));
     }
+    // 07:20 ET — sales_estimation runs AFTER products so today's row is
+    // already in amazonProductDaily; the estimation job updates the same
+    // row with the monthly/weekly unit estimate. ~1 credit per pinned
+    // ASIN so ~30 credits/day for the current slate.
+    if (inWindow(7, 20) && shouldRunSlot("sales_estimation", todayStr)) {
+      runSalesEstimation().catch((err) => log(`amazon-cron sales_estimation failed: ${err}`, "amazon-cron"));
+    }
     if (inWindow(7, 30) && shouldRunSlot("movers_and_new_releases", todayStr)) {
       runMoversAndNewReleases().catch((err) => log(`amazon-cron movers_and_new_releases failed: ${err}`, "amazon-cron"));
     }
@@ -1246,3 +1259,128 @@ export function stopAmazonIngestionCron(): void {
 // (AmazonPlatformSlug is imported for type parity with amazon-rainforest.ts;
 // callers may not reference it directly from this file.)
 export type { AmazonPlatformSlug };
+
+// runSalesEstimation — for every active pinned ASIN (Saber + competitor),
+// call Rainforest type=sales_estimation and merge weekly/monthly unit
+// estimates onto today's amazon_product_daily row. Runs AFTER runProducts
+// (which creates today's row) so this is a lightweight column update.
+//
+// Rainforest costs 1 credit per call. Fails silently for SKUs with no
+// BSR (pre-orders, brand-new listings) — those rows just stay null and
+// the UI renders "—". Nulls are normal, not an error.
+export async function runSalesEstimation(): Promise<{
+  asins: number;
+  updated: number;
+  hasEstimation: number;
+  noEstimation: number;
+  errors: number;
+}> {
+  return withRun("sales_estimation", async () => {
+    const snapshotDate = todayUtcDate();
+    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+    const seen = new Set<string>();
+    const active: string[] = [];
+    for (const p of saberPins) {
+      if (seen.has(p.asin)) continue;
+      seen.add(p.asin);
+      active.push(p.asin);
+    }
+    for (const p of compPins) {
+      if (seen.has(p.asin)) continue;
+      seen.add(p.asin);
+      active.push(p.asin);
+    }
+
+    let totalCreditsUsed = 0;
+    let lastCreditsRemaining = 0;
+    let updated = 0;
+    let hasEstimation = 0;
+    let noEstimation = 0;
+    let errors = 0;
+
+    for (const asin of active) {
+      try {
+        const { data, creditsUsed, creditsRemaining } = await fetchSalesEstimation(asin);
+        totalCreditsUsed += creditsUsed;
+        lastCreditsRemaining = creditsRemaining;
+        // Rainforest returns either { sales_estimation: {...} } or a
+        // top-level snake_case bag — handle both to be defensive.
+        const est = data?.sales_estimation ?? data ?? {};
+        const has = est.has_sales_estimation === true;
+        if (has) {
+          const monthly = numericOrNull(est.monthly_sales_estimate);
+          const weekly = numericOrNull(est.weekly_sales_estimate);
+          const bsrAt = numericOrNull(est.bestseller_rank);
+          const category = typeof est.sales_estimation_category === "string" ? est.sales_estimation_category : null;
+
+          // Ensure today's row exists before updating — runProducts should
+          // have inserted one already, but a first-boot / new-pin edge
+          // case could miss it. Insert a minimal row if so.
+          const existing = db.select().from(amazonProductDaily)
+            .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, asin)))
+            .get();
+          if (!existing) {
+            db.insert(amazonProductDaily).values({
+              snapshotDate,
+              asin,
+              buyboxPrice: null,
+              buyboxSeller: null,
+              buyboxIsAmazon: false,
+              isPrime: false,
+              stockStatus: null,
+              mainBsr: null,
+              subBsrsJson: null,
+              rating: null,
+              ratingsTotal: null,
+              recentSales: null,
+              monthlySalesEstimate: monthly,
+              weeklySalesEstimate: weekly,
+              salesEstimateBsr: bsrAt,
+              salesEstimateCategory: category,
+              createdAt: nowIso(),
+            }).run();
+          } else {
+            db.update(amazonProductDaily).set({
+              monthlySalesEstimate: monthly,
+              weeklySalesEstimate: weekly,
+              salesEstimateBsr: bsrAt,
+              salesEstimateCategory: category,
+            }).where(and(
+              eq(amazonProductDaily.snapshotDate, snapshotDate),
+              eq(amazonProductDaily.asin, asin),
+            )).run();
+          }
+          hasEstimation += 1;
+          updated += 1;
+        } else {
+          noEstimation += 1;
+        }
+      } catch (err) {
+        errors += 1;
+        log(`sales-estimation: ${asin} failed: ${err}`, "amazon-cron");
+      }
+    }
+
+    log(`sales-estimation done: asins=${active.length} updated=${updated} hasEst=${hasEstimation} noEst=${noEstimation} errors=${errors} creditsUsed=${totalCreditsUsed} creditsRemaining=${lastCreditsRemaining}`, "amazon-cron");
+
+    return {
+      result: { asins: active.length, updated, hasEstimation, noEstimation, errors },
+      creditsUsed: totalCreditsUsed,
+      creditsRemaining: lastCreditsRemaining,
+      rowsWritten: updated,
+    };
+  });
+}
+
+function numericOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return Math.round(v);
+  if (typeof v === "string") {
+    const cleaned = v.replace(/[^\d.\-]/g, "");
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? Math.round(n) : null;
+  }
+  return null;
+}

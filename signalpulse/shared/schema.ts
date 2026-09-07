@@ -906,6 +906,20 @@ export const amazonProductDaily = sqliteTable("amazon_product_daily", {
   subBsrsJson: text("sub_bsrs_json"), // JSON: [{category, rank}]
   rating: real("rating"),
   ratingsTotal: integer("ratings_total"),
+  // "Bought in past month" label surfaced on the product / search cards.
+  // Rainforest returns the raw display string (e.g. "100+ bought in past
+  // month", "1K+ bought in past week"). Only present on high-velocity SKUs
+  // — nulls are normal.
+  recentSales: text("recent_sales"),
+  // Rainforest sales_estimation output. Populated by the daily
+  // sales_estimation job that runs after `products`. Nulls when the ASIN
+  // has no BSR (pre-orders) or ranks too low to model. Estimates track
+  // the BSR at the time of estimation, stored separately from mainBsr
+  // so we can spot stale estimates.
+  monthlySalesEstimate: integer("monthly_sales_estimate"),
+  weeklySalesEstimate: integer("weekly_sales_estimate"),
+  salesEstimateBsr: integer("sales_estimate_bsr"),
+  salesEstimateCategory: text("sales_estimate_category"),
   createdAt: text("created_at").notNull(),
 }, (table) => ({
   uniqueDayAsin: uniqueIndex("amazon_product_daily_unique_day_asin").on(table.snapshotDate, table.asin),

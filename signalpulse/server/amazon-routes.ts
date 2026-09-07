@@ -224,6 +224,17 @@ export function registerAmazonRoutes(app: Express): void {
         pin: { asin: string; isSwitch2?: boolean },
         slug: string,
       ): Record<string, unknown> | null => {
+        // Sales-estimation and recent-sales come from amazon_product_daily
+        // regardless of chart presence, so pull the freshest row once and
+        // merge into whichever cell shape we end up returning below.
+        const prodToday = lookupAsinProductOn(pin.asin, today);
+        const estFields = {
+          recentSales: prodToday?.recentSales ?? null,
+          monthlySalesEstimate: prodToday?.monthlySalesEstimate ?? null,
+          weeklySalesEstimate: prodToday?.weeklySalesEstimate ?? null,
+          salesEstimateBsr: prodToday?.salesEstimateBsr ?? null,
+          salesEstimateCategory: prodToday?.salesEstimateCategory ?? null,
+        };
         const rowToday = lookupAsinRankOn(pin.asin, slug, today);
         if (rowToday) {
           const row1d  = lookupAsinRankOn(pin.asin, slug, d1);
@@ -241,11 +252,15 @@ export function registerAmazonRoutes(app: Express): void {
             delta30d: rankDelta(rowToday.rank, row30d ? { rank: row30d.rank } : undefined),
             asin: pin.asin,
             isSwitch2: pin.isSwitch2 ?? false,
+            ...estFields,
           };
         }
-        // No chart row — fall back to products BSR.
-        const prodToday = lookupAsinProductOn(pin.asin, today);
-        if (!prodToday || prodToday.mainBsr == null) return null;
+        // No chart row — fall back to products BSR. Even without BSR, if
+        // sales-estimation returned a number we still want to surface it.
+        if (!prodToday) return null;
+        const hasBsr = prodToday.mainBsr != null;
+        const hasEst = estFields.monthlySalesEstimate != null || estFields.recentSales != null;
+        if (!hasBsr && !hasEst) return null;
         const prod1d  = lookupAsinProductOn(pin.asin, d1);
         const prod7d  = lookupAsinProductOn(pin.asin, d7);
         const prod30d = lookupAsinProductOn(pin.asin, d30);
@@ -256,11 +271,12 @@ export function registerAmazonRoutes(app: Express): void {
           bsr: prodToday.mainBsr,
           price: prodToday.buyboxPrice,
           rating: prodToday.rating,
-          delta1d:  bsrDelta(prodToday.mainBsr, prod1d?.mainBsr),
-          delta7d:  bsrDelta(prodToday.mainBsr, prod7d?.mainBsr),
-          delta30d: bsrDelta(prodToday.mainBsr, prod30d?.mainBsr),
+          delta1d:  hasBsr ? bsrDelta(prodToday.mainBsr, prod1d?.mainBsr) : null,
+          delta7d:  hasBsr ? bsrDelta(prodToday.mainBsr, prod7d?.mainBsr) : null,
+          delta30d: hasBsr ? bsrDelta(prodToday.mainBsr, prod30d?.mainBsr) : null,
           asin: pin.asin,
           isSwitch2: pin.isSwitch2 ?? false,
+          ...estFields,
         };
       };
 
@@ -847,7 +863,7 @@ export function registerAmazonRoutes(app: Express): void {
   // ── Ops: manual ingest + recent runs ───────────────────────────────────
   app.post("/api/amazon/ingest/run/:job", async (req, res) => {
     const job = req.params.job as AmazonJobName;
-    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "asin_discovery", "asin_search_discovery", "formats_editions_fill", "competitor_discovery", "clean_auto_pins"].includes(job)) {
+    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "asin_discovery", "asin_search_discovery", "formats_editions_fill", "sales_estimation", "competitor_discovery", "clean_auto_pins"].includes(job)) {
       return res.status(400).json({ error: "unknown job" });
     }
     // clean_auto_pins is a DB-only op; every other job hits Rainforest.

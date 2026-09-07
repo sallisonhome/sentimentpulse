@@ -32,6 +32,7 @@ on:
           - asin_search_discovery
           - competitor_discovery
           - formats_editions_fill
+          - sales_estimation
           - clean_auto_pins
           - pin_status
 

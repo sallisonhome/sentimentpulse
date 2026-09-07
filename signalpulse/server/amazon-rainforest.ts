@@ -228,6 +228,38 @@ export async function fetchFormatsEditions(asin: string): Promise<RainforestCall
   return rainforestRequest({ type: "formats_editions", asin, amazon_domain: "amazon.com" });
 }
 
+// fetchSalesEstimation — Rainforest `type=sales_estimation`. Given an ASIN,
+// returns an internal-model estimate of weekly + monthly units sold, based
+// on BSR + category signals. Returns null-populated `sales_estimation` with
+// has_sales_estimation=false when there is not enough data (no BSR, rank
+// too low, pre-order). Costs 1 credit per call per Rainforest docs.
+export async function fetchSalesEstimation(asin: string): Promise<RainforestCallResult<any>> {
+  return rainforestRequest({ type: "sales_estimation", asin, amazon_domain: "amazon.com" });
+}
+
+// Extract the "bought in past .." label from a product response, handling
+// the two shapes Rainforest may emit (top-level string or object with a
+// `text` field). Returns null when Amazon isn't showing the label for this
+// SKU — that's the common case for low-velocity / pre-order items.
+export function extractRecentSales(productJson: any): string | null {
+  const p = productJson?.product ?? productJson ?? {};
+  const candidates: Array<unknown> = [
+    p.recent_sales,
+    p.buybox_winner?.recent_sales,
+    p.summarization_attributes?.recent_sales,
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    if (typeof c === "string" && c.trim()) return c.trim();
+    if (typeof c === "object") {
+      const anyC = c as any;
+      const s = anyC.text ?? anyC.value ?? anyC.label ?? anyC.raw;
+      if (typeof s === "string" && s.trim()) return s.trim();
+    }
+  }
+  return null;
+}
+
 // Extracts up to `limit` also_bought recommendations from a product response.
 export interface AlsoBoughtRow {
   rankPosition: number;

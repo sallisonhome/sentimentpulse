@@ -310,6 +310,20 @@ interface AmazonPlatformCell {
   rating: number | null;
   asin: string;
   isSwitch2: boolean;
+  // Sales-signal columns:
+  // recentSales    — raw Amazon label ("100+ bought in past month"). Free
+  //                  ride on the products call — only present on
+  //                  high-velocity SKUs, common to be null.
+  // monthlySalesEstimate / weeklySalesEstimate — Rainforest sales_estimation
+  //                  model output. 1 credit per ASIN per day. Null on
+  //                  pre-orders and very-low-rank SKUs.
+  // salesEstimateBsr — the BSR the estimate was computed against; if it
+  //                    diverges wildly from current bsr the estimate is stale.
+  recentSales?: string | null;
+  monthlySalesEstimate?: number | null;
+  weeklySalesEstimate?: number | null;
+  salesEstimateBsr?: number | null;
+  salesEstimateCategory?: string | null;
 }
 
 interface AmazonLeaderboardCompetitor {
@@ -345,7 +359,23 @@ interface AmazonLeaderboardResponse {
 const SABER_ACCENT = "#C0553A";
 const RANK_DOWN_MUTED = "#7A9E7E";
 
-function AmazonPill({
+// Compact-number formatter for the sales-estimate column (7,921 → "7.9K",
+// 1,204,000 → "1.2M"). Keeps the table row height stable when the numbers
+// span 3-7 digits across the slate.
+function formatCompactUnits(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (abs >= 10_000)    return `${Math.round(n / 1_000)}K`;
+  if (abs >= 1_000)     return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+// Cell contents for a single (title, platform) intersection. Three
+// stacked lines when we have data: rank line (chart # or BSR #), sales-est
+// line (≈ N /mo), recent-sales line (raw Amazon label). Missing pieces
+// gracefully drop out — pre-orders often show only the rank/BSR row.
+function AmazonPlatformTableCell({
   cell,
   delta,
   platformLabel,
@@ -356,119 +386,153 @@ function AmazonPill({
 }) {
   if (!cell) {
     return (
-      <div className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-muted text-muted-foreground text-[11px] tabular-nums min-w-[92px] justify-center" title={`No SKU tracked on ${platformLabel}`}>
-        <span className="font-medium">{platformLabel}</span>
-        <span>—</span>
+      <div className="text-[11px] text-muted-foreground/60 tabular-nums" title={`No SKU tracked on ${platformLabel}`}>
+        —
       </div>
     );
   }
   const deltaVal = delta === "1d" ? cell.delta1d : delta === "7d" ? cell.delta7d : cell.delta30d;
   const showArrow = deltaVal != null && deltaVal !== 0;
   const isUp = deltaVal != null && deltaVal > 0;
-  // Chart-source cells render as "<Platform> #<rank>" (top-100 category
-  // position); BSR-source cells render as "<Platform> BSR #<bsr>" so the
-  // platform is always visible AND the BSR marker distinguishes the two.
   const isBsr = cell.source === "bsr" || (cell.rank == null && cell.bsr != null);
   const displayNumber = isBsr ? cell.bsr : cell.rank;
-  const numberTitle = isBsr
+  const rankTitle = isBsr
     ? `${platformLabel} — Amazon Best Sellers Rank (not on top-100 category chart)`
     : `${platformLabel} — top-100 category rank`;
-  // BSR deltas are % change (bigger = better rank). Chart deltas are
-  // rank-slot change (bigger = better rank). Both semantics happen to
-  // align on "up arrow = improved", so no per-source branching needed.
   const deltaSuffix = isBsr && deltaVal != null ? "%" : "";
+  const hasRankLine = displayNumber != null;
+  const monthly = cell.monthlySalesEstimate;
+  const weekly = cell.weeklySalesEstimate;
+  const category = cell.salesEstimateCategory;
+  const recent = cell.recentSales;
+
   return (
-    <div
-      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-card border border-border text-[11px] tabular-nums min-w-[110px] justify-center"
-      title={numberTitle}
-    >
-      <span className="font-medium text-muted-foreground">{platformLabel}</span>
-      {isBsr ? (
-        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/80">BSR</span>
+    <div className="flex flex-col items-end gap-0.5 text-[11px] tabular-nums leading-tight">
+      {hasRankLine ? (
+        <div className="flex items-center gap-1.5" title={rankTitle}>
+          {isBsr ? (
+            <span className="text-[9px] uppercase tracking-wider text-muted-foreground/70">BSR</span>
+          ) : null}
+          <span className="font-semibold">#{displayNumber!.toLocaleString()}</span>
+          {showArrow ? (
+            <span
+              className="inline-flex items-center gap-0.5 font-medium"
+              style={{ color: isUp ? SABER_ACCENT : RANK_DOWN_MUTED }}
+            >
+              {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+              {Math.abs(deltaVal!)}{deltaSuffix}
+            </span>
+          ) : null}
+        </div>
       ) : null}
-      <span className="font-semibold">#{displayNumber?.toLocaleString() ?? "—"}</span>
-      {showArrow ? (
-        <span className="inline-flex items-center gap-0.5 font-medium" style={{ color: isUp ? SABER_ACCENT : RANK_DOWN_MUTED }}>
-          {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-          {Math.abs(deltaVal!)}{deltaSuffix}
-        </span>
-      ) : (
-        <span className="text-muted-foreground">·</span>
-      )}
+      {monthly != null ? (
+        <div
+          className="text-muted-foreground"
+          title={`Rainforest sales_estimation — ≈ ${monthly.toLocaleString()} units/mo` +
+            (weekly != null ? ` (≈ ${weekly.toLocaleString()} units/wk)` : "") +
+            (category ? `, based on rank in “${category}”` : "")}
+        >
+          ≈ {formatCompactUnits(monthly)}<span className="text-muted-foreground/70"> /mo</span>
+        </div>
+      ) : null}
+      {recent ? (
+        <div className="text-muted-foreground/80 text-[10px]" title={`Amazon PDP label: “${recent}”`}>
+          {recent}
+        </div>
+      ) : null}
+      {!hasRankLine && monthly == null && !recent ? (
+        <span className="text-muted-foreground/60">—</span>
+      ) : null}
     </div>
   );
 }
 
+// Table rendering: <AmazonBoardRow> emits a parent <TableRow> plus
+// optional indented competitor rows so a single <TableBody> renders the
+// full nested slate. Row-click still deep-links to the product detail
+// view via a wrapping anchor around the title cell (whole rows can't be
+// nested inside an <a> without breaking the table semantics).
 function AmazonBoardRow({ title, delta }: { title: AmazonLeaderboardTitle; delta: "1d" | "7d" | "30d" }) {
   const primaryAsin = title.platforms.ps5?.asin ?? title.platforms.xbox?.asin ?? title.platforms.switch?.asin;
   const detailHref = primaryAsin ? `/amazon/product/${primaryAsin}` : undefined;
   const competitors = title.competitors ?? [];
-  const parentRowContent = (
-    <div className="flex items-center justify-between gap-4 px-4 py-3 hover:bg-accent/50 transition-colors cursor-pointer">
-      <div className="min-w-0 flex-1">
-        <div className="font-medium text-sm truncate">
-          {title.title}
-          {title.noSaberAmazonPin ? (
-            <span className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground font-normal">
-              not on amazon
-            </span>
-          ) : null}
-        </div>
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <AmazonPill cell={title.platforms.ps5}    delta={delta} platformLabel="PS5" />
-        <AmazonPill cell={title.platforms.xbox}   delta={delta} platformLabel="Xbox" />
-        <AmazonPill
-          cell={title.platforms.switch}
-          delta={delta}
-          platformLabel={title.platforms.switch?.isSwitch2 ? "Switch 2" : "Switch"}
-        />
-      </div>
-    </div>
-  );
-  const parentWrapped = detailHref ? (
-    <a href={`#${detailHref}`} data-testid={`row-amazon-saber-${title.productId}`}>{parentRowContent}</a>
-  ) : (
-    <div data-testid={`row-amazon-saber-${title.productId}`}>{parentRowContent}</div>
-  );
-  return (
-    <div>
-      {parentWrapped}
-      {competitors.length > 0 ? (
-        <div className="bg-muted/30 border-t border-border/50">
-          <div className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
-            Competitors ({competitors.length})
-          </div>
-          <div className="divide-y divide-border/50">
-            {competitors.map((c) => {
-              const compPrimaryAsin = c.platforms.ps5?.asin ?? c.platforms.xbox?.asin ?? c.platforms.switch?.asin;
-              const compHref = compPrimaryAsin ? `/amazon/product/${compPrimaryAsin}` : undefined;
-              const compContent = (
-                <div className="flex items-center justify-between gap-4 pl-8 pr-4 py-2 hover:bg-accent/40 transition-colors">
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs truncate text-foreground/90">{c.name}</div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <AmazonPill cell={c.platforms.ps5}    delta={delta} platformLabel="PS5" />
-                    <AmazonPill cell={c.platforms.xbox}   delta={delta} platformLabel="Xbox" />
-                    <AmazonPill cell={c.platforms.switch} delta={delta} platformLabel="Switch" />
-                  </div>
-                </div>
-              );
-              return compHref ? (
-                <a key={c.sentimentpulseGameId} href={`#${compHref}`} data-testid={`row-amazon-competitor-${c.sentimentpulseGameId}`}>
-                  {compContent}
-                </a>
-              ) : (
-                <div key={c.sentimentpulseGameId} data-testid={`row-amazon-competitor-${c.sentimentpulseGameId}`}>
-                  {compContent}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+
+  const titleContent = (
+    <>
+      <span className="font-medium text-sm">{title.title}</span>
+      {title.noSaberAmazonPin ? (
+        <span className="ml-2 text-[10px] uppercase tracking-wider text-muted-foreground font-normal">
+          not on amazon
+        </span>
       ) : null}
-    </div>
+    </>
+  );
+
+  return (
+    <>
+      <TableRow
+        className={"hover:bg-accent/50 transition-colors" + (detailHref ? " cursor-pointer" : "")}
+        data-testid={`row-amazon-saber-${title.productId}`}
+      >
+        <TableCell className="align-top py-3">
+          {detailHref ? (
+            <a href={`#${detailHref}`} className="block truncate">{titleContent}</a>
+          ) : (
+            <div className="truncate">{titleContent}</div>
+          )}
+        </TableCell>
+        <TableCell className="align-top py-3 text-right">
+          <AmazonPlatformTableCell cell={title.platforms.ps5}  delta={delta} platformLabel="PS5" />
+        </TableCell>
+        <TableCell className="align-top py-3 text-right">
+          <AmazonPlatformTableCell cell={title.platforms.xbox} delta={delta} platformLabel="Xbox" />
+        </TableCell>
+        <TableCell className="align-top py-3 text-right">
+          <AmazonPlatformTableCell
+            cell={title.platforms.switch}
+            delta={delta}
+            platformLabel={title.platforms.switch?.isSwitch2 ? "Switch 2" : "Switch"}
+          />
+        </TableCell>
+      </TableRow>
+      {competitors.length > 0 ? (
+        <TableRow className="bg-muted/30 border-t-0">
+          <TableCell colSpan={4} className="py-1 px-4">
+            <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
+              Competitors ({competitors.length})
+            </div>
+          </TableCell>
+        </TableRow>
+      ) : null}
+      {competitors.map((c) => {
+        const compPrimaryAsin = c.platforms.ps5?.asin ?? c.platforms.xbox?.asin ?? c.platforms.switch?.asin;
+        const compHref = compPrimaryAsin ? `/amazon/product/${compPrimaryAsin}` : undefined;
+        return (
+          <TableRow
+            key={c.sentimentpulseGameId}
+            className="bg-muted/20 hover:bg-accent/40 transition-colors"
+            data-testid={`row-amazon-competitor-${c.sentimentpulseGameId}`}
+          >
+            <TableCell className="align-top py-2 pl-8">
+              {compHref ? (
+                <a href={`#${compHref}`} className="block truncate text-xs text-foreground/90">{c.name}</a>
+              ) : (
+                <div className="truncate text-xs text-foreground/90">{c.name}</div>
+              )}
+            </TableCell>
+            <TableCell className="align-top py-2 text-right">
+              <AmazonPlatformTableCell cell={c.platforms.ps5}    delta={delta} platformLabel="PS5" />
+            </TableCell>
+            <TableCell className="align-top py-2 text-right">
+              <AmazonPlatformTableCell cell={c.platforms.xbox}   delta={delta} platformLabel="Xbox" />
+            </TableCell>
+            <TableCell className="align-top py-2 text-right">
+              <AmazonPlatformTableCell cell={c.platforms.switch} delta={delta} platformLabel="Switch" />
+            </TableCell>
+          </TableRow>
+        );
+      })}
+    </>
   );
 }
 
@@ -531,11 +595,29 @@ function SaberAmazonBoard({
             No Saber titles pinned yet. Add ASIN mappings from the Amazon Retail app to populate this leaderboard.
           </div>
         ) : (
-          <div className="divide-y">
-            {saberTitles.map((t) => (
-              <AmazonBoardRow key={t.productId} title={t} delta={delta} />
-            ))}
-          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[38%] min-w-[220px]">Game Title</TableHead>
+                <TableHead className="text-right">PS5</TableHead>
+                <TableHead className="text-right">Xbox</TableHead>
+                <TableHead className="text-right">Switch</TableHead>
+              </TableRow>
+              <TableRow className="border-t-0">
+                <TableCell className="py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                  Rank / est. units / recent sales
+                </TableCell>
+                <TableCell colSpan={3} className="py-1 text-[10px] text-right uppercase tracking-wider text-muted-foreground/70">
+                  # = category rank · BSR = Best Sellers Rank · ≈ N/mo = Rainforest est.
+                </TableCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {saberTitles.map((t) => (
+                <AmazonBoardRow key={t.productId} title={t} delta={delta} />
+              ))}
+            </TableBody>
+          </Table>
         )}
       </Card>
 
@@ -550,23 +632,43 @@ function SaberAmazonBoard({
             </span>
             <span className="text-xs text-muted-foreground ml-2">{compTitles.length} pinned</span>
           </div>
-          <div className="divide-y">
-            {compTitles.map((c) => (
-              <div key={c.sentimentpulseGameId} className="flex items-center justify-between gap-4 px-4 py-2" data-testid={`row-amazon-flat-competitor-${c.sentimentpulseGameId}`}>
-                <div className="min-w-0 flex-1">
-                  <div className="text-xs truncate">{c.name}</div>
-                  {c.parentTitle ? (
-                    <div className="text-[10px] text-muted-foreground">under {c.parentTitle}</div>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <AmazonPill cell={c.platforms.ps5}    delta={delta} platformLabel="PS5" />
-                  <AmazonPill cell={c.platforms.xbox}   delta={delta} platformLabel="Xbox" />
-                  <AmazonPill cell={c.platforms.switch} delta={delta} platformLabel="Switch" />
-                </div>
-              </div>
-            ))}
-          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[38%] min-w-[220px]">Competitor</TableHead>
+                <TableHead className="text-right">PS5</TableHead>
+                <TableHead className="text-right">Xbox</TableHead>
+                <TableHead className="text-right">Switch</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {compTitles.map((c) => (
+                <TableRow
+                  key={c.sentimentpulseGameId}
+                  data-testid={`row-amazon-flat-competitor-${c.sentimentpulseGameId}`}
+                  className="hover:bg-accent/40 transition-colors"
+                >
+                  <TableCell className="align-top py-2">
+                    <div className="min-w-0">
+                      <div className="text-xs truncate">{c.name}</div>
+                      {c.parentTitle ? (
+                        <div className="text-[10px] text-muted-foreground">under {c.parentTitle}</div>
+                      ) : null}
+                    </div>
+                  </TableCell>
+                  <TableCell className="align-top py-2 text-right">
+                    <AmazonPlatformTableCell cell={c.platforms.ps5}    delta={delta} platformLabel="PS5" />
+                  </TableCell>
+                  <TableCell className="align-top py-2 text-right">
+                    <AmazonPlatformTableCell cell={c.platforms.xbox}   delta={delta} platformLabel="Xbox" />
+                  </TableCell>
+                  <TableCell className="align-top py-2 text-right">
+                    <AmazonPlatformTableCell cell={c.platforms.switch} delta={delta} platformLabel="Switch" />
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </Card>
       ) : null}
     </div>
