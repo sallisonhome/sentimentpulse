@@ -72,15 +72,27 @@ interface ProductDetail {
   platformBsrCategory: string | null;
 }
 
-interface AlsoBoughtResponse {
+// v3.37 (2026-09-07): the PDP "Also Bought" tab is now "Related".
+// Backed by product.variants[] (cross-platform siblings) + product.bestsellers_rank[]
+// (category rank + name + Amazon link) captured in runProductSnapshots.
+// Rainforest does not return also-bought data for game ASINs — confirmed
+// via four probes on 2026-09-07 (see lessons.md).
+interface RelatedResponse {
   asin: string;
   snapshotDate: string | null;
-  recommendations: Array<{
-    recommendedAsin: string;
-    position: number | null;
+  variants: Array<{
+    rankPosition: number;
+    relatedAsin: string | null;
     title: string | null;
     imageUrl: string | null;
+    link: string | null;
     isTracked: boolean;
+  }>;
+  categoryRanks: Array<{
+    rankPosition: number;
+    categoryName: string | null;
+    categoryRank: number | null;
+    link: string | null;
   }>;
 }
 
@@ -143,8 +155,8 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
   const { data: detail, isLoading } = useQuery<ProductDetail>({
     queryKey: [`/api/amazon/product/${asin}`],
   });
-  const { data: alsoBought } = useQuery<AlsoBoughtResponse>({
-    queryKey: [`/api/amazon/product/${asin}/also-bought`],
+  const { data: related } = useQuery<RelatedResponse>({
+    queryKey: [`/api/amazon/product/${asin}/related`],
   });
 
   const lp = detail?.latestProduct ?? null;
@@ -236,7 +248,7 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview" data-testid="tab-product-overview">Overview</TabsTrigger>
-          <TabsTrigger value="also-bought" data-testid="tab-product-also-bought">Also Bought</TabsTrigger>
+          <TabsTrigger value="related" data-testid="tab-product-related">Related</TabsTrigger>
           <TabsTrigger value="rank-history" data-testid="tab-product-rank-history">Rank History</TabsTrigger>
           <TabsTrigger value="reviews" data-testid="tab-product-reviews">Reviews</TabsTrigger>
         </TabsList>
@@ -312,43 +324,130 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
           </Card>
         </TabsContent>
 
-        <TabsContent value="also-bought" className="pt-4">
+        <TabsContent value="related" className="pt-4 space-y-4">
+          {/* Other Editions — cross-platform / edition siblings from product.variants[] */}
           <Card className="overflow-hidden">
-            {!alsoBought || alsoBought.recommendations.length === 0 ? (
+            <div className="px-4 py-2 text-xs font-medium text-muted-foreground border-b bg-muted/30">
+              Other editions of this title
+            </div>
+            {!related || related.variants.length === 0 ? (
               <div className="p-6 text-center text-xs text-muted-foreground">
-                No "customers also bought" data yet.
+                No other editions found.
               </div>
             ) : (
               <div className="divide-y">
-                {alsoBought.recommendations.map((r) => (
-                  <a
-                    key={r.recommendedAsin}
-                    href={`#/amazon/product/${r.recommendedAsin}`}
-                    className="flex items-center gap-3 px-4 py-2 hover:bg-accent/50 transition-colors"
-                    data-testid={`row-also-bought-${r.recommendedAsin}`}
-                  >
-                    {r.imageUrl ? (
-                      <img src={r.imageUrl} alt={r.title ?? r.recommendedAsin} className="h-8 w-8 rounded object-cover" />
-                    ) : (
-                      <div className="h-8 w-8 rounded bg-muted" />
-                    )}
-                    <div className="flex-1 min-w-0 text-xs">
-                      <div className="font-medium truncate">{r.title ?? r.recommendedAsin}</div>
-                      <div className="text-muted-foreground text-[10px]">
-                        ASIN {r.recommendedAsin}
-                        {r.position ? ` · pos ${r.position}` : ""}
+                {related.variants.map((v) => {
+                  const inner = (
+                    <>
+                      {v.imageUrl ? (
+                        <img src={v.imageUrl} alt={v.title ?? v.relatedAsin ?? ""} className="h-8 w-8 rounded object-cover" />
+                      ) : (
+                        <div className="h-8 w-8 rounded bg-muted" />
+                      )}
+                      <div className="flex-1 min-w-0 text-xs">
+                        <div className="font-medium truncate">{v.title ?? v.relatedAsin ?? "—"}</div>
+                        {v.relatedAsin && (
+                          <div className="text-muted-foreground text-[10px]">ASIN {v.relatedAsin}</div>
+                        )}
                       </div>
+                      {v.isTracked && (
+                        <Badge variant="outline" style={{ borderColor: "#C0553A", color: "#C0553A" }}>
+                          Tracked
+                        </Badge>
+                      )}
+                    </>
+                  );
+                  const key = `${v.rankPosition}-${v.relatedAsin ?? "na"}`;
+                  // If the variant is a real ASIN, link internally to its PDP.
+                  // Otherwise fall back to the Amazon product link if we have one.
+                  if (v.relatedAsin) {
+                    return (
+                      <a
+                        key={key}
+                        href={`#/amazon/product/${v.relatedAsin}`}
+                        className="flex items-center gap-3 px-4 py-2 hover:bg-accent/50 transition-colors"
+                        data-testid={`row-variant-${v.relatedAsin}`}
+                      >
+                        {inner}
+                      </a>
+                    );
+                  }
+                  if (v.link) {
+                    return (
+                      <a
+                        key={key}
+                        href={v.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-3 px-4 py-2 hover:bg-accent/50 transition-colors"
+                        data-testid={`row-variant-ext-${v.rankPosition}`}
+                      >
+                        {inner}
+                      </a>
+                    );
+                  }
+                  return (
+                    <div key={key} className="flex items-center gap-3 px-4 py-2">
+                      {inner}
                     </div>
-                    {r.isTracked && (
-                      <Badge variant="outline" style={{ borderColor: "#C0553A", color: "#C0553A" }}>
-                        Tracked
-                      </Badge>
-                    )}
-                  </a>
-                ))}
+                  );
+                })}
               </div>
             )}
           </Card>
+
+          {/* Category rank — bestseller sub-category ranks from product.bestsellers_rank[] */}
+          <Card className="overflow-hidden">
+            <div className="px-4 py-2 text-xs font-medium text-muted-foreground border-b bg-muted/30">
+              Category rank
+            </div>
+            {!related || related.categoryRanks.length === 0 ? (
+              <div className="p-6 text-center text-xs text-muted-foreground">
+                No category rank captured yet.
+              </div>
+            ) : (
+              <div className="divide-y">
+                {related.categoryRanks.map((c) => {
+                  const body = (
+                    <>
+                      <div className="flex-1 min-w-0 text-xs">
+                        <div className="font-medium truncate">{c.categoryName ?? "—"}</div>
+                      </div>
+                      <div className="text-xs tabular-nums font-medium">
+                        {c.categoryRank != null ? `#${c.categoryRank.toLocaleString()}` : "—"}
+                      </div>
+                    </>
+                  );
+                  const key = `${c.rankPosition}-${c.categoryName ?? "na"}`;
+                  if (c.link) {
+                    return (
+                      <a
+                        key={key}
+                        href={c.link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-3 px-4 py-2 hover:bg-accent/50 transition-colors"
+                        data-testid={`row-category-rank-${c.rankPosition}`}
+                      >
+                        {body}
+                      </a>
+                    );
+                  }
+                  return (
+                    <div key={key} className="flex items-center gap-3 px-4 py-2">
+                      {body}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+
+          {related?.snapshotDate && (
+            <div className="text-[10px] text-muted-foreground text-right">
+              As of {related.snapshotDate}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="rank-history" className="pt-4">

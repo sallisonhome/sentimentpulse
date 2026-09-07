@@ -1995,3 +1995,56 @@ the filter yielded zero every time.
 - **`/next-up` and `/live-now` are two different questions** and every
   UI badge that says "on promo" or "currently discounted" wants
   `/live-now`. Reserve `/next-up` for "what's coming".
+
+---
+
+## 2026-09-07 — Amazon "Also Bought" is dead for game ASINs; pivot to variants + bestseller-rank (v3.37)
+
+**What happened.** The SignalPulse PDP shipped an "Also Bought" tab
+against `product.also_bought[]` (plus a fallback pipeline via
+`type=also_bought` and `type=formats_editions`). Every game ASIN we
+tested (Space Marine 2 PS5/XSX, Elden Ring, Baldur's Gate 3, Doom Eternal,
+Helldivers 2, etc.) returned an empty tab in production.
+
+**Root cause.** Four probes (QA-GATE-1 through QA-GATE-3) confirmed:
+- `type=product` returns ZERO of the 11 recommendation fields
+  (`also_bought`, `also_viewed`, `view_to_purchase`, `sponsored_products`,
+  `frequently_bought_together`, `compare_with_similar`,
+  `similar_to_consider`, `newer_model`, `bundles`, `bundle_contents`,
+  `shop_by_look`) for game ASINs.
+- `type=also_bought` returns empty and spends ~400–500 credits per call
+  (aggressive pagination).
+- `type=formats_editions` returns HTTP 503 persistently for game ASINs.
+- Amazon renders these carousels client-side; Rainforest's scraper does
+  not execute JS on the video-games category.
+
+What DOES come back on every game ASIN from `type=product`:
+- `product.variants[]` — 5 rows: cross-platform / edition siblings
+  (PS5 ↔ XSX ↔ PC ↔ Collector's Ed) with dimensions, ASIN, image, link.
+- `product.bestsellers_rank[]` — 2–4 rows: (category, rank, link) per
+  sub-category, e.g. "#1 in PlayStation 5 Games".
+
+**Lessons.**
+- **When a vendor's field is empty on a whole category, don't ship a UI
+  that surfaces it.** The v3.36 "Also Bought" tab was blank for every
+  Saber title on day one because the underlying data doesn't exist for
+  the games category. Ship what the API actually returns.
+- **Prove the vendor field is dead across the category, not just for
+  one ASIN.** A single empty response is ambiguous (maybe the ASIN is
+  unpopular). Sample 5+ ASINs across publishers and price bands before
+  you rip out a feature.
+- **Zero-cost pivots beat second data sources.** The A2+A3 replacement
+  (variants + bestseller-rank) uses fields that are already in the
+  `type=product` response we fetch every 60 min — no new credits, no
+  new job, and the semantics are actually more useful for a publisher
+  ("what's this game's PS5 vs XSX vs PC rank" is a real question).
+- **Deprecate loudly, not silently.** `runAlsoBoughtDaily` is kept as an
+  exported no-op that logs "DEPRECATED: no-op (see runProductSnapshots +
+  amazon_product_related_daily)" so the scheduler entry still resolves
+  and any operator grepping logs sees the reason. The old
+  `/api/amazon/product/:asin/also-bought` endpoint is kept as an
+  empty-payload responder so cached client bundles don't 404 mid-deploy.
+- **Rip out debug probes as soon as they've answered the question.**
+  Four QA-GATE probes (URL/ASIN/FE/TOP, ~113 lines) accumulated in
+  amazon-cron.ts during diagnosis. They stay in git history — they
+  don't need to stay in the running binary.

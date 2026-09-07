@@ -26,6 +26,7 @@ import {
   amazonAsinMap,
   amazonChartSnapshots,
   amazonProductDaily,
+  amazonProductRelatedDaily,
   amazonMoversDaily,
   amazonNewReleases,
   amazonKeywordDaily,
@@ -41,15 +42,12 @@ import { and, eq } from "drizzle-orm";
 import {
   fetchSoftwareChart,
   fetchProduct,
-  fetchProductByUrl,
-  fetchAlsoBought,
   fetchSalesEstimation,
   extractRecentSales,
   fetchMovers,
   fetchNewReleases,
   fetchSearch,
   fetchFormatsEditions,
-  extractAlsoBought,
   fetchReviews,
   extractReviews,
   isVideoGameSoftware,
@@ -248,6 +246,12 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
           .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, row.asin)))
           .run();
         const recentSales = extractRecentSales(data);
+        // v3.37 (2026-09-07): capture title/image/link on every snapshot so
+        // the PDP header never blanks out (previously depended on a chart
+        // snapshot for the same ASIN existing on the same day).
+        const mainImage: string | null = p.main_image?.link ?? p.images?.[0]?.link ?? null;
+        const productLink: string | null = p.link ?? null;
+        const productTitle: string | null = p.title ?? null;
         db.insert(amazonProductDaily).values({
           snapshotDate,
           asin: row.asin,
@@ -261,9 +265,63 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
           rating: p.rating ?? null,
           ratingsTotal: p.ratings_total ?? null,
           recentSales,
+          title: productTitle,
+          imageUrl: mainImage,
+          link: productLink,
           createdAt: nowIso(),
         }).run();
         rowsWritten += 1;
+
+        // v3.37 (2026-09-07): write related surface (variants + category
+        // ranks) from the same response — zero extra Rainforest cost.
+        // Replace-per-day semantics keep the table tight.
+        try {
+          db.delete(amazonProductRelatedDaily)
+            .where(and(
+              eq(amazonProductRelatedDaily.snapshotDate, snapshotDate),
+              eq(amazonProductRelatedDaily.sourceAsin, row.asin),
+            )).run();
+          const variants: any[] = Array.isArray(p.variants) ? p.variants : [];
+          variants.slice(0, 10).forEach((v, idx) => {
+            const vAsin = v?.asin ?? null;
+            if (!vAsin || vAsin === row.asin) return; // skip self / missing
+            const vTitle = (Array.isArray(v?.dimensions) && v.dimensions.length > 0)
+              ? v.dimensions.map((d: any) => `${d?.name ?? ""}: ${d?.value ?? ""}`).filter((s: string) => s.trim().length > 2).join(", ")
+              : (v?.title ?? null);
+            db.insert(amazonProductRelatedDaily).values({
+              snapshotDate,
+              sourceAsin: row.asin,
+              kind: "variant",
+              rankPosition: idx + 1,
+              relatedAsin: vAsin,
+              title: vTitle,
+              imageUrl: v?.main_image ?? v?.image ?? null,
+              link: v?.link ?? null,
+              categoryName: null,
+              categoryRank: null,
+              createdAt: nowIso(),
+            }).run();
+          });
+          const ranks: any[] = Array.isArray(p.bestsellers_rank) ? p.bestsellers_rank : [];
+          ranks.slice(0, 6).forEach((r, idx) => {
+            if (!r || typeof r !== "object") return;
+            db.insert(amazonProductRelatedDaily).values({
+              snapshotDate,
+              sourceAsin: row.asin,
+              kind: "category_rank",
+              rankPosition: idx + 1,
+              relatedAsin: null,
+              title: null,
+              imageUrl: null,
+              link: r?.link ?? null,
+              categoryName: r?.category ?? null,
+              categoryRank: typeof r?.rank === "number" ? r.rank : null,
+              createdAt: nowIso(),
+            }).run();
+          });
+        } catch (relatedErr) {
+          log(`amazon-cron products related ${row.asin}: ${relatedErr}`, "amazon-cron");
+        }
       } catch (err) {
         log(`amazon-cron products: ${row.asin} failed: ${err}`, "amazon-cron");
         // continue with other ASINs
@@ -411,135 +469,26 @@ export async function runKeywordSearch(): Promise<{ rowsWritten: number }> {
 // dispatch table + workflow that referenced it.
 export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritten: number }> {
   return withRun("also_bought", async () => {
-    const snapshotDate = todayUtcDate();
-    // Union of Saber + competitor pins; dedupe by ASIN (an ASIN could
-    // theoretically be pinned as both a Saber SKU and a competitor pin,
-    // though we do not expect this in practice).
-    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
-    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
-    const sourceAsins = Array.from(new Set([...saberPins, ...compPins].map((p) => p.asin)));
-    log(`amazon-cron also_bought START sources=${sourceAsins.length} (saber=${saberPins.length} comp=${compPins.length})`, "amazon-cron");
-    let totalCreditsUsed = 0;
-    let lastCreditsRemaining = 0;
-    let rowsWritten = 0;
-    // v3.37 QA-GATE-3: instead of trusting one shape, dump the top-level
-    // response keys AND scan for ANY recommendation-adjacent field at
-    // top-level OR under product for a URL-based request, an asin-based
-    // request, and a formats_editions request (with retry on 503). This
-    // is the honest diagnostic that answers "does the data exist at all".
-    let probeCount = 0;
-    for (const asin of sourceAsins) {
-      try {
-        const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
-        if (probeCount < 3) {
-          probeCount += 1;
-          // ---- PROBE A: url= variant (some Rainforest fields only populate for URL-based requests)
-          try {
-            const urlRes = await fetchProductByUrl(asin);
-            const topKeys = urlRes.data && typeof urlRes.data === "object" ? Object.keys(urlRes.data) : [];
-            const productKeys = urlRes.data?.product && typeof urlRes.data.product === "object" ? Object.keys(urlRes.data.product) : [];
-            const rec = ["also_bought", "also_viewed", "view_to_purchase", "sponsored_products", "frequently_bought_together", "compare_with_similar", "similar_to_consider", "newer_model", "bundles", "bundle_contents", "shop_by_look"];
-            const topPresent = rec.filter((k) => (urlRes.data as any)?.[k] !== undefined);
-            const productPresent = rec.filter((k) => (urlRes.data as any)?.product?.[k] !== undefined);
-            const productLengths = Object.fromEntries(productPresent.map((k) => [k, Array.isArray((urlRes.data as any).product[k]) ? (urlRes.data as any).product[k].length : (typeof (urlRes.data as any).product[k])]));
-            log(`amazon-cron also_bought PROBE-URL asin=${asin} top_keys=${JSON.stringify(topKeys)} rec_at_top=${JSON.stringify(topPresent)} rec_in_product=${JSON.stringify(productLengths)} product_keys_count=${productKeys.length} credits_used=${urlRes.creditsUsed}`, "amazon-cron");
-          } catch (e) {
-            log(`amazon-cron also_bought PROBE-URL asin=${asin} FAILED: ${e}`, "amazon-cron");
-          }
-          // ---- PROBE B: same asin= call we already made, but scan same fields
-          try {
-            const rec = ["also_bought", "also_viewed", "view_to_purchase", "sponsored_products", "frequently_bought_together", "compare_with_similar", "similar_to_consider", "newer_model", "bundles", "bundle_contents", "shop_by_look"];
-            const topPresent = rec.filter((k) => (data as any)?.[k] !== undefined);
-            const productPresent = rec.filter((k) => (data as any)?.product?.[k] !== undefined);
-            const productLengths = Object.fromEntries(productPresent.map((k) => [k, Array.isArray((data as any).product[k]) ? (data as any).product[k].length : (typeof (data as any).product[k])]));
-            log(`amazon-cron also_bought PROBE-ASIN asin=${asin} rec_at_top=${JSON.stringify(topPresent)} rec_in_product=${JSON.stringify(productLengths)}`, "amazon-cron");
-          } catch (e) {
-            log(`amazon-cron also_bought PROBE-ASIN asin=${asin} FAILED: ${e}`, "amazon-cron");
-          }
-          // ---- PROBE C: formats_editions with one retry on 503
-          for (let attempt = 1; attempt <= 2; attempt++) {
-            try {
-              const feResult = await fetchFormatsEditions(asin);
-              const fe = feResult.data?.formats_editions;
-              const arr = Array.isArray(fe) ? fe : null;
-              const first = arr && arr.length > 0 ? arr[0] : null;
-              const firstKeys = first && typeof first === "object" ? Object.keys(first) : [];
-              const sample = arr ? arr.slice(0, 3).map((f: any) => ({
-                format: f?.format ?? null,
-                title: (f?.title ?? "").slice(0, 60),
-                asin: f?.asin ?? null,
-                is_current: f?.is_current_product ?? null,
-              })) : [];
-              log(`amazon-cron also_bought PROBE-FE asin=${asin} attempt=${attempt} status=${feResult.data?.request_info?.success} fe_len=${arr ? arr.length : -1} first_row_keys=${JSON.stringify(firstKeys)} sample=${JSON.stringify(sample)} credits_used=${feResult.creditsUsed}`, "amazon-cron");
-              break;
-            } catch (probeErr) {
-              const msg = String(probeErr);
-              log(`amazon-cron also_bought PROBE-FE asin=${asin} attempt=${attempt} FAILED: ${msg}`, "amazon-cron");
-              if (msg.includes("503") && attempt === 1) {
-                await new Promise((r) => setTimeout(r, 3000));
-                continue;
-              }
-              break;
-            }
-          }
-          // ---- PROBE D: dump top-level Rainforest response keys AND full length of ALL arrays under data.product
-          try {
-            const topKeys = data && typeof data === "object" ? Object.keys(data) : [];
-            const productArrs: Record<string, number> = {};
-            if (data?.product && typeof data.product === "object") {
-              for (const k of Object.keys(data.product)) {
-                const v = (data.product as any)[k];
-                if (Array.isArray(v)) productArrs[k] = v.length;
-              }
-            }
-            log(`amazon-cron also_bought PROBE-TOP asin=${asin} top_keys=${JSON.stringify(topKeys)} product_arrays=${JSON.stringify(productArrs)}`, "amazon-cron");
-          } catch (e) {
-            log(`amazon-cron also_bought PROBE-TOP asin=${asin} FAILED: ${e}`, "amazon-cron");
-          }
-        }
-        totalCreditsUsed += creditsUsed;
-        lastCreditsRemaining = creditsRemaining;
-        // v3.36 debug: dump shape hints so we can see what Rainforest is
-        // actually returning for these video-game ASINs. Safe: no secrets,
-        // only key names + counts.
-        const topKeys = data && typeof data === "object" ? Object.keys(data) : [];
-        const productKeys = data?.product && typeof data.product === "object" ? Object.keys(data.product) : [];
-        const suggestKeys = productKeys.filter((k: string) => /bought|related|together|recommend|similar|frequently|also|viewed|carousel/i.test(k));
-        const abLen = Array.isArray(data?.product?.also_bought) ? data.product.also_bought.length
-          : Array.isArray(data?.also_bought) ? data.also_bought.length
-          : Array.isArray(data?.product?.frequently_bought_together) ? data.product.frequently_bought_together.length
-          : -1;
-        log(`amazon-cron also_bought DEBUG asin=${asin} top_keys=${JSON.stringify(topKeys)} product_suggest_keys=${JSON.stringify(suggestKeys)} also_bought_len=${abLen}`, "amazon-cron");
-        const alsoBought = extractAlsoBought(data, 5);
-        db.delete(amazonAlsoBoughtDaily)
-          .where(and(eq(amazonAlsoBoughtDaily.snapshotDate, snapshotDate), eq(amazonAlsoBoughtDaily.sourceAsin, asin)))
-          .run();
-        for (const ab of alsoBought) {
-          db.insert(amazonAlsoBoughtDaily).values({
-            snapshotDate,
-            sourceAsin: asin,
-            rankPosition: ab.rankPosition,
-            recommendedAsin: ab.recommendedAsin,
-            title: ab.title,
-            price: ab.price,
-            rating: ab.rating,
-            ratingsTotal: ab.ratingsTotal,
-            mainBsr: null,
-            imageUrl: ab.imageUrl,
-            link: ab.link,
-            createdAt: nowIso(),
-          }).run();
-          rowsWritten += 1;
-        }
-      } catch (err) {
-        log(`amazon-cron also_bought ${asin} failed: ${err}`, "amazon-cron");
-      }
-    }
+    // v3.37 (2026-09-07): DEPRECATED. Rainforest's `type=also_bought` and
+    // the `also_bought`/`also_viewed`/`view_to_purchase`/`sponsored_products`/
+    // `frequently_bought_together`/`compare_with_similar` fields under
+    // `type=product` all return empty for video-game ASINs — confirmed via
+    // four probes on 2026-09-07 (URL variant, asin variant, formats_editions,
+    // and top-level key dump). Amazon renders those carousels client-side
+    // via personalization JS the Rainforest scraper doesn't execute.
+    //
+    // The PDP "Related" tab is now driven by product.variants[] and
+    // product.bestsellers_rank[] captured in runProductSnapshots — zero
+    // extra Rainforest calls. See amazon_product_related_daily.
+    //
+    // This job is retained as a no-op so scheduler slots and manual-
+    // dispatch entries don't break; it burns zero credits.
+    log(`amazon-cron also_bought DEPRECATED: no-op (see runProductSnapshots + amazon_product_related_daily)`, "amazon-cron");
     return {
-      result: { sources: sourceAsins.length, rowsWritten },
-      creditsUsed: totalCreditsUsed,
-      creditsRemaining: lastCreditsRemaining,
-      rowsWritten,
+      result: { sources: 0, rowsWritten: 0 },
+      creditsUsed: 0,
+      creditsRemaining: 0,
+      rowsWritten: 0,
     };
   });
 }

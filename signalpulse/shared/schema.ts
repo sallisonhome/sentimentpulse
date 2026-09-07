@@ -920,6 +920,11 @@ export const amazonProductDaily = sqliteTable("amazon_product_daily", {
   weeklySalesEstimate: integer("weekly_sales_estimate"),
   salesEstimateBsr: integer("sales_estimate_bsr"),
   salesEstimateCategory: text("sales_estimate_category"),
+  // v3.37 (2026-09-07): captured from the same type=product response so the
+  // PDP header renders even when the ASIN isn't in any chart snapshot.
+  title: text("title"),
+  imageUrl: text("image_url"),
+  link: text("link"),
   createdAt: text("created_at").notNull(),
 }, (table) => ({
   uniqueDayAsin: uniqueIndex("amazon_product_daily_unique_day_asin").on(table.snapshotDate, table.asin),
@@ -991,6 +996,32 @@ export const amazonIngestRuns = sqliteTable("amazon_ingest_runs", {
 // text), verified_purchase, helpful_votes, profile.name, and images[].
 // Everything is nullable because Amazon omits fields on international
 // storefronts and older reviews.
+// Per-ASIN related-product surface written by runProductSnapshots — zero
+// additional Rainforest calls. `kind` discriminates rows: `variant` rows
+// carry related_asin/title/image_url/link (cross-platform siblings from
+// product.variants[]); `category_rank` rows carry category_name +
+// category_rank + link (bestseller rank entries from product.bestsellers_rank[]).
+// Same-day upsert keyed on (source_asin, snapshot_date, kind, rank_position).
+// Replaces the deprecated amazon_also_bought_daily surface (Rainforest returns
+// nothing for game ASINs; see lessons.md 2026-09-07).
+export const amazonProductRelatedDaily = sqliteTable("amazon_product_related_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  sourceAsin: text("source_asin").notNull(),
+  kind: text("kind").notNull(), // 'variant' | 'category_rank'
+  rankPosition: integer("rank_position").notNull(),
+  relatedAsin: text("related_asin"),
+  title: text("title"),
+  imageUrl: text("image_url"),
+  link: text("link"),
+  categoryName: text("category_name"),
+  categoryRank: integer("category_rank"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDaySourceKindPos: uniqueIndex("amazon_product_related_unique_day_source_kind_pos").on(table.snapshotDate, table.sourceAsin, table.kind, table.rankPosition),
+  bySourceIdx: index("amazon_product_related_by_source_idx").on(table.sourceAsin, table.snapshotDate),
+}));
+
 export const amazonProductReviews = sqliteTable("amazon_product_reviews", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   asin: text("asin").notNull(),

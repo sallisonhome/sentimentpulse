@@ -22,6 +22,7 @@ import {
   amazonChartSnapshots,
   amazonProductDaily,
   amazonAlsoBoughtDaily,
+  amazonProductRelatedDaily,
   amazonMoversDaily,
   amazonNewReleases,
   amazonKeywordDaily,
@@ -701,6 +702,10 @@ export function registerAmazonRoutes(app: Express): void {
     }
 
     // Freshest chart row (used to fill display title/image/link).
+    // v3.37 (2026-09-07): fall back to the amazon_product_daily row when no
+    // chart snapshot exists for this ASIN — the daily product ingest now
+    // captures title/image_url/link for every pinned SKU, so tracked ASINs
+    // that never appeared in a top-50 chart still get proper header art.
     let freshestChart: { title: string | null; imageUrl: string | null; link: string | null } | null = null;
     if (perPlatformToday[0]) {
       freshestChart = { title: perPlatformToday[0].title, imageUrl: perPlatformToday[0].imageUrl, link: perPlatformToday[0].link };
@@ -715,6 +720,13 @@ export function registerAmazonRoutes(app: Express): void {
       if (anyChart) {
         freshestChart = { title: anyChart.title ?? null, imageUrl: anyChart.imageUrl ?? null, link: anyChart.link ?? null };
       }
+    }
+    if (!freshestChart?.imageUrl && (latestDaily as any)?.imageUrl) {
+      freshestChart = {
+        title: freshestChart?.title ?? (latestDaily as any).title ?? null,
+        imageUrl: (latestDaily as any).imageUrl ?? null,
+        link: freshestChart?.link ?? (latestDaily as any).link ?? null,
+      };
     }
 
     // Per-platform BSR extracted from sub_bsrs_json.
@@ -835,6 +847,55 @@ export function registerAmazonRoutes(app: Express): void {
     }
   });
 
+  // v3.37 (2026-09-07): Related surface for the PDP — replaces the dead
+  // also-bought endpoint (Rainforest returns nothing for game ASINs).
+  // Reads amazon_product_related_daily, which runProductSnapshots populates
+  // from product.variants[] (cross-platform siblings) and
+  // product.bestsellers_rank[] (category rank + name + Amazon link).
+  app.get("/api/amazon/product/:asin/related", (req, res) => {
+    const asin = req.params.asin;
+    const latest = db.select().from(amazonProductRelatedDaily)
+      .where(eq(amazonProductRelatedDaily.sourceAsin, asin))
+      .orderBy(desc(amazonProductRelatedDaily.snapshotDate))
+      .limit(1).get();
+    if (!latest) {
+      return res.json({ asin, snapshotDate: null, variants: [], categoryRanks: [] });
+    }
+    const rows = db.select().from(amazonProductRelatedDaily)
+      .where(and(
+        eq(amazonProductRelatedDaily.sourceAsin, asin),
+        eq(amazonProductRelatedDaily.snapshotDate, latest.snapshotDate),
+      ))
+      .orderBy(amazonProductRelatedDaily.rankPosition)
+      .all();
+    // Mark tracked variants so the client can badge them.
+    const trackedAsinSet = new Set(
+      db.select({ asin: amazonAsinMap.asin }).from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all().map((r) => r.asin),
+    );
+    const variants = rows.filter((r) => r.kind === "variant").map((r) => ({
+      rankPosition: r.rankPosition,
+      relatedAsin: r.relatedAsin,
+      title: r.title,
+      imageUrl: r.imageUrl,
+      link: r.link,
+      isTracked: r.relatedAsin ? trackedAsinSet.has(r.relatedAsin) : false,
+    }));
+    const categoryRanks = rows.filter((r) => r.kind === "category_rank").map((r) => ({
+      rankPosition: r.rankPosition,
+      categoryName: r.categoryName,
+      categoryRank: r.categoryRank,
+      link: r.link,
+    }));
+    res.json({
+      asin,
+      snapshotDate: latest.snapshotDate,
+      variants,
+      categoryRanks,
+    });
+  });
+
+  // v3.37 (2026-09-07): DEPRECATED. Kept so existing client bundles that
+  // still call the old path don't 404; returns an empty payload.
   app.get("/api/amazon/product/:asin/also-bought", (req, res) => {
     const asin = req.params.asin;
     // Most recent snapshot date that has any rows for this source ASIN.
