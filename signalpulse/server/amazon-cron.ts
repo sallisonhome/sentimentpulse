@@ -421,11 +421,12 @@ export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritt
     let totalCreditsUsed = 0;
     let lastCreditsRemaining = 0;
     let rowsWritten = 0;
-    // v3.37 QA-GATE-1b probe: dump EVERY product.* key with array length or
-    // sentinel so we can see which recommendation carousels Rainforest
-    // actually returns for game ASINs (also_viewed, sponsored_products,
-    // view_to_purchase, compare_with_similar, etc.). Uses the existing
-    // type=product call — zero extra credit cost.
+    // v3.37 QA-GATE-2 probe: for the first 3 ASINs (a) call
+    // fetchFormatsEditions and log the response shape, and (b) log the
+    // bestsellers_rank[] items so we know if we have category IDs usable
+    // for a type=category top-N fallback. Total extra cost: ~3 credits
+    // (formats_editions is 1 credit per ASIN, category info is free
+    // because it comes from the type=product call we already make).
     let probeCount = 0;
     for (const asin of sourceAsins) {
       try {
@@ -433,19 +434,33 @@ export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritt
         if (probeCount < 3) {
           probeCount += 1;
           try {
-            const p = data?.product;
-            const summary: Record<string, string> = {};
-            if (p && typeof p === "object") {
-              for (const k of Object.keys(p)) {
-                const v = (p as any)[k];
-                if (Array.isArray(v)) summary[k] = `array[${v.length}]`;
-                else if (v && typeof v === "object") summary[k] = `object{${Object.keys(v).slice(0, 6).join(",")}}`;
-                else summary[k] = typeof v;
-              }
-            }
-            log(`amazon-cron also_bought PROBE-KEYS asin=${asin} product_keys=${JSON.stringify(summary)}`, "amazon-cron");
+            const bsr = Array.isArray(data?.product?.bestsellers_rank) ? data.product.bestsellers_rank : [];
+            const bsrShape = bsr.slice(0, 3).map((b: any) => ({
+              keys: b && typeof b === "object" ? Object.keys(b) : [],
+              category: b?.category ?? null,
+              rank: b?.rank ?? null,
+              link: b?.link ?? null,
+              category_id: b?.category_id ?? b?.node_id ?? b?.id ?? null,
+            }));
+            log(`amazon-cron also_bought PROBE-BSR asin=${asin} bsr_count=${bsr.length} bsr_shape=${JSON.stringify(bsrShape)}`, "amazon-cron");
           } catch (probeErr) {
-            log(`amazon-cron also_bought PROBE-KEYS asin=${asin} FAILED: ${probeErr}`, "amazon-cron");
+            log(`amazon-cron also_bought PROBE-BSR asin=${asin} FAILED: ${probeErr}`, "amazon-cron");
+          }
+          try {
+            const feResult = await fetchFormatsEditions(asin);
+            const fe = feResult.data?.formats_editions;
+            const arr = Array.isArray(fe) ? fe : null;
+            const first = arr && arr.length > 0 ? arr[0] : null;
+            const firstKeys = first && typeof first === "object" ? Object.keys(first) : [];
+            const sample = arr ? arr.slice(0, 3).map((f: any) => ({
+              format: f?.format ?? null,
+              title: (f?.title ?? "").slice(0, 60),
+              asin: f?.asin ?? null,
+              is_current: f?.is_current_product ?? null,
+            })) : [];
+            log(`amazon-cron also_bought PROBE-FE asin=${asin} status=${feResult.data?.request_info?.success} fe_len=${arr ? arr.length : -1} first_row_keys=${JSON.stringify(firstKeys)} sample=${JSON.stringify(sample)} credits_used=${feResult.creditsUsed}`, "amazon-cron");
+          } catch (probeErr) {
+            log(`amazon-cron also_bought PROBE-FE asin=${asin} FAILED: ${probeErr}`, "amazon-cron");
           }
         }
         totalCreditsUsed += creditsUsed;
