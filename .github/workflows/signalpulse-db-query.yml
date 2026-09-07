@@ -50,4 +50,7 @@ jobs:
           esac
           SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
           # Pass SQL via stdin so quoting is safe.
-          printf '%s\n' "$SQL" | $SSH "cat > /tmp/q.sql && sqlite3 -header -${MODE:-column} /root/signalpulse/data/signalpulse.db < /tmp/q.sql"
+          # Resolve DB path from systemd WorkingDirectory (relative 'data.db' in storage.ts).
+          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/data.db\"")
+          echo "DB: $DB_PATH"
+          printf '%s\n' "$SQL" | $SSH "cat > /tmp/q.sql && sqlite3 -header -${MODE:-column} \"$DB_PATH\" < /tmp/q.sql"
