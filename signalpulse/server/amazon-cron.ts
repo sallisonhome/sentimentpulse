@@ -695,7 +695,7 @@ const DISCOVERY_STOPWORDS = new Set([
   "switch", "2", "one", "pc", "amazon",
 ]);
 
-function normalizeWords(title: string): Set<string> {
+export function normalizeWords(title: string): Set<string> {
   const cleaned = title
     .toLowerCase()
     .replace(/[\u00AE\u2122\u00A9]/g, "") // ® ™ ©
@@ -711,7 +711,7 @@ function normalizeWords(title: string): Set<string> {
   return out;
 }
 
-function countIntersection(a: Set<string>, b: Set<string>): number {
+export function countIntersection(a: Set<string>, b: Set<string>): number {
   let n = 0;
   a.forEach((w) => { if (b.has(w)) n += 1; });
   return n;
@@ -723,7 +723,7 @@ function countIntersection(a: Set<string>, b: Set<string>): number {
 // browse-node leak (e.g. matching an old PS3 SKU to a PS5 pin because the
 // title words overlap), which is the exact failure mode that produced the
 // wrong Road Kings / Tempest Rising pins.
-function titleMentionsPlatform(title: string, plat: string): { ok: boolean; isSwitch2: boolean } {
+export function titleMentionsPlatform(title: string, plat: string): { ok: boolean; isSwitch2: boolean } {
   const t = title.toLowerCase();
   if (plat === "ps5") {
     // Accept PS5 / PlayStation 5. Reject bare "playstation" so PS3/PS4 don't slip through.
@@ -751,7 +751,7 @@ function titleMentionsPlatform(title: string, plat: string): { ok: boolean; isSw
 // products released in 2020 or later. This kills the 2007-era Road Kings
 // (B00079HZX4) / Tempest Rising (B001AZRJGM) matches without needing extra
 // Rainforest calls. When product.releaseDate isn't set we skip the check.
-function isAsinAncientForProduct(asin: string, productReleaseDate: string | null | undefined): boolean {
+export function isAsinAncientForProduct(asin: string, productReleaseDate: string | null | undefined): boolean {
   if (!productReleaseDate) return false;
   const year = Number(productReleaseDate.slice(0, 4));
   if (!Number.isFinite(year) || year < 2020) return false;

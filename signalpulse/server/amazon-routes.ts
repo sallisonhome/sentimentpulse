@@ -31,8 +31,20 @@ import {
   type AmazonPlatformSlug,
 } from "@shared/schema";
 import { and, desc, eq, lte } from "drizzle-orm";
-import { runAmazonJob, type AmazonJobName } from "./amazon-cron";
-import { isRainforestConfigured } from "./amazon-rainforest";
+import {
+  runAmazonJob,
+  type AmazonJobName,
+  normalizeWords,
+  countIntersection,
+  titleMentionsPlatform,
+  isAsinAncientForProduct,
+} from "./amazon-cron";
+import {
+  isRainforestConfigured,
+  isVideoGameSoftware,
+  fetchSearch,
+} from "./amazon-rainforest";
+import { products } from "@shared/schema";
 
 // ─── Small helpers ──────────────────────────────────────────────────────────
 function daysAgoUtcDate(days: number): string {
@@ -310,6 +322,102 @@ export function registerAmazonRoutes(app: Express): void {
   app.get("/api/amazon/leaderboard/saber", handleLeaderboardSaber);
   // Ops-token-bypass alias for internal verification (same payload).
   app.get("/api/amazon/ingest/leaderboard-preview", handleLeaderboardSaber);
+
+  // ── Discovery diagnose (dry-run, ops-token bypass) ─────────────────────
+  // Given ?productId=N&platform=<ps5|xbox|switch>, re-runs the exact
+  // asin_search_discovery loop for that one product+platform and returns
+  // per-candidate accept/reject reasons in JSON. No writes.
+  //
+  // Why this exists: when discovery reports `no match: product #X (N raw
+  // results)` in the journal, we still don't know WHICH filter dropped
+  // each candidate. This endpoint answers exactly that — the raw Rainforest
+  // top-N titles + ASINs, plus the reason each was rejected (hardware
+  // exclusion, wrong platform, ancient ASIN, already-used, low score).
+  //
+  // See lessons.md §2 (consolidate — don't re-discover the same bug next
+  // month). Documented in CLAUDE.md operational appendix.
+  app.get("/api/amazon/ingest/discovery-diagnose", async (req: Request, res: Response) => {
+    try {
+      const productId = Number(req.query.productId);
+      const platform = String(req.query.platform ?? "");
+      const topN = Math.min(Math.max(parseInt(String(req.query.topN ?? "10"), 10) || 10, 1), 25);
+      const threshold = Number(req.query.threshold ?? 0.6);
+      if (!Number.isFinite(productId) || productId <= 0) {
+        return res.status(400).json({ error: "productId required" });
+      }
+      if (!isPlatformSlug(platform)) {
+        return res.status(400).json({ error: "invalid platform (ps5|xbox|switch)" });
+      }
+
+      const product = db.select().from(products).where(eq(products.id, productId)).get();
+      if (!product) return res.status(404).json({ error: `product ${productId} not found` });
+
+      const node = AMAZON_CHART_NODES[platform as AmazonPlatformSlug];
+      const usedAsins = new Set(
+        db.select().from(amazonAsinMap)
+          .where(and(eq(amazonAsinMap.productId, productId), eq(amazonAsinMap.isActive, true)))
+          .all().map((r) => r.asin),
+      );
+
+      const { data, creditsUsed, creditsRemaining } = await fetchSearch(product.title, node.nodeId);
+      const rawResults: any[] = data?.search_results ?? [];
+      const pWords = normalizeWords(product.title);
+
+      const candidates = rawResults.slice(0, topN).map((r: any, idx: number) => {
+        const asin = (r.asin ?? "").toString();
+        const title = (r.title ?? "").toString();
+        const item: any = {
+          rank: idx + 1,
+          asin,
+          title,
+          link: r.link ?? null,
+          rejectReason: null as string | null,
+          score: null as number | null,
+        };
+        if (!asin || !title) { item.rejectReason = "missing_asin_or_title"; return item; }
+        const vgs = isVideoGameSoftware(title);
+        if (!vgs.keep) { item.rejectReason = `isVideoGameSoftware:${vgs.reason}`; return item; }
+        const platCheck = titleMentionsPlatform(title, platform);
+        if (!platCheck.ok) { item.rejectReason = `titleMentionsPlatform:no_${platform}`; return item; }
+        if (usedAsins.has(asin)) { item.rejectReason = "already_pinned_to_this_product"; return item; }
+        if (isAsinAncientForProduct(asin, product.releaseDate ?? null)) { item.rejectReason = "ancient_asin"; return item; }
+        const rWords = normalizeWords(title);
+        if (rWords.size === 0) { item.rejectReason = "normalize_empty"; return item; }
+        const overlap = countIntersection(pWords, rWords);
+        const score = pWords.size > 0 ? overlap / pWords.size : 0;
+        item.score = score;
+        item.isSwitch2 = platCheck.isSwitch2;
+        if (score < threshold) { item.rejectReason = `low_score:${score.toFixed(3)}<${threshold}`; return item; }
+        item.accepted = true;
+        return item;
+      });
+
+      const accepted = candidates.filter((c: any) => c.accepted);
+      const bestAccepted = accepted.reduce<any>((best, c) => (best == null || c.score > best.score ? c : best), null);
+
+      res.json({
+        product: { id: product.id, title: product.title, releaseDate: product.releaseDate },
+        platform,
+        categoryNodeId: node.nodeId,
+        threshold,
+        productWords: Array.from(pWords),
+        rainforest: {
+          rawResultsCount: rawResults.length,
+          creditsUsed,
+          creditsRemaining,
+        },
+        candidates,
+        summary: {
+          totalCandidates: candidates.length,
+          acceptedCount: accepted.length,
+          bestAccepted,
+          alreadyPinnedAsins: Array.from(usedAsins),
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? String(err) });
+    }
+  });
 
   // ── Full top-50 per platform ───────────────────────────────────────────
   app.get("/api/amazon/charts/:platform", (req, res) => {
