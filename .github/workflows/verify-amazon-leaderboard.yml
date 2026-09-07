@@ -1,0 +1,35 @@
+name: Verify Amazon Leaderboard Live
+
+# Read-only verification workflow. Curls the ops-token-bypass alias
+# /api/amazon/ingest/leaderboard-preview from the droplet's loopback and
+# prints the JSON payload for manual inspection. No writes. No mutations.
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Curl leaderboard-preview from droplet
+        env:
+          OPS_TOKEN: ${{ secrets.INGESTION_OPS_TOKEN }}
+        run: |
+          set -e
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          echo "=========================================="
+          echo "Amazon leaderboard live payload:"
+          echo "=========================================="
+          $SSH "curl -sS -H 'x-ops-token: ${OPS_TOKEN}' 'http://127.0.0.1:5000/api/amazon/ingest/leaderboard-preview'" | python3 -m json.tool
