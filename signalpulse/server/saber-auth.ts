@@ -128,6 +128,11 @@ const EXEMPT_PATHS_READ_ONLY_CROSS_APP = new Set([
   // (v3.31, 2026-09-05). Same posture: read-only, aggregate country-level
   // totals, no PII, safe to expose unauthenticated over loopback + nginx.
   "/api/promo-support/sales-by-country",
+  // Weekly leaderboard digest preview — v3.34 (2026-09-07). Read-only
+  // HTML render for operator verification before scheduling resends.
+  // Contains only aggregate rev/units/rank data that's already in the
+  // digest emails themselves; safe to expose unauthenticated.
+  "/api/leaderboards/digest/preview",
 ]);
 const EXEMPT_PREFIXES = [
   "/api/onpromo/", // SignalPulse's OWN SPA reads this too, but it is
@@ -182,6 +187,14 @@ const OPS_TOKEN_PATHS = new Set([
   // portal-fetch endpoint, but doesn't require a JWT session. See
   // routes.ts /api/ops/portal-fetch.
   "/api/ops/portal-fetch",
+  // Amazon manual-pin workflow (amazon-manual-pin.yml) writes verified
+  // franchise-IP ASINs into the Saber map and the competitor map from a
+  // GitHub Actions runner over SSH → loopback. No browser session
+  // available; ops token gates it instead. See
+  // server/amazon-routes.ts POST /api/amazon/asin-map and
+  // POST /api/amazon/competitor-asin-map.
+  "/api/amazon/asin-map",
+  "/api/amazon/competitor-asin-map",
 ]);
 
 // Path prefixes that accept the ops token. Use for endpoint groups that have

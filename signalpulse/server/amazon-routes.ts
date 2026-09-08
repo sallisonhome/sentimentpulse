@@ -22,10 +22,14 @@ import {
   amazonChartSnapshots,
   amazonProductDaily,
   amazonAlsoBoughtDaily,
+  amazonProductRelatedDaily,
   amazonMoversDaily,
   amazonNewReleases,
   amazonKeywordDaily,
   amazonIngestRuns,
+  // v3.38: amazonProductReviews no longer read here — top reviews now
+  // live on amazon_product_daily.top_reviews_json (Rainforest deprecated
+  // type=reviews after Amazon killed most-recent reviews in Mar-2025).
   AMAZON_PLATFORM_SLUGS,
   AMAZON_CHART_NODES,
   type AmazonPlatformSlug,
@@ -38,11 +42,15 @@ import {
   countIntersection,
   titleMentionsPlatform,
   isAsinAncientForProduct,
+  writeProductSnapshotRow,
+  ensureProductSnapshotFresh,
 } from "./amazon-cron";
 import {
   isRainforestConfigured,
   isVideoGameSoftware,
   fetchSearch,
+  fetchProduct,
+  extractReviews,
 } from "./amazon-rainforest";
 import { products } from "@shared/schema";
 
@@ -66,6 +74,34 @@ function rankDelta(
 ): number | null {
   if (!historicRow) return null;
   return historicRow.rank - todayRank; // improved → positive
+}
+
+// Amazon bestseller sub-category names we treat as "platform BSR" for each
+// SignalPulse platform pin. Ordered by preference — first hit wins. Switch 2
+// pins get the Switch 2 category first, then legacy Switch as a fallback so
+// early-release titles still show a rank while Amazon rolls out the new node.
+function platformBsrCategories(
+  platform: AmazonPlatformSlug | null,
+  isSwitch2: boolean,
+): string[] {
+  if (!platform) return [];
+  switch (platform) {
+    case "ps5":
+      return ["PlayStation 5 Games"];
+    case "xbox":
+      return ["Xbox Series X & S Games", "Xbox Series X|S Games", "Xbox Games"];
+    case "switch":
+      return isSwitch2
+        ? ["Nintendo Switch 2 Games", "Nintendo Switch Games"]
+        : ["Nintendo Switch Games"];
+    default:
+      return [];
+  }
+}
+
+function tryJson(s: string | null | undefined): unknown {
+  if (!s) return null;
+  try { return JSON.parse(s); } catch { return null; }
 }
 
 // ─── Registration ──────────────────────────────────────────────────────────
@@ -224,6 +260,17 @@ export function registerAmazonRoutes(app: Express): void {
         pin: { asin: string; isSwitch2?: boolean },
         slug: string,
       ): Record<string, unknown> | null => {
+        // Sales-estimation and recent-sales come from amazon_product_daily
+        // regardless of chart presence, so pull the freshest row once and
+        // merge into whichever cell shape we end up returning below.
+        const prodToday = lookupAsinProductOn(pin.asin, today);
+        const estFields = {
+          recentSales: prodToday?.recentSales ?? null,
+          monthlySalesEstimate: prodToday?.monthlySalesEstimate ?? null,
+          weeklySalesEstimate: prodToday?.weeklySalesEstimate ?? null,
+          salesEstimateBsr: prodToday?.salesEstimateBsr ?? null,
+          salesEstimateCategory: prodToday?.salesEstimateCategory ?? null,
+        };
         const rowToday = lookupAsinRankOn(pin.asin, slug, today);
         if (rowToday) {
           const row1d  = lookupAsinRankOn(pin.asin, slug, d1);
@@ -241,11 +288,15 @@ export function registerAmazonRoutes(app: Express): void {
             delta30d: rankDelta(rowToday.rank, row30d ? { rank: row30d.rank } : undefined),
             asin: pin.asin,
             isSwitch2: pin.isSwitch2 ?? false,
+            ...estFields,
           };
         }
-        // No chart row — fall back to products BSR.
-        const prodToday = lookupAsinProductOn(pin.asin, today);
-        if (!prodToday || prodToday.mainBsr == null) return null;
+        // No chart row — fall back to products BSR. Even without BSR, if
+        // sales-estimation returned a number we still want to surface it.
+        if (!prodToday) return null;
+        const hasBsr = prodToday.mainBsr != null;
+        const hasEst = estFields.monthlySalesEstimate != null || estFields.recentSales != null;
+        if (!hasBsr && !hasEst) return null;
         const prod1d  = lookupAsinProductOn(pin.asin, d1);
         const prod7d  = lookupAsinProductOn(pin.asin, d7);
         const prod30d = lookupAsinProductOn(pin.asin, d30);
@@ -256,11 +307,12 @@ export function registerAmazonRoutes(app: Express): void {
           bsr: prodToday.mainBsr,
           price: prodToday.buyboxPrice,
           rating: prodToday.rating,
-          delta1d:  bsrDelta(prodToday.mainBsr, prod1d?.mainBsr),
-          delta7d:  bsrDelta(prodToday.mainBsr, prod7d?.mainBsr),
-          delta30d: bsrDelta(prodToday.mainBsr, prod30d?.mainBsr),
+          delta1d:  hasBsr ? bsrDelta(prodToday.mainBsr, prod1d?.mainBsr) : null,
+          delta7d:  hasBsr ? bsrDelta(prodToday.mainBsr, prod7d?.mainBsr) : null,
+          delta30d: hasBsr ? bsrDelta(prodToday.mainBsr, prod30d?.mainBsr) : null,
           asin: pin.asin,
           isSwitch2: pin.isSwitch2 ?? false,
+          ...estFields,
         };
       };
 
@@ -543,46 +595,77 @@ export function registerAmazonRoutes(app: Express): void {
     res.json({ snapshotDate, platform, rows: enriched });
   });
 
-  // 30-day rank history for one ASIN on one platform
+  // 30-day rank history for one ASIN on one platform.
+  // v3.36: returns BOTH `rows` (newest-first, snapshotDate keyed) for the
+  // PDP list view AND `points` (chronological, `date` keyed) for legacy
+  // sparkline callers.
   app.get("/api/amazon/charts/:platform/history/:asin", (req, res) => {
     const platform = req.params.platform;
     if (!isPlatformSlug(platform)) return res.status(400).json({ error: "invalid platform" });
     const asin = req.params.asin;
-    const rows = db.select().from(amazonChartSnapshots)
+    const raw = db.select().from(amazonChartSnapshots)
       .where(and(
         eq(amazonChartSnapshots.platform, platform),
         eq(amazonChartSnapshots.asin, asin),
       ))
       .orderBy(desc(amazonChartSnapshots.snapshotDate))
       .limit(30).all();
-    const points = rows.map((r) => ({ date: r.snapshotDate, rank: r.rank, rawRank: r.rawRank })).reverse();
-    res.json({ platform, asin, points });
+    const rows = raw.map((r) => ({ snapshotDate: r.snapshotDate, rank: r.rank, rawRank: r.rawRank }));
+    const points = [...rows].reverse().map((r) => ({ date: r.snapshotDate, rank: r.rank, rawRank: r.rawRank }));
+    res.json({ platform, asin, rows, points });
   });
 
   // ── Per-title drill-down ───────────────────────────────────────────────
-  app.get("/api/amazon/product/:asin", (req, res) => {
+  // Contract (v3.36, 2026-09-07):
+  //   { asin, pin, product, latestProduct, chartToday, sparkline,
+  //     sparklinePlatform, platformBsr, platformBsrCategory }
+  // - `product` is the client-facing display record (title / imageUrl / link /
+  //   platform / isTracked / isSwitch2), resolved from chart snapshots + pin
+  //   metadata so competitor ASINs (no SignalPulse products row) still render.
+  // - `latestProduct` mirrors amazon_product_daily but exposes the fields the
+  //   client reads (price, currency, availability, rating, ratingsTotal, link,
+  //   imageUrl, scrapedAt, buyboxSeller/Amazon flag, mainBsr, recentSales).
+  // - `chartToday` is a SINGLE {platform, rank, rawRank} or null; pin platform
+  //   wins ties, otherwise best (lowest) rank wins.
+  // - `platformBsr` + `platformBsrCategory` extract the per-platform bestseller
+  //   rank line (e.g. "#30 in PlayStation 5 Games") from sub_bsrs_json so the
+  //   PDP always shows a platform-scoped rank even when the ASIN isn't in the
+  //   top-50 chart.
+  app.get("/api/amazon/product/:asin", async (req, res) => {
     const asin = req.params.asin;
 
-    // Latest product-daily row
-    const latestProduct = db.select().from(amazonProductDaily)
+    // v3.39: on-demand lazy fetch — if this ASIN has never been
+    // snapshotted or the latest row is older than 3 days, pull one
+    // type=product call before responding. Non-blocking on failure.
+    await ensureProductSnapshotFresh(asin, 3);
+
+    // Latest product-daily row.
+    const latestDaily = db.select().from(amazonProductDaily)
       .where(eq(amazonProductDaily.asin, asin))
       .orderBy(desc(amazonProductDaily.snapshotDate))
       .limit(1).get();
 
-    // Pinned metadata (may be undefined for a "recommended" ASIN not in our map)
-    const pin = db.select().from(amazonAsinMap)
+    // Pin lookup: Saber pin first, then competitor pin.
+    const saberPin = db.select().from(amazonAsinMap)
       .where(eq(amazonAsinMap.asin, asin))
       .get();
-    const product = pin ? storage.getAllProducts().find((p) => p.id === pin.productId) ?? null : null;
+    const compPin = saberPin ? null : db.select().from(amazonCompetitorAsinMap)
+      .where(eq(amazonCompetitorAsinMap.asin, asin))
+      .get();
+    const pinPlatform = ((saberPin?.platform ?? compPin?.platform) ?? null) as AmazonPlatformSlug | null;
+    const isSwitch2 = !!(saberPin?.isSwitch2);
+    const spProduct = saberPin
+      ? storage.getAllProducts().find((p) => p.id === saberPin.productId) ?? null
+      : compPin
+        ? storage.getAllProducts().find((p) => p.id === (compPin as any).parentProductId) ?? null
+        : null;
 
-    // "Today's" chart position across all platforms — use the freshest
-    // snapshot on file so the product page keeps showing yesterday's rank
-    // between 00:00 UTC and 11:00 UTC when today's charts haven't fired yet.
+    // Latest chart snapshot date on the whole system (for "today" comparison).
     const latestChartRow = db.select().from(amazonChartSnapshots)
       .orderBy(desc(amazonChartSnapshots.snapshotDate))
       .limit(1).get();
     const today = latestChartRow?.snapshotDate ?? daysAgoUtcDate(0);
-    const chartToday: Record<string, unknown> = {};
+    const perPlatformToday: Array<{ platform: AmazonPlatformSlug; rank: number; rawRank: number | null; title: string; imageUrl: string | null; link: string | null }> = [];
     for (const slug of AMAZON_PLATFORM_SLUGS) {
       const row = db.select().from(amazonChartSnapshots)
         .where(and(
@@ -590,39 +673,265 @@ export function registerAmazonRoutes(app: Express): void {
           eq(amazonChartSnapshots.platform, slug),
           eq(amazonChartSnapshots.asin, asin),
         )).get();
-      chartToday[slug] = row ? { rank: row.rank, rawRank: row.rawRank, title: row.title } : null;
+      if (row) {
+        perPlatformToday.push({ platform: slug, rank: row.rank, rawRank: row.rawRank ?? null, title: row.title, imageUrl: row.imageUrl ?? null, link: row.link ?? null });
+      }
     }
+    perPlatformToday.sort((a, b) => {
+      if (pinPlatform) {
+        if (a.platform === pinPlatform && b.platform !== pinPlatform) return -1;
+        if (b.platform === pinPlatform && a.platform !== pinPlatform) return 1;
+      }
+      return a.rank - b.rank;
+    });
+    const chartToday = perPlatformToday[0]
+      ? { platform: perPlatformToday[0].platform, rank: perPlatformToday[0].rank, rawRank: perPlatformToday[0].rawRank }
+      : null;
 
-    // 30-day rank sparkline: pick the platform where this ASIN has the most
-    // recent activity (first hit).
-    let sparkline: { date: string; rank: number }[] = [];
-    let sparklinePlatform: string | null = null;
-    for (const slug of AMAZON_PLATFORM_SLUGS) {
-      const rows = db.select().from(amazonChartSnapshots)
+    // 30-day sparkline. Prefer pin platform, then any platform with data.
+    let sparkline: Array<{ snapshotDate: string; rank: number; rawRank: number | null }> = [];
+    let sparklinePlatform: AmazonPlatformSlug | null = null;
+    const platformOrder: AmazonPlatformSlug[] = pinPlatform
+      ? [pinPlatform, ...AMAZON_PLATFORM_SLUGS.filter((p) => p !== pinPlatform)]
+      : [...AMAZON_PLATFORM_SLUGS];
+    for (const slug of platformOrder) {
+      const sparkRows = db.select().from(amazonChartSnapshots)
         .where(and(
           eq(amazonChartSnapshots.platform, slug),
           eq(amazonChartSnapshots.asin, asin),
         ))
         .orderBy(desc(amazonChartSnapshots.snapshotDate))
         .limit(30).all();
-      if (rows.length > 0) {
-        sparkline = rows.map((r) => ({ date: r.snapshotDate, rank: r.rank })).reverse();
+      if (sparkRows.length > 0) {
+        sparkline = sparkRows.map((r) => ({ snapshotDate: r.snapshotDate, rank: r.rank, rawRank: r.rawRank ?? null })).reverse();
         sparklinePlatform = slug;
         break;
       }
     }
 
+    // Freshest chart row (used to fill display title/image/link).
+    // v3.37 (2026-09-07): fall back to the amazon_product_daily row when no
+    // chart snapshot exists for this ASIN — the daily product ingest now
+    // captures title/image_url/link for every pinned SKU, so tracked ASINs
+    // that never appeared in a top-50 chart still get proper header art.
+    let freshestChart: { title: string | null; imageUrl: string | null; link: string | null } | null = null;
+    if (perPlatformToday[0]) {
+      freshestChart = { title: perPlatformToday[0].title, imageUrl: perPlatformToday[0].imageUrl, link: perPlatformToday[0].link };
+    } else if (sparklinePlatform) {
+      const anyChart = db.select().from(amazonChartSnapshots)
+        .where(and(
+          eq(amazonChartSnapshots.platform, sparklinePlatform),
+          eq(amazonChartSnapshots.asin, asin),
+        ))
+        .orderBy(desc(amazonChartSnapshots.snapshotDate))
+        .limit(1).get();
+      if (anyChart) {
+        freshestChart = { title: anyChart.title ?? null, imageUrl: anyChart.imageUrl ?? null, link: anyChart.link ?? null };
+      }
+    }
+    if (!freshestChart?.imageUrl && (latestDaily as any)?.imageUrl) {
+      freshestChart = {
+        title: freshestChart?.title ?? (latestDaily as any).title ?? null,
+        imageUrl: (latestDaily as any).imageUrl ?? null,
+        link: freshestChart?.link ?? (latestDaily as any).link ?? null,
+      };
+    }
+
+    // Per-platform BSR extracted from sub_bsrs_json.
+    let platformBsr: number | null = null;
+    let platformBsrCategory: string | null = null;
+    if (latestDaily?.subBsrsJson) {
+      try {
+        const subs = JSON.parse(latestDaily.subBsrsJson) as Array<{ category?: string; rank?: number }>;
+        const wantedCats = platformBsrCategories(pinPlatform, isSwitch2);
+        for (const want of wantedCats) {
+          const hit = subs.find((s) => s.category && s.category.toLowerCase() === want.toLowerCase());
+          if (hit && typeof hit.rank === "number") {
+            platformBsr = hit.rank;
+            platformBsrCategory = hit.category ?? want;
+            break;
+          }
+        }
+        if (platformBsr == null) {
+          const first = subs.find((s) => typeof s.rank === "number" && s.category);
+          if (first) {
+            platformBsr = first.rank!;
+            platformBsrCategory = first.category!;
+          }
+        }
+      } catch { /* JSON parse failure = no platform BSR */ }
+    }
+
+    const displayProduct = {
+      asin,
+      platform: ((pinPlatform ?? chartToday?.platform ?? sparklinePlatform) ?? null) as string | null,
+      title: freshestChart?.title ?? (spProduct as any)?.title ?? `ASIN ${asin}`,
+      imageUrl: freshestChart?.imageUrl ?? null,
+      link: freshestChart?.link ?? null,
+      productId: ((saberPin?.productId ?? (compPin as any)?.parentProductId) ?? null) as number | null,
+      isTracked: !!saberPin,
+      isSwitch2,
+    };
+
+    const latestProduct = latestDaily ? {
+      title: displayProduct.title,
+      brand: null as string | null,
+      price: latestDaily.buyboxPrice ?? null,
+      currency: latestDaily.buyboxPrice != null ? "USD" : null,
+      availability: latestDaily.stockStatus ?? null,
+      rating: latestDaily.rating ?? null,
+      ratingsTotal: latestDaily.ratingsTotal ?? null,
+      imageUrl: displayProduct.imageUrl,
+      link: displayProduct.link,
+      scrapedAt: latestDaily.createdAt ?? null,
+      buyboxSeller: latestDaily.buyboxSeller ?? null,
+      buyboxIsAmazon: latestDaily.buyboxIsAmazon ?? null,
+      isPrime: latestDaily.isPrime ?? null,
+      mainBsr: latestDaily.mainBsr ?? null,
+      recentSales: latestDaily.recentSales ?? null,
+      monthlySalesEstimate: latestDaily.monthlySalesEstimate ?? null,
+      weeklySalesEstimate: latestDaily.weeklySalesEstimate ?? null,
+      snapshotDate: latestDaily.snapshotDate ?? null,
+    } : null;
+
     res.json({
       asin,
-      product,
-      pin: pin ?? null,
-      latestProduct: latestProduct ?? null,
+      product: displayProduct,
+      pin: saberPin ?? compPin ?? null,
+      latestProduct,
       chartToday,
       sparkline,
       sparklinePlatform,
+      platformBsr,
+      platformBsrCategory,
     });
   });
 
+  // Per-ASIN reviews (v3.38, 2026-09-07).
+  //
+  // v3.36 shipped with a dedicated reviews store (amazon_product_reviews)
+  // fed by Rainforest type=reviews. Amazon killed the public "Most Recent"
+  // reviews sort in March 2025, so Rainforest deprecated type=reviews
+  // (returns HTTP 503 "reviews request type is temporarily unavailable").
+  //
+  // v3.38 migrates to Rainforest's recommended fallback: p.top_reviews[]
+  // on type=product, which we already fetch hourly. GET reads the top
+  // reviews snapshotted into amazon_product_daily.top_reviews_json. POST
+  // /refresh re-fetches type=product for that ASIN (updating every field
+  // for the day, including top_reviews_json). Zero extra Rainforest cost
+  // vs. a dedicated reviews call.
+  app.get("/api/amazon/product/:asin/reviews", async (req, res) => {
+    const asin = req.params.asin;
+    // v3.39: on-demand lazy fetch — if this ASIN has never been
+    // snapshotted or the latest row is older than 3 days, pull one
+    // type=product call before responding. Non-blocking on failure:
+    // ensureProductSnapshotFresh swallows errors and we fall back to
+    // whatever stale row exists (if any).
+    await ensureProductSnapshotFresh(asin, 3);
+    const row = db.select().from(amazonProductDaily)
+      .where(eq(amazonProductDaily.asin, asin))
+      .orderBy(desc(amazonProductDaily.snapshotDate), desc(amazonProductDaily.createdAt))
+      .limit(1).get();
+    if (!row || !row.topReviewsJson) {
+      return res.json({ asin, latestFetch: row?.createdAt ?? null, reviews: [] });
+    }
+    const parsed = tryJson(row.topReviewsJson);
+    const reviews = Array.isArray(parsed)
+      ? parsed.map((r: any) => ({
+          reviewId: r.reviewId ?? r.id ?? null,
+          title: r.title ?? null,
+          body: r.body ?? null,
+          rating: r.rating ?? null,
+          reviewDate: r.reviewDate ?? r.date ?? null,
+          verifiedPurchase: r.verifiedPurchase ?? null,
+          helpfulVotes: r.helpfulVotes ?? null,
+          reviewerName: r.reviewerName ?? null,
+          variantAttrs: r.variantAttrs ?? null,
+          imageUrls: r.imageUrls ?? null,
+          fetchedAt: row.createdAt,
+        }))
+      : [];
+    res.json({ asin, latestFetch: row.createdAt, reviews });
+  });
+
+  app.post("/api/amazon/product/:asin/reviews/refresh", async (req, res) => {
+    const asin = req.params.asin;
+    if (!isRainforestConfigured()) {
+      return res.status(400).json({ error: "rainforest_api_key not set" });
+    }
+    try {
+      // v3.38: re-fetch type=product (top_reviews live here now). This
+      // refreshes every product-daily field for today, not just reviews —
+      // effectively an on-demand mini products-cron for one ASIN.
+      // v3.39: writes go through the shared writeProductSnapshotRow so
+      // this stays byte-identical to the daily + weekly cron paths.
+      const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
+      const snapshotDate = new Date().toISOString().slice(0, 10);
+      const nowIsoStr = new Date().toISOString();
+      writeProductSnapshotRow(asin, snapshotDate, data);
+      const p = data?.product ?? {};
+      const topRvs = extractReviews({ top_reviews: p.top_reviews ?? [] }, 20);
+      res.json({
+        asin,
+        fetched: topRvs.length,
+        creditsUsed,
+        creditsRemaining,
+        fetchedAt: nowIsoStr,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message ?? err) });
+    }
+  });
+
+  // v3.37 (2026-09-07): Related surface for the PDP — replaces the dead
+  // also-bought endpoint (Rainforest returns nothing for game ASINs).
+  // Reads amazon_product_related_daily, which runProductSnapshots populates
+  // from product.variants[] (cross-platform siblings) and
+  // product.bestsellers_rank[] (category rank + name + Amazon link).
+  app.get("/api/amazon/product/:asin/related", (req, res) => {
+    const asin = req.params.asin;
+    const latest = db.select().from(amazonProductRelatedDaily)
+      .where(eq(amazonProductRelatedDaily.sourceAsin, asin))
+      .orderBy(desc(amazonProductRelatedDaily.snapshotDate))
+      .limit(1).get();
+    if (!latest) {
+      return res.json({ asin, snapshotDate: null, variants: [], categoryRanks: [] });
+    }
+    const rows = db.select().from(amazonProductRelatedDaily)
+      .where(and(
+        eq(amazonProductRelatedDaily.sourceAsin, asin),
+        eq(amazonProductRelatedDaily.snapshotDate, latest.snapshotDate),
+      ))
+      .orderBy(amazonProductRelatedDaily.rankPosition)
+      .all();
+    // Mark tracked variants so the client can badge them.
+    const trackedAsinSet = new Set(
+      db.select({ asin: amazonAsinMap.asin }).from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all().map((r) => r.asin),
+    );
+    const variants = rows.filter((r) => r.kind === "variant").map((r) => ({
+      rankPosition: r.rankPosition,
+      relatedAsin: r.relatedAsin,
+      title: r.title,
+      imageUrl: r.imageUrl,
+      link: r.link,
+      isTracked: r.relatedAsin ? trackedAsinSet.has(r.relatedAsin) : false,
+    }));
+    const categoryRanks = rows.filter((r) => r.kind === "category_rank").map((r) => ({
+      rankPosition: r.rankPosition,
+      categoryName: r.categoryName,
+      categoryRank: r.categoryRank,
+      link: r.link,
+    }));
+    res.json({
+      asin,
+      snapshotDate: latest.snapshotDate,
+      variants,
+      categoryRanks,
+    });
+  });
+
+  // v3.37 (2026-09-07): DEPRECATED. Kept so existing client bundles that
+  // still call the old path don't 404; returns an empty payload.
   app.get("/api/amazon/product/:asin/also-bought", (req, res) => {
     const asin = req.params.asin;
     // Most recent snapshot date that has any rows for this source ASIN.
@@ -822,6 +1131,94 @@ export function registerAmazonRoutes(app: Express): void {
     }
   });
 
+  // Manual competitor ASIN pin. Mirrors POST /api/amazon/asin-map but for
+  // the competitor map (amazon_competitor_asin_map). Used when Amazon PDP
+  // inspection has verified a platform-specific ASIN for a competitor
+  // (franchise-IP crowding defeats asin_search_discovery for it too).
+  //
+  // Two shapes accepted:
+  //   { sentimentpulseGameId, platform, asin }
+  //     — upsert an ADDITIONAL platform for an already-tracked competitor.
+  //       parentProductId + name are inherited from any existing row so the
+  //       caller doesn't have to know them.
+  //   { sentimentpulseGameId, parentProductId, name, platform, asin }
+  //     — full form. Required when the competitor has no existing row yet
+  //       (i.e. brand-new competitor being added by hand).
+  // isAuto defaults to false so clean_auto_pins never touches manual pins.
+  app.post("/api/amazon/competitor-asin-map", (req: Request, res: Response) => {
+    try {
+      const body = req.body ?? {};
+      const sentimentpulseGameId = Number(body.sentimentpulseGameId);
+      const platform = String(body.platform ?? "");
+      const asin = String(body.asin ?? "").trim();
+      if (!Number.isFinite(sentimentpulseGameId) || sentimentpulseGameId <= 0) {
+        return res.status(400).json({ error: "sentimentpulseGameId required" });
+      }
+      if (!isPlatformSlug(platform)) return res.status(400).json({ error: "invalid platform" });
+      if (!asin) return res.status(400).json({ error: "asin required" });
+      const isAuto = body.isAuto == null ? false : !!body.isAuto;
+      const isActive = body.isActive == null ? true : !!body.isActive;
+      const now = new Date().toISOString();
+
+      // Look up any existing row for this game (any platform) to inherit
+      // parentProductId + name when the caller didn't supply them.
+      const anyRowForGame = db.select().from(amazonCompetitorAsinMap)
+        .where(eq(amazonCompetitorAsinMap.sentimentpulseGameId, sentimentpulseGameId))
+        .get();
+
+      let parentProductId = Number(body.parentProductId);
+      let name = body.name != null ? String(body.name) : undefined;
+      if (!Number.isFinite(parentProductId) || parentProductId <= 0) {
+        if (anyRowForGame) parentProductId = anyRowForGame.parentProductId;
+      }
+      if (name == null || name === "") {
+        if (anyRowForGame) name = anyRowForGame.name;
+      }
+      if (!Number.isFinite(parentProductId) || parentProductId <= 0) {
+        return res.status(400).json({ error: "parentProductId required (no existing row to inherit from)" });
+      }
+      if (!name) {
+        return res.status(400).json({ error: "name required (no existing row to inherit from)" });
+      }
+
+      const existing = db.select().from(amazonCompetitorAsinMap)
+        .where(and(
+          eq(amazonCompetitorAsinMap.sentimentpulseGameId, sentimentpulseGameId),
+          eq(amazonCompetitorAsinMap.platform, platform),
+        ))
+        .get();
+      if (existing) {
+        db.update(amazonCompetitorAsinMap).set({
+          asin, isAuto, isActive, matchScore: null,
+          updatedAt: now,
+        }).where(eq(amazonCompetitorAsinMap.id, existing.id)).run();
+      } else {
+        db.insert(amazonCompetitorAsinMap).values({
+          sentimentpulseGameId,
+          parentProductId,
+          name,
+          steamAppId: null,
+          platform,
+          asin,
+          isAuto,
+          isActive,
+          matchScore: null,
+          discoveredAt: isAuto ? now : null,
+          updatedAt: now,
+        }).run();
+      }
+      const row = db.select().from(amazonCompetitorAsinMap)
+        .where(and(
+          eq(amazonCompetitorAsinMap.sentimentpulseGameId, sentimentpulseGameId),
+          eq(amazonCompetitorAsinMap.platform, platform),
+        ))
+        .get();
+      res.json({ row });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? String(err) });
+    }
+  });
+
   app.delete("/api/amazon/asin-map/:id", (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid id" });
@@ -847,7 +1244,7 @@ export function registerAmazonRoutes(app: Express): void {
   // ── Ops: manual ingest + recent runs ───────────────────────────────────
   app.post("/api/amazon/ingest/run/:job", async (req, res) => {
     const job = req.params.job as AmazonJobName;
-    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "asin_discovery", "asin_search_discovery", "competitor_discovery", "clean_auto_pins"].includes(job)) {
+    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "reviews", "chart_coverage", "asin_discovery", "asin_search_discovery", "formats_editions_fill", "sales_estimation", "competitor_discovery", "clean_auto_pins"].includes(job)) {
       return res.status(400).json({ error: "unknown job" });
     }
     // clean_auto_pins is a DB-only op; every other job hits Rainforest.

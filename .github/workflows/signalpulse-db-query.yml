@@ -1,0 +1,56 @@
+name: SignalPulse DB Query (read-only)
+
+# Read-only SQLite query helper for signalpulse.db on the droplet.
+# Runs a SELECT (or other read-only statement) via sqlite3 and prints
+# the result. Rejects the statement if it looks like a write. Useful for
+# ad-hoc diagnostics — pin state, cell freshness, chart snapshots — when
+# the SPA is behind auth and the leaderboard-preview payload doesn't
+# expose the raw column you need.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sql:
+        description: 'SQL to run (single statement, must be SELECT or PRAGMA)'
+        required: true
+      mode:
+        description: 'Output format'
+        required: false
+        default: 'column'
+        type: choice
+        options: [column, csv, json, line]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  q:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run query
+        env:
+          SQL: ${{ github.event.inputs.sql }}
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -e
+          # Reject obvious writes. Loose but useful guard.
+          upper=$(printf '%s' "$SQL" | tr '[:lower:]' '[:upper:]')
+          case " $upper " in
+            *" INSERT "*|*" UPDATE "*|*" DELETE "*|*" DROP "*|*" ALTER "*|*" CREATE "*|*" REPLACE "*|*" ATTACH "*|*" VACUUM "*)
+              echo "ERROR: write-like statement rejected"; exit 1;;
+          esac
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          # Pass SQL via stdin so quoting is safe.
+          # Resolve DB path from systemd WorkingDirectory (relative 'data.db' in storage.ts).
+          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/data.db\"")
+          echo "DB: $DB_PATH"
+          printf '%s\n' "$SQL" | $SSH "cat > /tmp/q.sql && sqlite3 -header -${MODE:-column} \"$DB_PATH\" < /tmp/q.sql"

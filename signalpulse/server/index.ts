@@ -120,9 +120,11 @@ app.get("/api/config", (_req, res) => {
   startIngestionCron();
 
   // Amazon Retail ingestion (2026-09-06): charts / products / movers /
-  // keywords / new-releases daily 07:00-07:45 America/New_York, plus
-  // Sunday 08:00 also-bought. Silently no-ops until rainforest_api_key
-  // is set in Settings (see server/amazon-cron.ts).
+  // keywords / new-releases daily 07:00-07:45 America/New_York. v3.36
+  // (2026-09-07) promoted also-bought from Sunday-only to daily 08:00 so
+  // per-title PDPs always render a fresh carousel; also-bought now covers
+  // competitor pins too, not just Saber SKUs. Silently no-ops until
+  // rainforest_api_key is set in Settings (see server/amazon-cron.ts).
   startAmazonIngestionCron();
 
   // Saber Steam CCU Leaderboard (2026-09-08): live CCU + Steam-global rank

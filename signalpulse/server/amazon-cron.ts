@@ -6,7 +6,10 @@
  *   07:15 daily   runProductSnapshots()     all tracked ASINs
  *   07:30 daily   runMoversAndNewReleases() 3 platforms × 2 endpoints
  *   07:45 daily   runKeywordSearch()        7 seeded keywords
- *   08:00 Sunday  runAlsoBoughtWeekly()     all tracked ASINs, weekly refresh
+ *   08:00 daily   runAlsoBoughtDaily()      all tracked + competitor ASINs (v3.36:
+ *                                            promoted from weekly to daily; also
+ *                                            includes competitor pins so their PDPs
+ *                                            get an Also-Bought carousel too)
  *
  * Same pattern as `leaderboard-digest.ts::startWeeklyDigestCron`: a single
  * setInterval polling every 60s and comparing wall-clock hh:mm ET against
@@ -23,6 +26,7 @@ import {
   amazonAsinMap,
   amazonChartSnapshots,
   amazonProductDaily,
+  amazonProductRelatedDaily,
   amazonMoversDaily,
   amazonNewReleases,
   amazonKeywordDaily,
@@ -34,18 +38,24 @@ import {
   type AmazonPlatformSlug,
   products as productsTable,
 } from "@shared/schema";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import {
   fetchSoftwareChart,
   fetchProduct,
+  fetchSalesEstimation,
+  extractRecentSales,
   fetchMovers,
   fetchNewReleases,
   fetchSearch,
   fetchFormatsEditions,
-  extractAlsoBought,
+  // v3.38: fetchReviews removed — type=reviews is deprecated by Rainforest
+  // (Amazon killed most-recent reviews Mar-2025). extractReviews stays,
+  // used to normalize p.top_reviews[] from type=product responses.
+  extractReviews,
   isVideoGameSoftware,
   isRainforestConfigured,
 } from "./amazon-rainforest";
+import { amazonProductReviews } from "@shared/schema";
 import { listAllCompetitorRelationships, isSentimentPulseIngestRunning } from "./sentimentpulse-client";
 import { log } from "./index";
 
@@ -81,6 +91,12 @@ function getEasternHourMinuteWeekday(now: Date): { hour: number; minute: number;
 
 function todayUtcDate(): string {
   return new Date().toISOString().split("T")[0];
+}
+
+function daysAgoUtcDate(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().split("T")[0];
 }
 
 function nowIso(): string {
@@ -225,32 +241,7 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
         const { data, creditsUsed, creditsRemaining } = await fetchProduct(row.asin);
         totalCreditsUsed += creditsUsed;
         lastCreditsRemaining = creditsRemaining;
-        const p = data?.product ?? {};
-        const buybox = p.buybox_winner ?? {};
-        const price = typeof buybox.price === "number" ? buybox.price : (buybox.price?.value ?? null);
-        const bsr = p.bestsellers_rank?.[0]?.rank ?? null;
-        const subBsrs = (p.bestsellers_rank ?? []).slice(1).map((b: any) => ({
-          category: b.category ?? null,
-          rank: b.rank ?? null,
-        }));
-        // Upsert semantics: delete + insert
-        db.delete(amazonProductDaily)
-          .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, row.asin)))
-          .run();
-        db.insert(amazonProductDaily).values({
-          snapshotDate,
-          asin: row.asin,
-          buyboxPrice: price,
-          buyboxSeller: buybox.seller ?? null,
-          buyboxIsAmazon: !!(buybox.is_amazon ?? false),
-          isPrime: !!(buybox.is_prime ?? p.is_prime ?? false),
-          stockStatus: p.buybox_winner?.availability?.type ?? p.stock_status ?? null,
-          mainBsr: bsr,
-          subBsrsJson: JSON.stringify(subBsrs),
-          rating: p.rating ?? null,
-          ratingsTotal: p.ratings_total ?? null,
-          createdAt: nowIso(),
-        }).run();
+        writeProductSnapshotRow(row.asin, snapshotDate, data);
         rowsWritten += 1;
       } catch (err) {
         log(`amazon-cron products: ${row.asin} failed: ${err}`, "amazon-cron");
@@ -264,6 +255,233 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
       rowsWritten,
     };
   });
+}
+
+// v3.39 (2026-09-07): shared writer for a single type=product response.
+// One canonical write path used by:
+//   - runProductSnapshots (daily pinned-ASIN cron)
+//   - runProductSnapshotsChartCoverage (weekly leaderboard-ASIN cron)
+//   - ensureProductSnapshotFresh (on-demand lazy fetch from PDP GET routes)
+//   - POST /api/amazon/product/:asin/reviews/refresh (user-triggered refresh)
+//
+// Upsert semantics on (snapshot_date, asin). Also refreshes the related
+// surface (variants + category ranks) in amazon_product_related_daily.
+export function writeProductSnapshotRow(
+  asin: string,
+  snapshotDate: string,
+  data: any,
+): void {
+  const p = data?.product ?? {};
+  const buybox = p.buybox_winner ?? {};
+  const price = typeof buybox.price === "number" ? buybox.price : (buybox.price?.value ?? null);
+  const bsr = p.bestsellers_rank?.[0]?.rank ?? null;
+  const subBsrs = (p.bestsellers_rank ?? []).slice(1).map((b: any) => ({
+    category: b.category ?? null,
+    rank: b.rank ?? null,
+  }));
+  const recentSales = extractRecentSales(data);
+  const mainImage: string | null = p.main_image?.link ?? p.images?.[0]?.link ?? null;
+  const productLink: string | null = p.link ?? null;
+  const productTitle: string | null = p.title ?? null;
+  let topReviewsJson: string | null = null;
+  try {
+    const topRvs = extractReviews({ top_reviews: p.top_reviews ?? [] }, 20);
+    topReviewsJson = topRvs.length > 0 ? JSON.stringify(topRvs) : null;
+  } catch (err) {
+    log(`amazon-cron writeProductSnapshotRow top_reviews extract failed for ${asin}: ${err}`, "amazon-cron");
+  }
+
+  db.delete(amazonProductDaily)
+    .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, asin)))
+    .run();
+  db.insert(amazonProductDaily).values({
+    snapshotDate,
+    asin,
+    buyboxPrice: price,
+    buyboxSeller: buybox.seller ?? null,
+    buyboxIsAmazon: !!(buybox.is_amazon ?? false),
+    isPrime: !!(buybox.is_prime ?? p.is_prime ?? false),
+    stockStatus: p.buybox_winner?.availability?.type ?? p.stock_status ?? null,
+    mainBsr: bsr,
+    subBsrsJson: JSON.stringify(subBsrs),
+    rating: p.rating ?? null,
+    ratingsTotal: p.ratings_total ?? null,
+    recentSales,
+    title: productTitle,
+    imageUrl: mainImage,
+    link: productLink,
+    topReviewsJson,
+    createdAt: nowIso(),
+  }).run();
+
+  // Related surface (variants + category ranks) — replace-per-day.
+  try {
+    db.delete(amazonProductRelatedDaily)
+      .where(and(
+        eq(amazonProductRelatedDaily.snapshotDate, snapshotDate),
+        eq(amazonProductRelatedDaily.sourceAsin, asin),
+      )).run();
+    const variants: any[] = Array.isArray(p.variants) ? p.variants : [];
+    variants.slice(0, 10).forEach((v, idx) => {
+      const vAsin = v?.asin ?? null;
+      if (!vAsin || vAsin === asin) return;
+      const vTitle = (Array.isArray(v?.dimensions) && v.dimensions.length > 0)
+        ? v.dimensions.map((d: any) => `${d?.name ?? ""}: ${d?.value ?? ""}`).filter((s: string) => s.trim().length > 2).join(", ")
+        : (v?.title ?? null);
+      db.insert(amazonProductRelatedDaily).values({
+        snapshotDate,
+        sourceAsin: asin,
+        kind: "variant",
+        rankPosition: idx + 1,
+        relatedAsin: vAsin,
+        title: vTitle,
+        imageUrl: v?.main_image ?? v?.image ?? null,
+        link: v?.link ?? null,
+        categoryName: null,
+        categoryRank: null,
+        createdAt: nowIso(),
+      }).run();
+    });
+    const ranks: any[] = Array.isArray(p.bestsellers_rank) ? p.bestsellers_rank : [];
+    ranks.slice(0, 6).forEach((r, idx) => {
+      if (!r || typeof r !== "object") return;
+      db.insert(amazonProductRelatedDaily).values({
+        snapshotDate,
+        sourceAsin: asin,
+        kind: "category_rank",
+        rankPosition: idx + 1,
+        relatedAsin: null,
+        title: null,
+        imageUrl: null,
+        link: r?.link ?? null,
+        categoryName: r?.category ?? null,
+        categoryRank: typeof r?.rank === "number" ? r.rank : null,
+        createdAt: nowIso(),
+      }).run();
+    });
+  } catch (relatedErr) {
+    log(`amazon-cron writeProductSnapshotRow related ${asin}: ${relatedErr}`, "amazon-cron");
+  }
+}
+
+// v3.39 (2026-09-07): weekly chart-coverage products snapshot.
+//
+// Widens the daily products cron (pinned ASINs only) to include every
+// ASIN that has appeared in a leaderboard in the last 7 days but is NOT
+// already pinned. Runs once weekly (Sundays 06:00 ET) so leaderboard
+// PDPs — not just pinned ones — get proper header art, reviews, BSR,
+// buybox price, and category ranks. Skips ASINs that already have a row
+// for today (idempotent within the day).
+//
+// Cost: 1 Rainforest credit per ASIN, run weekly. At ~130 chart-only
+// ASINs today that's ~130 credits/week vs. ~130/day if we ran it daily.
+// Same-day freshness for actively-viewed titles comes from the
+// on-demand ensureProductSnapshotFresh path invoked from PDP GET routes.
+export async function runProductSnapshotsChartCoverage(): Promise<{
+  candidates: number;
+  skippedAlreadyToday: number;
+  skippedPinned: number;
+  rowsWritten: number;
+}> {
+  return withRun("chart_coverage", async () => {
+    const snapshotDate = todayUtcDate();
+    const cutoff = daysAgoUtcDate(7);
+
+    // Every distinct ASIN that appeared in a chart in the last 7 days.
+    const chartRows = db.select({ asin: amazonChartSnapshots.asin })
+      .from(amazonChartSnapshots)
+      .where(gte(amazonChartSnapshots.snapshotDate, cutoff))
+      .all();
+    const chartAsins = Array.from(new Set(chartRows.map((r) => r.asin))).filter(Boolean);
+
+    // Pinned ASIN set — daily products cron already covers these.
+    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+    const pinnedSet = new Set<string>([...saberPins.map((p) => p.asin), ...compPins.map((p) => p.asin)]);
+
+    // ASINs already snapshotted today (from daily products cron or a
+    // prior manual/lazy fetch) — skip to save credits.
+    const todayRows = db.select({ asin: amazonProductDaily.asin })
+      .from(amazonProductDaily)
+      .where(eq(amazonProductDaily.snapshotDate, snapshotDate))
+      .all();
+    const alreadyTodaySet = new Set<string>(todayRows.map((r) => r.asin));
+
+    let skippedPinned = 0;
+    let skippedAlreadyToday = 0;
+    const targetAsins: string[] = [];
+    for (const asin of chartAsins) {
+      if (pinnedSet.has(asin)) { skippedPinned += 1; continue; }
+      if (alreadyTodaySet.has(asin)) { skippedAlreadyToday += 1; continue; }
+      targetAsins.push(asin);
+    }
+
+    let totalCreditsUsed = 0;
+    let lastCreditsRemaining = 0;
+    let rowsWritten = 0;
+    for (const asin of targetAsins) {
+      try {
+        const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
+        totalCreditsUsed += creditsUsed;
+        lastCreditsRemaining = creditsRemaining;
+        writeProductSnapshotRow(asin, snapshotDate, data);
+        rowsWritten += 1;
+      } catch (err) {
+        log(`amazon-cron chart_coverage ${asin} failed: ${err}`, "amazon-cron");
+      }
+    }
+
+    return {
+      result: {
+        candidates: chartAsins.length,
+        skippedPinned,
+        skippedAlreadyToday,
+        rowsWritten,
+      },
+      creditsUsed: totalCreditsUsed,
+      creditsRemaining: lastCreditsRemaining,
+      rowsWritten,
+    };
+  });
+}
+
+// v3.39 (2026-09-07): on-demand lazy fetch — called by PDP GET routes
+// when a user opens a product whose latest amazon_product_daily row is
+// missing or older than `maxAgeDays`. Fires a single type=product call
+// and upserts today's row via the shared write path. Cost: 1 Rainforest
+// credit per unique stale-PDP click.
+//
+// Fails silently on Rainforest errors so PDP GETs never 5xx on lazy
+// fetch — the caller falls back to whatever stale row (if any) exists.
+export async function ensureProductSnapshotFresh(
+  asin: string,
+  maxAgeDays: number = 3,
+): Promise<{ fetched: boolean; latestSnapshotDate: string | null; error?: string }> {
+  if (!asin || !isRainforestConfigured()) {
+    return { fetched: false, latestSnapshotDate: null };
+  }
+  const latest = db.select({ snapshotDate: amazonProductDaily.snapshotDate })
+    .from(amazonProductDaily)
+    .where(eq(amazonProductDaily.asin, asin))
+    .orderBy(desc(amazonProductDaily.snapshotDate))
+    .limit(1).get();
+  const cutoff = daysAgoUtcDate(maxAgeDays);
+  if (latest && latest.snapshotDate >= cutoff) {
+    return { fetched: false, latestSnapshotDate: latest.snapshotDate };
+  }
+  try {
+    const snapshotDate = todayUtcDate();
+    const { data } = await fetchProduct(asin);
+    writeProductSnapshotRow(asin, snapshotDate, data);
+    return { fetched: true, latestSnapshotDate: snapshotDate };
+  } catch (err: any) {
+    log(`amazon-cron ensureProductSnapshotFresh ${asin} failed: ${err}`, "amazon-cron");
+    return {
+      fetched: false,
+      latestSnapshotDate: latest?.snapshotDate ?? null,
+      error: String(err?.message ?? err),
+    };
+  }
 }
 
 // ─── Job: movers + new-releases (07:30 daily) ──────────────────────────────
@@ -388,51 +606,115 @@ export async function runKeywordSearch(): Promise<{ rowsWritten: number }> {
   });
 }
 
-// ─── Job: also-bought weekly (08:00 Sunday) ────────────────────────────────
-export async function runAlsoBoughtWeekly(): Promise<{ sources: number; rowsWritten: number }> {
+// ─── Job: also-bought daily (08:00 ET) ─────────────────────────────────────
+// v3.36 (2026-09-07): promoted from weekly to daily so per-title PDPs
+// always show a fresh "customers also bought" carousel, and expanded to
+// include competitor pins (previously we only ingested for tracked Saber
+// ASINs, so competitor PDPs came up empty). One Rainforest `type=product`
+// credit per source ASIN — same call already made daily for buybox is
+// separate, so total cost is roughly 2× the number of pinned ASINs.
+// runAlsoBoughtWeekly is kept as an alias for back-compat with the manual
+// dispatch table + workflow that referenced it.
+export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritten: number }> {
   return withRun("also_bought", async () => {
-    const snapshotDate = todayUtcDate();
-    const active = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
-    let totalCreditsUsed = 0;
-    let lastCreditsRemaining = 0;
-    let rowsWritten = 0;
-    for (const src of active) {
-      try {
-        const { data, creditsUsed, creditsRemaining } = await fetchProduct(src.asin);
-        totalCreditsUsed += creditsUsed;
-        lastCreditsRemaining = creditsRemaining;
-        const alsoBought = extractAlsoBought(data, 5);
-        db.delete(amazonAlsoBoughtDaily)
-          .where(and(eq(amazonAlsoBoughtDaily.snapshotDate, snapshotDate), eq(amazonAlsoBoughtDaily.sourceAsin, src.asin)))
-          .run();
-        for (const ab of alsoBought) {
-          db.insert(amazonAlsoBoughtDaily).values({
-            snapshotDate,
-            sourceAsin: src.asin,
-            rankPosition: ab.rankPosition,
-            recommendedAsin: ab.recommendedAsin,
-            title: ab.title,
-            price: ab.price,
-            rating: ab.rating,
-            ratingsTotal: ab.ratingsTotal,
-            mainBsr: null,
-            imageUrl: ab.imageUrl,
-            link: ab.link,
-            createdAt: nowIso(),
-          }).run();
-          rowsWritten += 1;
-        }
-      } catch (err) {
-        log(`amazon-cron also_bought ${src.asin} failed: ${err}`, "amazon-cron");
-      }
-    }
+    // v3.37 (2026-09-07): DEPRECATED. Rainforest's `type=also_bought` and
+    // the `also_bought`/`also_viewed`/`view_to_purchase`/`sponsored_products`/
+    // `frequently_bought_together`/`compare_with_similar` fields under
+    // `type=product` all return empty for video-game ASINs — confirmed via
+    // four probes on 2026-09-07 (URL variant, asin variant, formats_editions,
+    // and top-level key dump). Amazon renders those carousels client-side
+    // via personalization JS the Rainforest scraper doesn't execute.
+    //
+    // The PDP "Related" tab is now driven by product.variants[] and
+    // product.bestsellers_rank[] captured in runProductSnapshots — zero
+    // extra Rainforest calls. See amazon_product_related_daily.
+    //
+    // This job is retained as a no-op so scheduler slots and manual-
+    // dispatch entries don't break; it burns zero credits.
+    log(`amazon-cron also_bought DEPRECATED: no-op (see runProductSnapshots + amazon_product_related_daily)`, "amazon-cron");
     return {
-      result: { sources: active.length, rowsWritten },
-      creditsUsed: totalCreditsUsed,
-      creditsRemaining: lastCreditsRemaining,
-      rowsWritten,
+      result: { sources: 0, rowsWritten: 0 },
+      creditsUsed: 0,
+      creditsRemaining: 0,
+      rowsWritten: 0,
     };
   });
+}
+
+// Back-compat alias — the manual-dispatch table + amazon-manual-pin.yml
+// still reference `runAlsoBoughtWeekly` by name; callers get the new
+// daily-scope, competitor-inclusive behaviour transparently.
+export const runAlsoBoughtWeekly = runAlsoBoughtDaily;
+
+// ─── Job: reviews daily (08:15 ET) ───────────────────────────────────
+// v3.38 (2026-09-07): DEPRECATED. Rainforest deprecated the type=reviews
+// endpoint in March 2025 after Amazon killed the public "Most Recent"
+// reviews sort. The endpoint now returns HTTP 503 "reviews request type
+// is temporarily unavailable" for every request. Their recommended
+// migration is p.top_reviews[] on type=product, which runProductSnapshots
+// now captures into amazon_product_daily.top_reviews_json at zero extra
+// Rainforest cost. See docs.trajectdata.com/rainforestapi/product-updates.
+//
+// This job is retained as a no-op so scheduler slots and manual-dispatch
+// entries don't break; it burns zero credits.
+export async function runReviewsDaily(): Promise<{ sources: number; rowsWritten: number }> {
+  return withRun("reviews", async () => {
+    log(`amazon-cron reviews DEPRECATED: no-op (Amazon killed most-recent reviews Mar-2025; see amazon_product_daily.top_reviews_json)`, "amazon-cron");
+    return {
+      result: { sources: 0, rowsWritten: 0 },
+      creditsUsed: 0,
+      creditsRemaining: 0,
+      rowsWritten: 0,
+    };
+  });
+}
+
+// Idempotent UPSERT for a single review row. Exported so the on-demand
+// PDP endpoint (`POST /api/amazon/product/:asin/reviews/refresh`) can
+// reuse the exact same write path.
+export function upsertReviewRow(
+  asin: string,
+  rv: { reviewId: string; title: string | null; body: string | null; rating: number | null; reviewDate: string | null; verifiedPurchase: boolean | null; helpfulVotes: number | null; reviewerName: string | null; variantAttrs: Array<{ name: string; value: string }> | null; imageUrls: string[] | null },
+  fetchedAtIso: string,
+): void {
+  const existing = db.select().from(amazonProductReviews)
+    .where(and(eq(amazonProductReviews.asin, asin), eq(amazonProductReviews.reviewId, rv.reviewId)))
+    .get();
+  const variantJson = rv.variantAttrs ? JSON.stringify(rv.variantAttrs) : null;
+  const imagesJson = rv.imageUrls ? JSON.stringify(rv.imageUrls) : null;
+  if (existing) {
+    db.update(amazonProductReviews)
+      .set({
+        title: rv.title,
+        body: rv.body,
+        rating: rv.rating,
+        reviewDate: rv.reviewDate,
+        verifiedPurchase: rv.verifiedPurchase,
+        helpfulVotes: rv.helpfulVotes,
+        reviewerName: rv.reviewerName,
+        variantAttrsJson: variantJson,
+        imageUrlsJson: imagesJson,
+        fetchedAt: fetchedAtIso,
+      })
+      .where(and(eq(amazonProductReviews.asin, asin), eq(amazonProductReviews.reviewId, rv.reviewId)))
+      .run();
+  } else {
+    db.insert(amazonProductReviews).values({
+      asin,
+      reviewId: rv.reviewId,
+      title: rv.title,
+      body: rv.body,
+      rating: rv.rating,
+      reviewDate: rv.reviewDate,
+      verifiedPurchase: rv.verifiedPurchase,
+      helpfulVotes: rv.helpfulVotes,
+      reviewerName: rv.reviewerName,
+      variantAttrsJson: variantJson,
+      imageUrlsJson: imagesJson,
+      fetchedAt: fetchedAtIso,
+      createdAt: fetchedAtIso,
+    }).run();
+  }
 }
 
 // ─── Manual job dispatch (used by /api/amazon/ingest/run/:job) ─────────────
@@ -1001,9 +1283,12 @@ export type AmazonJobName =
   | "keywords"
   | "new_releases"
   | "also_bought"
+  | "reviews"
+  | "chart_coverage"
   | "asin_discovery"
   | "asin_search_discovery"
   | "formats_editions_fill"
+  | "sales_estimation"
   | "competitor_discovery"
   | "clean_auto_pins";
 
@@ -1015,9 +1300,12 @@ export async function runAmazonJob(job: AmazonJobName): Promise<unknown> {
     case "new_releases":          return runMoversAndNewReleases(); // combined job
     case "keywords":              return runKeywordSearch();
     case "also_bought":           return runAlsoBoughtWeekly();
+    case "reviews":               return runReviewsDaily();
+    case "chart_coverage":        return runProductSnapshotsChartCoverage();
     case "asin_discovery":        return runAsinDiscovery();
     case "asin_search_discovery": return runAsinSearchDiscovery();
     case "formats_editions_fill": return runFormatsEditionsFill();
+    case "sales_estimation":      return runSalesEstimation();
     case "competitor_discovery": return runCompetitorDiscovery();
     case "clean_auto_pins":      return runCleanAutoPins();
     default:
@@ -1223,14 +1511,36 @@ export function startAmazonIngestionCron(): void {
     if (inWindow(7, 15) && shouldRunSlot("products", todayStr)) {
       runProductSnapshots().catch((err) => log(`amazon-cron products failed: ${err}`, "amazon-cron"));
     }
+    // 07:20 ET — sales_estimation runs AFTER products so today's row is
+    // already in amazonProductDaily; the estimation job updates the same
+    // row with the monthly/weekly unit estimate. ~1 credit per pinned
+    // ASIN so ~30 credits/day for the current slate.
+    if (inWindow(7, 20) && shouldRunSlot("sales_estimation", todayStr)) {
+      runSalesEstimation().catch((err) => log(`amazon-cron sales_estimation failed: ${err}`, "amazon-cron"));
+    }
     if (inWindow(7, 30) && shouldRunSlot("movers_and_new_releases", todayStr)) {
       runMoversAndNewReleases().catch((err) => log(`amazon-cron movers_and_new_releases failed: ${err}`, "amazon-cron"));
     }
     if (inWindow(7, 45) && shouldRunSlot("keywords", todayStr)) {
       runKeywordSearch().catch((err) => log(`amazon-cron keywords failed: ${err}`, "amazon-cron"));
     }
-    if (weekday === "Sun" && inWindow(8, 0) && shouldRunSlot("also_bought", todayStr)) {
-      runAlsoBoughtWeekly().catch((err) => log(`amazon-cron also_bought failed: ${err}`, "amazon-cron"));
+    // v3.36 (2026-09-07): daily, not Sunday-only.
+    if (inWindow(8, 0) && shouldRunSlot("also_bought", todayStr)) {
+      runAlsoBoughtDaily().catch((err) => log(`amazon-cron also_bought failed: ${err}`, "amazon-cron"));
+    }
+    // v3.36 (2026-09-07): daily review pulse per pinned ASIN.
+    if (inWindow(8, 15) && shouldRunSlot("reviews", todayStr)) {
+      runReviewsDaily().catch((err) => log(`amazon-cron reviews failed: ${err}`, "amazon-cron"));
+    }
+    // v3.39 (2026-09-07): weekly chart-coverage products snapshot.
+    // Sunday 08:30 ET — after the daily products/movers window closes, so
+    // there's no contention with the pinned-ASIN pass. Covers every ASIN
+    // that appeared on a leaderboard in the last 7 days but isn't pinned,
+    // so PDPs opened from platform leaderboards render with real header
+    // art, buybox, BSR, and top reviews instead of skeleton placeholders.
+    // Skips ASINs already snapshotted today, so cost = ~130 credits/wk.
+    if (weekday === "Sun" && inWindow(8, 30) && shouldRunSlot("chart_coverage_weekly", todayStr)) {
+      runProductSnapshotsChartCoverage().catch((err) => log(`amazon-cron chart_coverage_weekly failed: ${err}`, "amazon-cron"));
     }
   }, 60_000);
 }
@@ -1246,3 +1556,128 @@ export function stopAmazonIngestionCron(): void {
 // (AmazonPlatformSlug is imported for type parity with amazon-rainforest.ts;
 // callers may not reference it directly from this file.)
 export type { AmazonPlatformSlug };
+
+// runSalesEstimation — for every active pinned ASIN (Saber + competitor),
+// call Rainforest type=sales_estimation and merge weekly/monthly unit
+// estimates onto today's amazon_product_daily row. Runs AFTER runProducts
+// (which creates today's row) so this is a lightweight column update.
+//
+// Rainforest costs 1 credit per call. Fails silently for SKUs with no
+// BSR (pre-orders, brand-new listings) — those rows just stay null and
+// the UI renders "—". Nulls are normal, not an error.
+export async function runSalesEstimation(): Promise<{
+  asins: number;
+  updated: number;
+  hasEstimation: number;
+  noEstimation: number;
+  errors: number;
+}> {
+  return withRun("sales_estimation", async () => {
+    const snapshotDate = todayUtcDate();
+    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
+    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
+    const seen = new Set<string>();
+    const active: string[] = [];
+    for (const p of saberPins) {
+      if (seen.has(p.asin)) continue;
+      seen.add(p.asin);
+      active.push(p.asin);
+    }
+    for (const p of compPins) {
+      if (seen.has(p.asin)) continue;
+      seen.add(p.asin);
+      active.push(p.asin);
+    }
+
+    let totalCreditsUsed = 0;
+    let lastCreditsRemaining = 0;
+    let updated = 0;
+    let hasEstimation = 0;
+    let noEstimation = 0;
+    let errors = 0;
+
+    for (const asin of active) {
+      try {
+        const { data, creditsUsed, creditsRemaining } = await fetchSalesEstimation(asin);
+        totalCreditsUsed += creditsUsed;
+        lastCreditsRemaining = creditsRemaining;
+        // Rainforest returns either { sales_estimation: {...} } or a
+        // top-level snake_case bag — handle both to be defensive.
+        const est = data?.sales_estimation ?? data ?? {};
+        const has = est.has_sales_estimation === true;
+        if (has) {
+          const monthly = numericOrNull(est.monthly_sales_estimate);
+          const weekly = numericOrNull(est.weekly_sales_estimate);
+          const bsrAt = numericOrNull(est.bestseller_rank);
+          const category = typeof est.sales_estimation_category === "string" ? est.sales_estimation_category : null;
+
+          // Ensure today's row exists before updating — runProducts should
+          // have inserted one already, but a first-boot / new-pin edge
+          // case could miss it. Insert a minimal row if so.
+          const existing = db.select().from(amazonProductDaily)
+            .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, asin)))
+            .get();
+          if (!existing) {
+            db.insert(amazonProductDaily).values({
+              snapshotDate,
+              asin,
+              buyboxPrice: null,
+              buyboxSeller: null,
+              buyboxIsAmazon: false,
+              isPrime: false,
+              stockStatus: null,
+              mainBsr: null,
+              subBsrsJson: null,
+              rating: null,
+              ratingsTotal: null,
+              recentSales: null,
+              monthlySalesEstimate: monthly,
+              weeklySalesEstimate: weekly,
+              salesEstimateBsr: bsrAt,
+              salesEstimateCategory: category,
+              createdAt: nowIso(),
+            }).run();
+          } else {
+            db.update(amazonProductDaily).set({
+              monthlySalesEstimate: monthly,
+              weeklySalesEstimate: weekly,
+              salesEstimateBsr: bsrAt,
+              salesEstimateCategory: category,
+            }).where(and(
+              eq(amazonProductDaily.snapshotDate, snapshotDate),
+              eq(amazonProductDaily.asin, asin),
+            )).run();
+          }
+          hasEstimation += 1;
+          updated += 1;
+        } else {
+          noEstimation += 1;
+        }
+      } catch (err) {
+        errors += 1;
+        log(`sales-estimation: ${asin} failed: ${err}`, "amazon-cron");
+      }
+    }
+
+    log(`sales-estimation done: asins=${active.length} updated=${updated} hasEst=${hasEstimation} noEst=${noEstimation} errors=${errors} creditsUsed=${totalCreditsUsed} creditsRemaining=${lastCreditsRemaining}`, "amazon-cron");
+
+    return {
+      result: { asins: active.length, updated, hasEstimation, noEstimation, errors },
+      creditsUsed: totalCreditsUsed,
+      creditsRemaining: lastCreditsRemaining,
+      rowsWritten: updated,
+    };
+  });
+}
+
+function numericOrNull(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return Math.round(v);
+  if (typeof v === "string") {
+    const cleaned = v.replace(/[^\d.\-]/g, "");
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? Math.round(n) : null;
+  }
+  return null;
+}

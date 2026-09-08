@@ -31,6 +31,13 @@ import {
 } from "./leaderboard-digest-weekly";
 import { callSonar, sonarAvailable, type SonarResult } from "./sonar-client";
 import { log } from "./index";
+import { getActivePromosFor, type ActivePromo } from "./promo-calendar-client";
+
+// v3.34 (2026-09-07): weekly digest now checks the Promo Calendar so the
+// narrative + header can explain revenue/wishlist movement in the context
+// of any live storefront sale. Prior versions ignored on-promo state,
+// which meant a title on 60% Steam Publisher Sale looked like a mystery
+// spike instead of the obvious sale-driven bump.
 
 const BASE_URL = "http://104.236.239.46/signal";
 
@@ -223,8 +230,8 @@ async function generateDigestNarrative(
   if (!sonarAvailable()) return null;
   const weekLabel = `${window.weekStart} through ${window.weekEnd}`;
   const prompt = section === "wishlist"
-    ? `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam wishlist/follower/rank movement for our pre-release titles. For each title, research whether it had any real, dated news during or just before this week (Steam festival/event inclusion, demo drop, reveal trailer, showcase appearance, patch/DLC news, review coverage) that could plausibly explain a notable move in its numbers — only mention this when you find an actual dated source. Data:\n${summary}`
-    : `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam sales revenue (game + DLC) for our released/pre-purchase titles. For each title, research whether it had a Steam storefront sale/discount, a sales event/festival inclusion, or another news beat (patch/DLC release, review, controversy, esports/streamer coverage) during or just before this week that could plausibly explain a notable move in its units or revenue — only mention this when you find an actual dated source. Data:\n${summary}`;
+    ? `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam wishlist/follower/rank movement for our pre-release titles. For each title, research whether it had any real, dated news during or just before this week (Steam festival/event inclusion, demo drop, reveal trailer, showcase appearance, patch/DLC news, review coverage) that could plausibly explain a notable move in its numbers — only mention this when you find an actual dated source. If a data line includes a bracketed "[ON PROMO NOW: ...]" tag, that is a live Promo Calendar sale drawn from our own system and you should always call it out as a driver when it aligns with a notable move. Data:\n${summary}`
+    : `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam sales revenue (game + DLC) for our released/pre-purchase titles. For each title, research whether it had a Steam storefront sale/discount, a sales event/festival inclusion, or another news beat (patch/DLC release, review, controversy, esports/streamer coverage) during or just before this week that could plausibly explain a notable move in its units or revenue — only mention this when you find an actual dated source. If a data line includes a bracketed "[ON PROMO NOW: ...]" tag, that is a live Promo Calendar sale drawn from our own system and you should always call it out as the primary driver when it aligns with a notable move. Data:\n${summary}`;
   return callSonar(prompt, {
     searchAfterDateFilter: toSonarDateFilter(window.weekStart, -3),
     searchBeforeDateFilter: toSonarDateFilter(window.weekEnd, 1),
@@ -245,6 +252,127 @@ function buildRevenueNarrativeSummary(rows: WeeklyRevenueRow[], kpis: ReturnType
   return `Total units this week: ${kpis.totalUnitsWeek}. Total revenue this week: ${fmtUsd(kpis.totalRevenueWeek)}.\n${lines.join("\n")}`;
 }
 
+// v3.34: promo-context helpers ------------------------------------------------
+
+/** Fetch active promos for every AppID in `appIds` in parallel; results are
+ * keyed by AppID. Per-title failure is swallowed (returns empty array for
+ * that title) so a single Promo Calendar hiccup can't take down the whole
+ * digest send. Steam-focused first ordering — the digest is a Steam-only
+ * document, so callers can filter to platform === "Steam" as needed. */
+async function fetchPromoContext(appIds: number[]): Promise<Map<number, ActivePromo[]>> {
+  const map = new Map<number, ActivePromo[]>();
+  const results = await Promise.all(
+    appIds.map(async (id) => {
+      try {
+        const promos = await getActivePromosFor(id);
+        return [id, promos] as const;
+      } catch (err) {
+        log(`fetchPromoContext(${id}) failed: ${err}`, "leaderboard-digest");
+        return [id, [] as ActivePromo[]] as const;
+      }
+    }),
+  );
+  for (const [id, promos] of results) map.set(id, promos);
+  return map;
+}
+
+/** Compact human string for one title's active-promo state, used inside
+ * the narrative summary lines fed to Sonar. Empty string when no promos. */
+function promoLineFragment(appId: number, ctx: Map<number, ActivePromo[]>): string {
+  // v3.34.2 (2026-09-07): Steam-only, since this digest covers Steam data.
+  const promos = (ctx.get(appId) ?? []).filter(
+    (p) => p.platform && p.platform.toLowerCase() === "steam",
+  );
+  if (promos.length === 0) return "";
+  const parts = promos.map((p) => {
+    const disc = p.max_discount_pct != null
+      ? ` ${Math.round(p.max_discount_pct * 100)}% off`
+      : "";
+    const window = p.start_date
+      ? `${p.start_date} \u2192 ${p.end_date}`
+      : `through ${p.end_date}`;
+    const prog = p.program ? ` (${p.program})` : "";
+    return `${p.platform}${prog}${disc}, ${window}`;
+  });
+  return `   [ON PROMO NOW: ${parts.join("; ")}]`;
+}
+
+/** v3.34: render the "On Promo Now" HTML section that appears at the top of
+ * the digest between the banner and the Wishlist section. Only shows titles
+ * that appear in the current week's wishlist OR revenue tables AND have at
+ * least one active promo. Returns an empty string when no titles are on
+ * promo, so the section fully hides itself on quiet weeks. */
+function renderOnPromoNowSection(
+  wlRows: WeeklyWishlistRow[],
+  revRows: WeeklyRevenueRow[],
+  promoCtx: Map<number, ActivePromo[]>,
+): string {
+  // Merge titles from both sections so a title on promo shows up regardless
+  // of whether it's a pre-release wishlist title or a released revenue title.
+  const titleByAppId = new Map<number, string>();
+  for (const r of wlRows) {
+    const n = Number(r.steamAppId);
+    if (Number.isFinite(n)) titleByAppId.set(n, r.title);
+  }
+  for (const r of revRows) {
+    const n = Number(r.steamAppId);
+    if (Number.isFinite(n)) titleByAppId.set(n, r.title);
+  }
+
+  // v3.34.2 (2026-09-07): this digest is Steam-only (wishlist + revenue
+  // are both Steam datasets), so surface only Steam promos. Sony /
+  // Microsoft promos from the Promo Calendar are still valuable context
+  // in the app itself but would be noise here.
+  const rows: Array<{ appId: number; title: string; promos: ActivePromo[] }> = [];
+  titleByAppId.forEach((title, appId) => {
+    const promos = (promoCtx.get(appId) ?? []).filter(
+      (p) => p.platform && p.platform.toLowerCase() === "steam",
+    );
+    if (promos.length > 0) rows.push({ appId, title, promos });
+  });
+  if (rows.length === 0) return "";
+
+  // Sort by biggest discount first so recipients see the biggest sales at
+  // the top of the strip.
+  rows.sort((a, b) => {
+    const ma = Math.max(...a.promos.map((p) => p.max_discount_pct ?? 0));
+    const mb = Math.max(...b.promos.map((p) => p.max_discount_pct ?? 0));
+    return mb - ma;
+  });
+
+  const chipHtml = (p: ActivePromo): string => {
+    const disc = p.max_discount_pct != null
+      ? `${Math.round(p.max_discount_pct * 100)}% off`
+      : "on sale";
+    const prog = p.program ? ` \u00b7 ${esc(p.program)}` : "";
+    const window = `ends ${esc(p.end_date)}`;
+    return `<span style="display:inline-block; padding:3px 9px; margin:2px 4px 2px 0; border-radius:999px; background:#ecfdf5; border:1px solid #10b98133; font-family:${FONT}; font-size:11px; font-weight:600; color:#065f46; white-space:nowrap;">${esc(p.platform)}${prog} \u00b7 ${disc} \u00b7 ${window}</span>`;
+  };
+
+  const rowsHtml = rows.map((r) => `
+    <tr>
+      <td style="padding:8px 10px; font-family:${FONT}; font-size:13px; font-weight:600; color:${TEXT_PRIMARY}; border-bottom:1px solid ${BORDER}; white-space:nowrap; vertical-align:top;">${esc(r.title)}</td>
+      <td style="padding:8px 10px; border-bottom:1px solid ${BORDER};">${r.promos.map(chipHtml).join("")}</td>
+    </tr>
+  `).join("");
+
+  return `
+<!-- On Promo Now -->
+<tr><td style="padding:0 6px 18px 6px;">
+  <div style="font-family:${FONT}; font-size:12px; font-weight:700; letter-spacing:.08em; color:${BRAND_ACCENT};
+              text-transform:uppercase; border-bottom:2px solid ${BRAND_ACCENT}; padding-bottom:6px; margin-bottom:10px;">
+    On Promo Now \u00b7 ${rows.length} title${rows.length === 1 ? "" : "s"} live
+  </div>
+  <div style="font-family:${FONT}; font-size:12px; color:${TEXT_MUTED}; margin:0 0 10px 0;">
+    Live storefront sales visible in the Promo Calendar. Consider these when reading the movement below.
+  </div>
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+         style="background:${BG_CARD}; border:1px solid ${BORDER}; border-radius:8px; border-collapse:collapse;">
+    ${rowsHtml}
+  </table>
+</td></tr>`;
+}
+
 // ─── HTML render ────────────────────────────────────────────────────────────
 
 export async function renderWeeklyDigestHtml(
@@ -256,9 +384,37 @@ export async function renderWeeklyDigestHtml(
   const revRows = getWeeklyRevenueRows(window);
   const revKpis = getWeeklyRevenueKpis(revRows);
 
+  // v3.34 (2026-09-07): fetch active-promo context ONCE, use it in both the
+  // narrative summaries (so the LLM can explain sale-driven variance) and
+  // the HTML render (so recipients see the current sale posture at a
+  // glance without reading the full paragraph).
+  const allAppIds = Array.from(new Set([
+    ...wlRows.map((r) => Number(r.steamAppId)).filter((n) => Number.isFinite(n)),
+    ...revRows.map((r) => Number(r.steamAppId)).filter((n) => Number.isFinite(n)),
+  ]));
+  const promoCtx = await fetchPromoContext(allAppIds);
+
+  // Enrich narrative summaries so Sonar sees live promo state per title.
+  const wlSummary = buildWishlistNarrativeSummary(wlRows, wlKpis)
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/Steam App ID (\d+)/);
+      if (!m) return line;
+      return line + promoLineFragment(Number(m[1]), promoCtx);
+    })
+    .join("\n");
+  const revSummary = buildRevenueNarrativeSummary(revRows, revKpis)
+    .split("\n")
+    .map((line) => {
+      const m = line.match(/Steam App ID (\d+)/);
+      if (!m) return line;
+      return line + promoLineFragment(Number(m[1]), promoCtx);
+    })
+    .join("\n");
+
   const [wlNarrative, revNarrative] = await Promise.all([
-    generateDigestNarrative("wishlist", buildWishlistNarrativeSummary(wlRows, wlKpis), window),
-    generateDigestNarrative("revenue", buildRevenueNarrativeSummary(revRows, revKpis), window),
+    generateDigestNarrative("wishlist", wlSummary, window),
+    generateDigestNarrative("revenue", revSummary, window),
   ]);
 
   const wlRowsHtml = wlRows.map(wlTableRow).join("");
@@ -282,6 +438,8 @@ export async function renderWeeklyDigestHtml(
   <div style="font-family:${FONT}; font-size:13px; color:${TEXT_MUTED}; margin-top:4px;">
     Week in review: ${esc(weekOf)} &nbsp;·&nbsp; Sent ${esc(sentOn)}</div>
 </td></tr>
+
+${renderOnPromoNowSection(wlRows, revRows, promoCtx)}
 
 <!-- Wishlist Section -->
 <tr><td style="padding:0 6px 10px 6px;">
@@ -347,8 +505,8 @@ export async function renderWeeklyDigestHtml(
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Game Rev (Wk)</th>
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">DLC Units (Wk)</th>
       <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">DLC Rev (Wk)</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Total Rev (Wk)</th>
-      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">LTD Rev</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">Total Rev (Wk, Game + DLC)</th>
+      <th style="padding:9px 8px; text-align:right; font-size:10px; font-weight:700; letter-spacing:.04em; color:${TEXT_MUTED}; text-transform:uppercase; font-family:${FONT};">LTD Rev (Game + DLC)</th>
     </tr>
     ${revRowsHtml}
   </table>
@@ -477,13 +635,21 @@ async function sendViaResend(subject: string, recipients: string[], htmlBody: st
  * (runWeeklyDigestCronTick / the release check / the manual test-send route)
  * decide whether gating applies. */
 export async function sendWeeklyLeaderboardDigest(
-  window?: WeekWindow, overrideRecipients?: string[],
+  window?: WeekWindow, overrideRecipients?: string[], subjectPrefix?: string,
 ): Promise<DigestSendResult & { subject: string }> {
   const effectiveWindow = window ?? getWeekWindow(new Date());
   const recipients = overrideRecipients && overrideRecipients.length > 0
     ? overrideRecipients
     : storage.getActiveLeaderboardEmailRecipients().map((r) => r.email);
-  const { subject, html } = await renderWeeklyDigestHtml(effectiveWindow, new Date());
+  const rendered = await renderWeeklyDigestHtml(effectiveWindow, new Date());
+  // v3.34 (2026-09-07): allow the caller to prepend a one-off subject prefix
+  // for resends (e.g. "Resending Digest w/ Context From Saber Promo
+  // Calendar in SignalPulse — <original subject>"). Underlying render is
+  // unchanged so recipients still see the same email body.
+  const subject = subjectPrefix && subjectPrefix.trim().length > 0
+    ? `${subjectPrefix.trim()} \u2014 ${rendered.subject}`
+    : rendered.subject;
+  const html = rendered.html;
 
   if (recipients.length === 0) {
     log("Weekly leaderboard digest: no active recipients, skipping send", "leaderboard-digest");

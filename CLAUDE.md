@@ -1,5 +1,18 @@
 # SentimentPulse — Project Context for Claude Code
 
+## 🚨 MANDATORY — READ FIRST EVERY SESSION (2026-09-07)
+
+**Before doing ANY work on this project (code, deploy, verification, planning), read both of these files top-to-bottom every session:**
+
+1. `CLAUDE.md` (this file)
+2. `lessons.md` — see the "MANDATORY — READ FIRST EVERY SESSION" block at the top for the two non-negotiable operating rules (session-start reading + rigorous pre-push QA).
+
+No exceptions. Not "if the task looks complex." Every session, first thing. When resuming a compacted session, re-read both files at the top of the turn before touching any code, deploy, or verification path.
+
+**Rigorous QA is required BEFORE asking for deploy approval.** Compile-time checks (`tsc --noEmit`, `npm run build`) are the minimum, not "QA." See `lessons.md` for the full pre-push QA checklist — live API probe, local runtime test, client-render check, schema-migration dry-run. If any gate is impractical, say so in the `confirm_action` prompt; never silently skip.
+
+---
+
 ## What This Project Is
 A full-stack game publisher sentiment tracking application. It scrapes Steam Reviews, Steam Forums, and Reddit daily, classifies community posts by sentiment (positive/negative/neutral), extracts recurring topics, and presents findings on a React dashboard with KPI visualizations, executive summaries, and AI-generated recommended actions.
 

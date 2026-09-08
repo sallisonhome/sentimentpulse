@@ -1024,6 +1024,32 @@ export const amazonProductDaily = sqliteTable("amazon_product_daily", {
   subBsrsJson: text("sub_bsrs_json"), // JSON: [{category, rank}]
   rating: real("rating"),
   ratingsTotal: integer("ratings_total"),
+  // "Bought in past month" label surfaced on the product / search cards.
+  // Rainforest returns the raw display string (e.g. "100+ bought in past
+  // month", "1K+ bought in past week"). Only present on high-velocity SKUs
+  // — nulls are normal.
+  recentSales: text("recent_sales"),
+  // Rainforest sales_estimation output. Populated by the daily
+  // sales_estimation job that runs after `products`. Nulls when the ASIN
+  // has no BSR (pre-orders) or ranks too low to model. Estimates track
+  // the BSR at the time of estimation, stored separately from mainBsr
+  // so we can spot stale estimates.
+  monthlySalesEstimate: integer("monthly_sales_estimate"),
+  weeklySalesEstimate: integer("weekly_sales_estimate"),
+  salesEstimateBsr: integer("sales_estimate_bsr"),
+  salesEstimateCategory: text("sales_estimate_category"),
+  // v3.37 (2026-09-07): captured from the same type=product response so the
+  // PDP header renders even when the ASIN isn't in any chart snapshot.
+  title: text("title"),
+  imageUrl: text("image_url"),
+  link: text("link"),
+  // v3.38 (2026-09-07): top reviews array (up to 20) captured from the
+  // same type=product response. Replaces the deprecated type=reviews
+  // endpoint (Amazon killed the "Most Recent" reviews sort in March 2025
+  // and Rainforest deprecated /reviews v2 in response). JSON array of
+  // {reviewId,title,body,rating,reviewDate,verifiedPurchase,helpfulVotes,
+  //  reviewerName,variantAttrs,imageUrls} per docs.trajectdata.com.
+  topReviewsJson: text("top_reviews_json"),
   createdAt: text("created_at").notNull(),
 }, (table) => ({
   uniqueDayAsin: uniqueIndex("amazon_product_daily_unique_day_asin").on(table.snapshotDate, table.asin),
@@ -1087,6 +1113,59 @@ export const amazonIngestRuns = sqliteTable("amazon_ingest_runs", {
   errorMessage: text("error_message"),
 });
 
+// v3.36 (2026-09-07): Per-ASIN review snapshots. Populated on-demand from
+// the PDP Reviews tab (and by any future review-pulse ingest). We store
+// one row per Amazon review id per ASIN — the same review may be updated
+// (helpful_votes / body edited) but the (asin, review_id) pair is unique.
+// Rainforest returns review_id, title, body, rating, date (ISO or free-
+// text), verified_purchase, helpful_votes, profile.name, and images[].
+// Everything is nullable because Amazon omits fields on international
+// storefronts and older reviews.
+// Per-ASIN related-product surface written by runProductSnapshots — zero
+// additional Rainforest calls. `kind` discriminates rows: `variant` rows
+// carry related_asin/title/image_url/link (cross-platform siblings from
+// product.variants[]); `category_rank` rows carry category_name +
+// category_rank + link (bestseller rank entries from product.bestsellers_rank[]).
+// Same-day upsert keyed on (source_asin, snapshot_date, kind, rank_position).
+// Replaces the deprecated amazon_also_bought_daily surface (Rainforest returns
+// nothing for game ASINs; see lessons.md 2026-09-07).
+export const amazonProductRelatedDaily = sqliteTable("amazon_product_related_daily", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  snapshotDate: text("snapshot_date").notNull(),
+  sourceAsin: text("source_asin").notNull(),
+  kind: text("kind").notNull(), // 'variant' | 'category_rank'
+  rankPosition: integer("rank_position").notNull(),
+  relatedAsin: text("related_asin"),
+  title: text("title"),
+  imageUrl: text("image_url"),
+  link: text("link"),
+  categoryName: text("category_name"),
+  categoryRank: integer("category_rank"),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueDaySourceKindPos: uniqueIndex("amazon_product_related_unique_day_source_kind_pos").on(table.snapshotDate, table.sourceAsin, table.kind, table.rankPosition),
+  bySourceIdx: index("amazon_product_related_by_source_idx").on(table.sourceAsin, table.snapshotDate),
+}));
+
+export const amazonProductReviews = sqliteTable("amazon_product_reviews", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  asin: text("asin").notNull(),
+  reviewId: text("review_id").notNull(),
+  title: text("title"),
+  body: text("body"),
+  rating: real("rating"),
+  reviewDate: text("review_date"), // Amazon's raw "Reviewed in the United States on X" or ISO
+  verifiedPurchase: integer("verified_purchase", { mode: "boolean" }),
+  helpfulVotes: integer("helpful_votes"),
+  reviewerName: text("reviewer_name"),
+  variantAttrsJson: text("variant_attrs_json"), // JSON: e.g. [{name:"Platform", value:"PlayStation 5"}]
+  imageUrlsJson: text("image_urls_json"), // JSON: string[]
+  fetchedAt: text("fetched_at").notNull(), // when we pulled this row from Rainforest
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueAsinReview: uniqueIndex("amazon_product_reviews_unique_asin_review").on(table.asin, table.reviewId),
+}));
+
 export type AmazonAsinMap = typeof amazonAsinMap.$inferSelect;
 export type AmazonChartSnapshot = typeof amazonChartSnapshots.$inferSelect;
 export type AmazonProductDaily = typeof amazonProductDaily.$inferSelect;
@@ -1095,3 +1174,4 @@ export type AmazonKeywordDaily = typeof amazonKeywordDaily.$inferSelect;
 export type AmazonNewReleases = typeof amazonNewReleases.$inferSelect;
 export type AmazonAlsoBoughtDaily = typeof amazonAlsoBoughtDaily.$inferSelect;
 export type AmazonIngestRun = typeof amazonIngestRuns.$inferSelect;
+export type AmazonProductReview = typeof amazonProductReviews.$inferSelect;

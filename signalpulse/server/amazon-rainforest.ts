@@ -214,6 +214,15 @@ export async function fetchProduct(asin: string): Promise<RainforestCallResult<a
   return rainforestRequest({ type: "product", asin, amazon_domain: "amazon.com" });
 }
 
+// fetchAlsoBought — QA-GATE-1 probe added 2026-09-07 to verify Rainforest's
+// dedicated `type=also_bought` endpoint returns non-empty recommendation
+// arrays for game ASINs before we cut runAlsoBoughtDaily over to it.
+// Response shape per Rainforest docs: `{ request_info, also_bought: [ { asin,
+// title, image, link, rating?, ratings_total?, price? }, ... ] }`.
+export async function fetchAlsoBought(asin: string): Promise<RainforestCallResult<any>> {
+  return rainforestRequest({ type: "also_bought", asin, amazon_domain: "amazon.com" });
+}
+
 // fetchFormatsEditions — Rainforest `type=formats_editions`. Returns every
 // format/edition variant of the given ASIN as listed on Amazon's own
 // variant carousel. This is the RIGHT tool for finding cross-platform
@@ -226,6 +235,38 @@ export async function fetchProduct(asin: string): Promise<RainforestCallResult<a
 //                           link?: string, is_current_product?: boolean, ... }, ... ] }
 export async function fetchFormatsEditions(asin: string): Promise<RainforestCallResult<any>> {
   return rainforestRequest({ type: "formats_editions", asin, amazon_domain: "amazon.com" });
+}
+
+// fetchSalesEstimation — Rainforest `type=sales_estimation`. Given an ASIN,
+// returns an internal-model estimate of weekly + monthly units sold, based
+// on BSR + category signals. Returns null-populated `sales_estimation` with
+// has_sales_estimation=false when there is not enough data (no BSR, rank
+// too low, pre-order). Costs 1 credit per call per Rainforest docs.
+export async function fetchSalesEstimation(asin: string): Promise<RainforestCallResult<any>> {
+  return rainforestRequest({ type: "sales_estimation", asin, amazon_domain: "amazon.com" });
+}
+
+// Extract the "bought in past .." label from a product response, handling
+// the two shapes Rainforest may emit (top-level string or object with a
+// `text` field). Returns null when Amazon isn't showing the label for this
+// SKU — that's the common case for low-velocity / pre-order items.
+export function extractRecentSales(productJson: any): string | null {
+  const p = productJson?.product ?? productJson ?? {};
+  const candidates: Array<unknown> = [
+    p.recent_sales,
+    p.buybox_winner?.recent_sales,
+    p.summarization_attributes?.recent_sales,
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    if (typeof c === "string" && c.trim()) return c.trim();
+    if (typeof c === "object") {
+      const anyC = c as any;
+      const s = anyC.text ?? anyC.value ?? anyC.label ?? anyC.raw;
+      if (typeof s === "string" && s.trim()) return s.trim();
+    }
+  }
+  return null;
 }
 
 // Extracts up to `limit` also_bought recommendations from a product response.
@@ -260,6 +301,83 @@ export function extractAlsoBought(productJson: any, limit = 5): AlsoBoughtRow[] 
       ratingsTotal: c.ratings_total ?? null,
       imageUrl: c.image ?? null,
       link: c.link ?? null,
+    });
+  }
+  return out;
+}
+
+// ─── Reviews (v3.36, 2026-09-07) ────────────────────────────────────
+// Rainforest `type=reviews` returns up to ~10 reviews per call, newest
+// first when `sort_by=most_recent`. We keep this to 1 page per ASIN per
+// fetch — the PDP wants "top / newest", not exhaustive back-fill — so
+// each call costs 1 credit. For the daily PDP hydrator we call once per
+// pinned ASIN (Saber + competitor) on the same 08:00 slot as also-bought.
+
+export async function fetchReviews(
+  asin: string,
+  opts?: { sortBy?: "most_recent" | "most_helpful" | "top_reviews"; page?: number },
+): Promise<RainforestCallResult<any>> {
+  const params: Record<string, string> = {
+    type: "reviews",
+    asin,
+    amazon_domain: "amazon.com",
+    sort_by: opts?.sortBy ?? "most_recent",
+  };
+  if (opts?.page && opts.page > 1) params.page = String(opts.page);
+  return rainforestRequest(params);
+}
+
+export interface ReviewRow {
+  reviewId: string;
+  title: string | null;
+  body: string | null;
+  rating: number | null;
+  reviewDate: string | null;
+  verifiedPurchase: boolean | null;
+  helpfulVotes: number | null;
+  reviewerName: string | null;
+  variantAttrs: Array<{ name: string; value: string }> | null;
+  imageUrls: string[] | null;
+}
+
+export function extractReviews(reviewsJson: any, limit = 20): ReviewRow[] {
+  const cands: any[] = reviewsJson?.reviews ?? reviewsJson?.top_reviews ?? [];
+  const out: ReviewRow[] = [];
+  for (const r of cands) {
+    if (out.length >= limit) break;
+    if (!r?.id) continue;
+    const dateRaw = r.date;
+    const reviewDate = typeof dateRaw === "string"
+      ? dateRaw
+      : (dateRaw?.utc ?? dateRaw?.raw ?? null);
+    const helpful = (() => {
+      const v = r.helpful_votes;
+      if (typeof v === "number") return v;
+      if (typeof v === "string") {
+        const m = v.match(/(\d+)/);
+        return m ? Number(m[1]) : null;
+      }
+      return null;
+    })();
+    const variantAttrs: Array<{ name: string; value: string }> | null = Array.isArray(r.attributes)
+      ? r.attributes
+          .filter((a: any) => a && typeof a.name === "string")
+          .map((a: any) => ({ name: String(a.name), value: String(a.value ?? "") }))
+      : null;
+    const imageUrls: string[] | null = Array.isArray(r.images)
+      ? r.images.map((im: any) => (typeof im === "string" ? im : im?.link ?? im?.image ?? null)).filter((x: any): x is string => typeof x === "string")
+      : null;
+    out.push({
+      reviewId: String(r.id),
+      title: r.title ? String(r.title) : null,
+      body: r.body ? String(r.body) : null,
+      rating: typeof r.rating === "number" ? r.rating : null,
+      reviewDate,
+      verifiedPurchase: typeof r.verified_purchase === "boolean" ? r.verified_purchase : null,
+      helpfulVotes: helpful,
+      reviewerName: r.profile?.name ? String(r.profile.name) : (r.reviewer ? String(r.reviewer) : null),
+      variantAttrs: variantAttrs && variantAttrs.length ? variantAttrs : null,
+      imageUrls: imageUrls && imageUrls.length ? imageUrls : null,
     });
   }
   return out;

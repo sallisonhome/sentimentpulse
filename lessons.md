@@ -6,6 +6,78 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-09-07 (signalpulse v3.39) — Leaderboard PDPs must be populated: hybrid weekly cron + on-demand lazy fetch, and all writes go through one canonical helper
+
+**Context.** v3.38 shipped review coverage for the 19 pinned ASINs (10 Saber + 9 competitor) but every PDP opened from a platform leaderboard for an unpinned title rendered a skeleton — no header art, no buybox, no BSR, no reviews — because `amazon_product_daily` only had rows for pinned ASINs. Steve asked to extend coverage to every leaderboard ASIN “unless that will be cost-prohibitive.” DB probe showed 129 distinct chart ASINs in the last 7 days, so full daily coverage would be ~130 Rainforest credits/day (~$1.30/day, ~$40/mo). Weekly coverage is ~$0.02/day. On-demand lazy fetch is 1 credit per unique stale-PDP click. Steve chose the hybrid.
+
+**Fix (v3.39).**
+
+1. **Extracted `writeProductSnapshotRow(asin, snapshotDate, data)` in `server/amazon-cron.ts` as the single canonical write path** for `amazon_product_daily` + `amazon_product_related_daily`. Every caller now goes through it: `runProductSnapshots` (daily pinned), the new `runProductSnapshotsChartCoverage` (weekly leaderboard), `ensureProductSnapshotFresh` (on-demand lazy), and `POST /api/amazon/product/:asin/reviews/refresh` (user click). This eliminates the v3.36–v3.38 bug pattern where each writer drifted slightly in what fields it captured (recent-sales, top-reviews, related surface).
+2. **Added `runProductSnapshotsChartCoverage`** — enumerates every ASIN in `amazon_chart_snapshots` from the last 7 days, subtracts the union of active `amazon_asin_map` + `amazon_competitor_asin_map` (already covered daily), subtracts anything already snapshotted today (idempotent within-day), and calls `writeProductSnapshotRow` for the remainder. Scheduled Sunday 08:30 ET after the daily pinned window closes so there’s no contention with the daily products cron.
+3. **Added `ensureProductSnapshotFresh(asin, maxAgeDays=3)`** — checks the latest `amazon_product_daily` row for an ASIN; if missing or > 3 days stale, fires one `type=product` call and upserts today’s row via `writeProductSnapshotRow`. Wired into `GET /api/amazon/product/:asin` (PDP header) and `GET /api/amazon/product/:asin/reviews` (Reviews tab). Wrapped in try/catch inside the helper so a Rainforest failure never 5xxs the PDP — the endpoint falls back to whatever stale row (if any) exists.
+4. **Dispatch + workflow.** Added `chart_coverage` to `AmazonJobName`, `runAmazonJob` switch, the `/api/amazon/ingest/run/:job` whitelist in `server/amazon-routes.ts`, and the `job` choice list in `.github/workflows/amazon-ingest-trigger.yml`. Backfill = trigger `chart_coverage` manually from the workflow; recurring coverage = the weekly Sunday slot.
+
+**Non-negotiable rules going forward.**
+
+1. **Only one writer for `amazon_product_daily`.** `writeProductSnapshotRow` is it. Every new caller (endpoint, job, admin tool) must go through this helper. Do NOT duplicate the delete+insert pattern. Every field bug we shipped in v3.36–v3.38 (missing title/image/link on refresh, missing top-reviews on refresh, missing related-daily on refresh) was caused by a second writer drifting from the primary. One helper, one truth.
+2. **PDP GET routes must not 5xx on Rainforest failure.** The lazy-fetch call inside a GET endpoint MUST swallow Rainforest errors and fall through to whatever stale data exists. The user’s PDP renders skeleton at worst — never a 500. `ensureProductSnapshotFresh` enforces this by catching internally.
+3. **Idempotent-within-day is mandatory for any new products-cron variant.** The chart-coverage job explicitly skips ASINs already in today’s `amazon_product_daily`. If we ever add a third variant (movers-coverage, wishlist-coverage, etc.), it MUST do the same set-subtraction — otherwise a Sunday manual trigger + the same-day scheduled run doubles Rainforest cost with no benefit.
+4. **When an untracked ASIN needs coverage, decide the cadence by traffic × credit cost.** Pinned ASINs earn a daily snapshot (30 credits/day is trivial). Chart ASINs (~130 today) don’t justify daily but do justify weekly + on-demand-when-clicked. Any future "snapshot everything for surface X" request must compute distinct-ASIN count × 1 credit and check against the credit budget before choosing daily-vs-weekly-vs-lazy.
+5. **Backfill = manual trigger of the same cron.** No standalone one-off scripts. If the recurring job exists and works, run it manually via the workflow to seed history. Keeps the write path identical to what runs weekly.
+
+**Verification.** Chart-coverage job triggered manually post-deploy, rows land for chart-only ASINs. PDP opened for a leaderboard-only ASIN populates on first click (lazy fetch succeeds).
+
+---
+
+## 2026-09-07 (signalpulse v3.38) — Rainforest `type=reviews` is dead: Amazon killed “Most Recent” reviews in Mar-2025, use `p.top_reviews[]` from `type=product`
+
+**What happened.** v3.36 shipped a dedicated per-ASIN Reviews tab backed by `amazon_product_reviews`, ingested daily by `runReviewsDaily` which called `fetchReviews(asin, {sortBy:“most_recent”})` → Rainforest `type=reviews`. Steve reported the PDP Reviews tab was empty and the “Refresh from Amazon” button returned an error. Investigation:
+- `POST /api/amazon/product/:asin/reviews/refresh` → `500 {"error":"Rainforest 503: reviews request type is temporarily unavailable"}`.
+- No `amazon_ingest_runs` rows ever landed for job=`reviews`, so the DB was always empty.
+- Rainforest deprecated `type=reviews` in **March 2025** because Amazon removed the public “Most Recent” reviews sort from PDPs. Only the top reviews Amazon renders in the header carousel remain scrapable, and Rainforest exposes them as `product.top_reviews[]` on the regular `type=product` response (which we already fetch hourly).
+
+**Fix (v3.38).**
+1. Added `top_reviews_json TEXT` to `amazon_product_daily` (schema + `migrateAddColumnIfMissing`).
+2. `runProductSnapshots` now captures `p.top_reviews[]` via the existing `extractReviews` normalizer and writes it alongside the buybox/BSR row — zero extra Rainforest cost.
+3. Rewrote `GET /reviews` to read `top_reviews_json` from the latest `amazon_product_daily` row for the ASIN and shape it into the same `ReviewsResponse` the client already expects.
+4. Rewrote `POST /reviews/refresh` to call `fetchProduct(asin)` (not `fetchReviews`), extract `top_reviews`, and upsert today’s `amazon_product_daily` row.
+5. Deprecated `runReviewsDaily` as a no-op that logs `DEPRECATED: no-op (Amazon killed most-recent reviews Mar-2025)`, same pattern as v3.37’s `runAlsoBoughtDaily`.
+6. Client empty-state and header copy updated to say “Snapshot from … top reviews” instead of “Last fetched … stored”, and the empty state explains the Mar-2025 deprecation so operators don’t assume the pipeline is broken.
+
+**Non-negotiable rules going forward.**
+
+1. **Never call `type=reviews` again.** Rainforest returns 503 for every request. The only sanctioned source for review content on a game ASIN is `product.top_reviews[]` on `type=product`.
+2. **When an external endpoint returns a persistent, non-transient error, check the vendor changelog before writing a fix.** Rainforest’s deprecation was announced publicly at `docs.trajectdata.com/rainforestapi/product-updates`. Assuming a bug in our code when the vendor has publicly deprecated the endpoint wastes a full session.
+3. **Deprecation pattern (established v3.37, reconfirmed v3.38):** keep the old job function exported as a no-op that logs `DEPRECATED: no-op` so scheduler slots and manual-dispatch entries don’t break. Do NOT delete the function outright — external YAML workflows and cron slots reference it by name. Same for the client-facing endpoint URL: keep it, change the source-of-truth, don’t 404 cached bundles mid-deploy.
+4. **Ride existing calls whenever a new field lives on an already-fetched response.** v3.37 (variants + bestseller-rank) and v3.38 (top reviews) both replaced dedicated calls with fields piggybacking on `type=product`, saving credits and simplifying the ingest surface. Before adding a new Rainforest job, check whether the field is already on a response we already store.
+
+---
+
+## MANDATORY — READ FIRST EVERY SESSION (2026-09-07)
+
+**Two non-negotiable operating rules for every session, every task, before touching any code.**
+
+### 1. Start every session by reading BOTH `CLAUDE.md` and `lessons.md` before doing any work.
+
+No exceptions. Not "if the task looks complex." Not "if I remember the rules from last session." **Every session, first thing, both files, top to bottom.** Steve has told me this multiple times. If you skip it you will re-make mistakes that are already documented here, and Steve will (rightly) push back.
+
+When resuming a compacted session, the same rule applies — re-read both files at the top of the turn before touching any code, deploy, or verification path.
+
+### 2. Run rigorous QA BEFORE asking to push. Never ask for deploy approval until it's done.
+
+Compile-time checks (`tsc --noEmit`, `npm run build`) are the MINIMUM, not "QA." Rigorous QA means all of the following that apply to the change, executed before the `confirm_action` push prompt:
+
+1. **Live API/data probe of the new external contract.** If the change assumes an external API returns a certain shape (Rainforest, Steam, Reddit, Anthropic, Steamworks, etc.), prove it with a live request against a real ASIN / appid / URL BEFORE writing the fix. Add a temporary logging shim if needed, ship the shim as an isolated debug commit, trigger it, read the log, THEN write the fix. Never ship a fix whose correctness depends on unverified assumptions about an external response shape.
+2. **Local runtime test of the changed endpoint.** For any changed HTTP route, run the server locally (or on the sandbox), hit the route, inspect the actual JSON response. Do not rely on "the build compiled" as evidence the endpoint works.
+3. **Client-side render check for any change touching client-visible data.** If the server response shape changed, `read` the client component that consumes it and verify the fallback chain / null-guards / new field bindings actually match. Server-only edits without client verification produce blank UI even when the API is correct.
+4. **Schema-migration dry-run for any DDL change.** For `migrateAddColumnIfMissing` or any new table, verify the column actually landed on the live DB by running a `PRAGMA table_info(...)` SQL check via the read-only workflow immediately after the deploy, before claiming success.
+5. **Live-data verification post-deploy** is the FINAL gate, not the ONLY gate. The above four happen BEFORE `confirm_action`. Post-deploy verification confirms it, but a pre-push failure is much cheaper than a post-deploy rollback.
+6. **When in doubt, say so.** If a QA step is impractical (no local test harness, no way to probe the API without a secret, etc.), state that in the `confirm_action` question and let Steve decide whether to accept the gap. Never silently skip a QA gate to save time.
+
+**Cheap heuristic:** if the honest answer to "did I run rigorous QA?" is "no, just tsc + build", the answer to "can I ask to push?" is also "no." Fix the QA gap first.
+
+---
+
 ## 2026-08-18 (signalpulse) — Wishlist backfill MUST use the Steamworks Partner Financials API (steam_api_key), never HTML parsing
 
 **What happened.** After adding Twisted Tower (Steam AppID 1575990) to SignalPulse, the auto-triggered wishlist backfill on product creation only produced ONE row before the signalpulse deploy (from a subsequent commit) restarted the Node.js process and killed the in-flight background job. The dashboard showed `latestSteamWishlistCount: 5,215` when Steamworks ground truth was 147,718 (1,975 rows of pre-launch daily data, going back to first-wishlist date 2021-03-30). Steve caught it: "prior to release was over 133K but only seeing 11K wishlists in signalpulse is this because of the backfill running?" I initially proposed HTML-parsing the Steamworks partner portal via the cookie proxy as a fix — WRONG. The correct answer is to always use the pre-existing Steam Partner Financials web API (`IPartnerFinancialsService/GetAppWishlistReporting/v001/`) which requires `steam_api_key` and returns structured per-day rows with adds/deletes/purchases/gifts + per-platform, country, and language splits. The manual re-fire via `POST /api/steam/backfill/17` recovered instantly: 1,967 days queued, ~13 days/sec, latestSteamWishlistCount jumped from 5,215 → 147,718 within 60 seconds, matching Steamworks portal ground truth exactly.
@@ -1970,3 +2042,56 @@ the filter yielded zero every time.
 - **`/next-up` and `/live-now` are two different questions** and every
   UI badge that says "on promo" or "currently discounted" wants
   `/live-now`. Reserve `/next-up` for "what's coming".
+
+---
+
+## 2026-09-07 — Amazon "Also Bought" is dead for game ASINs; pivot to variants + bestseller-rank (v3.37)
+
+**What happened.** The SignalPulse PDP shipped an "Also Bought" tab
+against `product.also_bought[]` (plus a fallback pipeline via
+`type=also_bought` and `type=formats_editions`). Every game ASIN we
+tested (Space Marine 2 PS5/XSX, Elden Ring, Baldur's Gate 3, Doom Eternal,
+Helldivers 2, etc.) returned an empty tab in production.
+
+**Root cause.** Four probes (QA-GATE-1 through QA-GATE-3) confirmed:
+- `type=product` returns ZERO of the 11 recommendation fields
+  (`also_bought`, `also_viewed`, `view_to_purchase`, `sponsored_products`,
+  `frequently_bought_together`, `compare_with_similar`,
+  `similar_to_consider`, `newer_model`, `bundles`, `bundle_contents`,
+  `shop_by_look`) for game ASINs.
+- `type=also_bought` returns empty and spends ~400–500 credits per call
+  (aggressive pagination).
+- `type=formats_editions` returns HTTP 503 persistently for game ASINs.
+- Amazon renders these carousels client-side; Rainforest's scraper does
+  not execute JS on the video-games category.
+
+What DOES come back on every game ASIN from `type=product`:
+- `product.variants[]` — 5 rows: cross-platform / edition siblings
+  (PS5 ↔ XSX ↔ PC ↔ Collector's Ed) with dimensions, ASIN, image, link.
+- `product.bestsellers_rank[]` — 2–4 rows: (category, rank, link) per
+  sub-category, e.g. "#1 in PlayStation 5 Games".
+
+**Lessons.**
+- **When a vendor's field is empty on a whole category, don't ship a UI
+  that surfaces it.** The v3.36 "Also Bought" tab was blank for every
+  Saber title on day one because the underlying data doesn't exist for
+  the games category. Ship what the API actually returns.
+- **Prove the vendor field is dead across the category, not just for
+  one ASIN.** A single empty response is ambiguous (maybe the ASIN is
+  unpopular). Sample 5+ ASINs across publishers and price bands before
+  you rip out a feature.
+- **Zero-cost pivots beat second data sources.** The A2+A3 replacement
+  (variants + bestseller-rank) uses fields that are already in the
+  `type=product` response we fetch every 60 min — no new credits, no
+  new job, and the semantics are actually more useful for a publisher
+  ("what's this game's PS5 vs XSX vs PC rank" is a real question).
+- **Deprecate loudly, not silently.** `runAlsoBoughtDaily` is kept as an
+  exported no-op that logs "DEPRECATED: no-op (see runProductSnapshots +
+  amazon_product_related_daily)" so the scheduler entry still resolves
+  and any operator grepping logs sees the reason. The old
+  `/api/amazon/product/:asin/also-bought` endpoint is kept as an
+  empty-payload responder so cached client bundles don't 404 mid-deploy.
+- **Rip out debug probes as soon as they've answered the question.**
+  Four QA-GATE probes (URL/ASIN/FE/TOP, ~113 lines) accumulated in
+  amazon-cron.ts during diagnosis. They stay in git history — they
+  don't need to stay in the running binary.

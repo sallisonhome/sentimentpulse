@@ -570,6 +570,11 @@ function initializeDatabase() {
       sub_bsrs_json TEXT,
       rating REAL,
       ratings_total INTEGER,
+      recent_sales TEXT,
+      monthly_sales_estimate INTEGER,
+      weekly_sales_estimate INTEGER,
+      sales_estimate_bsr INTEGER,
+      sales_estimate_category TEXT,
       created_at TEXT NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS amazon_product_daily_unique_day_asin ON amazon_product_daily(snapshot_date, asin);
@@ -620,6 +625,50 @@ function initializeDatabase() {
       rows_written INTEGER,
       error_message TEXT
     );
+
+    -- v3.36 (2026-09-07): Per-ASIN Amazon reviews snapshots. Populated
+    -- on-demand from the PDP Reviews tab, and by any future daily
+    -- review-pulse ingest. UPSERT keyed on (asin, review_id).
+    CREATE TABLE IF NOT EXISTS amazon_product_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      review_id TEXT NOT NULL,
+      title TEXT,
+      body TEXT,
+      rating REAL,
+      review_date TEXT,
+      verified_purchase INTEGER,
+      helpful_votes INTEGER,
+      reviewer_name TEXT,
+      variant_attrs_json TEXT,
+      image_urls_json TEXT,
+      fetched_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_product_reviews_unique_asin_review ON amazon_product_reviews(asin, review_id);
+    CREATE INDEX IF NOT EXISTS amazon_product_reviews_by_asin_date_idx ON amazon_product_reviews(asin, review_date);
+
+    -- v3.37 (2026-09-07): Per-ASIN related surface — populated by
+    -- runProductSnapshots from the same type=product response that feeds
+    -- amazon_product_daily. kind='variant' rows carry cross-platform
+    -- siblings; kind='category_rank' rows carry bestseller-rank entries.
+    -- Replaces amazon_also_bought_daily for the PDP "Related" tab.
+    CREATE TABLE IF NOT EXISTS amazon_product_related_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      snapshot_date TEXT NOT NULL,
+      source_asin TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      rank_position INTEGER NOT NULL,
+      related_asin TEXT,
+      title TEXT,
+      image_url TEXT,
+      link TEXT,
+      category_name TEXT,
+      category_rank INTEGER,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS amazon_product_related_unique_day_source_kind_pos ON amazon_product_related_daily(snapshot_date, source_asin, kind, rank_position);
+    CREATE INDEX IF NOT EXISTS amazon_product_related_by_source_idx ON amazon_product_related_daily(source_asin, snapshot_date);
   `);
 }
 
@@ -646,6 +695,21 @@ function runMigrations() {
   // v3.32 (2026-09-05)
   migrateAddColumnIfMissing("steam_sales_by_country_period", "pct_of_units", "pct_of_units REAL");
   migrateAddColumnIfMissing("steam_sales_by_country_period", "pct_of_revenue", "pct_of_revenue REAL");
+  // v3.33 (2026-09-07): Amazon recent_sales + sales_estimation columns
+  migrateAddColumnIfMissing("amazon_product_daily", "recent_sales", "recent_sales TEXT");
+  migrateAddColumnIfMissing("amazon_product_daily", "monthly_sales_estimate", "monthly_sales_estimate INTEGER");
+  migrateAddColumnIfMissing("amazon_product_daily", "weekly_sales_estimate", "weekly_sales_estimate INTEGER");
+  migrateAddColumnIfMissing("amazon_product_daily", "sales_estimate_bsr", "sales_estimate_bsr INTEGER");
+  migrateAddColumnIfMissing("amazon_product_daily", "sales_estimate_category", "sales_estimate_category TEXT");
+  // v3.37 (2026-09-07): title/image_url/link captured in the daily product
+  // snapshot so the PDP has a header even when the ASIN isn't in any
+  // chart snapshot yet (fixes blank Space Marine 2 PDP art).
+  migrateAddColumnIfMissing("amazon_product_daily", "title", "title TEXT");
+  migrateAddColumnIfMissing("amazon_product_daily", "image_url", "image_url TEXT");
+  migrateAddColumnIfMissing("amazon_product_daily", "link", "link TEXT");
+  // v3.38 (2026-09-07): top_reviews[] captured from type=product to
+  // replace the deprecated type=reviews endpoint.
+  migrateAddColumnIfMissing("amazon_product_daily", "top_reviews_json", "top_reviews_json TEXT");
 }
 
 initializeDatabase();
