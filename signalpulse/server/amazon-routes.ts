@@ -42,6 +42,8 @@ import {
   countIntersection,
   titleMentionsPlatform,
   isAsinAncientForProduct,
+  writeProductSnapshotRow,
+  ensureProductSnapshotFresh,
 } from "./amazon-cron";
 import {
   isRainforestConfigured,
@@ -629,8 +631,13 @@ export function registerAmazonRoutes(app: Express): void {
   //   rank line (e.g. "#30 in PlayStation 5 Games") from sub_bsrs_json so the
   //   PDP always shows a platform-scoped rank even when the ASIN isn't in the
   //   top-50 chart.
-  app.get("/api/amazon/product/:asin", (req, res) => {
+  app.get("/api/amazon/product/:asin", async (req, res) => {
     const asin = req.params.asin;
+
+    // v3.39: on-demand lazy fetch — if this ASIN has never been
+    // snapshotted or the latest row is older than 3 days, pull one
+    // type=product call before responding. Non-blocking on failure.
+    await ensureProductSnapshotFresh(asin, 3);
 
     // Latest product-daily row.
     const latestDaily = db.select().from(amazonProductDaily)
@@ -813,8 +820,14 @@ export function registerAmazonRoutes(app: Express): void {
   // /refresh re-fetches type=product for that ASIN (updating every field
   // for the day, including top_reviews_json). Zero extra Rainforest cost
   // vs. a dedicated reviews call.
-  app.get("/api/amazon/product/:asin/reviews", (req, res) => {
+  app.get("/api/amazon/product/:asin/reviews", async (req, res) => {
     const asin = req.params.asin;
+    // v3.39: on-demand lazy fetch — if this ASIN has never been
+    // snapshotted or the latest row is older than 3 days, pull one
+    // type=product call before responding. Non-blocking on failure:
+    // ensureProductSnapshotFresh swallows errors and we fall back to
+    // whatever stale row exists (if any).
+    await ensureProductSnapshotFresh(asin, 3);
     const row = db.select().from(amazonProductDaily)
       .where(eq(amazonProductDaily.asin, asin))
       .orderBy(desc(amazonProductDaily.snapshotDate), desc(amazonProductDaily.createdAt))
@@ -850,44 +863,14 @@ export function registerAmazonRoutes(app: Express): void {
       // v3.38: re-fetch type=product (top_reviews live here now). This
       // refreshes every product-daily field for today, not just reviews —
       // effectively an on-demand mini products-cron for one ASIN.
+      // v3.39: writes go through the shared writeProductSnapshotRow so
+      // this stays byte-identical to the daily + weekly cron paths.
       const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
-      const p = data?.product ?? {};
-      const topRvs = extractReviews({ top_reviews: p.top_reviews ?? [] }, 20);
-      const topReviewsJson = topRvs.length > 0 ? JSON.stringify(topRvs) : null;
       const snapshotDate = new Date().toISOString().slice(0, 10);
       const nowIsoStr = new Date().toISOString();
-      const buybox = p.buybox_winner ?? {};
-      const price = typeof buybox.price === "number" ? buybox.price : (buybox.price?.value ?? null);
-      const bsr = p.bestsellers_rank?.[0]?.rank ?? null;
-      const subBsrs = (p.bestsellers_rank ?? []).slice(1).map((b: any) => ({
-        category: b.category ?? null,
-        rank: b.rank ?? null,
-      }));
-      const mainImage: string | null = p.main_image?.link ?? p.images?.[0]?.link ?? null;
-      // Upsert (delete + insert) on (snapshot_date, asin) — same semantics
-      // as runProductSnapshots so the row is fully coherent.
-      db.delete(amazonProductDaily)
-        .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, asin)))
-        .run();
-      db.insert(amazonProductDaily).values({
-        snapshotDate,
-        asin,
-        buyboxPrice: price,
-        buyboxSeller: buybox.seller ?? null,
-        buyboxIsAmazon: !!(buybox.is_amazon ?? false),
-        isPrime: !!(buybox.is_prime ?? p.is_prime ?? false),
-        stockStatus: p.buybox_winner?.availability?.type ?? p.stock_status ?? null,
-        mainBsr: bsr,
-        subBsrsJson: JSON.stringify(subBsrs),
-        rating: p.rating ?? null,
-        ratingsTotal: p.ratings_total ?? null,
-        recentSales: null,
-        title: p.title ?? null,
-        imageUrl: mainImage,
-        link: p.link ?? null,
-        topReviewsJson,
-        createdAt: nowIsoStr,
-      }).run();
+      writeProductSnapshotRow(asin, snapshotDate, data);
+      const p = data?.product ?? {};
+      const topRvs = extractReviews({ top_reviews: p.top_reviews ?? [] }, 20);
       res.json({
         asin,
         fetched: topRvs.length,
@@ -1261,7 +1244,7 @@ export function registerAmazonRoutes(app: Express): void {
   // ── Ops: manual ingest + recent runs ───────────────────────────────────
   app.post("/api/amazon/ingest/run/:job", async (req, res) => {
     const job = req.params.job as AmazonJobName;
-    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "reviews", "asin_discovery", "asin_search_discovery", "formats_editions_fill", "sales_estimation", "competitor_discovery", "clean_auto_pins"].includes(job)) {
+    if (!["charts", "products", "movers", "keywords", "new_releases", "also_bought", "reviews", "chart_coverage", "asin_discovery", "asin_search_discovery", "formats_editions_fill", "sales_estimation", "competitor_discovery", "clean_auto_pins"].includes(job)) {
       return res.status(400).json({ error: "unknown job" });
     }
     // clean_auto_pins is a DB-only op; every other job hits Rainforest.

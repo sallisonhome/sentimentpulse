@@ -6,6 +6,29 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-09-07 (signalpulse v3.39) — Leaderboard PDPs must be populated: hybrid weekly cron + on-demand lazy fetch, and all writes go through one canonical helper
+
+**Context.** v3.38 shipped review coverage for the 19 pinned ASINs (10 Saber + 9 competitor) but every PDP opened from a platform leaderboard for an unpinned title rendered a skeleton — no header art, no buybox, no BSR, no reviews — because `amazon_product_daily` only had rows for pinned ASINs. Steve asked to extend coverage to every leaderboard ASIN “unless that will be cost-prohibitive.” DB probe showed 129 distinct chart ASINs in the last 7 days, so full daily coverage would be ~130 Rainforest credits/day (~$1.30/day, ~$40/mo). Weekly coverage is ~$0.02/day. On-demand lazy fetch is 1 credit per unique stale-PDP click. Steve chose the hybrid.
+
+**Fix (v3.39).**
+
+1. **Extracted `writeProductSnapshotRow(asin, snapshotDate, data)` in `server/amazon-cron.ts` as the single canonical write path** for `amazon_product_daily` + `amazon_product_related_daily`. Every caller now goes through it: `runProductSnapshots` (daily pinned), the new `runProductSnapshotsChartCoverage` (weekly leaderboard), `ensureProductSnapshotFresh` (on-demand lazy), and `POST /api/amazon/product/:asin/reviews/refresh` (user click). This eliminates the v3.36–v3.38 bug pattern where each writer drifted slightly in what fields it captured (recent-sales, top-reviews, related surface).
+2. **Added `runProductSnapshotsChartCoverage`** — enumerates every ASIN in `amazon_chart_snapshots` from the last 7 days, subtracts the union of active `amazon_asin_map` + `amazon_competitor_asin_map` (already covered daily), subtracts anything already snapshotted today (idempotent within-day), and calls `writeProductSnapshotRow` for the remainder. Scheduled Sunday 08:30 ET after the daily pinned window closes so there’s no contention with the daily products cron.
+3. **Added `ensureProductSnapshotFresh(asin, maxAgeDays=3)`** — checks the latest `amazon_product_daily` row for an ASIN; if missing or > 3 days stale, fires one `type=product` call and upserts today’s row via `writeProductSnapshotRow`. Wired into `GET /api/amazon/product/:asin` (PDP header) and `GET /api/amazon/product/:asin/reviews` (Reviews tab). Wrapped in try/catch inside the helper so a Rainforest failure never 5xxs the PDP — the endpoint falls back to whatever stale row (if any) exists.
+4. **Dispatch + workflow.** Added `chart_coverage` to `AmazonJobName`, `runAmazonJob` switch, the `/api/amazon/ingest/run/:job` whitelist in `server/amazon-routes.ts`, and the `job` choice list in `.github/workflows/amazon-ingest-trigger.yml`. Backfill = trigger `chart_coverage` manually from the workflow; recurring coverage = the weekly Sunday slot.
+
+**Non-negotiable rules going forward.**
+
+1. **Only one writer for `amazon_product_daily`.** `writeProductSnapshotRow` is it. Every new caller (endpoint, job, admin tool) must go through this helper. Do NOT duplicate the delete+insert pattern. Every field bug we shipped in v3.36–v3.38 (missing title/image/link on refresh, missing top-reviews on refresh, missing related-daily on refresh) was caused by a second writer drifting from the primary. One helper, one truth.
+2. **PDP GET routes must not 5xx on Rainforest failure.** The lazy-fetch call inside a GET endpoint MUST swallow Rainforest errors and fall through to whatever stale data exists. The user’s PDP renders skeleton at worst — never a 500. `ensureProductSnapshotFresh` enforces this by catching internally.
+3. **Idempotent-within-day is mandatory for any new products-cron variant.** The chart-coverage job explicitly skips ASINs already in today’s `amazon_product_daily`. If we ever add a third variant (movers-coverage, wishlist-coverage, etc.), it MUST do the same set-subtraction — otherwise a Sunday manual trigger + the same-day scheduled run doubles Rainforest cost with no benefit.
+4. **When an untracked ASIN needs coverage, decide the cadence by traffic × credit cost.** Pinned ASINs earn a daily snapshot (30 credits/day is trivial). Chart ASINs (~130 today) don’t justify daily but do justify weekly + on-demand-when-clicked. Any future "snapshot everything for surface X" request must compute distinct-ASIN count × 1 credit and check against the credit budget before choosing daily-vs-weekly-vs-lazy.
+5. **Backfill = manual trigger of the same cron.** No standalone one-off scripts. If the recurring job exists and works, run it manually via the workflow to seed history. Keeps the write path identical to what runs weekly.
+
+**Verification.** Chart-coverage job triggered manually post-deploy, rows land for chart-only ASINs. PDP opened for a leaderboard-only ASIN populates on first click (lazy fetch succeeds).
+
+---
+
 ## 2026-09-07 (signalpulse v3.38) — Rainforest `type=reviews` is dead: Amazon killed “Most Recent” reviews in Mar-2025, use `p.top_reviews[]` from `type=product`
 
 **What happened.** v3.36 shipped a dedicated per-ASIN Reviews tab backed by `amazon_product_reviews`, ingested daily by `runReviewsDaily` which called `fetchReviews(asin, {sortBy:“most_recent”})` → Rainforest `type=reviews`. Steve reported the PDP Reviews tab was empty and the “Refresh from Amazon” button returned an error. Investigation:

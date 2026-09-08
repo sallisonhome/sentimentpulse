@@ -35,6 +35,7 @@ on:
           - sales_estimation
           - clean_auto_pins
           - pin_status
+          - chart_coverage
 
 concurrency:
   group: deploy-droplet
