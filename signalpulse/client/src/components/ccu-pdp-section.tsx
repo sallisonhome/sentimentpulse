@@ -32,7 +32,7 @@ import { Badge } from "@/components/ui/badge";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface CcuKpiCard {
+export interface CcuKpiCard {
   productId: number;
   liveRank: number | null;
   currentPlayers: number | null;
@@ -42,7 +42,7 @@ interface CcuKpiCard {
   vsLastMonthPct: number | null;
 }
 
-interface IgdbMediaResult {
+export interface IgdbMediaResult {
   igdbId: number;
   summary: string | null;
   screenshotIds: string[];
@@ -74,7 +74,7 @@ interface CcuHourlyResult {
   data: CcuHourlyPoint[];
 }
 
-interface RelatedGame {
+export interface RelatedGame {
   position: number;
   appid: number;
   name: string;
@@ -95,7 +95,7 @@ const RANGE_OPTIONS: Array<{ key: CcuHistoryRange; label: string }> = [
 
 // ─── Small helpers ───────────────────────────────────────────────────────────
 
-function StatBadge({ label, value, sub, badge }: { label: string; value: string; sub?: string; badge?: string }) {
+export function StatBadge({ label, value, sub, badge }: { label: string; value: string; sub?: string; badge?: string }) {
   return (
     <div className="flex flex-col gap-1" data-testid={`stat-${label.replace(/\s+/g, "-").toLowerCase()}`}>
       <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
@@ -127,7 +127,7 @@ function youtubeThumbUrl(videoId: string): string {
 
 type LightboxItem = { kind: "image"; url: string } | { kind: "video"; videoId: string };
 
-function GameMediaCarousel({ media }: { media: IgdbMediaResult | undefined }) {
+export function GameMediaCarousel({ media }: { media: IgdbMediaResult | undefined }) {
   const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
   const screenshots = media?.screenshotIds ?? [];
   const videos = media?.videoIds ?? [];
@@ -204,7 +204,7 @@ function GameMediaCarousel({ media }: { media: IgdbMediaResult | undefined }) {
 
 // ─── Related games grid ──────────────────────────────────────────────────────
 
-function RelatedGamesGrid({ games }: { games: RelatedGame[] | undefined }) {
+export function RelatedGamesGrid({ games }: { games: RelatedGame[] | undefined }) {
   if (!games || games.length === 0) {
     return <p className="text-sm text-muted-foreground">No related Steam titles found yet.</p>;
   }
@@ -246,7 +246,7 @@ function RelatedGamesGrid({ games }: { games: RelatedGame[] | undefined }) {
 
 // ─── History chart with range chips ─────────────────────────────────────────
 
-function CcuHistoryChart({ productId }: { productId: number }) {
+export function CcuHistoryChart({ productId }: { productId: number }) {
   const [range, setRange] = useState<CcuHistoryRange>("month");
 
   const { data, isLoading } = useQuery<CcuHistoryResult>({
@@ -319,7 +319,7 @@ function CcuHistoryChart({ productId }: { productId: number }) {
 
 // ─── Hourly (peak hours of day) chart ────────────────────────────────────────
 
-function CcuHourlyChart({ productId }: { productId: number }) {
+export function CcuHourlyChart({ productId }: { productId: number }) {
   const { data, isLoading } = useQuery<CcuHourlyResult>({
     queryKey: ["/api/products", productId, "ccu", "hourly"],
   });

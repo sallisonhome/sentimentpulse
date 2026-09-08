@@ -9,6 +9,7 @@ import { Layout } from "@/components/layout";
 import Dashboard from "@/pages/dashboard";
 import Leaderboards from "@/pages/leaderboards";
 import ProductDetail from "@/pages/product-detail";
+import CcuDetail from "@/pages/ccu-detail";
 import Settings from "@/pages/settings";
 import Inbox from "@/pages/inbox";
 import SalesByCountry from "@/pages/sales-by-country";
@@ -28,6 +29,7 @@ function AppRouter() {
         <Route path="/" component={Leaderboards} />
         <Route path="/dashboard" component={Dashboard} />
         <Route path="/products/:id" component={ProductDetail} />
+        <Route path="/ccu/:id" component={CcuDetail} />
         <Route path="/settings" component={Settings} />
         <Route path="/inbox" component={Inbox} />
         <Route path="/sales-by-country" component={SalesByCountry} />

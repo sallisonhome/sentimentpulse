@@ -74,7 +74,7 @@ function synthesizeHeaderImage(steamAppId: string): string {
   return `https://cdn.cloudflare.steamstatic.com/steam/apps/${steamAppId}/header.jpg`;
 }
 
-function resolveHeaderImage(steamAppId: string, cachedUrl: string | null): string {
+export function resolveHeaderImage(steamAppId: string, cachedUrl: string | null): string {
   return cachedUrl ?? synthesizeHeaderImage(steamAppId);
 }
 
