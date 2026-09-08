@@ -6,6 +6,23 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-09-08 (signalpulse v3.40) — Amazon zgbs node URLs: verify the node is the games-only leaf, not a parent umbrella
+
+**What happened.** Steve reported the PS5 leaderboard on the front page only went to ~20 rows while Xbox and Switch showed ~50. DB confirmed: `amazon_chart_snapshots` had 48–49 rows/day for xbox+switch but only 20–21 for ps5. Root cause: the PS5 `AMAZON_CHART_NODES` entry pointed at `zgbs/videogames/20972781011/` — the parent umbrella “PlayStation 5 Consoles, Games & Accessories” category, which is ~60% hardware (controllers, HDMI cables, cases). After `isVideoGameSoftware` filtered those out only ~20 games remained. Xbox (`20972814011` – Xbox Series X|S Games) and Switch (`16227133011` – Nintendo Switch Games) already pointed at games-only leaf nodes, so their post-filter counts were healthy. Correct PS5 games-only node: `20972797011` (“PlayStation 5 Games”).
+
+**Fix (v3.40).** Update `shared/schema.ts` PS5 entry to `nodeId=20972797011`, URL `.../Best-Sellers-PlayStation-5-Games/zgbs/videogames/20972797011/`. Same code path picks it up automatically — no cron code change needed.
+
+**Non-negotiable rules going forward.**
+
+1. **When adding or changing a `zgbs` chart node, verify the URL is a games-only leaf, not an umbrella.** The Amazon URL slug is not authoritative — “Consoles, Games & Accessories” in the slug is the giveaway that it’s an umbrella. Cross-check by opening the page: if the top-10 contains a controller, headset, or HDMI splitter, it’s an umbrella node. Games-only leaf nodes for the three platforms we track:
+   - PS5: `20972797011` — `/Best-Sellers-PlayStation-5-Games/zgbs/videogames/20972797011/`
+   - Xbox: `20972814011` — `/Best-Sellers-Xbox-Series-X-S-Games/zgbs/videogames/20972814011/`
+   - Switch: `16227133011` — `/Best-Sellers-Nintendo-Switch-Games/zgbs/videogames/16227133011/`
+2. **A post-filter chart depth below 40 on a games-only endpoint is a red flag.** Amazon publishes top-50 for every games-only leaf. If our `amazon_chart_snapshots` day-count for one platform is 20 while the others are 48–50, the node URL is wrong before anything else. Check this before touching `isVideoGameSoftware` heuristics.
+3. **Verify per-platform row counts as a regression check after any chart-related schema/route/cron change.** `SELECT snapshot_date, platform, COUNT(*) FROM amazon_chart_snapshots GROUP BY 1,2 ORDER BY 1 DESC` should show ~48–50 per platform per day; any platform below 40 needs investigation.
+
+---
+
 ## 2026-09-07 (signalpulse v3.39) — Leaderboard PDPs must be populated: hybrid weekly cron + on-demand lazy fetch, and all writes go through one canonical helper
 
 **Context.** v3.38 shipped review coverage for the 19 pinned ASINs (10 Saber + 9 competitor) but every PDP opened from a platform leaderboard for an unpinned title rendered a skeleton — no header art, no buybox, no BSR, no reviews — because `amazon_product_daily` only had rows for pinned ASINs. Steve asked to extend coverage to every leaderboard ASIN “unless that will be cost-prohibitive.” DB probe showed 129 distinct chart ASINs in the last 7 days, so full daily coverage would be ~130 Rainforest credits/day (~$1.30/day, ~$40/mo). Weekly coverage is ~$0.02/day. On-demand lazy fetch is 1 credit per unique stale-PDP click. Steve chose the hybrid.

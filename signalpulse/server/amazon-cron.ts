@@ -941,7 +941,7 @@ export async function runAsinSearchDiscovery(threshold = 0.6): Promise<{
 
           // Pass 2 — retry without the category filter when pass 1 turned up
           // no platform-matched result. Rainforest's category_id points to
-          // the *bestsellers* node (e.g. 20972781011 = PS5 Games Best-Sellers),
+          // the *bestsellers* node (e.g. 20972797011 = PS5 Games Best-Sellers),
           // which excludes pre-orders and brand-new titles with no sales
           // history. Without category we may see books/comics/movies too, but
           // isVideoGameSoftware + titleMentionsPlatform already reject those,

@@ -905,7 +905,14 @@ export type AmazonPlatformSlug = typeof AMAZON_PLATFORM_SLUGS[number];
 // Switch Games chart. UI opts to filter Switch results by SKU strings that
 // indicate a Switch 2 edition ("Nintendo Switch 2", "- Switch 2", etc.).
 export const AMAZON_CHART_NODES: Record<AmazonPlatformSlug, { name: string; url: string; nodeId: string }> = {
-  ps5:    { name: "PlayStation 5 Games",   nodeId: "20972781011", url: "https://www.amazon.com/Best-Sellers-Video-Games-PlayStation-5-Consoles-Games-Accessories/zgbs/videogames/20972781011/" },
+  // v3.40 (2026-09-08): switched from parent umbrella node 20972781011
+  // ("PlayStation 5 Consoles, Games & Accessories") to the games-only
+  // node 20972797011 ("PlayStation 5 Games"). The umbrella node's top-50
+  // is ~60% hardware/controllers/HDMI cables/etc., so after
+  // isVideoGameSoftware filtering only ~20 games survived per snapshot,
+  // while Xbox and Switch (already on games-only nodes) yielded ~48-50.
+  // This aligns PS5 leaderboard depth with the other two platforms.
+  ps5:    { name: "PlayStation 5 Games",   nodeId: "20972797011", url: "https://www.amazon.com/Best-Sellers-PlayStation-5-Games/zgbs/videogames/20972797011/" },
   xbox:   { name: "Xbox Series X|S Games", nodeId: "20972814011", url: "https://www.amazon.com/Best-Sellers-Xbox-Series-X-S-Games/zgbs/videogames/20972814011/" },
   switch: { name: "Nintendo Switch Games", nodeId: "16227133011", url: "https://www.amazon.com/Best-Sellers-Nintendo-Switch-Games/zgbs/videogames/16227133011/" },
 };
