@@ -977,6 +977,12 @@ export interface EventRow {
   days_until_start: number;
   is_active: boolean;
   is_past: boolean;
+  // Only populated for currently-live rows (see listEvents below) — the
+  // minimal game_code list routes.ts needs to fan out Steam revenue
+  // lookups per participating title for the event-level total-revenue
+  // enrichment. Never populated for upcoming/past rows, keeping the extra
+  // per-row hydration query bounded to the small live subset.
+  games?: { game_code: string }[];
 }
 
 export interface EventDetail extends EventRow {
@@ -1086,6 +1092,15 @@ export function listEvents(
     .prepare(sql)
     .all(...params, minTitles, ...orderByParams) as any[];
 
+  // Hydrate participating game_codes only for currently-live rows — the
+  // event-level Steam revenue enrichment (routes.ts) only ever applies to
+  // live events, so avoid an extra per-row query for the (usually much
+  // larger) upcoming/past sets.
+  const gameCodesStmt = sqlite.prepare(
+    `SELECT DISTINCT game_code FROM campaigns
+     WHERE calendar = ? AND program = ? AND platform = ? AND start_date = ? AND end_date = ?`,
+  );
+
   return rows.map((r) => {
     const daysUntil = Math.round(
       (Date.parse(r.start_date + "T00:00:00Z") -
@@ -1094,7 +1109,7 @@ export function listEvents(
     );
     const isLive = r.start_date <= today && r.end_date >= today;
     const isPast = r.end_date < today;
-    return {
+    const row: EventRow = {
       event_key: eventKey(calendar, r.program, r.platform, r.start_date, r.end_date),
       program: r.program,
       platform: r.platform,
@@ -1107,6 +1122,17 @@ export function listEvents(
       is_active: isLive,
       is_past: isPast,
     };
+    if (isLive) {
+      const codes = gameCodesStmt.all(
+        calendar,
+        r.program,
+        r.platform,
+        r.start_date,
+        r.end_date,
+      ) as { game_code: string }[];
+      row.games = codes;
+    }
+    return row;
   });
 }
 

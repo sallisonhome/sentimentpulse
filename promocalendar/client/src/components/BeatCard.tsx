@@ -137,8 +137,54 @@ export function MultiBeatCard({ beat }: { beat: MultiTitleBeat }) {
         <span className="chip discount">
           {pct(beat.min_discount_pct)} – {pct(beat.max_discount_pct)}
         </span>
+        <EventTotalRevenueChip event={beat} />
       </div>
       {gamesLine && <div className="games-line">{gamesLine}</div>}
     </div>
+  );
+}
+
+/**
+ * Combined Steam net revenue across every participating title in a
+ * multi-title EVENT card (as opposed to SteamRevenueChip above, which is
+ * per-title). Server-side aggregation from SignalPulse; see
+ * server/routes.ts sumSteamRevenueForEvent for the fan-out + sum and
+ * server/signalpulse-client.ts for the underlying per-title fetch/cache.
+ *
+ * Works against any object shape carrying the same field names
+ * (EventSummary, EventDetail, MultiTitleBeat all qualify), so this one
+ * component covers every event-level card surface.
+ *
+ * Same anti-false-zero discipline as SteamRevenueChip: renders nothing
+ * unless the event is a currently-live Steam event AND SignalPulse has
+ * reported data for at least one participating title.
+ */
+export function EventTotalRevenueChip({
+  event,
+}: {
+  event: {
+    platform: string;
+    is_active: boolean;
+    title_count: number;
+    steam_total_net_revenue_usd?: number | null;
+    steam_titles_covered?: number | null;
+  };
+}) {
+  if (event.platform !== "Steam" || !event.is_active) return null;
+  const net = event.steam_total_net_revenue_usd;
+  const covered = event.steam_titles_covered ?? 0;
+  if (net == null || covered === 0) return null;
+  const coverageNote =
+    event.title_count && covered < event.title_count
+      ? ` — data for ${covered} of ${event.title_count} participating titles so far`
+      : ` across all ${event.title_count} participating title${event.title_count === 1 ? "" : "s"}`;
+  return (
+    <span
+      className="chip steam-rev"
+      title={`Combined Steam net revenue for this event${coverageNote}. Source: SignalPulse Steam Revenue Leaderboard.`}
+    >
+      <span className="steam-rev-label">Total Rev</span>
+      {fmtUsdCompact(net)}
+    </span>
   );
 }

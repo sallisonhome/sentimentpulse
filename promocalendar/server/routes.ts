@@ -34,6 +34,64 @@ import { steamAppIdForCode } from "./signalpulse-map.js";
 import { getSteamRevenueForWindow } from "./signalpulse-client.js";
 import { syncSteamPlsEvents } from "./sync-pls-events.js";
 
+/**
+ * Event-level Steam revenue total: sums per-title net/gross revenue across
+ * every participating title in a multi-title event's Steam-mapped catalog,
+ * for the window `since`..`until`. Reuses the same per-title
+ * getSteamRevenueForWindow call (and its 60s cache) as the /live-now
+ * per-title enrichment — no new SignalPulse endpoint needed.
+ *
+ * Only called for currently-live Steam events (bounded fanout — realistically
+ * a handful of concurrent multi-title sales at most, and each title lookup
+ * is itself cached).
+ *
+ * Returns null (omit fields entirely) when the event isn't Steam, or when
+ * SignalPulse has no data yet for ANY participating title — never render a
+ * fake $0 total for a data lag, same discipline as the per-title chip.
+ */
+async function sumSteamRevenueForEvent(
+  platform: string,
+  games: { game_code: string }[],
+  since: string,
+  until: string,
+): Promise<{
+  steam_total_net_revenue_usd: number;
+  steam_total_gross_revenue_usd: number;
+  steam_total_days_covered: number;
+  steam_titles_covered: number;
+} | null> {
+  if (platform !== "Steam" || games.length === 0) return null;
+  const appids = games
+    .map((g) => steamAppIdForCode(g.game_code))
+    .filter((id): id is number => id != null);
+  if (appids.length === 0) return null;
+
+  const results = await Promise.all(
+    appids.map((id) =>
+      getSteamRevenueForWindow(id, since, until).catch(() => null),
+    ),
+  );
+
+  let net = 0;
+  let gross = 0;
+  let maxDaysCovered = 0;
+  let titlesCovered = 0;
+  for (const r of results) {
+    if (!r || r.days_covered === 0) continue;
+    net += r.net_revenue_usd;
+    gross += r.gross_revenue_usd;
+    maxDaysCovered = Math.max(maxDaysCovered, r.days_covered);
+    titlesCovered += 1;
+  }
+  if (titlesCovered === 0) return null;
+  return {
+    steam_total_net_revenue_usd: net,
+    steam_total_gross_revenue_usd: gross,
+    steam_total_days_covered: maxDaysCovered,
+    steam_titles_covered: titlesCovered,
+  };
+}
+
 // Excel files can be big. 20 MB ceiling.
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -390,7 +448,7 @@ export function registerRoutes(app: Express): void {
   // ?min_titles=N (default 2)
   // ?from=YYYY-MM-DD, ?to=YYYY-MM-DD optional overlap window
   // ?today=YYYY-MM-DD demo/testing override
-  app.get("/api/:calendar/events", (req, res) => {
+  app.get("/api/:calendar/events", async (req, res) => {
     const cal = requireCalendar(req, res);
     if (!cal) return;
     const today = serverToday((req.query.today as string) || null);
@@ -408,21 +466,61 @@ export function registerRoutes(app: Express): void {
       from: (req.query.from as string) || undefined,
       to: (req.query.to as string) || undefined,
     });
+
+    // Event-level total-revenue enrichment: only live rows carry a `games`
+    // list (see listEvents), so this only ever fans out for the small
+    // currently-live subset — never for the (much larger) upcoming/past
+    // sets. Never fails the request on SignalPulse errors.
+    const enriched = await Promise.all(
+      events.map(async (e) => {
+        const { games, ...summary } = e;
+        if (!e.is_active || !games) return summary;
+        try {
+          const totals = await sumSteamRevenueForEvent(
+            e.platform,
+            games,
+            e.start_date,
+            today,
+          );
+          return totals ? { ...summary, ...totals } : summary;
+        } catch {
+          return summary;
+        }
+      }),
+    );
+
     res.json({
       calendar: cal,
       today,
       when,
-      count: events.length,
-      events,
+      count: enriched.length,
+      events: enriched,
     });
   });
 
-  app.get("/api/:calendar/events/:event_key", (req, res) => {
+  app.get("/api/:calendar/events/:event_key", async (req, res) => {
     const cal = requireCalendar(req, res);
     if (!cal) return;
     const today = serverToday((req.query.today as string) || null);
     const detail = getEvent(cal, req.params.event_key, today);
     if (!detail) return res.status(404).json({ error: "event not found" });
-    res.json({ calendar: cal, today, event: detail });
+
+    let enrichedDetail: typeof detail = detail;
+    if (detail.is_active) {
+      try {
+        const totals = await sumSteamRevenueForEvent(
+          detail.platform,
+          detail.games,
+          detail.start_date,
+          today,
+        );
+        if (totals) enrichedDetail = { ...detail, ...totals };
+      } catch {
+        // Belt-and-suspenders — sumSteamRevenueForEvent already swallows
+        // per-title errors internally.
+      }
+    }
+
+    res.json({ calendar: cal, today, event: enrichedDetail });
   });
 }

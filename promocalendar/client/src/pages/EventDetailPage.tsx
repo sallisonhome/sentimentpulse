@@ -4,6 +4,7 @@ import { useAsync } from "../lib/hooks";
 import { getToday } from "../lib/today";
 import { PlatformChip, StatusChip } from "../components/chips";
 import { Skeleton, ErrorBanner } from "../components/misc";
+import { fmtUsdCompact } from "../components/BeatCard";
 import { fmtRange, fmtDay, pct, durationDays, parseISO } from "../lib/format";
 
 export default function EventDetailPage({ eventKey }: { eventKey: string }) {
@@ -66,9 +67,27 @@ function EventBody({ ev, today }: { ev: import("../lib/api").EventDetail; today:
                 : `Ended ${Math.abs(ev.days_until_start)}d ago`}
             {" · anchored to server date "} {today}
           </div>
-          <div className="discsum">
-            <div className="lbl">Overall discount range</div>
-            <div className="val">{pct(ev.min_discount_pct)} – {pct(ev.max_discount_pct)}</div>
+          <div className="kpi-row">
+            {ev.is_active &&
+              ev.platform === "Steam" &&
+              ev.steam_total_net_revenue_usd != null &&
+              (ev.steam_titles_covered ?? 0) > 0 && (
+                <div
+                  className="discsum rev"
+                  title={
+                    (ev.steam_titles_covered ?? 0) < ev.title_count
+                      ? `Data for ${ev.steam_titles_covered} of ${ev.title_count} participating titles so far. Source: SignalPulse Steam Revenue Leaderboard.`
+                      : `Across all ${ev.title_count} participating title${ev.title_count === 1 ? "" : "s"}. Source: SignalPulse Steam Revenue Leaderboard.`
+                  }
+                >
+                  <div className="lbl">Total revenue</div>
+                  <div className="val">{fmtUsdCompact(ev.steam_total_net_revenue_usd)}</div>
+                </div>
+              )}
+            <div className="discsum">
+              <div className="lbl">Overall discount range</div>
+              <div className="val">{pct(ev.min_discount_pct)} – {pct(ev.max_discount_pct)}</div>
+            </div>
           </div>
           <div className="progress">
             <div className="bar"><div className="fill" style={{ width: `${pctDone.toFixed(0)}%` }} /></div>

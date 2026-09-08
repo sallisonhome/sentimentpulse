@@ -109,6 +109,14 @@ export interface MultiTitleBeat {
   days_until_start: number;
   is_active: boolean;
   games: Array<{ game_code: string; game_label: string }>;
+  // Not currently populated — this endpoint only returns strictly-future
+  // events (see server nextUpMultiTitle), which are never is_active, so the
+  // event-level revenue chip guarded on is_active never fires here. Typed
+  // for forward compatibility if that ever changes.
+  steam_total_net_revenue_usd?: number | null;
+  steam_total_gross_revenue_usd?: number | null;
+  steam_total_days_covered?: number | null;
+  steam_titles_covered?: number | null;
 }
 
 export interface EventSummary {
@@ -123,6 +131,16 @@ export interface EventSummary {
   days_until_start: number;
   is_active: boolean;
   is_past: boolean;
+  // Event-level Steam revenue total — sum of per-title net/gross revenue
+  // across every participating title, from the event's start_date through
+  // today. Only ever present when is_active is true AND SignalPulse has
+  // data for at least one participating title (see server/routes.ts
+  // sumSteamRevenueForEvent). steam_titles_covered lets the UI note partial
+  // coverage ("data for 3 of 5 titles") when not every title has reported.
+  steam_total_net_revenue_usd?: number | null;
+  steam_total_gross_revenue_usd?: number | null;
+  steam_total_days_covered?: number | null;
+  steam_titles_covered?: number | null;
 }
 
 export interface EventDetail extends EventSummary {
