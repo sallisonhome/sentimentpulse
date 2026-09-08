@@ -441,6 +441,124 @@ export const insertIgdbHypeSchema = createInsertSchema(igdbHypeDaily).omit({
 export type InsertIgdbHype = z.infer<typeof insertIgdbHypeSchema>;
 export type IgdbHypeDaily = typeof igdbHypeDaily.$inferSelect;
 
+// ─── Saber Steam CCU Leaderboard (v1.0, 2026-09-08) ─────────────────────────
+//
+// Ported approach/design from howmanyareplaying.com's Steam CCU leaderboard
+// (backend/src/scheduler/pollLive.js + backend/src/routes/history.js),
+// scoped to only Saber's released titles (steamAppId set AND releaseDate <=
+// today — same predicate as getRevenueEligibleSteamTitles() in
+// server/leaderboards.ts, minus the prepurchase-active branch). Polled every
+// 60 minutes by server/ccu-poll.ts.
+
+// Hourly (or finer, per actual poll cadence) live CCU reading per title.
+// `capturedAt` is a full ISO-8601 UTC timestamp (not just a date) so the
+// peak-hours-of-day chart can bucket by hour.
+export const ccuSnapshotsSteam = sqliteTable("ccu_snapshots_steam", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  capturedAt: text("captured_at").notNull(), // ISO-8601 UTC timestamp
+  ccu: integer("ccu").notNull(),
+  // Steam-wide GetGamesByConcurrentPlayers rank at capture time (1-based).
+  // Null when the title wasn't in that poll's top-100 (a real API
+  // limitation for niche titles — render as "unranked", not a bug). Stored
+  // per-snapshot (not a separate table) since rank is only ever meaningful
+  // as-of a specific poll timestamp — same cadence as ccu itself.
+  globalRank: integer("global_rank"),
+}, (table) => ({
+  byProductCapturedAt: index("ccu_snapshots_steam_product_captured_idx").on(table.productId, table.capturedAt),
+}));
+
+export const insertCcuSnapshotSteamSchema = createInsertSchema(ccuSnapshotsSteam).omit({ id: true });
+export type InsertCcuSnapshotSteam = z.infer<typeof insertCcuSnapshotSteamSchema>;
+export type CcuSnapshotSteam = typeof ccuSnapshotsSteam.$inferSelect;
+
+// One row per (product, calendar date) — GREATEST-wins rollup of that day's
+// snapshots, mirroring howmanyareplaying's daily_peaks table. Powers the
+// week/month/3m/6m/1y/all range views without re-scanning raw snapshots.
+export const dailyPeaksSteamCcu = sqliteTable("daily_peaks_steam_ccu", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  peakDate: text("peak_date").notNull(), // YYYY-MM-DD
+  peakCcu: integer("peak_ccu").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => ({
+  uniqueProductDate: uniqueIndex("daily_peaks_steam_ccu_unique").on(table.productId, table.peakDate),
+}));
+
+export const insertDailyPeakSteamCcuSchema = createInsertSchema(dailyPeaksSteamCcu).omit({ id: true, createdAt: true });
+export type InsertDailyPeakSteamCcu = z.infer<typeof insertDailyPeakSteamCcuSchema>;
+export type DailyPeakSteamCcu = typeof dailyPeaksSteamCcu.$inferSelect;
+
+// Single-row (id=1) job-state tracker for the 60-minute poll, following the
+// same shape as steamworksSessions' auto-refresh columns. `lastPolledAt`
+// drives the leaderboard's countdown timer (mirrors howmanyareplaying's
+// CountdownTimer, which ticks down from `lastUpdatedAt` to the next poll).
+export const ccuPollState = sqliteTable("ccu_poll_state", {
+  id: integer("id").primaryKey(),
+  lastPolledAt: text("last_polled_at"),
+  lastPollResult: text("last_poll_result"), // "success" | "error: <message>"
+  titlesPolled: integer("titles_polled"),
+  updatedAt: text("updated_at"),
+});
+
+export type CcuPollState = typeof ccuPollState.$inferSelect;
+
+// One row per product — cached IGDB media (screenshots/videos/summary),
+// refreshed daily alongside the existing hype ingestion. Ported field list
+// from howmanyareplaying/backend/src/services/igdbApi.js
+// (screenshots.image_id, videos.video_id, summary), same
+// external_game_source=1 Steam-appid matching rule as server/igdb.ts's
+// existing fetchIgdbHypesBySteamAppids.
+export const igdbMediaCache = sqliteTable("igdb_media_cache", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }).unique(),
+  igdbId: integer("igdb_id"),
+  summary: text("summary"),
+  screenshotIds: text("screenshot_ids"), // JSON string[] of IGDB image_ids
+  videoIds: text("video_ids"), // JSON string[] of YouTube video_ids
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const insertIgdbMediaCacheSchema = createInsertSchema(igdbMediaCache).omit({ id: true });
+export type InsertIgdbMediaCache = z.infer<typeof insertIgdbMediaCacheSchema>;
+export type IgdbMediaCache = typeof igdbMediaCache.$inferSelect;
+
+// "Top 5 Steam crossover games" — ported v5 algorithm (Valve morelike +
+// SteamHunters achievement-completion scoring + franchise dedupe + MMR
+// selection) from howmanyareplaying/backend/src/services/steamApi.js
+// (fetchRelatedGames) and its monthly precompute cron
+// (backend/src/scheduler/pollRelatedGames.js). `position` is 1-based (1-5).
+export const relatedGamesSteamHunters = sqliteTable("related_games_steamhunters", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  relatedAppid: integer("related_appid").notNull(),
+  relatedName: text("related_name").notNull(),
+  headerImage: text("header_image"),
+  playerCount: integer("player_count"), // SteamHunters achievement-hunter panel size
+  tags: text("tags"), // JSON string[] of up to 5 tag names
+  computedAt: text("computed_at").notNull(),
+}, (table) => ({
+  uniqueProductPosition: uniqueIndex("related_games_steamhunters_unique").on(table.productId, table.position),
+}));
+
+export const insertRelatedGamesSteamHuntersSchema = createInsertSchema(relatedGamesSteamHunters).omit({ id: true });
+export type InsertRelatedGamesSteamHunters = z.infer<typeof insertRelatedGamesSteamHuntersSchema>;
+export type RelatedGamesSteamHunters = typeof relatedGamesSteamHunters.$inferSelect;
+
+// Single-row (id=1) meta tracker for the monthly related-games precompute,
+// mirroring howmanyareplaying's related_games_meta table.
+export const relatedGamesSteamHuntersMeta = sqliteTable("related_games_steamhunters_meta", {
+  id: integer("id").primaryKey(),
+  lastRefreshStartedAt: text("last_refresh_started_at"),
+  lastRefreshCompletedAt: text("last_refresh_completed_at"),
+  nextRefreshAt: text("next_refresh_at"),
+  titlesProcessed: integer("titles_processed"),
+  titlesSkipped: integer("titles_skipped"),
+});
+
+export type RelatedGamesSteamHuntersMeta = typeof relatedGamesSteamHuntersMeta.$inferSelect;
+
 // ─── PS5 Wishlist Daily ──────────────────────────────────────────────────────
 
 export const ps5WishlistDaily = sqliteTable("ps5_wishlist_daily", {

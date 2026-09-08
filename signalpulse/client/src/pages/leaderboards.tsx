@@ -25,12 +25,14 @@ import {
   Gamepad2,
   LineChart,
   ShoppingBag,
+  Activity,
 } from "lucide-react";
 import { LeaderboardBanner } from "@/components/leaderboard-banner";
 import { ChartDetailModal } from "@/components/chart-detail-modal";
 import { CompareChartModal, type CompareCandidate } from "@/components/compare-chart-modal";
 import { OnPromoBadge } from "@/components/OnPromoBadge";
-import { formatNumber, formatCurrency } from "@/lib/utils";
+import { CcuCountdownTimer } from "@/components/ccu-countdown-timer";
+import { formatNumber, formatCurrency, formatDate, formatRelativeTime } from "@/lib/utils";
 
 // Shared shape for the /api/onpromo/all response — used by both boards to
 // render an OnPromoBadge under each row's game title. Fetched once per
@@ -107,6 +109,29 @@ interface RevenueLeaderboardKpis {
   biggestPositive30dRevenueLift: RevenueLeaderboardMover | null;
 }
 
+// Saber Steam CCU Leaderboard (4th tab). Field names mirror
+// `CcuLeaderboardRow` / `CcuPollStateSummary` in server/leaderboards.ts
+// exactly — see that file for the authoritative shape.
+interface CcuLeaderboardRow {
+  productId: number;
+  title: string;
+  steamAppId: string;
+  headerImage: string;
+  currentCcu: number | null;
+  globalRank: number | null;
+  peak24h: number | null;
+  allTimePeak: number | null;
+  allTimePeakDate: string | null;
+  lastCapturedAt: string | null;
+}
+
+interface CcuPollStateSummary {
+  lastPolledAt: string | null;
+  lastPollResult: string | null;
+  titlesPolled: number | null;
+  nextPollAt: string | null;
+}
+
 type SortKey =
   | "wishlistTotal"
   | "wishlistDelta1d"
@@ -131,6 +156,8 @@ type RevenueSortKey =
   | "revenue30d"
   | "revenueDelta30dUsd"
   | "revenueDelta30dPct";
+
+type CcuSortKey = "globalRank" | "currentCcu" | "peak24h" | "allTimePeak" | "lastCapturedAt";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -682,9 +709,10 @@ export default function Leaderboards() {
   const search = useSearch();
   const params = new URLSearchParams(search);
   const boardParam = params.get("board");
-  const board: "wishlist" | "revenue" | "saber-amazon" =
+  const board: "wishlist" | "revenue" | "saber-amazon" | "ccu" =
     boardParam === "revenue" ? "revenue"
     : boardParam === "saber-amazon" ? "saber-amazon"
+    : boardParam === "ccu" ? "ccu"
     : "wishlist";
   // Which delta window to show inside the platform pill on the Saber Amazon
   // leaderboard. Persisted as component state (does not change the URL).
@@ -704,6 +732,10 @@ export default function Leaderboards() {
   });
   const [chartModal, setChartModal] = useState<{ productId: number; title: string; dataType: "steamWishlist" | "steamRevenueDaily" } | null>(null);
   const [compareOpen, setCompareOpen] = useState(false);
+  const [ccuSort, setCcuSort] = useState<{ key: CcuSortKey; dir: "asc" | "desc" }>({
+    key: "currentCcu",
+    dir: "desc",
+  });
 
   const { data: rows, isLoading: rowsLoading } = useQuery<WishlistLeaderboardRow[]>({
     queryKey: ["/api/leaderboards/wishlist"],
@@ -723,6 +755,19 @@ export default function Leaderboards() {
   const { data: revenueKpis, isLoading: revenueKpisLoading } = useQuery<RevenueLeaderboardKpis>({
     queryKey: ["/api/leaderboards/revenue/kpis"],
     enabled: board === "revenue",
+  });
+
+  const { data: ccuRows, isLoading: ccuRowsLoading, refetch: refetchCcuRows } = useQuery<CcuLeaderboardRow[]>({
+    queryKey: ["/api/leaderboards/ccu"],
+    enabled: board === "ccu",
+  });
+
+  const { data: ccuPollState, refetch: refetchCcuPollState } = useQuery<CcuPollStateSummary>({
+    queryKey: ["/api/leaderboards/ccu/poll-state"],
+    enabled: board === "ccu",
+    // Belt-and-suspenders alongside the countdown timer's own onRefetch —
+    // catches the case where the tab was backgrounded through a poll tick.
+    refetchInterval: board === "ccu" ? 60_000 : false,
   });
 
   // Cross-app "On Promo" badges. One shared query for BOTH boards — the
@@ -783,6 +828,49 @@ export default function Leaderboards() {
     );
   }
 
+  const sortedCcuRows = useMemo(() => {
+    if (!ccuRows) return [];
+    const copy = [...ccuRows];
+    copy.sort((a, b) => {
+      const av = a[ccuSort.key];
+      const bv = b[ccuSort.key];
+      // lastCapturedAt is an ISO string — everything else is numeric.
+      if (ccuSort.key === "lastCapturedAt") {
+        const at = av ? new Date(av as string).getTime() : null;
+        const bt = bv ? new Date(bv as string).getTime() : null;
+        if (at == null && bt == null) return 0;
+        if (at == null) return 1;
+        if (bt == null) return -1;
+        return ccuSort.dir === "desc" ? bt - at : at - bt;
+      }
+      const an = av as number | null;
+      const bn = bv as number | null;
+      if (an == null && bn == null) return 0;
+      if (an == null) return 1;
+      if (bn == null) return -1;
+      // globalRank: lower is better, so "desc" (the default sort direction)
+      // should still mean "best rank first" — invert the comparison.
+      if (ccuSort.key === "globalRank") {
+        return ccuSort.dir === "desc" ? an - bn : bn - an;
+      }
+      return ccuSort.dir === "desc" ? bn - an : an - bn;
+    });
+    return copy;
+  }, [ccuRows, ccuSort]);
+
+  function handleCcuSort(key: CcuSortKey) {
+    setCcuSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "desc" ? "asc" : "desc" }
+        : { key, dir: "desc" },
+    );
+  }
+
+  function handleCcuPollComplete() {
+    refetchCcuRows();
+    refetchCcuPollState();
+  }
+
   function handleTabChange(value: string) {
     navigate(`/?board=${value}`);
   }
@@ -790,6 +878,12 @@ export default function Leaderboards() {
   const compareCandidates: CompareCandidate[] = useMemo(() => {
     if (board === "revenue") {
       return (revenueRows ?? []).map((r) => ({ productId: r.productId, title: r.title }));
+    }
+    if (board === "ccu" || board === "saber-amazon") {
+      // CompareChartModal only knows the wishlist/revenue timeseries shapes
+      // — leave candidates empty so the "Compare Titles" button disables
+      // itself, matching the existing Saber Amazon behavior.
+      return [];
     }
     return (rows ?? []).map((r) => ({ productId: r.productId, title: r.title }));
   }, [board, rows, revenueRows]);
@@ -800,6 +894,7 @@ export default function Leaderboards() {
         title={
           board === "wishlist" ? "Pre-Release Steam Wishlist Leaderboard"
           : board === "revenue" ? "Steam Revenue Leaderboard"
+          : board === "ccu" ? "Saber Steam CCU Leaderboard"
           : "Saber Amazon Leaderboard"
         }
         subtitle={
@@ -807,6 +902,8 @@ export default function Leaderboards() {
             ? "Daily-refreshed wishlist, follower, rank, and hype tracking for every unreleased Saber title on Steam"
             : board === "revenue"
             ? "Daily-refreshed prepurchase and post-release sales for every Saber title on Steam"
+            : board === "ccu"
+            ? "Hourly-refreshed concurrent player counts and global Steam rank for every released Saber title"
             : "Daily Amazon retail chart position for every Saber title across PS5, Xbox, and Nintendo Switch"
         }
       />
@@ -822,23 +919,32 @@ export default function Leaderboards() {
               <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
               Revenue Leaderboard
             </TabsTrigger>
+            <TabsTrigger value="ccu" data-testid="tab-ccu">
+              <Activity className="h-3.5 w-3.5 mr-1.5" />
+              Saber Steam CCU Leaderboard
+            </TabsTrigger>
             <TabsTrigger value="saber-amazon" data-testid="tab-saber-amazon">
               <ShoppingBag className="h-3.5 w-3.5 mr-1.5" />
               Saber Amazon Leaderboard
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-8 text-xs gap-1.5"
-          disabled={compareCandidates.length === 0}
-          onClick={() => setCompareOpen(true)}
-          data-testid="button-open-compare"
-        >
-          <LineChart className="h-3.5 w-3.5" />
-          Compare Titles
-        </Button>
+        <div className="flex items-center gap-4">
+          {board === "ccu" && (
+            <CcuCountdownTimer nextPollAt={ccuPollState?.nextPollAt ?? null} onRefetch={handleCcuPollComplete} />
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            disabled={compareCandidates.length === 0}
+            onClick={() => setCompareOpen(true)}
+            data-testid="button-open-compare"
+          >
+            <LineChart className="h-3.5 w-3.5" />
+            Compare Titles
+          </Button>
+        </div>
       </div>
 
       {board === "saber-amazon" ? (
@@ -846,6 +952,74 @@ export default function Leaderboards() {
           delta={amazonDelta}
           onDeltaChange={setAmazonDelta}
         />
+      ) : board === "ccu" ? (
+        ccuRowsLoading ? (
+          <div className="space-y-3">
+            <Skeleton className="h-64 w-full rounded-xl" />
+          </div>
+        ) : !ccuRows || ccuRows.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <Activity className="h-12 w-12 text-muted-foreground/40 mb-4" />
+            <h2 className="text-sm font-medium text-muted-foreground">No CCU-tracked titles yet</h2>
+            <p className="text-xs text-muted-foreground/70 mt-1">
+              Titles start tracking concurrent players here once they release or open prepurchase on Steam.
+            </p>
+          </div>
+        ) : (
+          <Card className="overflow-hidden mb-6">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[260px]">Game Title</TableHead>
+                  <SortableHead label="Global Rank" sortKey="globalRank" activeSort={ccuSort} onSort={handleCcuSort} />
+                  <SortableHead label="Current CCU" sortKey="currentCcu" activeSort={ccuSort} onSort={handleCcuSort} />
+                  <SortableHead label="24h Peak" sortKey="peak24h" activeSort={ccuSort} onSort={handleCcuSort} />
+                  <SortableHead label="All-Time Peak" sortKey="allTimePeak" activeSort={ccuSort} onSort={handleCcuSort} />
+                  <SortableHead label="Last Captured" sortKey="lastCapturedAt" activeSort={ccuSort} onSort={handleCcuSort} />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedCcuRows.map((row) => (
+                  <TableRow key={row.productId} data-testid={`row-ccu-leaderboard-${row.productId}`}>
+                    <TableCell>
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-3">
+                          <GameKeyart headerImage={row.headerImage} title={row.title} />
+                          <span className="font-medium text-sm truncate">{row.title}</span>
+                        </div>
+                        {onPromo?.[row.steamAppId]?.length ? (
+                          <OnPromoBadge
+                            promos={onPromo[row.steamAppId]}
+                            className="w-fit"
+                            testId={`badge-on-promo-ccu-${row.productId}`}
+                          />
+                        ) : null}
+                      </div>
+                    </TableCell>
+                    <TableCell className="tabular-nums">
+                      {row.globalRank == null ? <span className="text-muted-foreground">—</span> : `#${formatNumber(row.globalRank)}`}
+                    </TableCell>
+                    <TableCell className="tabular-nums font-medium">{formatNumber(row.currentCcu)}</TableCell>
+                    <TableCell className="tabular-nums">{formatNumber(row.peak24h)}</TableCell>
+                    <TableCell className="tabular-nums">
+                      {row.allTimePeak == null ? (
+                        <span className="text-muted-foreground">—</span>
+                      ) : (
+                        <div className="flex flex-col">
+                          <span>{formatNumber(row.allTimePeak)}</span>
+                          {row.allTimePeakDate && (
+                            <span className="text-xs text-muted-foreground">{formatDate(row.allTimePeakDate)}</span>
+                          )}
+                        </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{formatRelativeTime(row.lastCapturedAt)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </Card>
+        )
       ) : board === "revenue" ? (
         revenueRowsLoading ? (
           <div className="space-y-3">
@@ -1088,7 +1262,7 @@ export default function Leaderboards() {
       {/* CompareChartModal only supports steam wishlist/revenue boards —
           on the Amazon tab we hide it. Passing a narrowed board keeps the
           existing prop contract intact. */}
-      {board !== "saber-amazon" && (
+      {board !== "saber-amazon" && board !== "ccu" && (
         <CompareChartModal
           open={compareOpen}
           onOpenChange={setCompareOpen}

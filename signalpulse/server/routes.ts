@@ -20,7 +20,14 @@ import {
   getWishlistLeaderboardKpis,
   getRevenueLeaderboardRows,
   getRevenueLeaderboardKpis,
+  getCcuLeaderboardRows,
+  getCcuPollStateSummary,
+  getCcuKpiCard,
 } from "./leaderboards";
+import { getCcuHistory, getCcuHourly, isValidCcuHistoryRange } from "./ccu-history";
+import { getRelatedGamesSteamHunters } from "./ccu-related";
+import { pollSaberSteamCcu } from "./ccu-poll";
+import { getIgdbMediaForProduct } from "./igdb";
 import { sendWeeklyLeaderboardDigest, renderWeeklyDigestHtml } from "./leaderboard-digest";
 import { getHeldDigestWeek, getHeldDigestMissing } from "./leaderboard-digest-weekly";
 import express from "express";
@@ -2464,6 +2471,120 @@ export async function registerRoutes(
       const rows = getRevenueLeaderboardRows();
       const kpis = getRevenueLeaderboardKpis(rows);
       res.json(kpis);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── Saber Steam CCU Leaderboard (Phase 6) ───────────────────────────────────
+  // No backfill possible via any Steam/Steamworks API (confirmed against
+  // ISteamUserStats/ISteamChartsService docs -- see chat) -- history only
+  // accumulates forward from whichever moment the 60-min poll first ran for
+  // a title, exactly like every other CCU tracker (SteamDB included).
+
+  app.get("/api/leaderboards/ccu", (_req, res) => {
+    try {
+      const rows = getCcuLeaderboardRows();
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/leaderboards/ccu/poll-state", (_req, res) => {
+    try {
+      const state = getCcuPollStateSummary();
+      res.json(state);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Manual "refresh now" for the Settings page -- runs the exact same
+  // pollSaberSteamCcu() the hourly scheduler calls (fetchTopGames +
+  // per-appid GetNumberOfCurrentPlayers, snapshot + daily-peak upsert).
+  // Guarded so a manual click can't race the scheduled top-of-hour tick.
+  let ccuPollInFlight = false;
+  app.post("/api/leaderboards/ccu/refresh", async (_req, res) => {
+    if (ccuPollInFlight) {
+      return res.status(409).json({
+        error: "CCU poll already in progress",
+        message: "Another CCU poll (manual or scheduled) is currently running. Retry in a moment.",
+      });
+    }
+    ccuPollInFlight = true;
+    try {
+      await pollSaberSteamCcu();
+      const state = getCcuPollStateSummary();
+      const rows = getCcuLeaderboardRows();
+      const hasError = state.lastPollResult?.startsWith("error") ?? false;
+      res.status(hasError ? 502 : 200).json({
+        message: hasError ? `CCU refresh failed: ${state.lastPollResult}` : `CCU refresh complete — ${state.titlesPolled ?? 0} title(s) polled`,
+        pollState: state,
+        leaderboardRowCount: rows.length,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    } finally {
+      ccuPollInFlight = false;
+    }
+  });
+
+  app.get("/api/products/:id/ccu/kpi", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const product = storage.getProduct(id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      res.json(getCcuKpiCard(id));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/products/:id/ccu/history", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const product = storage.getProduct(id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      const range = typeof req.query.range === "string" ? req.query.range : "month";
+      if (!isValidCcuHistoryRange(range)) {
+        return res.status(400).json({ error: "Invalid range. Expected one of: day, week, month, 3m, 6m, 1y, all" });
+      }
+      res.json(getCcuHistory(id, range));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/products/:id/ccu/hourly", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const product = storage.getProduct(id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      res.json(getCcuHourly(id));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/products/:id/ccu/media", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const product = storage.getProduct(id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      const media = await getIgdbMediaForProduct(id);
+      res.json(media);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get("/api/products/:id/ccu/related", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const product = storage.getProduct(id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      res.json(getRelatedGamesSteamHunters(id));
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

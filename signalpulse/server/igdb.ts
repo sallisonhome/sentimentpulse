@@ -138,6 +138,9 @@ function backoffFor429(res: Response, attempt: number): number {
 interface IgdbGameRow {
   id: number;
   hypes?: number;
+  summary?: string;
+  screenshots?: { image_id?: string }[];
+  videos?: { video_id?: string }[];
   external_games?: { uid?: string; category?: number; external_game_source?: number }[];
 }
 
@@ -265,6 +268,81 @@ async function fetchIgdbHypesViaHmap(steamAppids: number[]): Promise<Map<number,
 }
 
 // ---------------------------------------------------------------------------
+// Media fetch (Saber Steam CCU Leaderboard PDP — v1.0, 2026-09-08)
+//
+// Ported field list from howmanyareplaying/backend/src/services/igdbApi.js
+// (screenshots.image_id, videos.video_id, summary). Same
+// external_game_source=1 Steam-match rule as the hype fetcher above. No
+// HMAP fallback — media is a PDP enhancement, not core leaderboard data, so
+// when direct IGDB isn't configured this just returns an empty map and the
+// PDP renders without the media carousel.
+// ---------------------------------------------------------------------------
+
+export interface IgdbMediaResult {
+  igdbId: number;
+  summary: string | null;
+  screenshotIds: string[];
+  videoIds: string[];
+}
+
+async function fetchOneMediaBatchDirect(appids: number[]): Promise<Map<number, IgdbMediaResult>> {
+  const quoted = appids.map((id) => `"${id}"`).join(",");
+  const query =
+    `fields id,summary,screenshots.image_id,videos.video_id,external_games.uid,external_games.category,external_games.external_game_source;` +
+    ` where external_games.uid = (${quoted}) & external_games.external_game_source = ${IGDB_STEAM_EXTERNAL_SOURCE};` +
+    ` limit 500;`;
+
+  const rows = await postGames(query);
+  const map = new Map<number, IgdbMediaResult>();
+
+  for (const row of rows) {
+    const externalSteam = (row.external_games || []).find(
+      (x) => (x.external_game_source === IGDB_STEAM_EXTERNAL_SOURCE || x.category === IGDB_STEAM_EXTERNAL_SOURCE) && x.uid,
+    );
+    if (!externalSteam?.uid) continue;
+    const appid = Number.parseInt(externalSteam.uid, 10);
+    if (!Number.isInteger(appid)) continue;
+
+    map.set(appid, {
+      igdbId: row.id,
+      summary: typeof row.summary === "string" && row.summary.trim() ? row.summary : null,
+      screenshotIds: (row.screenshots || []).map((s) => s.image_id).filter((x): x is string => !!x),
+      videoIds: (row.videos || []).map((v) => v.video_id).filter((x): x is string => !!x),
+    });
+  }
+  return map;
+}
+
+/**
+ * Fetch IGDB media (summary + screenshot/video ids) for a list of Steam
+ * appids. Returns a Map<steamAppid, IgdbMediaResult>; an appid absent from
+ * the map means no IGDB/Steam match was found, or direct IGDB credentials
+ * are not configured. Batches at IGDB_BATCH_SIZE like the hype fetcher.
+ */
+export async function fetchIgdbMediaBySteamAppids(steamAppids: number[]): Promise<Map<number, IgdbMediaResult>> {
+  const uniq = Array.from(new Set(steamAppids.filter((n) => Number.isInteger(n))));
+  const result = new Map<number, IgdbMediaResult>();
+  if (uniq.length === 0) return result;
+
+  if (!directIgdbAvailable()) {
+    log("[igdb] media fetch skipped — twitch_client_id/twitch_client_secret not configured", "igdb");
+    return result;
+  }
+
+  let batchIndex = 0;
+  for (let i = 0; i < uniq.length; i += IGDB_BATCH_SIZE) {
+    if (batchIndex > 0) await sleep(IGDB_INTER_BATCH_SLEEP_MS);
+    const batch = uniq.slice(i, i + IGDB_BATCH_SIZE);
+    const partial = await fetchOneMediaBatchDirect(batch);
+    for (const [appid, meta] of Array.from(partial)) result.set(appid, meta);
+    batchIndex += 1;
+  }
+
+  log(`[igdb] media fetch matched ${result.size}/${uniq.length} Saber appids`, "igdb");
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point — unchanged signature, callers in ingestion.ts untouched
 // ---------------------------------------------------------------------------
 
@@ -288,4 +366,131 @@ export async function fetchIgdbHypesBySteamAppids(
     return fetchIgdbHypesDirect(steamAppids);
   }
   return fetchIgdbHypesViaHmap(steamAppids);
+}
+
+// ---------------------------------------------------------------------------
+// PDP-facing media accessor + daily cache refresh (v1.0, 2026-09-08)
+// ---------------------------------------------------------------------------
+
+const IGDB_MEDIA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // refreshed daily, see startCcuPollScheduler's sibling cron
+
+/**
+ * Cache-first IGDB media for a single product's PDP. Serves the cached row
+ * when it's <24h old; otherwise fetches live (single-appid batch), upserts
+ * the cache, and returns the fresh result. Returns null when the product
+ * has no steamAppId, or when no IGDB/Steam match exists at all (cache row
+ * absent AND live fetch found nothing) -- the PDP renders without a media
+ * carousel in that case rather than showing stale/fabricated data.
+ */
+export async function getIgdbMediaForProduct(productId: number): Promise<IgdbMediaResult | null> {
+  const cached = storage.getIgdbMediaCache(productId);
+  if (cached) {
+    const age = Date.now() - new Date(cached.updatedAt).getTime();
+    if (age < IGDB_MEDIA_CACHE_TTL_MS) {
+      return {
+        igdbId: cached.igdbId ?? 0,
+        summary: cached.summary,
+        screenshotIds: cached.screenshotIds ? JSON.parse(cached.screenshotIds) : [],
+        videoIds: cached.videoIds ? JSON.parse(cached.videoIds) : [],
+      };
+    }
+  }
+
+  const product = storage.getProduct(productId);
+  const appid = product?.steamAppId ? Number.parseInt(product.steamAppId, 10) : null;
+  if (!appid || !Number.isInteger(appid)) {
+    return cached
+      ? { igdbId: cached.igdbId ?? 0, summary: cached.summary, screenshotIds: cached.screenshotIds ? JSON.parse(cached.screenshotIds) : [], videoIds: cached.videoIds ? JSON.parse(cached.videoIds) : [] }
+      : null;
+  }
+
+  try {
+    const fresh = (await fetchIgdbMediaBySteamAppids([appid])).get(appid);
+    const nowIso = new Date().toISOString();
+    if (fresh) {
+      storage.upsertIgdbMediaCache({
+        productId,
+        igdbId: fresh.igdbId,
+        summary: fresh.summary,
+        screenshotIds: JSON.stringify(fresh.screenshotIds),
+        videoIds: JSON.stringify(fresh.videoIds),
+        updatedAt: nowIso,
+      });
+      return fresh;
+    }
+    // No live match -- fall back to whatever's cached (even if stale) rather
+    // than blanking out a previously-working carousel on a transient miss.
+    if (cached) {
+      return { igdbId: cached.igdbId ?? 0, summary: cached.summary, screenshotIds: cached.screenshotIds ? JSON.parse(cached.screenshotIds) : [], videoIds: cached.videoIds ? JSON.parse(cached.videoIds) : [] };
+    }
+    return null;
+  } catch (err) {
+    log(`[igdb] getIgdbMediaForProduct(${productId}) live fetch failed: ${(err as Error).message}`, "igdb");
+    if (cached) {
+      return { igdbId: cached.igdbId ?? 0, summary: cached.summary, screenshotIds: cached.screenshotIds ? JSON.parse(cached.screenshotIds) : [], videoIds: cached.videoIds ? JSON.parse(cached.videoIds) : [] };
+    }
+    return null;
+  }
+}
+
+/**
+ * Daily bulk refresh for every CCU-eligible Saber title's IGDB media cache.
+ * Wired into server startup on its own 24h interval (see index.ts) --
+ * separate from the 60-minute CCU poll since media/summary text changes
+ * far less often than live player counts.
+ */
+export async function refreshIgdbMediaForCcuTitles(): Promise<void> {
+  const { getCcuEligibleSteamTitles } = await import("./leaderboards");
+  const titles = getCcuEligibleSteamTitles();
+  const appidToProduct = new Map<number, number>();
+  for (const p of titles) {
+    const appid = p.steamAppId ? Number.parseInt(p.steamAppId, 10) : null;
+    if (appid && Number.isInteger(appid)) appidToProduct.set(appid, p.id);
+  }
+  if (appidToProduct.size === 0) return;
+
+  const mediaMap = await fetchIgdbMediaBySteamAppids(Array.from(appidToProduct.keys()));
+  const nowIso = new Date().toISOString();
+  let updated = 0;
+  for (const [appid, productId] of Array.from(appidToProduct)) {
+    const media = mediaMap.get(appid);
+    if (!media) continue;
+    storage.upsertIgdbMediaCache({
+      productId,
+      igdbId: media.igdbId,
+      summary: media.summary,
+      screenshotIds: JSON.stringify(media.screenshotIds),
+      videoIds: JSON.stringify(media.videoIds),
+      updatedAt: nowIso,
+    });
+    updated += 1;
+  }
+  log(`[igdb] daily media refresh: updated ${updated}/${appidToProduct.size} Saber CCU title(s)`, "igdb");
+}
+
+// ─── Scheduler ────────────────────────────────────────────────────────────────
+// Runs once every 24h, offset from the top-of-hour CCU poll so the two never
+// contend for the same tick. Fires once immediately after a short startup
+// delay so a fresh deploy doesn't wait a full day for its first media pull.
+let igdbMediaRefreshInterval: ReturnType<typeof setInterval> | null = null;
+
+export function startIgdbMediaRefreshScheduler(): void {
+  if (igdbMediaRefreshInterval) return;
+  log("Saber Steam CCU IGDB media refresh scheduler started (every 24h)", "igdb");
+
+  setTimeout(() => {
+    refreshIgdbMediaForCcuTitles().catch((err) => log(`[igdb] initial media refresh failed: ${(err as Error).message}`, "igdb"));
+  }, 60 * 1000);
+
+  igdbMediaRefreshInterval = setInterval(() => {
+    refreshIgdbMediaForCcuTitles().catch((err) => log(`[igdb] scheduled media refresh failed: ${(err as Error).message}`, "igdb"));
+  }, 24 * 60 * 60 * 1000);
+}
+
+export function stopIgdbMediaRefreshScheduler(): void {
+  if (igdbMediaRefreshInterval) {
+    clearInterval(igdbMediaRefreshInterval);
+    igdbMediaRefreshInterval = null;
+    log("Saber Steam CCU IGDB media refresh scheduler stopped", "igdb");
+  }
 }

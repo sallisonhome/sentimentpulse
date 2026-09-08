@@ -230,6 +230,26 @@ export function getRevenueEligibleSteamTitles() {
   });
 }
 
+/**
+ * Saber Steam CCU Leaderboard eligibility (v1.0, 2026-09-08): steamAppId set
+ * AND released (releaseDate <= today) — released titles ONLY, deliberately
+ * NOT including the prepurchase-active branch used by
+ * getRevenueEligibleSteamTitles() above, per explicit user instruction ("only
+ * display Saber's titles that are released"). A title transitioning from
+ * pre-release to released is picked up automatically on the very next
+ * 60-minute poll (server/ccu-poll.ts) with no separate registration step —
+ * this function is re-evaluated fresh on every poll and every leaderboard
+ * read.
+ */
+export function getCcuEligibleSteamTitles() {
+  const today = getTodayDateString();
+  return storage.getAllProducts().filter((p) => {
+    if (!p.steamAppId) return false;
+    const releaseDate = storage.getProductReleaseDate(p.id);
+    return !!releaseDate && releaseDate <= today;
+  });
+}
+
 export interface RevenueLeaderboardRow {
   productId: number;
   title: string;
@@ -464,5 +484,136 @@ export function getRevenueLeaderboardKpis(rows: RevenueLeaderboardRow[]): Revenu
     biggest24hRevenueMover: pickBiggestRevenueMover(rows, "revenue24hUsd"),
     biggest30dRevenueLift: pickBiggestRevenueMover(rows, "revenueDelta30dPct"),
     biggestPositive30dRevenueLift: pickBiggestPositiveRevenueLift(rows),
+  };
+}
+
+// ─── Saber Steam CCU Leaderboard (v1.0, 2026-09-08) ────────────────────────
+//
+// Row order: current CCU descending among Saber's own released titles
+// (getCcuEligibleSteamTitles), independent of whether a Steam-global rank
+// was found -- per explicit user instruction ("ordered from most to least
+// ccu"). `globalRank` is a separately-sourced display value (Steam's
+// GetGamesByConcurrentPlayers top ~100, captured at the same poll) and is
+// legitimately null for niche titles outside that top-100 -- render as
+// "unranked" on the frontend, never fabricate a value.
+
+export interface CcuLeaderboardRow {
+  productId: number;
+  title: string;
+  steamAppId: string;
+  headerImage: string;
+  currentCcu: number | null;
+  /** Steam-wide GetGamesByConcurrentPlayers rank as of the latest poll, or
+   * null when the title wasn't in that poll's top ~100 -- a real API
+   * limitation, not a bug. */
+  globalRank: number | null;
+  peak24h: number | null;
+  allTimePeak: number | null;
+  allTimePeakDate: string | null;
+  /** ISO timestamp of the snapshot this row is drawn from, or null if the
+   * 60-minute poll hasn't captured this title yet. */
+  lastCapturedAt: string | null;
+}
+
+export interface CcuPollStateSummary {
+  lastPolledAt: string | null;
+  lastPollResult: string | null;
+  titlesPolled: number | null;
+  /** ISO timestamp of the next expected poll (lastPolledAt + 60min),
+   * drives the frontend countdown timer the same way howmanyareplaying's
+   * CountdownTimer.jsx does. Null until the first poll has ever run. */
+  nextPollAt: string | null;
+}
+
+function peak24hForProduct(productId: number): number | null {
+  const sinceIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const snapshots = storage.getCcuSnapshotsSince(productId, sinceIso);
+  if (snapshots.length === 0) return null;
+  return Math.max(...snapshots.map((s) => s.ccu));
+}
+
+export function getCcuLeaderboardRows(): CcuLeaderboardRow[] {
+  const titles = getCcuEligibleSteamTitles();
+
+  const rows: CcuLeaderboardRow[] = titles.map((p) => {
+    const latest = storage.getLatestCcu(p.id);
+    const allTime = storage.getAllTimePeakCcu(p.id);
+    return {
+      productId: p.id,
+      title: p.title,
+      steamAppId: p.steamAppId!,
+      headerImage: resolveHeaderImage(p.steamAppId!, p.steamHeaderImageUrl ?? null),
+      currentCcu: latest?.ccu ?? null,
+      globalRank: latest?.globalRank ?? null,
+      peak24h: peak24hForProduct(p.id),
+      allTimePeak: allTime?.peakCcu ?? null,
+      allTimePeakDate: allTime?.peakDate ?? null,
+      lastCapturedAt: latest?.capturedAt ?? null,
+    };
+  });
+
+  // Titles never yet polled (currentCcu null) sort last, not first --
+  // otherwise a brand-new release with no snapshot yet would incorrectly
+  // outrank an active title on a stale/failed poll.
+  rows.sort((a, b) => (b.currentCcu ?? -1) - (a.currentCcu ?? -1));
+  return rows;
+}
+
+export function getCcuPollStateSummary(): CcuPollStateSummary {
+  const state = storage.getCcuPollState();
+  if (!state || !state.lastPolledAt) {
+    return { lastPolledAt: null, lastPollResult: state?.lastPollResult ?? null, titlesPolled: state?.titlesPolled ?? null, nextPollAt: null };
+  }
+  const nextPollAt = new Date(new Date(state.lastPolledAt).getTime() + 60 * 60 * 1000).toISOString();
+  return {
+    lastPolledAt: state.lastPolledAt,
+    lastPollResult: state.lastPollResult,
+    titlesPolled: state.titlesPolled,
+    nextPollAt,
+  };
+}
+
+export interface CcuKpiCard {
+  productId: number;
+  liveRank: number | null;
+  currentPlayers: number | null;
+  peak24h: number | null;
+  allTimePeak: number | null;
+  allTimePeakDate: string | null;
+  /** % change of current CCU vs. the daily-peak value ~30 days ago. Null
+   * when there's no snapshot old enough to compare against (title released
+   * < 1 month ago) -- rendered "—"/"new" on the frontend, not 0% or a
+   * fabricated delta. */
+  vsLastMonthPct: number | null;
+}
+
+export function getCcuKpiCard(productId: number): CcuKpiCard {
+  const latest = storage.getLatestCcu(productId);
+  const allTime = storage.getAllTimePeakCcu(productId);
+  const peak24h = peak24hForProduct(productId);
+
+  let vsLastMonthPct: number | null = null;
+  if (latest) {
+    // Closest daily peak to exactly 30 days ago (within a +/-3 day window,
+    // since a title may not have a snapshot on the exact day).
+    const target = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const windowStart = new Date(target.getTime() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const candidates = storage.getDailyPeaksCcuSince(productId, windowStart)
+      .filter((p) => p.peakDate <= new Date(target.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10));
+    if (candidates.length > 0) {
+      const closest = candidates.reduce((best, p) =>
+        Math.abs(new Date(p.peakDate).getTime() - target.getTime()) < Math.abs(new Date(best.peakDate).getTime() - target.getTime()) ? p : best);
+      vsLastMonthPct = pctChange(latest.ccu, closest.peakCcu);
+    }
+  }
+
+  return {
+    productId,
+    liveRank: latest?.globalRank ?? null,
+    currentPlayers: latest?.ccu ?? null,
+    peak24h,
+    allTimePeak: allTime?.peakCcu ?? null,
+    allTimePeakDate: allTime?.peakDate ?? null,
+    vsLastMonthPct,
   };
 }
