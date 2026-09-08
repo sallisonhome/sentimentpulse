@@ -40,6 +40,7 @@ export interface CcuKpiCard {
   allTimePeak: number | null;
   allTimePeakDate: string | null;
   vsLastMonthPct: number | null;
+  trackingSince: string | null;
 }
 
 export interface IgdbMediaResult {

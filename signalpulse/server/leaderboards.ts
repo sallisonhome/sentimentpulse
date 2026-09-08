@@ -585,10 +585,19 @@ export interface CcuKpiCard {
    * < 1 month ago) -- rendered "—"/"new" on the frontend, not 0% or a
    * fabricated delta. */
   vsLastMonthPct: number | null;
+  /** ISO timestamp of this product's earliest ccu_snapshots_steam row.
+   * The leaderboard launched 2026-09-08 (v1.0), so every title's history
+   * currently starts there; a title added to tracking later gets its own
+   * later start. Null only if the product has zero snapshots yet (should
+   * not happen for a title that resolves a KPI card at all). Frontend uses
+   * this for a "Tracking since ..." caveat, mirroring howmanyareplaying's
+   * tracking_since pattern. */
+  trackingSince: string | null;
 }
 
 export function getCcuKpiCard(productId: number): CcuKpiCard {
   const latest = storage.getLatestCcu(productId);
+  const earliest = storage.getEarliestCcu(productId);
   const allTime = storage.getAllTimePeakCcu(productId);
   const peak24h = peak24hForProduct(productId);
 
@@ -615,5 +624,6 @@ export function getCcuKpiCard(productId: number): CcuKpiCard {
     allTimePeak: allTime?.peakCcu ?? null,
     allTimePeakDate: allTime?.peakDate ?? null,
     vsLastMonthPct,
+    trackingSince: earliest?.capturedAt ?? null,
   };
 }

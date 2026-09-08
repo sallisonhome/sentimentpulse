@@ -29,6 +29,16 @@ export function formatDate(dateStr: string | null | undefined): string {
   });
 }
 
+/** Short human-readable date (e.g. "Sep 8, 2026") from a full ISO
+ * timestamp. Unlike formatDate, does NOT append "T00:00:00" -- pass the
+ * raw ISO string as stored (e.g. ccu_snapshots_steam.capturedAt). */
+export function formatShortDate(isoStr: string | null | undefined): string {
+  if (!isoStr) return "—";
+  const d = new Date(isoStr);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
 /** "5m ago" / "3h ago" / "2d ago" style relative timestamp, for CCU
  * "last captured at" / "last polled at" displays. Accepts a full ISO
  * timestamp (not a date-only string like formatDate). */
