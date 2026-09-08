@@ -28,6 +28,7 @@ import {
 } from "recharts";
 import { Gamepad2, Play, X, Users } from "lucide-react";
 import { formatNumber, formatDate } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -94,11 +95,21 @@ const RANGE_OPTIONS: Array<{ key: CcuHistoryRange; label: string }> = [
 
 // ─── Small helpers ───────────────────────────────────────────────────────────
 
-function StatBadge({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatBadge({ label, value, sub, badge }: { label: string; value: string; sub?: string; badge?: string }) {
   return (
     <div className="flex flex-col gap-1" data-testid={`stat-${label.replace(/\s+/g, "-").toLowerCase()}`}>
       <div className="text-xs text-muted-foreground uppercase tracking-wide">{label}</div>
-      <div className="text-2xl font-bold tabular-nums">{value}</div>
+      {badge ? (
+        <Badge
+          variant="outline"
+          className="w-fit whitespace-normal text-[11px] font-medium leading-snug text-muted-foreground"
+          data-testid={`badge-${label.replace(/\s+/g, "-").toLowerCase()}`}
+        >
+          {badge}
+        </Badge>
+      ) : (
+        <div className="text-2xl font-bold tabular-nums">{value}</div>
+      )}
       {sub && <div className="text-xs text-muted-foreground">{sub}</div>}
     </div>
   );
@@ -357,7 +368,11 @@ export function CcuPdpSection({ productId }: { productId: number }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4" data-testid="ccu-kpi-row">
-        <StatBadge label="Live Rank" value={kpi?.liveRank == null ? "—" : `#${formatNumber(kpi.liveRank)}`} />
+        <StatBadge
+          label="Live Rank"
+          value={kpi?.liveRank == null ? "—" : `#${formatNumber(kpi.liveRank)}`}
+          badge={kpi?.liveRank == null ? "Outside of Steam Top 100 CCU" : undefined}
+        />
         <StatBadge label="Current Players" value={formatNumber(kpi?.currentPlayers ?? null)} />
         <StatBadge label="24H Peak" value={formatNumber(kpi?.peak24h ?? null)} />
         <StatBadge

@@ -997,7 +997,17 @@ export default function Leaderboards() {
                       </div>
                     </TableCell>
                     <TableCell className="tabular-nums">
-                      {row.globalRank == null ? <span className="text-muted-foreground">—</span> : `#${formatNumber(row.globalRank)}`}
+                      {row.globalRank == null ? (
+                        <Badge
+                          variant="outline"
+                          className="whitespace-nowrap text-[11px] font-medium text-muted-foreground"
+                          data-testid={`badge-outside-top100-${row.productId}`}
+                        >
+                          Outside of Steam Top 100 CCU
+                        </Badge>
+                      ) : (
+                        `#${formatNumber(row.globalRank)}`
+                      )}
                     </TableCell>
                     <TableCell className="tabular-nums font-medium">{formatNumber(row.currentCcu)}</TableCell>
                     <TableCell className="tabular-nums">{formatNumber(row.peak24h)}</TableCell>
