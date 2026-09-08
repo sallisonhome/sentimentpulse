@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "wouter";
 import { Shell } from "../components/Shell";
 import { api } from "../lib/api";
@@ -7,6 +8,7 @@ import { PlatformChip, StatusChip } from "../components/chips";
 import { Skeleton, ErrorBanner, Section } from "../components/misc";
 import { BeatCard } from "../components/BeatCard";
 import { fmtRange, pct, platCls } from "../lib/format";
+import { SalesByCountryPanel, type LastPromoWindow } from "../components/SalesByCountryPanel";
 
 export function PlatformsIndex() {
   const today = getToday();
@@ -70,11 +72,43 @@ function PlatformCard({ platform, today }: { platform: string; today: string }) 
 export function PlatformDetail({ platform }: { platform: string }) {
   const today = getToday();
   const nextUp = useAsync(() => api.nextUpPlatform(platform, 6, today), [platform, today]);
+  // Unfiltered by date on purpose — Sales by Country below needs past
+  // campaigns too, to compute each title's most-recently-ended promo.
   const campaigns = useAsync(() => api.campaigns({ platform }), [platform]);
   const upcomingCampaigns = campaigns.data?.campaigns
     .filter((c) => c.end_date >= today)
     .sort((a, b) => a.start_date.localeCompare(b.start_date)) || [];
   const liveCount = upcomingCampaigns.filter((c) => c.start_date <= today && today <= c.end_date).length;
+
+  // ─── Steam Sales by Country (v3.32, 2026-09-08) ──────────────────────────
+  // Relocated here from the per-title PDP: SignalPulse only ingests Steam
+  // sales, so this widget only ever renders on the Steam platform page,
+  // never on Sony/Microsoft — there is no platform switch to get wrong.
+  // Named "Steam Sales by Country" (not just "Sales by Country") in the UI
+  // so the Steam-only scope is unambiguous even out of page context.
+  const isSteam = platform === "Steam";
+  const games = useAsync(() => (isSteam ? api.games() : Promise.resolve({ games: [] })), [isSteam]);
+  const steamTitles = (games.data?.games || []).filter((g) => g.steam_app_id != null);
+  const [selectedCode, setSelectedCode] = useState<string | null>(null);
+  const effectiveCode = selectedCode ?? steamTitles[0]?.game_code ?? null;
+  const selectedTitle = steamTitles.find((g) => g.game_code === effectiveCode) || null;
+
+  // `campaigns` above is already scoped to platform="Steam" on this page,
+  // so no extra platform filter is needed — just narrow to this title and
+  // find its most-recently-ended campaign strictly before today.
+  const lastPromo: LastPromoWindow | null = (() => {
+    if (!selectedTitle) return null;
+    const all = campaigns.data?.campaigns || [];
+    const past = all.filter((c) => c.game_code === selectedTitle.game_code && c.end_date < today);
+    if (past.length === 0) return null;
+    past.sort((a, b) => b.end_date.localeCompare(a.end_date));
+    const last = past[0];
+    return {
+      since: last.start_date,
+      until: last.end_date,
+      label: `Last promo · ${last.program} (Steam)`,
+    };
+  })();
 
   return (
     <Shell
@@ -162,6 +196,52 @@ export function PlatformDetail({ platform }: { platform: string }) {
             </div>
           )}
         </div>
+      )}
+
+      {isSteam && (
+        <Section
+          title="Steam Sales by Country"
+          right={<span className="sub">Steam per-country revenue · filters below</span>}
+        >
+          {games.loading ? (
+            <Skeleton height={80} />
+          ) : games.error ? (
+            <ErrorBanner error={games.error} />
+          ) : steamTitles.length === 0 ? (
+            <div className="empty" style={{ padding: 20 }}>
+              <p>No titles with a mapped Steam AppID yet.</p>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <label htmlFor="sbc-title-select" style={{ fontSize: 12, color: "var(--text-dim)" }}>
+                  Title
+                </label>
+                <select
+                  id="sbc-title-select"
+                  value={effectiveCode ?? ""}
+                  onChange={(e) => setSelectedCode(e.target.value)}
+                  style={{
+                    background: "#0b1220", border: "1px solid #334155", borderRadius: 6,
+                    padding: "6px 10px", fontSize: 13, color: "#e2e8f0", minWidth: 240,
+                  }}
+                >
+                  {steamTitles.map((g) => (
+                    <option key={g.game_code} value={g.game_code}>{g.game_label}</option>
+                  ))}
+                </select>
+              </div>
+              {selectedTitle?.steam_app_id != null && (
+                <SalesByCountryPanel
+                  key={selectedTitle.game_code}
+                  steamAppId={selectedTitle.steam_app_id}
+                  today={today}
+                  lastPromo={lastPromo}
+                />
+              )}
+            </div>
+          )}
+        </Section>
       )}
     </Shell>
   );

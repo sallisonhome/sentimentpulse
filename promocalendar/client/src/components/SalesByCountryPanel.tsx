@@ -1,8 +1,15 @@
-// Promo Calendar Sales-by-Country panel (v3.31, 2026-09-05).
+// Promo Calendar "Steam Sales by Country" panel (v3.31, 2026-09-05;
+// relocated from the per-title PDP to the Steam platform page in v3.32,
+// 2026-09-08).
 //
-// Renders a per-title country breakdown on the PDP. Fetches from
-// SignalPulse via `GET /api/promo-support/sales-by-country?steam_app_id=…`,
-// which is exposed unauthenticated over loopback + nginx (see
+// Renders a per-title country breakdown, embedded behind a title picker
+// on the Steam platform page (see PlatformsPage.tsx — PlatformDetail).
+// Steam is the only platform SignalPulse ingests sales/geo data for, so
+// this panel must never be mounted from a page that isn't already
+// Steam-scoped; PlatformDetail enforces that by only rendering it when
+// platform==="Steam". Fetches from SignalPulse via
+// `GET /api/promo-support/sales-by-country?steam_app_id=…`, which is
+// exposed unauthenticated over loopback + nginx (see
 // signalpulse/server/saber-auth.ts EXEMPT_PATHS_READ_ONLY_CROSS_APP).
 //
 // UI matches the Promo Calendar's dark aesthetic (styled inline, no shadcn):
@@ -12,8 +19,10 @@
 //   - Sortable country table with inline percentage bar
 //
 // The "Last promo event" chip is the calendar's headline feature: when
-// the title has at least one past campaign, the chip is present and
-// pre-fills the range to that most-recent-ended event's window.
+// the selected title has at least one past Steam campaign, the chip is
+// present and pre-fills the range to that most-recent-ended event's
+// window. The caller (PlatformDetail) computes this from Steam-only
+// campaign data — never from Sony/Microsoft.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { geoNaturalEarth1, geoPath } from "d3-geo";
