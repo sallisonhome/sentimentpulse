@@ -980,12 +980,20 @@ export default function Leaderboards() {
               </TableHeader>
               <TableBody>
                 {sortedCcuRows.map((row) => (
-                  <TableRow key={row.productId} data-testid={`row-ccu-leaderboard-${row.productId}`}>
+                  <TableRow
+                    key={row.productId}
+                    className="hover:bg-accent/50 transition-colors cursor-pointer"
+                    data-testid={`row-ccu-leaderboard-${row.productId}`}
+                  >
                     <TableCell>
-                      <div className="flex flex-col gap-1">
+                      <a
+                        href={`#/products/${row.productId}`}
+                        className="flex flex-col gap-1 group"
+                        data-testid={`link-ccu-title-${row.productId}`}
+                      >
                         <div className="flex items-center gap-3">
                           <GameKeyart headerImage={row.headerImage} title={row.title} />
-                          <span className="font-medium text-sm truncate">{row.title}</span>
+                          <span className="font-medium text-sm truncate group-hover:underline">{row.title}</span>
                         </div>
                         {onPromo?.[row.steamAppId]?.length ? (
                           <OnPromoBadge
@@ -994,7 +1002,7 @@ export default function Leaderboards() {
                             testId={`badge-on-promo-ccu-${row.productId}`}
                           />
                         ) : null}
-                      </div>
+                      </a>
                     </TableCell>
                     <TableCell className="tabular-nums">
                       {row.globalRank == null ? (
