@@ -6,6 +6,30 @@ session date so future agents can reconstruct context.
 
 ---
 
+## 2026-09-07 (signalpulse v3.38) — Rainforest `type=reviews` is dead: Amazon killed “Most Recent” reviews in Mar-2025, use `p.top_reviews[]` from `type=product`
+
+**What happened.** v3.36 shipped a dedicated per-ASIN Reviews tab backed by `amazon_product_reviews`, ingested daily by `runReviewsDaily` which called `fetchReviews(asin, {sortBy:“most_recent”})` → Rainforest `type=reviews`. Steve reported the PDP Reviews tab was empty and the “Refresh from Amazon” button returned an error. Investigation:
+- `POST /api/amazon/product/:asin/reviews/refresh` → `500 {"error":"Rainforest 503: reviews request type is temporarily unavailable"}`.
+- No `amazon_ingest_runs` rows ever landed for job=`reviews`, so the DB was always empty.
+- Rainforest deprecated `type=reviews` in **March 2025** because Amazon removed the public “Most Recent” reviews sort from PDPs. Only the top reviews Amazon renders in the header carousel remain scrapable, and Rainforest exposes them as `product.top_reviews[]` on the regular `type=product` response (which we already fetch hourly).
+
+**Fix (v3.38).**
+1. Added `top_reviews_json TEXT` to `amazon_product_daily` (schema + `migrateAddColumnIfMissing`).
+2. `runProductSnapshots` now captures `p.top_reviews[]` via the existing `extractReviews` normalizer and writes it alongside the buybox/BSR row — zero extra Rainforest cost.
+3. Rewrote `GET /reviews` to read `top_reviews_json` from the latest `amazon_product_daily` row for the ASIN and shape it into the same `ReviewsResponse` the client already expects.
+4. Rewrote `POST /reviews/refresh` to call `fetchProduct(asin)` (not `fetchReviews`), extract `top_reviews`, and upsert today’s `amazon_product_daily` row.
+5. Deprecated `runReviewsDaily` as a no-op that logs `DEPRECATED: no-op (Amazon killed most-recent reviews Mar-2025)`, same pattern as v3.37’s `runAlsoBoughtDaily`.
+6. Client empty-state and header copy updated to say “Snapshot from … top reviews” instead of “Last fetched … stored”, and the empty state explains the Mar-2025 deprecation so operators don’t assume the pipeline is broken.
+
+**Non-negotiable rules going forward.**
+
+1. **Never call `type=reviews` again.** Rainforest returns 503 for every request. The only sanctioned source for review content on a game ASIN is `product.top_reviews[]` on `type=product`.
+2. **When an external endpoint returns a persistent, non-transient error, check the vendor changelog before writing a fix.** Rainforest’s deprecation was announced publicly at `docs.trajectdata.com/rainforestapi/product-updates`. Assuming a bug in our code when the vendor has publicly deprecated the endpoint wastes a full session.
+3. **Deprecation pattern (established v3.37, reconfirmed v3.38):** keep the old job function exported as a no-op that logs `DEPRECATED: no-op` so scheduler slots and manual-dispatch entries don’t break. Do NOT delete the function outright — external YAML workflows and cron slots reference it by name. Same for the client-facing endpoint URL: keep it, change the source-of-truth, don’t 404 cached bundles mid-deploy.
+4. **Ride existing calls whenever a new field lives on an already-fetched response.** v3.37 (variants + bestseller-rank) and v3.38 (top reviews) both replaced dedicated calls with fields piggybacking on `type=product`, saving credits and simplifying the ingest surface. Before adding a new Rainforest job, check whether the field is already on a response we already store.
+
+---
+
 ## MANDATORY — READ FIRST EVERY SESSION (2026-09-07)
 
 **Two non-negotiable operating rules for every session, every task, before touching any code.**

@@ -545,9 +545,9 @@ function ReviewsPanel({ asin }: { asin: string }) {
       <div className="flex items-center justify-between">
         <div className="text-xs text-muted-foreground">
           {data?.latestFetch
-            ? `Last fetched ${new Date(data.latestFetch).toLocaleString()}`
-            : "No reviews fetched for this ASIN yet."}
-          {reviews.length > 0 && ` · ${reviews.length} stored`}
+            ? `Snapshot from ${new Date(data.latestFetch).toLocaleString()}`
+            : "No product snapshot for this ASIN yet."}
+          {reviews.length > 0 && ` · ${reviews.length} top reviews`}
         </div>
         <Button
           size="sm"
@@ -571,7 +571,10 @@ function ReviewsPanel({ asin }: { asin: string }) {
         <Skeleton className="h-40 w-full rounded-xl" />
       ) : reviews.length === 0 ? (
         <Card className="p-6 text-center text-xs text-muted-foreground">
-          No reviews stored yet. Click "Refresh from Amazon" to pull the latest 20 reviews.
+          No top reviews in the latest snapshot. Amazon deprecated the
+          “Most Recent” sort in early 2025, so we now surface the top
+          reviews Amazon shows on the product page. Click “Refresh from
+          Amazon” to re-pull this ASIN.
         </Card>
       ) : (
         <div className="space-y-2">

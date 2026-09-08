@@ -27,7 +27,9 @@ import {
   amazonNewReleases,
   amazonKeywordDaily,
   amazonIngestRuns,
-  amazonProductReviews,
+  // v3.38: amazonProductReviews no longer read here — top reviews now
+  // live on amazon_product_daily.top_reviews_json (Rainforest deprecated
+  // type=reviews after Amazon killed most-recent reviews in Mar-2025).
   AMAZON_PLATFORM_SLUGS,
   AMAZON_CHART_NODES,
   type AmazonPlatformSlug,
@@ -40,13 +42,12 @@ import {
   countIntersection,
   titleMentionsPlatform,
   isAsinAncientForProduct,
-  upsertReviewRow,
 } from "./amazon-cron";
 import {
   isRainforestConfigured,
   isVideoGameSoftware,
   fetchSearch,
-  fetchReviews,
+  fetchProduct,
   extractReviews,
 } from "./amazon-rainforest";
 import { products } from "@shared/schema";
@@ -799,30 +800,45 @@ export function registerAmazonRoutes(app: Express): void {
     });
   });
 
-  // Per-ASIN reviews (v3.36, 2026-09-07).
-  // GET returns stored reviews (newest first). POST /refresh forces an
-  // on-demand Rainforest pull; same write path as the daily cron.
+  // Per-ASIN reviews (v3.38, 2026-09-07).
+  //
+  // v3.36 shipped with a dedicated reviews store (amazon_product_reviews)
+  // fed by Rainforest type=reviews. Amazon killed the public "Most Recent"
+  // reviews sort in March 2025, so Rainforest deprecated type=reviews
+  // (returns HTTP 503 "reviews request type is temporarily unavailable").
+  //
+  // v3.38 migrates to Rainforest's recommended fallback: p.top_reviews[]
+  // on type=product, which we already fetch hourly. GET reads the top
+  // reviews snapshotted into amazon_product_daily.top_reviews_json. POST
+  // /refresh re-fetches type=product for that ASIN (updating every field
+  // for the day, including top_reviews_json). Zero extra Rainforest cost
+  // vs. a dedicated reviews call.
   app.get("/api/amazon/product/:asin/reviews", (req, res) => {
     const asin = req.params.asin;
-    const rows = db.select().from(amazonProductReviews)
-      .where(eq(amazonProductReviews.asin, asin))
-      .orderBy(desc(amazonProductReviews.reviewDate), desc(amazonProductReviews.fetchedAt))
-      .limit(50).all();
-    const reviews = rows.map((r) => ({
-      reviewId: r.reviewId,
-      title: r.title,
-      body: r.body,
-      rating: r.rating,
-      reviewDate: r.reviewDate,
-      verifiedPurchase: r.verifiedPurchase,
-      helpfulVotes: r.helpfulVotes,
-      reviewerName: r.reviewerName,
-      variantAttrs: r.variantAttrsJson ? tryJson(r.variantAttrsJson) : null,
-      imageUrls: r.imageUrlsJson ? tryJson(r.imageUrlsJson) : null,
-      fetchedAt: r.fetchedAt,
-    }));
-    const latestFetch = rows[0]?.fetchedAt ?? null;
-    res.json({ asin, latestFetch, reviews });
+    const row = db.select().from(amazonProductDaily)
+      .where(eq(amazonProductDaily.asin, asin))
+      .orderBy(desc(amazonProductDaily.snapshotDate), desc(amazonProductDaily.createdAt))
+      .limit(1).get();
+    if (!row || !row.topReviewsJson) {
+      return res.json({ asin, latestFetch: row?.createdAt ?? null, reviews: [] });
+    }
+    const parsed = tryJson(row.topReviewsJson);
+    const reviews = Array.isArray(parsed)
+      ? parsed.map((r: any) => ({
+          reviewId: r.reviewId ?? r.id ?? null,
+          title: r.title ?? null,
+          body: r.body ?? null,
+          rating: r.rating ?? null,
+          reviewDate: r.reviewDate ?? r.date ?? null,
+          verifiedPurchase: r.verifiedPurchase ?? null,
+          helpfulVotes: r.helpfulVotes ?? null,
+          reviewerName: r.reviewerName ?? null,
+          variantAttrs: r.variantAttrs ?? null,
+          imageUrls: r.imageUrls ?? null,
+          fetchedAt: row.createdAt,
+        }))
+      : [];
+    res.json({ asin, latestFetch: row.createdAt, reviews });
   });
 
   app.post("/api/amazon/product/:asin/reviews/refresh", async (req, res) => {
@@ -831,16 +847,53 @@ export function registerAmazonRoutes(app: Express): void {
       return res.status(400).json({ error: "rainforest_api_key not set" });
     }
     try {
-      const { data, creditsUsed, creditsRemaining } = await fetchReviews(asin, { sortBy: "most_recent" });
-      const reviews = extractReviews(data, 20);
-      const fetchedAtIso = new Date().toISOString();
-      for (const rv of reviews) upsertReviewRow(asin, rv, fetchedAtIso);
+      // v3.38: re-fetch type=product (top_reviews live here now). This
+      // refreshes every product-daily field for today, not just reviews —
+      // effectively an on-demand mini products-cron for one ASIN.
+      const { data, creditsUsed, creditsRemaining } = await fetchProduct(asin);
+      const p = data?.product ?? {};
+      const topRvs = extractReviews({ top_reviews: p.top_reviews ?? [] }, 20);
+      const topReviewsJson = topRvs.length > 0 ? JSON.stringify(topRvs) : null;
+      const snapshotDate = new Date().toISOString().slice(0, 10);
+      const nowIsoStr = new Date().toISOString();
+      const buybox = p.buybox_winner ?? {};
+      const price = typeof buybox.price === "number" ? buybox.price : (buybox.price?.value ?? null);
+      const bsr = p.bestsellers_rank?.[0]?.rank ?? null;
+      const subBsrs = (p.bestsellers_rank ?? []).slice(1).map((b: any) => ({
+        category: b.category ?? null,
+        rank: b.rank ?? null,
+      }));
+      const mainImage: string | null = p.main_image?.link ?? p.images?.[0]?.link ?? null;
+      // Upsert (delete + insert) on (snapshot_date, asin) — same semantics
+      // as runProductSnapshots so the row is fully coherent.
+      db.delete(amazonProductDaily)
+        .where(and(eq(amazonProductDaily.snapshotDate, snapshotDate), eq(amazonProductDaily.asin, asin)))
+        .run();
+      db.insert(amazonProductDaily).values({
+        snapshotDate,
+        asin,
+        buyboxPrice: price,
+        buyboxSeller: buybox.seller ?? null,
+        buyboxIsAmazon: !!(buybox.is_amazon ?? false),
+        isPrime: !!(buybox.is_prime ?? p.is_prime ?? false),
+        stockStatus: p.buybox_winner?.availability?.type ?? p.stock_status ?? null,
+        mainBsr: bsr,
+        subBsrsJson: JSON.stringify(subBsrs),
+        rating: p.rating ?? null,
+        ratingsTotal: p.ratings_total ?? null,
+        recentSales: null,
+        title: p.title ?? null,
+        imageUrl: mainImage,
+        link: p.link ?? null,
+        topReviewsJson,
+        createdAt: nowIsoStr,
+      }).run();
       res.json({
         asin,
-        fetched: reviews.length,
+        fetched: topRvs.length,
         creditsUsed,
         creditsRemaining,
-        fetchedAt: fetchedAtIso,
+        fetchedAt: nowIsoStr,
       });
     } catch (err: any) {
       res.status(500).json({ error: String(err?.message ?? err) });

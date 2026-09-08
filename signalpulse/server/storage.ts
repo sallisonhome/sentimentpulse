@@ -638,6 +638,9 @@ function runMigrations() {
   migrateAddColumnIfMissing("amazon_product_daily", "title", "title TEXT");
   migrateAddColumnIfMissing("amazon_product_daily", "image_url", "image_url TEXT");
   migrateAddColumnIfMissing("amazon_product_daily", "link", "link TEXT");
+  // v3.38 (2026-09-07): top_reviews[] captured from type=product to
+  // replace the deprecated type=reviews endpoint.
+  migrateAddColumnIfMissing("amazon_product_daily", "top_reviews_json", "top_reviews_json TEXT");
 }
 
 initializeDatabase();

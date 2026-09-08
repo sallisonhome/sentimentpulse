@@ -925,6 +925,13 @@ export const amazonProductDaily = sqliteTable("amazon_product_daily", {
   title: text("title"),
   imageUrl: text("image_url"),
   link: text("link"),
+  // v3.38 (2026-09-07): top reviews array (up to 20) captured from the
+  // same type=product response. Replaces the deprecated type=reviews
+  // endpoint (Amazon killed the "Most Recent" reviews sort in March 2025
+  // and Rainforest deprecated /reviews v2 in response). JSON array of
+  // {reviewId,title,body,rating,reviewDate,verifiedPurchase,helpfulVotes,
+  //  reviewerName,variantAttrs,imageUrls} per docs.trajectdata.com.
+  topReviewsJson: text("top_reviews_json"),
   createdAt: text("created_at").notNull(),
 }, (table) => ({
   uniqueDayAsin: uniqueIndex("amazon_product_daily_unique_day_asin").on(table.snapshotDate, table.asin),

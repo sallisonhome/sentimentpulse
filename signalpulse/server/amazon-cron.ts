@@ -48,7 +48,9 @@ import {
   fetchNewReleases,
   fetchSearch,
   fetchFormatsEditions,
-  fetchReviews,
+  // v3.38: fetchReviews removed — type=reviews is deprecated by Rainforest
+  // (Amazon killed most-recent reviews Mar-2025). extractReviews stays,
+  // used to normalize p.top_reviews[] from type=product responses.
   extractReviews,
   isVideoGameSoftware,
   isRainforestConfigured,
@@ -252,6 +254,19 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
         const mainImage: string | null = p.main_image?.link ?? p.images?.[0]?.link ?? null;
         const productLink: string | null = p.link ?? null;
         const productTitle: string | null = p.title ?? null;
+        // v3.38 (2026-09-07): capture p.top_reviews[] from the same
+        // type=product response. Amazon killed the "Most Recent" reviews
+        // sort in March 2025, so Rainforest deprecated type=reviews. Their
+        // recommended migration is top_reviews on type=product — which we
+        // already fetch hourly. Reuses extractReviews (already accepts
+        // {top_reviews: ...}) so we get the same normalized shape.
+        let topReviewsJson: string | null = null;
+        try {
+          const topRvs = extractReviews({ top_reviews: p.top_reviews ?? [] }, 20);
+          topReviewsJson = topRvs.length > 0 ? JSON.stringify(topRvs) : null;
+        } catch (err) {
+          log(`amazon-cron products top_reviews extract failed for ${row.asin}: ${err}`, "amazon-cron");
+        }
         db.insert(amazonProductDaily).values({
           snapshotDate,
           asin: row.asin,
@@ -268,6 +283,7 @@ export async function runProductSnapshots(): Promise<{ asins: number; rowsWritte
           title: productTitle,
           imageUrl: mainImage,
           link: productLink,
+          topReviewsJson,
           createdAt: nowIso(),
         }).run();
         rowsWritten += 1;
@@ -499,40 +515,24 @@ export async function runAlsoBoughtDaily(): Promise<{ sources: number; rowsWritt
 export const runAlsoBoughtWeekly = runAlsoBoughtDaily;
 
 // ─── Job: reviews daily (08:15 ET) ───────────────────────────────────
-// v3.36 (2026-09-07): pulls the newest ~10 reviews for every pinned
-// ASIN (Saber + competitor). UPSERT by (asin, review_id) so re-runs
-// refresh helpful-vote counts + edited bodies without duplicating rows.
-// One Rainforest `type=reviews` credit per pinned ASIN per day. The PDP
-// Reviews tab reads straight out of the review table + can also POST to
-// force a refresh on demand.
+// v3.38 (2026-09-07): DEPRECATED. Rainforest deprecated the type=reviews
+// endpoint in March 2025 after Amazon killed the public "Most Recent"
+// reviews sort. The endpoint now returns HTTP 503 "reviews request type
+// is temporarily unavailable" for every request. Their recommended
+// migration is p.top_reviews[] on type=product, which runProductSnapshots
+// now captures into amazon_product_daily.top_reviews_json at zero extra
+// Rainforest cost. See docs.trajectdata.com/rainforestapi/product-updates.
+//
+// This job is retained as a no-op so scheduler slots and manual-dispatch
+// entries don't break; it burns zero credits.
 export async function runReviewsDaily(): Promise<{ sources: number; rowsWritten: number }> {
   return withRun("reviews", async () => {
-    const snapshotIso = nowIso();
-    const saberPins = db.select().from(amazonAsinMap).where(eq(amazonAsinMap.isActive, true)).all();
-    const compPins = db.select().from(amazonCompetitorAsinMap).where(eq(amazonCompetitorAsinMap.isActive, true)).all();
-    const sourceAsins = Array.from(new Set([...saberPins, ...compPins].map((p) => p.asin)));
-    let totalCreditsUsed = 0;
-    let lastCreditsRemaining = 0;
-    let rowsWritten = 0;
-    for (const asin of sourceAsins) {
-      try {
-        const { data, creditsUsed, creditsRemaining } = await fetchReviews(asin, { sortBy: "most_recent" });
-        totalCreditsUsed += creditsUsed;
-        lastCreditsRemaining = creditsRemaining;
-        const reviews = extractReviews(data, 20);
-        for (const rv of reviews) {
-          upsertReviewRow(asin, rv, snapshotIso);
-          rowsWritten += 1;
-        }
-      } catch (err) {
-        log(`amazon-cron reviews ${asin} failed: ${err}`, "amazon-cron");
-      }
-    }
+    log(`amazon-cron reviews DEPRECATED: no-op (Amazon killed most-recent reviews Mar-2025; see amazon_product_daily.top_reviews_json)`, "amazon-cron");
     return {
-      result: { sources: sourceAsins.length, rowsWritten },
-      creditsUsed: totalCreditsUsed,
-      creditsRemaining: lastCreditsRemaining,
-      rowsWritten,
+      result: { sources: 0, rowsWritten: 0 },
+      creditsUsed: 0,
+      creditsRemaining: 0,
+      rowsWritten: 0,
     };
   });
 }
