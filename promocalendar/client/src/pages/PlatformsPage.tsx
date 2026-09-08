@@ -233,7 +233,18 @@ export function PlatformDetail({ platform }: { platform: string }) {
               </div>
               {selectedTitle?.steam_app_id != null && (
                 <SalesByCountryPanel
-                  key={selectedTitle.game_code}
+                  // Also key on whether `campaigns` has finished loading, not just
+                  // the selected title: SalesByCountryPanel picks its *initial*
+                  // range ("last_promo" vs "90d") once, in a useState initializer,
+                  // from the `lastPromo` prop at mount time. If `campaigns` (and
+                  // therefore `lastPromo`) is still loading when this first mounts,
+                  // lastPromo is null, the panel locks onto "90d", and it never
+                  // reconsiders once the real lastPromo arrives a moment later --
+                  // remount is the only way to re-run that initializer. Bug caught
+                  // in live production QA: local dev's same-host fetch was fast
+                  // enough that campaigns was already loaded by first render, so
+                  // this never showed up until tested against real network latency.
+                  key={`${selectedTitle.game_code}:${campaigns.loading ? "pending" : "ready"}`}
                   steamAppId={selectedTitle.steam_app_id}
                   today={today}
                   lastPromo={lastPromo}
