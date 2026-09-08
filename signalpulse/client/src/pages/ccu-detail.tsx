@@ -20,7 +20,7 @@ import { useParams } from "wouter";
 import { ArrowLeft, Gamepad2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { formatDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
+import { formatDate, formatShortDate, getPlatformClass, getPlayerFormatLabel } from "@/lib/utils";
 import {
   StatBadge,
   GameMediaCarousel,
@@ -136,6 +136,12 @@ export default function CcuDetail() {
                 }
               />
             </div>
+
+            {kpi?.trackingSince && (
+              <p className="text-xs text-muted-foreground mt-1" data-testid="text-ccu-tracking-since">
+                Tracking since {formatShortDate(kpi.trackingSince)} — history will accumulate from that date forward as more data is collected.
+              </p>
+            )}
           </div>
         </Card>
       )}

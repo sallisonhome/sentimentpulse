@@ -1041,6 +1041,7 @@ export interface IStorage {
   getDailyPeaksCcuSince(productId: number, sinceDate: string): DailyPeakSteamCcu[];
   getAllTimePeakCcu(productId: number): DailyPeakSteamCcu | null;
   getLatestCcu(productId: number): CcuSnapshotSteam | null;
+  getEarliestCcu(productId: number): CcuSnapshotSteam | null;
   getCcuPollState(): CcuPollState | null;
   upsertCcuPollState(fields: { lastPolledAt: string; lastPollResult: string; titlesPolled: number }): CcuPollState;
   getIgdbMediaCache(productId: number): IgdbMediaCache | null;
@@ -2665,6 +2666,12 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(ccuSnapshotsSteam)
       .where(eq(ccuSnapshotsSteam.productId, productId))
       .orderBy(desc(ccuSnapshotsSteam.capturedAt)).limit(1).get() ?? null;
+  }
+
+  getEarliestCcu(productId: number): CcuSnapshotSteam | null {
+    return db.select().from(ccuSnapshotsSteam)
+      .where(eq(ccuSnapshotsSteam.productId, productId))
+      .orderBy(asc(ccuSnapshotsSteam.capturedAt)).limit(1).get() ?? null;
   }
 
   getCcuPollState(): CcuPollState | null {
