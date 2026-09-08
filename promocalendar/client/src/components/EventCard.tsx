@@ -1,5 +1,6 @@
 import { useLocation } from "wouter";
 import { PlatformChip, StatusChip, GameChip } from "./chips";
+import { EventTotalRevenueChip } from "./BeatCard";
 import { fmtRange, pct, durationDays } from "../lib/format";
 import type { EventSummary } from "../lib/api";
 
@@ -40,6 +41,11 @@ export function EventCard({
       <div className="dates">
         {fmtRange(event.start_date, event.end_date)} · {dur} days · {event.title_count} titles
       </div>
+      {event.is_active && (
+        <div className="chips">
+          <EventTotalRevenueChip event={event} />
+        </div>
+      )}
       {codes.length > 0 && (
         <div className="titles">
           {codes.map((c) => (
