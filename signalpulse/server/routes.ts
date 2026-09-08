@@ -23,6 +23,7 @@ import {
   getCcuLeaderboardRows,
   getCcuPollStateSummary,
   getCcuKpiCard,
+  resolveHeaderImage,
 } from "./leaderboards";
 import { getCcuHistory, getCcuHourly, isValidCcuHistoryRange } from "./ccu-history";
 import { getRelatedGamesSteamHunters } from "./ccu-related";
@@ -2527,6 +2528,31 @@ export async function registerRoutes(
       res.status(500).json({ error: err?.message || String(err) });
     } finally {
       ccuPollInFlight = false;
+    }
+  });
+
+  // Standalone CCU detail page (client/src/pages/ccu-detail.tsx) header —
+  // deliberately lightweight vs. GET /api/products/:id, which additionally
+  // computes wishlist/sales/PS5/forecast data this page never needs.
+  app.get("/api/products/:id/ccu/header", (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const product = storage.getProduct(id);
+      if (!product) return res.status(404).json({ error: "Product not found" });
+      const platforms: string[] = JSON.parse(product.platforms);
+      res.json({
+        productId: id,
+        title: product.title,
+        publisher: product.publisher,
+        releaseDate: product.releaseDate,
+        genre: product.genre,
+        playerFormat: product.playerFormat,
+        targetRetailPriceUsd: product.targetRetailPriceUsd,
+        platforms,
+        headerImage: product.steamAppId ? resolveHeaderImage(product.steamAppId, product.steamHeaderImageUrl ?? null) : null,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 

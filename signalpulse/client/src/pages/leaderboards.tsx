@@ -987,7 +987,7 @@ export default function Leaderboards() {
                   >
                     <TableCell>
                       <a
-                        href={`#/products/${row.productId}`}
+                        href={`#/ccu/${row.productId}`}
                         className="flex flex-col gap-1 group"
                         data-testid={`link-ccu-title-${row.productId}`}
                       >
