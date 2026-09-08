@@ -54,7 +54,7 @@ export default function SalesByCountryPage() {
       <div>
         <div className="flex items-center gap-2 mb-1">
           <Globe2 className="h-4 w-4 text-primary" />
-          <h1 className="text-xl font-semibold">Sales by Country</h1>
+          <h1 className="text-xl font-semibold">Steam Sales by Country</h1>
         </div>
         <div className="text-xs text-muted-foreground">
           {range.label}
