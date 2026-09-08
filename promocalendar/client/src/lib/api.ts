@@ -189,7 +189,8 @@ export interface GameSummary {
   platforms: string[];
   // v3.31 (2026-09-05): resolved by server/signalpulse-map. null when the
   // game code has no Steam AppID mapping (e.g. console-only titles). Feeds
-  // the TitleDetailPage Sales-by-Country panel.
+  // the Steam platform page's "Steam Sales by Country" title picker
+  // (see client/src/pages/PlatformsPage.tsx — PlatformDetail).
   steam_app_id: number | null;
 }
 

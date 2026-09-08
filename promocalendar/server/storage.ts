@@ -8,6 +8,10 @@ import { CALENDARS, UPLOAD_HISTORY_LIMIT, type CalendarId } from "../shared/sche
 import type { ParseResult, ParsedCampaign } from "./parser.js";
 import { rollupDiscount } from "./parser.js";
 import crypto, { createHash } from "node:crypto";
+// Same server-only helper that server/routes.ts and server/sync-pls-events.ts
+// already import statically — this file is never bundled for the browser
+// (separate Vite root under client/), so there's no bundler risk here.
+import { steamAppIdForCode } from "./signalpulse-map.js";
 
 export function isCalendarId(x: unknown): x is CalendarId {
   return typeof x === "string" && (CALENDARS as readonly string[]).includes(x);
@@ -418,12 +422,9 @@ export function listGames(calendar: CalendarId): GameSummary[] {
     )
     .all(calendar) as any[];
   // v3.31 (2026-09-05): enrich with steam_app_id from signalpulse-map so
-  // clients (e.g. TitleDetailPage's Sales by Country panel) can call
-  // SignalPulse's per-AppID endpoints without a second round-trip.
-  // Lazy require to keep the browser bundler happy — signalpulse-map is
-  // server-only.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { steamAppIdForCode } = require("./signalpulse-map.js") as typeof import("./signalpulse-map.js");
+  // clients (e.g. the Steam platform page's Steam Sales by Country title
+  // picker) can call SignalPulse's per-AppID endpoints without a second
+  // round-trip.
   return rows.map((r) => ({
     game_code: r.game_code,
     game_label: r.game_label,
