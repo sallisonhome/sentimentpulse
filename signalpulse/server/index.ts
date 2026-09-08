@@ -5,6 +5,9 @@ import { createServer } from "http";
 import { startWeeklyDigestCron } from "./leaderboard-digest";
 import { startIngestionCron } from "./ingestion";
 import { startAmazonIngestionCron } from "./amazon-cron";
+import { startCcuPollScheduler } from "./ccu-poll";
+import { startIgdbMediaRefreshScheduler } from "./igdb";
+import { startRelatedGamesScheduler } from "./ccu-related";
 import { createSaberAuthMiddleware } from "./saber-auth";
 import { startSteamCookieAutoRefreshCron } from "./steam-token-refresh";
 import { storage } from "./storage";
@@ -121,6 +124,20 @@ app.get("/api/config", (_req, res) => {
   // Sunday 08:00 also-bought. Silently no-ops until rainforest_api_key
   // is set in Settings (see server/amazon-cron.ts).
   startAmazonIngestionCron();
+
+  // Saber Steam CCU Leaderboard (2026-09-08): live CCU + Steam-global rank
+  // poll for Saber's released Steam titles, top of every UTC hour (mirrors
+  // howmanyareplaying's `0 * * * *` pollLive cadence). See server/ccu-poll.ts.
+  startCcuPollScheduler();
+
+  // Daily IGDB media/summary cache refresh for CCU-eligible titles (media
+  // changes far less often than live CCU, so this runs on its own 24h
+  // cadence). See server/igdb.ts.
+  startIgdbMediaRefreshScheduler();
+
+  // Monthly "Top 5 Steam crossover games" precompute (v5 algorithm ported
+  // from howmanyareplaying), 1st of month 10:00 UTC. See server/ccu-related.ts.
+  startRelatedGamesScheduler();
 
   // v3.20 (2026-08-17): Steam long-lived-cookie auto-refresh -- pure HTTP,
   // no browser/Playwright required. Runs once ~2min after boot (self-heal

@@ -22,10 +22,16 @@ import {
   type WishlistConversionBenchmark, type InsertWishlistConversionBenchmark, wishlistConversionBenchmarks,
   type AppSetting, type InsertAppSetting, appSettings,
   type LeaderboardEmailRecipient, type InsertLeaderboardEmailRecipient, leaderboardEmailRecipients,
+  type CcuSnapshotSteam, type InsertCcuSnapshotSteam, ccuSnapshotsSteam,
+  type DailyPeakSteamCcu, type InsertDailyPeakSteamCcu, dailyPeaksSteamCcu,
+  type CcuPollState, ccuPollState,
+  type IgdbMediaCache, type InsertIgdbMediaCache, igdbMediaCache,
+  type RelatedGamesSteamHunters, type InsertRelatedGamesSteamHunters, relatedGamesSteamHunters,
+  type RelatedGamesSteamHuntersMeta, relatedGamesSteamHuntersMeta,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, and, desc, isNull, isNotNull, asc, gte, lte, notInArray, inArray } from "drizzle-orm";
+import { eq, and, desc, isNull, isNotNull, asc, gte, lte, notInArray, inArray, sql } from "drizzle-orm";
 
 const sqlite = new Database("data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -228,6 +234,69 @@ function initializeDatabase() {
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
     );
     CREATE UNIQUE INDEX IF NOT EXISTS igdb_hype_unique ON igdb_hype_daily(product_id, date);
+
+    -- Saber Steam CCU Leaderboard (v1.0, 2026-09-08) --
+    CREATE TABLE IF NOT EXISTS ccu_snapshots_steam (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      captured_at TEXT NOT NULL,
+      ccu INTEGER NOT NULL,
+      global_rank INTEGER,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS ccu_snapshots_steam_product_captured_idx ON ccu_snapshots_steam(product_id, captured_at);
+
+    CREATE TABLE IF NOT EXISTS daily_peaks_steam_ccu (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      peak_date TEXT NOT NULL,
+      peak_ccu INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS daily_peaks_steam_ccu_unique ON daily_peaks_steam_ccu(product_id, peak_date);
+
+    CREATE TABLE IF NOT EXISTS ccu_poll_state (
+      id INTEGER PRIMARY KEY,
+      last_polled_at TEXT,
+      last_poll_result TEXT,
+      titles_polled INTEGER,
+      updated_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS igdb_media_cache (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL UNIQUE,
+      igdb_id INTEGER,
+      summary TEXT,
+      screenshot_ids TEXT,
+      video_ids TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS related_games_steamhunters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      position INTEGER NOT NULL,
+      related_appid INTEGER NOT NULL,
+      related_name TEXT NOT NULL,
+      header_image TEXT,
+      player_count INTEGER,
+      tags TEXT,
+      computed_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS related_games_steamhunters_unique ON related_games_steamhunters(product_id, position);
+
+    CREATE TABLE IF NOT EXISTS related_games_steamhunters_meta (
+      id INTEGER PRIMARY KEY,
+      last_refresh_started_at TEXT,
+      last_refresh_completed_at TEXT,
+      next_refresh_at TEXT,
+      titles_processed INTEGER,
+      titles_skipped INTEGER
+    );
 
     CREATE TABLE IF NOT EXISTS ps5_wishlist_daily (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -899,6 +968,23 @@ export interface IStorage {
     data: InsertWishlistConversionBenchmark,
   ): WishlistConversionBenchmark;
   getWishlistConversionBenchmark(productId: number): WishlistConversionBenchmark | null;
+
+  // ─── Saber Steam CCU Leaderboard (v1.0, 2026-09-08) ────────────────────
+  insertCcuSnapshot(productId: number, ccu: number, capturedAt: string, globalRank?: number | null): CcuSnapshotSteam;
+  upsertDailyPeakCcu(productId: number, peakDate: string, ccu: number): DailyPeakSteamCcu;
+  getCcuSnapshotsSince(productId: number, sinceIso: string): CcuSnapshotSteam[];
+  getAllCcuSnapshotsSince(sinceIso: string): CcuSnapshotSteam[];
+  getDailyPeaksCcuSince(productId: number, sinceDate: string): DailyPeakSteamCcu[];
+  getAllTimePeakCcu(productId: number): DailyPeakSteamCcu | null;
+  getLatestCcu(productId: number): CcuSnapshotSteam | null;
+  getCcuPollState(): CcuPollState | null;
+  upsertCcuPollState(fields: { lastPolledAt: string; lastPollResult: string; titlesPolled: number }): CcuPollState;
+  getIgdbMediaCache(productId: number): IgdbMediaCache | null;
+  upsertIgdbMediaCache(data: InsertIgdbMediaCache): IgdbMediaCache;
+  getRelatedGamesSteamHunters(productId: number): RelatedGamesSteamHunters[];
+  replaceRelatedGamesSteamHunters(productId: number, rows: InsertRelatedGamesSteamHunters[]): void;
+  getRelatedGamesSteamHuntersMeta(): RelatedGamesSteamHuntersMeta | null;
+  upsertRelatedGamesSteamHuntersMeta(fields: Partial<Omit<RelatedGamesSteamHuntersMeta, "id">>): RelatedGamesSteamHuntersMeta;
 
   // App Settings
   getAllSettings(): AppSetting[];
@@ -2465,6 +2551,111 @@ export class DatabaseStorage implements IStorage {
   getWishlistConversionBenchmark(productId: number): WishlistConversionBenchmark | null {
     return db.select().from(wishlistConversionBenchmarks)
       .where(eq(wishlistConversionBenchmarks.productId, productId)).get() ?? null;
+  }
+
+  // ─── Saber Steam CCU Leaderboard (v1.0, 2026-09-08) ────────────────────
+
+  insertCcuSnapshot(productId: number, ccu: number, capturedAt: string, globalRank: number | null = null): CcuSnapshotSteam {
+    return db.insert(ccuSnapshotsSteam).values({ productId, ccu, capturedAt, globalRank }).returning().get();
+  }
+
+  upsertDailyPeakCcu(productId: number, peakDate: string, ccu: number): DailyPeakSteamCcu {
+    const existing = db.select().from(dailyPeaksSteamCcu)
+      .where(and(eq(dailyPeaksSteamCcu.productId, productId), eq(dailyPeaksSteamCcu.peakDate, peakDate))).get();
+    if (existing) {
+      const peakCcu = Math.max(existing.peakCcu, ccu);
+      if (peakCcu === existing.peakCcu) return existing;
+      return db.update(dailyPeaksSteamCcu).set({ peakCcu })
+        .where(eq(dailyPeaksSteamCcu.id, existing.id)).returning().get();
+    }
+    return db.insert(dailyPeaksSteamCcu).values({
+      productId, peakDate, peakCcu: ccu, createdAt: this.now(),
+    }).returning().get();
+  }
+
+  getCcuSnapshotsSince(productId: number, sinceIso: string): CcuSnapshotSteam[] {
+    return db.select().from(ccuSnapshotsSteam)
+      .where(and(eq(ccuSnapshotsSteam.productId, productId), gte(ccuSnapshotsSteam.capturedAt, sinceIso)))
+      .orderBy(asc(ccuSnapshotsSteam.capturedAt)).all();
+  }
+
+  getAllCcuSnapshotsSince(sinceIso: string): CcuSnapshotSteam[] {
+    return db.select().from(ccuSnapshotsSteam)
+      .where(gte(ccuSnapshotsSteam.capturedAt, sinceIso))
+      .orderBy(asc(ccuSnapshotsSteam.capturedAt)).all();
+  }
+
+  getDailyPeaksCcuSince(productId: number, sinceDate: string): DailyPeakSteamCcu[] {
+    return db.select().from(dailyPeaksSteamCcu)
+      .where(and(eq(dailyPeaksSteamCcu.productId, productId), gte(dailyPeaksSteamCcu.peakDate, sinceDate)))
+      .orderBy(asc(dailyPeaksSteamCcu.peakDate)).all();
+  }
+
+  getAllTimePeakCcu(productId: number): DailyPeakSteamCcu | null {
+    return db.select().from(dailyPeaksSteamCcu)
+      .where(eq(dailyPeaksSteamCcu.productId, productId))
+      .orderBy(desc(dailyPeaksSteamCcu.peakCcu)).limit(1).get() ?? null;
+  }
+
+  getLatestCcu(productId: number): CcuSnapshotSteam | null {
+    return db.select().from(ccuSnapshotsSteam)
+      .where(eq(ccuSnapshotsSteam.productId, productId))
+      .orderBy(desc(ccuSnapshotsSteam.capturedAt)).limit(1).get() ?? null;
+  }
+
+  getCcuPollState(): CcuPollState | null {
+    return db.select().from(ccuPollState).where(eq(ccuPollState.id, 1)).get() ?? null;
+  }
+
+  upsertCcuPollState(fields: { lastPolledAt: string; lastPollResult: string; titlesPolled: number }): CcuPollState {
+    const updatedAt = this.now();
+    const existing = this.getCcuPollState();
+    if (existing) {
+      return db.update(ccuPollState).set({ ...fields, updatedAt })
+        .where(eq(ccuPollState.id, 1)).returning().get();
+    }
+    return db.insert(ccuPollState).values({ id: 1, ...fields, updatedAt }).returning().get();
+  }
+
+  getIgdbMediaCache(productId: number): IgdbMediaCache | null {
+    return db.select().from(igdbMediaCache).where(eq(igdbMediaCache.productId, productId)).get() ?? null;
+  }
+
+  upsertIgdbMediaCache(data: InsertIgdbMediaCache): IgdbMediaCache {
+    const existing = this.getIgdbMediaCache(data.productId);
+    if (existing) {
+      return db.update(igdbMediaCache).set(data)
+        .where(eq(igdbMediaCache.productId, data.productId)).returning().get();
+    }
+    return db.insert(igdbMediaCache).values(data).returning().get();
+  }
+
+  getRelatedGamesSteamHunters(productId: number): RelatedGamesSteamHunters[] {
+    return db.select().from(relatedGamesSteamHunters)
+      .where(eq(relatedGamesSteamHunters.productId, productId))
+      .orderBy(asc(relatedGamesSteamHunters.position)).all();
+  }
+
+  replaceRelatedGamesSteamHunters(productId: number, rows: InsertRelatedGamesSteamHunters[]): void {
+    db.transaction((tx) => {
+      tx.delete(relatedGamesSteamHunters).where(eq(relatedGamesSteamHunters.productId, productId)).run();
+      for (const row of rows) {
+        tx.insert(relatedGamesSteamHunters).values(row).run();
+      }
+    });
+  }
+
+  getRelatedGamesSteamHuntersMeta(): RelatedGamesSteamHuntersMeta | null {
+    return db.select().from(relatedGamesSteamHuntersMeta).where(eq(relatedGamesSteamHuntersMeta.id, 1)).get() ?? null;
+  }
+
+  upsertRelatedGamesSteamHuntersMeta(fields: Partial<Omit<RelatedGamesSteamHuntersMeta, "id">>): RelatedGamesSteamHuntersMeta {
+    const existing = this.getRelatedGamesSteamHuntersMeta();
+    if (existing) {
+      return db.update(relatedGamesSteamHuntersMeta).set(fields)
+        .where(eq(relatedGamesSteamHuntersMeta.id, 1)).returning().get();
+    }
+    return db.insert(relatedGamesSteamHuntersMeta).values({ id: 1, ...fields }).returning().get();
   }
 
   // ─── App Settings ───────────────────────────────────────────────────────────

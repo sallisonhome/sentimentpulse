@@ -22,6 +22,7 @@ import { SparklineChart, type TimeSeriesDataPoint, SectionSparkline } from "@/co
 import { SteamSalesCard } from "@/components/steam-sales-card";
 import { ClickablePreview, SectionActions } from "@/components/clickable-preview";
 import { OnPromoBadge } from "@/components/OnPromoBadge";
+import { CcuPdpSection } from "@/components/ccu-pdp-section";
 import {
   SalesByCountry,
   RangeChips,
@@ -53,6 +54,7 @@ export default function ProductDetail() {
     steamPrepurchase: true,
     steamSales: true,
     salesByCountry: true,
+    ccu: true,
     ps5Wishlist: true,
     ps5Prepurchase: true,
     ps5Forecast: true,
@@ -552,6 +554,18 @@ export default function ProductDetail() {
                 showKpis={true}
               />
             </div>
+          </CollapsibleSection>
+        )}
+
+        {/* ─── Concurrent Players (CCU) ──────────────────────────────── */}
+        {hasSteam && product.steamAppId && (
+          <CollapsibleSection
+            title="Concurrent Players"
+            sectionKey="ccu"
+            open={openSections.ccu}
+            onToggle={toggleSection}
+          >
+            <CcuPdpSection productId={productId} />
           </CollapsibleSection>
         )}
 

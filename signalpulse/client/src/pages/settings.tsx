@@ -14,6 +14,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { SteamworksSessionSettings } from "@/components/steamworks-session-settings";
 import { ManualIngestionControls } from "@/components/manual-ingestion-controls";
+import { CcuRefreshControl } from "@/components/ccu-refresh-control";
 import { AmazonAsinPins } from "@/components/amazon-asin-pins";
 
 interface SettingRow {
@@ -337,6 +338,8 @@ export default function Settings() {
       <RecipientsManager />
 
       <ManualIngestionControls />
+
+      <CcuRefreshControl />
 
       <SteamworksSessionSettings />
 
