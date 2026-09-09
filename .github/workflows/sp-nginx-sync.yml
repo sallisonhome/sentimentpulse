@@ -41,6 +41,19 @@ jobs:
             mkdir -p /etc/nginx/backups
             BACKUP=/etc/nginx/backups/sentimentpulse.bak.$(date +%Y%m%d-%H%M%S)
 
+            echo "── Self-heal: move any stray backups out of sites-enabled/ ──"
+            # Older workflow runs (before this fix) wrote sentimentpulse.bak.*
+            # directly into sites-enabled/, where nginx's extension-less
+            # `include sites-enabled/*;` parses them as duplicate server{}
+            # blocks and silently serves the oldest one. Sweep any leftover
+            # copies to the safe backups dir on every run so this can't
+            # recur even if a stray file reappears.
+            shopt -s nullglob
+            for stray in /etc/nginx/sites-enabled/sentimentpulse.bak.*; do
+              echo "moving stray $stray -> /etc/nginx/backups/"
+              mv "$stray" /etc/nginx/backups/
+            done
+
             echo "── Diff (live vs staged) ──"
             if diff -q "$LIVE" "$STAGED" > /dev/null 2>&1; then
               echo "No changes — live config is already up to date. Exiting."
