@@ -84,6 +84,17 @@ export interface RelatedGame {
   tags: string[];
 }
 
+// "Popular Upcoming" -- related UNRELEASED Steam titles, distinct from
+// RelatedGame above (already-released crossover titles). See
+// GET /api/products/:id/ccu/popular-upcoming (server/ccu-upcoming.ts).
+export interface PopularUpcomingGame {
+  position: number;
+  appid: number;
+  name: string;
+  headerImage: string;
+  releaseDisplay: string;
+}
+
 const RANGE_OPTIONS: Array<{ key: CcuHistoryRange; label: string }> = [
   { key: "day", label: "24H" },
   { key: "week", label: "1W" },
@@ -239,6 +250,43 @@ export function RelatedGamesGrid({ games }: { games: RelatedGame[] | undefined }
               {formatNumber(g.playerCount)} playing
             </span>
           )}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+// ─── Popular upcoming games grid ─────────────────────────────────────────────
+
+export function PopularUpcomingGrid({ games }: { games: PopularUpcomingGame[] | undefined }) {
+  if (!games || games.length === 0) {
+    return <p className="text-sm text-muted-foreground">No upcoming Steam titles found yet.</p>;
+  }
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3" data-testid="ccu-popular-upcoming-grid">
+      {games.slice(0, 5).map((g) => (
+        <a
+          key={g.appid}
+          href={`https://store.steampowered.com/app/${g.appid}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex flex-col gap-1.5 group"
+          data-testid={`ccu-popular-upcoming-game-${g.appid}`}
+        >
+          <div className="relative rounded-md overflow-hidden bg-muted aspect-[460/215]">
+            {g.headerImage ? (
+              <img src={g.headerImage} alt={g.name} className="h-full w-full object-cover group-hover:opacity-90 transition-opacity" />
+            ) : (
+              <div className="h-full w-full flex items-center justify-center">
+                <Gamepad2 className="h-6 w-6 text-muted-foreground/40" />
+              </div>
+            )}
+            <span className="absolute top-1.5 left-1.5 h-5 min-w-5 px-1 rounded bg-black/70 text-white text-[11px] font-bold flex items-center justify-center">
+              #{g.position}
+            </span>
+          </div>
+          <span className="text-xs font-medium truncate group-hover:underline">{g.name}</span>
+          <span className="text-[11px] text-muted-foreground">{g.releaseDisplay}</span>
         </a>
       ))}
     </div>

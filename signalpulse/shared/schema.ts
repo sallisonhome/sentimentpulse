@@ -559,6 +559,43 @@ export const relatedGamesSteamHuntersMeta = sqliteTable("related_games_steamhunt
 
 export type RelatedGamesSteamHuntersMeta = typeof relatedGamesSteamHuntersMeta.$inferSelect;
 
+// "Popular Upcoming" — related UNRELEASED Steam titles for a CCU PDP,
+// distinct from relatedGamesSteamHunters above (which is already-released
+// crossover titles only). Sourced from Valve's official
+// IStoreQueryService/MoreLikeThis/v1 with filters.coming_soon_only=true
+// (server/ccu-upcoming.ts) — no SteamHunters scoring, since unreleased
+// titles have no player/achievement stats yet; picks are Valve's own
+// relevance order after franchise-dedupe. `position` is 1-based (1-5).
+export const relatedGamesUpcoming = sqliteTable("related_games_upcoming", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull().references(() => products.id, { onDelete: "cascade" }),
+  position: integer("position").notNull(),
+  relatedAppid: integer("related_appid").notNull(),
+  relatedName: text("related_name").notNull(),
+  headerImage: text("header_image"),
+  releaseDisplay: text("release_display"), // e.g. "Coming soon", "To be announced", or a formatted date
+  computedAt: text("computed_at").notNull(),
+}, (table) => ({
+  uniqueProductPosition: uniqueIndex("related_games_upcoming_unique").on(table.productId, table.position),
+}));
+
+export const insertRelatedGamesUpcomingSchema = createInsertSchema(relatedGamesUpcoming).omit({ id: true });
+export type InsertRelatedGamesUpcoming = z.infer<typeof insertRelatedGamesUpcomingSchema>;
+export type RelatedGamesUpcoming = typeof relatedGamesUpcoming.$inferSelect;
+
+// Single-row (id=1) meta tracker for the monthly "Popular Upcoming"
+// precompute, mirroring relatedGamesSteamHuntersMeta above.
+export const relatedGamesUpcomingMeta = sqliteTable("related_games_upcoming_meta", {
+  id: integer("id").primaryKey(),
+  lastRefreshStartedAt: text("last_refresh_started_at"),
+  lastRefreshCompletedAt: text("last_refresh_completed_at"),
+  nextRefreshAt: text("next_refresh_at"),
+  titlesProcessed: integer("titles_processed"),
+  titlesSkipped: integer("titles_skipped"),
+});
+
+export type RelatedGamesUpcomingMeta = typeof relatedGamesUpcomingMeta.$inferSelect;
+
 // ─── PS5 Wishlist Daily ──────────────────────────────────────────────────────
 
 export const ps5WishlistDaily = sqliteTable("ps5_wishlist_daily", {
