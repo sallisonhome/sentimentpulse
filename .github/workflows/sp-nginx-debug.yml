@@ -1,0 +1,51 @@
+name: SP Nginx Debug (read-only)
+
+# Pure read-only diagnostics: dumps the effective nginx config and recent
+# error log lines. Never writes, reloads, or restarts anything. Use when
+# a route 404s in a way that doesn't match the versioned config, to see
+# what nginx actually has loaded without guessing.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Read-only nginx diagnostics
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s << 'REMOTE'
+            set -uo pipefail
+
+            echo "── sites-enabled listing ──"
+            ls -la /etc/nginx/sites-enabled/
+
+            echo ""
+            echo "── nginx -T | grep -B2 -A20 console (effective config as loaded) ──"
+            nginx -T 2>&1 | grep -B2 -A20 "console" || echo "NO 'console' STRING FOUND IN EFFECTIVE CONFIG"
+
+            echo ""
+            echo "── live sites-enabled/sentimentpulse file: console block as on disk ──"
+            grep -n -B2 -A15 "console" /etc/nginx/sites-enabled/sentimentpulse || echo "NOT FOUND ON DISK"
+
+            echo ""
+            echo "── nginx -v / worker processes ──"
+            nginx -v 2>&1
+            ps aux | grep "[n]ginx: worker"
+
+            echo ""
+            echo "── nginx error log, last 30 lines ──"
+            tail -n 30 /var/log/nginx/error.log 2>&1 || echo "no error.log or unreadable"
+
+            echo ""
+            echo "── direct curl from droplet itself with Host header ──"
+            curl -s -o /dev/null -w "GET /console/ (Host: 104.236.239.46) -> %{http_code}\n" -H "Host: 104.236.239.46" http://127.0.0.1/console/
+          REMOTE
