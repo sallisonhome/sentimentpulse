@@ -2112,3 +2112,65 @@ What DOES come back on every game ASIN from `type=product`:
   Four QA-GATE probes (URL/ASIN/FE/TOP, ~113 lines) accumulated in
   amazon-cron.ts during diagnosis. They stay in git history — they
   don't need to stay in the running binary.
+
+---
+
+## 2026-09-09 — `app_settings` not `settings`, and `MoreLikeThis` needs `context` populated or it silently no-ops
+
+**What happened.** Investigating whether Steam's `IStoreQueryService/MoreLikeThis/v1`
+endpoint could power a "Popular Upcoming" / related-upcoming-titles feature, two
+separate guesses produced wrong conclusions before verification caught them:
+
+1. **Wrong table name.** I queried a table called `settings` on the production
+   SignalPulse SQLite DB via the `signalpulse-db-query.yml` workflow, got zero rows /
+   a "no such table" error, and reported "the Steam key isn't configured." The real
+   table — already documented above in this file under "API Key Storage Convention"
+   — is `app_settings`. I had read that convention section but didn't apply it before
+   writing the query. Steve caught this ("you are wrong we use the steam web api for
+   the ccu tables in hmap go back and find it").
+2. **Wrong assumption about the endpoint being dead.** With a garbage/missing `key`,
+   `MoreLikeThis` returns HTTP 200 with `{"response":{}}` — indistinguishable from a
+   valid key making a malformed request. Early tests used a valid `steam_api_key`
+   (confirmed via `app_settings`, 32 chars, already powering the CCU leaderboard's
+   `GetGamesByConcurrentPlayers` calls) but still got `{"response":{}}` for
+   `MoreLikeThis`, which looked like "the endpoint doesn't work with our key."
+
+**Root cause of (2).** `MoreLikeThis` silently returns an empty `response: {}` object
+(not an error) whenever the `input_json.context` object is omitted — even with an
+otherwise-valid `key` and `item_id`. Populating
+`context: {"language":"english","country_code":"US","elanguage":0}` makes the same
+request return real data. This isn't documented on the reverse-engineered
+[steamapi.xpaw.me schema](https://steamapi.xpaw.me/IStoreQueryService) — `context` is
+listed there as if it were optional metadata, not a functional requirement.
+
+**Verified-working request shape (live, 2026-09-09):**
+```
+GET https://api.steampowered.com/IStoreQueryService/MoreLikeThis/v1/
+  ?key=<steam_api_key from app_settings>
+  &input_json={"context":{"language":"english","country_code":"US","elanguage":0},
+               "item_id":{"appid":<appid>},
+               "count":10,
+               "filters":{"coming_soon_only":true},
+               "data_request":{"include_basic_info":true,"include_release":true}}
+```
+Confirmed against Helldivers 2 (553850) and Space Marine 2 (2183900): returns real
+upcoming titles with `appid`, `name`, `is_coming_soon`, `release.*` fields —
+`total_matching_records` in the hundreds/low-thousands even when filtered to
+`coming_soon_only`.
+
+**Lessons.**
+- **When this file documents a table/column name, use it verbatim — don't
+  re-derive it from memory or guess a plausible-sounding variant.** `settings` vs
+  `app_settings` cost two rounds of wrong conclusions.
+- **A 200 response with an empty body is not proof a public API is broken or
+  key-gated.** Before concluding "doesn't work," diff the exact request against every
+  field the schema lists as available, not just the ones marked `required`. Try
+  populating optional-looking nested objects one at a time — silent no-ops are common
+  on Valve's undocumented/reverse-engineered endpoints.
+- **`steam_api_key` is a free, publicly self-issued developer key — not
+  confidential.** Steve confirmed it's fine to print/log it directly (including in
+  GitHub Actions logs or terminal output) when debugging Steam Web API integrations.
+  See the "Which registered keys are actually confidential" note added to CLAUDE.md's
+  API Key Storage Convention section — this exception applies to Steam-family keys
+  and other free/public developer keys picked up during this feature work, not to
+  genuinely confidential keys (Sony, YouTube, Perplexity, Twitch, Rainforest, Resend).
