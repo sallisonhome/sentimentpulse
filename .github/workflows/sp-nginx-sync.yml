@@ -38,7 +38,8 @@ jobs:
 
             LIVE=/etc/nginx/sites-enabled/sentimentpulse
             STAGED=/tmp/sentimentpulse.conf.staged
-            BACKUP=/etc/nginx/sites-enabled/sentimentpulse.bak.$(date +%Y%m%d-%H%M%S)
+            mkdir -p /etc/nginx/backups
+            BACKUP=/etc/nginx/backups/sentimentpulse.bak.$(date +%Y%m%d-%H%M%S)
 
             echo "── Diff (live vs staged) ──"
             if diff -q "$LIVE" "$STAGED" > /dev/null 2>&1; then
