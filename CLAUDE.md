@@ -890,11 +890,17 @@ The sections above contain project-specific operational details that remain in e
 
 Defaults are seeded (empty) by `seedDefaultSettings()` in `server/storage.ts` at boot, so a fresh droplet shows the field on the Settings page immediately. Do NOT commit real key values into the seed defaults.
 
+### Which registered keys are actually confidential
+
+The `is_secret` column controls UI masking (Settings page shows `••••••••`), but **not every key in this table is a real secret worth guarding in logs/output.** Steve has explicitly confirmed: **Steam Web API keys (`steam_api_key`) are free, publicly self-issued developer keys — there is nothing confidential about them.** They may be printed in terminal output, GitHub Actions logs, or chat when debugging/testing Steam Web API integrations (CCU leaderboard, IStoreQueryService/MoreLikeThis, or any other new public Steam API being wired up). This is a standing exception to the generic "never print secret values" rule for this one credential class — it does not extend to genuinely confidential keys in the table below (Sony, YouTube, Perplexity, Twitch, Rainforest, Resend, app_password), which must still never be printed/logged.
+
+The same reasoning applies to any other new free/public developer API key being integrated as part of this feature work (i.e., a key you can self-issue at no cost from a public developer portal with no account-linked billing/PII risk) — check with Steve if unsure whether a specific new key qualifies before printing it.
+
 ### Registered app_settings keys (Saber Intelligence Suite)
 
 | Setting key                        | Service                       | Secret? |
 |------------------------------------|-------------------------------|---------|
-| `steam_api_key`                    | Steam Web API                 | yes     |
+| `steam_api_key`                    | Steam Web API (free/public — not confidential, see above) | yes (UI-masked only) |
 | `steam_partner_id`                 | Steam Partner ID              | no      |
 | `sony_api_key`                     | Sony Partner Portal API       | yes     |
 | `sony_partner_id`                  | Sony Partner ID               | no      |
