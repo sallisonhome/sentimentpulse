@@ -1,44 +1,37 @@
 #!/usr/bin/env bash
-set -euo pipefail
-cd /opt/sentimentpulse/signalpulse
+set -uo pipefail
 
-KEY=$(node -e '
-const path = require("path");
-const Database = require(path.join(process.cwd(), "node_modules", "better-sqlite3"));
-const db = new Database("data.db", { readonly: true });
-const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get("rainforest_api_key");
-process.stdout.write(row && row.value ? row.value : "");
-' 2>/tmp/dberr.log)
+echo "===== nginx -t ====="
+nginx -t 2>&1
 
-if [ -z "$KEY" ]; then
-  KEY="${RAINFOREST_API_KEY:-}"
-fi
+echo
+echo "===== live nginx sites-enabled listing ====="
+ls -la /etc/nginx/sites-enabled/ 2>&1
 
-if [ -z "$KEY" ]; then
-  echo "ERROR: could not resolve rainforest key from DB or env"
-  cat /tmp/dberr.log || true
-  exit 1
-fi
+echo
+echo "===== live sentimentpulse.conf (full) ====="
+cat /etc/nginx/sites-enabled/sentimentpulse* 2>&1 || cat /etc/nginx/sites-available/sentimentpulse* 2>&1
 
-NODE_URL="https://www.amazon.com/gp/movers-and-shakers/videogames/20972797011/"
-curl -sS "https://api.rainforestapi.com/request" \
-  --data-urlencode "api_key=${KEY}" \
-  --data-urlencode "type=bestsellers" \
-  --data-urlencode "url=${NODE_URL}" \
-  -G -o /tmp/probe.json
+echo
+echo "===== grep for 'auth' across all live nginx conf files ====="
+grep -rn -i "auth" /etc/nginx/sites-enabled/ /etc/nginx/sites-available/ /etc/nginx/conf.d/ 2>/dev/null
 
-python3 -c "
-import json
-d = json.load(open('/tmp/probe.json'))
-print(json.dumps(d.get('request_info'), indent=2))
-bs = d.get('bestsellers', [])
-print('count:', len(bs))
-if bs:
-    print(json.dumps(bs[0], indent=2))
-keys = set()
-for item in bs[:5]:
-    keys.update(item.keys())
-print('union of keys across first 5:', sorted(keys))
-"
+echo
+echo "===== any .bak or stray files in sites-enabled/available ====="
+find /etc/nginx/sites-enabled /etc/nginx/sites-available -maxdepth 1 -type f 2>&1
 
-rm -f /tmp/probe.json /tmp/dberr.log
+echo
+echo "===== systemd services matching saber/signal/promo/partnership/console/sentimentpulse ====="
+systemctl list-units --type=service --all 2>&1 | grep -iE "saber|signal|promo|partner|console|sentiment" 
+
+echo
+echo "===== saber-auth service status (if exists) ====="
+systemctl status saber-auth --no-pager 2>&1 | head -30
+
+echo
+echo "===== ports currently listening ====="
+ss -tlnp 2>&1 | grep -E ":5000|:5001|:5002|:5003|:5004|:8000|:80 " 
+
+echo
+echo "===== is there a /opt/saber-auth or similar dir ====="
+ls -la /opt/ 2>&1
