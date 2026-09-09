@@ -1,0 +1,52 @@
+name: DEBUG - Amazon movers_and_shakers raw probe (temporary, delete after use)
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH probe (read-only) — one live Rainforest movers_and_shakers call
+        env:
+          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$DROPLET_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'bash -s' << 'REMOTE'
+            set -euo pipefail
+            # Read the key from the env file without ever echoing it.
+            KEY=$(grep -m1 '^RAINFOREST_API_KEY=' /etc/signalpulse/env | cut -d= -f2-)
+            if [ -z "$KEY" ]; then
+              echo "ERROR: RAINFOREST_API_KEY not found in /etc/signalpulse/env"
+              exit 1
+            fi
+            # PS5 games-only leaf node (per lessons.md 2026-09-08).
+            NODE_URL="https://www.amazon.com/gp/movers-and-shakers/videogames/20972797011/"
+            curl -sS "https://api.rainforestapi.com/request" \
+              --data-urlencode "api_key=${KEY}" \
+              --data-urlencode "type=bestsellers" \
+              --data-urlencode "url=${NODE_URL}" \
+              -G -o /tmp/probe.json
+            echo "── request_info + first bestseller entry (full) ──"
+            python3 -c "
+import json
+d = json.load(open('/tmp/probe.json'))
+print(json.dumps(d.get('request_info'), indent=2))
+bs = d.get('bestsellers', [])
+print(f'bestsellers count: {len(bs)}')
+if bs:
+    print(json.dumps(bs[0], indent=2))
+    print('--- all keys present across first 5 entries ---')
+    keys = set()
+    for item in bs[:5]:
+        keys |= set(item.keys())
+    print(sorted(keys))
+"
+            rm -f /tmp/probe.json
+          REMOTE
+
+          rm -f ~/.ssh/id_ed25519
