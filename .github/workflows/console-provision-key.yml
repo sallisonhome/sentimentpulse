@@ -1,0 +1,51 @@
+name: Provision Console Leaderboards Deploy Key
+
+# One-off utility: appends a given SSH public key to the droplet's
+# root authorized_keys, idempotently. Used once to let a new standalone
+# repo (console-leaderboards) SSH-deploy to this droplet the same way
+# howmanyareplaying does to its own droplet, without any manual SSH by
+# a human. Safe to re-run — a duplicate key is never appended twice.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pubkey:
+        description: "Public key line to add to authorized_keys"
+        required: true
+      label:
+        description: "Short label for the log output only"
+        required: false
+        default: "unlabeled"
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Append public key if missing
+        env:
+          PUBKEY: ${{ inputs.pubkey }}
+          LABEL: ${{ inputs.label }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "PUBKEY='${PUBKEY}' LABEL='${LABEL}' bash -s" << 'REMOTE'
+          set -euo pipefail
+          mkdir -p /root/.ssh
+          touch /root/.ssh/authorized_keys
+          chmod 700 /root/.ssh
+          chmod 600 /root/.ssh/authorized_keys
+          if grep -qF "$PUBKEY" /root/.ssh/authorized_keys; then
+            echo "Key for '$LABEL' already present — no change."
+          else
+            echo "$PUBKEY" >> /root/.ssh/authorized_keys
+            echo "Appended key for '$LABEL'."
+          fi
+          echo "-- authorized_keys comments now on file --"
+          awk '{print $NF}' /root/.ssh/authorized_keys
+          REMOTE
