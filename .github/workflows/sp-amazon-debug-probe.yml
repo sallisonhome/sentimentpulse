@@ -7,6 +7,7 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: SSH probe (read-only) — one live Rainforest movers_and_shakers call
         env:
           DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
@@ -16,8 +17,8 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-          REMOTE_CMD='set -euo pipefail; KEY=$(grep -m1 "^RAINFOREST_API_KEY=" /etc/signalpulse/env | cut -d= -f2-); if [ -z "$KEY" ]; then echo "ERROR: RAINFOREST_API_KEY not found"; exit 1; fi; NODE_URL="https://www.amazon.com/gp/movers-and-shakers/videogames/20972797011/"; curl -sS "https://api.rainforestapi.com/request" --data-urlencode "api_key=${KEY}" --data-urlencode "type=bestsellers" --data-urlencode "url=${NODE_URL}" -G -o /tmp/probe.json; python3 -c "import json; d=json.load(open(\"/tmp/probe.json\")); print(json.dumps(d.get(\"request_info\"), indent=2)); bs=d.get(\"bestsellers\", []); print(\"count:\", len(bs)); print(json.dumps(bs[0], indent=2)) if bs else None; keys=set(); [keys.update(item.keys()) for item in bs[:5]]; print(\"union of keys across first 5:\", sorted(keys))"; rm -f /tmp/probe.json'
-
-          ssh -v -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 root@104.236.239.46 "$REMOTE_CMD"
+          B64=$(base64 -w0 .github/workflows/probe_remote.sh)
+          echo "$B64" | ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 root@104.236.239.46 \
+            'base64 -d > /tmp/probe_remote.sh && chmod +x /tmp/probe_remote.sh && /tmp/probe_remote.sh; rc=$?; rm -f /tmp/probe_remote.sh; exit $rc'
 
           rm -f ~/.ssh/id_ed25519
