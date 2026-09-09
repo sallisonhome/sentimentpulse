@@ -21,6 +21,7 @@
 import { log } from "./index";
 import { storage } from "./storage";
 import { getCcuEligibleSteamTitles } from "./leaderboards";
+import { fetchHeaderImage } from "./steam-header-image";
 import type { InsertRelatedGamesSteamHunters } from "@shared/schema";
 
 const RELATED_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
@@ -32,7 +33,17 @@ const RELATED_MIN_PLAYERS = 5000;
 const RELATED_MIN_ACHIEVEMENTS = 5;
 const RELATED_SH_CONCURRENCY = 8;
 const RELATED_DELAY_BETWEEN_TITLES_MS = 500;
+// Last-resort fallback only -- Steam has migrated some titles' store assets
+// to hashed Akamai paths (store_item_assets/steam/apps/{appid}/{hash}/...),
+// which makes this synthesized guess 404 for those titles (same root cause
+// fixed for the main leaderboards in steam-header-image.ts v3.14). The real
+// URL is fetched per-pick via fetchHeaderImage() below; this is only used
+// if that live fetch fails.
 const RELATED_HEADER_IMAGE = (appid: number) => `https://cdn.cloudflare.steamstatic.com/steam/apps/${appid}/header.jpg`;
+// Only the final ~5 picks per title need a real header image (not all ~20
+// morelike candidates), so a small per-call stagger is enough pacing --
+// appdetails shares Steam's store-side rate limiting (see steam-header-image.ts).
+const RELATED_HEADER_IMAGE_DELAY_MS = 300;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -258,13 +269,26 @@ export async function fetchRelatedGames(appid: number): Promise<RelatedGamePick[
   const kept = _dedupeFranchise(scored);
   const picks = _mmrSelect(kept, RELATED_TOP_N, RELATED_MMR_LAMBDA);
 
-  return picks.map((r) => ({
-    appid: r.appid,
-    name: r.name,
-    headerImage: RELATED_HEADER_IMAGE(r.appid),
-    playerCount: r.playerCount,
-    tags: r.tagNames.slice(0, 5),
-  }));
+  const results: RelatedGamePick[] = [];
+  for (let i = 0; i < picks.length; i++) {
+    const r = picks[i];
+    let headerImage: string;
+    try {
+      headerImage = (await fetchHeaderImage(r.appid)) ?? RELATED_HEADER_IMAGE(r.appid);
+    } catch (err) {
+      log(`[ccu-related] fetchHeaderImage(${r.appid}) failed, using synthesized URL: ${(err as Error).message}`, "ccu-related");
+      headerImage = RELATED_HEADER_IMAGE(r.appid);
+    }
+    results.push({
+      appid: r.appid,
+      name: r.name,
+      headerImage,
+      playerCount: r.playerCount,
+      tags: r.tagNames.slice(0, 5),
+    });
+    if (i < picks.length - 1) await sleep(RELATED_HEADER_IMAGE_DELAY_MS);
+  }
+  return results;
 }
 
 /** Cache-only read for the PDP -- never hits Valve/SteamHunters live. */
