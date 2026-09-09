@@ -2174,3 +2174,24 @@ upcoming titles with `appid`, `name`, `is_coming_soon`, `release.*` fields —
   API Key Storage Convention section — this exception applies to Steam-family keys
   and other free/public developer keys picked up during this feature work, not to
   genuinely confidential keys (Sony, YouTube, Perplexity, Twitch, Rainforest, Resend).
+
+**Shipped (PR #37, merged 2026-09-09).** Built the "Popular Upcoming" feature end to
+end on SignalPulse's CCU PDP using the verified request shape above: new
+`related_games_upcoming` table, `server/ccu-upcoming.ts` (fetch + franchise dedupe +
+header image + monthly precompute + ops-token manual backfill, structurally mirroring
+`ccu-related.ts`'s crossover-games pipeline), new routes, and a `PopularUpcomingGrid`
+frontend component. Live-verified against production after deploy: manual backfill
+processed all 10 CCU-eligible titles with 0 skipped, and a direct read-only SQL query
+against the production DB (`signalpulse-db-query.yml`) confirmed 5 real picks per
+title with correct release-date formatting across all three branches (dated /
+"Coming soon" / "To be announced"). Notably, unreleased titles have no
+player-count/achievement data to score against, so this pipeline skips
+ccu-related.ts's SteamHunters-based MMR scoring entirely and just preserves Valve's
+own MoreLikeThis relevance order after franchise dedupe — don't try to force a
+scoring model onto data that doesn't support one.
+- **`_dedupeFranchise`/`ScoredCandidate` in ccu-related.ts is not reusable as-is for a
+  simpler candidate shape** — its interface requires SteamHunters-specific fields
+  (`playerCount`, `tagSet`, `tagNames`) that a coming-soon-only pipeline doesn't have,
+  and passing a narrower object literal array trips TypeScript's excess-property
+  check. Only `_franchiseKey` (the pure name→key function) was reusable; the dedupe
+  loop itself had to be re-written locally with the same logic but a smaller shape.
