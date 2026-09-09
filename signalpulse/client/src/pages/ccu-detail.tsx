@@ -10,11 +10,14 @@
  * collapsible-section PDP.
  *
  * Reuses the same content blocks as ccu-pdp-section.tsx's embedded
- * <CcuPdpSection> (that section still renders as-is inside the generic PDP
- * for anyone landing there via Dashboard/Add Product/etc.) so the two
- * surfaces never drift apart on data or chart behavior — only the header/
- * layout differ.
+ * <CcuPdpSection> (media/CCU charts/related games) so the two surfaces
+ * never drift apart on data or chart behavior — only the header/layout
+ * differ. As of 2026-09-08 the CCU/IGDB card and the per-title Steam
+ * Sales by Country panel were deprecated off the generic PDP
+ * (product-detail.tsx) entirely -- this standalone page is now the only
+ * place both live for a title.
  */
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "wouter";
 import { ArrowLeft, Gamepad2 } from "lucide-react";
@@ -31,6 +34,13 @@ import {
   type IgdbMediaResult,
   type RelatedGame,
 } from "@/components/ccu-pdp-section";
+import {
+  SalesByCountry,
+  RangeChips,
+  rangeFor,
+  type RangeKey,
+  type SalesByCountryData,
+} from "@/components/SalesByCountry";
 
 interface CcuHeader {
   productId: number;
@@ -63,6 +73,26 @@ export default function CcuDetail() {
   });
   const { data: related } = useQuery<RelatedGame[]>({
     queryKey: ["/api/products", productId, "ccu", "related"],
+  });
+
+  // ─── Steam Sales by Country (moved here 2026-09-08 from the generic PDP) ─
+  const [sbcRange, setSbcRange] = useState<RangeKey>("90d");
+  const [sbcCustomSince, setSbcCustomSince] = useState<string>("");
+  const [sbcCustomUntil, setSbcCustomUntil] = useState<string>("");
+  const sbcRangeSpec = rangeFor(sbcRange, sbcCustomSince, sbcCustomUntil);
+  const sbcQueryEnabled = !!productId && (sbcRange !== "custom" || (!!sbcCustomSince && !!sbcCustomUntil));
+  const { data: sbcData, isLoading: sbcLoading, error: sbcError } = useQuery<SalesByCountryData & { since: string | null; until: string | null; product_id: number; product_title: string }>({
+    queryKey: ["sales-by-country-product", productId, sbcRangeSpec.since ?? "", sbcRangeSpec.until ?? ""],
+    queryFn: async () => {
+      const p = new URLSearchParams();
+      if (sbcRangeSpec.since) p.set("since", sbcRangeSpec.since);
+      if (sbcRangeSpec.until) p.set("until", sbcRangeSpec.until);
+      const res = await fetch(`/signal/api/products/${productId}/sales-by-country?${p.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    },
+    enabled: sbcQueryEnabled,
+    staleTime: 5 * 60 * 1000,
   });
 
   return (
@@ -164,6 +194,37 @@ export default function CcuDetail() {
       <Card className="p-5 space-y-2">
         <div className="text-sm font-medium">Top 5 Steam Crossover Games</div>
         <RelatedGamesGrid games={related} />
+      </Card>
+
+      <Card className="p-5 space-y-3" data-testid="card-ccu-sales-by-country">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-medium">Steam Sales by Country</div>
+          {sbcData && (
+            <span className="text-xs text-muted-foreground">
+              {sbcData.countries_count} countries · {sbcRangeSpec.label}
+            </span>
+          )}
+        </div>
+        <RangeChips
+          value={sbcRange}
+          onChange={setSbcRange}
+          customSince={sbcCustomSince}
+          customUntil={sbcCustomUntil}
+          onCustomChange={(s, u) => { setSbcCustomSince(s); setSbcCustomUntil(u); }}
+        />
+        {sbcError && (
+          <div className="rounded-md border border-destructive/50 p-3 text-xs text-destructive">
+            Failed to load country data: {(sbcError as Error).message}
+          </div>
+        )}
+        <SalesByCountry
+          data={sbcData}
+          isLoading={sbcLoading}
+          worldAtlasUrl={`${import.meta.env.BASE_URL}world-atlas-110m.json`}
+          emptyMessage="No country data ingested for this range yet. Try widening to LTD to see historic monthly rows."
+          mapHeight={340}
+          showKpis={true}
+        />
       </Card>
     </div>
   );

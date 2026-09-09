@@ -188,7 +188,7 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
                 data-testid="link-sales-by-country"
               >
                 <Globe2 className="h-3.5 w-3.5 shrink-0" />
-                {!sidebarCollapsed && <span>Sales by Country</span>}
+                {!sidebarCollapsed && <span>Steam Sales by Country</span>}
               </div>
             </Link>
             <Link href="/amazon">
