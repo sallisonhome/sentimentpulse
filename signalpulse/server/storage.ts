@@ -28,6 +28,8 @@ import {
   type IgdbMediaCache, type InsertIgdbMediaCache, igdbMediaCache,
   type RelatedGamesSteamHunters, type InsertRelatedGamesSteamHunters, relatedGamesSteamHunters,
   type RelatedGamesSteamHuntersMeta, relatedGamesSteamHuntersMeta,
+  type RelatedGamesUpcoming, type InsertRelatedGamesUpcoming, relatedGamesUpcoming,
+  type RelatedGamesUpcomingMeta, relatedGamesUpcomingMeta,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -290,6 +292,28 @@ function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS related_games_steamhunters_unique ON related_games_steamhunters(product_id, position);
 
     CREATE TABLE IF NOT EXISTS related_games_steamhunters_meta (
+      id INTEGER PRIMARY KEY,
+      last_refresh_started_at TEXT,
+      last_refresh_completed_at TEXT,
+      next_refresh_at TEXT,
+      titles_processed INTEGER,
+      titles_skipped INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS related_games_upcoming (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      position INTEGER NOT NULL,
+      related_appid INTEGER NOT NULL,
+      related_name TEXT NOT NULL,
+      header_image TEXT,
+      release_display TEXT,
+      computed_at TEXT NOT NULL,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS related_games_upcoming_unique ON related_games_upcoming(product_id, position);
+
+    CREATE TABLE IF NOT EXISTS related_games_upcoming_meta (
       id INTEGER PRIMARY KEY,
       last_refresh_started_at TEXT,
       last_refresh_completed_at TEXT,
@@ -1050,6 +1074,10 @@ export interface IStorage {
   replaceRelatedGamesSteamHunters(productId: number, rows: InsertRelatedGamesSteamHunters[]): void;
   getRelatedGamesSteamHuntersMeta(): RelatedGamesSteamHuntersMeta | null;
   upsertRelatedGamesSteamHuntersMeta(fields: Partial<Omit<RelatedGamesSteamHuntersMeta, "id">>): RelatedGamesSteamHuntersMeta;
+  getRelatedGamesUpcoming(productId: number): RelatedGamesUpcoming[];
+  replaceRelatedGamesUpcoming(productId: number, rows: InsertRelatedGamesUpcoming[]): void;
+  getRelatedGamesUpcomingMeta(): RelatedGamesUpcomingMeta | null;
+  upsertRelatedGamesUpcomingMeta(fields: Partial<Omit<RelatedGamesUpcomingMeta, "id">>): RelatedGamesUpcomingMeta;
 
   // App Settings
   getAllSettings(): AppSetting[];
@@ -2727,6 +2755,34 @@ export class DatabaseStorage implements IStorage {
         .where(eq(relatedGamesSteamHuntersMeta.id, 1)).returning().get();
     }
     return db.insert(relatedGamesSteamHuntersMeta).values({ id: 1, ...fields }).returning().get();
+  }
+
+  getRelatedGamesUpcoming(productId: number): RelatedGamesUpcoming[] {
+    return db.select().from(relatedGamesUpcoming)
+      .where(eq(relatedGamesUpcoming.productId, productId))
+      .orderBy(asc(relatedGamesUpcoming.position)).all();
+  }
+
+  replaceRelatedGamesUpcoming(productId: number, rows: InsertRelatedGamesUpcoming[]): void {
+    db.transaction((tx) => {
+      tx.delete(relatedGamesUpcoming).where(eq(relatedGamesUpcoming.productId, productId)).run();
+      for (const row of rows) {
+        tx.insert(relatedGamesUpcoming).values(row).run();
+      }
+    });
+  }
+
+  getRelatedGamesUpcomingMeta(): RelatedGamesUpcomingMeta | null {
+    return db.select().from(relatedGamesUpcomingMeta).where(eq(relatedGamesUpcomingMeta.id, 1)).get() ?? null;
+  }
+
+  upsertRelatedGamesUpcomingMeta(fields: Partial<Omit<RelatedGamesUpcomingMeta, "id">>): RelatedGamesUpcomingMeta {
+    const existing = this.getRelatedGamesUpcomingMeta();
+    if (existing) {
+      return db.update(relatedGamesUpcomingMeta).set(fields)
+        .where(eq(relatedGamesUpcomingMeta.id, 1)).returning().get();
+    }
+    return db.insert(relatedGamesUpcomingMeta).values({ id: 1, ...fields }).returning().get();
   }
 
   // ─── App Settings ───────────────────────────────────────────────────────────

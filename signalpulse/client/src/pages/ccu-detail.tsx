@@ -30,9 +30,11 @@ import {
   CcuHistoryChart,
   CcuHourlyChart,
   RelatedGamesGrid,
+  PopularUpcomingGrid,
   type CcuKpiCard,
   type IgdbMediaResult,
   type RelatedGame,
+  type PopularUpcomingGame,
 } from "@/components/ccu-pdp-section";
 import {
   SalesByCountry,
@@ -73,6 +75,9 @@ export default function CcuDetail() {
   });
   const { data: related } = useQuery<RelatedGame[]>({
     queryKey: ["/api/products", productId, "ccu", "related"],
+  });
+  const { data: popularUpcoming } = useQuery<PopularUpcomingGame[]>({
+    queryKey: ["/api/products", productId, "ccu", "popular-upcoming"],
   });
 
   // ─── Steam Sales by Country (moved here 2026-09-08 from the generic PDP) ─
@@ -194,6 +199,11 @@ export default function CcuDetail() {
       <Card className="p-5 space-y-2">
         <div className="text-sm font-medium">Top 5 Steam Crossover Games</div>
         <RelatedGamesGrid games={related} />
+      </Card>
+
+      <Card className="p-5 space-y-2">
+        <div className="text-sm font-medium">Popular Upcoming</div>
+        <PopularUpcomingGrid games={popularUpcoming} />
       </Card>
 
       <Card className="p-5 space-y-3" data-testid="card-ccu-sales-by-country">

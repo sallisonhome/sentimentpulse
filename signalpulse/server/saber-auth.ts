@@ -202,6 +202,9 @@ const OPS_TOKEN_PATHS = new Set([
   // this lets an operator backfill immediately or recover a missed month
   // without waiting for the next natural window. See lessons.md 2026-09-08.
   "/api/ccu/related/backfill",
+  // Same manual-recovery pattern as above, for the "Popular Upcoming"
+  // monthly precompute (server/ccu-upcoming.ts). See lessons.md 2026-09-09.
+  "/api/ccu/popular-upcoming/backfill",
 ]);
 
 // Path prefixes that accept the ops token. Use for endpoint groups that have

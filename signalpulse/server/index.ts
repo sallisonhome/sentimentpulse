@@ -8,6 +8,7 @@ import { startAmazonIngestionCron } from "./amazon-cron";
 import { startCcuPollScheduler } from "./ccu-poll";
 import { startIgdbMediaRefreshScheduler } from "./igdb";
 import { startRelatedGamesScheduler } from "./ccu-related";
+import { startPopularUpcomingScheduler } from "./ccu-upcoming";
 import { createSaberAuthMiddleware } from "./saber-auth";
 import { startSteamCookieAutoRefreshCron } from "./steam-token-refresh";
 import { storage } from "./storage";
@@ -140,6 +141,11 @@ app.get("/api/config", (_req, res) => {
   // Monthly "Top 5 Steam crossover games" precompute (v5 algorithm ported
   // from howmanyareplaying), 1st of month 10:00 UTC. See server/ccu-related.ts.
   startRelatedGamesScheduler();
+
+  // Monthly "Popular Upcoming" precompute (unreleased related titles via
+  // Valve's official MoreLikeThis API), same 1st-of-month 10:00 UTC cadence.
+  // See server/ccu-upcoming.ts.
+  startPopularUpcomingScheduler();
 
   // v3.20 (2026-08-17): Steam long-lived-cookie auto-refresh -- pure HTTP,
   // no browser/Playwright required. Runs once ~2min after boot (self-heal
