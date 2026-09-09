@@ -18,6 +18,6 @@ jobs:
 
           REMOTE_CMD='set -euo pipefail; KEY=$(grep -m1 "^RAINFOREST_API_KEY=" /etc/signalpulse/env | cut -d= -f2-); if [ -z "$KEY" ]; then echo "ERROR: RAINFOREST_API_KEY not found"; exit 1; fi; NODE_URL="https://www.amazon.com/gp/movers-and-shakers/videogames/20972797011/"; curl -sS "https://api.rainforestapi.com/request" --data-urlencode "api_key=${KEY}" --data-urlencode "type=bestsellers" --data-urlencode "url=${NODE_URL}" -G -o /tmp/probe.json; python3 -c "import json; d=json.load(open(\"/tmp/probe.json\")); print(json.dumps(d.get(\"request_info\"), indent=2)); bs=d.get(\"bestsellers\", []); print(\"count:\", len(bs)); print(json.dumps(bs[0], indent=2)) if bs else None; keys=set(); [keys.update(item.keys()) for item in bs[:5]]; print(\"union of keys across first 5:\", sorted(keys))"; rm -f /tmp/probe.json'
 
-          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 "$REMOTE_CMD"
+          ssh -v -o BatchMode=yes -o StrictHostKeyChecking=accept-new -i ~/.ssh/id_ed25519 root@104.236.239.46 "$REMOTE_CMD"
 
           rm -f ~/.ssh/id_ed25519
