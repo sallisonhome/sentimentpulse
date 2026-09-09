@@ -48,4 +48,16 @@ jobs:
             echo ""
             echo "── direct curl from droplet itself with Host header ──"
             curl -s -o /dev/null -w "GET /console/ (Host: 104.236.239.46) -> %{http_code}\n" -H "Host: 104.236.239.46" http://127.0.0.1/console/
+
+            echo ""
+            echo "── nginx -t full raw output (checking for conflicting server_name warnings) ──"
+            nginx -t 2>&1
+
+            echo ""
+            echo "── grep server_name across ALL files in sites-enabled (incl. .bak) ──"
+            grep -n "server_name\|^server {\|^# configuration file" /etc/nginx/sites-enabled/* 2>&1
+
+            echo ""
+            echo "── main nginx.conf include directive for sites-enabled ──"
+            grep -n "sites-enabled" /etc/nginx/nginx.conf
           REMOTE
