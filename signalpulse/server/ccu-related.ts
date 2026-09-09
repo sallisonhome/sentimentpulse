@@ -287,6 +287,11 @@ export function getRelatedGamesSteamHunters(productId: number) {
  * scores nothing gets its stale picks cleared (matches HMAP's "picks.length
  * > 0 ? processed++ : skipped++" plus unconditional DELETE-then-maybe-INSERT).
  */
+// Module-private in-flight guard, kept alongside the flag it protects
+// (ES module bindings can't be reassigned from an importing module, so
+// the guard lives here rather than as an exported mutable `let`).
+let relatedGamesBackfillInFlight = false;
+
 export async function pollRelatedGamesSteamHunters(): Promise<{ processed: number; skipped: number }> {
   const startMs = Date.now();
   storage.upsertRelatedGamesSteamHuntersMeta({ lastRefreshStartedAt: new Date().toISOString(), titlesProcessed: 0, titlesSkipped: 0 });
@@ -368,5 +373,30 @@ export function stopRelatedGamesScheduler(): void {
     clearInterval(relatedPollInterval);
     relatedPollInterval = null;
     log("Saber Steam CCU related-games scheduler stopped", "ccu-related");
+  }
+}
+
+// ─── Manual trigger (2026-09-08) ────────────────────────────────────────────
+// Ops-token-gated one-off run for POST /api/ccu/related/backfill (see
+// server/saber-auth.ts OPS_TOKEN_PATHS). The automatic scheduler above is an
+// in-process setInterval with no catch-up if a deploy restarts the process
+// during its exact 1st-of-month/10:00-UTC check window, so this exists to
+// (a) populate the surface immediately instead of waiting for the next
+// natural window, and (b) let an operator recover a missed month on demand.
+// Runs the exact same pollRelatedGamesSteamHunters() pipeline -- no separate
+// code path to drift from the scheduled one.
+export async function triggerRelatedGamesBackfill(): Promise<
+  | { ok: true; processed: number; skipped: number }
+  | { ok: false; alreadyRunning: true }
+> {
+  if (relatedGamesBackfillInFlight) {
+    return { ok: false, alreadyRunning: true };
+  }
+  relatedGamesBackfillInFlight = true;
+  try {
+    const { processed, skipped } = await pollRelatedGamesSteamHunters();
+    return { ok: true, processed, skipped };
+  } finally {
+    relatedGamesBackfillInFlight = false;
   }
 }
