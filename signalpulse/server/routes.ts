@@ -26,7 +26,7 @@ import {
   resolveHeaderImage,
 } from "./leaderboards";
 import { getCcuHistory, getCcuHourly, isValidCcuHistoryRange } from "./ccu-history";
-import { getRelatedGamesSteamHunters } from "./ccu-related";
+import { getRelatedGamesSteamHunters, triggerRelatedGamesBackfill } from "./ccu-related";
 import { pollSaberSteamCcu } from "./ccu-poll";
 import { getIgdbMediaForProduct } from "./igdb";
 import { sendWeeklyLeaderboardDigest, renderWeeklyDigestHtml } from "./leaderboard-digest";
@@ -2611,6 +2611,30 @@ export async function registerRoutes(
       const product = storage.getProduct(id);
       if (!product) return res.status(404).json({ error: "Product not found" });
       res.json(getRelatedGamesSteamHunters(id));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Ops-token-gated manual trigger for the "Top 5 Steam Crossover Games"
+  // precompute (server/ccu-related.ts). See OPS_TOKEN_PATHS in
+  // server/saber-auth.ts. Runs across every CCU-eligible Saber title
+  // (external Valve + SteamHunters calls, ~0.5s delay per title on top of
+  // network latency) -- can take a couple minutes for the full portfolio.
+  app.post("/api/ccu/related/backfill", async (_req, res) => {
+    try {
+      const result = await triggerRelatedGamesBackfill();
+      if (!result.ok) {
+        return res.status(409).json({
+          error: "Backfill already in progress",
+          message: "Another related-games backfill is currently executing. Retry in a moment.",
+        });
+      }
+      res.json({
+        message: "Related-games backfill completed",
+        processed: result.processed,
+        skipped: result.skipped,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

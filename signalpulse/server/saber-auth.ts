@@ -195,6 +195,13 @@ const OPS_TOKEN_PATHS = new Set([
   // POST /api/amazon/competitor-asin-map.
   "/api/amazon/asin-map",
   "/api/amazon/competitor-asin-map",
+  // Manual/one-off trigger for the "Top 5 Steam Crossover Games" monthly
+  // precompute (server/ccu-related.ts). The job otherwise only fires via
+  // an in-process setInterval check (1st of month, 10:00 UTC) with no
+  // catch-up if a deploy restarts the process during that exact hour --
+  // this lets an operator backfill immediately or recover a missed month
+  // without waiting for the next natural window. See lessons.md 2026-09-08.
+  "/api/ccu/related/backfill",
 ]);
 
 // Path prefixes that accept the ops token. Use for endpoint groups that have
