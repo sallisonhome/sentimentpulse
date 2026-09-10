@@ -3,8 +3,10 @@
  *
  * Uses the Twitch OAuth2 flow (IGDB requires Twitch app credentials since 2020).
  * Credentials are read from app_settings keys:
- *   igdb.twitch_client_id
- *   igdb.twitch_client_secret
+ *   twitch_client_id
+ *   twitch_client_secret
+ * (Same keys the pre-existing server/igdb.ts module uses to enrich the
+ * howmanyareplaying-style Amazon PDPs, so a single Twitch app powers both.)
  * The bearer token is cached in-process for its full TTL.
  *
  * Rate-limit courtesy: 4 req/s max, 500 rows per response max — IGDB defaults.
@@ -25,10 +27,10 @@ let cachedToken: { access_token: string; expires_at: number } | null = null;
 async function getToken(): Promise<string> {
   const now = Date.now();
   if (cachedToken && cachedToken.expires_at > now + 60_000) return cachedToken.access_token;
-  const clientId = storage.getSetting("igdb.twitch_client_id")?.value;
-  const clientSecret = storage.getSetting("igdb.twitch_client_secret")?.value;
+  const clientId = storage.getSetting("twitch_client_id")?.value;
+  const clientSecret = storage.getSetting("twitch_client_secret")?.value;
   if (!clientId || !clientSecret) {
-    throw new Error("IGDB credentials missing: set igdb.twitch_client_id and igdb.twitch_client_secret in app_settings");
+    throw new Error("IGDB credentials missing: set twitch_client_id and twitch_client_secret in app_settings (Settings → API Keys)");
   }
   const url = `https://id.twitch.tv/oauth2/token?client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}&grant_type=client_credentials`;
   const res = await fetch(url, { method: "POST" });
@@ -57,7 +59,7 @@ interface IgdbGame {
 
 async function igdbQuery<T>(endpoint: string, body: string): Promise<T> {
   const token = await getToken();
-  const clientId = storage.getSetting("igdb.twitch_client_id")!.value!;
+  const clientId = storage.getSetting("twitch_client_id")!.value!;
   const res = await fetch(`https://api.igdb.com/v4/${endpoint}`, {
     method: "POST",
     headers: {
