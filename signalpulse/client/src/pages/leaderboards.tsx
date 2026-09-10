@@ -444,7 +444,7 @@ function AmazonPlatformTableCell({
           {showArrow ? (
             <span
               className="inline-flex items-center gap-0.5 font-medium"
-              style={{ color: isUp ? SABER_ACCENT : RANK_DOWN_MUTED }}
+              style={{ color: isUp ? RANK_DOWN_MUTED : SABER_ACCENT }}
             >
               {isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
               {Math.abs(deltaVal!)}{deltaSuffix}
@@ -588,13 +588,11 @@ function SaberAmazonBoard({
 
   return (
     <div className="space-y-6">
-      {/* Delta color legend -- rank/BSR are "lower is better" metrics, so an
-          increasing number is a decline (red) and a decreasing number is an
-          improvement (green). Called out explicitly since the arrow
-          direction alone (up) reads as "positive" by habit from other
-          charts, which is the opposite of what it means here. */}
+      {/* Delta color legend -- rank/BSR are "lower is better" metrics (e.g.
+          #26 beats #27), so a move toward #1 is an improvement (green, up
+          arrow) and a move away from #1 is a decline (red, down arrow). */}
       <div className="flex items-center flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-        <span>Rank &amp; BSR deltas: a lower number is better on Amazon, so the color follows the rank change, not the arrow direction.</span>
+        <span>Rank &amp; BSR deltas: a lower number is better on Amazon, so moving toward #1 is an improvement.</span>
         <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
           <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: RANK_DOWN_MUTED }} aria-hidden="true" />
           Green = rank improved
