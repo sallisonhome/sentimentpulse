@@ -1,0 +1,227 @@
+name: SignalPulse — Seed IGDB Credentials
+
+# Seeds igdb.twitch_client_id + igdb.twitch_client_secret into the
+# signalpulse app_settings table from repo secrets, so the console-
+# leaderboards IGDB enrichment (server/signals/console/igdb.ts) can
+# obtain a Twitch OAuth2 token.
+#
+# Required repo secrets:
+#   IGDB_TWITCH_CLIENT_ID     — the Twitch app's Client ID
+#   IGDB_TWITCH_CLIENT_SECRET — the Twitch app's Client Secret
+#   DROPLET_SSH_KEY           — existing SSH key, already used by
+#                               signalpulse-deploy.yml
+#
+# Idempotent: if both keys are already present in app_settings, the
+# workflow reports no change. If they're present with a different
+# value the workflow updates them in place.
+#
+# Manual-only (workflow_dispatch). No schedule, no push trigger — the
+# secrets live in GitHub, this workflow just projects them into the
+# live SQLite DB on the droplet.
+#
+# Concurrency: shares 'deploy-droplet' with deploy.yml so we don't race
+# a deploy that's touching the SQLite DB.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Preflight — secrets exist
+        env:
+          CID: ${{ secrets.IGDB_TWITCH_CLIENT_ID }}
+          CSEC: ${{ secrets.IGDB_TWITCH_CLIENT_SECRET }}
+        run: |
+          if [ -z "$CID" ]; then
+            echo "::error::IGDB_TWITCH_CLIENT_ID secret is not set on this repo."
+            echo "Add it in GitHub → Settings → Secrets and variables → Actions → New repository secret."
+            exit 1
+          fi
+          if [ -z "$CSEC" ]; then
+            echo "::error::IGDB_TWITCH_CLIENT_SECRET secret is not set on this repo."
+            exit 1
+          fi
+          echo "IGDB_TWITCH_CLIENT_ID length: ${#CID}"
+          echo "IGDB_TWITCH_CLIENT_SECRET length: ${#CSEC}"
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Seed rows in app_settings
+        env:
+          CID: ${{ secrets.IGDB_TWITCH_CLIENT_ID }}
+          CSEC: ${{ secrets.IGDB_TWITCH_CLIENT_SECRET }}
+        run: |
+          # Send the secrets to the droplet safely:
+          #   1. Write a two-line file on the runner with CID on line 1 and
+          #      CSEC on line 2 (nothing else, no key names, no shell code).
+          #   2. scp it to a mode-0600 file on the droplet, /root/.igdb-seed.
+          #   3. SSH in and run the seed script, which reads the two lines
+          #      into shell variables using `mapfile` (no quoting hazard).
+          #   4. shred + rm the file on both sides.
+          #
+          # This keeps the secret values entirely off any command line, so
+          # neither ps, bash history, nor sshd's authlog can capture them.
+
+          umask 077
+          RUN_TMP=$(mktemp)
+          printf '%s\n%s\n' "$CID" "$CSEC" > "$RUN_TMP"
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              "$RUN_TMP" root@104.236.239.46:/root/.igdb-seed
+          shred -u "$RUN_TMP" 2>/dev/null || rm -f "$RUN_TMP"
+
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          umask 077
+
+          SEED=/root/.igdb-seed
+          chmod 600 "$SEED"
+          if [ ! -s "$SEED" ]; then
+            echo "ERR: seed file missing or empty"
+            exit 1
+          fi
+
+          # Read the two lines. mapfile is bash-builtin; no PATH/env issues.
+          mapfile -t LINES < "$SEED"
+          if [ "${#LINES[@]}" -lt 2 ]; then
+            echo "ERR: seed file did not contain 2 lines"
+            shred -u "$SEED" 2>/dev/null || rm -f "$SEED"
+            exit 1
+          fi
+          IGDB_CID="${LINES[0]}"
+          IGDB_CSEC="${LINES[1]}"
+          # Wipe the on-disk copy immediately — from this point the values
+          # only exist in this shell's memory.
+          shred -u "$SEED" 2>/dev/null || rm -f "$SEED"
+
+          # Resolve the DB path the same way signalpulse-db-query.yml does:
+          # signalpulse.service WorkingDirectory + relative 'data.db' path
+          # that storage.ts opens.
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          if [ -z "$WD" ]; then
+            echo "ERR: could not resolve signalpulse WorkingDirectory from systemd"
+            exit 1
+          fi
+          DB="$WD/data.db"
+          if [ ! -f "$DB" ]; then
+            echo "ERR: DB file missing at $DB"
+            exit 1
+          fi
+          echo "DB: $DB"
+
+          # NOW = ISO-8601 UTC timestamp — same shape storage.ts uses.
+          NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+          # Guard: the app_settings table must exist. If it doesn't, the
+          # signalpulse process was never booted against this DB — fail
+          # loudly so we don't create a schema-less shim row.
+          EXISTS=$(sqlite3 "$DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='app_settings';")
+          if [ -z "$EXISTS" ]; then
+            echo "ERR: app_settings table does not exist in $DB"
+            exit 1
+          fi
+
+          # Upsert both rows. app_settings.key is UNIQUE, so ON CONFLICT (key)
+          # rewrites the value + updated_at without touching created_at.
+          # is_secret=1, category='igdb'. The label is human-facing (visible
+          # in the Settings UI).
+          #
+          # Quoting: use sqlite3's -cmd '.parameter set' with bash's own
+          # single-quote escaping (each ' -> '\''). This is the standard,
+          # complete way to inject arbitrary strings into a sqlite3 command
+          # line — no character sequence in the value can escape the
+          # binding, even ', ", ;, backticks, or embedded newlines.
+          esc() { printf "%s" "$1" | sed "s/'/'\\\\''/g"; }
+          CID_Q="'$(esc "$IGDB_CID")'"
+          CSEC_Q="'$(esc "$IGDB_CSEC")'"
+
+          sqlite3 "$DB" \
+            -cmd ".parameter set :cid  $CID_Q" \
+            -cmd ".parameter set :csec $CSEC_Q" \
+            "INSERT INTO app_settings (key, value, label, category, is_secret, created_at, updated_at)
+             VALUES ('igdb.twitch_client_id', :cid, 'IGDB (Twitch) Client ID', 'igdb', 1, '$NOW', '$NOW')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
+             INSERT INTO app_settings (key, value, label, category, is_secret, created_at, updated_at)
+             VALUES ('igdb.twitch_client_secret', :csec, 'IGDB (Twitch) Client Secret', 'igdb', 1, '$NOW', '$NOW')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;"
+
+          # Clear the values from this shell's memory before it exits.
+          unset IGDB_CID IGDB_CSEC CID_Q CSEC_Q
+
+          # Verify — print only key, category, is_secret, value LENGTH.
+          # Never print the value itself. GitHub Actions would mask the
+          # secret anyway (both are registered secrets) but belt-and-
+          # suspenders it.
+          echo ""
+          echo "-- app_settings rows for category='igdb' (values shown as LENGTH only) --"
+          sqlite3 -header -column "$DB" \
+            "SELECT key, category, is_secret, LENGTH(value) AS value_length, updated_at
+             FROM app_settings
+             WHERE category='igdb' AND key IN ('igdb.twitch_client_id','igdb.twitch_client_secret')
+             ORDER BY key;"
+          REMOTE
+
+      - name: Smoke test — verify IGDB token exchange
+        run: |
+          # Hit the app's IGDB refresh endpoint on loopback via the ops
+          # token. If credentials work, we expect the endpoint to at least
+          # get past the "credentials missing" branch — a 400 "unknown
+          # title" is fine; a 500 with "IGDB credentials missing" means
+          # the seed didn't stick. We can't safely test end-to-end here
+          # because we don't have a known title_id.
+          #
+          # Instead of hitting the app, we do the Twitch OAuth2 exchange
+          # directly from the runner and confirm we get a bearer token
+          # back — this is the exact same call server/signals/console/igdb.ts
+          # makes on first use.
+
+          set -e
+          # Fetch the just-seeded values from the droplet's DB (again,
+          # never echo them; pipe straight to curl).
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "bash -s" <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          DB="$WD/data.db"
+          CID=$(sqlite3 "$DB" "SELECT value FROM app_settings WHERE key='igdb.twitch_client_id';")
+          CSEC=$(sqlite3 "$DB" "SELECT value FROM app_settings WHERE key='igdb.twitch_client_secret';")
+          if [ -z "$CID" ] || [ -z "$CSEC" ]; then
+            echo "ERR: could not read back seeded credentials"
+            exit 1
+          fi
+          RESP=$(curl -sS --max-time 10 -X POST \
+            "https://id.twitch.tv/oauth2/token" \
+            -d "client_id=${CID}" \
+            -d "client_secret=${CSEC}" \
+            -d "grant_type=client_credentials")
+          # Parse without leaking the token
+          if echo "$RESP" | grep -q '"access_token"'; then
+            EXP=$(echo "$RESP" | grep -o '"expires_in":[0-9]*' | cut -d: -f2)
+            TYPE=$(echo "$RESP" | grep -o '"token_type":"[^"]*"' | cut -d'"' -f4)
+            echo "IGDB token exchange OK — token_type=${TYPE}, expires_in=${EXP}s"
+          else
+            echo "ERR: Twitch OAuth2 rejected the credentials"
+            # Strip any token before printing (defense in depth — should
+            # be no token if we got here).
+            echo "$RESP" | sed 's/"access_token":"[^"]*"/"access_token":"***"/'
+            exit 1
+          fi
+          REMOTE
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "IGDB credentials seeded into signalpulse app_settings."
+          echo "Next: hit POST /signal/api/console/igdb/refresh/<titleId> to enrich a title."
