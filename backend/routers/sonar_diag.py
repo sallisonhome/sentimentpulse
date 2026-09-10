@@ -57,7 +57,10 @@ def _probe_sonar(model: str, timeout: float = 20.0) -> dict:
             {"role": "system", "content": "Respond with the single word: ok"},
             {"role": "user", "content": "ping"},
         ],
-        "max_tokens": 3,
+        # Perplexity requires max_tokens >= 16 as of 2026-09; earlier a
+        # smaller value like 3 was accepted. Kept at the API's minimum so
+        # the probe stays cheap.
+        "max_tokens": 16,
         "temperature": 0.0,
         "disable_search": True,
     }
