@@ -37,6 +37,7 @@ import { handleResendInboundWebhook, sendReply, forwardToPersonalInbox } from ".
 import { registerOnPromoRoutes } from "./on-promo-routes";
 import { registerPromoSupportRoutes } from "./promo-support-routes";
 import { registerAmazonRoutes } from "./amazon-routes";
+import { registerConsoleLeaderboardRoutes } from "./routes-console-leaderboards";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -151,6 +152,7 @@ export async function registerRoutes(
   // Amazon Retail app (2026-09-06): all /api/amazon/* endpoints. See
   // server/amazon-routes.ts for the full endpoint list.
   registerAmazonRoutes(app);
+  registerConsoleLeaderboardRoutes(app);
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
 

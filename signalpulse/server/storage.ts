@@ -41,6 +41,12 @@ sqlite.pragma("foreign_keys = ON");
 
 export const db = drizzle(sqlite);
 
+// Raw better-sqlite3 handle exposed for modules that need direct SQL access
+// (e.g. server/signals/console/* + routes-console-leaderboards.ts). Ported
+// from sallisonhome/signalpulse@feature/console-leaderboards-v1 where this
+// export was named `rawSqlite`.
+export const rawSqlite = sqlite;
+
 // ─── Create Tables ───────────────────────────────────────────────────────────
 
 function initializeDatabase() {
@@ -693,6 +699,113 @@ function initializeDatabase() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS amazon_product_related_unique_day_source_kind_pos ON amazon_product_related_daily(snapshot_date, source_asin, kind, rank_position);
     CREATE INDEX IF NOT EXISTS amazon_product_related_by_source_idx ON amazon_product_related_daily(source_asin, snapshot_date);
+
+    -- ─── Console Leaderboards v1 (Store-Signal Sales) ───
+    -- Ported from sallisonhome/signalpulse@feature/console-leaderboards-v1.
+    -- Kept in lockstep with shared/schema.ts. Portable to howmanyareplaying (Postgres/raw SQL).
+
+    CREATE TABLE IF NOT EXISTS store_rating_signal_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      capture_date TEXT NOT NULL,
+      source_endpoint TEXT NOT NULL,
+      rating_count INTEGER,
+      avg_rating REAL,
+      distribution_json TEXT,
+      window_label TEXT,
+      is_native_window INTEGER NOT NULL DEFAULT 0,
+      sku_count INTEGER NOT NULL DEFAULT 0,
+      raw_json TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS store_rating_signal_daily_unique
+      ON store_rating_signal_daily (title_id, platform, capture_date);
+
+    CREATE TABLE IF NOT EXISTS steam_review_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id TEXT NOT NULL,
+      bucket_start INTEGER NOT NULL,
+      bucket_granularity TEXT NOT NULL,
+      recommendations_up INTEGER NOT NULL DEFAULT 0,
+      recommendations_down INTEGER NOT NULL DEFAULT 0,
+      source_endpoint TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS steam_review_history_unique
+      ON steam_review_history (app_id, bucket_start, bucket_granularity);
+
+    CREATE TABLE IF NOT EXISTS platform_sku_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      external_sku TEXT NOT NULL,
+      concept_id TEXT,
+      sku_role TEXT NOT NULL,
+      business_model TEXT NOT NULL DEFAULT 'unknown',
+      msrp_usd_cents INTEGER,
+      business_model_source TEXT,
+      is_manual_override INTEGER NOT NULL DEFAULT 0,
+      refreshed_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS platform_sku_map_unique
+      ON platform_sku_map (platform, external_sku);
+
+    CREATE TABLE IF NOT EXISTS window_estimates_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      window TEXT NOT NULL,
+      as_of_date TEXT NOT NULL,
+      signal_value REAL,
+      owners_low REAL,
+      owners_mid REAL,
+      owners_high REAL,
+      units_mid REAL,
+      multiplier_id INTEGER,
+      gated_reason TEXT,
+      method TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS window_estimates_daily_unique
+      ON window_estimates_daily (title_id, platform, window, as_of_date);
+
+    CREATE TABLE IF NOT EXISTS signal_source_divergence (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      capture_date TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      title_id INTEGER NOT NULL,
+      endpoint_a TEXT NOT NULL,
+      endpoint_b TEXT NOT NULL,
+      value_a REAL,
+      value_b REAL,
+      pct_delta REAL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS signal_source_divergence_unique
+      ON signal_source_divergence (capture_date, platform, title_id, endpoint_a, endpoint_b);
+
+    CREATE TABLE IF NOT EXISTS console_title_igdb (
+      title_id INTEGER PRIMARY KEY,
+      igdb_id INTEGER,
+      slug TEXT,
+      name TEXT,
+      summary TEXT,
+      release_date TEXT,
+      cover_url TEXT,
+      artwork_url TEXT,
+      screenshots_json TEXT,
+      genres_json TEXT,
+      themes_json TEXT,
+      platforms_json TEXT,
+      developers_json TEXT,
+      publishers_json TEXT,
+      rating REAL,
+      rating_count INTEGER,
+      refreshed_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 }
 
