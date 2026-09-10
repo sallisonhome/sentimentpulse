@@ -43,7 +43,7 @@ from typing import Iterable, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from models import RawPost, SentimentEnum, SentimentRecord
+from models import RawPost, SentimentEnum, SentimentRecord, SourceEnum
 
 logger = logging.getLogger(__name__)
 
@@ -449,6 +449,29 @@ _CACHE: dict[tuple[int, str, str], _CacheEntry] = {}
 _CACHE_TTL_SEC = 15 * 60
 
 
+# ── Corpus read shape (v0028, 2026-09-10) ───────────────────────────────
+#
+# _CORPUS_CAP
+#   Hard ceiling on how many rows enter the opinion+specificity filter.
+#   2000 preserves the pre-v0028 behaviour on titles that already fit
+#   under the cap; only high-volume titles feel the source stratification.
+#
+# _REDDIT_COMMENT_MAX_SHARE
+#   Ceiling on reddit_comment share of the final corpus (0.40 = 40%).
+#   reddit_comment rows on adjacent-community subreddits (r/Warhammer40k,
+#   r/Helldivers, r/HorrorGaming, etc.) can outnumber Steam-review +
+#   Steam-forum + top-level-post rows 10-20:1 for popular portfolio titles
+#   while carrying much lower on-topic density (tabletop chat, mini-
+#   painting, refunds on Codex books — not the video game). Without a
+#   share cap these swamp the filter→cluster step and the widget renders
+#   an empty state. Tuning: raise if we start missing genuine Reddit
+#   community feedback (unlikely, comments still dominate low-volume
+#   titles); lower if adjacent-community drift keeps leaking through.
+#   See lessons.md 2026-09-10.
+_CORPUS_CAP: int = 2000
+_REDDIT_COMMENT_MAX_SHARE: float = 0.40
+
+
 def _cache_get(key: tuple[int, str, str]) -> Optional[list[dict]]:
     entry = _CACHE.get(key)
     if entry is None:
@@ -514,27 +537,81 @@ def generate_feedback_summary(
     # Rationale for `!= 'noise'` (not `in ('signal', 'dedicated_sub')`):
     # 'unclassified' means the post predates the v3 tagger — those rows
     # should still count. Only explicit 'noise' verdicts are excluded.
-    q = (
-        db.query(RawPost.id, RawPost.title, RawPost.body)
-        .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
-        .filter(
-            RawPost.game_id == game_id,
-            SentimentRecord.sentiment == sentiment,
-            RawPost.post_date.isnot(None),
-            (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
-            # v0017 (2026-08-18): also exclude off-topic drift. Belt +
-            # suspenders against relevance_tier: drift comments on
-            # verified parents are 'dedicated_sub' or 'signal' tier but
-            # their body content isn't about the game. Without this
-            # filter the LLM synthesizer builds Top Topics clusters from
-            # cross-game essays and Steam Deck hardware complaints. See
-            # lessons.md 2026-08-18.
-            RawPost.is_off_topic_drift.is_(False),
-        )
+    #
+    # v0028 (2026-09-10): source-stratified read. High-volume portfolio
+    # titles with big adjacent-community subreddits (r/Warhammer40k etc.)
+    # ingest 500+ reddit_comment rows per day that pass relevance_tier +
+    # is_off_topic_drift because they live on 'dedicated_sub' or 'signal'
+    # tier posts — but the comment body itself is about the tabletop
+    # hobby, mini-painting, army lists, refunds on Codex books, etc.,
+    # not the video game. When those comments outnumber Steam-review +
+    # Steam-forum + top-level-post rows 10-20:1 (Space Marine 2 today:
+    # 519 reddit_comment vs 105 Steam-native), the 2000-row cap plus the
+    # ≥3-posts-share-a-phrase clusterer wipes out the on-topic Steam
+    # signal — every surviving post is a different tabletop micro-topic
+    # so no cluster clears the gate and the widget renders 'Not enough
+    # posts with definitive signal'. Fix reads on-topic-dense sources
+    # (steam_review, steam_forum, reddit top-level, bluesky, dtf) FIRST
+    # up to the cap, then fills remaining headroom with a bounded slice
+    # of reddit_comment rows (never more than _REDDIT_COMMENT_MAX_SHARE
+    # of the total corpus). See lessons.md 2026-09-10.
+    base_filters = (
+        RawPost.game_id == game_id,
+        SentimentRecord.sentiment == sentiment,
+        RawPost.post_date.isnot(None),
+        (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
+        # v0017 (2026-08-18): also exclude off-topic drift. Belt +
+        # suspenders against relevance_tier: drift comments on
+        # verified parents are 'dedicated_sub' or 'signal' tier but
+        # their body content isn't about the game. Without this
+        # filter the LLM synthesizer builds Top Topics clusters from
+        # cross-game essays and Steam Deck hardware complaints. See
+        # lessons.md 2026-08-18.
+        RawPost.is_off_topic_drift.is_(False),
     )
-    if period_start is not None:
-        q = q.filter(func.date(RawPost.post_date) >= str(period_start))
-    rows = q.limit(2000).all()
+
+    def _base_query():
+        q = (
+            db.query(RawPost.id, RawPost.title, RawPost.body, RawPost.source)
+            .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
+            .filter(*base_filters)
+        )
+        if period_start is not None:
+            q = q.filter(func.date(RawPost.post_date) >= str(period_start))
+        return q
+
+    # Pass 1: on-topic-dense sources first (everything except reddit_comment).
+    # Order newest-first so we prefer the freshest signal when the cap bites.
+    # NOTE: RawPost.source is a native SQLAlchemy Enum column — compare
+    # against SourceEnum members, not raw strings (the rest of the codebase
+    # does the same; see services/ingestor.py and services/relevance_tagger.py).
+    priority_rows = (
+        _base_query()
+        .filter(RawPost.source != SourceEnum.reddit_comment)
+        .order_by(RawPost.post_date.desc())
+        .limit(_CORPUS_CAP)
+        .all()
+    )
+
+    # Pass 2: fill remaining headroom with reddit_comment rows, but never
+    # let them exceed _REDDIT_COMMENT_MAX_SHARE of the final corpus.
+    #   share s = C / (P + C) ≤ MAX ⇒ C ≤ MAX/(1-MAX) · P
+    # e.g. MAX=0.40 ⇒ C ≤ (2/3) · P. Plus we never overflow _CORPUS_CAP.
+    max_comments_by_share = int((_REDDIT_COMMENT_MAX_SHARE / (1.0 - _REDDIT_COMMENT_MAX_SHARE)) * len(priority_rows))
+    max_comments_by_cap = max(_CORPUS_CAP - len(priority_rows), 0)
+    comment_budget = min(max_comments_by_share, max_comments_by_cap)
+    if comment_budget > 0:
+        comment_rows = (
+            _base_query()
+            .filter(RawPost.source == SourceEnum.reddit_comment)
+            .order_by(RawPost.post_date.desc())
+            .limit(comment_budget)
+            .all()
+        )
+    else:
+        comment_rows = []
+
+    rows = priority_rows + comment_rows
 
     if not rows:
         _cache_set(cache_key, [])
@@ -542,7 +619,7 @@ def generate_feedback_summary(
 
     # 2. Filter: opinion + specificity.
     survivors: list[str] = []
-    for _pid, title, body in rows:
+    for _pid, title, body, _src in rows:
         combined = f"{title or ''} {body or ''}".strip()
         if _has_opinion_and_specificity(combined):
             survivors.append(combined)

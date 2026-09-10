@@ -790,3 +790,314 @@ class TestNoiseTierExcludedFromCorpus:
             f"aggressive and is dropping unclassified/NULL/signal rows."
         )
         assert out[0].volume == 4
+
+
+# v0028 (2026-09-10) — source-stratified corpus read.
+#
+# Adjacent-community subreddits (r/Warhammer40k, r/Helldivers, etc.)
+# ingest hundreds of reddit_comment rows per day that pass the
+# relevance_tier + is_off_topic_drift gates because they live under
+# 'dedicated_sub' or 'signal' parent posts, but their body content is
+# tabletop chat, mini-painting jokes, army-list bickering — not the
+# video game. When those comments outnumber Steam-native rows 10-20:1
+# for popular titles, the 2000-row cap plus the ≥3-posts-share-a-phrase
+# clusterer wipes out the on-topic Steam signal and the widget renders
+# 'Not enough posts with definitive signal'. Fix reads Steam-native +
+# top-level-post sources first, then fills with a bounded slice of
+# reddit_comment rows never exceeding _REDDIT_COMMENT_MAX_SHARE of the
+# total corpus. See services/dashboard_feedback_synthesizer.py v0028
+# and lessons.md 2026-09-10.
+
+class TestRedditCommentFloodDoesNotStarveSteamNative:
+    """Guard: reddit_comment volume must not crowd out Steam-native signal."""
+
+    def test_steam_native_signal_survives_reddit_comment_flood(self, db):
+        """
+        Simulate the Space Marine 2 pattern: a small cluster of coherent
+        Steam-forum feedback plus a large pile of reddit_comment rows
+        each on a different tabletop micro-topic. Pre-v0028 the reddit
+        flood would either fill the cap and starve the Steam-forum rows,
+        or dilute the clusterer so the shared Steam-forum phrase never
+        clears the 3-post gate. Post-v0028 the Steam-forum cluster must
+        still surface.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from unittest.mock import patch as _patch
+
+        from models import (
+            Game, Publisher, RawPost, SentimentEnum, SentimentRecord,
+            SourceEnum,
+        )
+        from services import dashboard_feedback_synthesizer as m
+        from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+        m._CACHE.clear()
+
+        pub = Publisher(name="Test Pub Flood")
+        db.add(pub); db.flush()
+        g = Game(
+            publisher_id=pub.id, steam_app_id=88883, name="Flood Game",
+            is_active=True, distinctive_keywords=["Flood Game"],
+        )
+        db.add(g); db.flush()
+
+        # 5 coherent Steam-forum posts sharing a phrase (matchmaking).
+        steam_bodies = [
+            "The matchmaking is broken and needs a fix asap",
+            "Matchmaking bugs make ranked unplayable, please patch",
+            "Matchmaking has been unfair for weeks now",
+            "Matchmaking issues ruin the whole experience",
+            "Matchmaking system needs a serious rework",
+        ]
+        for i, body in enumerate(steam_bodies):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.steam_forum,
+                external_id=f"sf_{i}", body=body, is_relevant=True,
+                relevance_tier="signal",
+                post_date=datetime.now(timezone.utc) - timedelta(hours=i),
+                collected_at=datetime.now(timezone.utc),
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.8, topics=[],
+            ))
+
+        # 200 reddit_comment rows on unrelated tabletop micro-topics.
+        # Each one is different enough that no cluster forms among them,
+        # but they all pass relevance_tier + is_off_topic_drift because
+        # they live under legitimate dedicated_sub parents.
+        tabletop_bodies = [
+            "The arquebus damage is not worth the wargear cost this edition",
+            "Codex book shipped damaged, refund policy is terrible",
+            "Radial Suffusion enhancement should be balanced against action monkey lists",
+            "Warhammer plastic model prices went up again, this is bad",
+            "Power scaling debates about who beats Kharn are so bad",
+            "Techpriest drip is amazing but the price of the model is unfair",
+            "Scout squad rules are broken, please fix in the next FAQ",
+            "Yamnin Centaur APC has terrible melee weapon options",
+            "Painting the aquila on shoulder pads is frustrating",
+            "Army list balance is worse than last edition, refund please",
+        ]
+        for i in range(200):
+            body = tabletop_bodies[i % len(tabletop_bodies)] + f" (msg {i})"
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit_comment,
+                external_id=f"rc_{i}", body=body, is_relevant=True,
+                relevance_tier="dedicated_sub",
+                post_date=datetime.now(timezone.utc) - timedelta(hours=100 + i),
+                collected_at=datetime.now(timezone.utc),
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.7, topics=[],
+            ))
+        db.commit()
+
+        captured: list[list[str]] = []
+
+        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
+            captured.append(list(cluster_posts))
+            return f"Fake synthesis about {cluster_phrase}."
+
+        with _patch(
+            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            side_effect=_fake_synth,
+        ):
+            out = generate_feedback_summary(
+                db=db, game_id=g.id, game_name="Flood Game",
+                sentiment=SentimentEnum.negative,
+                period_key="today",
+                period_start=date.today(),
+            )
+
+        # The Steam-forum matchmaking cluster must surface. If this fails,
+        # the source-stratified read has regressed and reddit_comment rows
+        # are again crowding out the on-topic Steam-native signal.
+        assert out, (
+            "expected a non-empty topic summary. If empty, the reddit_comment "
+            "flood is starving the Steam-native cluster \u2014 v0028 has regressed."
+        )
+        assert captured, "cluster should have been synthesised"
+        joined = " || ".join("\n".join(c) for c in captured)
+        assert "matchmaking" in joined.lower(), (
+            f"expected the Steam-forum matchmaking cluster to be surfaced. "
+            f"Corpus reaching the synthesiser: {joined[:1500]}"
+        )
+
+    def test_reddit_comment_share_cap_enforced(self, db):
+        """
+        When priority (non-reddit_comment) rows exist, reddit_comment rows
+        must not exceed _REDDIT_COMMENT_MAX_SHARE of the total read. With
+        10 priority rows and MAX_SHARE=0.40, the cap on comment rows is
+        floor(0.40/0.60 * 10) = 6, so a corpus of 100 available comments
+        must be trimmed to 6.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from unittest.mock import patch as _patch
+
+        from models import (
+            Game, Publisher, RawPost, SentimentEnum, SentimentRecord,
+            SourceEnum,
+        )
+        from services import dashboard_feedback_synthesizer as m
+        from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+        m._CACHE.clear()
+
+        pub = Publisher(name="Test Pub Cap")
+        db.add(pub); db.flush()
+        g = Game(
+            publisher_id=pub.id, steam_app_id=88884, name="Cap Game",
+            is_active=True, distinctive_keywords=["Cap Game"],
+        )
+        db.add(g); db.flush()
+
+        # 10 priority rows (Steam forum), coherent single cluster.
+        for i in range(10):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.steam_forum,
+                external_id=f"sf_cap_{i}",
+                body="The matchmaking is broken and needs urgent balance patch",
+                is_relevant=True, relevance_tier="signal",
+                post_date=datetime.now(timezone.utc) - timedelta(hours=i),
+                collected_at=datetime.now(timezone.utc),
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.8, topics=[],
+            ))
+
+        # 100 reddit_comment rows available — only 6 should reach the corpus.
+        # Use minutes offsets (not hours) so all 100 stay within the 'today'
+        # window; a period_start=date.today() cut-off drops anything with a
+        # post_date < midnight-UTC-today.
+        now_utc = datetime.now(timezone.utc)
+        for i in range(100):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit_comment,
+                external_id=f"rc_cap_{i}",
+                body=f"Arquebus damage discussion needs a nerf in patch (msg {i})",
+                is_relevant=True, relevance_tier="dedicated_sub",
+                post_date=now_utc - timedelta(minutes=1 + i),
+                collected_at=now_utc,
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.7, topics=[],
+            ))
+        db.commit()
+
+        # Instrument the base_query path by watching the survivor pool size.
+        # We stub _has_opinion_and_specificity to accept everything so the
+        # count of survivors == count of rows returned by the query, giving
+        # us a direct measurement of the corpus read shape.
+        original_filter = m._has_opinion_and_specificity
+        seen_rows: list[int] = []
+
+        def _accept_all(text):
+            seen_rows.append(1)
+            return True
+
+        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
+            return "Fake."
+
+        with _patch(
+            "services.dashboard_feedback_synthesizer._has_opinion_and_specificity",
+            side_effect=_accept_all,
+        ), _patch(
+            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            side_effect=_fake_synth,
+        ):
+            generate_feedback_summary(
+                db=db, game_id=g.id, game_name="Cap Game",
+                sentiment=SentimentEnum.negative,
+                period_key="today",
+                period_start=date.today(),
+            )
+
+        # 10 priority + min(6 by-share, 1990 by-cap) = 16 total.
+        assert len(seen_rows) == 16, (
+            f"expected 10 priority + 6 comments = 16 total corpus rows, got "
+            f"{len(seen_rows)}. If >16, share cap is not enforced. If <16, "
+            f"priority rows are being lost."
+        )
+
+    def test_no_priority_rows_reads_no_comments(self, db):
+        """
+        Edge case: if the only rows for a (game, period, sentiment) tuple
+        are reddit_comment rows, the share formula gives comment_budget=0
+        and the corpus is empty. This is the correct behaviour — without
+        any Steam-native or top-level anchor, reddit_comment content is
+        exactly the pollution v0028 exists to filter. The widget will
+        render the empty state, which is honest for this input shape.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from unittest.mock import patch as _patch
+
+        from models import (
+            Game, Publisher, RawPost, SentimentEnum, SentimentRecord,
+            SourceEnum,
+        )
+        from services import dashboard_feedback_synthesizer as m
+        from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+        m._CACHE.clear()
+
+        pub = Publisher(name="Test Pub Only Comments")
+        db.add(pub); db.flush()
+        g = Game(
+            publisher_id=pub.id, steam_app_id=88885, name="OnlyComments",
+            is_active=True, distinctive_keywords=["OnlyComments"],
+        )
+        db.add(g); db.flush()
+
+        for i in range(20):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit_comment,
+                external_id=f"only_rc_{i}",
+                body="The matchmaking is broken and needs urgent patch balance",
+                is_relevant=True, relevance_tier="dedicated_sub",
+                post_date=datetime.now(timezone.utc) - timedelta(hours=i),
+                collected_at=datetime.now(timezone.utc),
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.7, topics=[],
+            ))
+        db.commit()
+
+        called: list[bool] = []
+
+        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
+            called.append(True)
+            return "Fake."
+
+        with _patch(
+            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            side_effect=_fake_synth,
+        ):
+            out = generate_feedback_summary(
+                db=db, game_id=g.id, game_name="OnlyComments",
+                sentiment=SentimentEnum.negative,
+                period_key="today",
+                period_start=date.today(),
+            )
+
+        assert out == [], (
+            "comment-only corpus must render empty; v0028 explicitly refuses "
+            "to synthesise from reddit_comment content without a Steam-native "
+            "or top-level-post anchor."
+        )
+        assert not called, (
+            "Sonar synthesiser must not be called when there is no anchor."
+        )

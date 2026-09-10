@@ -4,6 +4,31 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-10 — Top Topics widget empty despite 725 posts of daily volume; adjacent-community reddit_comment flood was starving the on-topic Steam-native corpus
+
+**What happened.** User screenshotted the Space Marine 2 (game_id=24) dashboard showing ~725 posts on the Post Volume by Source chart (overwhelmingly Reddit orange) but Top Topics reading "Not enough posts with definitive signal to surface topics here." `/api/games/24/dashboard?period=today` confirmed `top_topics_summary.negative=[]`, `positive=[]`, `neutral=[]` server-side. Same shape on Halloween: The Game (140) and Aliens: Fireteam Elite 2 (146). Sampled negative posts for SM2 via `/api/games/24/posts?period=today&sentiment=negative`: 49 of 50 sampled were `reddit_comment` rows from Warhammer 40k community subs (r/Warhammer40k and family). Actual content was tabletop chat — arquebus damage tables, Yamnin XuanWu Centaur APC stats, Codex-book refund complaints, mini-painting jokes, power-scaling debates on Kharn vs Rhulk — none about the video game.
+
+**Root cause.** `services/dashboard_feedback_synthesizer.py::generate_feedback_summary` used one flat `.limit(2000)` read with no source stratification. The 2026-08-18 fix (relevance_tier != 'noise') and 2026-08-21 fix (is_off_topic_drift=False) catch invariant breaks and per-post drift, but not comments on legitimate `dedicated_sub` parents whose parent post is *tangentially* game-adjacent. The parent might reference SM2; the comment thread is about painting the aquila. Both survive the two existing gates. When those comments outnumber Steam-review + Steam-forum + top-level-post rows 10-20:1 for popular titles (SM2 today: 519 reddit_comment vs 105 Steam-native), the 2000-cap plus the ≥3-posts-share-a-phrase clusterer wipes out the on-topic Steam signal. Every surviving reddit_comment post is on a different tabletop micro-topic, so no cluster clears the gate and the widget renders empty.
+
+**Fix (v0028).** Source-stratified read in `generate_feedback_summary`:
+
+1. Pass 1: read on-topic-dense sources first (steam_review, steam_forum, reddit top-level post, bluesky, dtf) — everything except `reddit_comment` — ordered by `post_date DESC`, capped at `_CORPUS_CAP` (2000).
+2. Pass 2: fill remaining headroom with `reddit_comment` rows, but never exceed `_REDDIT_COMMENT_MAX_SHARE` (0.40 = 40%) of the total corpus. If Pass 1 already filled the cap, Pass 2 is skipped. If Pass 1 yielded zero rows, Pass 2 also yields zero (share formula gives 0) — a comment-only corpus without a Steam-native or top-level anchor is deliberately refused rather than pumped through Sonar, because the input shape is exactly the pollution v0028 exists to filter.
+
+Module constants `_CORPUS_CAP` and `_REDDIT_COMMENT_MAX_SHARE` make the shape introspectable and tunable. Extended block comment in the source file captures the diagnosis.
+
+**Guard tests** (`TestRedditCommentFloodDoesNotStarveSteamNative` in `tests/test_dashboard_feedback_synthesizer.py`):
+
+- `test_steam_native_signal_survives_reddit_comment_flood` — 5 coherent Steam-forum posts sharing a phrase + 200 reddit_comment rows on 10 unrelated tabletop micro-topics; the Steam-forum cluster must still surface.
+- `test_reddit_comment_share_cap_enforced` — 10 priority + 100 available comments must resolve to 10 + 6 = 16 rows in the corpus (share ≤ 40%).
+- `test_no_priority_rows_reads_no_comments` — comment-only corpus must render empty; Sonar synthesiser must not be called without an anchor.
+
+**Rule going forward.** For any LLM synthesiser that reads a mixed-source corpus, cap the low-density high-volume sources by *share of the final corpus*, not just by row count. Row-count caps let a single loud source dominate whenever it wins the newest-first race. Share caps preserve the mix.
+
+**Filter comparison gotcha.** `RawPost.source` is a native SQLAlchemy Enum column — compare against `SourceEnum` members (`SourceEnum.reddit_comment`), NOT the raw string (`"reddit_comment"`). String comparison silently returns zero rows on the native-enum column in the deployment's Postgres dialect. Every other call site (`services/ingestor.py`, `services/relevance_tagger.py`, `services/post_relevance.py`) already uses `SourceEnum` members; new code must match.
+
+**Related follow-up.** The v0028 fix is a read-side defence. The root cause on the ingest side is that `reddit_comment` rows inherit their parent's `relevance_tier` and `is_off_topic_drift` without a comment-body-content check. Fix B (comment-level relevance gate keyed on the comment text or its parent's title) is scheduled separately; it requires a backfill pass and is a bigger change than v0028.
+
 ---
 
 ## 2026-09-08 (signalpulse v3.40) — Amazon zgbs node URLs: verify the node is the games-only leaf, not a parent umbrella

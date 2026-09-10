@@ -2,6 +2,20 @@
 
 A running log of what changed in SentimentPulse — the community sentiment intelligence surface for Saber's game portfolio.
 
+## September 10, 2026
+
+- Fixed
+
+  ### Top Topics widget no longer renders empty on high-volume portfolio titles
+
+  Space Marine 2, Halloween: The Game, and Aliens: Fireteam Elite 2 were showing hundreds of daily posts on the Post Volume by Source chart while the Top Topics square rendered "Not enough posts with definitive signal to surface topics here" across positive, negative, and neutral tabs.
+
+  Root cause: adjacent-community subreddits (r/Warhammer40k and family for SM2) ingest 500+ reddit_comment rows per day that pass the relevance_tier + off-topic-drift gates because they live under legitimate `dedicated_sub` parent posts — but the comment bodies are about the tabletop hobby, mini-painting, army lists, and Codex-book refunds, not the video game. When those comments outnumbered Steam-native rows 10-20:1, the flat 2000-row read cap plus the clusterer's ≥3-posts-share-a-phrase gate wiped out the on-topic Steam signal, so no cluster ever cleared the bar.
+
+  Fix: the Top Topics corpus read is now source-stratified. Steam reviews, Steam forum posts, top-level Reddit posts, Bluesky, and DTF are read first (up to the 2000-row cap). Reddit comments then fill remaining headroom but can never exceed 40% of the total corpus. Comment-only corpora — which lack any Steam-native or top-level anchor — return the empty state deliberately rather than being pumped through Sonar.
+
+  Guard tests in `tests/test_dashboard_feedback_synthesizer.py::TestRedditCommentFloodDoesNotStarveSteamNative` cover the flood-starvation regression, the share cap, and the comment-only edge case. See `lessons.md` 2026-09-10 for the full diagnosis.
+
 ## September 1, 2026
 
 - Fixed
