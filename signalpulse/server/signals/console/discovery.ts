@@ -16,7 +16,7 @@
  */
 
 import { rawSqlite } from "../../storage";
-import { log } from "../../index";
+import { log } from "../../log";
 import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from "./types";
 import { fetchXboxRatingSignal } from "./xbox";
 

@@ -19,7 +19,7 @@
  */
 
 import { rawSqlite } from "../../storage";
-import { log } from "../../index";
+import { log } from "../../log";
 import { storage } from "../../storage";
 
 let cachedToken: { access_token: string; expires_at: number } | null = null;

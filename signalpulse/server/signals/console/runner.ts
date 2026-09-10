@@ -12,7 +12,7 @@
  */
 
 import { rawSqlite } from "../../storage";
-import { log } from "../../index";
+import { log } from "../../log";
 import { collectSteamSignals, type SteamCollectorInput } from "./steam";
 import { collectXboxSignals, type XboxCollectorInput } from "./xbox";
 import { collectPsSignals, type PsCollectorInput } from "./ps";

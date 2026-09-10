@@ -42,16 +42,10 @@ app.use(express.text({
   limit: "50mb",
 }));
 
-export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
-}
+// `log` lives in ./log so console signals and CI scripts can import it
+// without dragging in the entire express bootstrap side-effect chain.
+export { log } from "./log";
+import { log } from "./log";
 
 app.use((req, res, next) => {
   const start = Date.now();
