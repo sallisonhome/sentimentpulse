@@ -1,0 +1,56 @@
+name: SP Smoke — IGDB Credentials
+
+# One-off smoke test: read twitch_client_id / twitch_client_secret from
+# the signalpulse app_settings table on the droplet, do the client_credentials
+# OAuth exchange with Twitch, and confirm we get a bearer token. Proves the
+# same rows the console IGDB module (post-fix) now reads produce a valid
+# Twitch session. Never prints the secret values or the returned token.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Twitch OAuth2 exchange using DB creds
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          DB="$WD/data.db"
+          CID=$(sqlite3 "$DB" "SELECT value FROM app_settings WHERE key='twitch_client_id';")
+          CSEC=$(sqlite3 "$DB" "SELECT value FROM app_settings WHERE key='twitch_client_secret';")
+          if [ -z "$CID" ] || [ -z "$CSEC" ]; then
+            echo "ERR: twitch_client_id or twitch_client_secret missing in app_settings"
+            exit 1
+          fi
+          echo "creds present: cid_len=${#CID} csec_len=${#CSEC}"
+          RESP=$(curl -sS --max-time 10 -X POST \
+            "https://id.twitch.tv/oauth2/token" \
+            -d "client_id=${CID}" \
+            -d "client_secret=${CSEC}" \
+            -d "grant_type=client_credentials")
+          if echo "$RESP" | grep -q '"access_token"'; then
+            EXP=$(echo "$RESP" | grep -o '"expires_in":[0-9]*' | cut -d: -f2)
+            TYPE=$(echo "$RESP" | grep -o '"token_type":"[^"]*"' | cut -d'"' -f4)
+            echo "IGDB token exchange OK — token_type=${TYPE}, expires_in=${EXP}s"
+          else
+            echo "ERR: Twitch OAuth2 rejected the credentials"
+            echo "$RESP" | sed 's/"access_token":"[^"]*"/"access_token":"***"/'
+            exit 1
+          fi
+          REMOTE
