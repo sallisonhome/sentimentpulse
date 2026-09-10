@@ -15,7 +15,7 @@ import Inbox from "@/pages/inbox";
 import SalesByCountry from "@/pages/sales-by-country";
 import AmazonIndex from "@/pages/amazon";
 import AmazonProductDetail from "@/pages/amazon/product-detail";
-import ConsoleLeaderboards from "@/pages/console-leaderboards";
+import ConsoleLeaderboards, { ConsoleLeaderboardsPlatform } from "@/pages/console-leaderboards";
 import ConsoleTitleDetail from "@/pages/console-title-detail";
 import NotFound from "@/pages/not-found";
 import { useEffect, useState } from "react";
@@ -39,8 +39,8 @@ function AppRouter() {
             picks the other sub-tabs; /amazon/product/:asin drills in. */}
         <Route path="/amazon/product/:asin" component={AmazonProductDetail} />
         <Route path="/console-leaderboards" component={ConsoleLeaderboards} />
-        <Route path="/console-leaderboards/:platform" component={ConsoleLeaderboards} />
         <Route path="/console-leaderboards/:platform/:titleId" component={ConsoleTitleDetail} />
+        <Route path="/console-leaderboards/:platform" component={ConsoleLeaderboardsPlatform} />
         <Route path="/amazon/:section" component={AmazonIndex} />
         <Route path="/amazon" component={AmazonIndex} />
         <Route component={NotFound} />
