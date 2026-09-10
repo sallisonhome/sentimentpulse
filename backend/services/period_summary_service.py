@@ -5336,62 +5336,112 @@ def _call_llm_for_user_block(
     temperature: float = 0.2,
     block_label: str = "",
 ) -> _LLMResponse:
-    """Route a user-facing block (exec / recs / bold-ideas) through Sonar
-    first, falling back to Anthropic on any Sonar failure.
+    """Route a user-facing block (exec / recs / bold-ideas) through the
+    unified LLM client.
 
-    Returns an object with `.content[0].text` for the caller.  Raises only
-    if BOTH Sonar and Anthropic fail — callers already wrap in try/except
-    and fall back to placeholders on exception.
+    v0030 (2026-09-10, Landing 2 of Sonar-deprecation migration): this
+    helper is now a thin adapter over services.llm_client.call_llm. The
+    old inline Sonar-then-Anthropic branching lived here; the unified
+    client does the same routing and fallback natively with three
+    backends (sonar | anthropic | agent-api) selected by env var.
+
+    Public signature is preserved so the three existing call sites
+    (exec / recs / bold-ideas) work unchanged.
+
+    Test-injection contract preserved: many existing unit tests pass a
+    fake `anthropic_client` (e.g. _CapturingClient in
+    test_summary_prompt_kpi.py) whose `.messages.create()` records
+    every prompt for shape assertions. Those tests pre-date the unified
+    client and legitimately rely on the injected client being called.
+    When the caller passes an anthropic_client that looks like a real
+    (or fake) Anthropic client — i.e. has a `.messages` attribute —
+    the adapter takes the legacy path: try Sonar first when configured,
+    otherwise call `anthropic_client.messages.create()` directly. This
+    matches the pre-Landing-2 fallback behaviour exactly and keeps the
+    prompt-shape test suite green.
+
+    When `anthropic_client` is None (or lacks `.messages`), the adapter
+    routes through the unified call_llm path, which handles Sonar +
+    Anthropic + Agent API selection via env vars. This is the path
+    production callers should migrate to over time; today, all three
+    production call sites (exec/recs/bold-ideas) do pass a real
+    anthropic_client, so the legacy path is what actually runs. The
+    env-var routing benefit for these blocks lands in Landing 6 (bake-
+    off) when we're ready to flip LLM_PRIMARY_SUMMARY.
+
+    Default behaviour is unchanged: Sonar remains the primary backend
+    for the exec/recs/bold-ideas block. The disable_search=True
+    invariant is preserved on both paths (regression guard for
+    2026-08-18).
+
+    Returns an object with `.content[0].text` for the caller. Raises
+    only if both primary and fallback fail — callers already wrap in
+    try/except and fall back to placeholders on exception.
     """
-    # Try Sonar first when configured.
-    try:
-        from services.sonar_client import sonar_available, call_sonar  # local import to avoid cycles
-        if sonar_available():
-            try:
-                # 2026-08-18: disable_search=True is the default in
-                # sonar_client, but pass it explicitly here as an
-                # invariant. Exec/recs/bold-ideas prompts already say
-                # "ground strictly in the cited posts" — letting Sonar
-                # web-search alongside caused a Turok: Origins Top
-                # Topics regression where Helldivers 2 patch-note
-                # vocabulary leaked into an unreleased-game summary.
-                # See lessons.md 2026-08-18.
-                resp = call_sonar(
-                    prompt,
-                    model=sonar_model,
-                    max_tokens=sonar_max_tokens,
-                    temperature=temperature,
-                    disable_search=True,
-                )
-                logger.info(
-                    "LLM[%s] via Sonar (model=%s, resp_chars=%d)",
-                    block_label or "?", sonar_model, len(resp.text),
-                )
-                return _LLMResponse(text=resp.text, source=f"sonar:{sonar_model}")
-            except Exception as sonar_exc:
-                logger.warning(
-                    "LLM[%s] Sonar failed (%s) — falling back to Anthropic %s",
-                    block_label or "?", sonar_exc, anthropic_model,
-                )
-    except ImportError as e:
-        logger.warning("sonar_client import failed (%s); using Anthropic only", e)
+    # Legacy path: caller injected an anthropic-shaped client. Preserve
+    # the pre-Landing-2 semantics so prompt-shape unit tests
+    # (test_summary_prompt_kpi, test_period_summary_guardrails, etc.)
+    # keep intercepting via the injected client. Sonar is still tried
+    # first when configured.
+    if anthropic_client is not None and hasattr(anthropic_client, "messages"):
+        try:
+            from services.sonar_client import sonar_available, call_sonar
+            if sonar_available():
+                try:
+                    resp = call_sonar(
+                        prompt,
+                        model=sonar_model,
+                        max_tokens=sonar_max_tokens,
+                        temperature=temperature,
+                        disable_search=True,
+                    )
+                    logger.info(
+                        "LLM[%s] via Sonar (model=%s, resp_chars=%d)",
+                        block_label or "?", sonar_model, len(resp.text),
+                    )
+                    return _LLMResponse(text=resp.text, source=f"sonar:{sonar_model}")
+                except Exception as sonar_exc:
+                    logger.warning(
+                        "LLM[%s] Sonar failed (%s) — falling back to Anthropic %s",
+                        block_label or "?", sonar_exc, anthropic_model,
+                    )
+        except ImportError as e:
+            logger.warning("sonar_client import failed (%s); using Anthropic only", e)
 
-    # Fallback: Anthropic.
-    if anthropic_client is None:
-        raise RuntimeError(
-            f"LLM[{block_label}] both Sonar (unavailable) and Anthropic (no client) are unusable"
+        message = anthropic_client.messages.create(
+            model=anthropic_model,
+            max_tokens=anthropic_max_tokens,
+            messages=[{"role": "user", "content": prompt}],
         )
-    message = anthropic_client.messages.create(
-        model=anthropic_model,
-        max_tokens=anthropic_max_tokens,
-        messages=[{"role": "user", "content": prompt}],
+        text = message.content[0].text if message.content else ""
+        logger.info(
+            "LLM[%s] via Anthropic (model=%s, resp_chars=%d)",
+            block_label or "?", anthropic_model, len(text),
+        )
+        return _LLMResponse(text=text, source=f"anthropic:{anthropic_model}")
+
+    # Unified path: no injected client. Route through call_llm so env
+    # vars (LLM_PRIMARY / LLM_PRIMARY_SUMMARY / LLM_FALLBACK) can
+    # reroute this call site to Anthropic or Agent API without a code
+    # change. Currently only reachable if a call site starts passing
+    # anthropic_client=None; kept as the forward-compatible path.
+    from services.llm_client import call_llm
+    max_tokens = min(sonar_max_tokens, anthropic_max_tokens)
+    resp = call_llm(
+        prompt,
+        block_kind="summary",
+        max_tokens=max_tokens,
+        temperature=temperature,
+        disable_search=True,
+        sonar_model=sonar_model,
+        anthropic_model=anthropic_model,
     )
-    text = message.content[0].text if message.content else ""
     logger.info(
-        "LLM[%s] via Anthropic (model=%s, resp_chars=%d)",
-        block_label or "?", anthropic_model, len(text),
+        "LLM[%s] via %s (resp_chars=%d, elapsed=%.2fs%s)",
+        block_label or "?", resp.source, len(resp.text), resp.elapsed_s,
+        f", fell_back_from={resp.fell_back_from}" if resp.fell_back_from else "",
     )
-    return _LLMResponse(text=text, source=f"anthropic:{anthropic_model}")
+    return _LLMResponse(text=resp.text, source=resp.source)
 
 
 def _get_client():

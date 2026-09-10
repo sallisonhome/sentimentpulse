@@ -411,15 +411,20 @@ def _synthesize_cluster_sentence(
     cluster_posts: list[str],
 ) -> Optional[str]:
     """Return a single short sentence describing what the cluster says.
-    Returns None if Sonar isn't configured or the call fails \u2014 the caller
-    handles that gracefully (renders the empty state).
+    Returns None if no LLM backend is configured or every backend fails \u2014
+    the caller handles that gracefully (renders the empty state).
+
+    v0030 (2026-09-10, Landing 2 of Sonar-deprecation migration): routed
+    through services.llm_client.call_llm instead of direct call_sonar.
+    Default behaviour is unchanged (Sonar remains the primary backend);
+    operators can flip this call site to Anthropic or Agent API by
+    setting LLM_PRIMARY_TOPICS=anthropic|agent-api on the droplet.
+    disable_search=True remains the invariant (regression guard for the
+    2026-08-18 Sonar web-search contamination lesson).
     """
-    from services.sonar_client import sonar_available, call_sonar
+    from services.llm_client import call_llm
 
-    if not sonar_available():
-        return None
-
-    # Cap the number of posts we ship to Sonar to keep the prompt small.
+    # Cap the number of posts we ship to the LLM to keep the prompt small.
     # 10 posts per cluster is plenty of signal for a 1-sentence synthesis.
     sample = cluster_posts[:10]
     tagged = "\n".join(f"[P-{i+1:03d}] {text[:400]}" for i, text in enumerate(sample))
@@ -442,23 +447,20 @@ def _synthesize_cluster_sentence(
         f"One-sentence output:"
     )
     try:
-        # 2026-08-18: pass disable_search=True explicitly (also the default
-        # in sonar_client) to lock in that this synthesis MUST be grounded
-        # only in the cluster's actual posts. Prior to this fix, Sonar was
-        # called with search_context_size="low", which still let it web-
-        # search and blend live content. That produced a Turok: Origins
-        # dashboard bullet full of Helldivers 2 patch-note vocabulary
-        # ("shield mech", "flame sentry", "lumberer") even though Turok
-        # is unreleased and its 19 admitted 7d posts contained no such
-        # words. See lessons.md 2026-08-18.
-        resp = call_sonar(
+        # 2026-08-18: disable_search=True is required for this synthesis \u2014
+        # the cluster's actual posts are the ONLY grounding. Web-search
+        # blending produced the Turok/Helldivers 2 contamination bug.
+        # call_llm defaults to disable_search=True; passing it explicitly
+        # is a belt-and-suspenders regression guard.
+        resp = call_llm(
             prompt,
+            block_kind="topics",
             max_tokens=80,
             temperature=0.2,
             disable_search=True,
         )
     except Exception as exc:
-        logger.warning("Sonar call failed for game=%s sentiment=%s: %s",
+        logger.warning("LLM call failed for game=%s sentiment=%s: %s",
                        game_name, sentiment.value, exc)
         return None
 
