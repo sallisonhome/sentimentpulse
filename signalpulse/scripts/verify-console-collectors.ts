@@ -106,16 +106,49 @@ async function main() {
   console.log("steam_review_history bucket counts:", bucketCount);
 
   // Assertions — surface any silent failure loudly.
+  //
+  // Note: title_id is allocated by whichever code path first inserted the row
+  // into platform_sku_map — this script's seed uses ON CONFLICT that preserves
+  // the existing title_id, and discovery uses its own allocator. So we cannot
+  // assert on specific title_id values. Look up by (platform, external_sku) to
+  // resolve the actual title_id, then verify each expected snapshot exists.
   const errors: string[] = [];
-  const paidSteamCount = (snapshots as Array<{platform:string;title_id:number}>).filter(r => r.platform === "steam" && [9001,9002,9003].includes(r.title_id)).length;
-  if (paidSteamCount < 1) errors.push(`expected >=1 Steam paid snapshot, got ${paidSteamCount}`);
-  const f2pRow = (snapshots as Array<{title_id:number}>).find(r => r.title_id === 9099);
-  if (f2pRow) errors.push(`F2P title 9099 (PUBG) was NOT gated — bug in ingest gate`);
-  const xboxRow = (snapshots as Array<{platform:string;title_id:number;rating_count:number|null}>).find(r => r.platform === "xbox" && r.title_id === 9101);
-  if (!xboxRow) errors.push(`expected Xbox Forza row (9101), got none`);
+  const resolveTitleId = (platform: string, externalSku: string): number | null => {
+    const row = rawSqlite.prepare(
+      `SELECT title_id FROM platform_sku_map WHERE platform = ? AND external_sku = ?`
+    ).get(platform, externalSku) as { title_id: number } | undefined;
+    return row?.title_id ?? null;
+  };
+
+  // Paid Steam snapshots — expect at least one across the three seeded appids.
+  const steamPaidIds = ["1245620", "2050650", "553850"]
+    .map(sku => resolveTitleId("steam", sku))
+    .filter((id): id is number => id != null);
+  const paidSteamCount = (snapshots as Array<{platform:string;title_id:number}>)
+    .filter(r => r.platform === "steam" && steamPaidIds.includes(r.title_id)).length;
+  if (paidSteamCount < 1) errors.push(`expected >=1 Steam paid snapshot, got ${paidSteamCount} (resolved title_ids=${steamPaidIds.join(",")})`);
+
+  // F2P gate — PUBG (appid 578080) should NOT produce a snapshot regardless of title_id.
+  const pubgId = resolveTitleId("steam", "578080");
+  if (pubgId != null) {
+    const f2pRow = (snapshots as Array<{title_id:number}>).find(r => r.title_id === pubgId);
+    if (f2pRow) errors.push(`F2P PUBG (title_id=${pubgId}, appid=578080) was NOT gated — bug in ingest gate`);
+  }
+
+  // Xbox Forza — resolve by bigId, then assert snapshot exists with real ratings.
+  const forzaId = resolveTitleId("xbox", "9NKX70BBCDRN");
+  const xboxRow = forzaId != null
+    ? (snapshots as Array<{platform:string;title_id:number;rating_count:number|null}>).find(r => r.platform === "xbox" && r.title_id === forzaId)
+    : undefined;
+  if (!xboxRow) errors.push(`expected Xbox Forza row (resolved title_id=${forzaId}), got none`);
   else if (xboxRow.rating_count == null || xboxRow.rating_count <= 0) errors.push(`Xbox Forza rating_count is ${xboxRow.rating_count}`);
-  const psRow = (snapshots as Array<{platform:string;title_id:number;rating_count:number|null}>).find(r => r.platform === "ps5" && r.title_id === 9201);
-  if (!psRow) errors.push(`expected PS Helldivers 2 row (9201), got none`);
+
+  // PS Helldivers 2 — resolve by productId.
+  const hd2Id = resolveTitleId("ps5", "UP9000-PPSA01413_00-HELLDIVERS200000");
+  const psRow = hd2Id != null
+    ? (snapshots as Array<{platform:string;title_id:number;rating_count:number|null}>).find(r => r.platform === "ps5" && r.title_id === hd2Id)
+    : undefined;
+  if (!psRow) errors.push(`expected PS Helldivers 2 row (resolved title_id=${hd2Id}), got none`);
   else if (psRow.rating_count == null || psRow.rating_count <= 0) errors.push(`PS Helldivers 2 rating_count is ${psRow.rating_count}`);
 
   if (errors.length > 0) {
