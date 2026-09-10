@@ -1,0 +1,46 @@
+name: SP Partnerships Nginx Inspect
+
+# Read-only. Dumps /etc/nginx/snippets/partnerships-locations.conf and greps
+# every nginx config for "/partnerships/" location blocks, to diagnose the
+# "duplicate location /partnerships/" error surfaced by `nginx -t` during
+# an unrelated console-leaderboards teardown attempt.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Inspect
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+
+            echo "── /etc/nginx/snippets/ ──"
+            ls -la /etc/nginx/snippets/ 2>&1
+
+            echo ""
+            echo "── /etc/nginx/snippets/partnerships-locations.conf (full) ──"
+            cat -n /etc/nginx/snippets/partnerships-locations.conf 2>&1
+
+            echo ""
+            echo "── grep '/partnerships/' across ALL nginx configs ──"
+            grep -rn "/partnerships/" /etc/nginx/ 2>/dev/null
+
+            echo ""
+            echo "── grep 'include.*partnerships' across ALL nginx configs (who includes the snippet) ──"
+            grep -rn "include.*partnerships" /etc/nginx/ 2>/dev/null
+
+            echo ""
+            echo "── nginx -t (current failure, for reference) ──"
+            nginx -t 2>&1 || true
+          EOF
