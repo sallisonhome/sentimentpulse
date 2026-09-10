@@ -148,6 +148,8 @@ class TestGenerateFeedbackSummary:
 
         # 5 posts that hit the filter (opinion + specificity), all sharing
         # a content phrase → single cluster of 5.
+        # source=steam_forum so these count as priority sources under v0029
+        # (Reddit is now low-density and share-capped at 40% of the corpus).
         for i, body in enumerate([
             "The prestige grind is way too long, needs a rework badly",
             "Prestige grind ruined my motivation, please reduce it",
@@ -156,7 +158,7 @@ class TestGenerateFeedbackSummary:
             "The prestige grind feels like an unrewarding chore",
         ]):
             rp = RawPost(
-                game_id=g.id, source=SourceEnum.reddit,
+                game_id=g.id, source=SourceEnum.steam_forum,
                 external_id=f"gr_{i}", body=body, is_relevant=True,
                 post_date=datetime.now(timezone.utc) - timedelta(days=i),
                 collected_at=datetime.now(timezone.utc),
@@ -246,8 +248,9 @@ class TestCacheTTL:
         db.add(g); db.flush()
 
         for i in range(4):
+            # source=steam_forum so these count as priority under v0029.
             rp = RawPost(
-                game_id=g.id, source=SourceEnum.reddit, external_id=f"c_{i}",
+                game_id=g.id, source=SourceEnum.steam_forum, external_id=f"c_{i}",
                 body="Prestige grind is too long, needs a patch to reduce it",
                 is_relevant=True,
                 post_date=datetime.now(timezone.utc) - timedelta(days=i),
@@ -632,8 +635,12 @@ class TestNoiseTierExcludedFromCorpus:
             "Matchmaking system needs a serious rework",
         ]
         for i, body in enumerate(signal_bodies):
+            # source=steam_forum so signal posts count as priority under v0029.
+            # This test's purpose is guarding the noise-tier filter, not the
+            # source tier; keep the source in the priority bucket so the
+            # noise-tier gate is the only filter under test here.
             rp = RawPost(
-                game_id=g.id, source=SourceEnum.reddit,
+                game_id=g.id, source=SourceEnum.steam_forum,
                 external_id=f"sig_{i}", body=body, is_relevant=True,
                 relevance_tier="signal",
                 post_date=datetime.now(timezone.utc) - timedelta(hours=i),
@@ -656,8 +663,11 @@ class TestNoiseTierExcludedFromCorpus:
             "Stratagem cooldowns are way too long since patch",
         ] * 4  # 20 posts total
         for i, body in enumerate(noise_bodies):
+            # source=steam_forum so the source tier isn't what's excluding
+            # these rows — the noise-tier relevance_tier gate must be the
+            # sole reason they're dropped.
             rp = RawPost(
-                game_id=g.id, source=SourceEnum.reddit,
+                game_id=g.id, source=SourceEnum.steam_forum,
                 external_id=f"noise_{i}", body=body, is_relevant=True,
                 relevance_tier="noise",  # <-- the invariant break
                 post_date=datetime.now(timezone.utc) - timedelta(hours=i + 20),
@@ -750,8 +760,10 @@ class TestNoiseTierExcludedFromCorpus:
             "The prestige grind feels endless and needs a serious rework"
         )
         for i, tier in enumerate(tiers):
+            # source=steam_forum so relevance_tier is the sole filter
+            # under test here (not the v0029 source tier).
             rp = RawPost(
-                game_id=g.id, source=SourceEnum.reddit,
+                game_id=g.id, source=SourceEnum.steam_forum,
                 external_id=f"tier_{i}",
                 body=f"{body_template} (variant {i})",
                 is_relevant=True, relevance_tier=tier,
@@ -1100,4 +1112,274 @@ class TestRedditCommentFloodDoesNotStarveSteamNative:
         )
         assert not called, (
             "Sonar synthesiser must not be called when there is no anchor."
+        )
+
+
+# v0029 (2026-09-10) — broadened opinion+specificity filter and expanded
+# low-density source tier.
+#
+# Ground-truth sampling on SM2 today (2026-09-10) showed the pre-v0028
+# filter was materially undertuned for real Steam-review vocabulary:
+# 0/N sampled negative Steam reviews and 6/50 positive Steam reviews
+# survived the opinion+specificity gate. Reviews mentioning "sprint",
+# "controllers", "crashing", "annoying", "unplayable", "loading",
+# "stuttering", "OptiScaler" — all textbook game-mechanic complaints —
+# were being dropped because the regexes hadn't kept up with the
+# vocabulary Steam reviewers actually use. Broadened the two regexes
+# to cover input devices, movement/combat, network/session, technical
+# failure, and upscaling. The two-signal gate (opinion AND specificity)
+# remains the guard against pure hype.
+#
+# Also: v0028 capped only `reddit_comment` in the low-density bucket.
+# Ground-truth sampling of SM2's Reddit top-level stream for today
+# showed the same adjacent-community pollution shape (r/Warhammer40k
+# lore Q&A — "Do the C'tan shards still eat souls?", "How badly did
+# the Black Legion lose during Boltgun?") — not about the video game.
+# v0029 extends the share cap to include top-level `reddit` too.
+
+class TestOpinionSpecificityBroadenedForSteamReviews:
+    """Guard: real Steam-review vocabulary passes the opinion+specificity gate."""
+
+    # Every entry here is a real (or realistic) Steam review body that any
+    # Steam-native reviewer would recognise as concrete game feedback. If
+    # any of these regresses to False, the widget loses the ability to see
+    # the review's genuine complaint or praise.
+    STEAM_REVIEW_POSITIVES = [
+        "Absolutely phenomenal experience, brutal and intense combat",
+        "This game is an absolute blast, brutal and challenging combat and an awesome co-op mode",
+        "Fluid combat and a very enjoyable campaign, great writing throughout",
+        "Great melee and ranged combat, solid horde mode",
+    ]
+    STEAM_REVIEW_NEGATIVES = [
+        "Sprint doesnt work on xbox controllers, fix your game",
+        "Always online is annoying and the loading screens slow down gameplay",
+        "Keyboard and mouse controls are derpy and unresponsive",
+        "EAC anticheat is crashing then the game freezes on launch",
+        "Server matchmaking is broken and the game is unplayable in coop",
+        "Stuttering and frame drops all through the campaign, unplayable",
+        "Please fix the DLSS upscaler, it makes the game blurry on my handheld",
+    ]
+
+    @pytest.mark.parametrize("body", STEAM_REVIEW_POSITIVES + STEAM_REVIEW_NEGATIVES)
+    def test_real_steam_review_body_passes_filter(self, body):
+        """
+        Every fixture body must survive the opinion+specificity gate.
+        If any fixture fails, the pre-v0029 miss has partially regressed —
+        add the missing vocabulary to _OPINION_MARKERS or _SPECIFICITY_MARKERS.
+        """
+        assert _has_opinion_and_specificity(body), (
+            f"real Steam-review body dropped by opinion+specificity: {body!r}. "
+            f"v0029 broadened the two regexes to cover this vocabulary; if "
+            f"this fails, one of the categories (input, network/session, "
+            f"technical failure, upscaling) has regressed."
+        )
+
+    def test_pure_hype_still_rejected(self):
+        """
+        The two-signal gate must still reject pure hype without any
+        specific game aspect. If this passes, the specificity regex
+        has become too greedy and admits generic 'this game rocks'
+        reviews that produce meaningless cluster labels.
+        """
+        pure_hype = [
+            "This game is amazing, best thing ever",
+            "Absolute masterpiece, love it",
+            "WE ALL ALPHARIUS",
+            "very nice",
+            "Buy it",
+        ]
+        for body in pure_hype:
+            assert not _has_opinion_and_specificity(body), (
+                f"pure-hype body wrongly passed opinion+specificity: {body!r}. "
+                f"v0029 must keep the two-signal guard against generic hype."
+            )
+
+
+class TestRedditTopLevelJoinsLowDensityTier:
+    """Guard: v0029 puts top-level `reddit` in the low-density tier."""
+
+    def test_reddit_top_level_share_capped_with_comments(self, db):
+        """
+        Under v0029, `reddit` (top-level posts) and `reddit_comment` share
+        a single combined 40% cap. With 10 priority (Steam-forum) rows and
+        MAX_SHARE=0.40, the cap on Reddit rows is floor(0.40/0.60 * 10) = 6.
+        That budget is shared: e.g. 50 top-level reddit + 50 reddit_comment
+        available should resolve to at most 6 Reddit rows total in the
+        corpus, not 6+6=12.
+
+        If this test fails, either the share cap is being applied per-source
+        (regression to v0028 behaviour) or top-level `reddit` has been moved
+        back into the priority bucket.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from unittest.mock import patch as _patch
+
+        from models import (
+            Game, Publisher, RawPost, SentimentEnum, SentimentRecord,
+            SourceEnum,
+        )
+        from services import dashboard_feedback_synthesizer as m
+        from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+        m._CACHE.clear()
+        now_utc = datetime.now(timezone.utc)
+
+        pub = Publisher(name="Test Pub v0029")
+        db.add(pub); db.flush()
+        g = Game(
+            publisher_id=pub.id, steam_app_id=88886, name="v0029 Game",
+            is_active=True, distinctive_keywords=["v0029 Game"],
+        )
+        db.add(g); db.flush()
+
+        # 10 priority (Steam forum) rows.
+        for i in range(10):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.steam_forum,
+                external_id=f"sf_v29_{i}",
+                body="The matchmaking is broken and needs urgent balance patch",
+                is_relevant=True, relevance_tier="signal",
+                post_date=now_utc - timedelta(hours=i),
+                collected_at=now_utc,
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.8, topics=[],
+            ))
+
+        # 50 top-level reddit rows + 50 reddit_comment rows, all in-period.
+        for i in range(50):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit,
+                external_id=f"r_top_v29_{i}",
+                body=f"Do the C'tan shards still eat souls in combat lore discussion {i}",
+                is_relevant=True, relevance_tier="dedicated_sub",
+                post_date=now_utc - timedelta(minutes=1 + i),
+                collected_at=now_utc,
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.7, topics=[],
+            ))
+        for i in range(50):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit_comment,
+                external_id=f"rc_v29_{i}",
+                body=f"Arquebus damage discussion needs a nerf in patch (msg {i})",
+                is_relevant=True, relevance_tier="dedicated_sub",
+                post_date=now_utc - timedelta(minutes=60 + i),
+                collected_at=now_utc,
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.7, topics=[],
+            ))
+        db.commit()
+
+        seen: list[int] = []
+
+        def _accept_all(text):
+            seen.append(1); return True
+
+        with _patch(
+            "services.dashboard_feedback_synthesizer._has_opinion_and_specificity",
+            side_effect=_accept_all,
+        ), _patch(
+            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            return_value="Fake.",
+        ):
+            generate_feedback_summary(
+                db=db, game_id=g.id, game_name="v0029 Game",
+                sentiment=SentimentEnum.negative,
+                period_key="today",
+                period_start=date.today(),
+            )
+
+        # 10 priority + min(6 by-combined-share, 1990 by-cap) = 16 total.
+        assert len(seen) == 16, (
+            f"expected 10 priority + 6 combined-Reddit = 16 corpus rows, "
+            f"got {len(seen)}. If >16, v0029 combined-share cap regressed "
+            f"(possibly reverted to per-source v0028 cap). If <16, priority "
+            f"rows are being lost."
+        )
+
+    def test_reddit_top_level_alone_without_priority_returns_empty(self, db):
+        """
+        Under v0029, top-level `reddit` is low-density too. If the only
+        rows for a (game, period, sentiment) tuple are top-level Reddit
+        rows, the combined share formula gives reddit_budget=0 and the
+        corpus is empty — same behaviour as reddit_comment-only.
+
+        This is the intended v0029 refusal: r/Warhammer40k lore Q&A is
+        exactly the pollution v0029 exists to filter when unaccompanied
+        by any Steam-native or Bluesky anchor.
+        """
+        from datetime import date, datetime, timedelta, timezone
+        from unittest.mock import patch as _patch
+
+        from models import (
+            Game, Publisher, RawPost, SentimentEnum, SentimentRecord,
+            SourceEnum,
+        )
+        from services import dashboard_feedback_synthesizer as m
+        from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+        m._CACHE.clear()
+        now_utc = datetime.now(timezone.utc)
+
+        pub = Publisher(name="Test Pub v0029 reddit-only")
+        db.add(pub); db.flush()
+        g = Game(
+            publisher_id=pub.id, steam_app_id=88887, name="RedditOnly",
+            is_active=True, distinctive_keywords=["RedditOnly"],
+        )
+        db.add(g); db.flush()
+
+        for i in range(20):
+            rp = RawPost(
+                game_id=g.id, source=SourceEnum.reddit,
+                external_id=f"only_r_{i}",
+                body="The matchmaking is broken and needs urgent patch balance",
+                is_relevant=True, relevance_tier="dedicated_sub",
+                post_date=now_utc - timedelta(minutes=1 + i),
+                collected_at=now_utc,
+            )
+            db.add(rp); db.flush()
+            db.add(SentimentRecord(
+                raw_post_id=rp.id,
+                sentiment=SentimentEnum.negative,
+                sentiment_score=-0.7, topics=[],
+            ))
+        db.commit()
+
+        called: list[bool] = []
+
+        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
+            called.append(True); return "Fake."
+
+        with _patch(
+            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            side_effect=_fake_synth,
+        ):
+            out = generate_feedback_summary(
+                db=db, game_id=g.id, game_name="RedditOnly",
+                sentiment=SentimentEnum.negative,
+                period_key="today",
+                period_start=date.today(),
+            )
+
+        assert out == [], (
+            "top-level reddit-only corpus must render empty under v0029; "
+            "if this fails, top-level reddit has been moved back to the "
+            "priority tier."
+        )
+        assert not called, (
+            "Sonar synthesiser must not be called when the corpus has no "
+            "Steam-native or Bluesky anchor."
         )

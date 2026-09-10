@@ -61,35 +61,69 @@ logger = logging.getLogger(__name__)
 # noun, common gaming-domain markers (patch, class, mode, mechanic, price,
 # balance, DLC, chapter, boss, weapon, etc.).
 
+# v0029 (2026-09-10): broadened to match real Steam-review vocabulary. The
+# pre-v0029 list was tuned against Reddit-thread commentary and missed most
+# short-form Steam review language ("annoying", "boring", "unplayable",
+# "clunky", "phenomenal", "blast", "stuttering", "crashing", "doesn't work").
+# Empirical baseline on SM2 today: pre-v0029 filter admitted 6/50 positive
+# Steam reviews and 0/N sampled negative Steam reviews — too narrow to
+# support any cluster. Broadened list keeps the two-signal (opinion AND
+# specificity) gate as the guard against pure hype like "this game rocks".
 _OPINION_MARKERS = re.compile(
     r"\b("
     # Positive
-    r"love|loved|loving|amazing|incredible|great|awesome|fun|enjoy|enjoyed|"
+    r"love|loved|loving|lovely|amazing|incredible|great|awesome|fun|enjoy|enjoyed|"
     r"praise|impressed|solid|nailed|hooked|addicted|hyped|best|"
+    r"blast|phenomenal|brutal|intense|perfect|fluid|polished|"
     # Negative
     r"hate|hated|disappointed|frustrating|frustrated|broken|terrible|awful|"
     r"unfair|bad|worst|garbage|trash|nerf|nerfed|regret|refund|"
+    r"annoying|annoyed|boring|meh|clunky|janky|derpy|"
+    r"unplayable|unresponsive|slow|slowdown|"
     # Wish / request
     r"wish|hope|would love|would like|please|need|needs|should|"
-    r"pls|plz|fix|fixed|"
+    r"pls|plz|fix|fixed|fixing|"
+    # Negations of function — direct complaint syntax
+    r"doesn'?t\s+work|does\s+not\s+work|not\s+working|"
+    r"wouldn'?t\s+let|would\s+not\s+let|won'?t\s+let|"
+    r"kicked|kicks\s+me|"
     # Question about a specific thing
-    r"why does|why is|why isn't|when will|will there|is there|are there|"
+    r"why does|why is|why isn'?t|when will|will there|is there|are there|"
     # Comparative
     r"compared to|better than|worse than|reminds me of|feels like|"
     # Complaint marker without a swear
-    r"issue|problem|bug|glitch|crash|crashes|lag|laggy|"
+    r"issue|problem|bug|glitch|crash|crashes|crashing|freeze|freezes|freezing|"
+    r"lag|laggy|stutter|stuttering|hitches|drops?\s+frames|"
     # Praise marker
     r"actually good|actually great|surprisingly good|underrated"
     r")\b",
     re.IGNORECASE,
 )
 
+# v0029 (2026-09-10): specificity broadened to match real Steam-review
+# vocabulary. Pre-v0029 the regex admitted "class/patch/boss/mode/story"
+# but not "controllers/sprint/aim/loading/servers/crashing/crossplay/
+# gunplay/melee/campaign/anticheat/upscaler" — exactly the words Steam
+# reviewers use when complaining about a specific thing. That miss
+# combined with the narrow opinion list to reject virtually every real
+# Steam review on SM2 today. Broadened categories below cover: input
+# devices, movement/combat, network/session, technical failure,
+# progression modes, upscaling and hardware. Keep everything anchored to
+# a concrete game concept — no generic English words that could match a
+# refund-policy or lore-Q&A post that isn't about the game itself.
 _SPECIFICITY_MARKERS = re.compile(
     r"\b("
     # Structural game elements
-    r"class|classes|weapon|weapons|mode|modes|map|maps|level|levels|"
+    r"class|classes|weapon|weapons|gun|guns|gunplay|"
+    r"mode|modes|map|maps|level|levels|"
     r"chapter|chapters|boss|bosses|enemy|enemies|mechanic|mechanics|"
     r"skill|skills|perk|perks|ability|abilities|"
+    r"mission|missions|operations|raid|raids|horde|wave|waves|"
+    r"squad|squadmate|squadmates|team|teammate|teammates|"
+    # Input / controls (v0029)
+    r"controller|controllers|gamepad|joystick|"
+    r"keyboard|mouse|kbm|controls|input|"
+    r"sprint|aim|aiming|movement|melee|ranged|combat|campaign|"
     # Progression / economy
     r"prestige|level.\d+|xp|exp|grind|grinding|unlock|unlocks|"
     r"progression|reward|rewards|"
@@ -98,12 +132,18 @@ _SPECIFICITY_MARKERS = re.compile(
     # Story / setting
     r"story|plot|character|characters|writing|dialogue|voice|voice.acting|"
     r"lore|world|setting|"
-    # Commercial / release\n"
+    # Commercial / release
     r"price|priced|pricing|dlc|expansion|season.pass|microtransaction|"
     r"launch|release|early.access|beta|alpha|"
-    # Technical\n"
+    # Network / session (v0029)
+    r"online|offline|server|servers|crossplay|matchmaking|multiplayer|"
+    r"co.?op|coop|solo|singleplayer|single.player|pvp|pve|"
+    # Technical (v0029 additions: loading, shader, cache, upscaler, kernel)
     r"performance|fps|framerate|optimization|graphics|"
-    r"matchmaking|multiplayer|co.?op|coop|solo|singleplayer|single.player"
+    r"loading|load\s+screen|shader|shaders|compilation|"
+    r"anti.?cheat|anticheat|eac|battleeye|kernel|"
+    r"upscaler|upscaling|dlss|fsr|xess|framegen|"
+    r"gpu|cpu|vram|handheld|steam\s+deck"
     r")\b",
     re.IGNORECASE,
 )
@@ -456,20 +496,34 @@ _CACHE_TTL_SEC = 15 * 60
 #   2000 preserves the pre-v0028 behaviour on titles that already fit
 #   under the cap; only high-volume titles feel the source stratification.
 #
-# _REDDIT_COMMENT_MAX_SHARE
-#   Ceiling on reddit_comment share of the final corpus (0.40 = 40%).
-#   reddit_comment rows on adjacent-community subreddits (r/Warhammer40k,
-#   r/Helldivers, r/HorrorGaming, etc.) can outnumber Steam-review +
-#   Steam-forum + top-level-post rows 10-20:1 for popular portfolio titles
-#   while carrying much lower on-topic density (tabletop chat, mini-
-#   painting, refunds on Codex books — not the video game). Without a
-#   share cap these swamp the filter→cluster step and the widget renders
-#   an empty state. Tuning: raise if we start missing genuine Reddit
-#   community feedback (unlikely, comments still dominate low-volume
-#   titles); lower if adjacent-community drift keeps leaking through.
+# _REDDIT_MAX_SHARE
+#   Ceiling on the *combined* share of Reddit top-level posts + Reddit
+#   comments in the final corpus (0.40 = 40%). Both source types on
+#   adjacent-community subreddits (r/Warhammer40k, r/Helldivers,
+#   r/HorrorGaming, etc.) carry lower on-topic density than Steam-native
+#   sources: comments are tabletop chat and mini-painting jokes, top-level
+#   posts are Warhammer lore Q&A ("Do the C'tan shards still eat souls?").
+#   Both admit under relevance_tier + drift because the parent subreddit is
+#   legitimately tagged to the game, but neither talks about the video game
+#   itself. Without a combined share cap these swamp the filter→cluster
+#   step and the widget renders an empty state.
+#
+#   Tuning: raise if we start missing genuine Reddit-community feedback
+#   (unlikely — Reddit still dominates the corpus on low-volume titles
+#   where Steam-native counts are near zero); lower if adjacent-community
+#   drift keeps leaking through.
+#
+#   v0028 (2026-09-10) capped only `reddit_comment`. v0029 (2026-09-10)
+#   extended the cap to include top-level `reddit` too after ground-truth
+#   sampling on SM2 today showed r/Warhammer40k top-level lore Q&A was
+#   just as noisy as the comment stream underneath it.
 #   See lessons.md 2026-09-10.
 _CORPUS_CAP: int = 2000
-_REDDIT_COMMENT_MAX_SHARE: float = 0.40
+_REDDIT_MAX_SHARE: float = 0.40
+
+# Back-compat alias so external tools (regen scripts, notebooks) that
+# imported the v0028 constant name keep working.
+_REDDIT_COMMENT_MAX_SHARE: float = _REDDIT_MAX_SHARE
 
 
 def _cache_get(key: tuple[int, str, str]) -> Optional[list[dict]]:
@@ -544,16 +598,23 @@ def generate_feedback_summary(
     # is_off_topic_drift because they live on 'dedicated_sub' or 'signal'
     # tier posts — but the comment body itself is about the tabletop
     # hobby, mini-painting, army lists, refunds on Codex books, etc.,
-    # not the video game. When those comments outnumber Steam-review +
-    # Steam-forum + top-level-post rows 10-20:1 (Space Marine 2 today:
-    # 519 reddit_comment vs 105 Steam-native), the 2000-row cap plus the
-    # ≥3-posts-share-a-phrase clusterer wipes out the on-topic Steam
-    # signal — every surviving post is a different tabletop micro-topic
-    # so no cluster clears the gate and the widget renders 'Not enough
-    # posts with definitive signal'. Fix reads on-topic-dense sources
-    # (steam_review, steam_forum, reddit top-level, bluesky, dtf) FIRST
-    # up to the cap, then fills remaining headroom with a bounded slice
-    # of reddit_comment rows (never more than _REDDIT_COMMENT_MAX_SHARE
+    # not the video game.
+    #
+    # v0029 (2026-09-10): extended the low-density tier to include Reddit
+    # top-level posts too. Ground-truth sampling on SM2 today showed the
+    # r/Warhammer40k top-level stream is 40k lore Q&A ("Do the C'tan
+    # shards still eat souls?", "How badly did the Black Legion lose
+    # during Boltgun?") — same adjacent-community pollution as the
+    # comment stream, just at the parent level. Both source types now
+    # share a combined 40% share cap.
+    #
+    # When Reddit outnumbers Steam-review + Steam-forum + Bluesky + DTF
+    # rows 10-20:1 (Space Marine 2 today: ~1100 Reddit vs 105 Steam-native),
+    # the flat 2000-row cap plus the ≥3-posts-share-a-phrase clusterer
+    # wipes out the on-topic Steam signal. Fix reads on-topic-dense
+    # sources (steam_review, steam_forum, bluesky, dtf) FIRST up to the
+    # cap, then fills remaining headroom with a bounded slice of Reddit
+    # rows (top-level + comments combined never exceed _REDDIT_MAX_SHARE
     # of the total corpus). See lessons.md 2026-09-10.
     base_filters = (
         RawPost.game_id == game_id,
@@ -580,38 +641,40 @@ def generate_feedback_summary(
             q = q.filter(func.date(RawPost.post_date) >= str(period_start))
         return q
 
-    # Pass 1: on-topic-dense sources first (everything except reddit_comment).
+    # Pass 1: on-topic-dense sources first (everything except Reddit).
     # Order newest-first so we prefer the freshest signal when the cap bites.
     # NOTE: RawPost.source is a native SQLAlchemy Enum column — compare
     # against SourceEnum members, not raw strings (the rest of the codebase
     # does the same; see services/ingestor.py and services/relevance_tagger.py).
+    _LOW_DENSITY_SOURCES = (SourceEnum.reddit, SourceEnum.reddit_comment)
     priority_rows = (
         _base_query()
-        .filter(RawPost.source != SourceEnum.reddit_comment)
+        .filter(~RawPost.source.in_(_LOW_DENSITY_SOURCES))
         .order_by(RawPost.post_date.desc())
         .limit(_CORPUS_CAP)
         .all()
     )
 
-    # Pass 2: fill remaining headroom with reddit_comment rows, but never
-    # let them exceed _REDDIT_COMMENT_MAX_SHARE of the final corpus.
-    #   share s = C / (P + C) ≤ MAX ⇒ C ≤ MAX/(1-MAX) · P
-    # e.g. MAX=0.40 ⇒ C ≤ (2/3) · P. Plus we never overflow _CORPUS_CAP.
-    max_comments_by_share = int((_REDDIT_COMMENT_MAX_SHARE / (1.0 - _REDDIT_COMMENT_MAX_SHARE)) * len(priority_rows))
-    max_comments_by_cap = max(_CORPUS_CAP - len(priority_rows), 0)
-    comment_budget = min(max_comments_by_share, max_comments_by_cap)
-    if comment_budget > 0:
-        comment_rows = (
+    # Pass 2: fill remaining headroom with Reddit (top-level + comments),
+    # but never let their combined share exceed _REDDIT_MAX_SHARE of the
+    # final corpus.
+    #   share s = R / (P + R) ≤ MAX ⇒ R ≤ MAX/(1-MAX) · P
+    # e.g. MAX=0.40 ⇒ R ≤ (2/3) · P. Plus we never overflow _CORPUS_CAP.
+    max_reddit_by_share = int((_REDDIT_MAX_SHARE / (1.0 - _REDDIT_MAX_SHARE)) * len(priority_rows))
+    max_reddit_by_cap = max(_CORPUS_CAP - len(priority_rows), 0)
+    reddit_budget = min(max_reddit_by_share, max_reddit_by_cap)
+    if reddit_budget > 0:
+        reddit_rows = (
             _base_query()
-            .filter(RawPost.source == SourceEnum.reddit_comment)
+            .filter(RawPost.source.in_(_LOW_DENSITY_SOURCES))
             .order_by(RawPost.post_date.desc())
-            .limit(comment_budget)
+            .limit(reddit_budget)
             .all()
         )
     else:
-        comment_rows = []
+        reddit_rows = []
 
-    rows = priority_rows + comment_rows
+    rows = priority_rows + reddit_rows
 
     if not rows:
         _cache_set(cache_key, [])

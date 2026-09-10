@@ -1029,3 +1029,182 @@ def test_http_error_logs_response_body(monkeypatch, caplog):
         f"HTTP 400 warning must include response body. "
         f"Got: {warning_lines}"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v0029 (2026-09-10) — ambiguous-single-word gate for Bluesky filter.
+#
+# Some games in the portfolio have curated distinctive_keywords whose first
+# entry is a common English word (Insurgency: Sandstorm → ['insurgency',
+# 'sandstorm', 'new world interactive']). The pre-v0029 filter accepted any
+# post whose text contained ANY curated keyword, so a Bluesky post about
+# Colombian police substation attacks or Minneapolis protests using the
+# word "insurgency" was admitted as an "Insurgency: Sandstorm" post.
+# Same shape for "sandstorm" (weather / rap song) or "wick" (candles /
+# John Wick / surname).
+#
+# v0029 introduces a tiered gate: strong-keyword hit OR two-or-more
+# weak-keyword co-occurrence. See services/bluesky_service.py v0029.
+
+
+def test_v0029_ambiguous_single_word_alone_is_rejected(monkeypatch):
+    """
+    Post containing ONLY the weak keyword "insurgency" (e.g. a political
+    news post about an insurgent group) must be rejected under v0029.
+    """
+    _set_credentials(monkeypatch)
+    off_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_political",
+        text="ICE OUT: The Minneapolis Insurgency and the specter of civil war",
+    )
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([off_topic]))
+        results = fetch_bluesky_posts_for_game(
+            "Insurgency: Sandstorm",
+            limit=10,
+            distinctive_keywords=["insurgency", "sandstorm", "new world interactive"],
+        )
+    assert results == [], (
+        "post that only matches the weak single-word keyword 'insurgency' "
+        "must be dropped by v0029 tiered gate. If this fails, "
+        "_AMBIGUOUS_SINGLE_WORDS has been narrowed or the gate has "
+        "regressed to any()-behaviour."
+    )
+
+
+def test_v0029_two_weak_keywords_together_is_accepted(monkeypatch):
+    """
+    Post containing BOTH weak keywords ("insurgency" AND "sandstorm")
+    together is almost certainly about the game and must be accepted
+    even though neither word alone is distinctive.
+    """
+    _set_credentials(monkeypatch)
+    on_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_game",
+        text="Just spent an hour in Insurgency Sandstorm coop, the AI is brutal.",
+    )
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([on_topic]))
+        results = fetch_bluesky_posts_for_game(
+            "Insurgency: Sandstorm",
+            limit=10,
+            distinctive_keywords=["insurgency", "sandstorm", "new world interactive"],
+        )
+    assert len(results) == 1, (
+        "post that matches TWO weak keywords co-occurring must be "
+        "accepted by v0029 tiered gate. If this fails, the weak-keyword "
+        "co-occurrence branch has regressed."
+    )
+
+
+def test_v0029_strong_keyword_alone_is_accepted(monkeypatch):
+    """
+    Post containing a strong keyword (multi-word phrase or non-ambiguous
+    single word) must be accepted regardless of weak-keyword matches.
+    """
+    _set_credentials(monkeypatch)
+    on_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_studio",
+        text="New World Interactive just announced a patch, huge changes.",
+    )
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([on_topic]))
+        results = fetch_bluesky_posts_for_game(
+            "Insurgency: Sandstorm",
+            limit=10,
+            distinctive_keywords=["insurgency", "sandstorm", "new world interactive"],
+        )
+    assert len(results) == 1, (
+        "post matching the strong developer-name keyword must be "
+        "accepted by v0029 tiered gate."
+    )
+
+
+def test_v0029_only_weak_keywords_falls_back_to_any(monkeypatch):
+    """
+    Edge case: a game whose curated list contains ONLY weak keywords and
+    no strong ones must still accept posts with a single weak match, so
+    we don't zero-out titles that have only ambiguous disambiguators on
+    record. If this test fails, v0029 is too aggressive.
+    """
+    _set_credentials(monkeypatch)
+    on_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_fallback",
+        text="Just tried Docked on Steam, container-stacking puzzle game.",
+    )
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([on_topic]))
+        # 'docked' is in _AMBIGUOUS_SINGLE_WORDS, but no strong keyword
+        # is curated for this hypothetical title. Fallback: any()-behaviour.
+        results = fetch_bluesky_posts_for_game(
+            "Docked",
+            limit=10,
+            distinctive_keywords=["docked"],
+        )
+    assert len(results) == 1, (
+        "when only weak keywords are curated, v0029 must fall back to "
+        "any()-behaviour to avoid zeroing out titles with a single "
+        "ambiguous disambiguator on record."
+    )
+
+
+def test_v0029_strong_keyword_regression_inversion(monkeypatch):
+    """
+    Regression guard for the pre-v0029 Inversion behaviour. All keywords
+    for Inversion 2012 are multi-word phrases (STRONG), so v0029 must
+    behave identically to v0028 for this title.
+    """
+    _set_credentials(monkeypatch)
+    on_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_on",
+        text="Just replayed Inversion 2012, forgot how good the gravity mechanic was.",
+    )
+    off_topic = _make_post(
+        uri="at://did:x/app.bsky.feed.post/rkey_off",
+        text="Inversion of control is a great pattern for testable code.",
+    )
+    with requests_mock_module.Mocker() as m:
+        m.post(CREATE_SESSION_URL, json=_session_ok_response())
+        m.get(SEARCH_URL, json=_bsky_ok([on_topic, off_topic]))
+        results = fetch_bluesky_posts_for_game(
+            "Inversion",
+            limit=100,
+            distinctive_keywords=["Inversion 2012", "Saber Inversion"],
+        )
+    ids = {r["external_id"] for r in results}
+    assert "at://did:x/app.bsky.feed.post/rkey_on" in ids
+    assert "at://did:x/app.bsky.feed.post/rkey_off" not in ids
+
+
+def test_is_strong_bluesky_keyword_helper():
+    """Unit-test the strong-keyword classification helper directly."""
+    from services.bluesky_service import _is_strong_bluesky_keyword
+
+    # Multi-word phrases are always strong.
+    assert _is_strong_bluesky_keyword("insurgency sandstorm")
+    assert _is_strong_bluesky_keyword("new world interactive")
+    assert _is_strong_bluesky_keyword("john wick")
+
+    # Single ambiguous words are weak.
+    assert not _is_strong_bluesky_keyword("insurgency")
+    assert not _is_strong_bluesky_keyword("sandstorm")
+    assert not _is_strong_bluesky_keyword("wick")
+    assert not _is_strong_bluesky_keyword("halloween")
+    assert not _is_strong_bluesky_keyword("docked")
+
+    # Case-insensitive.
+    assert not _is_strong_bluesky_keyword("INSURGENCY")
+    assert _is_strong_bluesky_keyword("New World Interactive")
+
+    # Non-ambiguous single words are strong.
+    assert _is_strong_bluesky_keyword("snowrunner")
+    assert _is_strong_bluesky_keyword("gloomhaven")
+    assert _is_strong_bluesky_keyword("hellraiser")
+
+    # Empty / whitespace is weak/None.
+    assert not _is_strong_bluesky_keyword("")
+    assert not _is_strong_bluesky_keyword("   ")

@@ -337,6 +337,74 @@ _BSKY_GENERIC_TAIL = {
     "official", "expansion", "prologue",
 }
 
+# 2026-09-10 (v0029): common English words that appear in some games'
+# distinctive_keywords lists but match huge amounts of unrelated
+# non-gaming content on Bluesky when used as a substring filter. These
+# words are still ALLOWED in the curated list (they carry signal WHEN a
+# stronger phrase co-occurs — e.g. a Bluesky post that mentions both
+# "insurgency" and "sandstorm" is almost certainly about the game),
+# but a post that ONLY matches one of these single words is rejected
+# by the post-fetch filter. Rule: a Bluesky post must match at least
+# one STRONG keyword (see `_is_strong_bluesky_keyword`) whenever the
+# game's curated list contains at least one strong keyword.
+#
+# The list is curated conservatively — only high-collision common
+# English single words that we've actually observed producing noise
+# against portfolio titles. Growth pattern: append when live-corpus
+# sampling shows a new word driving noise for a specific title, do NOT
+# preemptively add "any English word that could be a game name".
+_AMBIGUOUS_SINGLE_WORDS: frozenset[str] = frozenset({
+    # Insurgency: Sandstorm — political news, Colombia/Minneapolis
+    # protest coverage on Bluesky dominated the corpus.
+    "insurgency",
+    "sandstorm",
+    # Docked — boats, phones, general docking chatter.
+    "docked",
+    # Inversion — math, music, inversion tables, medical.
+    "inversion",
+    # TimeShift — legitimate physics/scheduling term.
+    "timeshift",
+    # Wick — the John Wick franchise + candles + surname 'Wick'.
+    "wick",
+    # Halloween — the actual holiday floods every October.
+    "halloween",
+    # Townfall — typo/mishearing prone.
+    "townfall",
+    # Rideshare — Uber/Lyft posts overwhelmingly.
+    "rideshare",
+    # Stimulator — medical / physiotherapy device posts.
+    "stimulator",
+    # Boltgun — tool posts (nail guns, industrial bolt guns).
+    "boltgun",
+    # Turok — rare enough to be tolerable most days; kept out for
+    # now, add if noise emerges.
+    # Rest — add per live-corpus observation.
+})
+
+
+def _is_strong_bluesky_keyword(keyword: str) -> bool:
+    """True if a distinctive_keyword can carry the post-fetch filter alone.
+
+    A keyword is STRONG if it is a multi-word phrase, OR a single word
+    that is not in _AMBIGUOUS_SINGLE_WORDS. Multi-word phrases are
+    treated as strong because a post that literally contains a two-word
+    phrase like "insurgency sandstorm" or "john wick" is almost never
+    accidental. Single words are strong unless they're in the ambiguous
+    list (common English words that mean something outside gaming).
+
+    Note: the check is case-insensitive; callers should already have
+    lowercased. Passing an empty string returns False.
+    """
+    if not keyword:
+        return False
+    kw = keyword.strip().lower()
+    if not kw:
+        return False
+    if " " in kw:
+        # Multi-word phrase — accidental collisions are extremely rare
+        return True
+    return kw not in _AMBIGUOUS_SINGLE_WORDS
+
 
 def _build_search_query(
     game_name: str,
@@ -832,12 +900,43 @@ def fetch_bluesky_posts_for_game(
     # extractor when distinctive_keywords is absent — kept for backward
     # compatibility with games whose title is inherently distinctive
     # (SnowRunner, Gloomhaven, Hellraiser, etc.).
+    #
+    # 2026-09-10 (v0029): split distinctive_keywords into "strong" and
+    # "weak" tiers. Weak keywords are single common-English-word tokens
+    # in _AMBIGUOUS_SINGLE_WORDS (see module constant); strong keywords
+    # are everything else (multi-word phrases, brand names, developer
+    # names, invented compounds like "SnowRunner"). Filter contract:
+    #
+    #   * A post passes if it matches ANY strong keyword.
+    #   * A post ALSO passes if it matches TWO OR MORE weak keywords
+    #     together (e.g. a Bluesky post that mentions both
+    #     "insurgency" and "sandstorm" is almost certainly about the
+    #     game even though each word alone is ambiguous).
+    #   * A post that matches ONLY a single weak keyword is rejected.
+    #   * When the curated list has ONLY weak keywords (no strong ones)
+    #     and only one weak keyword, we fall back to the pre-v0029
+    #     any()-behaviour so we don't accidentally drop every match
+    #     for titles with a single ambiguous single-word disambiguator.
+    #
+    # This fixes noise from games whose curated keyword list is a
+    # common English word (Insurgency: Sandstorm's first keyword is
+    # 'insurgency' — political posts about the term 'insurgency' were
+    # flooding the corpus). See lessons.md 2026-09-10 (afternoon).
     filter_keywords: Optional[list[str]] = None
+    strong_filter_keywords: Optional[list[str]] = None
+    weak_filter_keywords: Optional[list[str]] = None
     if distinctive_keywords:
-        filter_keywords = [
+        cleaned = [
             k.strip().lower() for k in distinctive_keywords
             if isinstance(k, str) and k.strip()
         ]
+        strong_filter_keywords = [k for k in cleaned if _is_strong_bluesky_keyword(k)]
+        weak_filter_keywords = [k for k in cleaned if not _is_strong_bluesky_keyword(k)]
+        # Preserve the flat filter_keywords for the fallback-list case:
+        # when a game has only ONE weak keyword and no strong keywords
+        # (rare in practice — usually >=1 strong exists), fall back to
+        # the any()-behaviour so we don't reject every match.
+        filter_keywords = cleaned
     filter_query = _game_search_query(game_name)  # fallback
 
     cursor: Optional[str] = None
@@ -915,7 +1014,26 @@ def fetch_bluesky_posts_for_game(
                     text = (
                         (post.get("title") or "") + " " + (post.get("body") or "")
                     ).lower()
-                    if not any(kw in text for kw in filter_keywords):
+                    # v0029 tiered gate: strong-keyword hit OR two-or-more
+                    # weak-keyword co-occurrence. See comment above where
+                    # strong_filter_keywords / weak_filter_keywords are built.
+                    strong_hit = bool(strong_filter_keywords) and any(
+                        kw in text for kw in strong_filter_keywords
+                    )
+                    weak_hits = (
+                        sum(1 for kw in (weak_filter_keywords or []) if kw in text)
+                    )
+                    if strong_hit:
+                        pass  # accept
+                    elif weak_hits >= 2:
+                        pass  # accept: two ambiguous single-word tokens co-occur
+                    elif not strong_filter_keywords and weak_hits >= 1:
+                        # Fallback: only weak keywords curated — keep the
+                        # pre-v0029 any() behaviour so we don't reject
+                        # every match for a title with a single ambiguous
+                        # disambiguator on record.
+                        pass  # accept
+                    else:
                         continue
                 elif not _post_mentions_game(post, filter_query):
                     continue

@@ -2,6 +2,28 @@
 
 A running log of what changed in SentimentPulse — the community sentiment intelligence surface for Saber's game portfolio.
 
+## September 10, 2026 (afternoon follow-up)
+
+- Fixed
+
+  ### Top Topics widget now surfaces real Steam-review vocabulary
+
+  Even after this morning's source-stratification fix, the Top Topics widget was still rendering empty for Space Marine 2, Halloween: The Game, and Aliens: Fireteam Elite 2 across every sentiment tab. Live-corpus sampling revealed two remaining gaps:
+
+  1. The opinion+specificity filter guarding what feedback the widget synthesizes was materially undertuned for how Steam reviewers actually write. Reviews saying "sprint doesn't work on xbox controllers", "annoying and the loading screens slow down gameplay", "keyboard and mouse controls are derpy", "EAC is crashing then the game freezes", "unplayable in coop", "please fix the DLSS upscaler on my handheld" — all textbook Steam feedback — were being dropped because the filter's vocabulary had been tuned to Reddit-thread commentary, not review-page short-form. Empirical baseline before the fix: 0 of a 50-post sample of SM2 negative Steam reviews passed the filter, and only 6 of 50 positive reviews.
+
+  2. Top-level Reddit posts on adjacent-community subreddits carry the same off-topic problem as their comments: r/Warhammer40k lore Q&A like "Do the C'tan shards still eat souls?" and "How badly did the Black Legion lose during Boltgun?" — legitimately Reddit-community content, but not about the video game. The morning fix capped only Reddit comments; the parent posts were still counted as priority.
+
+  Fix: broadened the two filter regexes to cover real Steam-review vocabulary (input devices, movement/combat, network/session, technical failure, upscaling) while keeping the two-signal AND gate as the guard against pure hype (verified by test: fixtures like "Absolute masterpiece, love it" still get rejected). Extended the low-density source tier from just `reddit_comment` to both `reddit` and `reddit_comment` — together they now share a combined 40% cap on the corpus instead of 40% each.
+
+  Guard tests in `TestOpinionSpecificityBroadenedForSteamReviews` (11 real-review parametrized cases + a pure-hype-rejection case) and `TestRedditTopLevelJoinsLowDensityTier` (combined-share cap + top-level-Reddit-alone refusal) prevent regressions. Full test suite: 338 dashboard + Bluesky-adjacent tests pass. See `lessons.md` 2026-09-10 (afternoon) for the diagnosis.
+
+  ### Bluesky ambiguous-single-word filter tightened
+
+  Insurgency: Sandstorm was pulling in political news posts (Minneapolis protests, Colombia police substation attacks) because its curated `distinctive_keywords` list started with the common English word "insurgency" and the post-fetch filter accepted any post containing any one keyword. Same shape for other titles whose keywords include ambiguous English words like "sandstorm", "wick", "docked", "halloween", "rideshare", or "stimulator".
+
+  Added a tiered filter: a Bluesky post passes if it matches at least one strong keyword (multi-word phrase or non-ambiguous single word) or two or more ambiguous single words co-occurring (a post with both "insurgency" and "sandstorm" is almost certainly about the game). Ambiguous single words alone are rejected. Titles whose curated list contains only ambiguous single words still fall back to the pre-fix behaviour so they don't zero out. Growth rule for the ambiguous-word list: only add a word when live-corpus sampling shows it is actively driving noise for a specific portfolio title.
+
 ## September 10, 2026
 
 - Fixed
