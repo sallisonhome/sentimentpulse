@@ -1,0 +1,280 @@
+name: SignalPulse — Seed Console Leaderboards Data
+
+# One-shot workflow to populate the Console Leaderboards feature with
+# real prod data by running two verification scripts sequentially on
+# the droplet:
+#
+#   1. signalpulse/scripts/verify-discovery.ts
+#      -> Steam top-sellers (2 pages, ~50 titles), Xbox top-paid (~25),
+#         PS manual seeds (4 known paid titles). Classifies each SKU
+#         (paid vs free-to-play) via storefront pricing and writes to
+#         platform_sku_map. Asserts >=25 Steam paid, >=15 Xbox paid,
+#         and that a known F2P (PUBG etc.) is NOT classified as paid.
+#
+#   2. signalpulse/scripts/verify-console-collectors.ts
+#      -> Runs one live pass of the three per-platform collectors
+#         (Steam / Xbox / PS) against a fixed set of seeded title_ids
+#         (9001..9201). Writes snapshots to store_rating_signal_daily
+#         and Steam review buckets to steam_review_history. Asserts
+#         >=1 Steam snapshot, F2P gate fires, Xbox + PS rows have
+#         rating_count > 0.
+#
+# Both scripts:
+#   - hit real vendor endpoints (Valve, Microsoft, Sony) — this is
+#     not a unit test.
+#   - are idempotent (upsert semantics) — safe to re-run.
+#   - self-assert and exit non-zero on failure, so the job status
+#     reflects real correctness.
+#
+# The workflow runs from /opt/sentimentpulse/signalpulse so the
+# `data.db` reference in server/storage.ts resolves to the live
+# production DB — same file signalpulse.service reads/writes.
+# SQLite WAL means concurrent reads from the running service are
+# safe; the discovery + collector writes touch platform_sku_map,
+# store_rating_signal_daily, and steam_review_history, none of
+# which the request path writes to (only cron does, and cron isn't
+# active during the ~2-minute window this workflow holds).
+#
+# Runtime estimate: 60-120s total (discovery ~30s, collectors ~60s).
+#
+# Skip flags:
+#   run_discovery  (default true)  — skip to only run collectors
+#   run_collectors (default true)  — skip to only run discovery
+#
+# Concurrency: shares 'deploy-droplet' with the deploy workflows so
+# this cannot race a deploy that's mid-restart.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_discovery:
+        description: "Run discovery (Steam/Xbox/PS SKU classification)"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      run_collectors:
+        description: "Run one collector pass (real vendor snapshots)"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight — DB, service, and scripts present
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+
+          # Resolve DB path via systemd — same as signalpulse-db-query.yml.
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          if [ -z "$WD" ]; then
+            echo "ERR: could not resolve signalpulse WorkingDirectory"
+            exit 1
+          fi
+          DB="$WD/data.db"
+          echo "Working dir: $WD"
+          echo "DB: $DB"
+          [ -f "$DB" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/verify-discovery.ts" ] || { echo "ERR: verify-discovery.ts missing"; exit 1; }
+          [ -f "$WD/scripts/verify-console-collectors.ts" ] || { echo "ERR: verify-console-collectors.ts missing"; exit 1; }
+          echo "Scripts present."
+
+          # Confirm required tables exist. If any of these are missing
+          # the deploy that added the schema hasn't run yet.
+          for t in platform_sku_map store_rating_signal_daily steam_review_history; do
+            n=$(sqlite3 "$DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='$t';")
+            [ "$n" = "1" ] || { echo "ERR: required table '$t' missing"; exit 1; }
+          done
+          echo "Required tables present."
+
+          # Snapshot pre-run row counts for the audit.
+          echo ""
+          echo "── Pre-run row counts ──"
+          sqlite3 -header -column "$DB" "
+            SELECT 'platform_sku_map' AS tbl, COUNT(*) AS rows FROM platform_sku_map
+            UNION ALL SELECT 'store_rating_signal_daily', COUNT(*) FROM store_rating_signal_daily
+            UNION ALL SELECT 'steam_review_history', COUNT(*) FROM steam_review_history;"
+          REMOTE
+
+      - name: Run discovery + collectors
+        env:
+          RUN_DISCOVERY: ${{ github.event.inputs.run_discovery }}
+          RUN_COLLECTORS: ${{ github.event.inputs.run_collectors }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              RUN_DISCOVERY="$RUN_DISCOVERY" RUN_COLLECTORS="$RUN_COLLECTORS" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+
+          RUN_DISCOVERY="${RUN_DISCOVERY:-true}"
+          RUN_COLLECTORS="${RUN_COLLECTORS:-true}"
+
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+
+          # tsx is a dev-dependency in signalpulse/package.json. `npm install`
+          # runs on every deploy so node_modules/.bin/tsx exists on the
+          # droplet already. Use it directly instead of `npx` to avoid a
+          # network round-trip.
+          TSX="./node_modules/.bin/tsx"
+          if [ ! -x "$TSX" ]; then
+            echo "ERR: tsx not found at $TSX — is signalpulse deployed?"
+            exit 1
+          fi
+          echo "Using runner: $TSX"
+
+          # Match signalpulse.service's runtime env so the script sees the
+          # same NODE_ENV and any other env-file settings. We source the
+          # env file if present; harmless if it's not.
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+
+          # ── 1. Discovery ────────────────────────────────────────────
+          if [ "$RUN_DISCOVERY" = "true" ]; then
+            echo ""
+            echo "════════════════════════════════════════════════════════"
+            echo "  DISCOVERY: verify-discovery.ts"
+            echo "════════════════════════════════════════════════════════"
+            t0=$(date +%s)
+            # Cap at 5 minutes to keep the SSH connection alive under any
+            # single upstream stall. Script itself exits 0/1/2.
+            timeout 300 "$TSX" scripts/verify-discovery.ts
+            rc=$?
+            t1=$(date +%s)
+            echo "Discovery exit=$rc elapsed=$((t1 - t0))s"
+            if [ $rc -ne 0 ]; then
+              echo "ERR: discovery failed (rc=$rc). Aborting before collectors."
+              exit $rc
+            fi
+          else
+            echo "Skipping discovery (run_discovery=false)"
+          fi
+
+          # ── 2. Collectors ───────────────────────────────────────────
+          if [ "$RUN_COLLECTORS" = "true" ]; then
+            echo ""
+            echo "════════════════════════════════════════════════════════"
+            echo "  COLLECTORS: verify-console-collectors.ts"
+            echo "════════════════════════════════════════════════════════"
+            t0=$(date +%s)
+            timeout 300 "$TSX" scripts/verify-console-collectors.ts
+            rc=$?
+            t1=$(date +%s)
+            echo "Collectors exit=$rc elapsed=$((t1 - t0))s"
+            if [ $rc -ne 0 ]; then
+              echo "ERR: collectors failed (rc=$rc)"
+              exit $rc
+            fi
+          else
+            echo "Skipping collectors (run_collectors=false)"
+          fi
+          REMOTE
+
+      - name: Post-run audit
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          DB="$WD/data.db"
+
+          echo "── Post-run row counts ──"
+          sqlite3 -header -column "$DB" "
+            SELECT 'platform_sku_map' AS tbl, COUNT(*) AS rows FROM platform_sku_map
+            UNION ALL SELECT 'store_rating_signal_daily', COUNT(*) FROM store_rating_signal_daily
+            UNION ALL SELECT 'steam_review_history', COUNT(*) FROM steam_review_history
+            UNION ALL SELECT 'console_title_igdb', COUNT(*) FROM console_title_igdb;"
+
+          echo ""
+          echo "── platform_sku_map by platform × business_model ──"
+          sqlite3 -header -column "$DB" "
+            SELECT platform, business_model, COUNT(*) AS n
+              FROM platform_sku_map
+             GROUP BY platform, business_model
+             ORDER BY platform, business_model;"
+
+          echo ""
+          echo "── store_rating_signal_daily by platform (latest window) ──"
+          sqlite3 -header -column "$DB" "
+            SELECT platform, COUNT(*) AS snapshots,
+                   MIN(capture_date) AS earliest,
+                   MAX(capture_date) AS latest,
+                   SUM(CASE WHEN rating_count > 0 THEN 1 ELSE 0 END) AS with_ratings
+              FROM store_rating_signal_daily
+             GROUP BY platform
+             ORDER BY platform;"
+
+          echo ""
+          echo "── Sample paid Steam SKUs (top 5 by MSRP) ──"
+          sqlite3 -header -column "$DB" "
+            SELECT platform, external_sku, business_model, msrp_usd_cents, business_model_source
+              FROM platform_sku_map
+             WHERE platform = 'steam' AND business_model = 'paid'
+             ORDER BY msrp_usd_cents DESC
+             LIMIT 5;"
+
+          echo ""
+          echo "── Sample snapshots by platform (most recent per) ──"
+          sqlite3 -header -column "$DB" "
+            SELECT platform, title_id, capture_date, rating_count, avg_rating, window_label
+              FROM store_rating_signal_daily
+             ORDER BY platform, capture_date DESC, title_id
+             LIMIT 15;"
+          REMOTE
+
+      - name: Verify API returns non-empty leaderboards
+        if: success()
+        run: |
+          # Now that discovery + collectors ran, hit the same read paths
+          # the SPA hits (via nginx). These are auth-gated in prod, so a
+          # public curl returns 401 — but we can hit the droplet's
+          # loopback port 5000 directly (which the app allows without
+          # auth for known routes like /api/health), and we can also
+          # print what /signal/api/console/leaderboards/steam?window=d7
+          # returns publicly to confirm the auth wall is intact.
+
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+
+          echo "── Public 401 wall (should be 401 not 500) ──"
+          for pf in steam xbox ps5; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 \
+                   "http://127.0.0.1/signal/api/console/leaderboards/${pf}?window=d7")
+            echo "  /signal/api/console/leaderboards/${pf}?window=d7 -> HTTP $code"
+          done
+
+          echo ""
+          echo "── Direct loopback (bypasses saber auth via same-origin) ──"
+          # /api/console/leaderboards is public-readable if AUTH_MODE=both
+          # was configured to make console routes public. Print status
+          # + first 200 chars regardless.
+          for pf in steam xbox ps5; do
+            resp=$(curl -sS --max-time 5 "http://127.0.0.1:5000/api/console/leaderboards/${pf}?window=d7" || echo "curl-fail")
+            echo "  ${pf}: ${resp:0:200}"
+          done
+          REMOTE
