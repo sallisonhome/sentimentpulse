@@ -178,7 +178,7 @@ export default function ConsoleLeaderboardsHub() {
             <Badge variant="outline" className="text-[10px] uppercase tracking-wide">experimental</Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Top premium paid titles across Steam, Xbox, and PlayStation, ranked by daily rating-count signal — a public proxy for sales momentum. Free-to-play titles are excluded.
+            Top premium paid titles across Steam, Xbox, and PlayStation, ranked by estimated in-window revenue (units × ASP). Free-to-play titles are excluded. Rating count is the underlying sales-momentum signal that feeds the estimator.
           </p>
         </div>
         <div className="flex gap-1 flex-wrap" role="tablist" aria-label="Window">
@@ -357,11 +357,11 @@ function PlatformColumn({
                       ) : null}
                     </span>
                     <div className="flex flex-col items-end shrink-0 leading-tight">
-                      <span className="font-mono text-xs tabular-nums" title="Rating count (sales proxy)">
-                        {formatNumberCompact(t.ratingCount)}
-                      </span>
+                      {/* Primary: estimated revenue. Rating-count is our
+                          algorithm's input signal but not the leaderboard's
+                          point — revenue leads, rating count is muted below. */}
                       <span
-                        className="font-mono text-[10px] tabular-nums text-muted-foreground"
+                        className="font-mono text-xs tabular-nums"
                         title={
                           t.revenueMidUsd != null
                             ? `Est. revenue (${window}) = est. units × ASP — v0, ±30–50%`
@@ -375,6 +375,12 @@ function PlatformColumn({
                           : t.unitsMid != null
                             ? `~${formatNumberCompact(t.unitsMid)}u`
                             : "—"}
+                      </span>
+                      <span
+                        className="font-mono text-[10px] tabular-nums text-muted-foreground"
+                        title="Rating count — public sales-momentum proxy that feeds the estimator"
+                      >
+                        {formatNumberCompact(t.ratingCount)} ratings
                       </span>
                     </div>
                   </a>
