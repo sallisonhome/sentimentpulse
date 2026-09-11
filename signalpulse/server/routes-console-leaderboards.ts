@@ -172,13 +172,21 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // COALESCE picks the first non-null level in cascade order. The parallel
       // CASE expression records which window actually produced the value so the
       // client can badge "est. via 30d" when 7d was empty.
-      const cascadeUnits = "COALESCE(" + cascade.map((_, i) => `w${i}.units_mid`).join(", ") + ")";
-      const sortExpr = sortExprFor(cascadeUnits)[sort];
+      //
+      // SQLite's COALESCE requires >=2 arguments; single-arg raises
+      // "wrong number of arguments to function COALESCE()" and takes down the
+      // whole leaderboard route. window=ltd has exactly one cascade level
+      // (['ltd']), so emit the bare column expression in that case. All wider
+      // windows still get real COALESCE.
+      const cascadeCoalesce = (col: string): string =>
+        cascade.length === 1
+          ? `w0.${col}`
+          : `COALESCE(${cascade.map((_, i) => `w${i}.${col}`).join(", ")})`;
+      const cascadeUnits = cascadeCoalesce("units_mid");
       // Bind the ASP factor twice for revenue sort (once in ORDER BY IS NULL,
       // once in ORDER BY sortExpr) so the constant lands in both slots.
       const sortBinds = sort === "revenue" ? [aspFactor, aspFactor] : [];
-      const cascadeOwners = "COALESCE(" + cascade.map((_, i) => `w${i}.owners_mid`).join(", ") + ")";
-      const cascadeGated = "COALESCE(" + cascade.map((_, i) => `w${i}.gated_reason`).join(", ") + ")";
+
       const cascadeWindowUsed = "CASE " + cascade.map((w, i) => `WHEN w${i}.units_mid IS NOT NULL THEN '${w}'`).join(" ") + " ELSE NULL END";
       // Method tag of the winning cascade level. The estimator writes
       // 'backfill-bootstrap' / 'backfill-steam-pace' / 'backfill-peer-ratio'
@@ -193,6 +201,98 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const recentHot7dTest = window === "d7"
         ? "w0.units_mid IS NOT NULL"
         : "EXISTS (SELECT 1 FROM window_estimates_daily w7d WHERE w7d.title_id = psm.title_id AND w7d.platform = psm.platform AND w7d.window = 'd7' AND w7d.units_mid IS NOT NULL)";
+
+      // ── SKU display-name filter (bundles / DLC / PC-only Microsoft Store) ──
+      // Applied at query time against IGDB canonical name OR store name fallback,
+      // whichever the SELECT already resolves. Kept in one place so PS5 and Xbox
+      // share the same exclusion vocabulary. Names are LOWER()'d for matching.
+      //
+      // DLC vocabulary — never real base games: 'season pass', ' season 1..6' (word-final),
+      //   'episode 1..5', 'skin pack', '- 2008 movie ... skin', 'worlds part', '- aftermath',
+      //   ': aftermath', 'character/weapon/map/mission/mythology pack', 'starter bundle'.
+      // Bundle vocabulary — multi-title or paid-upgrade combos, NOT cross-gen base SKUs:
+      //   'cross-gen bundle' (explicit Sony upgrade-path SKU, distinct from a game that
+      //   happens to be labeled 'PS4 & PS5'), 'saga bundle', 'legacy bundle', 'collection
+      //   bundle', 'complete bundle', 'trilogy bundle', 'legendary edition bundle',
+      //   'anniversary bundle', and any '<X> + <Y> Bundle' combo.
+      // PC-only (Xbox platform only): 'java & bedrock edition for pc' and its variants —
+      //   Microsoft Store surfaces these under the same displaycatalog as Xbox games.
+      //
+      // Cross-gen base SKUs like 'Miles Morales PS4 & PS5' or 'DOOM Eternal PS4 & PS5'
+      // are NOT filtered here: they are legitimate base games Sony sells from the PS5
+      // store, and Push 2 will canonicalize them alongside any PS5-only twin SKU.
+      const nameSourceExpr = `LOWER(COALESCE(NULLIF(igdb.name,''), NULLIF(igdb.store_name,''), psm.external_sku))`;
+      const dlcBundleFilter = `
+        AND ${nameSourceExpr} NOT LIKE '%season pass%'
+        AND ${nameSourceExpr} NOT LIKE '% season 1'
+        AND ${nameSourceExpr} NOT LIKE '% season 2'
+        AND ${nameSourceExpr} NOT LIKE '% season 3'
+        AND ${nameSourceExpr} NOT LIKE '% season 4'
+        AND ${nameSourceExpr} NOT LIKE '% season 5'
+        AND ${nameSourceExpr} NOT LIKE '% season 6'
+        AND ${nameSourceExpr} NOT LIKE '%- season %'
+        AND ${nameSourceExpr} NOT LIKE '%episode 1%'
+        AND ${nameSourceExpr} NOT LIKE '%episode 2%'
+        AND ${nameSourceExpr} NOT LIKE '%episode 3%'
+        AND ${nameSourceExpr} NOT LIKE '%episode 4%'
+        AND ${nameSourceExpr} NOT LIKE '%episode 5%'
+        AND ${nameSourceExpr} NOT LIKE '%skin pack%'
+        AND ${nameSourceExpr} NOT LIKE '% movie % skin%'
+        AND ${nameSourceExpr} NOT LIKE '%worlds part%'
+        AND ${nameSourceExpr} NOT LIKE '%- aftermath%'
+        AND ${nameSourceExpr} NOT LIKE ': aftermath%'
+        AND ${nameSourceExpr} NOT LIKE '%character pack%'
+        AND ${nameSourceExpr} NOT LIKE '%weapon pack%'
+        AND ${nameSourceExpr} NOT LIKE '%map pack%'
+        AND ${nameSourceExpr} NOT LIKE '%mission pack%'
+        AND ${nameSourceExpr} NOT LIKE '%mythology pack%'
+        AND ${nameSourceExpr} NOT LIKE '%starter bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%cross-gen bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%saga bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%legacy bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%collection bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%complete bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%trilogy bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%legendary edition bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%anniversary bundle%'
+        AND NOT (${nameSourceExpr} LIKE '% + %' AND ${nameSourceExpr} LIKE '%bundle%')
+      `;
+      // Xbox-only extra: filter Microsoft Store PC apps that leak into Xbox catalog.
+      const pcOnlyFilter = platform === 'xbox' ? `
+        AND ${nameSourceExpr} NOT LIKE '%java & bedrock edition for pc%'
+        AND ${nameSourceExpr} NOT LIKE '%: java & bedrock%pc%'
+        AND ${nameSourceExpr} NOT LIKE '%for windows 10%'
+        AND ${nameSourceExpr} NOT LIKE '%for pc%'
+      ` : '';
+
+      // Cascade-to-LTD revenue gate: when the chosen window is not 'ltd' and the
+      // cascade falls all the way through to LTD (only w${last}.units_mid is set),
+      // treat that as insufficient window signal — the LTD unit count is a
+      // lifetime total, not a d7/d30/d90/m12 quantity, and blindly multiplying it
+      // by ASP overstates window revenue by orders of magnitude. Emit NULL for
+      // units, revenue, and windowUsed in that case, and tag gatedReason so the
+      // client can badge 'gated: ltd-only signal'.
+      //
+      // For window='ltd' the whole cascade IS just ['ltd'], so no gate applies.
+      const gateToLtd = window !== 'ltd' && cascade.length >= 2;
+      // 'preLtd' = the pre-LTD levels of the cascade (all levels except the last).
+      // The gate fires when NONE of the pre-LTD levels produced a unit signal.
+      const preLtdHasSignal = cascade.slice(0, -1).map((_, i) => `w${i}.units_mid IS NOT NULL`).join(' OR ');
+      const cascadeUnitsGated = gateToLtd
+        ? `CASE WHEN ${preLtdHasSignal} THEN ${cascadeCoalesce('units_mid')} ELSE NULL END`
+        : cascadeCoalesce('units_mid');
+      const cascadeOwnersGated = gateToLtd
+        ? `CASE WHEN ${preLtdHasSignal} THEN ${cascadeCoalesce('owners_mid')} ELSE NULL END`
+        : cascadeCoalesce('owners_mid');
+      const cascadeWindowUsedGated = gateToLtd
+        ? `CASE WHEN ${preLtdHasSignal} THEN (${cascadeWindowUsed}) ELSE NULL END`
+        : cascadeWindowUsed;
+      const gatedReasonExpr = gateToLtd
+        ? `CASE WHEN ${preLtdHasSignal} THEN ${cascadeCoalesce('gated_reason')} ELSE 'ltd_only_signal' END`
+        : cascadeCoalesce('gated_reason');
+      // Recompute the sort expression on the gated units so revenue/units sorts
+      // treat a gated row as NULL (sinks to bottom) instead of using LTD units.
+      const sortExprGated = sortExprFor(cascadeUnitsGated)[sort];
 
       // Grab latest daily rating snapshot per (title, platform). Only paid business_model.
       const rows = rawSqlite.prepare(`
@@ -279,17 +379,17 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                END
                ELSE NULL END                        AS avgRatingLabel,
           srs.capture_date                          AS ratingCapturedAt,
-          ${cascadeOwners}                          AS ownersMid,
-          ${cascadeUnits}                           AS unitsMid,
-          ${cascadeWindowUsed}                      AS windowUsed,
+          ${cascadeOwnersGated}                     AS ownersMid,
+          ${cascadeUnitsGated}                      AS unitsMid,
+          ${cascadeWindowUsedGated}                 AS windowUsed,
           ${cascadeMethod}                          AS estimateMethod,
           -- ASP (Average Selling Price) in USD cents = MSRP × platform ASP factor.
           -- Kept as an integer-cents value so the client formats it the same as MSRP.
           CAST(psm.msrp_usd_cents * ? AS INTEGER)   AS aspUsdCents,
           -- Estimated in-window revenue in USD dollars = cascaded units × ASP.
           -- ASP applies platform-specific realization (steam ~66%, consoles ~80%).
-          (${cascadeUnits} * psm.msrp_usd_cents * ? / 100.0) AS revenueMidUsd,
-          ${cascadeGated}                           AS gatedReason,
+          (${cascadeUnitsGated} * psm.msrp_usd_cents * ? / 100.0) AS revenueMidUsd,
+          ${gatedReasonExpr}                        AS gatedReason,
           -- Recent-hot flag = released in the last 30d AND has a real 7d estimate.
           -- Same confidence-aware date resolution as the releaseDate column: when
           -- IGDB matched the wrong game we prefer the store's own date, since
@@ -322,14 +422,16 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
        WHERE psm.platform = ?
          AND psm.business_model = 'paid'
          AND psm.sku_role = 'base'
+         ${dlcBundleFilter}
+         ${pcOnlyFilter}
        -- NULL sort values sink so the client still gets a full 100 rows even
        -- before the estimator has populated every window. rating_count is a
        -- stable-sort tie-breaker for every sort mode.
        -- Recent-hot titles get a small tie-breaker bump so a Sep-8 launch
        -- with the same revenue as a tenured title still lands above it in
        -- the 7d view.
-       ORDER BY (${sortExpr} IS NULL) ASC,
-                ${sortExpr} ${dirSql},
+       ORDER BY (${sortExprGated} IS NULL) ASC,
+                ${sortExprGated} ${dirSql},
                 (CASE WHEN (
                    CASE WHEN igdb.match_confidence = 'low'
                      THEN COALESCE(igdb.store_release_date, igdb.release_date)
