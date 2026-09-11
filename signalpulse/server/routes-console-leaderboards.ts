@@ -3,15 +3,24 @@
  *
  * Endpoints:
  *   GET /api/console/leaderboards/:platform
- *     Query: window=d7|d30|d90|m12|ltd  (default d30)
- *     Returns top-100 titles for that platform ranked by estimated units sold
- *     in the requested window (window_estimates_daily.units_mid), NOT by rating
- *     count. Ratings feed the estimator; they are not the sort key.
+ *     Query:
+ *       window = d7|d30|d90|m12|ltd  (default d30)
+ *       sort   = revenue|units|ratings|score   (default revenue)
+ *       dir    = asc|desc   (default desc)
  *
- *     Titles with no estimate for the window (NULL units_mid) sink to the
- *     bottom rather than being excluded, so the client still gets 100 rows
- *     even before the estimator has populated every window. rating_count is
- *     only a stable-sort tie-breaker.
+ *     Returns top-100 titles for that platform for the requested window.
+ *
+ *     Ranking columns:
+ *       revenue  = units_mid * msrp_usd_cents / 100 (window-scoped)
+ *       units    = window_estimates_daily.units_mid
+ *       ratings  = store_rating_signal_daily.rating_count (latest LTD snapshot)
+ *       score    = store_rating_signal_daily.avg_rating   (latest LTD snapshot)
+ *
+ *     Ratings and score feed the estimator; they are also user-selectable
+ *     sort keys. Titles with a NULL sort value sink to the bottom rather
+ *     than being excluded, so the client still gets a full 100 rows even
+ *     before the estimator has populated every window. rating_count is a
+ *     stable-sort tie-breaker for every sort mode.
  *
  *     Only rows with business_model = 'paid' AND sku_role = 'base' are returned.
  *
@@ -60,6 +69,24 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const window = (req.query.window as string) || "d30";
       if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
 
+      // Sort mode + direction. Whitelist rather than string-interpolate to keep
+      // the query prepareable and to prevent injection through the query string.
+      const sort = ((req.query.sort as string) || "revenue").toLowerCase();
+      if (!["revenue","units","ratings","score"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
+      const dir = ((req.query.dir as string) || "desc").toLowerCase();
+      if (!["asc","desc"].includes(dir)) return res.status(400).json({ error: "invalid dir" });
+
+      // sortExpr maps each sort key to the column expression. revenue is
+      // units × msrp/100 (dollars), so a title with unknown msrp (NULL) sinks.
+      const SORT_EXPR: Record<string, string> = {
+        revenue: "(w.units_mid * psm.msrp_usd_cents / 100.0)",
+        units:   "w.units_mid",
+        ratings: "srs.rating_count",
+        score:   "srs.avg_rating",
+      };
+      const sortExpr = SORT_EXPR[sort];
+      const dirSql = dir === "asc" ? "ASC" : "DESC";
+
       // Grab latest daily rating snapshot per (title, platform). Only paid business_model.
       const rows = rawSqlite.prepare(`
         WITH latest_rating AS (
@@ -81,6 +108,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           srs.capture_date                          AS ratingCapturedAt,
           w.owners_mid                              AS ownersMid,
           w.units_mid                               AS unitsMid,
+          -- Estimated in-window revenue in USD dollars = units × MSRP.
+          -- No discount factor applied yet; treat as an MSRP-anchored ceiling.
+          (w.units_mid * psm.msrp_usd_cents / 100.0) AS revenueMidUsd,
           w.gated_reason                            AS gatedReason
         FROM platform_sku_map psm
         LEFT JOIN latest_rating lr
@@ -100,17 +130,17 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
        WHERE psm.platform = ?
          AND psm.business_model = 'paid'
          AND psm.sku_role = 'base'
-       -- Sort by estimated units for the selected window. Ratings are an INPUT
-       -- to the estimator, not the sort key. Titles with no estimate for this
-       -- window (NULL units_mid) sink; rating_count is only a tie-breaker so
-       -- ordering stays stable when two titles share the same units_mid.
-       ORDER BY (w.units_mid IS NULL) ASC,
-                w.units_mid DESC,
+       -- Default sort is estimated revenue for the selected window. User can
+       -- switch to units, ratings, or score via ?sort=. NULL sort values sink
+       -- so the client still gets a full 100 rows even before the estimator
+       -- has populated every window. rating_count is a stable-sort tie-breaker.
+       ORDER BY (${sortExpr} IS NULL) ASC,
+                ${sortExpr} ${dirSql},
                 COALESCE(srs.rating_count, 0) DESC
        LIMIT 100
       `).all(platform, window, window, platform) as Array<Record<string, any>>;
 
-      res.json({ platform, window, count: rows.length, titles: rows });
+      res.json({ platform, window, sort, dir, count: rows.length, titles: rows });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
