@@ -48,24 +48,38 @@ interface SeedRow {
   notes: string;
 }
 
+// v0.2 (2026-09-11): first-run outputs vs public disclosures showed the
+// initial multipliers were too high for evergreen titles — Xbox Minecraft came
+// out at 930M units, PS BG3 at 154M. Recalibrated against a handful of
+// public anchors to produce plausible top-of-board numbers. These are still
+// v0 defaults — not fitted — and per-cohort fits (Game Pass inclusion, PS Plus
+// day-one, premium exclusive, indie) come with the calibration follow-up.
+//
+// Cross-check math the numbers below satisfy:
+//   Steam Terraria: 1.34M reviews × 40 → 53M units      (real ~58M)
+//   Steam BG3:      ~500K reviews × 40 → 20M units      (real ~15M steam)
+//   Xbox Minecraft: 4.18M ratings × 12 / 0.90 → 55M     (real ~40-50M xbox)
+//   Xbox Forza H5:  67K ratings × 12 / 0.90 → 900K       (real ~6M xbox, but 20M "players" incl. Game Pass streaming)
+//   PS5  Minecraft: 1.98M ratings × 6 / 0.76 → 15.6M     (real ~15-20M ps)
+//   PS5  BG3:       780K ratings × 6 / 0.76 → 6.2M       (real ~5M ps)
 const V0_ROWS: SeedRow[] = [
   {
     platform: "steam", cohort_key: "default",
-    multiplier: 55, ci_pct: 0.30, digital_unit_share: 1.00,
-    confidence: "v0-defaults", method: "gamediscoverco-baseline",
-    notes: "GameDiscoverCo baseline 50-70x owners/review; VG Insights published 55x. ±30% is the tight end because Steam has the deepest public back-tests.",
+    multiplier: 40, ci_pct: 0.40, digital_unit_share: 1.00,
+    confidence: "v0-defaults", method: "gamediscoverco-adjusted",
+    notes: "GameDiscoverCo baseline 50-70x owners/review over-estimates evergreen titles; anchor cross-check against Terraria (58M actual @ 1.34M reviews = 43x) and BG3 Steam (~15M @ ~500K reviews = 30x) narrows the plausible range to ~30-45x. 40x with ±40% covers both.",
   },
   {
     platform: "xbox", cohort_key: "default",
-    multiplier: 200, ci_pct: 0.50, digital_unit_share: 0.90,
-    confidence: "v0-defaults", method: "raijin-scaled-from-steam",
-    notes: "UsageData ratings are ~4x thinner per owner than Steam reviews per Raijin methodology (55*4≈220, rounded to 200 for conservatism). Digital 0.90 modelled since Xbox exited Circana's digital panel in July 2026.",
+    multiplier: 12, ci_pct: 0.60, digital_unit_share: 0.90,
+    confidence: "v0-defaults", method: "anchor-cross-checked",
+    notes: "Anchor cross-check: Minecraft Xbox (4.18M ratings, ~40-50M lifetime) implies ~10-12x. Elden Ring Nightreign (182K ratings, ~2M Xbox) implies ~10x. Forza Horizon 5 (67K ratings, 20M cross-platform Game Pass players) sits high but Game Pass streaming inflates player counts. Digital 0.90 modelled since Xbox exited Circana panel July 2026. ±60% because Game Pass inclusion is a very large cohort effect not yet captured.",
   },
   {
     platform: "ps5", cohort_key: "default",
-    multiplier: 150, ci_pct: 0.50, digital_unit_share: 0.76,
-    confidence: "v0-defaults", method: "gamstat-scaled-from-steam",
-    notes: "PSN star ratings are ~3x thinner per owner than Steam reviews per the gamstat trophy-sampling back-test. Digital 0.76 = Sony IR FY24 full-game digital unit share.",
+    multiplier: 6, ci_pct: 0.60, digital_unit_share: 0.76,
+    confidence: "v0-defaults", method: "anchor-cross-checked",
+    notes: "Anchor cross-check: BG3 PS5 (780K ratings, ~5M lifetime) implies 4.9x. Minecraft PS (1.98M ratings, ~15-20M lifetime) implies 5-8x. PSN star-ratings are a passive 1-tap prompt so their rate-per-owner is much higher than Steam's active review action. Digital 0.76 = Sony IR FY24 full-game digital unit share.",
   },
 ];
 
@@ -74,7 +88,7 @@ async function main() {
   const nowIso = new Date().toISOString();
   // Use a fixed effective_from date so re-running the workflow doesn't create
   // a new row per day. If we change any coefficient we bump this date manually.
-  const effectiveFrom = "2026-09-11";
+  const effectiveFrom = "2026-09-11T12:00Z"; // bumped from 2026-09-11 when v0.2 anchor-cross-checked multipliers replaced initial GameDiscoverCo-only defaults
 
   // ─── 1. ownership_multipliers ─────────────────────────────────────────────
   const existing = db.prepare(

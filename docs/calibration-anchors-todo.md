@@ -9,9 +9,11 @@ receipts; MAPE reported alongside R²; boards remain internal until reviewed."
 
 | Platform | Multiplier | CI | Digital share | Basis |
 |---|---|---|---|---|
-| Steam | 55× | ±30% | 1.00 | [GameDiscoverCo](https://newsletter.gamediscover.co/p/what-steam-review-count-tells-us), [VG Insights](https://vginsights.com/insights/article/steam-sales-estimation-methodology-and-accuracy) |
-| Xbox  | 200× | ±50% | 0.90 | Scaled from Steam via [Raijin methodology](https://raijin.gg/methodology) 4× thinning; digital modelled since [Xbox Circana exit](https://kotaku.com/xbox-isnt-sharing-us-digital-sales-data-anymore-2000726257) |
-| PS5   | 150× | ±50% | 0.76 | Scaled from Steam via [gamstat trophy back-test](https://arstechnica.com/gaming/2019/03/here-are-the-most-popular-playstation-games-based-on-public-trophy-data/) 3× thinning; digital = [Sony IR FY24 76%](https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/25q2_supplement.pdf) |
+| Steam | 40× | ±40% | 1.00 | [GameDiscoverCo](https://newsletter.gamediscover.co/p/what-steam-review-count-tells-us) baseline adjusted down after evergreen anchor cross-check (Terraria 58M @ 1.34M reviews = 43×, BG3 Steam ~15M @ ~500K reviews = 30×) |
+| Xbox  | 12× | ±60% | 0.90 | Anchor cross-check: Minecraft Xbox (4.18M ratings, ~40-50M lifetime) implies ~10-12×; Elden Ring Nightreign (182K ratings, ~2M Xbox) implies ~10×; digital modelled since [Xbox Circana exit](https://kotaku.com/xbox-isnt-sharing-us-digital-sales-data-anymore-2000726257) |
+| PS5   | 6× | ±60% | 0.76 | Anchor cross-check: BG3 PS5 (780K ratings, ~5M lifetime) = 4.9×, Minecraft PS (1.98M ratings, ~15-20M lifetime) = 5-8×. PSN star-ratings are a passive 1-tap prompt so per-owner rate is much higher than Steam. Digital = [Sony IR FY24 76%](https://www.sony.com/en/SonyInfo/IR/library/presen/er/pdf/25q2_supplement.pdf) |
+
+**v0 history:** initial defaults (Steam 55×, Xbox 200×, PS5 150×) produced first-run outputs of 930M Xbox Minecraft units and 154M PS BG3 units. Recalibrated to the numbers above 2026-09-11 12:00Z after anchor cross-checks. These are still v0 — not fitted.
 
 Every leaderboard row shows a `v0` amber pill next to the "Est. units" column
 header. The estimator writes `owners_low/mid/high`, `units_mid`, and a
