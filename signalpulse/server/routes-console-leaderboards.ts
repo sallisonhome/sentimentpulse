@@ -222,12 +222,16 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
           END                                       AS coverUrl,
           -- Effective release date the isRecentHot flag and client badge read.
-          -- Prefer IGDB when present, else fall back to the store-truthed
-          -- store_release_date. Covers the case where IGDB matched a wildly
-          -- wrong game (e.g. Fishing Fishing 2015 in place of How to Fish 2026)
-          -- so its release_date would otherwise sink recent launches out of
-          -- the Recent hot filter.
-          COALESCE(igdb.release_date, igdb.store_release_date) AS releaseDate,
+          -- When match_confidence='low' we know IGDB matched a different game
+          -- (e.g. Solitaire Game Halloween 2 in place of Halloween: The Game),
+          -- so its release_date is not trustworthy either — prefer the store's
+          -- own date in that case. Otherwise prefer IGDB and fall back to the
+          -- store's date only when IGDB is missing.
+          CASE
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(igdb.store_release_date, igdb.release_date)
+            ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+          END                                       AS releaseDate,
           -- nameSource lets the client badge each row.
           CASE
             WHEN igdb.match_confidence = 'low' THEN 'store'
@@ -249,11 +253,22 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           (${cascadeUnits} * psm.msrp_usd_cents * ? / 100.0) AS revenueMidUsd,
           ${cascadeGated}                           AS gatedReason,
           -- Recent-hot flag = released in the last 30d AND has a real 7d estimate.
-          -- Uses COALESCE(igdb.release_date, igdb.store_release_date) so a bad
-          -- IGDB match (wrong game -> wrong old release date) doesn't hide a
-          -- brand-new title from the Recent hot badge.
-          CASE WHEN COALESCE(igdb.release_date, igdb.store_release_date) IS NOT NULL
-                AND COALESCE(igdb.release_date, igdb.store_release_date) >= ?
+          -- Same confidence-aware date resolution as the releaseDate column: when
+          -- IGDB matched the wrong game we prefer the store's own date, since
+          -- IGDB's release_date would otherwise refer to a completely different
+          -- game and hide a brand-new launch from the Recent hot badge.
+          CASE WHEN (
+                 CASE WHEN igdb.match_confidence = 'low'
+                   THEN COALESCE(igdb.store_release_date, igdb.release_date)
+                   ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+                 END
+               ) IS NOT NULL
+                AND (
+                 CASE WHEN igdb.match_confidence = 'low'
+                   THEN COALESCE(igdb.store_release_date, igdb.release_date)
+                   ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+                 END
+               ) >= ?
                 AND ${recentHot7dTest}
                THEN 1 ELSE 0 END                    AS isRecentHot
         FROM platform_sku_map psm
@@ -277,7 +292,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
        -- the 7d view.
        ORDER BY (${sortExpr} IS NULL) ASC,
                 ${sortExpr} ${dirSql},
-                (CASE WHEN COALESCE(igdb.release_date, igdb.store_release_date) >= ? THEN 1 ELSE 0 END) DESC,
+                (CASE WHEN (
+                   CASE WHEN igdb.match_confidence = 'low'
+                     THEN COALESCE(igdb.store_release_date, igdb.release_date)
+                     ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+                   END
+                 ) >= ? THEN 1 ELSE 0 END) DESC,
                 COALESCE(srs.rating_count, 0) DESC
        LIMIT 100
       `).all(
