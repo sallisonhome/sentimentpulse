@@ -213,6 +213,21 @@ jobs:
           # Non-fatal: if IGDB creds are missing or the API is having a
           # bad day, the leaderboard still shows the raw storefront name
           # (no cover) until the next daily run.
+          # ── 3.5. One-shot repair: Nightreign / base Elden Ring name collision ──
+          # Two console_title_igdb rows (10022 steam, 10402 ps5) were named
+          # "Elden Ring Nightreign" but their platform_sku_map SKUs pointed at
+          # base Elden Ring (Steam 1245620, PSN UP0700-PPSA04610_00-ELDENRING0000000).
+          # This surfaced a bogus 35.2M Steam Nightreign estimate on the leaderboard.
+          # The script is idempotent: after the first successful run it becomes a no-op.
+          echo ""
+          echo "═════════════════════════════════════════════════════════"
+          echo "  REPAIR: nightreign / base elden ring collision"
+          echo "═════════════════════════════════════════════════════════"
+          timeout 30 "$TSX" scripts/repair-nightreign-collision.ts || {
+            rc=$?
+            echo "WARN: repair-nightreign-collision exited rc=$rc — continuing"
+          }
+
           echo ""
           echo "═════════════════════════════════════════════════════════"
           echo "  IGDB ENRICHMENT: enrich-console-igdb.ts"
