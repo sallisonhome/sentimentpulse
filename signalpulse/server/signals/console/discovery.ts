@@ -135,7 +135,10 @@ export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassi
   // appdetails supports batch via comma-separated appids but returns partial data;
   // one-at-a-time is more reliable and Valve rate-limits leniently.
   for (const id of appIds) {
-    const url = `https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(id)}&cc=us&l=english&filters=basic,price_overview`;
+    // filters is a Steam whitelist — `basic` alone does NOT include release_date,
+    // so we ask for it explicitly. Without this, release_date comes back null
+    // on every appid and the store_release_date column stays empty.
+    const url = `https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(id)}&cc=us&l=english&filters=basic,price_overview,release_date`;
     try {
       const resp = await fetchJson<SteamAppDetailsResponse>(url, { timeoutMs: 15000 });
       const entry = resp[id];
