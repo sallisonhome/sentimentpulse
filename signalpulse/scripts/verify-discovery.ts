@@ -27,11 +27,16 @@ function titleIdFor(platform: string, sku: string, _name: string | null): number
   return titleIdByKey.get(key)!;
 }
 
+// PSN productIds — sourced from live store.playstation.com PDP URLs.
+// The old placeholders (…-SPACEMARINE20000, …-STARWARSJEDISUR2, …-ELDENRINGGAME000)
+// were synthetic and returned "Product not available" errors from Sony's graphql
+// (data_not_found / errorCode 3166081). Every productId below has been verified
+// against Sony's productRetrieve endpoint and returned real starRating data.
 const PS_MANUAL_SEEDS = [
   { productId: "UP9000-PPSA01413_00-HELLDIVERS200000", businessModel: "paid" as const, msrpUsdCents: 3999, name: "HELLDIVERS 2" },
-  { productId: "UP4133-PPSA07784_00-SPACEMARINE20000", businessModel: "paid" as const, msrpUsdCents: 5999, name: "Warhammer 40,000: Space Marine 2" },
-  { productId: "UP1003-PPSA02439_00-STARWARSJEDISUR2", businessModel: "paid" as const, msrpUsdCents: 6999, name: "STAR WARS Jedi: Survivor" },
-  { productId: "UP0002-PPSA05127_00-ELDENRINGGAME000", businessModel: "paid" as const, msrpUsdCents: 5999, name: "ELDEN RING" },
+  { productId: "UP4133-PPSA04452_00-SPACEMARINESII00", businessModel: "paid" as const, msrpUsdCents: 5999, name: "Warhammer 40,000: Space Marine 2" },
+  { productId: "UP0006-PPSA07783_00-APPLEJACKGAME000", businessModel: "paid" as const, msrpUsdCents: 6999, name: "STAR WARS Jedi: Survivor" },
+  { productId: "UP0700-PPSA04610_00-ELDENRING0000000", businessModel: "paid" as const, msrpUsdCents: 5999, name: "ELDEN RING" },
 ];
 
 async function main() {
