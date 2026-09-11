@@ -92,11 +92,17 @@ export interface IgdbRefreshResult {
  * within the last 7 days unless force=true.
  */
 export async function refreshIgdbForTitle(titleId: number, name: string, force: boolean = false): Promise<IgdbRefreshResult> {
-  const existing = rawSqlite.prepare(`SELECT refreshed_at FROM console_title_igdb WHERE title_id = ?`).get(titleId) as { refreshed_at: string } | undefined;
-  if (existing && !force) {
+  // Only cache-skip a row that has ALREADY matched IGDB — a bootstrap row
+  // written by discovery has refreshed_at=now but igdb_id=NULL and still
+  // needs a real match on the next enrichment tick. Skipping those would
+  // permanently strand every discovery-fresh row without a cover.
+  const existing = rawSqlite.prepare(
+    `SELECT refreshed_at, igdb_id FROM console_title_igdb WHERE title_id = ?`
+  ).get(titleId) as { refreshed_at: string; igdb_id: number | null } | undefined;
+  if (existing && existing.igdb_id != null && !force) {
     const ageMs = Date.now() - new Date(existing.refreshed_at).getTime();
     if (ageMs < 7 * 24 * 60 * 60 * 1000) {
-      return { titleId, igdbId: null, slug: null, matched: true, fromCache: true };
+      return { titleId, igdbId: existing.igdb_id, slug: null, matched: true, fromCache: true };
     }
   }
 
