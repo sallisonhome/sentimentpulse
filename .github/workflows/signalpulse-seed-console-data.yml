@@ -262,7 +262,20 @@ jobs:
           echo "  SEED XBOX GAME PASS FLAGS: seed-xbox-gamepass-flags.ts"
           echo "════════════════════════════════════════════════════════"
           timeout 60 "$TSX" scripts/seed-xbox-gamepass-flags.ts || {
-            echo "WARN: gp flag seed exited rc=$? — continuing to estimator"
+            echo "WARN: gp flag seed exited rc=$? — continuing"
+          }
+
+          # ── 4c. Xbox Game Pass flag enrichment via IGDB ───────────────
+          # Ask IGDB (external_games category=54) whether each xbox title with a
+          # confirmed igdb_id is currently on Game Pass. Additive-only — never
+          # clears a flag the hand-curated seed set. Runs AFTER the seed so the
+          # baseline is present even if IGDB has a bad day.
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "  ENRICH XBOX GAME PASS FLAGS (IGDB): enrich-xbox-gamepass-flags.ts"
+          echo "════════════════════════════════════════════════════════"
+          timeout 300 "$TSX" scripts/enrich-xbox-gamepass-flags.ts || {
+            echo "WARN: gp flag enrichment exited rc=$? — continuing to estimator"
           }
 
           # ── 5. Phase 4 estimator: window_estimates_daily ───────────

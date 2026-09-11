@@ -1,0 +1,101 @@
+name: SignalPulse DB Admin (write)
+
+# Write-enabled companion to signalpulse-db-query.yml. Runs an arbitrary SQL
+# statement against signalpulse's data.db on the droplet AFTER a snapshot
+# backup, so a bad statement can be reversed by copying the backup back into
+# place. Requires an explicit confirm=CONFIRM input to prevent accidental
+# invocation from CLI history. Prints EXPLAIN QUERY PLAN before running so
+# the log documents what happened.
+#
+# Intended uses (short list — one-off maintenance only):
+#   - DELETE stale ownership_multipliers rows with a wrong effective_from
+#   - UPDATE is_gamepass corrections that the enrichment cron can't discover
+#   - Cleanup of duplicate console_title_igdb rows after a merge
+# NOT a general write path. Anything that runs repeatedly belongs in a real
+# migration or a seed script committed to the repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sql:
+        description: 'SQL to run (single statement, must not include CREATE / ATTACH / DROP TABLE)'
+        required: true
+      confirm:
+        description: 'Type CONFIRM to acknowledge you are writing to prod'
+        required: true
+        default: ''
+      note:
+        description: 'One-line human note explaining why (goes into the log)'
+        required: false
+        default: ''
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  admin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Gate on CONFIRM
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "CONFIRM" ]; then
+            echo "ERROR: confirm input must be exactly 'CONFIRM' (got '$CONFIRM')"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Backup, EXPLAIN, and run
+        env:
+          SQL: ${{ github.event.inputs.sql }}
+          NOTE: ${{ github.event.inputs.note }}
+        run: |
+          set -e
+          # Reject structural changes even here. Table redefinitions must go
+          # through storage.ts migrations, not this workflow.
+          upper=$(printf '%s' "$SQL" | tr '[:lower:]' '[:upper:]')
+          case " $upper " in
+            *" DROP TABLE "*|*" DROP INDEX "*|*" ATTACH "*|*" CREATE TABLE "*|*" CREATE INDEX "*|*" ALTER TABLE "*|*" VACUUM "*)
+              echo "ERROR: structural statement rejected — use a real migration"; exit 1;;
+          esac
+
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/data.db\"")
+          echo "DB: $DB_PATH"
+          echo "NOTE: ${NOTE:-<none>}"
+          echo "SQL:"
+          printf '%s\n' "$SQL"
+          echo ""
+
+          # 1. Snapshot backup — safe rewind path if the write goes wrong.
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          BACKUP="${DB_PATH%.db}.pre-admin.$STAMP.db"
+          echo "── Snapshot backup ──"
+          $SSH "sqlite3 \"$DB_PATH\" \".backup '$BACKUP'\" && ls -lh \"$BACKUP\""
+
+          # 2. EXPLAIN QUERY PLAN so the log documents what the statement targets.
+          echo ""
+          echo "── EXPLAIN QUERY PLAN ──"
+          printf 'EXPLAIN QUERY PLAN %s\n' "$SQL" | $SSH "cat > /tmp/eqp.sql && sqlite3 -header -column \"$DB_PATH\" < /tmp/eqp.sql" || {
+            echo "WARN: EXPLAIN failed — continuing to actual run"
+          }
+
+          # 3. Execute the statement. Wrap in an implicit transaction via the
+          # sqlite3 CLI (each statement in a single .read is one txn).
+          echo ""
+          echo "── Executing statement ──"
+          printf '%s\n' "$SQL" | $SSH "cat > /tmp/admin.sql && sqlite3 \"$DB_PATH\" \"SELECT 'changes_before=' || changes()\" && sqlite3 -header -column \"$DB_PATH\" < /tmp/admin.sql && sqlite3 \"$DB_PATH\" \"SELECT 'changes_after=' || changes()\""
+
+          echo ""
+          echo "── Post-run audit ──"
+          # Show ownership_multipliers state as a general-purpose sanity block.
+          $SSH "sqlite3 -header -column \"$DB_PATH\" 'SELECT platform, cohort_key, multiplier, ci_pct, digital_unit_share, gp_rating_deflator, effective_from, confidence FROM ownership_multipliers ORDER BY platform, effective_from DESC'"
