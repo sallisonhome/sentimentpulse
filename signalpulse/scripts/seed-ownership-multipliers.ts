@@ -108,7 +108,7 @@ async function main() {
   const nowIso = new Date().toISOString();
   // Use a fixed effective_from date so re-running the workflow doesn't create
   // a new row per day. If we change any coefficient we bump this date manually.
-  const effectiveFrom = "2026-09-11T20:00Z"; // v0.3 anchor-fitted multipliers with Game Pass segmentation; bumped from 12:00Z (v0.2)
+  const effectiveFrom = "2026-09-11T14:00Z"; // v0.3 anchor-fitted multipliers with Game Pass segmentation; bumped from 12:00Z (v0.2). Kept in the past so effective_from <= nowIso allows the estimator to pick it up on the same day.
 
   // ─── 1. ownership_multipliers ─────────────────────────────────────────────
   const existing = db.prepare(

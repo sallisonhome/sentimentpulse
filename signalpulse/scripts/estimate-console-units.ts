@@ -40,6 +40,7 @@ interface MultiplierRow {
   digital_unit_share: number;
   confidence: string;
   method: string;
+  gp_rating_deflator: number | null;
 }
 
 type Window = "d7" | "d30" | "d90" | "m12" | "ltd";
@@ -87,7 +88,8 @@ async function main() {
   const multipliers = new Map<string, MultiplierRow>();
   for (const platform of ["steam", "xbox", "ps5"]) {
     const row = db.prepare(
-      `SELECT id, platform, cohort_key, multiplier, ci_pct, digital_unit_share, confidence, method
+      `SELECT id, platform, cohort_key, multiplier, ci_pct, digital_unit_share,
+              confidence, method, gp_rating_deflator
          FROM ownership_multipliers
         WHERE platform = ? AND cohort_key = 'default'
           AND effective_from <= ?
@@ -101,11 +103,25 @@ async function main() {
     ).get(platform, nowIso) as MultiplierRow | undefined;
     if (row) {
       multipliers.set(platform, row);
-      console.log(`[estimate-console-units] ${platform}: multiplier=${row.multiplier} ci=±${(row.ci_pct * 100).toFixed(0)}% digital=${row.digital_unit_share} (${row.confidence}, ${row.method})`);
+      const gpNote = row.gp_rating_deflator ? ` gp_deflator=${row.gp_rating_deflator}` : "";
+      console.log(`[estimate-console-units] ${platform}: multiplier=${row.multiplier} ci=±${(row.ci_pct * 100).toFixed(0)}% digital=${row.digital_unit_share}${gpNote} (${row.confidence}, ${row.method})`);
     } else {
       console.warn(`[estimate-console-units] no active multiplier for ${platform} — rows will be gated as no_multiplier`);
     }
   }
+
+  // ─── 2b. is_gamepass flags per (title_id, platform) ────────────────────
+  // Only xbox rows carry a GP flag today; keep the map platform-agnostic so
+  // future PS Plus day-one segmentation slots in the same way.
+  const gpFlagByKey = new Map<string, boolean>();
+  const gpFlags = db.prepare(
+    `SELECT title_id, platform, MAX(is_gamepass) AS gp
+       FROM platform_sku_map
+      WHERE is_gamepass = 1
+      GROUP BY title_id, platform`
+  ).all() as Array<{ title_id: number; platform: string; gp: number }>;
+  for (const r of gpFlags) gpFlagByKey.set(`${r.title_id}|${r.platform}`, r.gp === 1);
+  console.log(`[estimate-console-units] loaded ${gpFlags.length} Game Pass–flagged (title,platform) pairs`);
 
   // ─── 3. Load every eligible (title, platform) from platform_sku_map ───────
   const eligible = db.prepare(

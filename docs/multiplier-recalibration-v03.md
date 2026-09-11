@@ -101,9 +101,9 @@ The multiplier is fit against LTD ratings vs LTD units. Windowed estimates
 decay-and-share logic — no change required. Only the LTD central multiplier
 moves in v0.3.
 
-## Shipped values (2026-09-11T20:00Z)
+## Shipped values (effective_from 2026-09-11T14:00Z)
 
-Values pushed to `ownership_multipliers` (effective_from `2026-09-11T20:00Z`):
+Values pushed to `ownership_multipliers` (effective_from `2026-09-11T14:00Z`):
 
 | Platform | Cohort | Multiplier | CI band | Digital share | GP deflator | Method |
 |---|---|---:|---:|---:|---:|---|
