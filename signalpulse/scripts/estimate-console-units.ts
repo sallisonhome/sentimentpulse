@@ -204,8 +204,26 @@ async function main() {
   // here rather than risk a bad cross-title pace curve.
   const crossPlatformSteamTitleId = new Map<number, number>();
   {
-    interface NameRow { title_id: number; norm_name: string; platform: string }
-    const rows = db.prepare(
+    // Storefront-suffix stripper: PS Store and Xbox Store bake platform / edition
+    // qualifiers into the SKU display name that Steam never carries. Bare LOWER+
+    // TRIM misses "Hogwarts Legacy PS5 Version" ↔ "Hogwarts Legacy" and dozens more.
+    // We first try the raw normalized name; if that misses we retry with a stripped
+    // name that removes those known suffixes and typographic curly punctuation.
+    function stripStorefrontSuffix(s: string): string {
+      let x = s
+        .replace(/\u2019/g, "'")               // curly apostrophe → straight
+        .replace(/[\u2013\u2014]/g, "-")        // en/em dash → hyphen
+        .replace(/[\u2122\u00ae\u00a9]/g, "")   // ™ ® © stripped
+        .replace(/[:\-]?\s*(ps4\s*&\s*ps5|ps4\s*and\s*ps5|ps4|ps5|xbox one|xbox series x\|s|xbox series x\/s|xbox series|xbox)\s*(version|edition)?\b/gi, "")
+        .replace(/\b(digital deluxe edition|digital edition|deluxe edition|standard edition|complete edition|game of the year edition|goty edition|definitive edition|ultimate edition|premium edition|special edition|collector'?s edition|anniversary edition|remastered)\b/gi, "")
+        .replace(/[:\-]\s*digital( version)?$/gi, "")
+        .replace(/\s+/g, " ")
+        .trim();
+      return x;
+    }
+
+    interface NameRow { title_id: number; norm_name: string; strip_name: string; platform: string }
+    const rowsRaw = db.prepare(
       `SELECT psm.title_id AS title_id,
               LOWER(TRIM(COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, '')))) AS norm_name,
               psm.platform AS platform
@@ -213,18 +231,42 @@ async function main() {
          JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
         WHERE psm.business_model = 'paid' AND psm.sku_role = 'base'
           AND igdb.title_id IS NOT NULL`
-    ).all() as NameRow[];
+    ).all() as Array<{ title_id: number; norm_name: string; platform: string }>;
+    const rows: NameRow[] = rowsRaw.map(r => ({
+      title_id: r.title_id,
+      norm_name: r.norm_name,
+      strip_name: stripStorefrontSuffix(r.norm_name),
+      platform: r.platform,
+    }));
     const steamByName = new Map<string, number>();
+    const steamByStripName = new Map<string, number>();
     for (const r of rows) {
-      if (r.platform === "steam" && r.norm_name) steamByName.set(r.norm_name, r.title_id);
-    }
-    for (const r of rows) {
-      if (r.platform === "steam" || !r.norm_name) continue;
-      const steamTid = steamByName.get(r.norm_name);
-      if (steamTid != null && steamTid !== r.title_id) {
-        crossPlatformSteamTitleId.set(r.title_id, steamTid);
+      if (r.platform === "steam") {
+        if (r.norm_name)  steamByName.set(r.norm_name, r.title_id);
+        if (r.strip_name) steamByStripName.set(r.strip_name, r.title_id);
       }
     }
+    let bridgedExact = 0;
+    let bridgedStripped = 0;
+    for (const r of rows) {
+      if (r.platform === "steam" || !r.norm_name) continue;
+      // Try exact normalized name first.
+      let steamTid = steamByName.get(r.norm_name);
+      if (steamTid != null && steamTid !== r.title_id) {
+        crossPlatformSteamTitleId.set(r.title_id, steamTid);
+        bridgedExact++;
+        continue;
+      }
+      // Fall back to storefront-suffix-stripped match.
+      if (r.strip_name) {
+        steamTid = steamByStripName.get(r.strip_name);
+        if (steamTid != null && steamTid !== r.title_id) {
+          crossPlatformSteamTitleId.set(r.title_id, steamTid);
+          bridgedStripped++;
+        }
+      }
+    }
+    console.log(`[estimate-console-units] cross-platform bridge: exact=${bridgedExact} stripped=${bridgedStripped} total=${crossPlatformSteamTitleId.size}`);
   }
 
   // Resolve a title_id to the Steam title_id that carries its review history.
@@ -520,6 +562,170 @@ async function main() {
     }
   });
   tx(rows);
+
+  // ─── 9b. Game Pass revenue-share overlay for Xbox ────────────────────────
+  //
+  // Game Pass massively inflates Xbox ratings — subscribers rate without
+  // buying, and popular day-one GP titles like Palworld pick up ratings at a
+  // rate untethered from purchases. The gp_rating_deflator (v0.3) corrects
+  // for that on average, but for GP-anchor mega-hits the per-title deflator
+  // needed is much larger than the fitted median.
+  //
+  // Fix: when a GP-flagged Xbox title has a Steam sibling with a solid LTD
+  // signal, project Xbox units from the fixed multi-platform revenue share
+  // rather than from raw Xbox ratings. Shares (from ops spec):
+  //
+  //   PC (Steam) 46%   PS5 33%   Xbox 18%   Switch 2 3%
+  //
+  // For a title on Steam + Xbox + PS5 (no Switch), Xbox revenue share is
+  //   0.18 / (0.46 + 0.33 + 0.18) = 0.188  ≈ 18/97
+  // Steam revenue is our anchor: revenue_steam = units_steam × MSRP_steam × ASP_steam.
+  // Xbox revenue = revenue_steam × (xbox_share / steam_share).
+  // Xbox units = revenue_xbox / (MSRP_xbox × ASP_xbox).
+  //
+  // We compute the overlay for the LTD window per title, then apportion the
+  // same fraction across d7/d30/d90/m12 by the Xbox raw signal ratio (so a
+  // recent hit's per-window shape is preserved from Xbox's own ratings
+  // pace). We only OVERRIDE the rating-derived number when the overlay is
+  // LOWER — this is a deflation, never inflation.
+  //
+  // Method tag: 'steam-anchored-revshare-v01'
+  {
+    const REV_SHARE: Record<string, number> = { steam: 0.46, ps5: 0.33, xbox: 0.18, switch2: 0.03 };
+    const ASP: Record<string, number> = { steam: 0.66, ps5: 0.80, xbox: 0.80 };
+
+    // Pull the fresh rows we just wrote so we work off canonical state.
+    const written = db.prepare(
+      `SELECT title_id, platform, window, signal_value, owners_low, owners_mid, owners_high, units_mid, gated_reason, method
+         FROM window_estimates_daily
+        WHERE as_of_date = ?`
+    ).all(asOfDate) as Array<{
+      title_id: number; platform: string; window: string;
+      signal_value: number | null; owners_low: number | null; owners_mid: number | null;
+      owners_high: number | null; units_mid: number | null;
+      gated_reason: string | null; method: string;
+    }>;
+    // Index by title_id → platform → window
+    const byTPW = new Map<string, typeof written[number]>();
+    for (const w of written) byTPW.set(`${w.title_id}|${w.platform}|${w.window}`, w);
+
+    // Bridge Xbox title_id → Steam title_id via same-name lookup used earlier.
+    // Xbox title_ids on their own don't carry Steam data, so use bridgedSteamTitleId.
+    // We need it to be visible here; it's defined inside main(), so this block IS inside main().
+
+    const msrpByKey = new Map<string, number>();
+    for (const r of db.prepare(
+      `SELECT title_id, platform, msrp_usd_cents FROM platform_sku_map WHERE msrp_usd_cents IS NOT NULL`
+    ).all() as Array<{ title_id: number; platform: string; msrp_usd_cents: number }>) {
+      msrpByKey.set(`${r.title_id}|${r.platform}`, r.msrp_usd_cents);
+    }
+
+    // Helper: does this title ship on a given platform (paid, base)?
+    const shipsOn = new Set<string>();
+    for (const r of db.prepare(
+      `SELECT DISTINCT title_id, platform FROM platform_sku_map
+        WHERE business_model = 'paid' AND sku_role = 'base'`
+    ).all() as Array<{ title_id: number; platform: string }>) {
+      shipsOn.add(`${r.title_id}|${r.platform}`);
+    }
+
+    let overlayApplied = 0;
+    let overlaySkippedNoSteam = 0;
+    let overlaySkippedRaisesUnits = 0;
+
+    const overlayUpdate = db.prepare(
+      `UPDATE window_estimates_daily
+          SET owners_mid   = ?,
+              owners_low   = ?,
+              owners_high  = ?,
+              units_mid    = ?,
+              method       = ?
+        WHERE title_id = ? AND platform = ? AND window = ? AND as_of_date = ?`
+    );
+
+    const overlayTx = db.transaction(() => {
+      // Iterate Xbox rows only, GP-flagged only.
+      const xboxTitles = new Set<number>();
+      for (const w of written) if (w.platform === "xbox") xboxTitles.add(w.title_id);
+
+      for (const xboxTid of xboxTitles) {
+        const isGp = gpFlagByKey.get(`${xboxTid}|xbox`) ?? false;
+        if (!isGp) continue;
+
+        const steamTid = bridgedSteamTitleId(xboxTid);
+        if (steamTid == null) { overlaySkippedNoSteam++; continue; }
+
+        // Need Steam LTD units to anchor the projection.
+        const steamLtd = byTPW.get(`${steamTid}|steam|ltd`);
+        if (!steamLtd || steamLtd.units_mid == null) { overlaySkippedNoSteam++; continue; }
+
+        const steamMsrpCents = msrpByKey.get(`${steamTid}|steam`);
+        if (!steamMsrpCents) { overlaySkippedNoSteam++; continue; }
+
+        // Sum ACTIVE revenue shares (platforms this title actually ships on).
+        // We drop platforms it doesn't ship on so the pie sums to 1 across the
+        // real footprint. Switch 2 is not tracked in platform_sku_map today;
+        // treat it as absent unless a switch2 row exists.
+        // Sum revenue shares for the platforms this title actually ships on.
+        // shipsOn is keyed (title_id, platform) — ps5 title_ids differ from steam,
+        // so for ps5 we ask "is there any ps5 title_id that bridges back to our steamTid?".
+        let activeShareSum = 0;
+        let hasSteam = false, hasXbox = false, hasPs5 = false;
+        if (shipsOn.has(`${steamTid}|steam`)) { activeShareSum += REV_SHARE.steam; hasSteam = true; }
+        if (shipsOn.has(`${xboxTid}|xbox`))   { activeShareSum += REV_SHARE.xbox;  hasXbox = true; }
+        for (const [ps5Tid, brSteam] of crossPlatformSteamTitleId) {
+          if (brSteam === steamTid && shipsOn.has(`${ps5Tid}|ps5`)) { hasPs5 = true; break; }
+        }
+        if (hasPs5) activeShareSum += REV_SHARE.ps5;
+        // switch2 skipped — not tracked in platform_sku_map today.
+        void hasSteam; void hasXbox; // used implicitly via activeShareSum; retained for future logging
+        if (activeShareSum <= 0) continue;
+
+        const steamShareActive = REV_SHARE.steam / activeShareSum;
+        const xboxShareActive  = REV_SHARE.xbox  / activeShareSum;
+
+        // Steam LTD revenue in cents: units × MSRP_cents × ASP_steam
+        const steamRevCents = steamLtd.units_mid * steamMsrpCents * ASP.steam;
+
+        // Xbox LTD revenue in cents = steam_rev × (xbox_share / steam_share)
+        const xboxRevCents  = steamRevCents * (xboxShareActive / steamShareActive);
+
+        const xboxMsrpCents = msrpByKey.get(`${xboxTid}|xbox`) ?? steamMsrpCents;
+        // Xbox units = revenue / (MSRP × ASP_xbox)
+        const overlayXboxLtdUnits = Math.round(xboxRevCents / (xboxMsrpCents * ASP.xbox));
+
+        // Only overlay when the projection is LOWER than the rating-derived number.
+        const xboxLtd = byTPW.get(`${xboxTid}|xbox|ltd`);
+        if (!xboxLtd || xboxLtd.units_mid == null) { continue; }
+        if (overlayXboxLtdUnits >= xboxLtd.units_mid) { overlaySkippedRaisesUnits++; continue; }
+
+        // Apply the LTD overlay first, then apportion the same shrink ratio
+        // across d7/d30/d90/m12 (preserves per-window shape from Xbox ratings).
+        const shrink = overlayXboxLtdUnits / xboxLtd.units_mid;
+
+        for (const w of ALL_WINDOWS) {
+          const cur = byTPW.get(`${xboxTid}|xbox|${w}`);
+          if (!cur || cur.units_mid == null || cur.owners_mid == null) continue;
+          const newOwnersMid = cur.owners_mid * shrink;
+          const newOwnersLow  = cur.owners_low  == null ? null : cur.owners_low  * shrink;
+          const newOwnersHigh = cur.owners_high == null ? null : cur.owners_high * shrink;
+          const newUnitsMid   = Math.round(cur.units_mid * shrink);
+          overlayUpdate.run(
+            Math.round(newOwnersMid),
+            newOwnersLow  == null ? null : Math.round(newOwnersLow),
+            newOwnersHigh == null ? null : Math.round(newOwnersHigh),
+            newUnitsMid,
+            "steam-anchored-revshare-v01",
+            xboxTid, "xbox", w, asOfDate,
+          );
+        }
+        overlayApplied++;
+      }
+    });
+    overlayTx();
+
+    console.log(`[estimate-console-units] GP revshare overlay: applied=${overlayApplied}, skipped_no_steam_anchor=${overlaySkippedNoSteam}, skipped_would_raise=${overlaySkippedRaisesUnits}`);
+  }
 
   // ─── 10. Summary ─────────────────────────────────────────────────────────
   const byOutcome: Record<string, number> = {};
