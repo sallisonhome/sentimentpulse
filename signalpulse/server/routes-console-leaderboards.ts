@@ -5,7 +5,7 @@
  *   GET /api/console/leaderboards/:platform
  *     Query:
  *       window = d7|d30|d90|m12|ltd  (default d30)
- *       sort   = revenue|units|ratings|score   (default revenue)
+ *       sort   = revenue|units|ratings|score|asp   (default revenue)
  *       dir    = asc|desc   (default desc)
  *
  *     Returns top-100 titles for that platform for the requested window.
@@ -103,7 +103,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Sort mode + direction. Whitelist rather than string-interpolate to keep
       // the query prepareable and to prevent injection through the query string.
       const sort = ((req.query.sort as string) || "revenue").toLowerCase();
-      if (!["revenue","units","ratings","score"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
+      if (!["revenue","units","ratings","score","asp"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
       const dir = ((req.query.dir as string) || "desc").toLowerCase();
       if (!["asc","desc"].includes(dir)) return res.status(400).json({ error: "invalid dir" });
 
@@ -118,6 +118,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         units:   "w.units_mid",
         ratings: "srs.rating_count",
         score:   "srs.avg_rating",
+        // ASP sort ranks by MSRP directly since ASP = MSRP × platform factor is
+        // a fixed monotonic multiplier per platform. Cheaper avoids two more binds.
+        asp:     "psm.msrp_usd_cents",
       };
       const sortExpr = SORT_EXPR[sort];
       // Bind the ASP factor twice for revenue sort (once in ORDER BY IS NULL,

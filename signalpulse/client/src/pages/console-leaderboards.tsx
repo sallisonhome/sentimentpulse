@@ -106,13 +106,26 @@ function formatUsdCompact(dollars: number | null | undefined): string {
   return `$${dollars.toFixed(0)}`;
 }
 
-function usePlatformLeaderboard(platform: Platform, window: WindowKey) {
+// Sort keys accepted by the server — must stay in sync with SORT_EXPR in
+// routes-console-leaderboards.ts. `title` is client-side only (locale sort).
+type SortKey = "revenue" | "units" | "ratings" | "score" | "asp" | "title";
+type SortDir = "asc" | "desc";
+
+function usePlatformLeaderboard(
+  platform: Platform,
+  window: WindowKey,
+  sort: SortKey = "revenue",
+  dir: SortDir = "desc",
+) {
+  // The server doesn't understand sort=title; it always returns default-sorted
+  // rows in that case and we sort locally by name.
+  const serverSort: string = sort === "title" ? "revenue" : sort;
+  const serverDir: string = sort === "title" ? "desc" : dir;
   return useQuery<LeaderboardResponse>({
-    queryKey: [`/signal/api/console/leaderboards/${platform}`, { window }],
+    queryKey: [`/signal/api/console/leaderboards/${platform}`, { window, serverSort, serverDir }],
     queryFn: async () => {
-      const r = await fetch(`/signal/api/console/leaderboards/${platform}?window=${window}`, {
-        credentials: "include",
-      });
+      const url = `/signal/api/console/leaderboards/${platform}?window=${window}&sort=${serverSort}&dir=${serverDir}`;
+      const r = await fetch(url, { credentials: "include" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -358,8 +371,39 @@ export function ConsoleLeaderboardsPlatform() {
   const params = useParams<{ platform: Platform }>();
   const platform = params.platform;
   const [window, setWindow] = useState<WindowKey>("d30");
-  const { data, isLoading, isError, error } = usePlatformLeaderboard(platform, window);
+  const [sort, setSort] = useState<SortKey>("revenue");
+  const [dir, setDir] = useState<SortDir>("desc");
+  const { data, isLoading, isError, error } = usePlatformLeaderboard(platform, window, sort, dir);
   const platformLabel = PLATFORMS.find(p => p.id === platform)?.label || platform;
+
+  // Header click: same column toggles asc/desc; new column jumps to that
+  // column's natural default direction (desc for numeric, asc for title).
+  const NATURAL_DESC: SortKey[] = ["revenue", "units", "ratings", "score", "asp"];
+  function onHeaderClick(key: SortKey) {
+    if (key === sort) {
+      setDir(d => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSort(key);
+      setDir(NATURAL_DESC.includes(key) ? "desc" : "asc");
+    }
+  }
+  function sortArrow(key: SortKey): string {
+    if (key !== sort) return "";
+    return dir === "asc" ? " ↑" : " ↓";
+  }
+
+  // Client-side sort for the `title` column (server doesn't know how). All
+  // other keys arrive already sorted from the server, so we pass them through.
+  const displayRows = data ? (
+    sort === "title"
+      ? [...data.titles].sort((a, b) => {
+          const av = (a.name || a.externalSku || "").toLocaleLowerCase();
+          const bv = (b.name || b.externalSku || "").toLocaleLowerCase();
+          const cmp = av.localeCompare(bv);
+          return dir === "asc" ? cmp : -cmp;
+        })
+      : data.titles
+  ) : [];
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-4">
@@ -417,19 +461,70 @@ export function ConsoleLeaderboardsPlatform() {
             <thead className="bg-muted/40">
               <tr className="text-xs text-muted-foreground">
                 <th className="text-left px-3 py-2 font-medium">#</th>
-                <th className="text-left px-3 py-2 font-medium">Title</th>
-                <th className="text-right px-3 py-2 font-medium">Rating count</th>
-                <th className="text-right px-3 py-2 font-medium">Avg rating</th>
-                <th className="text-right px-3 py-2 font-medium" title="Estimated units sold in this window — v0 estimator, ±30–50% per title">Est. units ({window}) <span className="ml-1 px-1 text-[10px] rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">v0</span></th>
-                <th className="text-right px-3 py-2 font-medium" title="Estimated in-window revenue = est. units × ASP, USD — v0 estimator, ±30–50% per title">Est. revenue ({window}) <span className="ml-1 px-1 text-[10px] rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">v0</span></th>
-                <th className="text-right px-3 py-2 font-medium" title="Average Selling Price = MSRP × platform realization (Steam 66%, PS5 80%, Xbox 80%)">ASP</th>
+                <th
+                  className="text-left px-3 py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                  role="button"
+                  aria-sort={sort === "title" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  onClick={() => onHeaderClick("title")}
+                  data-testid="th-title"
+                >
+                  Title{sortArrow("title")}
+                </th>
+                <th
+                  className="text-right px-3 py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                  role="button"
+                  aria-sort={sort === "ratings" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  onClick={() => onHeaderClick("ratings")}
+                  data-testid="th-ratings"
+                >
+                  Rating count{sortArrow("ratings")}
+                </th>
+                <th
+                  className="text-right px-3 py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                  role="button"
+                  aria-sort={sort === "score" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  onClick={() => onHeaderClick("score")}
+                  data-testid="th-score"
+                >
+                  Avg rating{sortArrow("score")}
+                </th>
+                <th
+                  className="text-right px-3 py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                  role="button"
+                  aria-sort={sort === "units" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  onClick={() => onHeaderClick("units")}
+                  title="Estimated units sold in this window — v0 estimator, ±30–50% per title"
+                  data-testid="th-units"
+                >
+                  Est. units ({window}){sortArrow("units")} <span className="ml-1 px-1 text-[10px] rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">v0</span>
+                </th>
+                <th
+                  className="text-right px-3 py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                  role="button"
+                  aria-sort={sort === "revenue" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  onClick={() => onHeaderClick("revenue")}
+                  title="Estimated in-window revenue = est. units × ASP, USD — v0 estimator, ±30–50% per title"
+                  data-testid="th-revenue"
+                >
+                  Est. revenue ({window}){sortArrow("revenue")} <span className="ml-1 px-1 text-[10px] rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">v0</span>
+                </th>
+                <th
+                  className="text-right px-3 py-2 font-medium cursor-pointer select-none hover:text-foreground"
+                  role="button"
+                  aria-sort={sort === "asp" ? (dir === "asc" ? "ascending" : "descending") : "none"}
+                  onClick={() => onHeaderClick("asp")}
+                  title="Average Selling Price = MSRP × platform realization (Steam 66%, PS5 80%, Xbox 80%)"
+                  data-testid="th-asp"
+                >
+                  ASP{sortArrow("asp")}
+                </th>
               </tr>
             </thead>
             <tbody>
-              {data.titles.length === 0 && (
+              {displayRows.length === 0 && (
                 <tr><td className="p-6 text-center text-muted-foreground text-sm" colSpan={7}>No titles yet — run discovery + signal collectors.</td></tr>
               )}
-              {data.titles.map((t, i) => (
+              {displayRows.map((t, i) => (
                 <tr key={t.titleId} className="border-t border-border hover:bg-muted/30">
                   <td className="px-3 py-2 text-muted-foreground">{i + 1}</td>
                   <td className="px-3 py-2">
