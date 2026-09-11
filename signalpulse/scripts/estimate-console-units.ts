@@ -203,6 +203,35 @@ async function main() {
   // (different official titles across storefronts). We accept some misses
   // here rather than risk a bad cross-title pace curve.
   const crossPlatformSteamTitleId = new Map<number, number>();
+
+  // Manual bridge overrides for cases the auto-bridge misses. These are
+  // operator-verified same-game pairs where storefront naming diverges too
+  // much for our exact/stripped matchers (edition qualifiers, subtitles, or
+  // storefront-only "Version" suffixes). Add a line here after eyeballing
+  // both display names in the DB. Key = console title_id, value = steam
+  // title_id. Bridge fills these AFTER the auto pass so overrides win over
+  // any incidental auto matches.
+  //
+  // Verified 2026-09-11 from platform_sku_map + console_title_igdb:
+  //   10359 (PS5 "Elden Ring PS4 & PS5")                → 10022 (Elden Ring)
+  //   10366 (PS5 "Hogwarts Legacy PS5 Version")         → no Steam anchor yet
+  //   10247 (Xbox "Hogwarts Legacy: Digital Deluxe")    → no Steam anchor yet
+  //   10343 (PS5 "It Takes Two PS4 & PS5")              → no Steam anchor yet
+  //   10241 (Xbox "It Takes Two - Digital Version")     → no Steam anchor yet
+  //   10237 (Xbox "Phasmophobia (Game Preview)")        → 10088 (Phasmophobia)
+  //   10221 (Xbox "Forza Horizon 6 Standard Edition")   → 10058 (Forza Horizon 6)
+  //   10319 (PS5 "Forza Horizon 5: Deluxe Edition")     → no Steam anchor (mis-titled: FH5 not on PS5)
+  //   10411 (Xbox "The Texas Chain Saw Massacre")       → no Steam anchor yet
+  //   10431 (Xbox "Party Animals")                      → no Steam anchor yet
+  // Rows commented out with "no Steam anchor yet" wait for the next Steam
+  // discovery pass to seed the Steam side; adding them here would be a null
+  // override.
+  const MANUAL_BRIDGE: Array<[number, number]> = [
+    [10359, 10022], // Elden Ring PS5 → Elden Ring
+    [10237, 10088], // Phasmophobia Xbox Game Preview → Phasmophobia
+    [10221, 10058], // Forza Horizon 6 Xbox Standard Edition → Forza Horizon 6
+  ];
+
   {
     // Storefront-suffix stripper: PS Store and Xbox Store bake platform / edition
     // qualifiers into the SKU display name that Steam never carries. Bare LOWER+
@@ -266,7 +295,19 @@ async function main() {
         }
       }
     }
-    console.log(`[estimate-console-units] cross-platform bridge: exact=${bridgedExact} stripped=${bridgedStripped} total=${crossPlatformSteamTitleId.size}`);
+    // Apply operator-verified manual overrides last so they win.
+    let manualApplied = 0;
+    for (const [consoleTid, steamTid] of MANUAL_BRIDGE) {
+      // Only apply if the steam side exists in the map (steam has a base SKU).
+      if (steamByName.size > 0 && !Array.from(steamByName.values()).includes(steamTid) && !Array.from(steamByStripName.values()).includes(steamTid)) {
+        console.warn(`[estimate-console-units] manual bridge skipped: steam title_id ${steamTid} not present in platform_sku_map`);
+        continue;
+      }
+      const prev = crossPlatformSteamTitleId.get(consoleTid);
+      crossPlatformSteamTitleId.set(consoleTid, steamTid);
+      if (prev !== steamTid) manualApplied++;
+    }
+    console.log(`[estimate-console-units] cross-platform bridge: exact=${bridgedExact} stripped=${bridgedStripped} manual=${manualApplied} total=${crossPlatformSteamTitleId.size}`);
   }
 
   // Resolve a title_id to the Steam title_id that carries its review history.
