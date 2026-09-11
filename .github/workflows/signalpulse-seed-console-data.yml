@@ -225,6 +225,34 @@ jobs:
           }
           t1=$(date +%s)
           echo "IGDB enrichment elapsed=$((t1 - t0))s"
+
+          # ── 4. Ownership multiplier seed (idempotent) ─────────────
+          # Writes v0 defaults into ownership_multipliers + noise-gate
+          # setting the first time it runs. Idempotent — later runs skip
+          # existing rows by (platform, cohort_key, effective_from).
+          echo ""
+          echo "═════════════════════════════════════════════════════════"
+          echo "  SEED OWNERSHIP MULTIPLIERS: seed-ownership-multipliers.ts"
+          echo "═════════════════════════════════════════════════════════"
+          timeout 60 "$TSX" scripts/seed-ownership-multipliers.ts || {
+            echo "WARN: multiplier seed exited rc=$? — continuing to estimator"
+          }
+
+          # ── 5. Phase 4 estimator: window_estimates_daily ───────────
+          # For each (title, platform, window) writes owners_low/mid/high and
+          # units_mid, or a gated_reason. Fast — pure SQL + arithmetic, no
+          # external calls. Non-fatal: if the estimator dies, the leaderboard
+          # still renders rating-count rankings.
+          echo ""
+          echo "═════════════════════════════════════════════════════════"
+          echo "  PHASE 4 ESTIMATOR: estimate-console-units.ts"
+          echo "═════════════════════════════════════════════════════════"
+          te0=$(date +%s)
+          timeout 120 "$TSX" scripts/estimate-console-units.ts || {
+            echo "WARN: estimator exited rc=$? — continuing to audit"
+          }
+          te1=$(date +%s)
+          echo "Estimator elapsed=$((te1 - te0))s"
           REMOTE
 
       - name: Post-run audit

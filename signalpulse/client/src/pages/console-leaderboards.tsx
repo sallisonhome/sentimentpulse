@@ -77,6 +77,16 @@ function formatNumberCompact(n: number | null | undefined): string {
   return n.toString();
 }
 
+function gatedTooltip(reason: string | null | undefined): string {
+  switch (reason) {
+    case "signal_too_small": return "Rating count below the noise gate (50) — signal too small to estimate reliably";
+    case "insufficient_history": return "This window needs more days of forward-only collection than we have yet";
+    case "no_signal": return "No rating snapshot available for this title today";
+    case "no_multiplier": return "No calibration multiplier configured for this platform";
+    default: return reason || "Estimate unavailable";
+  }
+}
+
 function formatUsd(cents: number | null): string {
   if (cents == null) return "—";
   return `$${(cents / 100).toFixed(2)}`;
@@ -281,9 +291,17 @@ function PlatformColumn({
                     <span className="flex-1 min-w-0 truncate text-sm">
                       {t.name || t.externalSku}
                     </span>
-                    <span className="font-mono text-xs tabular-nums shrink-0" title="Rating count (sales proxy)">
-                      {formatNumberCompact(t.ratingCount)}
-                    </span>
+                    <div className="flex flex-col items-end shrink-0 leading-tight">
+                      <span className="font-mono text-xs tabular-nums" title="Rating count (sales proxy)">
+                        {formatNumberCompact(t.ratingCount)}
+                      </span>
+                      <span
+                        className="font-mono text-[10px] tabular-nums text-muted-foreground"
+                        title={t.unitsMid != null ? `Est. units (${window}) — v0, ±30–50%` : gatedTooltip(t.gatedReason)}
+                      >
+                        {t.unitsMid != null ? `~${formatNumberCompact(t.unitsMid)}u` : "—"}
+                      </span>
+                    </div>
                   </a>
                 </Link>
               </li>
@@ -365,7 +383,7 @@ export function ConsoleLeaderboardsPlatform() {
           <Card className="p-3 bg-muted/40 border-dashed">
             <p className="text-xs text-muted-foreground">
               <span className="font-semibold text-foreground">Ranking signal:</span> daily rating-count delta from the storefront review API — a public proxy for sales velocity.
-              Estimated units are pending the Phase 4 demand-model rollout; rows show <span className="font-mono">pending</span> until that ships.
+              <span className="ml-1 font-semibold text-foreground">Est. units</span> use v0 public-benchmark multipliers (±30–50%) with digital-share adjustments per platform (Steam 100%, PS5 76%, Xbox 90% modelled). Cells reading <span className="font-mono">—</span> mean the signal is below the noise gate (50) or that window lacks the required forward history. Calibration against first-party disclosures is the next milestone.
             </p>
           </Card>
           <Card className="overflow-hidden">
@@ -376,7 +394,7 @@ export function ConsoleLeaderboardsPlatform() {
                 <th className="text-left px-3 py-2 font-medium">Title</th>
                 <th className="text-right px-3 py-2 font-medium">Rating count</th>
                 <th className="text-right px-3 py-2 font-medium">Avg rating</th>
-                <th className="text-right px-3 py-2 font-medium" title="Estimated units sold in this window — pending Phase 4 estimator rollout">Est. units ({window})</th>
+                <th className="text-right px-3 py-2 font-medium" title="Estimated units sold in this window — v0 estimator, ±30–50% per title">Est. units ({window}) <span className="ml-1 px-1 text-[10px] rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">v0</span></th>
                 <th className="text-right px-3 py-2 font-medium">MSRP</th>
               </tr>
             </thead>
@@ -399,7 +417,7 @@ export function ConsoleLeaderboardsPlatform() {
                   <td className="px-3 py-2 text-right font-mono">{t.avgRating != null ? t.avgRating.toFixed(2) : "—"}</td>
                   <td className="px-3 py-2 text-right font-mono">
                     {t.unitsMid != null ? formatNumberCompact(t.unitsMid) : (
-                      <span className="text-muted-foreground" title={t.gatedReason || "Phase 4 estimator not yet deployed"}>pending</span>
+                      <span className="text-muted-foreground" title={gatedTooltip(t.gatedReason)}>—</span>
                     )}
                   </td>
                   <td className="px-3 py-2 text-right font-mono">{formatUsd(t.msrpUsdCents)}</td>

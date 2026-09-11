@@ -786,6 +786,34 @@ function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS signal_source_divergence_unique
       ON signal_source_divergence (capture_date, platform, title_id, endpoint_a, endpoint_b);
 
+    -- Multiplier table for the console-leaderboards estimator. One active row
+    -- per (platform, cohort_key) at any effective_from timestamp; the estimator
+    -- reads the row with the greatest effective_from <= today. Cohort keys are
+    -- 'default' for v0; the calibration follow-up adds 'gamepass', 'ps-plus-day-one',
+    -- 'exclusive', 'multiplayer-live-service', etc. confidence ∈ {v0-defaults,
+    -- anchor-adjusted, fitted} — v0-defaults are seeded from public benchmarks and
+    -- must be replaced by fitted values before the boards leave the internal-only
+    -- state described in the spec §10.4. digital_unit_share divides owners_mid to
+    -- get total-unit estimates (Steam 1.0, PS5 0.76 per Sony IR FY24, Xbox 0.90
+    -- modelled since Circana exit).
+    CREATE TABLE IF NOT EXISTS ownership_multipliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      platform TEXT NOT NULL,
+      cohort_key TEXT NOT NULL,
+      multiplier REAL NOT NULL,
+      ci_pct REAL NOT NULL,
+      digital_unit_share REAL NOT NULL,
+      confidence TEXT NOT NULL,
+      method TEXT NOT NULL,
+      notes TEXT,
+      effective_from TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS ownership_multipliers_active
+      ON ownership_multipliers (platform, cohort_key, effective_from);
+    CREATE INDEX IF NOT EXISTS ownership_multipliers_lookup
+      ON ownership_multipliers (platform, cohort_key, effective_from DESC);
+
     CREATE TABLE IF NOT EXISTS console_title_igdb (
       title_id INTEGER PRIMARY KEY,
       igdb_id INTEGER,
