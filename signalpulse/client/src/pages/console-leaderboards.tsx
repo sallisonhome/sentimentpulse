@@ -523,8 +523,11 @@ export function ConsoleLeaderboardsPlatform() {
                   aria-sort={sort === "score" ? (dir === "asc" ? "ascending" : "descending") : "none"}
                   onClick={() => onHeaderClick("score")}
                   data-testid="th-score"
+                  title={platform === "steam"
+                    ? "Percent of ratings that are positive (Steam's native metric). Hover a cell to see Steam's bucket label: Overwhelmingly Positive (≥95%), Very Positive (80–94%), Mostly Positive (70–79%), Mixed (40–69%), Mostly Negative (20–39%), Overwhelmingly Negative (<20%)."
+                    : "Average of user ratings on a 0–5 scale (storefront native)."}
                 >
-                  Avg rating{sortArrow("score")}
+                  {platform === "steam" ? "Rating %" : "Avg rating"}{sortArrow("score")}
                 </th>
                 <th
                   className="text-right px-3 py-2 font-medium cursor-pointer select-none hover:text-foreground"
