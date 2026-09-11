@@ -1,8 +1,10 @@
-name: SignalPulse — Seed Console Leaderboards Data
+name: SignalPulse — Daily Console Leaderboards Refresh
 
-# One-shot workflow to populate the Console Leaderboards feature with
-# real prod data by running two verification scripts sequentially on
-# the droplet:
+# Daily workflow that keeps the Console Leaderboards feature populated
+# with fresh prod data by running two verification scripts sequentially
+# on the droplet. Runs automatically at 09:15 UTC (05:15 ET / 04:15 EST)
+# on cron, and can also be dispatched manually anytime for on-demand
+# refresh or partial-run debugging.
 #
 #   1. signalpulse/scripts/verify-discovery.ts
 #      -> Steam top-sellers (2 pages, ~50 titles), Xbox top-paid (~25),
@@ -45,6 +47,18 @@ name: SignalPulse — Seed Console Leaderboards Data
 # this cannot race a deploy that's mid-restart.
 
 on:
+  # Daily auto-run at 09:15 UTC. GitHub Actions cron runs in UTC and does NOT
+  # shift for DST, so this lands at 05:15 America/New_York during EDT and
+  # 04:15 during EST — either way, before the user's workday starts.
+  # store_rating_signal_daily is grained by capture_date (UTC), so one run per
+  # UTC calendar day is the natural cadence. When triggered on schedule, both
+  # inputs are empty and the shell `${VAR:-true}` defaults on the droplet make
+  # discovery+collectors both run — same behavior as a manual dispatch with
+  # defaults.
+  # Note: GitHub may delay scheduled runs by 5–15 min during peak load; not
+  # material for daily rating snapshots.
+  schedule:
+    - cron: "15 9 * * *"
   workflow_dispatch:
     inputs:
       run_discovery:
