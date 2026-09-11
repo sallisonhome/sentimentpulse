@@ -50,7 +50,7 @@ function DeltaChip({ value }: { value: number | null }) {
   if (value === 0) return <span className="text-muted-foreground text-[10px] tabular-nums">·</span>;
   const isUp = value > 0;
   return (
-    <span className="inline-flex items-center gap-0.5 text-[10px] tabular-nums font-medium" style={{ color: isUp ? SABER_ACCENT : RANK_DOWN }}>
+    <span className="inline-flex items-center gap-0.5 text-[10px] tabular-nums font-medium" style={{ color: isUp ? RANK_DOWN : SABER_ACCENT }}>
       {isUp ? <TrendingUp className="h-2.5 w-2.5" /> : <TrendingDown className="h-2.5 w-2.5" />}
       {Math.abs(value)}
     </span>
