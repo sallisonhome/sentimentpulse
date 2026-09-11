@@ -27,12 +27,8 @@
 
 /* eslint-disable no-console */
 
-import "dotenv/config";
-import Database from "better-sqlite3";
-import path from "node:path";
+import { rawSqlite } from "../server/storage";
 
-const DB_PATH = process.env.SIGNALPULSE_DB_PATH
-  ?? path.resolve(process.cwd(), "data.db");
 const NOISE_GATE_DEFAULT = 50;
 
 interface MultiplierRow {
@@ -76,10 +72,7 @@ function daysAgoEpochSec(days: number): number {
 }
 
 async function main() {
-  const db = new Database(DB_PATH, { readonly: false });
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-
+  const db = rawSqlite;
   const asOfDate = isoDate();
   const nowIso = new Date().toISOString();
 
@@ -331,7 +324,6 @@ async function main() {
     console.log(`  ${r.platform.padEnd(5)} ${String(r.signal_value).padStart(9)} sig → ${String(r.units_mid).padStart(11)} units — ${r.name}`);
   }
 
-  db.close();
 }
 
 main().catch((err) => {

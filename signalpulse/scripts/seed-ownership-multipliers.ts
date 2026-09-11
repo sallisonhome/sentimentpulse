@@ -35,12 +35,7 @@
 
 /* eslint-disable no-console */
 
-import "dotenv/config";
-import Database from "better-sqlite3";
-import path from "node:path";
-
-const DB_PATH = process.env.SIGNALPULSE_DB_PATH
-  ?? path.resolve(process.cwd(), "data.db");
+import { rawSqlite } from "../server/storage";
 
 interface SeedRow {
   platform: string;
@@ -75,10 +70,7 @@ const V0_ROWS: SeedRow[] = [
 ];
 
 async function main() {
-  const db = new Database(DB_PATH, { readonly: false });
-  db.pragma("journal_mode = WAL");
-  db.pragma("busy_timeout = 5000");
-
+  const db = rawSqlite;
   const nowIso = new Date().toISOString();
   // Use a fixed effective_from date so re-running the workflow doesn't create
   // a new row per day. If we change any coefficient we bump this date manually.
@@ -129,7 +121,6 @@ async function main() {
     console.log(`[seed-ownership-multipliers] app_settings.noise_gate_min_signal already present (value=${gate.value})`);
   }
 
-  db.close();
 }
 
 main().catch((err) => {
