@@ -212,24 +212,31 @@ async function main() {
   // title_id. Bridge fills these AFTER the auto pass so overrides win over
   // any incidental auto matches.
   //
-  // Verified 2026-09-11 from platform_sku_map + console_title_igdb:
-  //   10359 (PS5 "Elden Ring PS4 & PS5")                → 10022 (Elden Ring)
-  //   10366 (PS5 "Hogwarts Legacy PS5 Version")         → no Steam anchor yet
-  //   10247 (Xbox "Hogwarts Legacy: Digital Deluxe")    → no Steam anchor yet
-  //   10343 (PS5 "It Takes Two PS4 & PS5")              → no Steam anchor yet
-  //   10241 (Xbox "It Takes Two - Digital Version")     → no Steam anchor yet
-  //   10237 (Xbox "Phasmophobia (Game Preview)")        → 10088 (Phasmophobia)
-  //   10221 (Xbox "Forza Horizon 6 Standard Edition")   → 10058 (Forza Horizon 6)
-  //   10319 (PS5 "Forza Horizon 5: Deluxe Edition")     → no Steam anchor (mis-titled: FH5 not on PS5)
-  //   10411 (Xbox "The Texas Chain Saw Massacre")       → no Steam anchor yet
-  //   10431 (Xbox "Party Animals")                      → no Steam anchor yet
-  // Rows commented out with "no Steam anchor yet" wait for the next Steam
-  // discovery pass to seed the Steam side; adding them here would be a null
-  // override.
+  // Verified 2026-09-11 from platform_sku_map + console_title_igdb.
+  // Steam anchor title_ids 10600-10603 were seeded manually on 2026-09-11
+  // for four titles missing from Steam discovery.
+  //   10359 (PS5  "Elden Ring PS4 & PS5")                → 10022 (Elden Ring)
+  //   10366 (PS5  "Hogwarts Legacy PS5 Version")         → 10600 (Hogwarts Legacy)
+  //   10247 (Xbox "Hogwarts Legacy: Digital Deluxe")     → 10600 (Hogwarts Legacy)
+  //   10343 (PS5  "It Takes Two PS4 & PS5")              → 10601 (It Takes Two)
+  //   10241 (Xbox "It Takes Two - Digital Version")      → 10601 (It Takes Two)
+  //   10552 (PS5  "It Takes Two - Friend's Pass")        → 10601 (It Takes Two)
+  //   10237 (Xbox "Phasmophobia (Game Preview)")         → 10088 (Phasmophobia)
+  //   10221 (Xbox "Forza Horizon 6 Standard Edition")    → 10058 (Forza Horizon 6)
+  //   10411 (Xbox "The Texas Chain Saw Massacre")        → 10602 (The Texas Chain Saw Massacre)
+  //   10431 (Xbox "Party Animals")                       → 10603 (Party Animals)
+  //   10319 (PS5  "Forza Horizon 5: Deluxe Edition")     → SKIP (Forza Horizon 5 is Xbox/PC exclusive; console_title_igdb row is a discovery mislabel)
   const MANUAL_BRIDGE: Array<[number, number]> = [
     [10359, 10022], // Elden Ring PS5 → Elden Ring
+    [10366, 10600], // Hogwarts Legacy PS5 → Hogwarts Legacy (steam)
+    [10247, 10600], // Hogwarts Legacy Xbox Deluxe → Hogwarts Legacy (steam)
+    [10343, 10601], // It Takes Two PS4 & PS5 → It Takes Two (steam)
+    [10241, 10601], // It Takes Two Xbox Digital → It Takes Two (steam)
+    [10552, 10601], // It Takes Two Friend's Pass PS5 → It Takes Two (steam)
     [10237, 10088], // Phasmophobia Xbox Game Preview → Phasmophobia
     [10221, 10058], // Forza Horizon 6 Xbox Standard Edition → Forza Horizon 6
+    [10411, 10602], // The Texas Chain Saw Massacre Xbox → TCM (steam)
+    [10431, 10603], // Party Animals Xbox → Party Animals (steam)
   ];
 
   {
