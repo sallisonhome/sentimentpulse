@@ -19,6 +19,7 @@ import { rawSqlite } from "../../storage";
 import { log } from "../../log";
 import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from "./types";
 import { fetchXboxRatingSignal } from "./xbox";
+import { writeRankSnapshot, computeTop50Churn } from "./rankSnapshot";
 
 // ─── Steam ───────────────────────────────────────────────────────────────────
 
@@ -894,6 +895,50 @@ export async function runFullDiscovery(opts: {
   // for the same productId wins (writer preserves is_manual_override=true).
   const psAutoW = upsertSkuMap(ps5DiscoveredRows);
   const psManualW = upsertSkuMap(psManualRows);
+
+  // ── Storefront rank snapshot (Push 2, Change 11) ────────────────────────────
+  // Record today's rank for each (platform, sort_key). Position in the source
+  // arrays IS the rank because both `discoverXboxAll` and `discoverPs5TopSelling`
+  // return arrays already ordered by the storefront (top-paid-games, sales30).
+  // Classification preserves that order 1:1, so `xboxRows[i]` and
+  // `ps5DiscoveredRows[i]` are at rank i+1. Manual seeds are NOT ranked — they
+  // are additive coverage, not a sales-ranked chart.
+  //
+  // Rank writes are best-effort: a failure here must not break discovery
+  // (leaderboards still work without a snapshot; only churn / hot-badge do).
+  try {
+    const xboxRankEntries = xboxRows.map((r, i) => ({ titleId: r.titleId, rank: i + 1 }));
+    if (xboxRankEntries.length > 0) {
+      writeRankSnapshot("xbox", "xbox_api_top_paid", xboxRankEntries);
+    }
+    const ps5RankEntries = ps5DiscoveredRows.map((r, i) => ({ titleId: r.titleId, rank: i + 1 }));
+    if (ps5RankEntries.length > 0) {
+      writeRankSnapshot("ps5", "psn_api_sales30", ps5RankEntries);
+    }
+  } catch (e: any) {
+    log(`rank snapshot write failed (non-fatal): ${e?.message ?? String(e)}`);
+  }
+
+  // Emit top-50 churn metric per (platform, sort_key). Null on the first-ever
+  // run (no yesterday baseline) is logged and skipped; once 2+ days of history
+  // exist the metric drives the daily→weekly relaxation decision. Not
+  // acceptance-tested against thresholds here — that's an operator call after
+  // 14 days of empirical data.
+  try {
+    for (const [platform, sortKey] of [
+      ["xbox", "xbox_api_top_paid"],
+      ["ps5", "psn_api_sales30"],
+    ] as const) {
+      const c = computeTop50Churn(platform, sortKey);
+      if (c.churnPct != null) {
+        log(`top50_churn platform=${platform} sort_key=${sortKey} churn_pct=${c.churnPct.toFixed(1)} entered=${c.enteredCount} exited=${c.exitedCount} today_n=${c.todayN} yesterday_n=${c.yesterdayN}`);
+      } else {
+        log(`top50_churn platform=${platform} sort_key=${sortKey} churn_pct=null (today_n=${c.todayN} yesterday_n=${c.yesterdayN})`);
+      }
+    }
+  } catch (e: any) {
+    log(`top50_churn compute failed (non-fatal): ${e?.message ?? String(e)}`);
+  }
 
   // Bootstrap console_title_igdb with the storefront-fetched name, header art,
   // and release date so the leaderboard has SOMETHING readable and a durable

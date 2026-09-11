@@ -836,6 +836,46 @@ function initializeDatabase() {
       refreshed_at TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    -- Storefront rank snapshot (Push 2, Change 11, 2026-09-11).
+    -- Daily record of "what did each storefront's ranked shelf look like"
+    -- for each of the console platforms + sort keys we discovery-scan. Feeds
+    -- three downstream uses:
+    --   1. top50_churn_pct metric — % of the top-50 that entered/exited vs.
+    --      the prior day's snapshot. Once churn stays <20% for 14 consecutive
+    --      days on a platform we can safely relax that platform's daily
+    --      deep-scan to weekly (operator decision, not automatic).
+    --   2. Rank-velocity "hot" badge — a title climbing >=5 positions in 24h
+    --      gets a badge on the leaderboard client.
+    --   3. Historical debugging — when a title disappears from the leaderboard,
+    --      we can look up when it last held rank and on which sort key.
+    --
+    -- sort_key identifies the ranked source, so the same title_id can hold
+    -- different ranks under different keys on the same day (e.g. it may be
+    -- #12 by PSN sales30 but #3 by web bestsellers). Known keys today:
+    --   ps5:  psn_api_sales30, psn_web_bestsellers (Wave B, pending)
+    --   xbox: xbox_api_top_paid, xboxcom_web_top_paid (Wave B, pending)
+    --
+    -- PRIMARY KEY covers (platform, sort_key, snapshot_date, title_id) so a
+    -- re-run within the same UTC day upserts rank in place rather than
+    -- creating a duplicate row. snapshot_at is the wall-clock timestamp of
+    -- the last write within the day, useful when diagnosing which of
+    -- multiple same-day runs actually populated the leaderboard.
+    CREATE TABLE IF NOT EXISTS console_storefront_rank_daily (
+      platform TEXT NOT NULL,
+      sort_key TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      title_id INTEGER NOT NULL,
+      rank INTEGER NOT NULL,
+      snapshot_at TEXT NOT NULL,
+      PRIMARY KEY (platform, sort_key, snapshot_date, title_id)
+    );
+    -- Rank-based lookups: "top-50 titles on platform+sort_key for date".
+    CREATE INDEX IF NOT EXISTS console_storefront_rank_daily_by_rank
+      ON console_storefront_rank_daily (platform, sort_key, snapshot_date, rank);
+    -- Per-title history lookups: "where has title_id ranked recently?".
+    CREATE INDEX IF NOT EXISTS console_storefront_rank_daily_by_title
+      ON console_storefront_rank_daily (platform, title_id, snapshot_date DESC);
   `);
 }
 
