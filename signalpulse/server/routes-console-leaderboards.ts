@@ -66,6 +66,114 @@ function daysAgo(n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Edition-suffix normalizer used by the leaderboard rollup (Change 10, Push 2).
+//
+// Purpose: collapse SKU variants of the SAME game family within a single platform
+// so "NBA 2K27" and "NBA 2K27 Deluxe" render as one row rather than two.
+//
+// Strategy: lowercase, strip trademark noise, then chop off known edition suffixes.
+// Order matters — we strip the longest suffix first so "Digital Deluxe" wins over
+// "Deluxe", "Premium Deluxe" wins over "Deluxe", etc. Anything left after the
+// suffix strip is the group key. "Marvel's Wolverine" and "Marvel's Wolverine:
+// Digital Deluxe Edition" both collapse to "marvel's wolverine".
+//
+// The output is opaque — it is compared for equality but never displayed. A
+// title without any known edition suffix returns its own normalized name so
+// it groups only with exact-duplicate SKUs (which should not exist post-Push 2).
+//
+// Also collapses Sony's PS4 & PS5 hybrid SKUs into their PS5-only twin
+// (Change 6, Push 2): "Marvel's Spider-Man 2 PS4 & PS5" and "Marvel's
+// Spider-Man 2" both collapse to the same key.
+export function editionGroupKey(name: string | null | undefined): string {
+  if (!name) return "";
+  let s = name.toLowerCase();
+  // Strip trademark / registered / smart-quote noise so "PS4™ & PS5™" matches.
+  s = s.replace(/[™®℗℠]/g, "");
+  s = s.replace(/[‘’‚‛‹›]/g, "'");
+  s = s.replace(/[“”„‟«»]/g, '"');
+  // Collapse whitespace early so " - " / ": " separators normalize.
+  s = s.replace(/\s+/g, " ").trim();
+
+  // Ordered list of edition suffixes. Long/specific first so multi-word suffixes
+  // are recognized before their sub-strings. Match at end-of-string only; the
+  // pattern anchors at (a) end or (b) end after a colon/dash separator.
+  const SUFFIXES: string[] = [
+    // Composite / multi-word first
+    "digital deluxe edition",
+    "premium deluxe edition",
+    "legendary edition",
+    "definitive edition",
+    "anniversary edition",
+    "gold edition",
+    "deluxe edition",
+    "ultimate edition",
+    "complete edition",
+    "standard edition",
+    "premium edition",
+    "vault edition",
+    "eclipse edition",
+    "legacy edition",
+    "enhanced edition",
+    "kickoff bundle",
+    "digital version",
+    "friend's pass",
+    "friends pass",
+    "free trial",
+    "game preview",
+    // Cross-gen indicators
+    "ps4 & ps5",
+    "ps4 and ps5",
+    "ps5 version",
+    "ps4 version",
+    "xbox one & xbox series x|s",
+    "xbox one and xbox series x|s",
+    "xbox series x|s",
+    // Bare qualifiers (last so they don't over-match)
+    "digital deluxe",
+    "premium deluxe",
+    "super deluxe",
+    "deluxe",
+    "ultimate",
+    "premium",
+    "standard",
+    "complete",
+    "definitive",
+    "gold",
+    "vault",
+    "eclipse",
+    "legacy",
+    "enhanced",
+  ];
+
+  // Repeatedly strip trailing suffixes so "NBA 2K27: Standard Edition Deluxe"
+  // — nonsensical but possible — collapses in one pass.
+  let changed = true;
+  let guard = 0;
+  while (changed && guard++ < 8) {
+    changed = false;
+    for (const suf of SUFFIXES) {
+      // Strip separator (colon or dash) + optional space + suffix at end.
+      const patterns = [
+        new RegExp(`[:\\-]\\s*${suf.replace(/[|]/g, "\\|").replace(/[.*+?^${}()]/g, "\\$&")}\\s*$`),
+        new RegExp(`\\s+${suf.replace(/[|]/g, "\\|").replace(/[.*+?^${}()]/g, "\\$&")}\\s*$`),
+        new RegExp(`^${suf.replace(/[|]/g, "\\|").replace(/[.*+?^${}()]/g, "\\$&")}\\s*$`),
+      ];
+      for (const re of patterns) {
+        const next = s.replace(re, "");
+        if (next !== s && next.length >= 2) {
+          s = next.trim();
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Strip trailing colon / dash / whitespace once suffix removal is done.
+  s = s.replace(/[\s:\-]+$/g, "").trim();
+  return s;
+}
+
 // Platform ASP factors used to translate MSRP into an Average Selling Price
 // estimate. Applied at read time so an operator can retune without a re-run
 // of the estimator. Kept out of window_estimates_daily on purpose: units are
@@ -247,6 +355,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         AND ${nameSourceExpr} NOT LIKE '%mission pack%'
         AND ${nameSourceExpr} NOT LIKE '%mythology pack%'
         AND ${nameSourceExpr} NOT LIKE '%starter bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%cosmetic bundle%'
+        AND ${nameSourceExpr} NOT LIKE '%color pack%'
+        AND ${nameSourceExpr} NOT LIKE '%additional color%'
         AND ${nameSourceExpr} NOT LIKE '%cross-gen bundle%'
         AND ${nameSourceExpr} NOT LIKE '%saga bundle%'
         AND ${nameSourceExpr} NOT LIKE '%legacy bundle%'
@@ -439,7 +550,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                    END
                  ) >= ? THEN 1 ELSE 0 END) DESC,
                 COALESCE(srs.rating_count, 0) DESC
-       LIMIT 100
+       -- LIMIT raised from 100 → 250 (Change 10, Push 2). Edition rollup collapses
+       -- SKU variants below in JS; we need enough headroom that a family with
+       -- 3+ editions (e.g. NHL 27 Deluxe + Standard, EA FC 27 Ultimate + Standard)
+       -- still leaves 100 unique game families on the client. 250 is a safe
+       -- overshoot: current top-100 has ~10–15 edition-collapsed rows, worst-case
+       -- ~2× blowup, so 250 rows in guarantees ≥100 groups out.
+       LIMIT 250
       `).all(
         platform,               // 1: latest_rating CTE WHERE platform = ?
         aspFactor,              // 2: SELECT aspUsdCents CAST(msrp * ? AS INTEGER)
@@ -450,7 +567,88 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         recentHotThresholdIso,  // last: ORDER BY recent-hot tie-breaker release_date >= ?
       ) as Array<Record<string, any>>;
 
-      res.json({ platform, window, sort, dir, aspFactor, cascade, count: rows.length, titles: rows });
+      // ── Edition rollup (Change 10, Push 2) ─────────────────────────────────
+      // Group SKU variants of the same game family within this platform. We
+      // fetched 250 rows above; group them by editionGroupKey(name) so that
+      // "NBA 2K27" and "NBA 2K27 Deluxe" collapse into one leaderboard row.
+      //
+      // Rules:
+      //   • Display row = the group's highest-revenue member (with unitsMid /
+      //     revenueMidUsd fallback so a row that gated to NULL revenue never
+      //     wins over a real one).
+      //   • revenueMidUsd, unitsMid = SUM across all members of the group.
+      //     Rollup treats sibling editions as additive sales, which is the
+      //     evidence-bound assumption: they are separate SKUs that sold
+      //     separately, and the operator wants total franchise revenue in the
+      //     window, not the largest edition's revenue.
+      //   • editionCount = number of collapsed siblings (0 if standalone).
+      //   • editionTitles = list of grouped display names (for tooltip / "+N
+      //     editions" badge on the client).
+      //   • Grouping only happens when the key is non-empty AND at least one
+      //     of the members carries a real name from IGDB/store — external_sku
+      //     fallbacks (raw storefront IDs) never group with anything, since
+      //     those keys are noisy and would risk cross-family collisions.
+      //
+      // Ordering after grouping is preserved from the SQL ORDER BY because we
+      // walk the input rows in order and record each group's first-appearance
+      // slot as its rank. That keeps sort=revenue / sort=score / etc. stable
+      // without a second sort pass.
+      type Row = Record<string, any>;
+      const groups: Row[] = [];
+      const byKey = new Map<string, Row>();
+      for (const r of rows) {
+        const rawName = (r.name ?? "") as string;
+        const key = editionGroupKey(rawName);
+        // Fall back to title_id-anchored key when name normalization yields
+        // empty (external_sku fallbacks, unicode-only names). This keeps the
+        // row in the output but prevents it from grouping with anything else.
+        const groupKey = key.length >= 2 ? `k:${key}` : `t:${r.titleId ?? Math.random()}`;
+        const existing = byKey.get(groupKey);
+        if (!existing) {
+          const initial: Row = {
+            ...r,
+            editionCount: 0,
+            editionTitles: [rawName],
+            editionGroupKey: key,
+          };
+          byKey.set(groupKey, initial);
+          groups.push(initial);
+          continue;
+        }
+        // Sum window-derived quantities. Missing/NULL is treated as 0 for the
+        // SUM but preserved on the display row when nothing has a value.
+        const rRev = typeof r.revenueMidUsd === "number" ? r.revenueMidUsd : 0;
+        const rUnits = typeof r.unitsMid === "number" ? r.unitsMid : 0;
+        const eRev = typeof existing.revenueMidUsd === "number" ? existing.revenueMidUsd : 0;
+        const eUnits = typeof existing.unitsMid === "number" ? existing.unitsMid : 0;
+        // If the incoming row's revenue is higher than the current display,
+        // promote it to the display row (keep its metadata: title, releaseDate,
+        // avgRating, coverUrl, etc.) but carry the accumulated sums forward.
+        if (rRev > eRev) {
+          const bumped: Row = {
+            ...r,
+            revenueMidUsd: rRev + eRev,
+            unitsMid: rUnits + eUnits,
+            editionCount: existing.editionCount + 1,
+            editionTitles: [...existing.editionTitles, rawName],
+            editionGroupKey: key,
+          };
+          byKey.set(groupKey, bumped);
+          // Replace in the ordered array at the same slot.
+          const idx = groups.indexOf(existing);
+          if (idx >= 0) groups[idx] = bumped;
+        } else {
+          existing.revenueMidUsd = eRev + rRev || null;
+          existing.unitsMid = eUnits + rUnits || null;
+          existing.editionCount += 1;
+          existing.editionTitles.push(rawName);
+        }
+      }
+      // Trim to top-100 groups. The input SQL was ordered, group order was
+      // preserved, so groups[0..99] is the final leaderboard.
+      const collapsed = groups.slice(0, 100);
+
+      res.json({ platform, window, sort, dir, aspFactor, cascade, count: collapsed.length, titles: collapsed });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

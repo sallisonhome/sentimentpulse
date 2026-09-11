@@ -279,14 +279,22 @@ async function fetchXboxEmeraldPage(
  * Falls back to whatever partial page-set succeeded on error — a partial
  * harvest still beats no harvest.
  *
- * Discovery now takes the UNION of two Xbox emerald channels:
- *   1. `top-paid-games`                                       — revenue chart.
- *   2. `new-releases-xbox-and-xbox-360-optimized-games`       — fresh launches.
+ * Discovery uses the `top-paid-games` channel only.
  *
- * The top-paid channel is a rolling revenue chart, so fresh launches with
- * genuine demand can take a week to appear. Unioning the new-releases channel
- * catches those launches while they are still hot enough for the 7-day
- * leaderboard's isRecentHot flag to fire.
+ * The `new-releases-xbox-and-xbox-360-optimized-games` channel WAS unioned in
+ * here until 2026-09-11 when a probe confirmed it is dead upstream at
+ * Microsoft: emerald returns totalItems=0, and xbox.com's own SSR for
+ * /games/browse/new-releases embeds "title":"Failed to Get Channel". Seven
+ * alternative slugs (most-played, new-releases, coming-soon, top-rated,
+ * best-rated, coming-soon-games, most-popular) all returned 0. Meanwhile
+ * top-paid-games already surfaces every 2026 launch we care about
+ * (Battlefield 6, NBA 2K27, Blood of Dawnwalker, 007 First Light, Madden 27,
+ * Onimusha — verified 49/50 top-50 productIds already in platform_sku_map),
+ * so the dead union added zero value and one silent point of failure.
+ *
+ * TODO(xbox-new-releases-channel-replacement): monthly, probe whether Microsoft
+ * has restored the channel under a different slug (or hydrates the SSR page
+ * again). If a replacement surfaces, add it back as a secondary drain.
  *
  * Total addressable top-paid list is ~1001 titles per emerald's totalItems.
  */
@@ -315,13 +323,10 @@ export async function discoverXboxAll(topN: number = 100): Promise<Array<{ bigId
     }
   };
 
-  // Primary channel gets the full topN budget so revenue-chart coverage is
-  // never regressed by adding a secondary channel.
+  // Sole channel. The new-releases-* channel dropped 2026-09-11: dead upstream
+  // (see doc comment above).
   await drainChannel("top-paid-games", topN);
-  // Secondary channel adds fresh launches on top; capped so a spammy new-release
-  // list can't dilute the top-paid coverage.
-  await drainChannel("new-releases-xbox-and-xbox-360-optimized-games", 50);
-  log(`xbox discovery: unioned top-paid + new-releases → ${all.length} bigIds`);
+  log(`xbox discovery: top-paid-games only (new-releases-* dropped 2026-09-11) → ${all.length} bigIds`);
   return all.map(bigId => ({ bigId }));
 }
 
@@ -486,15 +491,25 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
   // of the same underlying game all appear on the sales chart). We dedupe by
   // npTitleId and over-fetch until we have topN UNIQUE games.
   //
-  // Discovery now takes the UNION of two categoryGridRetrieve passes:
-  //   1. sortBy="sales7"  — 7-day sales chart (fresh launches like Halloween:
-  //                        The Game land here first).
-  //   2. sortBy="sales30" — 30-day sales chart (the previous default, kept for
-  //                        stable coverage of the top-selling catalogue).
+  // Discovery uses sortBy="sales30" only.
   //
-  // The 7-day pass runs FIRST so its productIds win in the dedup set. Fresh
-  // launches that only exist on sales7 are guaranteed to be picked up, and
-  // the 30-day pass then backfills anything else needed to hit topN.
+  // sales7 was PART of this union until 2026-09-11 when deep probing (200-row
+  // pull, saved to ps5_deep_probe.json) showed the sales7 endpoint has degraded:
+  //   • 60% of the 200 rows were PS4&PS5 hybrids, 22 free titles, 3 Game Trials,
+  //     2 Unavailable.
+  //   • Zero of the visible 2026 chart-topping titles appeared in the sales7
+  //     top-200 (NBA 2K27, GTA VI Ultimate, Wolverine Deluxe, Blood of Dawnwalker,
+  //     Onimusha, Madden 27, Battlefield 6, 007 First Light, Crimson Desert).
+  //   • Rows past position ~15 were alphabetically sorted, not sales-ranked.
+  // Meanwhile sales30 rendered a plausible current chart (158/200 PS5-only,
+  // zero F2P/Unavailable/Trial, 32 known 2026 titles, NBA 2K27 at rank 1).
+  // Using sales7 as either primary or secondary poisoned dedupe: it consumed
+  // slots of the topN budget with F2P/hybrid rows and pushed real sales30 top
+  // hits past the cliff. Dropping sales7 recovers ~15 chart positions.
+  //
+  // TODO(ps5-sales7-recheck-monthly): reprobe categoryGridRetrieve?sortBy=sales7
+  // once a quarter. If Sony repairs it, resurrect the union with sales7 second
+  // (not first) so sales30 keeps the dedup slots.
   const pageSize = 100;
   const maxPages = Math.max(2, Math.ceil((topN * 1.3) / pageSize));
   const out: Ps5TopProduct[] = [];
@@ -550,11 +565,10 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
     }
   };
 
-  // 7-day sales chart wins on dedup so fresh launches surface.
-  await drainSort("sales7");
-  // 30-day sales chart backfills the top-100 with stable revenue coverage.
+  // 30-day sales chart is the sole discovery source. sales7 dropped 2026-09-11
+  // due to endpoint degradation (see comment block above).
   await drainSort("sales30");
-  log(`ps5 discovery: unioned sales7 + sales30 → ${out.length} unique npTitleIds`);
+  log(`ps5 discovery: sales30 only (sales7 dropped 2026-09-11) → ${out.length} unique npTitleIds`);
   return out;
 }
 
@@ -864,7 +878,7 @@ export async function runFullDiscovery(opts: {
     platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
-    businessModelSource: `ps_categoryGridRetrieve.sales7+sales30`,
+    businessModelSource: `ps_categoryGridRetrieve.sales30`,
   }));
   const psManualRows: UpsertRow[] = psManualCls.map(c => ({
     platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),

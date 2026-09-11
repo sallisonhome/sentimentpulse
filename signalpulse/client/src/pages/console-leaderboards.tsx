@@ -77,6 +77,13 @@ interface LeaderboardRow {
   isRecentHot?: 0 | 1 | boolean | null;
   nameSource?: "igdb" | "store" | null;
   matchConfidence?: "high" | "low" | null;
+  // Edition rollup (Push 2, Change 10). editionCount is the number of
+  // sibling SKUs (Deluxe/Ultimate/Digital Deluxe/Standard/PS4 & PS5/...)
+  // that were collapsed into this display row. 0 = standalone.
+  // editionTitles lists the original SKU names for the tooltip.
+  editionCount?: number;
+  editionTitles?: string[];
+  editionGroupKey?: string;
 }
 
 interface LeaderboardResponse {
@@ -355,6 +362,16 @@ function PlatformColumn({
                           est. via {t.windowUsed}
                         </Badge>
                       ) : null}
+                      {t.editionCount && t.editionCount > 0 ? (
+                        <Badge
+                          variant="outline"
+                          className="text-[9px] uppercase tracking-wide text-muted-foreground shrink-0"
+                          title={`Includes ${t.editionCount + 1} SKUs: ${(t.editionTitles ?? []).join(", ")}`}
+                          data-testid={`badge-editions-${t.titleId}`}
+                        >
+                          +{t.editionCount} edition{t.editionCount === 1 ? "" : "s"}
+                        </Badge>
+                      ) : null}
                     </span>
                     <div className="flex flex-col items-end shrink-0 leading-tight">
                       {/* Primary: estimated revenue. Rating-count is our
@@ -596,6 +613,16 @@ export function ConsoleLeaderboardsPlatform() {
                             data-testid={`badge-cascade-${t.titleId}`}
                           >
                             est. via {t.windowUsed}
+                          </Badge>
+                        ) : null}
+                        {t.editionCount && t.editionCount > 0 ? (
+                          <Badge
+                            variant="outline"
+                            className="text-[9px] uppercase tracking-wide text-muted-foreground"
+                            title={`Includes ${t.editionCount + 1} SKUs: ${(t.editionTitles ?? []).join(", ")}`}
+                            data-testid={`badge-editions-${t.titleId}`}
+                          >
+                            +{t.editionCount} edition{t.editionCount === 1 ? "" : "s"}
                           </Badge>
                         ) : null}
                       </span>
