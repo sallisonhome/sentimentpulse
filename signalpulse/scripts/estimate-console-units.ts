@@ -13,12 +13,24 @@
  *                          steam_review_history buckets ending in [now-N, now]
  *   Xbox ltd/d7/d30 — bundled into store_rating_signal_daily.raw_json.windows[]
  *                     (native from displaycatalog UsageData)
- *   PS5 ltd — store_rating_signal_daily.rating_count. d7/d30/d90 need
- *             forward-only day-over-day deltas; gated until ≥N days of history.
+ *   Xbox d90/m12    — forward-only LTD delta (ltd_today − ltd_N_days_ago) when we
+ *                     have ≥N+1 daily snapshots; otherwise bootstrap-fill using
+ *                     the LTD count for titles released within the window (their
+ *                     lifetime ratings all fall inside that window by definition).
+ *   PS5 ltd — store_rating_signal_daily.rating_count.
+ *   PS5 d7/d30/d90/m12 — same forward-delta + bootstrap strategy as Xbox d90/m12.
+ *                        As history accrues, the delta path replaces the bootstrap.
+ *
+ * Bootstrap gap-fill (critical for coverage on freshly launched platforms):
+ *   For any title whose effective release date falls within the requested window,
+ *   its LTD signal EQUALS its windowed signal. This lets us present a top-100 on
+ *   PS5/Xbox even with a single day of collection history, so long as the recent-
+ *   release cohort is populated.
  *
  * Gates:
  *   'signal_too_small'      — signal < noise_gate (spec §6, default 50)
  *   'insufficient_history'  — window needs more days of collection than we have
+ *                             AND title predates the window (bootstrap failed)
  *   'no_multiplier'         — active multiplier row missing (should never happen after seed)
  *
  * v0 is CLEARLY LABELLED — confidence='v0-defaults' — and must be replaced by
@@ -191,17 +203,169 @@ async function main() {
     return r.s;
   }
 
-  // ─── 7. PS forward-history availability: how many distinct capture_dates do we have? ─
-  const psDays = db.prepare(
-    `SELECT COUNT(DISTINCT capture_date) AS n FROM store_rating_signal_daily WHERE platform = 'ps5'`
-  ).get() as { n: number };
-  const psForwardDays = psDays.n;
-  console.log(`[estimate-console-units] ps5 forward-history depth: ${psForwardDays} day(s)`);
+  // Steam latest LTD signal for a title. Denominator for backfill-steam-pace.
+  function steamLtdSignal(titleId: number): number | null {
+    return latestSignalByKey.get(`${titleId}|steam`)?.rating_count ?? null;
+  }
 
-  // Build (title, platform, prev-capture) map for PS delta math — reused if enough history.
-  // For v0: PS d7/d30/d90/m12 all gated as insufficient_history until we have ≥ N+1 days.
+  // Steam window/LTD ratio used by backfill-steam-pace to slice the console
+  // LTD into a windowed signal. Guardrails:
+  //  • both numerator and denominator must exist and be > 0
+  //  • Steam LTD must be >= 100 (below that the ratio is noise-dominated)
+  //  • ratio is clamped to [0, 1] — a window signal can never exceed lifetime
+  function steamWindowRatio(titleId: number, days: number): number | null {
+    const win = steamWindowSignal(titleId, days);
+    const ltd = steamLtdSignal(titleId);
+    if (win == null || ltd == null || ltd < 100 || ltd <= 0) return null;
+    const ratio = win / ltd;
+    if (ratio <= 0) return null;
+    return Math.min(1, ratio);
+  }
 
-  // ─── 8. For each (title, platform, window), compute an EstimateRow ────────
+  // ─── 7. Forward-history depth per platform, and per-window historical LTD lookup ─
+  //     For each (title, platform, window) we may need the LTD count as-of
+  //     (today − window_days). If it exists AND the row's current LTD > it, that
+  //     delta IS the windowed signal.
+  const historyDepth = db.prepare(
+    `SELECT platform, COUNT(DISTINCT capture_date) AS n
+       FROM store_rating_signal_daily
+      GROUP BY platform`
+  ).all() as Array<{ platform: string; n: number }>;
+  const forwardDaysByPlatform = new Map<string, number>();
+  for (const r of historyDepth) forwardDaysByPlatform.set(r.platform, r.n);
+  for (const p of ["steam", "xbox", "ps5"]) {
+    console.log(`[estimate-console-units] ${p} forward-history depth: ${forwardDaysByPlatform.get(p) ?? 0} day(s)`);
+  }
+
+  // Look up an as-of LTD for a (title, platform, target_date). Falls back to the
+  // OLDEST snapshot on or after target_date only when the exact date is missing,
+  // so short gaps in collection don't kill delta math.
+  const asOfLtdStmt = db.prepare(
+    `SELECT rating_count, capture_date
+       FROM store_rating_signal_daily
+      WHERE title_id = ? AND platform = ? AND capture_date <= ?
+      ORDER BY capture_date DESC
+      LIMIT 1`
+  );
+  function asOfLtd(titleId: number, platform: string, targetDate: string): number | null {
+    const r = asOfLtdStmt.get(titleId, platform, targetDate) as { rating_count: number | null; capture_date: string } | undefined;
+    if (!r || r.rating_count == null) return null;
+    return r.rating_count;
+  }
+  function daysAgoIso(days: number): string {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() - days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // ─── 7b. Effective release-date map (mirrors the leaderboard route's CASE) ─
+  //     Used for bootstrap gap-fill: if release <= now AND release >= now-window_days,
+  //     the title's LTD count is EQUIVALENT to its windowed signal (all ratings arrived
+  //     inside that window). Confidence-aware: prefer store_release_date when IGDB
+  //     matched the wrong game.
+  const releaseRows = db.prepare(
+    `SELECT title_id,
+            CASE WHEN match_confidence = 'low'
+              THEN COALESCE(store_release_date, release_date)
+              ELSE COALESCE(release_date, store_release_date)
+            END AS effective_release
+       FROM console_title_igdb`
+  ).all() as Array<{ title_id: number; effective_release: string | null }>;
+  const releaseByTitle = new Map<number, string>();
+  for (const r of releaseRows) {
+    if (r.effective_release) releaseByTitle.set(r.title_id, r.effective_release);
+  }
+  const todayIso = asOfDate;
+  function isReleasedWithin(titleId: number, days: number): boolean {
+    const rel = releaseByTitle.get(titleId);
+    if (!rel) return false;
+    return rel >= daysAgoIso(days) && rel <= todayIso;
+  }
+
+  // ─── 8. Per-platform signal resolver ─────────────────────────────────────
+  //
+  // Signal resolution cascade (from best to worst confidence):
+  //   1. native            — platform's own per-window count (Steam review
+  //                          history; Xbox d7/d30 UsageData)
+  //   2. forward-delta     — ltd_today − ltd_(N_days_ago), only when we have
+  //                          N+1 days of collection history
+  //   3. backfill-bootstrap — title released inside the window → ltd IS the
+  //                           window signal (exact math, no modeling assumption)
+  //   4. backfill-steam-pace — apply this title's Steam window/LTD ratio to
+  //                            the console LTD (same-title cross-platform ratio)
+  //   5. backfill-peer-ratio — reserved for a future decay-adjusted variant.
+  //                            Currently subsumed by steam-pace.
+  //
+  // Each backfill source tags row.method with 'backfill-*' so the client can
+  // badge those rows. The tag disappears the moment forward-delta or native
+  // returns a value — those paths leave methodTag null and we keep the
+  // multiplier's method unchanged.
+  interface SignalResult { signal: number; methodTag: string | null }
+
+  function resolveSteamSignal(titleId: number, window: Window): SignalResult | null {
+    if (window === "ltd") {
+      const s = steamLtdSignal(titleId);
+      return s == null ? null : { signal: s, methodTag: null };
+    }
+    const s = steamWindowSignal(titleId, WINDOW_DAYS[window]!);
+    return s == null ? null : { signal: s, methodTag: null };
+  }
+
+  function resolveConsoleSignal(
+    titleId: number, platform: "xbox" | "ps5", window: Window,
+  ): SignalResult | null {
+    const ltdNow = platform === "xbox"
+      ? (xboxWindowsByTitle.get(titleId)?.ltd
+         ?? latestSignalByKey.get(`${titleId}|xbox`)?.rating_count
+         ?? null)
+      : (latestSignalByKey.get(`${titleId}|ps5`)?.rating_count ?? null);
+
+    if (window === "ltd") {
+      return ltdNow == null ? null : { signal: ltdNow, methodTag: null };
+    }
+
+    const winDays = WINDOW_DAYS[window]!;
+
+    // 1. NATIVE — Xbox displaycatalog carries d7 and d30 UsageData.
+    if (platform === "xbox") {
+      const xw = xboxWindowsByTitle.get(titleId);
+      if (window === "d7" && xw?.d7 != null) return { signal: xw.d7, methodTag: null };
+      if (window === "d30" && xw?.d30 != null) return { signal: xw.d30, methodTag: null };
+    }
+
+    // 2. FORWARD-DELTA — kicks in once collection history exceeds window length.
+    const historyDays = forwardDaysByPlatform.get(platform) ?? 0;
+    if (historyDays > winDays && ltdNow != null) {
+      const past = asOfLtd(titleId, platform, daysAgoIso(winDays));
+      if (past != null && ltdNow >= past) {
+        return { signal: ltdNow - past, methodTag: null };
+      }
+    }
+
+    // 3. BACKFILL-BOOTSTRAP — title released inside window → ltd IS the window.
+    if (ltdNow != null && isReleasedWithin(titleId, winDays)) {
+      return { signal: ltdNow, methodTag: "backfill-bootstrap" };
+    }
+
+    // 4. BACKFILL-STEAM-PACE — Same-title cross-platform ratio. When the same
+    //    title also ships on Steam and has enough LTD to be trustworthy, the
+    //    fraction of its ratings that fell in the last N days on Steam is a
+    //    strong prior for the console version's own pace.
+    if (ltdNow != null) {
+      const ratio = steamWindowRatio(titleId, winDays);
+      if (ratio != null) {
+        return { signal: Math.round(ltdNow * ratio), methodTag: "backfill-steam-pace" };
+      }
+    }
+
+    // 5. BACKFILL-PEER-RATIO — reserved. Currently steam-pace subsumes it. Kept
+    //    as a distinct code path so a future decay-adjusted variant can slot in
+    //    without changing the resolver contract or the client's badge dictionary.
+
+    return null;
+  }
+
+  // ─── 9. For each (title, platform, window), compute an EstimateRow ────────
   const rows: EstimateRow[] = [];
   for (const { title_id: titleId, platform } of eligible) {
     const mult = multipliers.get(platform);
@@ -222,40 +386,19 @@ async function main() {
         continue;
       }
 
-      // ─── Signal lookup per (platform, window) ──────────────────────────
-      let signal: number | null = null;
+      // ─── Signal resolution ─────────────────────────────────────────────
+      const resolved = platform === "steam"
+        ? resolveSteamSignal(titleId, window)
+        : resolveConsoleSignal(titleId, platform as "xbox" | "ps5", window);
 
-      if (platform === "steam") {
-        if (window === "ltd") {
-          signal = latestSignalByKey.get(`${titleId}|steam`)?.rating_count ?? null;
-        } else {
-          const days = WINDOW_DAYS[window]!;
-          signal = steamWindowSignal(titleId, days);
-        }
-      } else if (platform === "xbox") {
-        const w = xboxWindowsByTitle.get(titleId);
-        if (window === "ltd") {
-          signal = w?.ltd ?? latestSignalByKey.get(`${titleId}|xbox`)?.rating_count ?? null;
-        } else if (window === "d7") {
-          signal = w?.d7 ?? null;
-        } else if (window === "d30") {
-          signal = w?.d30 ?? null;
-        } else {
-          // d90, m12 need forward-only history — Xbox native only gives d7/d30.
-          row.gatedReason = "insufficient_history";
-          rows.push(row);
-          continue;
-        }
-      } else if (platform === "ps5") {
-        if (window === "ltd") {
-          signal = latestSignalByKey.get(`${titleId}|ps5`)?.rating_count ?? null;
-        } else {
-          // PS gives only LTD snapshots — every windowed cell needs forward-only
-          // day-over-day deltas we don't yet have.
-          row.gatedReason = "insufficient_history";
-          rows.push(row);
-          continue;
-        }
+      let signal: number | null = null;
+      if (resolved) {
+        signal = resolved.signal;
+        if (resolved.methodTag) row.method = resolved.methodTag;
+      } else if (window !== "ltd" && (platform === "xbox" || platform === "ps5")) {
+        row.gatedReason = "insufficient_history";
+        rows.push(row);
+        continue;
       }
 
       row.signalValue = signal;

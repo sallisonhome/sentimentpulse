@@ -180,6 +180,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const cascadeOwners = "COALESCE(" + cascade.map((_, i) => `w${i}.owners_mid`).join(", ") + ")";
       const cascadeGated = "COALESCE(" + cascade.map((_, i) => `w${i}.gated_reason`).join(", ") + ")";
       const cascadeWindowUsed = "CASE " + cascade.map((w, i) => `WHEN w${i}.units_mid IS NOT NULL THEN '${w}'`).join(" ") + " ELSE NULL END";
+      // Method tag of the winning cascade level. The estimator writes
+      // 'backfill-bootstrap' / 'backfill-steam-pace' / 'backfill-peer-ratio'
+      // when a backfill source produced the value, otherwise it's the
+      // multiplier's own method (e.g. 'v0-defaults'). Exposed so the UI can
+      // badge rows that are running on inference vs. native/forward-delta.
+      const cascadeMethod = "CASE " + cascade.map((_, i) => `WHEN w${i}.units_mid IS NOT NULL THEN w${i}.method`).join(" ") + " ELSE NULL END";
 
       // Recent-hot needs the STRICT 7d estimate, which is w0 only when the
       // requested window is d7. For wider requests we do a small correlated
@@ -245,6 +251,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           ${cascadeOwners}                          AS ownersMid,
           ${cascadeUnits}                           AS unitsMid,
           ${cascadeWindowUsed}                      AS windowUsed,
+          ${cascadeMethod}                          AS estimateMethod,
           -- ASP (Average Selling Price) in USD cents = MSRP × platform ASP factor.
           -- Kept as an integer-cents value so the client formats it the same as MSRP.
           CAST(psm.msrp_usd_cents * ? AS INTEGER)   AS aspUsdCents,
