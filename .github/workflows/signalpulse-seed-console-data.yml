@@ -204,6 +204,27 @@ jobs:
           else
             echo "Skipping collectors (run_collectors=false)"
           fi
+
+          # ── 3. IGDB enrichment (titles + cover art) ─────────────
+          # Discovery already writes the storefront-fetched name into
+          # console_title_igdb, but IGDB enrichment adds cover_url,
+          # artwork_url, slug, release date, genres, dev+pub, etc. —
+          # everything the leaderboard needs to render a proper tile.
+          # Non-fatal: if IGDB creds are missing or the API is having a
+          # bad day, the leaderboard still shows the raw storefront name
+          # (no cover) until the next daily run.
+          echo ""
+          echo "═════════════════════════════════════════════════════════"
+          echo "  IGDB ENRICHMENT: enrich-console-igdb.ts"
+          echo "═════════════════════════════════════════════════════════"
+          t0=$(date +%s)
+          # 500 titles ÷ 4 req/s = ~125s worst-case; cap at 5 min.
+          timeout 300 "$TSX" scripts/enrich-console-igdb.ts || {
+            rc=$?
+            echo "WARN: IGDB enrichment exited rc=$rc — continuing to audit"
+          }
+          t1=$(date +%s)
+          echo "IGDB enrichment elapsed=$((t1 - t0))s"
           REMOTE
 
       - name: Post-run audit

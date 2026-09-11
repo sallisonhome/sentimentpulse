@@ -361,7 +361,14 @@ export function ConsoleLeaderboardsPlatform() {
       )}
 
       {!isLoading && !isError && data && (
-        <Card className="overflow-hidden">
+        <>
+          <Card className="p-3 bg-muted/40 border-dashed">
+            <p className="text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">Ranking signal:</span> daily rating-count delta from the storefront review API — a public proxy for sales velocity.
+              Estimated units are pending the Phase 4 demand-model rollout; rows show <span className="font-mono">pending</span> until that ships.
+            </p>
+          </Card>
+          <Card className="overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
               <tr className="text-xs text-muted-foreground">
@@ -369,7 +376,7 @@ export function ConsoleLeaderboardsPlatform() {
                 <th className="text-left px-3 py-2 font-medium">Title</th>
                 <th className="text-right px-3 py-2 font-medium">Rating count</th>
                 <th className="text-right px-3 py-2 font-medium">Avg rating</th>
-                <th className="text-right px-3 py-2 font-medium">Est. owners ({window})</th>
+                <th className="text-right px-3 py-2 font-medium" title="Estimated units sold in this window — pending Phase 4 estimator rollout">Est. units ({window})</th>
                 <th className="text-right px-3 py-2 font-medium">MSRP</th>
               </tr>
             </thead>
@@ -391,8 +398,8 @@ export function ConsoleLeaderboardsPlatform() {
                   <td className="px-3 py-2 text-right font-mono">{formatNumberCompact(t.ratingCount)}</td>
                   <td className="px-3 py-2 text-right font-mono">{t.avgRating != null ? t.avgRating.toFixed(2) : "—"}</td>
                   <td className="px-3 py-2 text-right font-mono">
-                    {t.ownersMid != null ? formatNumberCompact(t.ownersMid) : (
-                      <span className="text-muted-foreground" title={t.gatedReason || "insufficient history"}>—</span>
+                    {t.unitsMid != null ? formatNumberCompact(t.unitsMid) : (
+                      <span className="text-muted-foreground" title={t.gatedReason || "Phase 4 estimator not yet deployed"}>pending</span>
                     )}
                   </td>
                   <td className="px-3 py-2 text-right font-mono">{formatUsd(t.msrpUsdCents)}</td>
@@ -401,6 +408,7 @@ export function ConsoleLeaderboardsPlatform() {
             </tbody>
           </table>
         </Card>
+        </>
       )}
     </div>
   );

@@ -545,6 +545,48 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
   return { inserted, updated, preservedOverride };
 }
 
+// ─── Console title name bootstrap ────────────────────────────────────────────
+
+/**
+ * Insert storefront-known title names into console_title_igdb so the leaderboard
+ * displays a readable title from day one — before any IGDB match lands.
+ *
+ * On conflict, only writes name when igdb_id IS NULL. A row that already has
+ * a real IGDB match keeps whatever name IGDB gave it — never regresses to the
+ * storefront's crude name (e.g. Xbox's product-catalog titles are often ugly).
+ */
+export function bootstrapConsoleTitleNames(rows: Array<{ titleId: number; name: string }>): { inserted: number; updatedName: number; kept: number } {
+  if (rows.length === 0) return { inserted: 0, updatedName: 0, kept: 0 };
+  const nowIso = new Date().toISOString();
+  // Insert-if-missing; else update name only when we haven't matched IGDB yet.
+  const stmt = rawSqlite.prepare(`
+    INSERT INTO console_title_igdb (title_id, name, refreshed_at, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(title_id) DO UPDATE SET
+      name = CASE WHEN console_title_igdb.igdb_id IS NULL
+                  THEN excluded.name
+                  ELSE console_title_igdb.name END
+  `);
+  const existsStmt = rawSqlite.prepare(`SELECT igdb_id, name FROM console_title_igdb WHERE title_id = ?`);
+
+  let inserted = 0, updatedName = 0, kept = 0;
+  const runTx = rawSqlite.transaction((batch: typeof rows) => {
+    for (const r of batch) {
+      const existing = existsStmt.get(r.titleId) as { igdb_id: number | null; name: string | null } | undefined;
+      stmt.run(r.titleId, r.name, nowIso, nowIso);
+      if (!existing) inserted++;
+      else if (existing.igdb_id != null) kept++;
+      else updatedName++;
+    }
+  });
+  // Deduplicate by titleId first — a title in multiple platforms would
+  // otherwise be written N times inside one transaction.
+  const seen = new Set<number>();
+  const deduped = rows.filter(r => (seen.has(r.titleId) ? false : (seen.add(r.titleId), true)));
+  runTx(deduped);
+  return { inserted, updatedName, kept };
+}
+
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export interface DiscoveryResult {
@@ -626,6 +668,18 @@ export async function runFullDiscovery(opts: {
   // for the same productId wins (writer preserves is_manual_override=true).
   const psAutoW = upsertSkuMap(ps5DiscoveredRows);
   const psManualW = upsertSkuMap(psManualRows);
+
+  // Bootstrap console_title_igdb with the storefront-fetched name so the
+  // leaderboard has SOMETHING readable even before IGDB enrichment runs.
+  // Only writes when the row is new or when igdb_id IS NULL (so a real IGDB
+  // refresh that filled slug/cover_url is never clobbered by a raw storefront
+  // name later).
+  const nameRows: Array<{ titleId: number; name: string }> = [];
+  for (const c of steamCls) if (c.name) nameRows.push({ titleId: opts.titleIdFor("steam", c.appId, c.name), name: c.name });
+  for (const c of xboxCls)  if (c.name) nameRows.push({ titleId: opts.titleIdFor("xbox",  c.bigId,  c.name), name: c.name });
+  for (const c of ps5DiscoveredCls) if (c.name) nameRows.push({ titleId: opts.titleIdFor("ps5", c.productId, c.name), name: c.name });
+  for (const c of psManualCls)      if (c.name) nameRows.push({ titleId: opts.titleIdFor("ps5", c.productId, c.name), name: c.name });
+  bootstrapConsoleTitleNames(nameRows);
 
   // Aggregate PS stats across auto + manual (dedupe by productId for accurate
   // discovered/paid counts).
