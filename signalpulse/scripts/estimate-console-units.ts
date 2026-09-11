@@ -93,7 +93,12 @@ async function main() {
           AND effective_from <= ?
         ORDER BY effective_from DESC
         LIMIT 1`
-    ).get(platform, asOfDate) as MultiplierRow | undefined;
+    // Compare against nowIso so hour-granular effective_from timestamps
+    // (e.g. '2026-09-11T12:00Z') sort correctly when a same-day recalibration
+    // is pushed. Comparing against a date-only asOfDate would incorrectly reject
+    // any timestamp with a T component because '2026-09-11T12:00Z' > '2026-09-11'
+    // lexically.
+    ).get(platform, nowIso) as MultiplierRow | undefined;
     if (row) {
       multipliers.set(platform, row);
       console.log(`[estimate-console-units] ${platform}: multiplier=${row.multiplier} ci=±${(row.ci_pct * 100).toFixed(0)}% digital=${row.digital_unit_share} (${row.confidence}, ${row.method})`);
