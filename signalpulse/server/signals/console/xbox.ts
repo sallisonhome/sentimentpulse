@@ -52,6 +52,19 @@ interface DisplayCatalogDisplaySkuAvailability {
 interface DisplayCatalogMarketProperties {
   UsageData?: DisplayCatalogUsageData[];
   UsageDataAggregates?: DisplayCatalogUsageData[];  // alt field name seen in the wild
+  OriginalReleaseDate?: string;              // ISO 8601 timestamp of the base-product release.
+}
+
+interface DisplayCatalogImage {
+  ImagePurpose?: string;                     // "Poster" | "BoxArt" | "SuperHeroArt" | "Screenshot" | ...
+  Uri?: string;                              // Often starts with //store-images... — always relative-protocol.
+  Height?: number;
+  Width?: number;
+}
+
+interface DisplayCatalogLocalizedProperties {
+  ProductTitle?: string;
+  Images?: DisplayCatalogImage[];
 }
 
 interface DisplayCatalogProduct {
@@ -59,7 +72,7 @@ interface DisplayCatalogProduct {
   ProductTitle?: string;
   MarketProperties?: DisplayCatalogMarketProperties[];
   DisplaySkuAvailabilities?: DisplayCatalogDisplaySkuAvailability[];
-  LocalizedProperties?: Array<{ ProductTitle?: string }>;
+  LocalizedProperties?: DisplayCatalogLocalizedProperties[];
 }
 
 // Response has either { Product: {...} } (observed) or { Products: [ {...} ] } (spec).
@@ -91,6 +104,43 @@ export interface XboxCollectorOutput {
     currency: string | null;
   };
   productTitle: string | null;
+  // Store-truthed extras captured in the same round-trip and threaded through
+  // classifyXboxBigIds → bootstrapConsoleTitleNames → console_title_igdb.
+  // Never authoritative over IGDB, but the leaderboard route falls back to them
+  // when IGDB matched the wrong game (match_confidence='low') or is missing.
+  storeHeaderImageUrl: string | null;        // Absolute https:// URL when available.
+  storeReleaseDateIso: string | null;        // YYYY-MM-DD, null when MS omits or ships an obviously bad date.
+}
+
+/**
+ * Pick the best image to use as a store header. displaycatalog exposes multiple
+ * ImagePurposes; "Poster" is closest in aspect ratio to Steam's header, then
+ * "SuperHeroArt" (wide banner), then "BoxArt" as last resort. `Uri` is usually
+ * protocol-relative (//store-images...) so we prepend https:.
+ */
+function pickXboxHeaderImage(images: DisplayCatalogImage[] | undefined): string | null {
+  if (!Array.isArray(images) || images.length === 0) return null;
+  const priorities = ["Poster", "SuperHeroArt", "BoxArt", "TitledHeroArt", "FeaturePromotionalSquareArt"];
+  for (const purpose of priorities) {
+    const hit = images.find(im => im.ImagePurpose === purpose && typeof im.Uri === "string" && im.Uri.length > 0);
+    if (hit?.Uri) return hit.Uri.startsWith("//") ? `https:${hit.Uri}` : hit.Uri;
+  }
+  const any = images.find(im => typeof im.Uri === "string" && im.Uri.length > 0);
+  return any?.Uri ? (any.Uri.startsWith("//") ? `https:${any.Uri}` : any.Uri) : null;
+}
+
+/**
+ * Extract a real ISO release date from OriginalReleaseDate. displaycatalog
+ * usually returns "2024-05-14T00:00:00.0000000Z" but sometimes ships obviously
+ * bogus far-future or year-0001 sentinels for unreleased games; we drop those.
+ */
+function parseXboxReleaseDate(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (!Number.isFinite(d.getTime())) return null;
+  const iso = d.toISOString().slice(0, 10);
+  if (iso < "1990-01-01" || iso > "2100-01-01") return null;
+  return iso;
 }
 
 function unwrapProduct(raw: DisplayCatalogResponse): DisplayCatalogProduct | null {
@@ -117,6 +167,9 @@ export async function fetchXboxRatingSignal(input: XboxCollectorInput): Promise<
     product.LocalizedProperties?.[0]?.ProductTitle ??
     product.ProductTitle ??
     null;
+
+  const storeHeaderImageUrl = pickXboxHeaderImage(product.LocalizedProperties?.[0]?.Images);
+  const storeReleaseDateIso = parseXboxReleaseDate(product.MarketProperties?.[0]?.OriginalReleaseDate);
 
   const usage: DisplayCatalogUsageData[] =
     (product.MarketProperties?.[0]?.UsageData ??
@@ -170,6 +223,8 @@ export async function fetchXboxRatingSignal(input: XboxCollectorInput): Promise<
     snapshots,
     pricing: { allSkusZero, baseMsrpUsdCents, currency },
     productTitle,
+    storeHeaderImageUrl,
+    storeReleaseDateIso,
   };
 }
 

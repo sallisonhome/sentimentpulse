@@ -896,6 +896,13 @@ function runMigrations() {
   // blindly displaying its name. Currently written by refreshIgdbForTitle when
   // the release-date sanity check fires; NULL means "never evaluated".
   migrateAddColumnIfMissing("console_title_igdb", "match_confidence", "match_confidence TEXT");
+  // v3.41 (2026-09-11): Store-truthed release date so isRecentHot (release <=30d
+  // AND has real d7 estimate) can fire on rows where IGDB matched the wrong
+  // game and therefore reported a wildly wrong release_date. Same pattern as
+  // store_name / store_header_image_url: written from the storefront by
+  // bootstrapConsoleTitleNames() and never touched by the IGDB refresh path.
+  // The leaderboard route COALESCEs IGDB release_date with this fallback.
+  migrateAddColumnIfMissing("console_title_igdb", "store_release_date", "store_release_date TEXT");
 }
 
 initializeDatabase();

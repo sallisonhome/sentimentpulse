@@ -221,7 +221,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
           END                                       AS coverUrl,
-          igdb.release_date                         AS releaseDate,
+          -- Effective release date the isRecentHot flag and client badge read.
+          -- Prefer IGDB when present, else fall back to the store-truthed
+          -- store_release_date. Covers the case where IGDB matched a wildly
+          -- wrong game (e.g. Fishing Fishing 2015 in place of How to Fish 2026)
+          -- so its release_date would otherwise sink recent launches out of
+          -- the Recent hot filter.
+          COALESCE(igdb.release_date, igdb.store_release_date) AS releaseDate,
           -- nameSource lets the client badge each row.
           CASE
             WHEN igdb.match_confidence = 'low' THEN 'store'
@@ -243,8 +249,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           (${cascadeUnits} * psm.msrp_usd_cents * ? / 100.0) AS revenueMidUsd,
           ${cascadeGated}                           AS gatedReason,
           -- Recent-hot flag = released in the last 30d AND has a real 7d estimate.
-          CASE WHEN igdb.release_date IS NOT NULL
-                AND igdb.release_date >= ?
+          -- Uses COALESCE(igdb.release_date, igdb.store_release_date) so a bad
+          -- IGDB match (wrong game -> wrong old release date) doesn't hide a
+          -- brand-new title from the Recent hot badge.
+          CASE WHEN COALESCE(igdb.release_date, igdb.store_release_date) IS NOT NULL
+                AND COALESCE(igdb.release_date, igdb.store_release_date) >= ?
                 AND ${recentHot7dTest}
                THEN 1 ELSE 0 END                    AS isRecentHot
         FROM platform_sku_map psm
@@ -268,7 +277,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
        -- the 7d view.
        ORDER BY (${sortExpr} IS NULL) ASC,
                 ${sortExpr} ${dirSql},
-                (CASE WHEN igdb.release_date >= ? THEN 1 ELSE 0 END) DESC,
+                (CASE WHEN COALESCE(igdb.release_date, igdb.store_release_date) >= ? THEN 1 ELSE 0 END) DESC,
                 COALESCE(srs.rating_count, 0) DESC
        LIMIT 100
       `).all(

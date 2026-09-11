@@ -39,8 +39,25 @@ interface SteamAppDetailsResponse {
       price_overview?: { initial: number; final: number; currency: string };
       type: string;                          // "game" | "dlc" | "demo" | "advertising" | ...
       release_date?: { coming_soon: boolean; date: string };
+      header_image?: string;                 // 460×215 store header, included in the `basic` filter set.
     };
   };
+}
+
+/**
+ * Parse Steam's storefront release_date.date string into an ISO YYYY-MM-DD.
+ * Steam returns strings like "22 Sep, 2026", "Sep 22, 2026", "Q4 2026", or
+ * "Coming soon". We only accept a full day/month/year form so an unparseable
+ * value never lands in the store_release_date column pretending to be real.
+ */
+export function parseSteamReleaseDate(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s || /coming\s*soon|to be announced|tba|q[1-4]|^\d{4}$/i.test(s)) return null;
+  // Try native Date parser first — handles both "22 Sep, 2026" and "Sep 22, 2026".
+  const d = new Date(s);
+  if (!Number.isFinite(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
 }
 
 /**
@@ -105,6 +122,12 @@ export interface SteamClassification {
   msrpUsdCents: number | null;
   name: string | null;
   type: string | null;
+  // Store-truthed fields captured alongside classification. Fed into
+  // bootstrapConsoleTitleNames so the console_title_igdb row keeps a
+  // storefront-truthed fallback for header art and release date, even when
+  // IGDB later matches the wrong game.
+  headerImageUrl: string | null;             // 460×215 header from appdetails.header_image.
+  releaseDateIso: string | null;             // Parsed ISO date, null when coming_soon / TBA.
 }
 
 export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassification[]> {
@@ -117,24 +140,30 @@ export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassi
       const resp = await fetchJson<SteamAppDetailsResponse>(url, { timeoutMs: 15000 });
       const entry = resp[id];
       if (!entry || !entry.success || !entry.data) {
-        out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null });
+        out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null, headerImageUrl: null, releaseDateIso: null });
         continue;
       }
       const d = entry.data;
+      const headerImageUrl = d.header_image ?? null;
+      // Coming_soon rows still get a store release_date captured when the string
+      // is a real day/month/year (some pre-release games publish an exact date).
+      const releaseDateIso = d.release_date?.coming_soon
+        ? null
+        : parseSteamReleaseDate(d.release_date?.date);
       if (d.type !== "game") {
         // Non-game (DLC, demo, video, application) — do not classify as paid.
-        out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: d.name, type: d.type });
+        out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: d.name, type: d.type, headerImageUrl, releaseDateIso });
         continue;
       }
       if (d.is_free === true) {
-        out.push({ appId: id, businessModel: "free_to_play", msrpUsdCents: 0, name: d.name, type: d.type });
+        out.push({ appId: id, businessModel: "free_to_play", msrpUsdCents: 0, name: d.name, type: d.type, headerImageUrl, releaseDateIso });
         continue;
       }
       // Paid game.
       const cents = d.price_overview?.initial ?? null;   // Steam returns integer cents already
-      out.push({ appId: id, businessModel: "paid", msrpUsdCents: cents, name: d.name, type: d.type });
+      out.push({ appId: id, businessModel: "paid", msrpUsdCents: cents, name: d.name, type: d.type, headerImageUrl, releaseDateIso });
     } catch (e) {
-      out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null });
+      out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null, headerImageUrl: null, releaseDateIso: null });
       log(`steam classify: appid=${id} failed: ${e instanceof Error ? e.message : e}`);
     }
     await new Promise(r => setTimeout(r, 350));
@@ -298,6 +327,8 @@ export interface XboxClassification {
   businessModel: BusinessModel;
   msrpUsdCents: number | null;
   name: string | null;
+  headerImageUrl: string | null;             // Poster / SuperHeroArt from displaycatalog LocalizedProperties.
+  releaseDateIso: string | null;             // Parsed OriginalReleaseDate, YYYY-MM-DD.
 }
 
 /**
@@ -315,9 +346,16 @@ export async function classifyXboxBigIds(bigIds: string[]): Promise<XboxClassifi
         : r.pricing.baseMsrpUsdCents == null
         ? "unknown"
         : "paid";
-      out.push({ bigId, businessModel: bm, msrpUsdCents: r.pricing.baseMsrpUsdCents, name: r.productTitle });
+      out.push({
+        bigId,
+        businessModel: bm,
+        msrpUsdCents: r.pricing.baseMsrpUsdCents,
+        name: r.productTitle,
+        headerImageUrl: r.storeHeaderImageUrl,
+        releaseDateIso: r.storeReleaseDateIso,
+      });
     } catch (e) {
-      out.push({ bigId, businessModel: "unknown", msrpUsdCents: null, name: null });
+      out.push({ bigId, businessModel: "unknown", msrpUsdCents: null, name: null, headerImageUrl: null, releaseDateIso: null });
       log(`xbox classify: bigId=${bigId} failed: ${e instanceof Error ? e.message : e}`);
     }
     await new Promise(r => setTimeout(r, 250));
@@ -354,6 +392,11 @@ interface PsGridProduct {
   price?: { basePrice?: string; discountedPrice?: string; isFree?: boolean };
   webBasePrice?: string;
   storeDisplayClassification?: string;
+  // Fields observed on the categoryGridRetrieve persisted-query response that
+  // we opportunistically capture for the store-truthed fallback. Any absence
+  // is silently tolerated — the writer just skips the fallback for that row.
+  media?: Array<{ url?: string; role?: string; type?: string }>;
+  releaseDate?: string;     // ISO 8601 timestamp (e.g. "2026-09-08T00:00:00Z").
 }
 interface PsGridResponse {
   data?: {
@@ -374,6 +417,8 @@ export interface Ps5TopProduct {
   storeDisplayClassification: string | null;
   msrpUsdCents: number | null;                   // Parsed from PSN grid price.basePrice under en-US locale.
                                                  // NULL when the row is F2P, subscription, or the string couldn't be parsed.
+  headerImageUrl: string | null;                 // Best available cover from the grid `media` array.
+  releaseDateIso: string | null;                 // Parsed ISO date, YYYY-MM-DD.
 }
 
 type PsGridSort = "sales30" | "sales7";
@@ -482,6 +527,8 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
         // “Available with subscription” — parses to null and the writer leaves it null.
         const basePrice = (p.price && p.price.basePrice) ?? null;
         const msrpUsdCents = parsePs5UsdBasePriceCents(basePrice);
+        const headerImageUrl = pickPsGridHeaderImage(p.media);
+        const releaseDateIso = parsePsGridReleaseDate(p.releaseDate);
         out.push({
           productId,
           npTitleId,
@@ -489,6 +536,8 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
           platforms,
           storeDisplayClassification: p.storeDisplayClassification ?? null,
           msrpUsdCents,
+          headerImageUrl,
+          releaseDateIso,
         });
         if (out.length >= topN) break;
       }
@@ -506,12 +555,41 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
   return out;
 }
 
+/**
+ * Pick the best media asset from a categoryGridRetrieve product to use as a
+ * store header. Sony tags entries with role='MASTER' (main hero image) or
+ * type='IMAGE'; a MASTER image beats any other; otherwise take the first
+ * IMAGE url. Returns null when the row lacks a usable url.
+ */
+export function pickPsGridHeaderImage(media: Array<{ url?: string; role?: string; type?: string }> | undefined): string | null {
+  if (!Array.isArray(media) || media.length === 0) return null;
+  const master = media.find(m => m.role === "MASTER" && typeof m.url === "string" && m.url.length > 0);
+  if (master?.url) return master.url;
+  const anyImage = media.find(m => (m.type === "IMAGE" || m.type === undefined) && typeof m.url === "string" && m.url.length > 0);
+  return anyImage?.url ?? null;
+}
+
+/**
+ * Parse a PSN grid releaseDate ISO 8601 timestamp into YYYY-MM-DD. Silently
+ * rejects obviously bad dates so a sentinel never lands in the store column.
+ */
+export function parsePsGridReleaseDate(raw: string | undefined): string | null {
+  if (!raw) return null;
+  const d = new Date(raw);
+  if (!Number.isFinite(d.getTime())) return null;
+  const iso = d.toISOString().slice(0, 10);
+  if (iso < "1990-01-01" || iso > "2100-01-01") return null;
+  return iso;
+}
+
 export interface PsClassification {
   productId: string;
   businessModel: BusinessModel;
   msrpUsdCents: number | null;
   name: string | null;
   storeDisplayClassification: string | null;
+  headerImageUrl: string | null;
+  releaseDateIso: string | null;
 }
 
 /**
@@ -532,6 +610,8 @@ export async function classifyPsManualSeed(seeds: Array<{
     msrpUsdCents: s.msrpUsdCents,
     name: s.name,
     storeDisplayClassification: null,
+    headerImageUrl: null,
+    releaseDateIso: null,
   }));
 }
 
@@ -562,6 +642,8 @@ export async function classifyPs5TopSelling(rows: Ps5TopProduct[]): Promise<PsCl
       msrpUsdCents: r.msrpUsdCents,
       name: r.name,
       storeDisplayClassification: r.storeDisplayClassification,
+      headerImageUrl: r.headerImageUrl,
+      releaseDateIso: r.releaseDateIso,
     };
   });
 }
@@ -672,24 +754,27 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
  *   returned "Solitaire Game Halloween 2").
  */
 export function bootstrapConsoleTitleNames(
-  rows: Array<{ titleId: number; name: string; headerImageUrl?: string | null }>,
+  rows: Array<{ titleId: number; name: string; headerImageUrl?: string | null; releaseDateIso?: string | null }>,
 ): { inserted: number; updatedName: number; kept: number } {
   if (rows.length === 0) return { inserted: 0, updatedName: 0, kept: 0 };
   const nowIso = new Date().toISOString();
   // Insert-if-missing; else update `name` only when IGDB hasn't taken over,
-  // but ALWAYS refresh store_name / store_header_image_url so the fallback
-  // stays in sync with what the storefront currently says.
+  // but ALWAYS refresh store_name / store_header_image_url / store_release_date
+  // so the fallback stays in sync with what the storefront currently says.
   const stmt = rawSqlite.prepare(`
-    INSERT INTO console_title_igdb (title_id, name, store_name, store_header_image_url, refreshed_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO console_title_igdb (title_id, name, store_name, store_header_image_url, store_release_date, refreshed_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(title_id) DO UPDATE SET
       name = CASE WHEN console_title_igdb.igdb_id IS NULL
                   THEN excluded.name
                   ELSE console_title_igdb.name END,
       store_name = excluded.store_name,
-      -- Only overwrite the store header when we actually have one this call;
-      -- otherwise keep whatever was previously captured.
-      store_header_image_url = COALESCE(excluded.store_header_image_url, console_title_igdb.store_header_image_url)
+      -- Only overwrite each store column when we actually have a value this
+      -- call; otherwise keep whatever was previously captured. That way a
+      -- Steam-then-Xbox refresh sequence doesn't wipe out the Xbox art with a
+      -- later Steam call that couldn't fetch headers.
+      store_header_image_url = COALESCE(excluded.store_header_image_url, console_title_igdb.store_header_image_url),
+      store_release_date = COALESCE(excluded.store_release_date, console_title_igdb.store_release_date)
   `);
   const existsStmt = rawSqlite.prepare(`SELECT igdb_id, name FROM console_title_igdb WHERE title_id = ?`);
 
@@ -697,7 +782,7 @@ export function bootstrapConsoleTitleNames(
   const runTx = rawSqlite.transaction((batch: typeof rows) => {
     for (const r of batch) {
       const existing = existsStmt.get(r.titleId) as { igdb_id: number | null; name: string | null } | undefined;
-      stmt.run(r.titleId, r.name, r.name, r.headerImageUrl ?? null, nowIso, nowIso);
+      stmt.run(r.titleId, r.name, r.name, r.headerImageUrl ?? null, r.releaseDateIso ?? null, nowIso, nowIso);
       if (!existing) inserted++;
       else if (existing.igdb_id != null) kept++;
       else updatedName++;
@@ -793,16 +878,36 @@ export async function runFullDiscovery(opts: {
   const psAutoW = upsertSkuMap(ps5DiscoveredRows);
   const psManualW = upsertSkuMap(psManualRows);
 
-  // Bootstrap console_title_igdb with the storefront-fetched name so the
-  // leaderboard has SOMETHING readable even before IGDB enrichment runs.
-  // Only writes when the row is new or when igdb_id IS NULL (so a real IGDB
-  // refresh that filled slug/cover_url is never clobbered by a raw storefront
-  // name later).
-  const nameRows: Array<{ titleId: number; name: string }> = [];
-  for (const c of steamCls) if (c.name) nameRows.push({ titleId: opts.titleIdFor("steam", c.appId, c.name), name: c.name });
-  for (const c of xboxCls)  if (c.name) nameRows.push({ titleId: opts.titleIdFor("xbox",  c.bigId,  c.name), name: c.name });
-  for (const c of ps5DiscoveredCls) if (c.name) nameRows.push({ titleId: opts.titleIdFor("ps5", c.productId, c.name), name: c.name });
-  for (const c of psManualCls)      if (c.name) nameRows.push({ titleId: opts.titleIdFor("ps5", c.productId, c.name), name: c.name });
+  // Bootstrap console_title_igdb with the storefront-fetched name, header art,
+  // and release date so the leaderboard has SOMETHING readable and a durable
+  // store-truthed fallback even before IGDB enrichment runs. Only the display
+  // `name` column is gated by igdb_id being null; store_* columns always
+  // refresh so the fallback stays current with the storefront.
+  const nameRows: Array<{ titleId: number; name: string; headerImageUrl?: string | null; releaseDateIso?: string | null }> = [];
+  for (const c of steamCls) if (c.name) nameRows.push({
+    titleId: opts.titleIdFor("steam", c.appId, c.name),
+    name: c.name,
+    headerImageUrl: c.headerImageUrl,
+    releaseDateIso: c.releaseDateIso,
+  });
+  for (const c of xboxCls) if (c.name) nameRows.push({
+    titleId: opts.titleIdFor("xbox", c.bigId, c.name),
+    name: c.name,
+    headerImageUrl: c.headerImageUrl,
+    releaseDateIso: c.releaseDateIso,
+  });
+  for (const c of ps5DiscoveredCls) if (c.name) nameRows.push({
+    titleId: opts.titleIdFor("ps5", c.productId, c.name),
+    name: c.name,
+    headerImageUrl: c.headerImageUrl,
+    releaseDateIso: c.releaseDateIso,
+  });
+  for (const c of psManualCls) if (c.name) nameRows.push({
+    titleId: opts.titleIdFor("ps5", c.productId, c.name),
+    name: c.name,
+    headerImageUrl: c.headerImageUrl,
+    releaseDateIso: c.releaseDateIso,
+  });
   bootstrapConsoleTitleNames(nameRows);
 
   // Aggregate PS stats across auto + manual (dedupe by productId for accurate
