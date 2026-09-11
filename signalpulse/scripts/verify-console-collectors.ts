@@ -63,7 +63,34 @@ function seedPlatformSkuMap() {
   }
 }
 
+// PSN productIds that we KNOW are synthetic/invalid — Sony returns
+// "Product not available" (errorCode 3166081) for these. They were injected
+// by an earlier seed run before we discovered the real productIds. Delete
+// them so the collector iteration doesn't waste vendor calls or generate
+// noisy failed-run signal.
+const STALE_PS_SKUS = [
+  "UP4133-PPSA07784_00-SPACEMARINE20000",
+  "UP1003-PPSA02439_00-STARWARSJEDISUR2",
+  "UP0002-PPSA05127_00-ELDENRINGGAME000",
+];
+
+function cleanupStalePsSkus(): number {
+  const stmt = rawSqlite.prepare(
+    `DELETE FROM platform_sku_map WHERE platform = 'ps5' AND external_sku = ?`
+  );
+  let n = 0;
+  for (const sku of STALE_PS_SKUS) {
+    const res = stmt.run(sku);
+    n += res.changes;
+  }
+  return n;
+}
+
 async function main() {
+  console.log("─── cleanup stale/synthetic PS productIds ───");
+  const cleaned = cleanupStalePsSkus();
+  console.log(`  removed ${cleaned} stale ps5 rows`);
+
   console.log("─── seeding platform_sku_map ───");
   seedPlatformSkuMap();
   const seeded = rawSqlite.prepare(`SELECT platform, external_sku, business_model FROM platform_sku_map ORDER BY platform, external_sku`).all();
