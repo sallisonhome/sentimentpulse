@@ -1,0 +1,107 @@
+name: SignalPulse — PS5 snapshot misalignment purge (one-shot cleanup)
+
+# One-shot cleanup for the collector positional-index misalignment bug
+# discovered on 2026-09-10.
+#
+# What happened: runner.ts consumed collectPsSignals().ok by positional
+# index, assuming ok[i] aligned with eligible[i]. But collectPsSignals
+# only pushes ok entries on success — failed and (post-fix) skipped inputs
+# are excluded. So the moment any input failed or was soft-skipped, every
+# subsequent snapshot was written to the WRONG title_id.
+#
+# Concrete evidence: title_id=10307 (Star Wars: Zero Company's productId
+# mapping) has a snapshot with rating_count=154960, which is exactly
+# Helldivers 2's live rating count. Rows 10244, 10247, 10075 all show the
+# Helldivers rating shape too, with blank external_sku after platform_sku_map
+# rewrites — orphaned from prior misaligned ingests.
+#
+# Every ps5 row in store_rating_signal_daily was written under this buggy
+# code path and cannot be trusted. Xbox and Steam were structurally
+# vulnerable but did not have skip semantics wired, so their snapshots
+# are not being purged.
+#
+# This workflow:
+#   1. Prints the pre-delete row counts by capture_date.
+#   2. Deletes every ps5 row from store_rating_signal_daily.
+#   3. Prints the post-delete counts (should be 0).
+#
+# Concurrency: shares deploy-droplet with deploy + seed workflows so it
+# can't race a restart.
+#
+# After running this, the fixed collector (commit 9cd8ef5) will re-populate
+# ps5 snapshots correctly on the next seed workflow run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DELETE to confirm'
+        required: true
+        default: ''
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  purge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Guard
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "DELETE" ]; then
+            echo "ERR: input 'confirm' must be exactly 'DELETE' (got: $CONFIRM)"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Purge PS5 snapshots
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          DB="$WD/data.db"
+          [ -f "$DB" ] || { echo "ERR: DB missing"; exit 1; }
+
+          echo "── Pre-delete PS5 snapshot counts by capture_date ──"
+          sqlite3 -header -column "$DB" "
+            SELECT capture_date,
+                   COUNT(*) AS snaps,
+                   COUNT(CASE WHEN rating_count IS NOT NULL THEN 1 END) AS with_ratings
+              FROM store_rating_signal_daily
+             WHERE platform = 'ps5'
+             GROUP BY capture_date
+             ORDER BY capture_date DESC;"
+
+          echo ""
+          echo "── Deleting every ps5 row (scoped: platform='ps5' only) ──"
+          sqlite3 "$DB" "
+            DELETE FROM store_rating_signal_daily
+             WHERE platform = 'ps5';"
+          echo "deleted rows: $(sqlite3 "$DB" 'SELECT changes();')"
+
+          echo ""
+          echo "── Post-delete PS5 snapshot counts (expect zero) ──"
+          sqlite3 -header -column "$DB" "
+            SELECT COUNT(*) AS remaining_ps5_snaps
+              FROM store_rating_signal_daily
+             WHERE platform = 'ps5';"
+
+          echo ""
+          echo "── Sibling platforms untouched (sanity) ──"
+          sqlite3 -header -column "$DB" "
+            SELECT platform, COUNT(*) AS snaps
+              FROM store_rating_signal_daily
+             GROUP BY platform
+             ORDER BY platform;"
+          REMOTE
