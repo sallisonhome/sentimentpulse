@@ -4,8 +4,16 @@
  * Endpoints:
  *   GET /api/console/leaderboards/:platform
  *     Query: window=d7|d30|d90|m12|ltd  (default d30)
- *     Returns ranked list of titles for that platform × window with LTD rating snapshot
- *     as the primary sortable signal. Only rows with business_model = 'paid' are returned.
+ *     Returns top-100 titles for that platform ranked by estimated units sold
+ *     in the requested window (window_estimates_daily.units_mid), NOT by rating
+ *     count. Ratings feed the estimator; they are not the sort key.
+ *
+ *     Titles with no estimate for the window (NULL units_mid) sink to the
+ *     bottom rather than being excluded, so the client still gets 100 rows
+ *     even before the estimator has populated every window. rating_count is
+ *     only a stable-sort tie-breaker.
+ *
+ *     Only rows with business_model = 'paid' AND sku_role = 'base' are returned.
  *
  *   GET /api/console/titles/:titleId
  *     Returns PDP header data: title metadata, current LTD snapshot per platform,
@@ -92,7 +100,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
        WHERE psm.platform = ?
          AND psm.business_model = 'paid'
          AND psm.sku_role = 'base'
-       ORDER BY COALESCE(srs.rating_count, 0) DESC
+       -- Sort by estimated units for the selected window. Ratings are an INPUT
+       -- to the estimator, not the sort key. Titles with no estimate for this
+       -- window (NULL units_mid) sink; rating_count is only a tie-breaker so
+       -- ordering stays stable when two titles share the same units_mid.
+       ORDER BY (w.units_mid IS NULL) ASC,
+                w.units_mid DESC,
+                COALESCE(srs.rating_count, 0) DESC
+       LIMIT 100
       `).all(platform, window, window, platform) as Array<Record<string, any>>;
 
       res.json({ platform, window, count: rows.length, titles: rows });
