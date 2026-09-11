@@ -335,6 +335,8 @@ export interface Ps5TopProduct {
   name: string | null;
   platforms: string[];
   storeDisplayClassification: string | null;
+  msrpUsdCents: number | null;                   // Parsed from PSN grid price.basePrice under en-US locale.
+                                                 // NULL when the row is F2P, subscription, or the string couldn't be parsed.
 }
 
 async function fetchPs5GridPage(offset: number, size: number): Promise<PsGridProduct[]> {
@@ -354,6 +356,11 @@ async function fetchPs5GridPage(offset: number, size: number): Promise<PsGridPro
   const res = await fetch(url, {
     headers: {
       "Accept": "application/json",
+      // en-US pins the response to the US PSN store, which returns prices as
+      // "$59.99" strings. Without this we get whatever locale the calling host's
+      // egress IP maps to (£GBP from many datacenters), which breaks parsing.
+      "Accept-Language": "en-US",
+      "Referer": "https://store.playstation.com/en-us/",
       "x-apollo-operation-name": "categoryGridRetrieve",
       "apollo-require-preflight": "true",
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
@@ -365,6 +372,26 @@ async function fetchPs5GridPage(offset: number, size: number): Promise<PsGridPro
     throw new Error(`ps graphql error: ${json.errors[0].message}`);
   }
   return json.data?.categoryGridRetrieve?.products ?? [];
+}
+
+/**
+ * Parse the USD basePrice string returned by the PSN grid under en-US locale
+ * into integer cents. Handles:
+ *   "$59.99"     → 5999
+ *   "US$14.99"   → 1499
+ *   "Free"        → 0
+ *   null/other   → null (caller decides F2P vs unknown)
+ */
+export function parsePs5UsdBasePriceCents(raw: string | null | undefined): number | null {
+  if (raw == null) return null;
+  const s = raw.trim();
+  if (/^free$/i.test(s)) return 0;
+  // Match a leading currency prefix that includes '$' (US$, $), then digits.dot.digits.
+  const m = s.match(/^(?:US)?\$\s*(\d+)(?:\.(\d{1,2}))?$/i);
+  if (!m) return null;
+  const dollars = parseInt(m[1], 10);
+  const cents = m[2] ? parseInt(m[2].padEnd(2, "0"), 10) : 0;
+  return dollars * 100 + cents;
 }
 
 export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopProduct[]> {
@@ -400,12 +427,19 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
       const platforms = Array.isArray(p.platforms) ? p.platforms : [];
       if (!platforms.includes("PS5")) continue;
       seen.add(npTitleId);
+      // Pull USD MSRP from price.basePrice (populated when the caller sent
+      // Accept-Language: en-US). F2P titles come back as "Free" and parse to 0;
+      // paid parses to positive cents. Anything else — unavailable, add-on-only,
+      // “Available with subscription” — parses to null and the writer leaves it null.
+      const basePrice = (p.price && p.price.basePrice) ?? null;
+      const msrpUsdCents = parsePs5UsdBasePriceCents(basePrice);
       out.push({
         productId,
         npTitleId,
         name: p.name ?? null,
         platforms,
         storeDisplayClassification: p.storeDisplayClassification ?? null,
+        msrpUsdCents,
       });
       if (out.length >= topN) break;
     }
@@ -446,24 +480,34 @@ export async function classifyPsManualSeed(seeds: Array<{
 }
 
 /**
- * Classify discovered PS5 top-sellers. The categoryGridRetrieve response does
- * not return per-SKU pricing under the persisted-query hash, so we mark every
- * discovered row as `paid` with `msrpUsdCents: null` (source recorded as
- * `ps_categoryGridRetrieve.sales30`). This is safe because:
+ * Classify discovered PS5 top-sellers. Under the persisted-query hash the
+ * categoryGridRetrieve response DOES return per-SKU pricing in the SkuPrice
+ * subobject when the request is pinned to en-US locale (see fetchPs5GridPage).
+ * That's what we surface here: msrpUsdCents comes directly from grid data,
+ * so PS5 revenue estimates no longer need a manual seed for MSRP.
+ *
+ * Business-model rules:
  *   1. Sony's category is scoped to "All PS5 Games" (not add-ons/subscriptions).
- *   2. Sorting by `sales30` requires paid revenue; F2P titles have $0 sales
- *      per-unit and rank via a separate `topDownload` sort we do not use.
- *   3. MSRP can be backfilled by a follow-up productRetrieve call per title
- *      if/when we validate a whitelisted product-pricing hash (Phase 3.5).
+ *   2. Sorting by `sales30` requires paid revenue; F2P titles are rare in this
+ *      list but valid and are recorded with msrpUsdCents=0 and businessModel=free_to_play.
+ *   3. Anything with a parseable non-zero USD price is 'paid'.
+ *   4. Anything else (msrpUsdCents=null) is left 'paid' so the row still lands
+ *      in the leaderboard — revenue just falls back to unit count until an operator
+ *      seeds an override.
  */
 export async function classifyPs5TopSelling(rows: Ps5TopProduct[]): Promise<PsClassification[]> {
-  return rows.map(r => ({
-    productId: r.productId,
-    businessModel: "paid" as BusinessModel,
-    msrpUsdCents: null,
-    name: r.name,
-    storeDisplayClassification: r.storeDisplayClassification,
-  }));
+  return rows.map(r => {
+    const bm: BusinessModel = r.msrpUsdCents === 0
+      ? "free_to_play"
+      : "paid";
+    return {
+      productId: r.productId,
+      businessModel: bm,
+      msrpUsdCents: r.msrpUsdCents,
+      name: r.name,
+      storeDisplayClassification: r.storeDisplayClassification,
+    };
+  });
 }
 
 // ─── Writer ──────────────────────────────────────────────────────────────────
@@ -508,9 +552,12 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
        business_model = CASE WHEN platform_sku_map.is_manual_override = 1
                              THEN platform_sku_map.business_model
                              ELSE excluded.business_model END,
+       -- Keep the existing value whenever the incoming row is null, so a
+       -- classifier that couldn't determine price never wipes a known MSRP.
+       -- Manual overrides still take precedence over any refresh.
        msrp_usd_cents = CASE WHEN platform_sku_map.is_manual_override = 1
                              THEN platform_sku_map.msrp_usd_cents
-                             ELSE excluded.msrp_usd_cents END,
+                             ELSE COALESCE(excluded.msrp_usd_cents, platform_sku_map.msrp_usd_cents) END,
        business_model_source = CASE WHEN platform_sku_map.is_manual_override = 1
                              THEN platform_sku_map.business_model_source
                              ELSE excluded.business_model_source END,
