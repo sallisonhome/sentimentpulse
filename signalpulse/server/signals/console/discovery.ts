@@ -128,12 +128,13 @@ export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassi
 // ─── Xbox ────────────────────────────────────────────────────────────────────
 
 /**
- * Fetch the Xbox top-paid list HTML and extract the productIds embedded in the
- * page. `/top-paid-games` is preferred over `/Popular` — a source-level premium
- * filter beats a downstream one.
+ * Fetch bigIds from an Xbox browse page. Each Xbox "channel" page renders 25
+ * items server-side (page-index query params are ignored — the additional
+ * items load client-side via an XHR that requires JS). Combining multiple
+ * curated channels gives broader coverage without headless rendering.
  */
-export async function discoverXboxTopPaid(): Promise<Array<{ bigId: string }>> {
-  const url = "https://www.xbox.com/en-US/games/browse/top-paid-games";
+async function fetchXboxChannelBigIds(slug: string): Promise<string[]> {
+  const url = `https://www.xbox.com/en-US/games/browse/${slug}`;
   const res = await fetch(url, {
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
@@ -141,13 +142,47 @@ export async function discoverXboxTopPaid(): Promise<Array<{ bigId: string }>> {
       "Accept-Language": "en-US,en;q=0.9",
     },
   });
-  if (!res.ok) throw new Error(`xbox top-paid HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`xbox ${slug} HTTP ${res.status}`);
   const html = await res.text();
   const ids = new Set<string>();
   const re = /"productId":"([A-Z0-9]{12})"/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(html))) ids.add(m[1]);
-  return Array.from(ids).map(bigId => ({ bigId }));
+  return Array.from(ids);
+}
+
+/**
+ * Fetch the Xbox top-paid list (25 titles, server-side rendered).
+ */
+export async function discoverXboxTopPaid(): Promise<Array<{ bigId: string }>> {
+  const ids = await fetchXboxChannelBigIds("top-paid-games");
+  return ids.map(bigId => ({ bigId }));
+}
+
+/**
+ * Broader Xbox discovery: merges every Xbox browse channel we've validated
+ * as returning bigIds. Each page returns 25 unique ids; deduped across all
+ * pages we typically get 45–65 unique premium candidates. Falls back to
+ * whatever succeeded if any single channel errors — a partial harvest still
+ * beats no harvest.
+ *
+ * NOTE: Xbox's server-side listings cap at 25 per page and page-index params
+ * are ignored, so this is the current ceiling without headless browser scroll.
+ * Total addressable top-paid list is ~1001 titles per xbox.com's totalItems.
+ */
+export async function discoverXboxAll(): Promise<Array<{ bigId: string }>> {
+  const channels = ["top-paid-games", "popular"];
+  const all = new Set<string>();
+  for (const c of channels) {
+    try {
+      const ids = await fetchXboxChannelBigIds(c);
+      for (const id of ids) all.add(id);
+      await new Promise(r => setTimeout(r, 250));
+    } catch (e) {
+      log(`xbox discovery: channel '${c}' failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  return Array.from(all).map(bigId => ({ bigId }));
 }
 
 export interface XboxClassification {
@@ -325,7 +360,7 @@ export async function runFullDiscovery(opts: {
   // Run all three discoveries in parallel; classification serially per platform (rate-limit friendly).
   const [steamRaw, xboxRaw] = await Promise.all([
     discoverSteamTopSellers(opts.steamPages ?? 2),
-    discoverXboxTopPaid(),
+    discoverXboxAll(),
   ]);
 
   const [steamCls, xboxCls, psCls] = await Promise.all([

@@ -69,21 +69,38 @@ async function main() {
   const seeded = rawSqlite.prepare(`SELECT platform, external_sku, business_model FROM platform_sku_map ORDER BY platform, external_sku`).all();
   console.log(seeded);
 
+  // Build the full collector input set. For each platform, fetch every SKU
+  // in platform_sku_map (regardless of business_model — the collector's own
+  // gate filters F2P/unknown before hitting vendor APIs). Then append two
+  // Steam probes that MUST NOT ingest, to keep gate-behaviour under test:
+  //   - appid 578080 (PUBG) — seeded above as free_to_play → should be gated F2P
+  //   - appid UNSEEDED_STEAM_APPID — not in the map at all → should be gated unknown
+  console.log("\n─── building collector inputs from platform_sku_map ───");
+  const steamSkus = rawSqlite.prepare(
+    `SELECT external_sku FROM platform_sku_map WHERE platform = 'steam'`
+  ).all() as Array<{ external_sku: string }>;
+  const xboxSkus = rawSqlite.prepare(
+    `SELECT external_sku FROM platform_sku_map WHERE platform = 'xbox'`
+  ).all() as Array<{ external_sku: string }>;
+  const psSkus = rawSqlite.prepare(
+    `SELECT external_sku FROM platform_sku_map WHERE platform = 'ps5'`
+  ).all() as Array<{ external_sku: string }>;
+
+  const steamInputs = steamSkus.map(r => ({ titleId: 0, appId: r.external_sku }));
+  // Append gate probes if they aren't already present.
+  if (!steamInputs.some(r => r.appId === UNSEEDED_STEAM_APPID)) {
+    steamInputs.push({ titleId: 0, appId: UNSEEDED_STEAM_APPID });
+  }
+  const xboxInputs = xboxSkus.map(r => ({ titleId: 0, bigId: r.external_sku }));
+  const psInputs = psSkus.map(r => ({ titleId: 0, productId: r.external_sku }));
+
+  console.log(`  steam inputs: ${steamInputs.length}  xbox inputs: ${xboxInputs.length}  ps inputs: ${psInputs.length}`);
+
   console.log("\n─── running collectors ───");
   const result = await runConsoleLeaderboardIngest({
-    steam: [
-      { titleId: 0, appId: "1245620" },
-      { titleId: 0, appId: "2050650" },
-      { titleId: 0, appId: "553850" },
-      { titleId: 0, appId: "578080" },                // F2P — should be gated
-      { titleId: 0, appId: UNSEEDED_STEAM_APPID },    // Unseeded — should be gated as unknown
-    ],
-    xbox: [
-      { titleId: 0, bigId: "9NKX70BBCDRN" },
-    ],
-    ps: [
-      { titleId: 0, productId: "UP9000-PPSA01413_00-HELLDIVERS200000" },
-    ],
+    steam: steamInputs,
+    xbox: xboxInputs,
+    ps: psInputs,
   });
 
   console.log("\n─── per-platform run summary ───");

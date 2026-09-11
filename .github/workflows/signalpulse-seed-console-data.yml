@@ -238,12 +238,22 @@ jobs:
              LIMIT 5;"
 
           echo ""
-          echo "── Sample snapshots by platform (most recent per) ──"
-          sqlite3 -header -column "$DB" "
-            SELECT platform, title_id, capture_date, rating_count, avg_rating, window_label
-              FROM store_rating_signal_daily
-             ORDER BY platform, capture_date DESC, title_id
-             LIMIT 15;"
+          echo "── Top 10 per platform by rating_count (leaderboard preview) ──"
+          for p in steam xbox ps5; do
+            echo ""
+            echo "  === $p ==="
+            sqlite3 -header -column "$DB" "
+              SELECT srd.title_id, srd.capture_date, srd.rating_count, srd.avg_rating, srd.window_label,
+                     COALESCE(cti.name, psm.external_sku) AS title
+                FROM store_rating_signal_daily srd
+                LEFT JOIN platform_sku_map psm
+                  ON psm.title_id = srd.title_id AND psm.platform = srd.platform
+                LEFT JOIN console_title_igdb cti
+                  ON cti.title_id = srd.title_id
+               WHERE srd.platform = '$p'
+               ORDER BY srd.rating_count DESC
+               LIMIT 10;"
+          done
           REMOTE
 
       - name: Verify API returns non-empty leaderboards
