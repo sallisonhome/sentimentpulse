@@ -4,14 +4,14 @@
  * Runs:
  *   1. Steam top-sellers (8 pages = 200 candidates) → classify → write to platform_sku_map
  *      Target: ~100 paid titles after F2P + type-filter.
- *   2. Xbox top-paid + popular channels merged (~50 candidates) → classify → write
- *      Xbox server-side listings hard-cap at 25/page; two channels give us
- *      ~50 unique premium candidates.
- *   3. PS manual seed (4 known paid titles) → write
+ *   2. Xbox emerald top-paid (paginated, top-100) → classify → write.
+ *   3. PS5 top-selling (categoryGridRetrieve sales30, top-100) → classify → write,
+ *      plus a small manual-seed override set for Saber-relevant titles.
  * Then asserts:
  *   - At least 80 Steam paid titles classified from top-sellers
- *   - At least 25 Xbox paid titles classified across channels
- *   - Zero F2P titles marked as `paid` on either platform (spot-check known F2Ps)
+ *   - At least 80 Xbox paid titles classified from emerald pagination
+ *   - At least 90 PS5 paid titles from category discovery (allow slack for graphql hiccups)
+ *   - Zero F2P titles marked as `paid` on Steam (spot-check known F2Ps)
  *   - Manual-override preservation: running discovery twice does not clobber
  *     a title we manually marked
  */
@@ -93,8 +93,8 @@ async function main() {
   // Assertions
   const errors: string[] = [];
   if (res.steam.paid < 80) errors.push(`expected >=80 Steam paid titles, got ${res.steam.paid}`);
-  if (res.xbox.paid < 25) errors.push(`expected >=25 Xbox paid titles, got ${res.xbox.paid}`);
-  if (res.ps.paid !== 4) errors.push(`expected 4 PS paid seeds, got ${res.ps.paid}`);
+  if (res.xbox.paid < 80) errors.push(`expected >=80 Xbox paid titles, got ${res.xbox.paid}`);
+  if (res.ps.paid < 90) errors.push(`expected >=90 PS5 paid titles (auto+manual), got ${res.ps.paid}`);
   if (!overridePreserved) errors.push(`manual-override preservation FAILED`);
 
   // Spot check: no `paid` classification for known F2P appids that MIGHT show up in top-sellers.

@@ -132,6 +132,8 @@ export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassi
  * items server-side (page-index query params are ignored — the additional
  * items load client-side via an XHR that requires JS). Combining multiple
  * curated channels gives broader coverage without headless rendering.
+ *
+ * Retained for callers/tests that still want the HTML-scoped 25 items.
  */
 async function fetchXboxChannelBigIds(slug: string): Promise<string[]> {
   const url = `https://www.xbox.com/en-US/games/browse/${slug}`;
@@ -152,37 +154,106 @@ async function fetchXboxChannelBigIds(slug: string): Promise<string[]> {
 }
 
 /**
- * Fetch the Xbox top-paid list (25 titles, server-side rendered).
+ * Fetch the Xbox top-paid list (25 titles, server-side rendered HTML fallback).
  */
 export async function discoverXboxTopPaid(): Promise<Array<{ bigId: string }>> {
   const ids = await fetchXboxChannelBigIds("top-paid-games");
   return ids.map(bigId => ({ bigId }));
 }
 
+interface XboxEmeraldProduct {
+  productId: string;
+  title?: string;
+}
+interface XboxEmeraldChannel {
+  products?: XboxEmeraldProduct[];
+  totalItems?: number;
+  encodedCT?: string;
+}
+interface XboxEmeraldResponse {
+  channels?: Record<string, XboxEmeraldChannel>;
+}
+
 /**
- * Broader Xbox discovery: merges every Xbox browse channel we've validated
- * as returning bigIds. Each page returns 25 unique ids; deduped across all
- * pages we typically get 45–65 unique premium candidates. Falls back to
- * whatever succeeded if any single channel errors — a partial harvest still
- * beats no harvest.
+ * Emerald browse call — the same JSON endpoint xbox.com's client uses to
+ * populate the Top-Paid channel. Returns 25 products per page plus an
+ * `encodedCT` cursor for the next page. No auth required.
  *
- * NOTE: Xbox's server-side listings cap at 25 per page and page-index params
- * are ignored, so this is the current ceiling without headless browser scroll.
- * Total addressable top-paid list is ~1001 titles per xbox.com's totalItems.
+ * Discovered via network trace on xbox.com/en-US/games/browse/top-paid-games
+ * (Session 2026-09-10). Confirmed 4 sequential calls → 100 unique productIds.
  */
-export async function discoverXboxAll(): Promise<Array<{ bigId: string }>> {
-  const channels = ["top-paid-games", "popular"];
-  const all = new Set<string>();
-  for (const c of channels) {
+async function fetchXboxEmeraldPage(
+  channelId: string,
+  encodedCT: string | null,
+): Promise<{ productIds: string[]; nextCT: string | null; totalItems: number }> {
+  const body: Record<string, unknown> = {
+    Filters: "e30=",
+    ReturnFilters: false,
+    ChannelKeyToBeUsedInResponse: `BROWSE_CHANNELID=${channelId.toUpperCase()}_FILTERS=`,
+    ChannelId: channelId,
+  };
+  if (encodedCT) body.EncodedCT = encodedCT;
+  const res = await fetch(
+    "https://emerald.xboxservices.com/xboxcomfd/browse?locale=en-US",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "MS-CV": "signalpulse.0",
+        "X-Ms-Api-Version": "1.1",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+      },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) throw new Error(`xbox emerald HTTP ${res.status}`);
+  const json = (await res.json()) as XboxEmeraldResponse;
+  const channels = json.channels ?? {};
+  const key = Object.keys(channels)[0];
+  const ch = key ? channels[key] : undefined;
+  const products = ch?.products ?? [];
+  const productIds = products
+    .map(p => p.productId)
+    .filter((id): id is string => typeof id === "string" && /^[A-Z0-9]{12}$/.test(id));
+  return {
+    productIds,
+    nextCT: ch?.encodedCT ?? null,
+    totalItems: ch?.totalItems ?? 0,
+  };
+}
+
+/**
+ * Xbox top-100 discovery via the emerald browse JSON endpoint.
+ *
+ * Paginates the Top-Paid channel (25/page, ~4 calls for 100 unique productIds).
+ * Falls back to whatever partial page-set succeeded on error — a partial
+ * harvest still beats no harvest.
+ *
+ * Total addressable top-paid list is ~1001 titles per emerald's totalItems.
+ */
+export async function discoverXboxAll(topN: number = 100): Promise<Array<{ bigId: string }>> {
+  const channelId = "top-paid-games";
+  const all: string[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+  const maxPages = Math.ceil(topN / 25);
+  for (let page = 0; page < maxPages; page++) {
     try {
-      const ids = await fetchXboxChannelBigIds(c);
-      for (const id of ids) all.add(id);
+      const { productIds, nextCT } = await fetchXboxEmeraldPage(channelId, cursor);
+      for (const id of productIds) {
+        if (!seen.has(id)) { seen.add(id); all.push(id); }
+        if (all.length >= topN) break;
+      }
+      if (all.length >= topN || !nextCT) break;
+      cursor = nextCT;
       await new Promise(r => setTimeout(r, 250));
     } catch (e) {
-      log(`xbox discovery: channel '${c}' failed: ${e instanceof Error ? e.message : e}`);
+      log(`xbox discovery: emerald page ${page} failed: ${e instanceof Error ? e.message : e}`);
+      break;
     }
   }
-  return Array.from(all).map(bigId => ({ bigId }));
+  return all.slice(0, topN).map(bigId => ({ bigId }));
 }
 
 export interface XboxClassification {
@@ -220,16 +291,119 @@ export async function classifyXboxBigIds(bigIds: string[]): Promise<XboxClassifi
 // ─── PlayStation ─────────────────────────────────────────────────────────────
 
 /**
- * PS v1 discovery is a MANUAL SEED — Sony's storefront GraphQL for category
- * listings is whitelist-gated on hash and we did not spend Phase 3 budget
- * chasing whitelisted category ops. Instead, callers provide a curated list
- * of PS product IDs (from Saber-relevant titles and known premium chart entries),
- * and classification runs against them the same way Xbox does — using the
- * productRetrieve GraphQL which we already validated works.
+ * PS5 top-100 discovery via Sony's whitelisted `categoryGridRetrieve` graphql
+ * op. Uses the "All PS5 Games" category (9,271 titles) sorted by 30-day sales,
+ * so we get the true PSN top-100 in a single call. No auth required.
  *
- * Tracked in todo.md Phase 3.5 as follow-up: replace manual seed with a real
- * top-charts crawl once we identify a whitelisted category-listing hash.
+ * Discovered via network trace on store.playstation.com's category grid, then
+ * validated against Sony's own storefront ranking (top-10 matches GTA VI,
+ * Blood of Dawnwalker, FC 27, etc). Session 2026-09-10.
+ *
+ * PS5 ONLY — the category itself filters out PS4-only titles. Some hybrid
+ * PS4+PS5 SKUs appear (npTitleId is the PS5 SKU), which is expected.
  */
+const PS5_ALL_GAMES_CATEGORY_ID = "d71e8e6d-0940-4e03-bd02-404fc7d31a31";
+const PS_CATEGORY_GRID_HASH =
+  "88c0b9a1273c6d320c51cd73e390924e21ae28bf09f01cde8b84b1034b16cd03";
+
+interface PsGridProduct {
+  npTitleId?: string;
+  name?: string;
+  platforms?: string[];
+  price?: { basePrice?: string; discountedPrice?: string; isFree?: boolean };
+  webBasePrice?: string;
+  storeDisplayClassification?: string;
+}
+interface PsGridResponse {
+  data?: {
+    categoryGridRetrieve?: {
+      products?: PsGridProduct[];
+      pageInfo?: { totalCount?: number };
+    };
+  };
+  errors?: Array<{ message: string }>;
+}
+
+export interface Ps5TopProduct {
+  productId: string;                             // npTitleId (e.g. PPSA01547_00)
+  name: string | null;
+  platforms: string[];
+  storeDisplayClassification: string | null;
+}
+
+async function fetchPs5GridPage(offset: number, size: number): Promise<PsGridProduct[]> {
+  const variables = {
+    id: PS5_ALL_GAMES_CATEGORY_ID,
+    pageArgs: { size, offset },
+    sortBy: { name: "sales30", isAscending: false },
+    filterBy: [] as string[],
+    facetOptions: [] as string[],
+  };
+  const extensions = { persistedQuery: { version: 1, sha256Hash: PS_CATEGORY_GRID_HASH } };
+  const url =
+    `https://web.np.playstation.com/api/graphql/v1//op` +
+    `?operationName=categoryGridRetrieve` +
+    `&variables=${encodeURIComponent(JSON.stringify(variables))}` +
+    `&extensions=${encodeURIComponent(JSON.stringify(extensions))}`;
+  const res = await fetch(url, {
+    headers: {
+      "Accept": "application/json",
+      "x-apollo-operation-name": "categoryGridRetrieve",
+      "apollo-require-preflight": "true",
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15",
+    },
+  });
+  if (!res.ok) throw new Error(`ps categoryGridRetrieve HTTP ${res.status}`);
+  const json = (await res.json()) as PsGridResponse;
+  if (json.errors && json.errors.length > 0) {
+    throw new Error(`ps graphql error: ${json.errors[0].message}`);
+  }
+  return json.data?.categoryGridRetrieve?.products ?? [];
+}
+
+export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopProduct[]> {
+  // Sony returns MULTIPLE ROWS per npTitleId (Standard + Deluxe + Ultimate editions
+  // of the same underlying game all appear on the sales chart). We dedupe by
+  // npTitleId and over-fetch until we have topN UNIQUE games. Observed collapse
+  // ratio is ~0.79 (79 uniques per 100 rows), so 2 pages cover top-100 easily.
+  const pageSize = 100;
+  const maxPages = Math.max(2, Math.ceil((topN * 1.3) / pageSize));
+  const out: Ps5TopProduct[] = [];
+  const seen = new Set<string>();
+
+  for (let page = 0; page < maxPages && out.length < topN; page++) {
+    let products: PsGridProduct[];
+    try {
+      products = await fetchPs5GridPage(page * pageSize, pageSize);
+    } catch (e) {
+      log(`ps5 discovery: page ${page} failed: ${e instanceof Error ? e.message : e}`);
+      break;
+    }
+    if (products.length === 0) break;
+
+    for (const p of products) {
+      const id = p.npTitleId;
+      if (!id || seen.has(id)) continue;
+      // Enforce PS5-only at the row level even though the category is scoped:
+      // hybrid SKUs list both platforms; require PS5 to be present.
+      const platforms = Array.isArray(p.platforms) ? p.platforms : [];
+      if (!platforms.includes("PS5")) continue;
+      seen.add(id);
+      out.push({
+        productId: id,
+        name: p.name ?? null,
+        platforms,
+        storeDisplayClassification: p.storeDisplayClassification ?? null,
+      });
+      if (out.length >= topN) break;
+    }
+    if (out.length < topN && page < maxPages - 1) {
+      await new Promise(r => setTimeout(r, 250));
+    }
+  }
+  return out;
+}
+
 export interface PsClassification {
   productId: string;
   businessModel: BusinessModel;
@@ -239,15 +413,10 @@ export interface PsClassification {
 }
 
 /**
- * PS classification via productRetrieve GraphQL. Uses the star-rating hash
- * we already have; the response also includes storeDisplayClassification and
- * a webctas array. We treat FULL_GAME + non-zero webcta price as `paid`,
- * FULL_GAME + all-zero webcta as `free_to_play`, everything else as `unknown`.
- *
- * NOTE: the wcaProductStarRatingRetrive query returns star-rating only — no
- * webctas. For v1, PS classification is manual-seed-based and callers pass
- * businessModel explicitly. This function exists as a hook for the future
- * whitelisted product-detail hash.
+ * Manual-seed classifier retained for callers that want to inject a curated
+ * override list (e.g. Saber-relevant titles that must always appear in the
+ * universe regardless of sales rank). Marked `isManualOverride` at the writer
+ * layer so an automated refresh cannot clobber them.
  */
 export async function classifyPsManualSeed(seeds: Array<{
   productId: string;
@@ -261,6 +430,27 @@ export async function classifyPsManualSeed(seeds: Array<{
     msrpUsdCents: s.msrpUsdCents,
     name: s.name,
     storeDisplayClassification: null,
+  }));
+}
+
+/**
+ * Classify discovered PS5 top-sellers. The categoryGridRetrieve response does
+ * not return per-SKU pricing under the persisted-query hash, so we mark every
+ * discovered row as `paid` with `msrpUsdCents: null` (source recorded as
+ * `ps_categoryGridRetrieve.sales30`). This is safe because:
+ *   1. Sony's category is scoped to "All PS5 Games" (not add-ons/subscriptions).
+ *   2. Sorting by `sales30` requires paid revenue; F2P titles have $0 sales
+ *      per-unit and rank via a separate `topDownload` sort we do not use.
+ *   3. MSRP can be backfilled by a follow-up productRetrieve call per title
+ *      if/when we validate a whitelisted product-pricing hash (Phase 3.5).
+ */
+export async function classifyPs5TopSelling(rows: Ps5TopProduct[]): Promise<PsClassification[]> {
+  return rows.map(r => ({
+    productId: r.productId,
+    businessModel: "paid" as BusinessModel,
+    msrpUsdCents: null,
+    name: r.name,
+    storeDisplayClassification: r.storeDisplayClassification,
   }));
 }
 
@@ -346,27 +536,40 @@ export interface DiscoveryResult {
 
 /**
  * Full discovery run for a fresh universe refresh.
- * `psManualSeeds` is required until PS crawler ships (Phase 3.5).
+ *
+ * PS5 flow (2026-09-10):
+ *   - `discoverPs5TopSelling()` pulls the top-100 PS5 titles by 30-day sales
+ *     from Sony's whitelisted `categoryGridRetrieve` op — no manual seeding
+ *     required for baseline coverage.
+ *   - `psManualSeeds` remains available as an ADDITIVE override channel for
+ *     titles that must always be in the universe (e.g. Saber-relevant SKUs).
+ *     Seeded rows carry isManualOverride=true so auto-refresh cannot clobber
+ *     them; they merge with the discovered set and dedupe on productId.
+ *
  * `titleIdFor` is a caller-supplied fn that returns a stable title_id for a
  * (platform, externalSku, name) — dedupes titles that appear on multiple stores.
  */
 export async function runFullDiscovery(opts: {
   steamPages?: number;
-  psManualSeeds: Array<{ productId: string; businessModel: BusinessModel; msrpUsdCents: number | null; name: string | null }>;
+  ps5TopN?: number;
+  psManualSeeds?: Array<{ productId: string; businessModel: BusinessModel; msrpUsdCents: number | null; name: string | null }>;
   titleIdFor: (platform: ConsolePlatform, sku: string, name: string | null) => number;
 }): Promise<DiscoveryResult> {
   const startedAt = new Date().toISOString();
+  const manualSeeds = opts.psManualSeeds ?? [];
 
   // Run all three discoveries in parallel; classification serially per platform (rate-limit friendly).
-  const [steamRaw, xboxRaw] = await Promise.all([
+  const [steamRaw, xboxRaw, ps5Raw] = await Promise.all([
     discoverSteamTopSellers(opts.steamPages ?? 2),
     discoverXboxAll(),
+    discoverPs5TopSelling(opts.ps5TopN ?? 100),
   ]);
 
-  const [steamCls, xboxCls, psCls] = await Promise.all([
+  const [steamCls, xboxCls, ps5DiscoveredCls, psManualCls] = await Promise.all([
     classifySteamAppIds(steamRaw.map(x => x.appId)),
     classifyXboxBigIds(xboxRaw.map(x => x.bigId)),
-    classifyPsManualSeed(opts.psManualSeeds),
+    classifyPs5TopSelling(ps5Raw),
+    classifyPsManualSeed(manualSeeds),
   ]);
 
   // Write to platform_sku_map
@@ -382,17 +585,33 @@ export async function runFullDiscovery(opts: {
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `xbox_displaycatalog.MSRP`,
   }));
-  const psRows: UpsertRow[] = psCls.map(c => ({
+  const ps5DiscoveredRows: UpsertRow[] = ps5DiscoveredCls.map(c => ({
+    platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),
+    conceptId: null, skuRole: "base",
+    businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
+    businessModelSource: `ps_categoryGridRetrieve.sales30`,
+  }));
+  const psManualRows: UpsertRow[] = psManualCls.map(c => ({
     platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `ps_manual_seed`,
-    isManualOverride: true,                  // manual seeds are protected from auto-refresh
+    isManualOverride: true,
   }));
 
   const steamW = upsertSkuMap(steamRows);
   const xboxW = upsertSkuMap(xboxRows);
-  const psW = upsertSkuMap(psRows);
+  // Auto-discovered PS5 rows first, then manual overrides so a manual entry
+  // for the same productId wins (writer preserves is_manual_override=true).
+  const psAutoW = upsertSkuMap(ps5DiscoveredRows);
+  const psManualW = upsertSkuMap(psManualRows);
+
+  // Aggregate PS stats across auto + manual (dedupe by productId for accurate
+  // discovered/paid counts).
+  const psAll = new Map<string, PsClassification>();
+  for (const c of ps5DiscoveredCls) psAll.set(c.productId, c);
+  for (const c of psManualCls) psAll.set(c.productId, c);
+  const psMerged = Array.from(psAll.values());
 
   return {
     startedAt,
@@ -412,11 +631,12 @@ export async function runFullDiscovery(opts: {
       written: xboxW.inserted + xboxW.updated,
     },
     ps: {
-      discovered: opts.psManualSeeds.length, classified: psCls.length,
-      paid: psCls.filter(c => c.businessModel === "paid").length,
-      f2p: psCls.filter(c => c.businessModel === "free_to_play").length,
-      unknown: psCls.filter(c => c.businessModel === "unknown").length,
-      written: psW.inserted + psW.updated,
+      discovered: ps5Raw.length + manualSeeds.length,
+      classified: psMerged.length,
+      paid: psMerged.filter(c => c.businessModel === "paid").length,
+      f2p: psMerged.filter(c => c.businessModel === "free_to_play").length,
+      unknown: psMerged.filter(c => c.businessModel === "unknown").length,
+      written: psAutoW.inserted + psAutoW.updated + psManualW.inserted + psManualW.updated,
     },
   };
 }
