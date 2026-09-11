@@ -88,6 +88,37 @@ export interface IgdbRefreshResult {
 }
 
 /**
+ * SKU-level IGDB overrides for known collisions where IGDB's `search`
+ * endpoint returns the wrong top hit for a plain name query.
+ *
+ * Keyed by `${platform}:${external_sku}`. Discovered cases:
+ *   - Steam 1245620 (base Elden Ring): IGDB search for "ELDEN RING" returns
+ *     Elden Ring Nightreign as top hit (id 325591) because Nightreign is
+ *     newer/more popular. Pin to id 119133 slug elden-ring.
+ *   - PSN UP0700-PPSA04610_00-ELDENRING0000000 (base Elden Ring PS4/PS5):
+ *     same collision as above.
+ *
+ * Bigger fix pending: use IGDB /external_games to look up by storefront
+ * appid/product id directly instead of by name. See
+ * docs/calibration-anchors-todo.md.
+ */
+const IGDB_SKU_OVERRIDES: Record<string, { igdbId: number; canonicalName: string }> = {
+  "steam:1245620": { igdbId: 119133, canonicalName: "Elden Ring" },
+  "ps5:UP0700-PPSA04610_00-ELDENRING0000000": { igdbId: 119133, canonicalName: "Elden Ring" },
+};
+
+function lookupOverrideForTitle(titleId: number): { igdbId: number; canonicalName: string } | null {
+  const skus = rawSqlite.prepare(
+    `SELECT platform, external_sku FROM platform_sku_map WHERE title_id = ?`,
+  ).all(titleId) as Array<{ platform: string; external_sku: string }>;
+  for (const s of skus) {
+    const hit = IGDB_SKU_OVERRIDES[`${s.platform}:${s.external_sku}`];
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
  * Refresh IGDB metadata for one title. Skips refresh if the row was updated
  * within the last 7 days unless force=true.
  */
@@ -106,10 +137,21 @@ export async function refreshIgdbForTitle(titleId: number, name: string, force: 
     }
   }
 
-  // Query IGDB — search by name, take top hit
-  const escaped = name.replace(/"/g, '\\"');
-  const query = `search "${escaped}"; fields id,name,slug,summary,first_release_date,cover.image_id,artworks.image_id,screenshots.image_id,genres.name,themes.name,platforms.name,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count; limit 1;`;
-  const hits = await igdbQuery<IgdbGame[]>("games", query);
+  // Check SKU-level override before hitting IGDB search. When a known
+  // collision SKU is bound to this title, pin the IGDB lookup to the
+  // correct id (fetched by id, not by name).
+  const override = lookupOverrideForTitle(titleId);
+  let hits: IgdbGame[] | null = null;
+  if (override) {
+    const byId = `fields id,name,slug,summary,first_release_date,cover.image_id,artworks.image_id,screenshots.image_id,genres.name,themes.name,platforms.name,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count; where id = ${override.igdbId}; limit 1;`;
+    hits = await igdbQuery<IgdbGame[]>("games", byId);
+    log(`igdb: applied SKU override for titleId=${titleId} → igdb_id=${override.igdbId} (${override.canonicalName})`);
+  } else {
+    // Query IGDB — search by name, take top hit
+    const escaped = name.replace(/"/g, '\\"');
+    const query = `search "${escaped}"; fields id,name,slug,summary,first_release_date,cover.image_id,artworks.image_id,screenshots.image_id,genres.name,themes.name,platforms.name,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count; limit 1;`;
+    hits = await igdbQuery<IgdbGame[]>("games", query);
+  }
   if (!Array.isArray(hits) || hits.length === 0) {
     // Write empty row so we don't keep retrying on the same tick
     const nowIso = new Date().toISOString();

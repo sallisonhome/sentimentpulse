@@ -35,6 +35,7 @@
 /* eslint-disable no-console */
 
 import { rawSqlite } from "../server/storage";
+import { refreshIgdbForTitle } from "../server/signals/console/igdb";
 
 const MISLABELLED_IDS = [10022, 10402];
 const CORRECT_NIGHTREIGN_ID = 10183;
@@ -114,7 +115,24 @@ async function main() {
 
   const result = tx();
   console.log(`[repair-nightreign] done. relabelled=${result.relabelled}, deleted_estimates=${result.deletedEstimates}`);
-  console.log(`[repair-nightreign] NEXT: enrich-console-igdb refreshes base-Elden-Ring metadata; estimate-console-units repopulates window_estimates_daily under the corrected name.`);
+
+  // ─── Step 3: immediately re-run IGDB enrichment on the two rows ─────────
+  // This uses the SKU override in server/signals/console/igdb.ts to force
+  // the correct base-Elden-Ring IGDB id (119133) rather than IGDB's name
+  // search top hit (which returns Nightreign for a bare "ELDEN RING" query).
+  // Without this step the enrich-console-igdb.ts pass that runs immediately
+  // after this script re-derives "Elden Ring Nightreign" from the ELDEN RING
+  // name and clobbers the repair.
+  for (const row of mislabelled) {
+    try {
+      const r = await refreshIgdbForTitle(row.title_id, "Elden Ring", true);
+      console.log(`[repair-nightreign] enriched title_id=${row.title_id}: igdb_id=${r.igdbId} matched=${r.matched}`);
+    } catch (err) {
+      console.error(`[repair-nightreign] WARN failed to enrich title_id=${row.title_id}: ${(err as Error).message}`);
+    }
+  }
+
+  console.log(`[repair-nightreign] NEXT: estimate-console-units repopulates window_estimates_daily under the corrected "Elden Ring" name.`);
 }
 
 main().catch((err) => {
