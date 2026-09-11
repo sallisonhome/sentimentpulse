@@ -1,0 +1,66 @@
+name: SignalPulse DB Query (artifact)
+
+# Same read-only DB query path as signalpulse-db-query.yml, but writes the
+# result to a workflow artifact instead of stdout. Use this when the result
+# is large (top-100 lists, table dumps) — `gh run view --log` hits the REST
+# rate limit on big results, but `gh run download` uses artifact storage.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sql:
+        description: "SQL SELECT statement (read-only, whitespace-tolerant)"
+        required: true
+        type: string
+      mode:
+        description: "sqlite3 output mode: csv | column | tabs | line"
+        required: false
+        default: "csv"
+        type: string
+      artifact_name:
+        description: "Name of the uploaded artifact file (without extension)"
+        required: false
+        default: "query-result"
+        type: string
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  q:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run query
+        env:
+          SQL: ${{ inputs.sql }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -e
+          upper=$(printf '%s' "$SQL" | tr '[:lower:]' '[:upper:]')
+          case " $upper " in
+            *" INSERT "*|*" UPDATE "*|*" DELETE "*|*" DROP "*|*" ALTER "*|*" CREATE "*|*" REPLACE "*|*" ATTACH "*|*" VACUUM "*)
+              echo "ERROR: write-like statement rejected"; exit 1;;
+          esac
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/data.db\"")
+          echo "DB: $DB_PATH"
+          mkdir -p out
+          printf '%s\n' "$SQL" | $SSH "cat > /tmp/q.sql && sqlite3 -header -${MODE:-csv} \"$DB_PATH\" < /tmp/q.sql" > out/result.${MODE:-csv}
+          wc -l out/result.${MODE:-csv} || true
+          head -3 out/result.${MODE:-csv} || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: out/
+          retention-days: 3
