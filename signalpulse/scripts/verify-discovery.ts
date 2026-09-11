@@ -19,12 +19,28 @@
 import { rawSqlite } from "../server/storage";
 import { runFullDiscovery, upsertSkuMap } from "../server/signals/console/discovery";
 
-let nextTitleId = 10000;
+// Prefer the DB's existing title_id when a row already exists — upsertSkuMap
+// pins title_id on conflict (it is IMMUTABLE once written), so consulting the
+// DB first keeps this in-process allocator from burning fresh numbers on every
+// run and drifting the visible id relative to what the DB holds. New SKUs get
+// a fresh id from the counter; the counter is seeded above the current max so
+// it never collides with an existing id.
+const maxRow = rawSqlite.prepare(
+  `SELECT COALESCE(MAX(title_id), 9999) AS max_id FROM platform_sku_map`
+).get() as { max_id: number };
+let nextTitleId = maxRow.max_id + 1;
 const titleIdByKey = new Map<string, number>();
+const existingLookup = rawSqlite.prepare(
+  `SELECT title_id FROM platform_sku_map WHERE platform = ? AND external_sku = ?`
+);
 function titleIdFor(platform: string, sku: string, _name: string | null): number {
   const key = `${platform}:${sku}`;
-  if (!titleIdByKey.has(key)) titleIdByKey.set(key, nextTitleId++);
-  return titleIdByKey.get(key)!;
+  const cached = titleIdByKey.get(key);
+  if (cached != null) return cached;
+  const existing = existingLookup.get(platform, sku) as { title_id: number } | undefined;
+  const id = existing?.title_id ?? nextTitleId++;
+  titleIdByKey.set(key, id);
+  return id;
 }
 
 // PSN productIds — sourced from live store.playstation.com PDP URLs.
@@ -90,12 +106,39 @@ async function main() {
   // Cleanup test row.
   rawSqlite.prepare(`DELETE FROM platform_sku_map WHERE external_sku = ?`).run(overrideSku);
 
+  console.log("\n─── title_id pinning test (immutable-on-conflict invariant) ───");
+  // Insert a row at a known title_id, then attempt to "reallocate" it to a
+  // different title_id via a discovery-shaped upsert. The DB row's title_id
+  // MUST NOT change — store_rating_signal_daily and every joined report key
+  // off title_id, so drift orphans historical rows.
+  const pinSku = "TEST_PIN_ABC";
+  rawSqlite.prepare(`DELETE FROM platform_sku_map WHERE external_sku = ?`).run(pinSku);
+  upsertSkuMap([{
+    platform: "xbox", externalSku: pinSku, titleId: 88888, conceptId: null, skuRole: "base",
+    businessModel: "paid", msrpUsdCents: 5999, businessModelSource: "pin_test", isManualOverride: false,
+  }]);
+  // Now discovery hands out a different title_id for the same SKU (simulates
+  // the allocator burning a fresh number on a re-run).
+  upsertSkuMap([{
+    platform: "xbox", externalSku: pinSku, titleId: 77777, conceptId: null, skuRole: "base",
+    businessModel: "paid", msrpUsdCents: 6499, businessModelSource: "pin_test_reallocated", isManualOverride: false,
+  }]);
+  const pinRow = rawSqlite.prepare(
+    `SELECT title_id, msrp_usd_cents FROM platform_sku_map WHERE external_sku = ?`
+  ).get(pinSku) as { title_id: number; msrp_usd_cents: number };
+  const titleIdPinned = pinRow?.title_id === 88888;
+  const msrpUpdated = pinRow?.msrp_usd_cents === 6499;
+  console.log(`title_id pinned at 88888 across re-upsert: ${titleIdPinned} (got ${pinRow?.title_id}); msrp updated to 6499: ${msrpUpdated} (got ${pinRow?.msrp_usd_cents})`);
+  rawSqlite.prepare(`DELETE FROM platform_sku_map WHERE external_sku = ?`).run(pinSku);
+
   // Assertions
   const errors: string[] = [];
   if (res.steam.paid < 80) errors.push(`expected >=80 Steam paid titles, got ${res.steam.paid}`);
   if (res.xbox.paid < 80) errors.push(`expected >=80 Xbox paid titles, got ${res.xbox.paid}`);
   if (res.ps.paid < 90) errors.push(`expected >=90 PS5 paid titles (auto+manual), got ${res.ps.paid}`);
   if (!overridePreserved) errors.push(`manual-override preservation FAILED`);
+  if (!titleIdPinned) errors.push(`title_id pinning FAILED — row title_id changed after re-upsert (was 88888, now ${pinRow?.title_id})`);
+  if (!msrpUpdated) errors.push(`title_id pinning test: msrp did NOT update as expected — non-title_id columns should still refresh (expected 6499, got ${pinRow?.msrp_usd_cents})`);
 
   // Spot check: no `paid` classification for known F2P appids that MIGHT show up in top-sellers.
   const knownF2P = ["578080", "570", "440", "230410", "1085660"];  // PUBG, Dota2, TF2, Warframe, Destiny 2

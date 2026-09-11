@@ -483,6 +483,15 @@ interface UpsertRow {
 /**
  * Upsert into platform_sku_map. Preserves is_manual_override=true rows from
  * being clobbered by an automated refresh — the ON CONFLICT clause skips them.
+ *
+ * IMPORTANT: title_id is IMMUTABLE once written. On conflict we DO NOT set
+ * title_id = excluded.title_id, because store_rating_signal_daily,
+ * steam_review_history, and every joined report keys off title_id. If the id
+ * drifts, historical rows orphan (rating trends flatline, leaderboards lose
+ * back-history) and cross-title contamination becomes possible when a fresh
+ * discovery allocator hands out a number that used to belong to a different
+ * SKU. The DB row's title_id is the source of truth from the moment it
+ * first lands; the caller's `titleIdFor` value is only consulted on INSERT.
  */
 export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: number; preservedOverride: number } {
   const nowIso = new Date().toISOString();
@@ -493,7 +502,7 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
         refreshed_at, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(platform, external_sku) DO UPDATE SET
-       title_id = excluded.title_id,
+       -- title_id intentionally omitted: pin existing row's title_id forever.
        concept_id = excluded.concept_id,
        sku_role = excluded.sku_role,
        business_model = CASE WHEN platform_sku_map.is_manual_override = 1
