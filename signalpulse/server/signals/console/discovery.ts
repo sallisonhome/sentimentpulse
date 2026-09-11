@@ -307,7 +307,11 @@ const PS_CATEGORY_GRID_HASH =
   "88c0b9a1273c6d320c51cd73e390924e21ae28bf09f01cde8b84b1034b16cd03";
 
 interface PsGridProduct {
-  npTitleId?: string;
+  id?: string;              // Full concept-productId, e.g. "EP1004-PPSA01547_00-GTAVIULTIMATE001".
+                            // This is what productRetrieve requires — NOT npTitleId.
+  npTitleId?: string;       // Middle segment only, e.g. "PPSA01547_00". Editions of
+                            // the same underlying game share one npTitleId, so we use
+                            // it for dedupe but never as an external_sku.
   name?: string;
   platforms?: string[];
   price?: { basePrice?: string; discountedPrice?: string; isFree?: boolean };
@@ -325,7 +329,9 @@ interface PsGridResponse {
 }
 
 export interface Ps5TopProduct {
-  productId: string;                             // npTitleId (e.g. PPSA01547_00)
+  productId: string;                             // Full concept-productId (e.g. EP1004-PPSA01547_00-GTAVIULTIMATE001).
+                                                 // Required by PSN productRetrieve. Deduped by npTitleId upstream.
+  npTitleId: string;                             // Kept for observability and dedupe audits.
   name: string | null;
   platforms: string[];
   storeDisplayClassification: string | null;
@@ -382,15 +388,21 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
     if (products.length === 0) break;
 
     for (const p of products) {
-      const id = p.npTitleId;
-      if (!id || seen.has(id)) continue;
+      // Dedupe by npTitleId (Standard/Deluxe/Ultimate editions share one),
+      // but record the FULL concept-productId `p.id` as external_sku —
+      // that's the value productRetrieve needs.
+      const npTitleId = p.npTitleId;
+      const productId = p.id;
+      if (!npTitleId || !productId) continue;
+      if (seen.has(npTitleId)) continue;
       // Enforce PS5-only at the row level even though the category is scoped:
       // hybrid SKUs list both platforms; require PS5 to be present.
       const platforms = Array.isArray(p.platforms) ? p.platforms : [];
       if (!platforms.includes("PS5")) continue;
-      seen.add(id);
+      seen.add(npTitleId);
       out.push({
-        productId: id,
+        productId,
+        npTitleId,
         name: p.name ?? null,
         platforms,
         storeDisplayClassification: p.storeDisplayClassification ?? null,
