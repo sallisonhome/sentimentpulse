@@ -183,9 +183,57 @@ async function main() {
   const steamAppidByTitleId = new Map<number, string>();
   const steamSkus = db.prepare(
     `SELECT title_id, external_sku FROM platform_sku_map
-      WHERE platform = 'steam' AND business_model = 'paid'`
+      WHERE platform = 'steam' AND business_model = 'paid' AND sku_role = 'base'`
   ).all() as Array<{ title_id: number; external_sku: string }>;
   for (const r of steamSkus) steamAppidByTitleId.set(r.title_id, r.external_sku);
+
+  // ─── 6b. Cross-platform title bridge (console title_id → Steam title_id) ────
+  // platform_sku_map keys every SKU by its own title_id, so a PS5 SKU for
+  // "Space Marine 2" and the Steam SKU for the same game live under different
+  // title_ids. Without a bridge, backfill-steam-pace can never fire on console
+  // rows because steamAppidByTitleId.get(consoleTitleId) always misses.
+  //
+  // Build the bridge at estimator time by normalized-name matching through
+  // console_title_igdb. The name column is the IGDB canonical name when the
+  // match is trustworthy, otherwise the store name — same field the leaderboard
+  // route displays, so operator eyeballs and estimator inference agree.
+  //
+  // Normalization: lowercased, trimmed. This is intentionally conservative:
+  // "Space Marine 2" and "Warhammer 40,000: Space Marine 2" will NOT bridge
+  // (different official titles across storefronts). We accept some misses
+  // here rather than risk a bad cross-title pace curve.
+  const crossPlatformSteamTitleId = new Map<number, number>();
+  {
+    interface NameRow { title_id: number; norm_name: string; platform: string }
+    const rows = db.prepare(
+      `SELECT psm.title_id AS title_id,
+              LOWER(TRIM(COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, '')))) AS norm_name,
+              psm.platform AS platform
+         FROM platform_sku_map psm
+         JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
+        WHERE psm.business_model = 'paid' AND psm.sku_role = 'base'
+          AND igdb.title_id IS NOT NULL`
+    ).all() as NameRow[];
+    const steamByName = new Map<string, number>();
+    for (const r of rows) {
+      if (r.platform === "steam" && r.norm_name) steamByName.set(r.norm_name, r.title_id);
+    }
+    for (const r of rows) {
+      if (r.platform === "steam" || !r.norm_name) continue;
+      const steamTid = steamByName.get(r.norm_name);
+      if (steamTid != null && steamTid !== r.title_id) {
+        crossPlatformSteamTitleId.set(r.title_id, steamTid);
+      }
+    }
+  }
+
+  // Resolve a title_id to the Steam title_id that carries its review history.
+  // If the console title_id itself has a Steam SKU (same-id case), that wins;
+  // otherwise fall through to the name-based bridge; otherwise no Steam side.
+  function bridgedSteamTitleId(titleId: number): number | null {
+    if (steamAppidByTitleId.has(titleId)) return titleId;
+    return crossPlatformSteamTitleId.get(titleId) ?? null;
+  }
 
   const steamHistoryAgg = db.prepare(
     `SELECT COALESCE(SUM(recommendations_up + recommendations_down), 0) AS s
@@ -193,8 +241,8 @@ async function main() {
       WHERE app_id = ? AND bucket_start >= ?`
   );
 
-  function steamWindowSignal(titleId: number, days: number): number | null {
-    const appid = steamAppidByTitleId.get(titleId);
+  function steamWindowSignal(steamTitleId: number, days: number): number | null {
+    const appid = steamAppidByTitleId.get(steamTitleId);
     if (!appid) return null;
     const cutoff = daysAgoEpochSec(days);
     const r = steamHistoryAgg.get(appid, cutoff) as { s: number };
@@ -203,9 +251,9 @@ async function main() {
     return r.s;
   }
 
-  // Steam latest LTD signal for a title. Denominator for backfill-steam-pace.
-  function steamLtdSignal(titleId: number): number | null {
-    return latestSignalByKey.get(`${titleId}|steam`)?.rating_count ?? null;
+  // Steam latest LTD signal for a Steam title_id. Denominator for backfill-steam-pace.
+  function steamLtdSignal(steamTitleId: number): number | null {
+    return latestSignalByKey.get(`${steamTitleId}|steam`)?.rating_count ?? null;
   }
 
   // Steam window/LTD ratio used by backfill-steam-pace to slice the console
@@ -213,9 +261,14 @@ async function main() {
   //  • both numerator and denominator must exist and be > 0
   //  • Steam LTD must be >= 100 (below that the ratio is noise-dominated)
   //  • ratio is clamped to [0, 1] — a window signal can never exceed lifetime
+  //
+  // Accepts the console title_id and resolves the Steam side through the
+  // bridge internally so callers don't need to know about the mapping.
   function steamWindowRatio(titleId: number, days: number): number | null {
-    const win = steamWindowSignal(titleId, days);
-    const ltd = steamLtdSignal(titleId);
+    const steamTid = bridgedSteamTitleId(titleId);
+    if (steamTid == null) return null;
+    const win = steamWindowSignal(steamTid, days);
+    const ltd = steamLtdSignal(steamTid);
     if (win == null || ltd == null || ltd < 100 || ltd <= 0) return null;
     const ratio = win / ltd;
     if (ratio <= 0) return null;

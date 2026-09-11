@@ -58,6 +58,10 @@ interface LeaderboardRow {
   releaseDate: string | null;
   ratingCount: number | null;
   avgRating: number | null;
+  // Steam only. Native percent-of-positive (e.g. 87) and Steam's own bucket
+  // label (e.g. "Very Positive"). Null for PS5/Xbox, which use the 0-5 mean.
+  avgRatingPercent: number | null;
+  avgRatingLabel: string | null;
   ratingCapturedAt: string | null;
   ownersMid: number | null;
   unitsMid: number | null;
@@ -589,7 +593,11 @@ export function ConsoleLeaderboardsPlatform() {
                     </Link>
                   </td>
                   <td className="px-3 py-2 text-right font-mono">{formatNumberCompact(t.ratingCount)}</td>
-                  <td className="px-3 py-2 text-right font-mono">{t.avgRating != null ? t.avgRating.toFixed(2) : "—"}</td>
+                  <td className="px-3 py-2 text-right font-mono" title={t.avgRatingLabel ?? (t.avgRating != null ? `${t.avgRating.toFixed(2)} / 5` : undefined)}>
+                    {t.avgRatingPercent != null
+                      ? `${t.avgRatingPercent}%`
+                      : (t.avgRating != null ? t.avgRating.toFixed(2) : "—")}
+                  </td>
                   <td className="px-3 py-2 text-right font-mono">
                     {t.unitsMid != null ? formatNumberCompact(t.unitsMid) : (
                       <span className="text-muted-foreground" title={gatedTooltip(t.gatedReason)}>—</span>

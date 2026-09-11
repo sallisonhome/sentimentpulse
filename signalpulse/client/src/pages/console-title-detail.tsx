@@ -174,7 +174,19 @@ export default function ConsoleTitleDetail() {
           <Card key={l.platform} className={`p-4 ${l.platform === platform ? "border-primary/50" : ""}`}>
             <div className="text-xs text-muted-foreground uppercase">{PLATFORM_LABEL[l.platform]}</div>
             <div className="text-2xl font-mono mt-1">{formatCompact(l.ratingCount)}</div>
-            <div className="text-xs text-muted-foreground">ratings · avg {l.avgRating != null ? l.avgRating.toFixed(2) : "—"}</div>
+            <div className="text-xs text-muted-foreground">
+              ratings · avg {
+                // Steam's avg_rating is a 0-5 rescale of the up/(up+down) recommendation rate
+                // (collector: (up/total)*5). Show it as the native percent on Steam rows so
+                // "70%" doesn't display as 3.5 and read like a positive score; keep the 0-5
+                // mean on PS5/Xbox where that's the native unit.
+                l.avgRating != null
+                  ? (l.platform === "steam"
+                      ? `${Math.round(l.avgRating * 20)}%`
+                      : l.avgRating.toFixed(2))
+                  : "—"
+              }
+            </div>
             <div className="text-xs text-muted-foreground mt-1">captured {l.captureDate}</div>
           </Card>
         ))}

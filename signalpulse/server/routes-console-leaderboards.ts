@@ -247,6 +247,37 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           igdb.match_confidence                     AS matchConfidence,
           srs.rating_count                          AS ratingCount,
           srs.avg_rating                            AS avgRating,
+          -- Steam's native semantics are 'percent of ratings that are positive'
+          -- (thumbs-up recommendations), NOT a 5-star mean. The collector rescales
+          -- it to 0-5 as (up/total)*5 for cross-platform sortability, but that
+          -- reads misleadingly on the UI: 70% recommended (which Steam labels
+          -- 'Mixed') shows as 3.5/5, close to 'Positive' on a console-eye scale.
+          --
+          -- Expose the native percent alongside the 0-5 value and let the client
+          -- render '87% · Very Positive' for Steam rows and keep '4.3' on PS5/Xbox.
+          -- For non-Steam platforms these fields are null.
+          --
+          -- Percent is the exact inversion of the collector: avg_rating * 20.
+          -- Label follows Steam's own bucket thresholds:
+          --   >=95: Overwhelmingly Positive
+          --   80-94: Very Positive
+          --   70-79: Mostly Positive
+          --   40-69: Mixed
+          --   20-39: Mostly Negative
+          --   0-19:  Overwhelmingly Negative
+          CASE WHEN psm.platform = 'steam' AND srs.avg_rating IS NOT NULL
+               THEN CAST(ROUND(srs.avg_rating * 20) AS INTEGER)
+               ELSE NULL END                        AS avgRatingPercent,
+          CASE WHEN psm.platform = 'steam' AND srs.avg_rating IS NOT NULL
+               THEN CASE
+                 WHEN srs.avg_rating * 20 >= 95 THEN 'Overwhelmingly Positive'
+                 WHEN srs.avg_rating * 20 >= 80 THEN 'Very Positive'
+                 WHEN srs.avg_rating * 20 >= 70 THEN 'Mostly Positive'
+                 WHEN srs.avg_rating * 20 >= 40 THEN 'Mixed'
+                 WHEN srs.avg_rating * 20 >= 20 THEN 'Mostly Negative'
+                 ELSE 'Overwhelmingly Negative'
+               END
+               ELSE NULL END                        AS avgRatingLabel,
           srs.capture_date                          AS ratingCapturedAt,
           ${cascadeOwners}                          AS ownersMid,
           ${cascadeUnits}                           AS unitsMid,
