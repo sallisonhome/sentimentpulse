@@ -42,6 +42,13 @@ export interface SteamCollectorInput {
 }
 
 export interface SteamCollectorOutput {
+  /**
+   * The input record this output was produced for. The runner MUST read
+   * `output.input.titleId` when writing snapshots — positional alignment
+   * with the original inputs array is unsafe (failed inputs are excluded
+   * from `ok`, so `ok[i]` does not match `inputs[i]` after any failure).
+   */
+  input: SteamCollectorInput;
   snapshot: StoreRatingSnapshot;
   buckets: SteamReviewBucket[];
 }
@@ -113,7 +120,7 @@ export async function fetchSteamRatingSignal(input: SteamCollectorInput): Promis
     rawJson: JSON.stringify({ rollup_type: rollupType, recent_len: recent.length, rollups_len: rollups.length }),
   };
 
-  return { snapshot, buckets };
+  return { input, snapshot, buckets };
 }
 
 /**

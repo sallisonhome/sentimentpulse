@@ -20,7 +20,20 @@
  * so we know we drifted. Never silently switch.
  */
 
-import { CollectorFailure, CollectorResult, StoreRatingSnapshot, fetchJson, todayUtc } from "./types";
+import { CollectorFailure, CollectorResult, CollectorSkip, StoreRatingSnapshot, fetchJson, todayUtc } from "./types";
+
+/**
+ * Soft-skip sentinel: the endpoint answered, but `productRetrieve` returned
+ * null data (delisted / upcoming / unpublished). Runner treats as skipped,
+ * NOT failed, so it doesn't inflate on-call metrics or the seed workflow's
+ * failure count.
+ */
+export class PsProductRetrieveEmptyError extends Error {
+  constructor(public productId: string) {
+    super(`ps productRetrieve returned no data for productId=${productId}`);
+    this.name = "PsProductRetrieveEmptyError";
+  }
+}
 
 const DEFAULT_HASH = "799fa113378f699281e0eda3154c54e03d763f6a98ad9a1378d58b1c2cb76cec";
 const DEFAULT_LOCALE_HEADER = "en-US,en;q=0.9";
@@ -59,6 +72,14 @@ export interface PsCollectorInput {
 }
 
 export interface PsCollectorOutput {
+  /**
+   * The input record this output was produced for. The runner MUST read
+   * `output.input.titleId` when writing snapshots — do not rely on
+   * positional alignment with the original inputs array. Failures and
+   * soft-skips remove entries from `ok`, so `ok[i]` no longer lines up
+   * with `inputs[i]` after the first skip.
+   */
+  input: PsCollectorInput;
   snapshot: StoreRatingSnapshot;
   conceptId: string | null;
   storeDisplayClassification: string | null;
@@ -106,7 +127,7 @@ export async function fetchPsRatingSignal(input: PsCollectorInput): Promise<PsCo
   }
 
   const pr = raw?.data?.productRetrieve;
-  if (!pr) throw new Error(`ps productRetrieve returned no data for productId=${input.productId}`);
+  if (!pr) throw new PsProductRetrieveEmptyError(input.productId);
 
   const sr = pr.starRating ?? {};
   const rc = typeof sr.totalRatingsCount === "number" ? sr.totalRatingsCount : null;
@@ -131,6 +152,7 @@ export async function fetchPsRatingSignal(input: PsCollectorInput): Promise<PsCo
   };
 
   return {
+    input,
     snapshot,
     conceptId: pr.concept?.id ?? null,
     storeDisplayClassification: pr.storeDisplayClassification ?? null,
@@ -142,19 +164,30 @@ export async function fetchPsRatingSignal(input: PsCollectorInput): Promise<PsCo
 export async function collectPsSignals(inputs: PsCollectorInput[], delayMs: number = 300): Promise<CollectorResult<PsCollectorOutput>> {
   const ok: PsCollectorOutput[] = [];
   const failed: CollectorFailure[] = [];
+  const skipped: CollectorSkip[] = [];
   for (const inp of inputs) {
     try {
       const out = await fetchPsRatingSignal(inp);
       ok.push(out);
     } catch (e) {
-      failed.push({
-        platform: "ps5",
-        externalSku: inp.productId,
-        reason: e instanceof Error ? e.message : String(e),
-        cause: e,
-      });
+      // Soft-skip: delisted / unpublished / upcoming editions still surface
+      // on the sales chart but have no PDP data. Not a system failure.
+      if (e instanceof PsProductRetrieveEmptyError) {
+        skipped.push({
+          platform: "ps5",
+          externalSku: inp.productId,
+          reason: "productRetrieve returned no data (likely delisted or upcoming)",
+        });
+      } else {
+        failed.push({
+          platform: "ps5",
+          externalSku: inp.productId,
+          reason: e instanceof Error ? e.message : String(e),
+          cause: e,
+        });
+      }
     }
     if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs));
   }
-  return { ok, failed };
+  return { ok, failed, skipped };
 }

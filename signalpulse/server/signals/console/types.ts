@@ -46,9 +46,30 @@ export interface CollectorFailure {
   cause?: unknown;
 }
 
+/**
+ * A soft-skip: the storefront answered but returned no data for this SKU.
+ * This is a business-as-usual outcome for delisted/unpublished/upcoming
+ * editions that appear on a sales chart but no longer have a live PDP.
+ * The runner should NOT treat these as failures (no on-call alert, no
+ * exit-code bump). They just don't produce a rating snapshot, which
+ * means the leaderboard's `COALESCE(rating_count,0) DESC` naturally
+ * sinks them to the bottom.
+ */
+export interface CollectorSkip {
+  platform: ConsolePlatform;
+  externalSku?: string;
+  reason: string;                          // e.g. "productRetrieve returned no data (likely delisted)"
+}
+
 export interface CollectorResult<T> {
   ok: T[];
   failed: CollectorFailure[];
+  /**
+   * Empty for collectors that don't distinguish soft-skips (Steam, Xbox
+   * as of 2026-09-11). PS routes delisted-edition cases here so they
+   * don't inflate the `failed` count.
+   */
+  skipped?: CollectorSkip[];
 }
 
 // ─── Fetch helper w/ timeout + retry-once ────────────────────────────────────

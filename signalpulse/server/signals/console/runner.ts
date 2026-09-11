@@ -35,6 +35,13 @@ interface PlatformRunResult {
   gatedUnknown: number;
   failed: number;
   failureSample: Array<{ sku?: string; reason: string }>;
+  /**
+   * SKUs the storefront answered for but returned no data (delisted /
+   * upcoming / unpublished). Distinct from `failed` — soft-skips are
+   * business-as-usual and should not trigger on-call.
+   */
+  skipped?: number;
+  skipSample?: Array<{ sku?: string; reason: string }>;
 }
 
 interface SkuGateRow {
@@ -155,11 +162,11 @@ export async function runSteamCollector(inputs: SteamCollectorInput[]): Promise<
 
   const res = await collectSteamSignals(eligible);
   let ingested = 0;
-  for (let i = 0; i < res.ok.length; i++) {
-    const out = res.ok[i];
-    const inp = eligible[i];
-    if (!inp) continue;
-    insertStoreRatingSnapshot(inp.titleId, out.snapshot);
+  // Consume outputs by input identity, NOT by positional index. Failed inputs
+  // are excluded from `res.ok`, so `res.ok[i]` does not align with
+  // `eligible[i]` after any failure. See PsCollectorOutput.input docstring.
+  for (const out of res.ok) {
+    insertStoreRatingSnapshot(out.input.titleId, out.snapshot);
     for (const b of out.buckets) insertSteamBucket(b);
     ingested++;
   }
@@ -188,10 +195,9 @@ export async function runXboxCollector(inputs: XboxCollectorInput[]): Promise<Pl
 
   const res = await collectXboxSignals(eligible);
   let ingested = 0;
-  for (let i = 0; i < res.ok.length; i++) {
-    const out = res.ok[i];
-    const inp = eligible[i];
-    if (!inp) continue;
+  // Consume outputs by input identity, NOT by positional index. See
+  // XboxCollectorOutput.input docstring.
+  for (const out of res.ok) {
     // store_rating_signal_daily is unique on (title, platform, capture_date).
     // Xbox natively returns three windows; keep the LTD row on disk and bundle
     // d7/d30 numbers into raw_json for the estimator to consume.
@@ -207,7 +213,7 @@ export async function runXboxCollector(inputs: XboxCollectorInput[]): Promise<Pl
         })),
       }),
     };
-    insertStoreRatingSnapshot(inp.titleId, bundled);
+    insertStoreRatingSnapshot(out.input.titleId, bundled);
     ingested++;
   }
 
@@ -235,15 +241,15 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
 
   const res = await collectPsSignals(eligible);
   let ingested = 0;
-  for (let i = 0; i < res.ok.length; i++) {
-    const out = res.ok[i];
-    const inp = eligible[i];
-    if (!inp) continue;
-    insertStoreRatingSnapshot(inp.titleId, out.snapshot);
+  // Consume outputs by input identity, NOT by positional index. Failed AND
+  // soft-skipped inputs are excluded from `res.ok`, so `res.ok[i]` does not
+  // align with `eligible[i]`. See PsCollectorOutput.input docstring.
+  for (const out of res.ok) {
+    insertStoreRatingSnapshot(out.input.titleId, out.snapshot);
     if (out.usedFallback) {
       insertDivergence({
         platform: "ps5",
-        titleId: inp.titleId,
+        titleId: out.input.titleId,
         endpointA: "ps:wcaProductStarRatingRetrive",
         endpointB: "ps:pdp-html",
         valueA: null,
@@ -253,6 +259,7 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
     ingested++;
   }
 
+  const skips = res.skipped ?? [];
   return {
     attempted: inputs.length,
     ingested,
@@ -260,6 +267,8 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
     gatedUnknown,
     failed: res.failed.length,
     failureSample: res.failed.slice(0, 5).map(f => ({ sku: f.externalSku, reason: f.reason })),
+    skipped: skips.length,
+    skipSample: skips.slice(0, 5).map(s => ({ sku: s.externalSku, reason: s.reason })),
   };
 }
 

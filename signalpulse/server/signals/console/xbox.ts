@@ -77,6 +77,13 @@ export interface XboxCollectorInput {
 }
 
 export interface XboxCollectorOutput {
+  /**
+   * The input record this output was produced for. The runner MUST read
+   * `output.input.titleId` when writing snapshots — positional alignment
+   * with the original inputs array is unsafe (failed inputs are excluded
+   * from `ok`, so `ok[i]` does not match `inputs[i]` after any failure).
+   */
+  input: XboxCollectorInput;
   snapshots: StoreRatingSnapshot[];          // one per window: d7, d30, ltd (native)
   pricing: {
     allSkusZero: boolean;                    // true → free_to_play classification
@@ -159,6 +166,7 @@ export async function fetchXboxRatingSignal(input: XboxCollectorInput): Promise<
   const baseMsrpUsdCents = baseMsrpUsd == null ? null : Math.round(baseMsrpUsd * 100);
 
   return {
+    input,
     snapshots,
     pricing: { allSkusZero, baseMsrpUsdCents, currency },
     productTitle,
