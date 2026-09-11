@@ -174,12 +174,25 @@ export async function refreshIgdbForTitle(titleId: number, name: string, force: 
   const developers = (g.involved_companies || []).filter(c => c.developer).map(c => c.company.name);
   const publishers = (g.involved_companies || []).filter(c => c.publisher).map(c => c.company.name);
 
+  // Match-quality guard. IGDB's `search` operator returns the first hit that
+  // token-matches the query — so "Halloween: The Game" happily comes back as
+  // "Solitaire Game Halloween 2" if that title's IGDB rating count is higher.
+  // A simple token-overlap check is enough to catch the obvious wrong-matches
+  // without a full similarity library. Jaccard ≥ 0.5 (half the tokens shared)
+  // is considered high confidence; below that we still write the metadata
+  // (so PDPs and searches still work) but mark match_confidence='low' so the
+  // leaderboard falls back to the storefront-captured store_name.
+  const matchConfidence = classifyMatchConfidence(name, g.name);
+  if (matchConfidence === "low") {
+    log(`igdb: LOW-confidence match titleId=${titleId} query="${name}" → "${g.name}" — leaderboard will fall back to store_name`);
+  }
+
   rawSqlite.prepare(`
     INSERT INTO console_title_igdb
       (title_id, igdb_id, slug, name, summary, release_date, cover_url, artwork_url,
        screenshots_json, genres_json, themes_json, platforms_json, developers_json, publishers_json,
-       rating, rating_count, refreshed_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       rating, rating_count, match_confidence, refreshed_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(title_id) DO UPDATE SET
       igdb_id = excluded.igdb_id, slug = excluded.slug, name = excluded.name,
       summary = excluded.summary, release_date = excluded.release_date,
@@ -188,14 +201,76 @@ export async function refreshIgdbForTitle(titleId: number, name: string, force: 
       themes_json = excluded.themes_json, platforms_json = excluded.platforms_json,
       developers_json = excluded.developers_json, publishers_json = excluded.publishers_json,
       rating = excluded.rating, rating_count = excluded.rating_count,
+      match_confidence = excluded.match_confidence,
       refreshed_at = excluded.refreshed_at
+      -- store_name / store_header_image_url are intentionally NOT touched here.
+      -- They're captured by bootstrapConsoleTitleNames() and are the fallback
+      -- when this IGDB match turns out to be wrong.
   `).run(
     titleId, g.id, g.slug, g.name, g.summary || null, releaseIso, cover, artwork,
     JSON.stringify(screenshots), JSON.stringify(genres), JSON.stringify(themes),
     JSON.stringify(platforms), JSON.stringify(developers), JSON.stringify(publishers),
-    g.rating || null, g.rating_count || null, nowIso, nowIso,
+    g.rating || null, g.rating_count || null, matchConfidence, nowIso, nowIso,
   );
 
-  log(`igdb: refreshed titleId=${titleId} → igdb_id=${g.id} (${g.slug})`);
+  log(`igdb: refreshed titleId=${titleId} → igdb_id=${g.id} (${g.slug}) confidence=${matchConfidence}`);
   return { titleId, igdbId: g.id, slug: g.slug, matched: true, fromCache: false };
+}
+
+/**
+ * Compare our search name against IGDB's returned name using token overlap +
+ * a first-token guard. Returns 'low' when either the token overlap is weak OR
+ * the leading significant tokens disagree.
+ *
+ * Design notes:
+ *   - Punctuation stripped, case folded.
+ *   - Stopwords ("the", "of", "deluxe", "edition", …) and edition suffixes
+ *     dropped so "EA Sports FC 27 Ultimate Edition" ≡ "EA Sports FC 27".
+ *   - Prefix matching (fish ⊆ fishing) so pluralised or gerund forms of the
+ *     same core word still count as a hit. This catches "How to Fish" vs
+ *     "Fishing Fishing" as a MIS-match (the first significant token differs)
+ *     without also flagging "Fish" vs "Fishing" — that pair still trips
+ *     the first-token guard.
+ *   - First-token guard: after tokenisation, the FIRST non-stop token of the
+ *     query and the match must share a prefix. This is what actually breaks
+ *     "Halloween: The Game" vs "Solitaire Game Halloween 2" — the first
+ *     tokens are "halloween" vs "solitaire", which never match.
+ *   - Overall coverage: at least 60% of the QUERY tokens must find a partner
+ *     in the match tokens. Coverage-of-query is more stable than Jaccard when
+ *     IGDB returns a longer edition-tagged name than the storefront's plain
+ *     title.
+ */
+function classifyMatchConfidence(query: string, matchName: string | undefined): "high" | "low" {
+  if (!matchName) return "low";
+  const stop = new Set(["the", "a", "an", "of", "to", "and", "deluxe", "edition", "ultimate", "digital", "standard", "remastered", "remake", "gold", "premium", "complete", "anniversary", "goty"]);
+  const tokens = (s: string): string[] =>
+    s
+      // Strip combining-diacritic characters after NFD-normalising, so
+      // "yōtei" collapses to "yotei" and lines up with IGDB's ascii-fold.
+      .normalize("NFD").replace(/[\u0300-\u036f]+/g, "")
+      .toLowerCase().replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/).filter(t => t.length >= 2 && !stop.has(t));
+
+  const qTokens = tokens(query);
+  const mTokens = tokens(matchName);
+  if (qTokens.length === 0 || mTokens.length === 0) return "low";
+
+  // Prefix-aware token match: 'fish' matches 'fishing', '2k27' matches '2k27'.
+  // We require the SHORTER token to be a prefix of the longer one so we don't
+  // spuriously connect 'sword' to 'crossword'.
+  const prefixMatch = (a: string, b: string) => {
+    if (a === b) return true;
+    const [s, l] = a.length <= b.length ? [a, b] : [b, a];
+    return s.length >= 3 && l.startsWith(s);
+  };
+  const tokenIn = (t: string, arr: string[]) => arr.some(x => prefixMatch(t, x));
+
+  // First-token guard — the strongest signal that this is the wrong game.
+  if (!prefixMatch(qTokens[0], mTokens[0])) return "low";
+
+  // Coverage: fraction of query tokens with a partner in the match.
+  let hits = 0;
+  for (const t of qTokens) if (tokenIn(t, mTokens)) hits++;
+  const coverage = hits / qTokens.length;
+  return coverage >= 0.6 ? "high" : "low";
 }

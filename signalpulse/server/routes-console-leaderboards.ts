@@ -97,7 +97,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     try {
       const platform = req.params.platform as Platform;
       if (!PLATFORMS.includes(platform)) return res.status(400).json({ error: "invalid platform" });
-      const window = (req.query.window as string) || "d30";
+      // Default is the 7d window so fresh weekly hits (launches like
+      // Halloween: The Game and How to Fish) surface first. Because the
+      // estimator sometimes doesn't have 7d numbers yet for very recent
+      // launches, the SQL below cascades w.units_mid through d7→d30→d90→ltd
+      // per-row so revenue/units always fills top-100 even when a specific
+      // window is thin. The `windowUsed` column on each row tells the client
+      // which underlying window produced the number.
+      const window = (req.query.window as string) || "d7";
       if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
 
       // Sort mode + direction. Whitelist rather than string-interpolate to keep
@@ -113,20 +120,73 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // units × asp/100 (dollars), where asp = msrp × platform ASP factor,
       // so a title with unknown msrp (NULL) sinks. The ASP factor is a
       // constant per request — sqlite treats it as a bound parameter below.
-      const SORT_EXPR: Record<string, string> = {
-        revenue: "(w.units_mid * psm.msrp_usd_cents * ? / 100.0)",
-        units:   "w.units_mid",
+      //
+      // Sort expressions reference the CASCADED window value (built below as
+      // cascadeUnits) rather than a single window's row, so a title with only
+      // 30d data still sorts sensibly against titles that have real 7d data.
+      const sortExprFor = (cascadeUnitsSql: string): Record<string, string> => ({
+        revenue: `(${cascadeUnitsSql} * psm.msrp_usd_cents * ? / 100.0)`,
+        units:   cascadeUnitsSql,
         ratings: "srs.rating_count",
         score:   "srs.avg_rating",
         // ASP sort ranks by MSRP directly since ASP = MSRP × platform factor is
         // a fixed monotonic multiplier per platform. Cheaper avoids two more binds.
         asp:     "psm.msrp_usd_cents",
+      });
+      const dirSql = dir === "asc" ? "ASC" : "DESC";
+
+      // Row-level window cascade. Business rule:
+      //   Bias toward the requested window (default 7d), but if that window has
+      //   no estimate yet for a given (title, platform), fall back to the next
+      //   wider window so the row still ranks. Order: d7 → d30 → d90 → m12 → ltd.
+      //   Never widen NARROWER (e.g. d30 request doesn't fall to d7): that would
+      //   break the semantics of a user asking specifically for the 30d view.
+      const CASCADE_BY_WINDOW: Record<string, string[]> = {
+        d7:  ["d7", "d30", "d90", "m12", "ltd"],
+        d30: ["d30", "d90", "m12", "ltd"],
+        d90: ["d90", "m12", "ltd"],
+        m12: ["m12", "ltd"],
+        ltd: ["ltd"],
       };
-      const sortExpr = SORT_EXPR[sort];
+      const cascade = CASCADE_BY_WINDOW[window];
+
+      // "Recent hot" = the title released in the last 30 days AND has any 7d
+      // estimate at all. Surfaces launches like Halloween: The Game (2026-09-08)
+      // and How to Fish (2026-08-20) with a badge so the operator can see the
+      // 7d chart is being driven by new releases rather than tenured titles.
+      const recentHotThresholdIso = daysAgo(30);
+
+      // Build the LEFT JOIN chain for the cascade. Each level pulls its own
+      // latest as_of_date so a stale d7 row from last week doesn't win over a
+      // fresh d30 row from today. Window strings are HARDCODED from the whitelist
+      // above (never user input) so it's safe to interpolate directly.
+      const cascadeJoins = cascade.map((w, i) => `
+        LEFT JOIN window_estimates_daily w${i}
+               ON w${i}.title_id = psm.title_id
+              AND w${i}.platform = psm.platform
+              AND w${i}.window = '${w}'
+              AND w${i}.as_of_date = (SELECT MAX(as_of_date) FROM window_estimates_daily
+                                        WHERE title_id = psm.title_id AND platform = psm.platform AND window = '${w}')
+      `).join("\n");
+
+      // COALESCE picks the first non-null level in cascade order. The parallel
+      // CASE expression records which window actually produced the value so the
+      // client can badge "est. via 30d" when 7d was empty.
+      const cascadeUnits = "COALESCE(" + cascade.map((_, i) => `w${i}.units_mid`).join(", ") + ")";
+      const sortExpr = sortExprFor(cascadeUnits)[sort];
       // Bind the ASP factor twice for revenue sort (once in ORDER BY IS NULL,
       // once in ORDER BY sortExpr) so the constant lands in both slots.
       const sortBinds = sort === "revenue" ? [aspFactor, aspFactor] : [];
-      const dirSql = dir === "asc" ? "ASC" : "DESC";
+      const cascadeOwners = "COALESCE(" + cascade.map((_, i) => `w${i}.owners_mid`).join(", ") + ")";
+      const cascadeGated = "COALESCE(" + cascade.map((_, i) => `w${i}.gated_reason`).join(", ") + ")";
+      const cascadeWindowUsed = "CASE " + cascade.map((w, i) => `WHEN w${i}.units_mid IS NOT NULL THEN '${w}'`).join(" ") + " ELSE NULL END";
+
+      // Recent-hot needs the STRICT 7d estimate, which is w0 only when the
+      // requested window is d7. For wider requests we do a small correlated
+      // EXISTS to check 7d explicitly.
+      const recentHot7dTest = window === "d7"
+        ? "w0.units_mid IS NOT NULL"
+        : "EXISTS (SELECT 1 FROM window_estimates_daily w7d WHERE w7d.title_id = psm.title_id AND w7d.platform = psm.platform AND w7d.window = 'd7' AND w7d.units_mid IS NOT NULL)";
 
       // Grab latest daily rating snapshot per (title, platform). Only paid business_model.
       const rows = rawSqlite.prepare(`
@@ -141,21 +201,52 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           psm.external_sku                          AS externalSku,
           psm.msrp_usd_cents                        AS msrpUsdCents,
           psm.business_model                        AS businessModel,
-          igdb.name                                 AS name,
-          igdb.cover_url                            AS coverUrl,
+          -- Name / cover selection:
+          --   Prefer IGDB's canonical name/cover when the match looks trustworthy.
+          --   When match_confidence='low' (release-date sanity check flagged a
+          --   mismatch during IGDB refresh) OR IGDB has no data yet, fall back
+          --   to the storefront's name / header art. Those are preserved on
+          --   console_title_igdb (store_name / store_header_image_url) by
+          --   bootstrapConsoleTitleNames() and are never overwritten by the
+          --   IGDB refresh path. This fixes cases like Steam appid 3219630
+          --   ("Halloween: The Game") whose IGDB search happened to match
+          --   "Solitaire Game Halloween 2".
+          CASE
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
+            ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
+          END                                       AS name,
+          CASE
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
+            ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
+          END                                       AS coverUrl,
           igdb.release_date                         AS releaseDate,
+          -- nameSource lets the client badge each row.
+          CASE
+            WHEN igdb.match_confidence = 'low' THEN 'store'
+            WHEN igdb.name IS NOT NULL AND igdb.name != '' THEN 'igdb'
+            ELSE 'store'
+          END                                       AS nameSource,
+          igdb.match_confidence                     AS matchConfidence,
           srs.rating_count                          AS ratingCount,
           srs.avg_rating                            AS avgRating,
           srs.capture_date                          AS ratingCapturedAt,
-          w.owners_mid                              AS ownersMid,
-          w.units_mid                               AS unitsMid,
+          ${cascadeOwners}                          AS ownersMid,
+          ${cascadeUnits}                           AS unitsMid,
+          ${cascadeWindowUsed}                      AS windowUsed,
           -- ASP (Average Selling Price) in USD cents = MSRP × platform ASP factor.
           -- Kept as an integer-cents value so the client formats it the same as MSRP.
           CAST(psm.msrp_usd_cents * ? AS INTEGER)   AS aspUsdCents,
-          -- Estimated in-window revenue in USD dollars = units × ASP.
+          -- Estimated in-window revenue in USD dollars = cascaded units × ASP.
           -- ASP applies platform-specific realization (steam ~66%, consoles ~80%).
-          (w.units_mid * psm.msrp_usd_cents * ? / 100.0) AS revenueMidUsd,
-          w.gated_reason                            AS gatedReason
+          (${cascadeUnits} * psm.msrp_usd_cents * ? / 100.0) AS revenueMidUsd,
+          ${cascadeGated}                           AS gatedReason,
+          -- Recent-hot flag = released in the last 30d AND has a real 7d estimate.
+          CASE WHEN igdb.release_date IS NOT NULL
+                AND igdb.release_date >= ?
+                AND ${recentHot7dTest}
+               THEN 1 ELSE 0 END                    AS isRecentHot
         FROM platform_sku_map psm
         LEFT JOIN latest_rating lr
                ON lr.title_id = psm.title_id AND lr.platform = psm.platform
@@ -165,34 +256,32 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               AND srs.capture_date = lr.max_date
         LEFT JOIN console_title_igdb igdb
                ON igdb.title_id = psm.title_id
-        LEFT JOIN window_estimates_daily w
-               ON w.title_id = psm.title_id
-              AND w.platform = psm.platform
-              AND w.window = ?
-              AND w.as_of_date = (SELECT MAX(as_of_date) FROM window_estimates_daily
-                                    WHERE title_id = psm.title_id AND platform = psm.platform AND window = ?)
+        ${cascadeJoins}
        WHERE psm.platform = ?
          AND psm.business_model = 'paid'
          AND psm.sku_role = 'base'
-       -- Default sort is estimated revenue for the selected window. User can
-       -- switch to units, ratings, or score via ?sort=. NULL sort values sink
-       -- so the client still gets a full 100 rows even before the estimator
-       -- has populated every window. rating_count is a stable-sort tie-breaker.
+       -- NULL sort values sink so the client still gets a full 100 rows even
+       -- before the estimator has populated every window. rating_count is a
+       -- stable-sort tie-breaker for every sort mode.
+       -- Recent-hot titles get a small tie-breaker bump so a Sep-8 launch
+       -- with the same revenue as a tenured title still lands above it in
+       -- the 7d view.
        ORDER BY (${sortExpr} IS NULL) ASC,
                 ${sortExpr} ${dirSql},
+                (CASE WHEN igdb.release_date >= ? THEN 1 ELSE 0 END) DESC,
                 COALESCE(srs.rating_count, 0) DESC
        LIMIT 100
       `).all(
-        platform,          // 1: latest_rating CTE  WHERE platform = ?
-        aspFactor,         // 2: SELECT aspUsdCents CAST(msrp * ? AS INTEGER)
-        aspFactor,         // 3: SELECT revenueMidUsd = units * msrp * ? / 100
-        window,            // 4: LEFT JOIN window_estimates_daily w  AND w.window = ?
-        window,            // 5: subquery MAX(as_of_date) … AND window = ?
-        platform,          // 6: outer  WHERE psm.platform = ?
-        ...sortBinds,      // 7,8: ORDER BY sortExpr contains one ? per use (twice when sort=revenue)
+        platform,               // 1: latest_rating CTE WHERE platform = ?
+        aspFactor,              // 2: SELECT aspUsdCents CAST(msrp * ? AS INTEGER)
+        aspFactor,              // 3: SELECT revenueMidUsd = units * msrp * ? / 100
+        recentHotThresholdIso,  // 4: isRecentHot release_date >= ?
+        platform,               // 5: outer WHERE psm.platform = ?
+        ...sortBinds,           // 6,7: ORDER BY sortExpr contains one ? per use (twice when sort=revenue)
+        recentHotThresholdIso,  // last: ORDER BY recent-hot tie-breaker release_date >= ?
       ) as Array<Record<string, any>>;
 
-      res.json({ platform, window, sort, dir, aspFactor, count: rows.length, titles: rows });
+      res.json({ platform, window, sort, dir, aspFactor, cascade, count: rows.length, titles: rows });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

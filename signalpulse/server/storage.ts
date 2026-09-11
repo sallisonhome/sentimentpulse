@@ -884,6 +884,18 @@ function runMigrations() {
   // docs/multiplier-recalibration-v03.md.
   migrateAddColumnIfMissing("platform_sku_map", "is_gamepass", "is_gamepass INTEGER NOT NULL DEFAULT 0");
   migrateAddColumnIfMissing("ownership_multipliers", "gp_rating_deflator", "gp_rating_deflator REAL");
+  // v3.40 (2026-09-11): Preserve storefront name/cover on console_title_igdb
+  // so an IGDB mismatch (e.g. Steam appid 3219630 = "Halloween: The Game" but
+  // IGDB happens to match "Solitaire Game Halloween 2") never leaves the
+  // leaderboard displaying the wrong title. bootstrapConsoleTitleNames writes
+  // these columns from the store; the IGDB refresh path is not allowed to touch
+  // them. Route falls back to them when IGDB fields are NULL/empty.
+  migrateAddColumnIfMissing("console_title_igdb", "store_name", "store_name TEXT");
+  migrateAddColumnIfMissing("console_title_igdb", "store_header_image_url", "store_header_image_url TEXT");
+  // Confidence tag so we can down-weight an obvious IGDB mismatch instead of
+  // blindly displaying its name. Currently written by refreshIgdbForTitle when
+  // the release-date sanity check fires; NULL means "never evaluated".
+  migrateAddColumnIfMissing("console_title_igdb", "match_confidence", "match_confidence TEXT");
 }
 
 initializeDatabase();

@@ -46,26 +46,43 @@ interface SteamAppDetailsResponse {
 /**
  * Fetch the Steam top-sellers list. `hidef2p=1` filters F2P at the SOURCE
  * (defense in depth on top of the ingest gate).
+ *
+ * Discovery now takes the UNION of two Steam search filters:
+ *   1. `topsellers` — the 24-hour top-sellers chart (Steam's primary signal).
+ *   2. `new_releases` — the past-month new-releases chart.
+ *
+ * The topsellers chart aggregates over a rolling 24h window, so a game that
+ * launches strong (Halloween: The Game on Sep 8) may not surface for several
+ * days. Unioning `new_releases` catches those “hot right now” launches while
+ * they are still fresh, so the 7-day leaderboard can flag them via the
+ * isRecentHot column.
  */
 export async function discoverSteamTopSellers(pages: number = 4): Promise<Array<{ appId: string }>> {
-  const out: Array<{ appId: string }> = [];
   const seen = new Set<string>();
-  for (let page = 0; page < pages; page++) {
-    const start = page * 25;
-    const url = `https://store.steampowered.com/search/results/?query=&start=${start}&count=25&filter=topsellers&supportedlang=english&category1=998&hidef2p=1&infinite=1`;
-    let resp: SteamSearchResponse;
-    try {
-      resp = await fetchJson<SteamSearchResponse>(url, { timeoutMs: 15000 });
-    } catch (e) {
-      log(`steam discovery: page ${page} failed: ${e instanceof Error ? e.message : e}`);
-      continue;
+  const out: Array<{ appId: string }> = [];
+
+  const fetchFilter = async (filter: "topsellers" | "new_releases") => {
+    for (let page = 0; page < pages; page++) {
+      const start = page * 25;
+      const url = `https://store.steampowered.com/search/results/?query=&start=${start}&count=25&filter=${filter}&supportedlang=english&category1=998&hidef2p=1&infinite=1`;
+      let resp: SteamSearchResponse;
+      try {
+        resp = await fetchJson<SteamSearchResponse>(url, { timeoutMs: 15000 });
+      } catch (e) {
+        log(`steam discovery: ${filter} page ${page} failed: ${e instanceof Error ? e.message : e}`);
+        continue;
+      }
+      const appIds = extractSteamAppIds(resp.results_html || "");
+      for (const id of appIds) {
+        if (!seen.has(id)) { seen.add(id); out.push({ appId: id }); }
+      }
+      await new Promise(r => setTimeout(r, 300));
     }
-    const appIds = extractSteamAppIds(resp.results_html || "");
-    for (const id of appIds) {
-      if (!seen.has(id)) { seen.add(id); out.push({ appId: id }); }
-    }
-    await new Promise(r => setTimeout(r, 300));
-  }
+  };
+
+  await fetchFilter("topsellers");
+  await fetchFilter("new_releases");
+  log(`steam discovery: unioned topsellers + new_releases → ${out.length} appids`);
   return out;
 }
 
@@ -230,30 +247,50 @@ async function fetchXboxEmeraldPage(
  * Falls back to whatever partial page-set succeeded on error — a partial
  * harvest still beats no harvest.
  *
+ * Discovery now takes the UNION of two Xbox emerald channels:
+ *   1. `top-paid-games`                                       — revenue chart.
+ *   2. `new-releases-xbox-and-xbox-360-optimized-games`       — fresh launches.
+ *
+ * The top-paid channel is a rolling revenue chart, so fresh launches with
+ * genuine demand can take a week to appear. Unioning the new-releases channel
+ * catches those launches while they are still hot enough for the 7-day
+ * leaderboard's isRecentHot flag to fire.
+ *
  * Total addressable top-paid list is ~1001 titles per emerald's totalItems.
  */
 export async function discoverXboxAll(topN: number = 100): Promise<Array<{ bigId: string }>> {
-  const channelId = "top-paid-games";
   const all: string[] = [];
   const seen = new Set<string>();
-  let cursor: string | null = null;
-  const maxPages = Math.ceil(topN / 25);
-  for (let page = 0; page < maxPages; page++) {
-    try {
-      const { productIds, nextCT } = await fetchXboxEmeraldPage(channelId, cursor);
-      for (const id of productIds) {
-        if (!seen.has(id)) { seen.add(id); all.push(id); }
-        if (all.length >= topN) break;
+
+  const drainChannel = async (channelId: string, cap: number) => {
+    let cursor: string | null = null;
+    const maxPages = Math.ceil(cap / 25);
+    for (let page = 0; page < maxPages; page++) {
+      try {
+        const { productIds, nextCT } = await fetchXboxEmeraldPage(channelId, cursor);
+        let hadNew = false;
+        for (const id of productIds) {
+          if (!seen.has(id)) { seen.add(id); all.push(id); hadNew = true; }
+        }
+        if (!hadNew && !nextCT) break;
+        if (!nextCT) break;
+        cursor = nextCT;
+        await new Promise(r => setTimeout(r, 250));
+      } catch (e) {
+        log(`xbox discovery: ${channelId} page ${page} failed: ${e instanceof Error ? e.message : e}`);
+        break;
       }
-      if (all.length >= topN || !nextCT) break;
-      cursor = nextCT;
-      await new Promise(r => setTimeout(r, 250));
-    } catch (e) {
-      log(`xbox discovery: emerald page ${page} failed: ${e instanceof Error ? e.message : e}`);
-      break;
     }
-  }
-  return all.slice(0, topN).map(bigId => ({ bigId }));
+  };
+
+  // Primary channel gets the full topN budget so revenue-chart coverage is
+  // never regressed by adding a secondary channel.
+  await drainChannel("top-paid-games", topN);
+  // Secondary channel adds fresh launches on top; capped so a spammy new-release
+  // list can't dilute the top-paid coverage.
+  await drainChannel("new-releases-xbox-and-xbox-360-optimized-games", 50);
+  log(`xbox discovery: unioned top-paid + new-releases → ${all.length} bigIds`);
+  return all.map(bigId => ({ bigId }));
 }
 
 export interface XboxClassification {
@@ -339,11 +376,13 @@ export interface Ps5TopProduct {
                                                  // NULL when the row is F2P, subscription, or the string couldn't be parsed.
 }
 
-async function fetchPs5GridPage(offset: number, size: number): Promise<PsGridProduct[]> {
+type PsGridSort = "sales30" | "sales7";
+
+async function fetchPs5GridPage(offset: number, size: number, sortName: PsGridSort = "sales30"): Promise<PsGridProduct[]> {
   const variables = {
     id: PS5_ALL_GAMES_CATEGORY_ID,
     pageArgs: { size, offset },
-    sortBy: { name: "sales30", isAscending: false },
+    sortBy: { name: sortName, isAscending: false },
     filterBy: [] as string[],
     facetOptions: [] as string[],
   };
@@ -397,56 +436,73 @@ export function parsePs5UsdBasePriceCents(raw: string | null | undefined): numbe
 export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopProduct[]> {
   // Sony returns MULTIPLE ROWS per npTitleId (Standard + Deluxe + Ultimate editions
   // of the same underlying game all appear on the sales chart). We dedupe by
-  // npTitleId and over-fetch until we have topN UNIQUE games. Observed collapse
-  // ratio is ~0.79 (79 uniques per 100 rows), so 2 pages cover top-100 easily.
+  // npTitleId and over-fetch until we have topN UNIQUE games.
+  //
+  // Discovery now takes the UNION of two categoryGridRetrieve passes:
+  //   1. sortBy="sales7"  — 7-day sales chart (fresh launches like Halloween:
+  //                        The Game land here first).
+  //   2. sortBy="sales30" — 30-day sales chart (the previous default, kept for
+  //                        stable coverage of the top-selling catalogue).
+  //
+  // The 7-day pass runs FIRST so its productIds win in the dedup set. Fresh
+  // launches that only exist on sales7 are guaranteed to be picked up, and
+  // the 30-day pass then backfills anything else needed to hit topN.
   const pageSize = 100;
   const maxPages = Math.max(2, Math.ceil((topN * 1.3) / pageSize));
   const out: Ps5TopProduct[] = [];
   const seen = new Set<string>();
 
-  for (let page = 0; page < maxPages && out.length < topN; page++) {
-    let products: PsGridProduct[];
-    try {
-      products = await fetchPs5GridPage(page * pageSize, pageSize);
-    } catch (e) {
-      log(`ps5 discovery: page ${page} failed: ${e instanceof Error ? e.message : e}`);
-      break;
-    }
-    if (products.length === 0) break;
+  const drainSort = async (sortName: PsGridSort) => {
+    for (let page = 0; page < maxPages && out.length < topN; page++) {
+      let products: PsGridProduct[];
+      try {
+        products = await fetchPs5GridPage(page * pageSize, pageSize, sortName);
+      } catch (e) {
+        log(`ps5 discovery: ${sortName} page ${page} failed: ${e instanceof Error ? e.message : e}`);
+        break;
+      }
+      if (products.length === 0) break;
 
-    for (const p of products) {
-      // Dedupe by npTitleId (Standard/Deluxe/Ultimate editions share one),
-      // but record the FULL concept-productId `p.id` as external_sku —
-      // that's the value productRetrieve needs.
-      const npTitleId = p.npTitleId;
-      const productId = p.id;
-      if (!npTitleId || !productId) continue;
-      if (seen.has(npTitleId)) continue;
-      // Enforce PS5-only at the row level even though the category is scoped:
-      // hybrid SKUs list both platforms; require PS5 to be present.
-      const platforms = Array.isArray(p.platforms) ? p.platforms : [];
-      if (!platforms.includes("PS5")) continue;
-      seen.add(npTitleId);
-      // Pull USD MSRP from price.basePrice (populated when the caller sent
-      // Accept-Language: en-US). F2P titles come back as "Free" and parse to 0;
-      // paid parses to positive cents. Anything else — unavailable, add-on-only,
-      // “Available with subscription” — parses to null and the writer leaves it null.
-      const basePrice = (p.price && p.price.basePrice) ?? null;
-      const msrpUsdCents = parsePs5UsdBasePriceCents(basePrice);
-      out.push({
-        productId,
-        npTitleId,
-        name: p.name ?? null,
-        platforms,
-        storeDisplayClassification: p.storeDisplayClassification ?? null,
-        msrpUsdCents,
-      });
-      if (out.length >= topN) break;
+      for (const p of products) {
+        // Dedupe by npTitleId (Standard/Deluxe/Ultimate editions share one),
+        // but record the FULL concept-productId `p.id` as external_sku —
+        // that's the value productRetrieve needs.
+        const npTitleId = p.npTitleId;
+        const productId = p.id;
+        if (!npTitleId || !productId) continue;
+        if (seen.has(npTitleId)) continue;
+        // Enforce PS5-only at the row level even though the category is scoped:
+        // hybrid SKUs list both platforms; require PS5 to be present.
+        const platforms = Array.isArray(p.platforms) ? p.platforms : [];
+        if (!platforms.includes("PS5")) continue;
+        seen.add(npTitleId);
+        // Pull USD MSRP from price.basePrice (populated when the caller sent
+        // Accept-Language: en-US). F2P titles come back as "Free" and parse to 0;
+        // paid parses to positive cents. Anything else — unavailable, add-on-only,
+        // “Available with subscription” — parses to null and the writer leaves it null.
+        const basePrice = (p.price && p.price.basePrice) ?? null;
+        const msrpUsdCents = parsePs5UsdBasePriceCents(basePrice);
+        out.push({
+          productId,
+          npTitleId,
+          name: p.name ?? null,
+          platforms,
+          storeDisplayClassification: p.storeDisplayClassification ?? null,
+          msrpUsdCents,
+        });
+        if (out.length >= topN) break;
+      }
+      if (out.length < topN && page < maxPages - 1) {
+        await new Promise(r => setTimeout(r, 250));
+      }
     }
-    if (out.length < topN && page < maxPages - 1) {
-      await new Promise(r => setTimeout(r, 250));
-    }
-  }
+  };
+
+  // 7-day sales chart wins on dedup so fresh launches surface.
+  await drainSort("sales7");
+  // 30-day sales chart backfills the top-100 with stable revenue coverage.
+  await drainSort("sales30");
+  log(`ps5 discovery: unioned sales7 + sales30 → ${out.length} unique npTitleIds`);
   return out;
 }
 
@@ -595,24 +651,45 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
 // ─── Console title name bootstrap ────────────────────────────────────────────
 
 /**
- * Insert storefront-known title names into console_title_igdb so the leaderboard
- * displays a readable title from day one — before any IGDB match lands.
+ * Insert storefront-known title names + header art into console_title_igdb so
+ * the leaderboard displays a readable title from day one — before any IGDB
+ * match lands — AND so we always have a store-truthed fallback when IGDB
+ * later mis-matches.
  *
- * On conflict, only writes name when igdb_id IS NULL. A row that already has
- * a real IGDB match keeps whatever name IGDB gave it — never regresses to the
- * storefront's crude name (e.g. Xbox's product-catalog titles are often ugly).
+ * Two-column strategy:
+ *   - `name` / `cover_url` are the DISPLAY fields that IGDB writes to. On
+ *     conflict they only accept the store name when there's no IGDB match
+ *     yet (backwards-compatible with the old behaviour).
+ *   - `store_name` / `store_header_image_url` are TRUTH-FROM-THE-STORE fields.
+ *     They are always kept up to date on refresh ("the store still calls this
+ *     Halloween: The Game") and are NEVER touched by the IGDB refresh path.
+ *     The leaderboard route falls back to them whenever match_confidence='low'
+ *     or IGDB has no data.
+ *
+ *   This lets us keep IGDB's canonical names for well-matched titles while
+ *   still recovering the correct name for the ones where IGDB attached the
+ *   wrong game (e.g. Steam appid 3219630 = "Halloween: The Game" but IGDB
+ *   returned "Solitaire Game Halloween 2").
  */
-export function bootstrapConsoleTitleNames(rows: Array<{ titleId: number; name: string }>): { inserted: number; updatedName: number; kept: number } {
+export function bootstrapConsoleTitleNames(
+  rows: Array<{ titleId: number; name: string; headerImageUrl?: string | null }>,
+): { inserted: number; updatedName: number; kept: number } {
   if (rows.length === 0) return { inserted: 0, updatedName: 0, kept: 0 };
   const nowIso = new Date().toISOString();
-  // Insert-if-missing; else update name only when we haven't matched IGDB yet.
+  // Insert-if-missing; else update `name` only when IGDB hasn't taken over,
+  // but ALWAYS refresh store_name / store_header_image_url so the fallback
+  // stays in sync with what the storefront currently says.
   const stmt = rawSqlite.prepare(`
-    INSERT INTO console_title_igdb (title_id, name, refreshed_at, created_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO console_title_igdb (title_id, name, store_name, store_header_image_url, refreshed_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(title_id) DO UPDATE SET
       name = CASE WHEN console_title_igdb.igdb_id IS NULL
                   THEN excluded.name
-                  ELSE console_title_igdb.name END
+                  ELSE console_title_igdb.name END,
+      store_name = excluded.store_name,
+      -- Only overwrite the store header when we actually have one this call;
+      -- otherwise keep whatever was previously captured.
+      store_header_image_url = COALESCE(excluded.store_header_image_url, console_title_igdb.store_header_image_url)
   `);
   const existsStmt = rawSqlite.prepare(`SELECT igdb_id, name FROM console_title_igdb WHERE title_id = ?`);
 
@@ -620,7 +697,7 @@ export function bootstrapConsoleTitleNames(rows: Array<{ titleId: number; name: 
   const runTx = rawSqlite.transaction((batch: typeof rows) => {
     for (const r of batch) {
       const existing = existsStmt.get(r.titleId) as { igdb_id: number | null; name: string | null } | undefined;
-      stmt.run(r.titleId, r.name, nowIso, nowIso);
+      stmt.run(r.titleId, r.name, r.name, r.headerImageUrl ?? null, nowIso, nowIso);
       if (!existing) inserted++;
       else if (existing.igdb_id != null) kept++;
       else updatedName++;
@@ -699,7 +776,7 @@ export async function runFullDiscovery(opts: {
     platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
-    businessModelSource: `ps_categoryGridRetrieve.sales30`,
+    businessModelSource: `ps_categoryGridRetrieve.sales7+sales30`,
   }));
   const psManualRows: UpsertRow[] = psManualCls.map(c => ({
     platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),

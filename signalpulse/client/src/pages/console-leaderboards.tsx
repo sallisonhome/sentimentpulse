@@ -63,6 +63,16 @@ interface LeaderboardRow {
   unitsMid: number | null;
   revenueMidUsd: number | null;
   gatedReason: string | null;
+  // Fields added when discovery widened to sales7 / new-releases and the
+  // route began cascading windows. windowUsed reports which window actually
+  // produced the estimate ("d7" – the requested one – or a wider fallback
+  // like "d30" / "d90"). isRecentHot is 1 when the title released in the
+  // last 30 days AND has a real d7 estimate — the client badges those rows
+  // as "Recent hot" so users can spot new launches at a glance.
+  windowUsed?: WindowKey | null;
+  isRecentHot?: 0 | 1 | boolean | null;
+  nameSource?: "igdb" | "store" | null;
+  matchConfidence?: "high" | "low" | null;
 }
 
 interface LeaderboardResponse {
@@ -138,7 +148,12 @@ function usePlatformLeaderboard(
 export default function ConsoleLeaderboardsHub() {
   // Single window applies to all three columns on the hub to keep the
   // comparison honest. The per-platform full page can override it.
-  const [window, setWindow] = useState<WindowKey>("d30");
+  //
+  // Default is d7 so fresh launches with a real 7-day estimate surface
+  // first — rows without a real d7 estimate cascade internally to d30/d90/
+  // m12/ltd on the server, and the client uses windowUsed + isRecentHot to
+  // badge the difference.
+  const [window, setWindow] = useState<WindowKey>("d7");
   const [mobileTab, setMobileTab] = useState<Platform>("steam");
 
   const steamQ = usePlatformLeaderboard("steam", window);
@@ -315,8 +330,27 @@ function PlatformColumn({
                     ) : (
                       <div className="h-8 w-6 rounded-sm bg-muted shrink-0" />
                     )}
-                    <span className="flex-1 min-w-0 truncate text-sm">
-                      {t.name || t.externalSku}
+                    <span className="flex-1 min-w-0 flex items-center gap-1.5 text-sm">
+                      <span className="truncate">{t.name || t.externalSku}</span>
+                      {t.isRecentHot ? (
+                        <Badge
+                          variant="secondary"
+                          className="text-[9px] uppercase tracking-wide bg-orange-500/15 text-orange-600 border border-orange-500/30 shrink-0"
+                          title="Released in the last 30 days with a real 7-day sales estimate"
+                          data-testid={`badge-hot-${t.titleId}`}
+                        >
+                          Recent hot
+                        </Badge>
+                      ) : t.windowUsed && t.windowUsed !== window ? (
+                        <Badge
+                          variant="outline"
+                          className="text-[9px] uppercase tracking-wide text-muted-foreground shrink-0"
+                          title={`No ${window} signal yet — estimate uses ${t.windowUsed} data as fallback`}
+                          data-testid={`badge-cascade-${t.titleId}`}
+                        >
+                          est. via {t.windowUsed}
+                        </Badge>
+                      ) : null}
                     </span>
                     <div className="flex flex-col items-end shrink-0 leading-tight">
                       <span className="font-mono text-xs tabular-nums" title="Rating count (sales proxy)">
@@ -370,7 +404,7 @@ function PlatformColumn({
 export function ConsoleLeaderboardsPlatform() {
   const params = useParams<{ platform: Platform }>();
   const platform = params.platform;
-  const [window, setWindow] = useState<WindowKey>("d30");
+  const [window, setWindow] = useState<WindowKey>("d7");
   const [sort, setSort] = useState<SortKey>("revenue");
   const [dir, setDir] = useState<SortDir>("desc");
   const { data, isLoading, isError, error } = usePlatformLeaderboard(platform, window, sort, dir);
@@ -532,6 +566,25 @@ export function ConsoleLeaderboardsPlatform() {
                       <span className="cursor-pointer hover:underline flex items-center gap-2" data-testid={`link-title-${t.titleId}`}>
                         {t.coverUrl && <img src={t.coverUrl} alt="" className="h-8 w-6 object-cover rounded-sm" />}
                         <span>{t.name || t.externalSku}</span>
+                        {t.isRecentHot ? (
+                          <Badge
+                            variant="secondary"
+                            className="text-[9px] uppercase tracking-wide bg-orange-500/15 text-orange-600 border border-orange-500/30"
+                            title="Released in the last 30 days with a real 7-day sales estimate"
+                            data-testid={`badge-hot-${t.titleId}`}
+                          >
+                            Recent hot
+                          </Badge>
+                        ) : t.windowUsed && t.windowUsed !== window ? (
+                          <Badge
+                            variant="outline"
+                            className="text-[9px] uppercase tracking-wide text-muted-foreground"
+                            title={`No ${window} signal yet — estimate uses ${t.windowUsed} data as fallback`}
+                            data-testid={`badge-cascade-${t.titleId}`}
+                          >
+                            est. via {t.windowUsed}
+                          </Badge>
+                        ) : null}
                       </span>
                     </Link>
                   </td>
