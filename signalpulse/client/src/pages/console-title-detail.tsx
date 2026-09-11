@@ -92,7 +92,7 @@ export default function ConsoleTitleDetail() {
   const { data: detail, isLoading } = useQuery<TitleDetail>({
     queryKey: [`/api/console/titles/${titleId}`],
     queryFn: async () => {
-      const r = await fetch(`/api/console/titles/${titleId}`);
+      const r = await fetch(`/signal/api/console/titles/${titleId}`, { credentials: "include" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -115,7 +115,7 @@ export default function ConsoleTitleDetail() {
     queryKey: [`/api/console/titles/${titleId}/timeseries`, { platform, metric, from, to }],
     queryFn: async () => {
       const q = new URLSearchParams({ platform, metric, from, to });
-      const r = await fetch(`/api/console/titles/${titleId}/timeseries?${q.toString()}`);
+      const r = await fetch(`/signal/api/console/titles/${titleId}/timeseries?${q.toString()}`, { credentials: "include" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },

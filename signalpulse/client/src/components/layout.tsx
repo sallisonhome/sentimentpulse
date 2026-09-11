@@ -175,7 +175,7 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
                 data-testid="link-console-leaderboards"
               >
                 <Gamepad2 className="h-3.5 w-3.5 shrink-0" />
-                {!sidebarCollapsed && <span>Console Leaderboards</span>}
+                {!sidebarCollapsed && <span>Steam &amp; Console Sales <span className="opacity-60">(experimental)</span></span>}
               </div>
             </Link>
             <Link href="/dashboard">

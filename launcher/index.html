@@ -25,6 +25,7 @@
       --accent-gtm: #FFB454;
       --accent-partnerships: #f472b6;
       --accent-promo: #22c55e;
+      --accent-console: #38bdf8;
       --danger: #ef4444;
       --radius: 14px;
     }
@@ -193,6 +194,7 @@
     .app-card-icon.gtm { background: rgba(255, 180, 84, 0.1); color: var(--accent-gtm); }
     .app-card-icon.partnerships { background: rgba(244, 114, 182, 0.1); color: var(--accent-partnerships); }
     .app-card-icon.promo { background: rgba(34, 197, 94, 0.1); color: var(--accent-promo); }
+    .app-card-icon.console { background: rgba(56, 189, 248, 0.1); color: var(--accent-console); }
     .app-card-icon svg { width: 22px; height: 22px; }
 
     .app-card-title {
@@ -404,6 +406,23 @@
           </div>
           <div class="app-card-title">Promo Calendar</div>
           <div class="app-card-desc">Every scheduled promo across Steam, Xbox, and PS5 — with Next Up and multi-title event views so nothing slips through the cracks</div>
+          <div class="app-card-arrow">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+          </div>
+        </a>
+
+        <a class="app-card" href="/signal/#/console-leaderboards">
+          <div class="app-card-icon console">
+            <!-- Game controller icon -->
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 12h4M8 10v4"/>
+              <circle cx="15" cy="12" r="1"/>
+              <circle cx="18" cy="12" r="1"/>
+              <path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59L2.09 14.5A2.5 2.5 0 0 0 4.58 17a2.51 2.51 0 0 0 2.21-1.32l.858-1.68h8.704l.858 1.68a2.51 2.51 0 0 0 2.21 1.32 2.5 2.5 0 0 0 2.489-2.5l-.61-5.91A4 4 0 0 0 17.32 5z"/>
+            </svg>
+          </div>
+          <div class="app-card-title">Steam &amp; Console Sales Leaderboards <span style="font-size:0.6875rem;color:var(--text-dim);font-weight:500;">(experimental)</span></div>
+          <div class="app-card-desc">Top premium paid titles across Steam, Xbox, and PS5, ranked by daily rating-count momentum — a proxy for sales velocity</div>
           <div class="app-card-arrow">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
           </div>
