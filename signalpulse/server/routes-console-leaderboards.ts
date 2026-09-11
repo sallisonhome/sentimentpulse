@@ -11,10 +11,17 @@
  *     Returns top-100 titles for that platform for the requested window.
  *
  *     Ranking columns:
- *       revenue  = units_mid * msrp_usd_cents / 100 (window-scoped)
+ *       revenue  = units_mid * asp_usd_cents / 100 (window-scoped, ASP-adjusted)
  *       units    = window_estimates_daily.units_mid
  *       ratings  = store_rating_signal_daily.rating_count (latest LTD snapshot)
  *       score    = store_rating_signal_daily.avg_rating   (latest LTD snapshot)
+ *
+ *     ASP factors (fraction of MSRP realized per platform, applied to revenue only):
+ *       steam 0.66  (heavy discounting + regional pricing)
+ *       ps5   0.80  (year-round PSN Store discounts + PS+ Extra bundling)
+ *       xbox  0.80  (Microsoft Store discounts + Game Pass rev share)
+ *     Configurable via app_settings keys asp_factor_steam / asp_factor_ps5 /
+ *       asp_factor_xbox; defaults live in ASP_FACTOR_DEFAULTS below.
  *
  *     Ratings and score feed the estimator; they are also user-selectable
  *     sort keys. Titles with a NULL sort value sink to the bottom rather
@@ -59,6 +66,30 @@ function daysAgo(n: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Platform ASP factors used to translate MSRP into an Average Selling Price
+// estimate. Applied at read time so an operator can retune without a re-run
+// of the estimator. Kept out of window_estimates_daily on purpose: units are
+// the modelled quantity; ASP is a downstream pricing overlay.
+const ASP_FACTOR_DEFAULTS: Record<Platform, number> = {
+  steam: 0.66,
+  ps5:   0.80,
+  xbox:  0.80,
+};
+
+function aspFactorFor(platform: Platform): number {
+  // app_settings override lets us retune from the Settings UI without a deploy.
+  try {
+    const r = rawSqlite
+      .prepare(`SELECT value FROM app_settings WHERE key = ?`)
+      .get(`asp_factor_${platform}`) as { value: string } | undefined;
+    if (r && r.value != null) {
+      const v = parseFloat(r.value);
+      if (Number.isFinite(v) && v > 0 && v <= 1) return v;
+    }
+  } catch { /* app_settings may not exist in an odd sandbox */ }
+  return ASP_FACTOR_DEFAULTS[platform];
+}
+
 export function registerConsoleLeaderboardRoutes(app: Express) {
 
   // ─── Leaderboard list ─────────────────────────────────────────────────────
@@ -76,15 +107,22 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const dir = ((req.query.dir as string) || "desc").toLowerCase();
       if (!["asc","desc"].includes(dir)) return res.status(400).json({ error: "invalid dir" });
 
+      const aspFactor = aspFactorFor(platform);
+
       // sortExpr maps each sort key to the column expression. revenue is
-      // units × msrp/100 (dollars), so a title with unknown msrp (NULL) sinks.
+      // units × asp/100 (dollars), where asp = msrp × platform ASP factor,
+      // so a title with unknown msrp (NULL) sinks. The ASP factor is a
+      // constant per request — sqlite treats it as a bound parameter below.
       const SORT_EXPR: Record<string, string> = {
-        revenue: "(w.units_mid * psm.msrp_usd_cents / 100.0)",
+        revenue: "(w.units_mid * psm.msrp_usd_cents * ? / 100.0)",
         units:   "w.units_mid",
         ratings: "srs.rating_count",
         score:   "srs.avg_rating",
       };
       const sortExpr = SORT_EXPR[sort];
+      // Bind the ASP factor twice for revenue sort (once in ORDER BY IS NULL,
+      // once in ORDER BY sortExpr) so the constant lands in both slots.
+      const sortBinds = sort === "revenue" ? [aspFactor, aspFactor] : [];
       const dirSql = dir === "asc" ? "ASC" : "DESC";
 
       // Grab latest daily rating snapshot per (title, platform). Only paid business_model.
@@ -108,9 +146,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           srs.capture_date                          AS ratingCapturedAt,
           w.owners_mid                              AS ownersMid,
           w.units_mid                               AS unitsMid,
-          -- Estimated in-window revenue in USD dollars = units × MSRP.
-          -- No discount factor applied yet; treat as an MSRP-anchored ceiling.
-          (w.units_mid * psm.msrp_usd_cents / 100.0) AS revenueMidUsd,
+          -- ASP (Average Selling Price) in USD cents = MSRP × platform ASP factor.
+          -- Kept as an integer-cents value so the client formats it the same as MSRP.
+          CAST(psm.msrp_usd_cents * ? AS INTEGER)   AS aspUsdCents,
+          -- Estimated in-window revenue in USD dollars = units × ASP.
+          -- ASP applies platform-specific realization (steam ~66%, consoles ~80%).
+          (w.units_mid * psm.msrp_usd_cents * ? / 100.0) AS revenueMidUsd,
           w.gated_reason                            AS gatedReason
         FROM platform_sku_map psm
         LEFT JOIN latest_rating lr
@@ -138,9 +179,17 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                 ${sortExpr} ${dirSql},
                 COALESCE(srs.rating_count, 0) DESC
        LIMIT 100
-      `).all(platform, window, window, platform) as Array<Record<string, any>>;
+      `).all(
+        platform,          // 1: latest_rating CTE  WHERE platform = ?
+        aspFactor,         // 2: SELECT aspUsdCents CAST(msrp * ? AS INTEGER)
+        aspFactor,         // 3: SELECT revenueMidUsd = units * msrp * ? / 100
+        window,            // 4: LEFT JOIN window_estimates_daily w  AND w.window = ?
+        window,            // 5: subquery MAX(as_of_date) … AND window = ?
+        platform,          // 6: outer  WHERE psm.platform = ?
+        ...sortBinds,      // 7,8: ORDER BY sortExpr contains one ? per use (twice when sort=revenue)
+      ) as Array<Record<string, any>>;
 
-      res.json({ platform, window, sort, dir, count: rows.length, titles: rows });
+      res.json({ platform, window, sort, dir, aspFactor, count: rows.length, titles: rows });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

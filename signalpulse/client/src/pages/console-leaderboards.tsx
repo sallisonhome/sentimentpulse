@@ -51,6 +51,7 @@ interface LeaderboardRow {
   titleId: number;
   externalSku: string;
   msrpUsdCents: number | null;
+  aspUsdCents: number | null;
   businessModel: string;
   name: string | null;
   coverUrl: string | null;
@@ -60,6 +61,7 @@ interface LeaderboardRow {
   ratingCapturedAt: string | null;
   ownersMid: number | null;
   unitsMid: number | null;
+  revenueMidUsd: number | null;
   gatedReason: string | null;
 }
 
@@ -67,6 +69,7 @@ interface LeaderboardResponse {
   platform: Platform;
   window: WindowKey;
   count: number;
+  aspFactor?: number;
   titles: LeaderboardRow[];
 }
 
@@ -90,6 +93,17 @@ function gatedTooltip(reason: string | null | undefined): string {
 function formatUsd(cents: number | null): string {
   if (cents == null) return "—";
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+// Compact USD for dollar amounts already in dollars (not cents). Used for the
+// estimated in-window revenue column, which can range from thousands to hundreds
+// of millions across the top-100.
+function formatUsdCompact(dollars: number | null | undefined): string {
+  if (dollars == null || !Number.isFinite(dollars)) return "—";
+  if (dollars >= 1_000_000_000) return `$${(dollars / 1_000_000_000).toFixed(2)}B`;
+  if (dollars >= 1_000_000)     return `$${(dollars / 1_000_000).toFixed(1)}M`;
+  if (dollars >= 1_000)         return `$${(dollars / 1_000).toFixed(1)}K`;
+  return `$${dollars.toFixed(0)}`;
 }
 
 function usePlatformLeaderboard(platform: Platform, window: WindowKey) {
@@ -297,9 +311,19 @@ function PlatformColumn({
                       </span>
                       <span
                         className="font-mono text-[10px] tabular-nums text-muted-foreground"
-                        title={t.unitsMid != null ? `Est. units (${window}) — v0, ±30–50%` : gatedTooltip(t.gatedReason)}
+                        title={
+                          t.revenueMidUsd != null
+                            ? `Est. revenue (${window}) = est. units × ASP — v0, ±30–50%`
+                            : t.unitsMid != null
+                              ? `Est. units (${window}) — v0, ±30–50% (ASP or MSRP missing)`
+                              : gatedTooltip(t.gatedReason)
+                        }
                       >
-                        {t.unitsMid != null ? `~${formatNumberCompact(t.unitsMid)}u` : "—"}
+                        {t.revenueMidUsd != null
+                          ? formatUsdCompact(t.revenueMidUsd)
+                          : t.unitsMid != null
+                            ? `~${formatNumberCompact(t.unitsMid)}u`
+                            : "—"}
                       </span>
                     </div>
                   </a>
@@ -383,7 +407,9 @@ export function ConsoleLeaderboardsPlatform() {
           <Card className="p-3 bg-muted/40 border-dashed">
             <p className="text-xs text-muted-foreground">
               <span className="font-semibold text-foreground">Ranking signal:</span> daily rating-count delta from the storefront review API — a public proxy for sales velocity.
-              <span className="ml-1 font-semibold text-foreground">Est. units</span> use v0 public-benchmark multipliers (±30–50%) with digital-share adjustments per platform (Steam 100%, PS5 76%, Xbox 90% modelled). Cells reading <span className="font-mono">—</span> mean the signal is below the noise gate (50) or that window lacks the required forward history. Calibration against first-party disclosures is the next milestone.
+              <span className="ml-1 font-semibold text-foreground">Est. units</span> use v0 public-benchmark multipliers (±30–50%) with digital-share adjustments per platform (Steam 100%, PS5 76%, Xbox 90% modelled).
+              <span className="ml-1 font-semibold text-foreground">Est. revenue</span> = est. units × <span className="font-mono">ASP</span>, where ASP = MSRP × platform realization factor (Steam 66%, PS5 80%, Xbox 80%){data.aspFactor != null ? ` — this platform: ${(data.aspFactor * 100).toFixed(0)}%` : ""}.
+              Cells reading <span className="font-mono">—</span> mean the signal is below the noise gate (50) or that window lacks the required forward history. Calibration against first-party disclosures is the next milestone.
             </p>
           </Card>
           <Card className="overflow-hidden">
@@ -395,12 +421,13 @@ export function ConsoleLeaderboardsPlatform() {
                 <th className="text-right px-3 py-2 font-medium">Rating count</th>
                 <th className="text-right px-3 py-2 font-medium">Avg rating</th>
                 <th className="text-right px-3 py-2 font-medium" title="Estimated units sold in this window — v0 estimator, ±30–50% per title">Est. units ({window}) <span className="ml-1 px-1 text-[10px] rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">v0</span></th>
-                <th className="text-right px-3 py-2 font-medium">MSRP</th>
+                <th className="text-right px-3 py-2 font-medium" title="Estimated in-window revenue = est. units × ASP, USD — v0 estimator, ±30–50% per title">Est. revenue ({window}) <span className="ml-1 px-1 text-[10px] rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">v0</span></th>
+                <th className="text-right px-3 py-2 font-medium" title="Average Selling Price = MSRP × platform realization (Steam 66%, PS5 80%, Xbox 80%)">ASP</th>
               </tr>
             </thead>
             <tbody>
               {data.titles.length === 0 && (
-                <tr><td className="p-6 text-center text-muted-foreground text-sm" colSpan={6}>No titles yet — run discovery + signal collectors.</td></tr>
+                <tr><td className="p-6 text-center text-muted-foreground text-sm" colSpan={7}>No titles yet — run discovery + signal collectors.</td></tr>
               )}
               {data.titles.map((t, i) => (
                 <tr key={t.titleId} className="border-t border-border hover:bg-muted/30">
@@ -420,7 +447,12 @@ export function ConsoleLeaderboardsPlatform() {
                       <span className="text-muted-foreground" title={gatedTooltip(t.gatedReason)}>—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">{formatUsd(t.msrpUsdCents)}</td>
+                  <td className="px-3 py-2 text-right font-mono">
+                    {t.revenueMidUsd != null ? formatUsdCompact(t.revenueMidUsd) : (
+                      <span className="text-muted-foreground" title={gatedTooltip(t.gatedReason)}>—</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono" title={t.msrpUsdCents != null ? `MSRP ${formatUsd(t.msrpUsdCents)} × platform realization = ASP ${formatUsd(t.aspUsdCents)}` : undefined}>{formatUsd(t.aspUsdCents ?? t.msrpUsdCents)}</td>
                 </tr>
               ))}
             </tbody>
