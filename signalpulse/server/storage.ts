@@ -746,6 +746,7 @@ function initializeDatabase() {
       msrp_usd_cents INTEGER,
       business_model_source TEXT,
       is_manual_override INTEGER NOT NULL DEFAULT 0,
+      is_gamepass INTEGER NOT NULL DEFAULT 0,
       refreshed_at TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -806,6 +807,7 @@ function initializeDatabase() {
       confidence TEXT NOT NULL,
       method TEXT NOT NULL,
       notes TEXT,
+      gp_rating_deflator REAL,
       effective_from TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
@@ -875,6 +877,13 @@ function runMigrations() {
   // v3.38 (2026-09-07): top_reviews[] captured from type=product to
   // replace the deprecated type=reviews endpoint.
   migrateAddColumnIfMissing("amazon_product_daily", "top_reviews_json", "top_reviews_json TEXT");
+  // v3.39 (2026-09-11): Console-leaderboards v0.3 multiplier recalibration.
+  // Xbox Game Pass suppresses per-owner rating rate (subs rate without buying),
+  // so we tag GP SKUs and apply a per-platform GP rating deflator before the
+  // multiplier. Fit derived from LTD anchor research — see
+  // docs/multiplier-recalibration-v03.md.
+  migrateAddColumnIfMissing("platform_sku_map", "is_gamepass", "is_gamepass INTEGER NOT NULL DEFAULT 0");
+  migrateAddColumnIfMissing("ownership_multipliers", "gp_rating_deflator", "gp_rating_deflator REAL");
 }
 
 initializeDatabase();

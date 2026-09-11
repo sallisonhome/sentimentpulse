@@ -251,15 +251,23 @@ async function main() {
         continue;
       }
 
-      // ─── Noise gate ────────────────────────────────────────────────────
+      // ─── Noise gate (against raw signal, before GP deflator) ─────────
       if (signal < noiseGate) {
         row.gatedReason = "signal_too_small";
         rows.push(row);
         continue;
       }
 
+      // ─── Game Pass rating deflator (v0.3, xbox only today) ───────────
+      // GP subscribers rate without buying, so per-owner rating rate is
+      // inflated. Deflate raw ratings before multiplying so GP-flagged
+      // SKUs and non-GP SKUs share one platform multiplier.
+      const isGp = gpFlagByKey.get(`${titleId}|${platform}`) ?? false;
+      const deflator = isGp && mult.gp_rating_deflator ? mult.gp_rating_deflator : 1;
+      const effectiveSignal = signal / deflator;
+
       // ─── Apply multiplier ──────────────────────────────────────────────
-      const ownersMid = signal * mult.multiplier;
+      const ownersMid = effectiveSignal * mult.multiplier;
       const ownersLow = ownersMid * (1 - mult.ci_pct);
       const ownersHigh = ownersMid * (1 + mult.ci_pct);
       const unitsMid = ownersMid / mult.digital_unit_share;

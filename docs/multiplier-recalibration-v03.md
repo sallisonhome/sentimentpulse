@@ -100,3 +100,48 @@ The multiplier is fit against LTD ratings vs LTD units. Windowed estimates
 (d7/d30/d90/m12) are already derived from LTD by the existing estimator's
 decay-and-share logic — no change required. Only the LTD central multiplier
 moves in v0.3.
+
+## Shipped values (2026-09-11T20:00Z)
+
+Values pushed to `ownership_multipliers` (effective_from `2026-09-11T20:00Z`):
+
+| Platform | Cohort | Multiplier | CI band | Digital share | GP deflator | Method |
+|---|---|---:|---:|---:|---:|---|
+| steam | default | **25** | ±113% | 1.00 | — | ltd-anchor-median-v03 |
+| ps5   | default | **24** | ±257% | 0.76 | — | ltd-anchor-median-v03 |
+| xbox  | default | **147** | ±141% | 0.90 | **1.406** | ltd-anchor-median-v03-gp-segmented |
+
+Fit inputs and quality-filtered anchor sets are captured in
+`anchors/v03_fit_filtered.csv` (Steam n=31, PS5 n=15, Xbox non-GP n=5) and
+`anchors/v03_fit_gp_segmented.json` (Xbox GP n=6).
+
+### Xbox Game Pass segmentation
+
+Estimator applies `effective_signal = raw_signal / gp_rating_deflator` when
+`platform_sku_map.is_gamepass = 1`, then multiplies by the base xbox multiplier
+(147×). Non-GP xbox rows are untouched. GP flags are seeded from
+`scripts/seed-xbox-gamepass-flags.ts` (hand-curated starter list) and will be
+replaced by IGDB `game_service_availability` or an Xbox Wire feed in a
+follow-up.
+
+### What this changes in the leaderboards
+
+- **Steam Top 100** — every eligible LTD row now multiplied by 25 (down from 40)
+  and CI widened from ±40% to ±113% pending more anchors.
+- **PS5 Top 68** (DB ceiling today; discovery still filling toward Top 100) —
+  every eligible LTD row multiplied by 24 (up from 6). Wider ±257% band reflects
+  the sparse anchor pool of PS5-exclusive-heavy titles.
+- **Xbox Top 100** — non-GP rows multiplied by 147 (up from 12); GP rows
+  effectively multiplied by 147/1.406 = ~104. Both cohorts share the 147 base
+  multiplier so future GP-flag corrections propagate without a re-seed.
+
+### Not yet closed
+
+- PS5 discovery is short of Top 100 (68 titles in DB); the daily seed cron
+  should fill this over 30 days as new PS5 charts poll new SKUs.
+- Xbox d90 and m12 windows have no data (Xbox native ratings expose only d7/d30
+  + LTD; forward-only history will backfill d90/m12 by day 90/365).
+- PS5 windowed cells (d7/d30/d90/m12) remain gated `insufficient_history` until
+  ≥N+1 days of forward-only daily snapshots exist.
+- `is_gamepass` flag automation (IGDB `game_service_availability` or Xbox
+  Wire scrape) still pending.

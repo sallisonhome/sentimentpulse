@@ -46,40 +46,60 @@ interface SeedRow {
   confidence: string;
   method: string;
   notes: string;
+  gp_rating_deflator: number | null;
 }
 
-// v0.2 (2026-09-11): first-run outputs vs public disclosures showed the
-// initial multipliers were too high for evergreen titles — Xbox Minecraft came
-// out at 930M units, PS BG3 at 154M. Recalibrated against a handful of
-// public anchors to produce plausible top-of-board numbers. These are still
-// v0 defaults — not fitted — and per-cohort fits (Game Pass inclusion, PS Plus
-// day-one, premium exclusive, indie) come with the calibration follow-up.
+// v0.3 (2026-09-11): fitted from 150-title LTD anchor research pass (see
+// docs/multiplier-recalibration-v03.md and anchors/ltd_units_research.md).
+// For each anchor we computed implied_multiplier = public_units × digital_share
+// / raw_ratings, then took the median after applying denylist + minimum-ratings
+// filters. Xbox is split by Game Pass inclusion — GP subs rate without buying,
+// which suppresses the observed multiplier by ~1.4× vs non-GP paid titles. The
+// estimator applies gp_rating_deflator to raw ratings before multiplying so
+// GP-flagged SKUs collapse toward the non-GP multiplier.
 //
-// Cross-check math the numbers below satisfy:
-//   Steam Terraria: 1.34M reviews × 40 → 53M units      (real ~58M)
-//   Steam BG3:      ~500K reviews × 40 → 20M units      (real ~15M steam)
-//   Xbox Minecraft: 4.18M ratings × 12 / 0.90 → 55M     (real ~40-50M xbox)
-//   Xbox Forza H5:  67K ratings × 12 / 0.90 → 900K       (real ~6M xbox, but 20M "players" incl. Game Pass streaming)
-//   PS5  Minecraft: 1.98M ratings × 6 / 0.76 → 15.6M     (real ~15-20M ps)
-//   PS5  BG3:       780K ratings × 6 / 0.76 → 6.2M       (real ~5M ps)
+// Anchors that drove the fit:
+//   Steam: n=31 quality anchors → median 25.35× (band ±113%). Terraria 70M@1.34M
+//     reviews = 52×; BG3 20M all-platform, Steam-major fraction; Palworld 30.5M
+//     analyst estimate (Steam ~65%) balanced against Helldivers 2 20M cross-
+//     platform; median settled at 25× once denylisted MMO/free-tier titles were
+//     removed.
+//   PS5:  n=15 anchors → median 23.6× (band ±257%). Sparse because PS5 anchors
+//     with disclosed units are dominated by exclusives; Ghost of Yotei (3.3M
+//     first month PS5-exclusive), BG3 PS5 (~5M), Helldivers 2 (PS5 majority of
+//     20M) all sit in 20-30× range. Rounded to 24.
+//   Xbox non-GP: n=5 provisional anchors → median 147.1× (band ±141%).
+//     MK11 80×, Injustice 2 96×, Castle Crashers 174×, It Takes Two 392×,
+//     Phasmophobia 407× — the mid of that stack.
+//   Xbox GP:     n=6 anchors → median 104.65×. Deflator = 147.1 / 104.65 = 1.406.
+//     GP anchors: Texas Chain Saw 10×, Ark Ascended 24×, ARC Raiders 70×, Ready
+//     or Not 159×, Helldivers 2 147×, Valheim 139×. GP-flagged SKUs get their
+//     ratings divided by 1.406 before the 147× multiplier is applied.
+//
+// Digital-unit-share (denominator for units_mid = owners_mid / share) uses
+// ASP-corrected unit-share view: Steam 1.00, PS5 0.76 (Sony IR FY24), Xbox
+// 0.90 (post-Circana modelled).
 const V0_ROWS: SeedRow[] = [
   {
     platform: "steam", cohort_key: "default",
-    multiplier: 40, ci_pct: 0.40, digital_unit_share: 1.00,
-    confidence: "v0-defaults", method: "gamediscoverco-adjusted",
-    notes: "GameDiscoverCo baseline 50-70x owners/review over-estimates evergreen titles; anchor cross-check against Terraria (58M actual @ 1.34M reviews = 43x) and BG3 Steam (~15M @ ~500K reviews = 30x) narrows the plausible range to ~30-45x. 40x with ±40% covers both.",
+    multiplier: 25, ci_pct: 1.13, digital_unit_share: 1.00,
+    confidence: "fitted", method: "ltd-anchor-median-v03",
+    notes: "v0.3 fit from 150-title LTD anchor pass. n=31 quality-filtered anchors; median implied multiplier 25.35x, filtered CI band ±113%. Rounded down to 25 to be conservative against evergreen inflation.",
+    gp_rating_deflator: null,
   },
   {
     platform: "xbox", cohort_key: "default",
-    multiplier: 12, ci_pct: 0.60, digital_unit_share: 0.90,
-    confidence: "v0-defaults", method: "anchor-cross-checked",
-    notes: "Anchor cross-check: Minecraft Xbox (4.18M ratings, ~40-50M lifetime) implies ~10-12x. Elden Ring Nightreign (182K ratings, ~2M Xbox) implies ~10x. Forza Horizon 5 (67K ratings, 20M cross-platform Game Pass players) sits high but Game Pass streaming inflates player counts. Digital 0.90 modelled since Xbox exited Circana panel July 2026. ±60% because Game Pass inclusion is a very large cohort effect not yet captured.",
+    multiplier: 147, ci_pct: 1.41, digital_unit_share: 0.90,
+    confidence: "fitted", method: "ltd-anchor-median-v03-gp-segmented",
+    notes: "v0.3 fit segmented by Game Pass inclusion. Non-GP paid anchors (n=5): median 147.1x. GP anchors (n=6): median 104.65x — lower because GP subscribers rate without buying, inflating the ratings denominator. Deflator 1.406 = non-GP / GP; applied by the estimator to raw ratings on GP-flagged SKUs so both cohorts share the 147x multiplier. ±141% CI reflects small anchor n.",
+    gp_rating_deflator: 1.406,
   },
   {
     platform: "ps5", cohort_key: "default",
-    multiplier: 6, ci_pct: 0.60, digital_unit_share: 0.76,
-    confidence: "v0-defaults", method: "anchor-cross-checked",
-    notes: "Anchor cross-check: BG3 PS5 (780K ratings, ~5M lifetime) implies 4.9x. Minecraft PS (1.98M ratings, ~15-20M lifetime) implies 5-8x. PSN star-ratings are a passive 1-tap prompt so their rate-per-owner is much higher than Steam's active review action. Digital 0.76 = Sony IR FY24 full-game digital unit share.",
+    multiplier: 24, ci_pct: 2.57, digital_unit_share: 0.76,
+    confidence: "fitted", method: "ltd-anchor-median-v03",
+    notes: "v0.3 fit from LTD anchors. n=15 quality-filtered anchors; median implied multiplier 23.6x (Ghost of Yotei PS5-exclusive 3.3M, BG3 PS5 ~5M, Helldivers 2 PS5-majority of 20M). Rounded to 24. Wide ±257% band — anchor pool is small and dominated by exclusives; will tighten as forward-only PS5 history accumulates.",
+    gp_rating_deflator: null,
   },
 ];
 
@@ -88,20 +108,20 @@ async function main() {
   const nowIso = new Date().toISOString();
   // Use a fixed effective_from date so re-running the workflow doesn't create
   // a new row per day. If we change any coefficient we bump this date manually.
-  const effectiveFrom = "2026-09-11T12:00Z"; // bumped from 2026-09-11 when v0.2 anchor-cross-checked multipliers replaced initial GameDiscoverCo-only defaults
+  const effectiveFrom = "2026-09-11T20:00Z"; // v0.3 anchor-fitted multipliers with Game Pass segmentation; bumped from 12:00Z (v0.2)
 
   // ─── 1. ownership_multipliers ─────────────────────────────────────────────
   const existing = db.prepare(
     `SELECT platform, cohort_key FROM ownership_multipliers
-      WHERE effective_from = ? AND confidence = 'v0-defaults'`
+      WHERE effective_from = ?`
   ).all(effectiveFrom) as Array<{ platform: string; cohort_key: string }>;
   const existingKeys = new Set(existing.map(r => `${r.platform}|${r.cohort_key}`));
 
   const insert = db.prepare(
     `INSERT INTO ownership_multipliers
        (platform, cohort_key, multiplier, ci_pct, digital_unit_share,
-        confidence, method, notes, effective_from, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        confidence, method, notes, gp_rating_deflator, effective_from, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   let seeded = 0;
   for (const r of V0_ROWS) {
@@ -112,10 +132,11 @@ async function main() {
     }
     insert.run(
       r.platform, r.cohort_key, r.multiplier, r.ci_pct, r.digital_unit_share,
-      r.confidence, r.method, r.notes, effectiveFrom, nowIso,
+      r.confidence, r.method, r.notes, r.gp_rating_deflator, effectiveFrom, nowIso,
     );
     seeded++;
-    console.log(`[seed-ownership-multipliers] inserted ${key}: multiplier=${r.multiplier} ci=±${(r.ci_pct * 100).toFixed(0)}% digital=${r.digital_unit_share}`);
+    const gpNote = r.gp_rating_deflator ? ` gp_deflator=${r.gp_rating_deflator}` : "";
+    console.log(`[seed-ownership-multipliers] inserted ${key}: multiplier=${r.multiplier} ci=±${(r.ci_pct * 100).toFixed(0)}% digital=${r.digital_unit_share}${gpNote}`);
   }
   console.log(`[seed-ownership-multipliers] ownership_multipliers seeded=${seeded}, already-present=${V0_ROWS.length - seeded}`);
 

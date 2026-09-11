@@ -250,7 +250,19 @@ jobs:
           echo "  SEED OWNERSHIP MULTIPLIERS: seed-ownership-multipliers.ts"
           echo "═════════════════════════════════════════════════════════"
           timeout 60 "$TSX" scripts/seed-ownership-multipliers.ts || {
-            echo "WARN: multiplier seed exited rc=$? — continuing to estimator"
+            echo "WARN: multiplier seed exited rc=$? — continuing"
+          }
+
+          # ── 4b. Xbox Game Pass flag seed (v0.3) ─────────────────────
+          # Bootstrap hand-curated GP flags so xbox multiplier v0.3 applies its
+          # rating deflator to the correct SKUs. Idempotent — rerun just re-sets
+          # is_gamepass=1 on the same rows.
+          echo ""
+          echo "════════════════════════════════════════════════════════"
+          echo "  SEED XBOX GAME PASS FLAGS: seed-xbox-gamepass-flags.ts"
+          echo "════════════════════════════════════════════════════════"
+          timeout 60 "$TSX" scripts/seed-xbox-gamepass-flags.ts || {
+            echo "WARN: gp flag seed exited rc=$? — continuing to estimator"
           }
 
           # ── 5. Phase 4 estimator: window_estimates_daily ───────────
