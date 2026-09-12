@@ -644,7 +644,18 @@ export function ConsoleLeaderboardsPlatform() {
                       <span className="text-muted-foreground" title={gatedTooltip(t.gatedReason)}>—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono" title={t.msrpUsdCents != null ? `MSRP ${formatUsd(t.msrpUsdCents)} × platform realization = ASP ${formatUsd(t.aspUsdCents)}` : undefined}>{formatUsd(t.aspUsdCents ?? t.msrpUsdCents)}</td>
+                  <td
+                    className="px-3 py-2 text-right font-mono"
+                    title={
+                      t.editionCount && t.editionCount > 0
+                        ? `Blended ASP across ${t.editionCount + 1} SKUs = revenue ÷ units (single-SKU MSRP no longer applies once editions are combined)`
+                        : t.msrpUsdCents != null
+                          ? `MSRP ${formatUsd(t.msrpUsdCents)} × platform realization = ASP ${formatUsd(t.aspUsdCents)}`
+                          : undefined
+                    }
+                  >
+                    {formatUsd(t.aspUsdCents ?? t.msrpUsdCents)}
+                  </td>
                 </tr>
               ))}
             </tbody>
