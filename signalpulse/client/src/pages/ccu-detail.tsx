@@ -1,13 +1,19 @@
 /**
  * CCU Detail — standalone page (`/ccu/:id`).
  *
- * The Saber Steam CCU Leaderboard's title link opens THIS page, not the
- * generic multi-purpose Product Detail page (`/products/:id`, which bundles
- * Wishlist/Sales/PS5/Forecast cards for the title). This page is a single-
- * topic view of concurrent-player data only, styled after howmanyareplaying's
- * GameDetail page (hero + stat badges + media + history/hourly charts +
- * related titles, all on one scroll) rather than nested inside SignalPulse's
- * collapsible-section PDP.
+ * As of 2026-09-11, the Wishlist, Revenue, and Saber Steam CCU Leaderboard
+ * title links all open THIS same page, not the generic multi-purpose
+ * Product Detail page (`/products/:id`, which bundles Wishlist/Sales/PS5/
+ * Forecast cards for the title). This page is a single-topic view of
+ * concurrent-player data (plus general title metadata/media/related titles),
+ * styled after howmanyareplaying's GameDetail page (hero + stat badges +
+ * media + history/hourly charts + related titles, all on one scroll) rather
+ * than nested inside SignalPulse's collapsible-section PDP. Pre-release
+ * wishlist titles simply render the CCU stat badges as "—" until the game
+ * launches and Steam CCU tracking begins.
+ *
+ * The "Back" link at the top returns to whichever leaderboard tab the user
+ * came from (see `originBoard` below), not always the CCU tab.
  *
  * Reuses the same content blocks as ccu-pdp-section.tsx's embedded
  * <CcuPdpSection> (media/CCU charts/related games) so the two surfaces
@@ -19,7 +25,7 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useParams } from "wouter";
+import { useParams, useSearch } from "wouter";
 import { ArrowLeft, Gamepad2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -60,9 +66,26 @@ function formatNumber(n: number | null): string {
   return n == null ? "—" : n.toLocaleString("en-US");
 }
 
+const BACK_BOARD_LABEL: Record<string, string> = {
+  wishlist: "Wishlist",
+  revenue: "Revenue",
+  ccu: "CCU",
+};
+
 export default function CcuDetail() {
   const params = useParams<{ id: string }>();
   const productId = parseInt(params.id!);
+
+  // The Wishlist, Revenue, and CCU leaderboards all link into this same
+  // standalone detail page. Each leaderboard tab persists its own board in
+  // the outer (pre-hash) `?board=` query string, and a same-page hash-only
+  // link (`#/ccu/:id`) never touches that outer query -- so whatever board
+  // was active when the title was clicked is still readable here. Use it to
+  // send "Back" to the leaderboard the user actually came from, defaulting
+  // to CCU only if the param is missing/unrecognized.
+  const outerSearch = useSearch();
+  const originBoardParam = new URLSearchParams(outerSearch).get("board");
+  const originBoard = originBoardParam && BACK_BOARD_LABEL[originBoardParam] ? originBoardParam : "ccu";
 
   const { data: header, isLoading } = useQuery<CcuHeader>({
     queryKey: ["/api/products", productId, "ccu", "header"],
@@ -102,16 +125,17 @@ export default function CcuDetail() {
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-4">
-      {/* Explicit ?board=ccu#/ (not a relative "#/") so this always lands
-          back on the CCU tab, regardless of which tab's outer query string
-          was active before navigating here. */}
+      {/* Explicit ?board=<origin>#/ (not a relative "#/") so this lands back
+          on whichever leaderboard tab (Wishlist, Revenue, or CCU) the user
+          actually clicked the title from -- read from the outer query string
+          via `originBoard` above, defaulting to CCU if it's missing. */}
       <a
-        href="?board=ccu#/"
+        href={`?board=${originBoard}#/`}
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
-        data-testid="link-back-to-ccu-leaderboard"
+        data-testid="link-back-to-leaderboard"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
-        Back to CCU Leaderboard
+        Back to {BACK_BOARD_LABEL[originBoard]} Leaderboard
       </a>
 
       {isLoading ? (
