@@ -2283,3 +2283,18 @@ scoring model onto data that doesn't support one.
   and passing a narrower object literal array trips TypeScript's excess-property
   check. Only `_franchiseKey` (the pure name→key function) was reusable; the dedupe
   loop itself had to be re-written locally with the same logic but a smaller shape.
+
+## 2026-09-12 — Manual-override flag silently didn't latch: upsertSkuMap ON CONFLICT clause omitted `is_manual_override`
+
+**What happened.** Backfilled 5 released Saber Steam titles (WWZ, Insurgency: Sandstorm, Tempest Rising, Toxic Commando, RoadCraft) into `platform_sku_map` via `scripts/backfill-saber-steam-titles.ts`. Script called the atomic allocator `titleIdFor()` for each SKU (correctly), then handed rows to `upsertSkuMap({..., isManualOverride: true})`. After the run, post-state showed all 5 rows with `is_manual_override=0` — the caller's explicit request had been silently dropped. Business_model, msrp_usd_cents, and business_model_source landed correctly; only the override flag failed.
+
+**Root cause.** The atomic allocator's INSERT-placeholder path (`reserveStmt` in `verify-discovery.ts` line 51-58) always lands rows with `is_manual_override=0` and `business_model='unknown'` — those are placeholder defaults that get overwritten by the subsequent `upsertSkuMap` call. But `upsertSkuMap`'s ON CONFLICT SET clause did not include `is_manual_override` in its updated columns. It updated concept_id / sku_role / business_model / msrp_usd_cents / business_model_source / refreshed_at, and its bottom WHERE clause guarded against automated writes clobbering existing overrides — but there was no column-list entry that flipped the flag ON when the caller was doing an explicit override write against a pre-existing non-override row.
+
+Net: whenever an `isManualOverride=true` upsert hit a row that already existed (whether because a placeholder was pre-reserved or because a prior automated discovery had already discovered it), the flag stayed at whatever it was before. A first-time INSERT (no existing row) DID persist the flag via the INSERT column list.
+
+**Fix.**
+
+1. `server/signals/console/discovery.ts::upsertSkuMap`: add `is_manual_override = MAX(platform_sku_map.is_manual_override, excluded.is_manual_override)` to the ON CONFLICT SET clause. MAX latches the flag ON permanently — an override upsert always turns the lock on, and even a bug that somehow reached this SET with `excluded.is_manual_override=0` cannot turn a lock off (the existing WHERE clause already blocks that path, but the MAX is defense in depth).
+2. `scripts/lock-saber-seed-overrides.ts` + `.github/workflows/signalpulse-lock-saber-seed-overrides.yml`: one-shot dispatchable migration that flips `is_manual_override=1` on the 5 already-landed rows via `WHERE business_model_source='saber_manual_seed_2026-09-12'`. Idempotent.
+
+**Rule.** When writing an upsert helper, every column the caller can set must be in either the INSERT list AND the ON CONFLICT SET, OR explicitly documented as "insert-only." Silent partial updates on conflict are worst-of-both-worlds: they look right at insert time and drift on refresh. Regression check would be: `upsertSkuMap` unit test that inserts a placeholder row, then re-upserts with `isManualOverride=true`, asserts `SELECT is_manual_override FROM platform_sku_map WHERE ... = 1`.

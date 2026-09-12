@@ -781,6 +781,17 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
        business_model_source = CASE WHEN platform_sku_map.is_manual_override = 1
                              THEN platform_sku_map.business_model_source
                              ELSE excluded.business_model_source END,
+       -- Latch the override flag on: once a caller sets it, non-override
+       -- refreshes never turn it back off. Fixes a bug (found 2026-09-12
+       -- during Saber Steam backfill) where a manual-override upsert against
+       -- a pre-existing allocator-reservation placeholder row (which lands
+       -- with is_manual_override=0) left the flag at 0, so the caller's
+       -- intended lock silently failed. Setting to MAX(old, excluded) means
+       -- (a) an override upsert always turns the lock on, and (b) an
+       -- automated refresh cannot turn a lock off — the WHERE clause at the
+       -- bottom already blocks that path, but latching here is defense in
+       -- depth for any future writer that skips the WHERE.
+       is_manual_override = MAX(platform_sku_map.is_manual_override, excluded.is_manual_override),
        refreshed_at = excluded.refreshed_at
        WHERE platform_sku_map.is_manual_override = 0 OR excluded.is_manual_override = 1`
   );

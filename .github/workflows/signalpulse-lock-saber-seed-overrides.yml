@@ -1,0 +1,68 @@
+name: SignalPulse — Lock Saber-seed overrides (post-fix)
+
+# Post-fix for the 2026-09-12 backfill of 5 Saber Steam titles.
+# The initial backfill run's rows landed with is_manual_override=0 because
+# upsertSkuMap's ON CONFLICT SET clause did not touch is_manual_override.
+# This script flips the flag to 1 on rows whose business_model_source we
+# ourselves set (saber_manual_seed_2026-09-12) so the daily discovery cron
+# cannot clobber their MSRP/business_model.
+#
+# The root-cause fix is in server/signals/console/discovery.ts — upsertSkuMap
+# now latches is_manual_override to MAX(old, excluded) on conflict, so future
+# manual-override upserts land correctly the first time.
+#
+# Idempotent — safe to re-run.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run lock-saber-seed-overrides
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+          DRY_RUN="${DRY_RUN:-true}"
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+          [ -f "$WD/scripts/lock-saber-seed-overrides.ts" ] || {
+            echo "ERR: scripts/lock-saber-seed-overrides.ts missing on droplet — deploy first"; exit 1;
+          }
+          echo "════════════════════════════════════════════════════════"
+          echo "  lock-saber-seed-overrides.ts   DRY_RUN=${DRY_RUN:-unset}"
+          echo "════════════════════════════════════════════════════════"
+          timeout 30 ./node_modules/.bin/tsx scripts/lock-saber-seed-overrides.ts
+          REMOTE
