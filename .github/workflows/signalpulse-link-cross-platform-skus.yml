@@ -1,0 +1,179 @@
+name: SignalPulse — Weekly Cross-Platform SKU Link
+
+# Weekly job that keeps platform_sku_map in sync across storefronts using
+# IGDB metadata already resident in console_title_igdb:
+#
+#   1. Cross-platform title_id MERGE — when two title_ids share the same
+#      igdb_id, they are the same game. Rewrite platform_sku_map and
+#      every history table so a single canonical title_id owns both
+#      platforms. Fixes the root cause of the manual Steam backfill
+#      work: discovery allocates a fresh title_id per (platform,
+#      external_sku), so a title first seen on PS5 gets a different
+#      title_id than the same title first seen on Steam.
+#
+#   2. Missing-Steam-SKU DISCOVERY — for titles with a high-confidence
+#      IGDB match but no Steam SKU in platform_sku_map, look up the
+#      Steam AppID via IGDB /external_games, verify it via Steam's own
+#      appdetails API, and INSERT it. Paid-only, F2P titles are skipped
+#      (the collector gates them anyway).
+#
+# The script `scripts/link-cross-platform-skus.ts` is idempotent — every
+# transaction is guarded so a re-run after a partial failure is safe.
+#
+# Runs weekly on Sunday at 10:15 UTC (after the daily discovery + IGDB
+# enrich crons have populated console_title_igdb.igdb_id).
+#
+# Safety
+#   • First deploy runs with DRY_RUN=true (see workflow_dispatch defaults).
+#     Nothing is written until a human dispatches with dry_run=false.
+#   • Pass 1 needs allow_merges=true too — that's an extra safety fence
+#     because a merge rewrites history tables (window_estimates_daily,
+#     store_rating_signal_daily, …) irreversibly.
+#   • Pass 2 (Steam adds) never rewrites history, so it's safe to enable
+#     on the first non-dry run.
+#
+# Concurrency: shares the deploy-droplet group so it cannot race a
+# leaderboards refresh or a deploy.
+
+on:
+  schedule:
+    - cron: "15 10 * * 0"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — log only, no DB writes"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      allow_merges:
+        description: "Also execute Pass 1 title_id merges (irreversible)"
+        required: false
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+      allow_steam_adds:
+        description: "Run Pass 2 Steam-SKU discovery + insert"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      max_steam_adds:
+        description: "Max Steam SKUs to add in one run (rate-limit safety)"
+        required: false
+        default: "50"
+        type: string
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  link:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight — script + creds present
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          if [ -z "$WD" ]; then
+            echo "ERR: could not resolve signalpulse WorkingDirectory"
+            exit 1
+          fi
+          echo "Working dir: $WD"
+          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/link-cross-platform-skus.ts" ] || {
+            echo "ERR: scripts/link-cross-platform-skus.ts missing on droplet"
+            echo "     Deploy the branch that adds it first."
+            exit 1
+          }
+          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
+
+          echo ""
+          echo "── Pre-run row counts ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT 'platform_sku_map' AS tbl, COUNT(*) AS rows FROM platform_sku_map
+            UNION ALL SELECT 'console_title_igdb', COUNT(*) FROM console_title_igdb
+            UNION ALL SELECT 'igdb_matched', COUNT(*) FROM console_title_igdb WHERE igdb_id IS NOT NULL
+            UNION ALL SELECT 'match_conf_high', COUNT(*) FROM console_title_igdb WHERE match_confidence='high';"
+          REMOTE
+
+      - name: Run link-cross-platform-skus
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+          ALLOW_MERGES: ${{ github.event.inputs.allow_merges || 'false' }}
+          ALLOW_STEAM_ADDS: ${{ github.event.inputs.allow_steam_adds || 'true' }}
+          MAX_STEAM_ADDS: ${{ github.event.inputs.max_steam_adds || '50' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" ALLOW_MERGES="$ALLOW_MERGES" \
+              ALLOW_STEAM_ADDS="$ALLOW_STEAM_ADDS" MAX_STEAM_ADDS="$MAX_STEAM_ADDS" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+
+          DRY_RUN="${DRY_RUN:-true}"
+          ALLOW_MERGES="${ALLOW_MERGES:-false}"
+          ALLOW_STEAM_ADDS="${ALLOW_STEAM_ADDS:-true}"
+          MAX_STEAM_ADDS="${MAX_STEAM_ADDS:-50}"
+
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+
+          # Match signalpulse.service's runtime env so storage.getSetting
+          # sees the same DB and app_settings.
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+          # DRY_RUN / MAX_STEAM_ADDS pass through as env; --allow-merges /
+          # --no-steam-adds are argv flags on the script itself.
+          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+          export MAX_STEAM_ADDS
+
+          ARGS=""
+          if [ "$ALLOW_MERGES" = "true" ]; then ARGS="$ARGS --allow-merges"; fi
+          if [ "$ALLOW_STEAM_ADDS" = "false" ]; then ARGS="$ARGS --no-steam-adds"; fi
+
+          echo "════════════════════════════════════════════════════════"
+          echo "  link-cross-platform-skus.ts"
+          echo "  DRY_RUN=${DRY_RUN:-unset}  ALLOW_MERGES=$ALLOW_MERGES  ALLOW_STEAM_ADDS=$ALLOW_STEAM_ADDS  MAX_STEAM_ADDS=$MAX_STEAM_ADDS  ARGS='$ARGS'"
+          echo "════════════════════════════════════════════════════════"
+
+          t0=$(date +%s)
+          # 15 min ceiling — IGDB + appdetails calls are rate-limited to
+          # 4 rps and 2 rps respectively, so 50 Steam-add candidates take
+          # up to ~60s each in the worst case.
+          timeout 900 ./node_modules/.bin/tsx scripts/link-cross-platform-skus.ts $ARGS
+          rc=$?
+          t1=$(date +%s)
+          echo ""
+          echo "Elapsed: $((t1 - t0))s  exit=$rc"
+          exit $rc
+          REMOTE
+
+      - name: Post-run row counts
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          echo "── Post-run row counts ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT 'platform_sku_map' AS tbl, COUNT(*) AS rows FROM platform_sku_map
+            UNION ALL SELECT 'psm_auto_linked', COUNT(*) FROM platform_sku_map WHERE business_model_source='auto_link_cross_platform'
+            UNION ALL SELECT 'console_title_igdb', COUNT(*) FROM console_title_igdb;"
+          REMOTE
