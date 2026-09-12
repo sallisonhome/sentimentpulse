@@ -255,10 +255,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // inflated legacy titles (CoD MW4 at $1.82B m12 = actually the full lifetime
       // total). The cascade-cliff gate below sinks m12 rows lacking a real m12
       // estimate, matching how d7/d30/d90 sink when their nearest rung is missing.
+      //
+      // v0.4 (2026-09-12): narrow cascades no longer fall through to m12. Ghost
+      // of Yotei (released 2025-10) had d7/d30/d90 all gated as insufficient_history,
+      // but m12 fired `backfill-bootstrap` with signal=LTD. With the previous
+      // cascade [d7, d30, d90, m12] a d7 request COALESCE'd all the way to m12 and
+      // displayed LTD numbers as a 7-day value. The route's near-rung cliff gate
+      // (w0 OR w1) admitted the row because w1=d30 was null but w2/w3 were checked
+      // via COALESCE, not the cliff. Narrowing the cascade cuts that path.
       const CASCADE_BY_WINDOW: Record<string, string[]> = {
-        d7:  ["d7", "d30", "d90", "m12"],
-        d30: ["d30", "d90", "m12"],
-        d90: ["d90", "m12"],
+        d7:  ["d7", "d30"],
+        d30: ["d30", "d90"],
+        d90: ["d90"],
         m12: ["m12"],
         ltd: ["ltd"],
       };

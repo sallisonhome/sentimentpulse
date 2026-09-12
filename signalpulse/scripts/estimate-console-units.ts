@@ -43,6 +43,38 @@ import { rawSqlite } from "../server/storage";
 
 const NOISE_GATE_DEFAULT = 50;
 
+// v0.4 (2026-09-12): per-platform gate defaults calibrated to each store's
+// natural rating volume. Steam ratings are user-authored reviews and land in
+// the thousands per popular title; a 50-count gate cleanly separates real
+// signal from noise. Xbox displaycatalog UsageData counts are one to two
+// orders of magnitude smaller (~1-40 for most top-100 titles) — a 50-count
+// gate rejected 73% of Xbox d7 rows on 2026-09-12, silently emptying the d7
+// leaderboard. PS5 star-ratings are user-authored like Steam so keep the
+// higher gate. Override any of these via app_settings key
+// `noise_gate_min_signal.<platform>`; the legacy `noise_gate_min_signal` key
+// is still honored as a fallback for backward compatibility.
+const NOISE_GATE_DEFAULTS_BY_PLATFORM: Record<string, number> = {
+  steam: 50,
+  xbox: 10,
+  ps5: 50,
+};
+
+// Bootstrap-horizon guard. backfill-bootstrap fires when a title's release
+// date is inside the requested window, on the exact assumption that
+// LTD == window signal (all ratings arrived inside the window). That math
+// is truthful for a game released 30d ago on a d30 view, but false-truthy
+// for a game released 300d ago on an m12 view: technically release_date is
+// within the window, but 90% of those ratings landed in the first month,
+// not evenly across the year. Applying that LTD to m12 flags the row as a
+// year-total when it's really a lifetime-adjacent total.
+//
+// Rule: bootstrap only fires when release_date is within min(winDays, 60).
+// A d7 view still bootstraps recent launches (<=7d old); an m12 view only
+// bootstraps titles released in the last 60d. Older releases must earn a
+// window value via forward-delta or steam-pace, and if both fail the row
+// is left null (and the route's cliff gate suppresses it from that window).
+const BOOTSTRAP_MAX_DAYS = 60;
+
 interface MultiplierRow {
   id: number;
   platform: string;
@@ -89,12 +121,27 @@ async function main() {
   const asOfDate = isoDate();
   const nowIso = new Date().toISOString();
 
-  // ─── 1. Noise gate from app_settings ─────────────────────────────────────
-  const gateRow = db.prepare(
+  // ─── 1. Noise gate from app_settings (per-platform, with legacy fallback) ─
+  //     Load a per-platform gate for each of {steam,xbox,ps5}. Resolution order:
+  //       1. app_settings key 'noise_gate_min_signal.<platform>' (v0.4+)
+  //       2. app_settings key 'noise_gate_min_signal'            (legacy, all platforms)
+  //       3. NOISE_GATE_DEFAULTS_BY_PLATFORM[<platform>]         (compiled-in)
+  //       4. NOISE_GATE_DEFAULT                                  (final fallback)
+  const legacyGateRow = db.prepare(
     `SELECT value FROM app_settings WHERE key = 'noise_gate_min_signal'`
   ).get() as { value: string } | undefined;
-  const noiseGate = gateRow ? parseInt(gateRow.value, 10) : NOISE_GATE_DEFAULT;
-  console.log(`[estimate-console-units] noise_gate_min_signal=${noiseGate}`);
+  const legacyGate = legacyGateRow ? parseInt(legacyGateRow.value, 10) : null;
+  const noiseGateByPlatform = new Map<string, number>();
+  for (const platform of ["steam", "xbox", "ps5"]) {
+    const perPlatformRow = db.prepare(
+      `SELECT value FROM app_settings WHERE key = ?`
+    ).get(`noise_gate_min_signal.${platform}`) as { value: string } | undefined;
+    const gate = perPlatformRow
+      ? parseInt(perPlatformRow.value, 10)
+      : (legacyGate ?? NOISE_GATE_DEFAULTS_BY_PLATFORM[platform] ?? NOISE_GATE_DEFAULT);
+    noiseGateByPlatform.set(platform, gate);
+    console.log(`[estimate-console-units] noise_gate.${platform}=${gate}`);
+  }
 
   // ─── 2. Latest multiplier per (platform, cohort_key='default') ────────────
   const multipliers = new Map<string, MultiplierRow>();
@@ -543,7 +590,14 @@ async function main() {
     }
 
     // 3. BACKFILL-BOOTSTRAP — title released inside window → ltd IS the window.
-    if (ltdNow != null && isReleasedWithin(titleId, winDays)) {
+    //    Additionally gated by BOOTSTRAP_MAX_DAYS so a title released 300 days
+    //    ago doesn't get its LTD projected onto every window ≤365d. The math
+    //    (LTD == window signal) is only truthful for very recent launches where
+    //    virtually all ratings did land inside the window. For older titles,
+    //    fall through to steam-pace (which weights by pace) or return null and
+    //    let the route's cliff gate suppress the row.
+    const bootstrapHorizon = Math.min(winDays, BOOTSTRAP_MAX_DAYS);
+    if (ltdNow != null && isReleasedWithin(titleId, bootstrapHorizon)) {
       return { signal: ltdNow, methodTag: "backfill-bootstrap" };
     }
 
@@ -639,7 +693,10 @@ async function main() {
       }
 
       // ─── Noise gate (against raw signal, before GP deflator) ─────────
-      if (signal < noiseGate) {
+      //     Per-platform gate — see NOISE_GATE_DEFAULTS_BY_PLATFORM and the
+      //     app_settings loader in §1 for the resolution order.
+      const platformGate = noiseGateByPlatform.get(platform) ?? NOISE_GATE_DEFAULT;
+      if (signal < platformGate) {
         row.gatedReason = "signal_too_small";
         rows.push(row);
         continue;
