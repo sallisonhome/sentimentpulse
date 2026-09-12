@@ -784,17 +784,73 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
         let pathAOverlaid = 0;
         let pathBDerived = 0;
+        let pathBSkippedNoSteam = 0;
+        let ipOverridesApplied = 0;
 
         // Only build Steam-side revenue lookups when we're serving a
         // console leaderboard that needs Path B.
         const consoleRatio = PLATFORM_RATIO_VS_STEAM[platform];
-        const steamRevenueByTitle = new Map<number, {revenue:number; source:"anchor"|"estimator"}>();
-        if (consoleRatio != null && groups.length > 0) {
-          const groupTitleIds = groups.map(g => g.titleId).filter((x): x is number => typeof x === "number");
-          if (groupTitleIds.length > 0) {
-            const placeholders = groupTitleIds.map(() => "?").join(",");
 
-            // Steam anchors first (authoritative).
+        // Steam revenue keyed by editionGroupKey(name), NOT by title_id.
+        // Reason: title_id is per-platform in platform_sku_map. Steam's
+        // "Marvel's Spider-Man 2" has one title_id, PS5's has another.
+        // The only reliable cross-platform join key is the normalized
+        // display name (same helper the client uses to collapse editions
+        // within a platform). This is the fix for Path B silently missing
+        // every cross-platform title.
+        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"}>();
+        // Console group keys we need Steam revenue for.
+        const groupKeysNeeded = new Set<string>();
+        for (const g of groups) {
+          const k = (g.editionGroupKey as string | undefined) ?? "";
+          if (k.length >= 2) groupKeysNeeded.add(k);
+        }
+
+        if (consoleRatio != null && groupKeysNeeded.size > 0) {
+          // Discover every Steam base SKU whose editionGroupKey is one of
+          // the keys we need. We fetch all Steam base SKUs and filter in
+          // JS because SQLite has no way to run editionGroupKey().
+          const allSteamSkus = rawSqlite.prepare(`
+            SELECT psm.title_id AS titleId,
+                   CASE
+                     WHEN igdb.match_confidence = 'low'
+                       THEN COALESCE(NULLIF(igdb.store_name,''), NULLIF(igdb.name,''))
+                     ELSE COALESCE(NULLIF(igdb.name,''), NULLIF(igdb.store_name,''))
+                   END AS name,
+                   psm.msrp_usd_cents AS msrpUsdCents
+              FROM platform_sku_map psm
+              LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
+             WHERE psm.platform = 'steam'
+               AND psm.business_model = 'paid'
+               AND psm.sku_role = 'base'
+               AND psm.msrp_usd_cents IS NOT NULL
+               AND psm.msrp_usd_cents > 0
+          `).all() as Array<{titleId:number; name:string|null; msrpUsdCents:number}>;
+          // Map: editionGroupKey -> [{titleId, msrpUsdCents}]
+          const steamSkusByKey = new Map<string, Array<{titleId:number; msrpUsdCents:number}>>();
+          for (const s of allSteamSkus) {
+            const k = editionGroupKey(s.name);
+            if (k.length < 2 || !groupKeysNeeded.has(k)) continue;
+            const arr = steamSkusByKey.get(k) ?? [];
+            arr.push({ titleId: s.titleId, msrpUsdCents: s.msrpUsdCents });
+            steamSkusByKey.set(k, arr);
+          }
+
+          // Collect the union of Steam title_ids that matter, for one
+          // batched anchor + estimator lookup.
+          const steamTitleIds: number[] = [];
+          const steamTitleIdToKey = new Map<number, string>();
+          steamSkusByKey.forEach((list, k) => {
+            for (const s of list) {
+              steamTitleIds.push(s.titleId);
+              steamTitleIdToKey.set(s.titleId, k);
+            }
+          });
+
+          if (steamTitleIds.length > 0) {
+            const placeholders = steamTitleIds.map(() => "?").join(",");
+
+            // Steam anchors first (authoritative). Aggregate SUM by key.
             const steamAnchors = rawSqlite.prepare(`
               SELECT title_id, actual_revenue_usd
                 FROM revenue_calibration_anchors
@@ -807,19 +863,27 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                         AND title_id IN (${placeholders})
                       GROUP BY title_id
                  )
-            `).all(win, ...groupTitleIds, win, ...groupTitleIds) as Array<{title_id:number; actual_revenue_usd:number}>;
+            `).all(win, ...steamTitleIds, win, ...steamTitleIds) as Array<{title_id:number; actual_revenue_usd:number}>;
+            const anchoredKeys = new Set<string>();
             for (const r of steamAnchors) {
-              steamRevenueByTitle.set(r.title_id, { revenue: r.actual_revenue_usd, source: "anchor" });
+              const k = steamTitleIdToKey.get(r.title_id);
+              if (!k) continue;
+              const prev = steamRevenueByKey.get(k);
+              const nextRev = (prev?.revenue ?? 0) + r.actual_revenue_usd;
+              steamRevenueByKey.set(k, { revenue: nextRev, source: "anchor" });
+              anchoredKeys.add(k);
             }
 
-            // Steam estimator revenue for the remaining title_ids. Uses the
-            // same cascade rule as the requested platform so window semantics
-            // stay aligned. Aggregates across every Steam base SKU per
-            // title_id (matches the edition-rollup treatment).
-            const needEstimator = groupTitleIds.filter(tid => !steamRevenueByTitle.has(tid));
-            if (needEstimator.length > 0) {
+            // Steam estimator revenue for keys we didn't find an anchor for.
+            // Aggregates across every Steam base SKU per title_id, then we
+            // sum by editionGroupKey below.
+            const needEstimatorTitleIds = steamTitleIds.filter(tid => {
+              const k = steamTitleIdToKey.get(tid);
+              return k != null && !anchoredKeys.has(k);
+            });
+            if (needEstimatorTitleIds.length > 0) {
               const steamAspFactor = aspFactorFor("steam");
-              const ph2 = needEstimator.map(() => "?").join(",");
+              const ph2 = needEstimatorTitleIds.map(() => "?").join(",");
               const steamCascadeJoins = cascade.map((w, i) => `
                 LEFT JOIN window_estimates_daily w${i}
                        ON w${i}.title_id = psm.title_id
@@ -852,21 +916,37 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                    AND psm.title_id IN (${ph2})
                  GROUP BY psm.title_id
                 HAVING SUM(COALESCE((${steamCascadeGated}) * psm.msrp_usd_cents, 0)) > 0
-              `).all(steamAspFactor, ...needEstimator) as Array<{titleId:number; steamRevenue:number}>;
+              `).all(steamAspFactor, ...needEstimatorTitleIds) as Array<{titleId:number; steamRevenue:number}>;
+              // Sum estimator revenue by editionGroupKey.
               for (const r of steamRows) {
-                if (r.steamRevenue > 0) {
-                  steamRevenueByTitle.set(r.titleId, { revenue: r.steamRevenue, source: "estimator" });
-                }
+                if (r.steamRevenue <= 0) continue;
+                const k = steamTitleIdToKey.get(r.titleId);
+                if (!k) continue;
+                const prev = steamRevenueByKey.get(k);
+                if (prev && prev.source === "anchor") continue; // anchor wins
+                const nextRev = (prev?.revenue ?? 0) + r.steamRevenue;
+                steamRevenueByKey.set(k, { revenue: nextRev, source: "estimator" });
               }
             }
           }
         }
 
         for (const g of groups) {
-          // Path A always wins for the requested platform, including PS5/Xbox
-          // LTD when a console anchor exists (verified-LTD preservation).
+          // Path A precedence:
+          //   * Steam platform: always wins. Steam anchors are the whole
+          //     point of the calibration pipeline (portal_fetch actuals).
+          //   * PS5/Xbox platform: Path A NEVER wins today. Every PS5/Xbox
+          //     anchor currently in revenue_calibration_anchors was written
+          //     by the anchor writer FROM the estimator (there is no
+          //     verified-console-LTD source yet). Letting them win would
+          //     re-inflate exactly the Game-Pass/rating-driven distortions
+          //     the platform revenue ratio is meant to correct (Minecraft
+          //     Xbox LTD = \$1.5B is the canonical failure). When a real
+          //     verified-console-LTD source lands, gate this on that
+          //     source flag instead of the platform.
           const a = anchorMap.get(g.titleId);
-          if (a) {
+          const anchorWins = a && platform === "steam";
+          if (anchorWins && a) {
             g.revenueMidUsdEstimated = g.revenueMidUsd;
             g.revenueMidUsd = a.actual_revenue_usd;
             g.dataSource = "actual";
@@ -896,7 +976,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // aspUsdCents may be null when MSRP is missing; in that case we
           // preserve the estimator units rather than write a bad number.
           if (consoleRatio != null) {
-            const s = steamRevenueByTitle.get(g.titleId);
+            const gk = (g.editionGroupKey as string | undefined) ?? "";
+            const s = gk.length >= 2 ? steamRevenueByKey.get(gk) : undefined;
             if (s) {
               const ipOverride = ipOverrideFactorFor(g.name as string | null | undefined, platform);
               const factor = ipOverride ? ipOverride.factor : consoleRatio;
@@ -911,13 +992,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               g.dataSource = ipOverride ? "derived_from_steam_ip_override" : "derived_from_steam";
               g.derivationRatio = factor;
               g.derivationSteamSource = s.source; // 'anchor' | 'estimator'
-              if (ipOverride) g.derivationIpOverride = ipOverride.label;
+              if (ipOverride) { g.derivationIpOverride = ipOverride.label; ipOverridesApplied++; }
               pathBDerived++;
               continue;
             }
-            // Console exclusive (no Steam SKU for this title_id): keep the
-            // SQL-computed revenue AND units unchanged.
+            // Console exclusive (no Steam SKU family matched by name): keep
+            // the SQL-computed revenue AND units unchanged.
             g.dataSource = "estimated_console_exclusive";
+            pathBSkippedNoSteam++;
             continue;
           }
           // Steam platform, no anchor: unchanged.
@@ -937,7 +1019,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         }
 
         if (pathAOverlaid > 0 || pathBDerived > 0) {
-          console.log(`[leaderboard-overlay] platform=${platform} window=${win} pathA=${pathAOverlaid} pathB=${pathBDerived} groups=${groups.length}`);
+          console.log(`[leaderboard-overlay] platform=${platform} window=${win} pathA=${pathAOverlaid} pathB=${pathBDerived} ipOverrides=${ipOverridesApplied} pathBSkippedNoSteam=${pathBSkippedNoSteam} groups=${groups.length}`);
         }
       } catch (overlayErr: any) {
         // Overlay is optional — never fail the leaderboard because of it.

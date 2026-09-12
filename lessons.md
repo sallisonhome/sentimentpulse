@@ -4,6 +4,59 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-12 — Cross-platform Path B lookup MUST use editionGroupKey, not title_id
+
+**Symptom:** After landing the immutable platform revenue ratio and the sports
+IP override, users saw the leaderboards still show independent per-platform
+revenue for cross-platform titles: Wardogs $48.4M (Steam) vs Spider-Man 2
+$50.7M (PS5). Even NBA 2K27 had Xbox > PS5 in the 90-day view, the opposite of
+what the 65/25/10 IP override should produce.
+
+**Root cause:** `platform_sku_map.title_id` is PER-PLATFORM, not
+cross-platform. Every platform allocates its own title_id from the shared
+auto-increment counter, so the SAME game gets three different title_ids for
+Steam/PS5/Xbox rows. Verified:
+- NBA 2K27: Steam=10010, PS5=10306, Xbox=10199 (+10406 Deluxe)
+- Marvel's Spider-Man 2: Steam=10128, PS5=10352
+- Marvel's Spider-Man Remastered: Steam=10456, PS5=10360 and 10565
+
+Path B was written as `steamRevenueByTitle.get(g.titleId)`. Every console
+group row hit that map with its own console title_id, missed, and fell
+through — so the immutable ratio and every IP override were DEAD CODE for
+cross-platform titles. Path A LTD-derived anchors filled in for a few Steam
+rows and made spot checks look OK, hiding the failure.
+
+**Fix:** Build `steamRevenueByKey`, keyed by `editionGroupKey(name)` — the
+SAME normalizer the client uses to collapse edition SKUs within a platform.
+Discover every Steam base SKU, group by editionGroupKey, sum anchor +
+estimator revenue per key, look up by `g.editionGroupKey` in Path B.
+editionGroupKey collapses `PS4 & PS5` hybrids and every `<Title>: Digital
+Deluxe Edition` variant onto the base title, so PS5 SKUs like
+`Marvel's Spider-Man 2` and `Marvel's Spider-Man 2 (PS4 & PS5)` join to the
+Steam base under the same key. Path B now also emits
+`ipOverridesApplied` and `pathBSkippedNoSteam` counters.
+
+**Rule:** Any cross-platform lookup in this codebase MUST NOT use `title_id`
+as the join key. Use `editionGroupKey(name)`, or add a cross-platform
+`concept_id` column and backfill it before switching lookups.
+
+## 2026-09-12 — PS5/Xbox anchors are estimator-derived, not verified — Path A must not win on consoles
+
+**Symptom:** Minecraft Xbox LTD showed a runaway estimate driven by Game Pass
+rating pollution (rating_count on Xbox is ~10× a paid title's, because Game
+Pass players rate the game they got for free). The anchor writer then locked
+that estimator number into `revenue_calibration_anchors`. Result: LTD Xbox
+leaderboard put Minecraft far above its real ~$1.5B lifetime.
+
+**Rule:** Path A (anchor overlay) wins ONLY for the Steam platform today.
+Steam anchors come from portal_fetch actuals, so they are trustworthy. Every
+PS5/Xbox anchor currently in `revenue_calibration_anchors` was written by the
+anchor writer FROM the estimator, so letting them win re-inflates exactly
+the distortions the platform revenue ratio is meant to correct. When a real
+verified-console-LTD writer lands, gate Path A on THAT source flag — never
+re-enable it on the platform column.
+
+
 ## 2026-09-12 — Platform revenue-share ratio is immutable; PS5/Xbox windowed revenue derives from Steam
 
 **Context.** Agent kept trying to "predict" the platform mix from raw estimator output and confusing itself about whether Steam multiplier changes should shift PS5/Xbox numbers. User had to correct twice, then explicitly restate the rule: the platform mix is fixed by decision, not derived by fit.
