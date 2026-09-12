@@ -157,6 +157,32 @@ function usePlatformLeaderboard(
   });
 }
 
+interface CalibrationStatus {
+  calibrated: boolean;
+  platform: string;
+  lastCalibratedDate?: string;
+  anchorCount?: number;
+  windowUsed?: string;
+  weightMethod?: string;
+  observedRatio?: number;
+  multiplierBefore?: number;
+  multiplierAfter?: number;
+  method?: string;
+  overlayCount?: number;
+}
+
+function useCalibrationStatus(platform: string) {
+  return useQuery<CalibrationStatus>({
+    queryKey: [`/signal/api/console/leaderboards/${platform}/calibration`],
+    queryFn: async () => {
+      const r = await fetch(`/signal/api/console/leaderboards/${platform}/calibration`, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    staleTime: 30 * 60_000,
+  });
+}
+
 // ─── Hub: 3 columns side-by-side ─────────────────────────────────────────────
 
 export default function ConsoleLeaderboardsHub() {
@@ -438,6 +464,7 @@ export function ConsoleLeaderboardsPlatform() {
   const [sort, setSort] = useState<SortKey>("revenue");
   const [dir, setDir] = useState<SortDir>("desc");
   const { data, isLoading, isError, error } = usePlatformLeaderboard(platform, window, sort, dir);
+  const { data: calibration } = useCalibrationStatus(platform);
   const platformLabel = PLATFORMS.find(p => p.id === platform)?.label || platform;
 
   // Header click: same column toggles asc/desc; new column jumps to that
@@ -519,9 +546,18 @@ export function ConsoleLeaderboardsPlatform() {
               <span className="font-semibold text-foreground">Ranking signal:</span> daily rating-count delta from the storefront review API — a public proxy for sales velocity.
               <span className="ml-1 font-semibold text-foreground">Est. units</span> use v0 public-benchmark multipliers (±30–50%) with digital-share adjustments per platform (Steam 100%, PS5 76%, Xbox 90% modelled).
               <span className="ml-1 font-semibold text-foreground">Est. revenue</span> = est. units × <span className="font-mono">ASP</span>, where ASP = MSRP × platform realization factor (Steam 66%, PS5 80%, Xbox 80%){data.aspFactor != null ? ` — this platform: ${(data.aspFactor * 100).toFixed(0)}%` : ""}.
-              Cells reading <span className="font-mono">—</span> mean the signal is below the noise gate (50) or that window lacks the required forward history. Calibration against first-party disclosures is the next milestone.
+              Cells reading <span className="font-mono">—</span> mean the signal is below the noise gate (50) or that window lacks the required forward history.
             </p>
           </Card>
+          {calibration?.calibrated && (
+            <Card className="p-3 bg-amber-50/40 dark:bg-amber-950/20 border-amber-500/30">
+              <p className="text-xs text-muted-foreground">
+                <span className="font-semibold text-foreground">Calibration active.</span>{" "}
+                Revenue estimates on this leaderboard have been calibrated against a small sample of verified sales data. The model's realized ratio was <span className="font-mono">{calibration.observedRatio?.toFixed(2)}×</span> the pre-calibration estimate, and the platform ownership multiplier was adjusted from <span className="font-mono">{calibration.multiplierBefore?.toFixed(2)}</span> to <span className="font-mono">{calibration.multiplierAfter?.toFixed(2)}</span> as of <span className="font-mono">{calibration.lastCalibratedDate}</span> (n={calibration.anchorCount} anchor rows; windows: {calibration.windowUsed}).{" "}
+                Rows shown as <span className="font-mono">actual</span> in the data-source cell come directly from verified sales; all other rows remain model estimates. Use these numbers for relative ranking rather than absolute revenue claims — individual-title accuracy varies at this sample size.
+              </p>
+            </Card>
+          )}
           <Card className="overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-muted/40">

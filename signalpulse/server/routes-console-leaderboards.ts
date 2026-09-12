@@ -668,6 +668,65 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           existing.editionTitles.push(rawName);
         }
       }
+      // Path A: revenue-anchor display overlay.
+      // For any group whose (titleId, platform, window) matches a row in
+      // revenue_calibration_anchors for the most recent as_of_date, swap the
+      // estimator revenue for the anchor's actual_revenue_usd and tag
+      // dataSource='actual'. Units stay estimated on purpose — during active
+      // sales the units count is inflated relative to the estimator's ASP
+      // model, so replacing units with actual would mis-represent the
+      // per-unit economics; only the revenue side is trustworthy for a
+      // sale-active window. See lessons.md 2026-09-12 anchor entry.
+      try {
+        const win = window;
+        const anchorMap = new Map<number, {actual_revenue_usd:number; sale_state:string; as_of_date:string}>();
+        // Latest anchor per titleId for THIS platform+window across all as_of dates.
+        const anchorRows = rawSqlite.prepare(`
+          SELECT title_id, actual_revenue_usd, sale_state, as_of_date
+            FROM revenue_calibration_anchors
+           WHERE platform = ? AND window = ?
+             AND (title_id, as_of_date) IN (
+                 SELECT title_id, MAX(as_of_date)
+                   FROM revenue_calibration_anchors
+                  WHERE platform = ? AND window = ?
+                  GROUP BY title_id
+             )
+        `).all(platform, win, platform, win) as Array<{title_id:number; actual_revenue_usd:number; sale_state:string; as_of_date:string}>;
+        for (const a of anchorRows) anchorMap.set(a.title_id, a);
+
+        let overlaid = 0;
+        for (const g of groups) {
+          const a = anchorMap.get(g.titleId);
+          if (!a) { g.dataSource = "estimated"; continue; }
+          g.revenueMidUsdEstimated = g.revenueMidUsd; // preserve for callers that want to diff
+          g.revenueMidUsd = a.actual_revenue_usd;
+          g.dataSource = "actual";
+          g.anchorSaleState = a.sale_state;
+          g.anchorAsOfDate = a.as_of_date;
+          overlaid++;
+        }
+
+        // Re-sort groups by whichever sort key the client asked for so the
+        // anchor overlay doesn't leave rows in visually-wrong positions.
+        // Only re-sort when sort is revenue-based; other sorts (score,
+        // ratings, asp, units) operate on fields the overlay doesn't touch.
+        if (sort === "revenue") {
+          groups.sort((a, b) => {
+            const av = typeof a.revenueMidUsd === "number" ? a.revenueMidUsd : -1;
+            const bv = typeof b.revenueMidUsd === "number" ? b.revenueMidUsd : -1;
+            return dir === "asc" ? av - bv : bv - av;
+          });
+        }
+
+        if (overlaid > 0) {
+          // Non-noisy log so we can trace overlays in the deploy stream.
+          console.log(`[leaderboard-overlay] platform=${platform} window=${win} overlaid=${overlaid}/${groups.length}`);
+        }
+      } catch (overlayErr: any) {
+        // Overlay is optional — never fail the leaderboard because of it.
+        console.log(`[leaderboard-overlay] skipped (${overlayErr?.message ?? overlayErr}); returning estimates`);
+      }
+
       // Trim to top-100 groups. The input SQL was ordered, group order was
       // preserved, so groups[0..99] is the final leaderboard.
       const collapsed = groups.slice(0, 100);
@@ -678,7 +737,55 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     }
   });
 
-  // ─── PDP header ────────────────────────────────────────────────────────────
+  // ─── Calibration status ────────────────────────────────────────────
+  //
+  // Backs the leaderboard banner. Returns latest applied calibration_events
+  // row for the platform, so the client can render "Revenue estimates
+  // calibrated on YYYY-MM-DD from N verified sales anchors." No individual
+  // anchor titles are exposed. If no calibration has ever run for the
+  // platform, returns { calibrated: false }.
+  app.get("/api/console/leaderboards/:platform/calibration", (req, res) => {
+    try {
+      const platform = req.params.platform as Platform;
+      if (!PLATFORMS.includes(platform)) return res.status(400).json({ error: "invalid platform" });
+      const ev = rawSqlite.prepare(`
+        SELECT as_of_date, anchor_count, window_used, weight_method,
+               observed_ratio, old_multiplier, new_multiplier, method,
+               applied, notes, created_at
+          FROM calibration_events
+         WHERE platform = ? AND applied = 1
+         ORDER BY as_of_date DESC, id DESC
+         LIMIT 1
+      `).get(platform) as any;
+      if (!ev) return res.json({ calibrated: false, platform });
+      // Overlay count: how many rows on the current leaderboard will show
+      // an anchor overlay. We report on the m12 window as an informative
+      // proxy — the actual overlay count varies by window the user views.
+      const overlayCount = (rawSqlite.prepare(`
+        SELECT COUNT(DISTINCT title_id) AS n
+          FROM revenue_calibration_anchors
+         WHERE platform = ?
+           AND as_of_date = (SELECT MAX(as_of_date) FROM revenue_calibration_anchors WHERE platform = ?)
+      `).get(platform, platform) as {n:number} | undefined)?.n ?? 0;
+      res.json({
+        calibrated: true,
+        platform,
+        lastCalibratedDate: ev.as_of_date,
+        anchorCount: ev.anchor_count,
+        windowUsed: ev.window_used,
+        weightMethod: ev.weight_method,
+        observedRatio: ev.observed_ratio,
+        multiplierBefore: ev.old_multiplier,
+        multiplierAfter: ev.new_multiplier,
+        method: ev.method,
+        overlayCount, // total distinct titles that have any anchor overlay available
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ─── PDP header ────────────────────────────────────────────────────────
   //
   // Accepts `?window=d7|d30|d90|m12|ltd` (default `ltd`). The response now
   // includes a `windowKpisPerPlatform` array with window-scoped estimates

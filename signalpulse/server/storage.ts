@@ -816,6 +816,64 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS ownership_multipliers_lookup
       ON ownership_multipliers (platform, cohort_key, effective_from DESC);
 
+    -- Ground-truth revenue anchors for calibration. Rows are written by the
+    -- nightly anchor-writer script when a title has verified sales data
+    -- (steam_sales_daily.source='portal_fetch'). Each row is a
+    -- (title, platform, window, as_of_date) fact: how much revenue and how
+    -- many units the title actually did in that window, plus a sale-state
+    -- flag ('baseline' | 'active_sale') based on whether the trailing window
+    -- ASP is below the rolling 90d median (see scripts/write-revenue-anchors.ts).
+    -- The refit script (scripts/refit-ownership-multipliers.ts) reads this
+    -- table for baseline-state rows only when computing new multipliers.
+    -- The leaderboard route reads this table to overlay actual revenue on
+    -- rows that have an anchor (Path A display overlay).
+    CREATE TABLE IF NOT EXISTS revenue_calibration_anchors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      window TEXT NOT NULL,
+      as_of_date TEXT NOT NULL,
+      actual_revenue_usd REAL NOT NULL,
+      actual_units INTEGER,
+      reference_msrp_usd_cents INTEGER NOT NULL,
+      sale_state TEXT NOT NULL,
+      implied_asp_pct_msrp REAL,
+      rolling_asp_median_pct_msrp REAL,
+      data_source TEXT NOT NULL,
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS revenue_calibration_anchors_unique
+      ON revenue_calibration_anchors (title_id, platform, window, as_of_date);
+    CREATE INDEX IF NOT EXISTS revenue_calibration_anchors_lookup
+      ON revenue_calibration_anchors (platform, title_id, as_of_date DESC);
+
+    -- Audit trail of calibration events. Every time refit-ownership-multipliers
+    -- runs, it inserts one row here per platform describing the anchors used,
+    -- the observed ratio, and the resulting multiplier change. This is the
+    -- source of truth for the leaderboard's calibration banner (methodology,
+    -- last calibrated date, anchor count) — the banner does not identify
+    -- individual anchor titles.
+    CREATE TABLE IF NOT EXISTS calibration_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      as_of_date TEXT NOT NULL,
+      platform TEXT NOT NULL,
+      cohort_key TEXT NOT NULL,
+      anchor_count INTEGER NOT NULL,
+      anchor_sample_json TEXT NOT NULL,
+      window_used TEXT NOT NULL,
+      weight_method TEXT NOT NULL,
+      observed_ratio REAL NOT NULL,
+      old_multiplier REAL NOT NULL,
+      new_multiplier REAL NOT NULL,
+      method TEXT NOT NULL,
+      applied INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS calibration_events_platform_date
+      ON calibration_events (platform, as_of_date DESC);
+
     CREATE TABLE IF NOT EXISTS console_title_igdb (
       title_id INTEGER PRIMARY KEY,
       igdb_id INTEGER,
