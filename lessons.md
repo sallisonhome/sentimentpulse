@@ -4,6 +4,81 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-12 — Platform revenue-share ratio is immutable; PS5/Xbox windowed revenue derives from Steam
+
+**Context.** Agent kept trying to "predict" the platform mix from raw estimator output and confusing itself about whether Steam multiplier changes should shift PS5/Xbox numbers. User had to correct twice, then explicitly restate the rule: the platform mix is fixed by decision, not derived by fit.
+
+**The rule (canonical, immutable).**
+
+Source-of-truth ratio (from turn 78 of the 2026-09-12 session, ratified in
+`docs/multiplier-recalibration-v03.md` and updated to reflect user's "apply to
+revenue" clarification):
+
+- Steam / PC: **47%**
+- PS5: **36%**
+- Xbox: **12%**
+- Switch 2: **5%**
+
+On the console leaderboard (Steam / PS5 / Xbox only; Switch 2 not rendered),
+renormalize to:
+
+- Steam: **49.5%**
+- PS5: **37.9%**
+- Xbox: **12.6%**
+
+**Application (per multi-platform title, per window):**
+
+1. Compute Steam window revenue from Steam's calibrated multiplier + ASP
+   (the existing estimator path). This is the anchor.
+2. Derive PS5 window revenue = Steam window revenue × (37.9 / 49.5) ≈ 0.7657.
+3. Derive Xbox window revenue = Steam window revenue × (12.6 / 49.5) ≈ 0.2545.
+4. Back-compute PS5/Xbox units from the derived revenue:
+   `units = derived_revenue / (asp_usd_cents / 100)` where ASP =
+   MSRP × platform ASP factor. This keeps units and revenue internally
+   consistent — leaving units at the estimator's independent output would
+   produce a row whose implied ASP diverged from the platform's actual
+   ASP. PS5 and Xbox no longer use their own multipliers to compute
+   revenue OR units on cross-platform titles.
+
+**Applies to windowed revenue** (d7, d30, d90, m12).
+
+**Does NOT apply to:**
+
+- **LTD for anchored non-Saber titles with verified public LTD units.** Those
+  keep their verified LTD number as-is (that's the whole point of anchoring).
+  Their windowed revenues STILL use the ratio.
+- **Console exclusives.** A title with no Steam SKU has no Steam anchor to
+  derive from. Its own platform multiplier + ASP drives revenue directly.
+  The ratio is a cross-platform distribution rule and only fires when there
+  is a Steam SKU to distribute from.
+
+**Why the previous approach was wrong.** The agent kept treating the 47/36/12/5
+split as a UNIT share and letting per-platform multipliers independently drive
+per-platform revenue. That produces platform revenue mixes that drift from the
+agreed ratio the moment any single-platform multiplier changes. User's
+direction is explicit: the ratio applies to REVENUE, not units, and it is
+immutable across every windowed calculation.
+
+**Rule.** Any code path that computes per-platform revenue for a window must
+follow this ordering:
+
+1. Determine whether the title has a Steam SKU. If not: use own multiplier
+   (console exclusive).
+2. Determine whether the window is LTD for an anchored non-Saber title with
+   verified LTD units. If so: preserve the verified per-platform LTD number.
+3. Otherwise: compute Steam window revenue, then derive PS5 and Xbox from
+   Steam via the immutable ratio.
+
+A Steam-multiplier refit shifts Steam revenue estimates and, via the ratio,
+shifts PS5 and Xbox revenue estimates in the same direction proportionally.
+The platform revenue mix percentages themselves NEVER change — that is the
+definition of an immutable ratio.
+
+**Documentation.** See wiki `projects/signalpulse/architecture.md` for the
+full data-flow map (ingestion → anchor writer → multiplier refit → estimator
+→ leaderboard display) and where the ratio sits inside that flow.
+
+
 ## 2026-09-12 — Xbox console leaderboard: 19 title_id collisions caused by (a) stale-counter allocator racing two discovery runs, and (b) writing F2P rows into a paid-only leaderboard's platform_sku_map
 
 **What happened.** Xbox console leaderboard page rendered 19 rows where two SKUs shared the same `title_id` in `platform_sku_map`, e.g. title_id 10231 held both a Fortnite bigId (F2P, created 2026-09-11T00:07:38Z) and a Frostpunk 2 bigId (paid, created 2026-09-11T01:19:14Z). All 19 collisions lived in the consecutive range 10224–10242. In 16/19 pairs, the SKUs were F2P (00:07 batch) + paid (01:19 batch). In 3/19 pairs both SKUs were paid (title_ids 10239, 10241, 10242).

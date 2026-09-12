@@ -687,8 +687,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           existing.editionTitles.push(rawName);
         }
       }
-      // Path A: revenue-anchor display overlay.
-      // For any group whose (titleId, platform, window) matches a row in
+      // ── Path A: Steam anchor overlay (Steam platform only) ─────────────
+      // For any group whose (titleId, 'steam', window) matches a row in
       // revenue_calibration_anchors for the most recent as_of_date, swap the
       // estimator revenue for the anchor's actual_revenue_usd and tag
       // dataSource='actual'. Units stay estimated on purpose — during active
@@ -696,10 +696,45 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // model, so replacing units with actual would mis-represent the
       // per-unit economics; only the revenue side is trustworthy for a
       // sale-active window. See lessons.md 2026-09-12 anchor entry.
+      //
+      // ── Path B: Platform revenue-ratio derivation (PS5 / Xbox) ─────────
+      // Immutable platform revenue mix (see lessons.md 2026-09-12 entry
+      // "Platform revenue-share ratio is immutable"):
+      //   Steam 47%, PS5 36%, Xbox 12%, Switch 2 5%   (source of truth)
+      //   Renormalized for Steam/PS5/Xbox leaderboards (Switch 2 excluded):
+      //     Steam 49.5%   PS5 37.9%   Xbox 12.6%
+      //   Derivation factors:
+      //     PS5  = Steam × (37.9 / 49.5) ≈ 0.7657
+      //     Xbox = Steam × (12.6 / 49.5) ≈ 0.2545
+      //
+      // For every PS5 / Xbox group whose title_id ALSO has a Steam SKU in
+      // platform_sku_map (cross-platform title), the console revenue is
+      // DERIVED from Steam revenue for the same window, not computed
+      // independently from the platform's own multiplier × MSRP × ASP.
+      // Steam revenue used as the anchor is, in preference order:
+      //   1. Steam's anchor row (actual_revenue_usd) if one exists for the
+      //      same (title_id, window). Handles anchored titles for every
+      //      window, including LTD.
+      //   2. Steam's live estimator revenue = cascaded units_mid ×
+      //      msrp_usd_cents × steam_asp_factor / 100. Same cascade rule
+      //      as the requested platform, keyed off the SAME as_of_date
+      //      selection logic.
+      //
+      // Console-exclusive titles (no Steam SKU for that title_id) fall
+      // through to the SQL-computed revenue unchanged. LTD windows for
+      // anchored non-Saber PS5/Xbox titles are preserved: if a console
+      // anchor row exists for the requested window it wins (Path A wins
+      // over Path B for that specific window).
+      const PLATFORM_RATIO_VS_STEAM: Partial<Record<Platform, number>> = {
+        ps5:  37.9 / 49.5,   // ≈ 0.7657
+        xbox: 12.6 / 49.5,   // ≈ 0.2545
+      };
       try {
         const win = window;
-        const anchorMap = new Map<number, {actual_revenue_usd:number; sale_state:string; as_of_date:string}>();
-        // Latest anchor per titleId for THIS platform+window across all as_of dates.
+
+        // Latest anchor per titleId for THIS platform+window (used for
+        // Path A on Steam AND for the LTD-preserved exception on
+        // PS5/Xbox anchored titles).
         const anchorRows = rawSqlite.prepare(`
           SELECT title_id, actual_revenue_usd, sale_state, as_of_date
             FROM revenue_calibration_anchors
@@ -711,24 +746,147 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                   GROUP BY title_id
              )
         `).all(platform, win, platform, win) as Array<{title_id:number; actual_revenue_usd:number; sale_state:string; as_of_date:string}>;
+        const anchorMap = new Map<number, {actual_revenue_usd:number; sale_state:string; as_of_date:string}>();
         for (const a of anchorRows) anchorMap.set(a.title_id, a);
 
-        let overlaid = 0;
+        let pathAOverlaid = 0;
+        let pathBDerived = 0;
+
+        // Only build Steam-side revenue lookups when we're serving a
+        // console leaderboard that needs Path B.
+        const consoleRatio = PLATFORM_RATIO_VS_STEAM[platform];
+        const steamRevenueByTitle = new Map<number, {revenue:number; source:"anchor"|"estimator"}>();
+        if (consoleRatio != null && groups.length > 0) {
+          const groupTitleIds = groups.map(g => g.titleId).filter((x): x is number => typeof x === "number");
+          if (groupTitleIds.length > 0) {
+            const placeholders = groupTitleIds.map(() => "?").join(",");
+
+            // Steam anchors first (authoritative).
+            const steamAnchors = rawSqlite.prepare(`
+              SELECT title_id, actual_revenue_usd
+                FROM revenue_calibration_anchors
+               WHERE platform = 'steam' AND window = ?
+                 AND title_id IN (${placeholders})
+                 AND (title_id, as_of_date) IN (
+                     SELECT title_id, MAX(as_of_date)
+                       FROM revenue_calibration_anchors
+                      WHERE platform = 'steam' AND window = ?
+                        AND title_id IN (${placeholders})
+                      GROUP BY title_id
+                 )
+            `).all(win, ...groupTitleIds, win, ...groupTitleIds) as Array<{title_id:number; actual_revenue_usd:number}>;
+            for (const r of steamAnchors) {
+              steamRevenueByTitle.set(r.title_id, { revenue: r.actual_revenue_usd, source: "anchor" });
+            }
+
+            // Steam estimator revenue for the remaining title_ids. Uses the
+            // same cascade rule as the requested platform so window semantics
+            // stay aligned. Aggregates across every Steam base SKU per
+            // title_id (matches the edition-rollup treatment).
+            const needEstimator = groupTitleIds.filter(tid => !steamRevenueByTitle.has(tid));
+            if (needEstimator.length > 0) {
+              const steamAspFactor = aspFactorFor("steam");
+              const ph2 = needEstimator.map(() => "?").join(",");
+              const steamCascadeJoins = cascade.map((w, i) => `
+                LEFT JOIN window_estimates_daily w${i}
+                       ON w${i}.title_id = psm.title_id
+                      AND w${i}.platform = 'steam'
+                      AND w${i}.window = '${w}'
+                      AND w${i}.as_of_date = (SELECT MAX(as_of_date) FROM window_estimates_daily
+                                                WHERE title_id = psm.title_id AND platform='steam' AND window = '${w}')
+              `).join("\n");
+              const steamCascadeUnits = cascade.length === 1
+                ? `w0.units_mid`
+                : `COALESCE(${cascade.map((_, i) => `w${i}.units_mid`).join(", ")})`;
+              const steamCascadeGated = cascade.length >= 2 && window !== "ltd"
+                ? `CASE WHEN (w0.units_mid IS NOT NULL OR w1.units_mid IS NOT NULL) THEN ${steamCascadeUnits} ELSE NULL END`
+                : steamCascadeUnits;
+              const steamRows = rawSqlite.prepare(`
+                SELECT psm.title_id AS titleId,
+                       SUM(
+                         COALESCE(
+                           (${steamCascadeGated}) * psm.msrp_usd_cents * ? / 100.0,
+                           0
+                         )
+                       ) AS steamRevenue
+                  FROM platform_sku_map psm
+                  ${steamCascadeJoins}
+                 WHERE psm.platform = 'steam'
+                   AND psm.business_model = 'paid'
+                   AND psm.sku_role = 'base'
+                   AND psm.msrp_usd_cents IS NOT NULL
+                   AND psm.msrp_usd_cents > 0
+                   AND psm.title_id IN (${ph2})
+                 GROUP BY psm.title_id
+                HAVING SUM(COALESCE((${steamCascadeGated}) * psm.msrp_usd_cents, 0)) > 0
+              `).all(steamAspFactor, ...needEstimator) as Array<{titleId:number; steamRevenue:number}>;
+              for (const r of steamRows) {
+                if (r.steamRevenue > 0) {
+                  steamRevenueByTitle.set(r.titleId, { revenue: r.steamRevenue, source: "estimator" });
+                }
+              }
+            }
+          }
+        }
+
         for (const g of groups) {
+          // Path A always wins for the requested platform, including PS5/Xbox
+          // LTD when a console anchor exists (verified-LTD preservation).
           const a = anchorMap.get(g.titleId);
-          if (!a) { g.dataSource = "estimated"; continue; }
-          g.revenueMidUsdEstimated = g.revenueMidUsd; // preserve for callers that want to diff
-          g.revenueMidUsd = a.actual_revenue_usd;
-          g.dataSource = "actual";
-          g.anchorSaleState = a.sale_state;
-          g.anchorAsOfDate = a.as_of_date;
-          overlaid++;
+          if (a) {
+            g.revenueMidUsdEstimated = g.revenueMidUsd;
+            g.revenueMidUsd = a.actual_revenue_usd;
+            g.dataSource = "actual";
+            g.anchorSaleState = a.sale_state;
+            g.anchorAsOfDate = a.as_of_date;
+            pathAOverlaid++;
+            continue;
+          }
+          // Path B: derive PS5/Xbox windowed revenue from Steam via ratio,
+          // then back-compute units from that derived revenue so units and
+          // revenue stay internally consistent.
+          //
+          // Revenue derivation: derived_revenue = steam_revenue × consoleRatio.
+          // Unit derivation:    derived_units   = derived_revenue / (asp_usd_cents / 100).
+          //
+          // If we left units at the estimator's independent output the row
+          // would show a revenue and a units count whose implied ASP diverges
+          // from the platform's actual ASP — unfixable without either
+          // recomputing revenue (breaks the immutable ratio) or recomputing
+          // units (this branch). We recompute units.
+          //
+          // aspUsdCents may be null when MSRP is missing; in that case we
+          // preserve the estimator units rather than write a bad number.
+          if (consoleRatio != null) {
+            const s = steamRevenueByTitle.get(g.titleId);
+            if (s) {
+              const derivedRevenue = s.revenue * consoleRatio;
+              g.revenueMidUsdEstimated = g.revenueMidUsd;
+              g.revenueMidUsd = derivedRevenue;
+              g.unitsMidEstimated = g.unitsMid;
+              const aspCents = typeof g.aspUsdCents === "number" ? g.aspUsdCents : null;
+              if (aspCents != null && aspCents > 0) {
+                g.unitsMid = Math.round(derivedRevenue / (aspCents / 100));
+              }
+              g.dataSource = "derived_from_steam";
+              g.derivationRatio = consoleRatio;
+              g.derivationSteamSource = s.source; // 'anchor' | 'estimator'
+              pathBDerived++;
+              continue;
+            }
+            // Console exclusive (no Steam SKU for this title_id): keep the
+            // SQL-computed revenue AND units unchanged.
+            g.dataSource = "estimated_console_exclusive";
+            continue;
+          }
+          // Steam platform, no anchor: unchanged.
+          g.dataSource = "estimated";
         }
 
         // Re-sort groups by whichever sort key the client asked for so the
-        // anchor overlay doesn't leave rows in visually-wrong positions.
+        // overlay/derivation doesn't leave rows in visually-wrong positions.
         // Only re-sort when sort is revenue-based; other sorts (score,
-        // ratings, asp, units) operate on fields the overlay doesn't touch.
+        // ratings, asp, units) operate on fields these paths don't touch.
         if (sort === "revenue") {
           groups.sort((a, b) => {
             const av = typeof a.revenueMidUsd === "number" ? a.revenueMidUsd : -1;
@@ -737,9 +895,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           });
         }
 
-        if (overlaid > 0) {
-          // Non-noisy log so we can trace overlays in the deploy stream.
-          console.log(`[leaderboard-overlay] platform=${platform} window=${win} overlaid=${overlaid}/${groups.length}`);
+        if (pathAOverlaid > 0 || pathBDerived > 0) {
+          console.log(`[leaderboard-overlay] platform=${platform} window=${win} pathA=${pathAOverlaid} pathB=${pathBDerived} groups=${groups.length}`);
         }
       } catch (overlayErr: any) {
         // Overlay is optional — never fail the leaderboard because of it.

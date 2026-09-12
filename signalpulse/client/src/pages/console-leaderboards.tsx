@@ -33,8 +33,11 @@ type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
 
 const PLATFORMS: Array<{ id: Platform; label: string; accent: string; sourceLabel: string; sourceUrl: string }> = [
   { id: "steam", label: "Steam",         accent: "#66c0f4", sourceLabel: "Steam storefront",     sourceUrl: "https://store.steampowered.com" },
-  { id: "xbox",  label: "Xbox",          accent: "#107c10", sourceLabel: "Xbox display catalog", sourceUrl: "https://displaycatalog.mp.microsoft.com" },
+  // Order (2026-09-12): PS5 before Xbox to match the immutable platform
+  // revenue-mix ordering (Steam 49.5% → PS5 37.9% → Xbox 12.6%). See
+  // lessons.md "Platform revenue-share ratio is immutable".
   { id: "ps5",   label: "PlayStation 5", accent: "#0070d1", sourceLabel: "PlayStation Store",    sourceUrl: "https://store.playstation.com" },
+  { id: "xbox",  label: "Xbox",          accent: "#107c10", sourceLabel: "Xbox display catalog", sourceUrl: "https://displaycatalog.mp.microsoft.com" },
 ];
 
 const WINDOWS: Array<{ id: WindowKey; label: string }> = [
