@@ -52,6 +52,29 @@ renormalize to:
   The ratio is a cross-platform distribution rule and only fires when there
   is a Steam SKU to distribute from.
 
+**Per-IP overrides (also immutable).** Annual sports/sim IPs skew heavily
+console-dominant, so the general mix under-reads PS5/Xbox. The following
+IPs use their own fixed mix, still levering off Steam revenue as the
+anchor (Steam is the calibrated platform — the factors just get bigger to
+reflect the smaller Steam share):
+
+- **NBA 2K** — PS5 65% / Xbox 25% / Steam (PC) 10%
+- **Madden NFL** — PS5 65% / Xbox 25% / Steam (PC) 10%
+- **EA Sports College Football** — PS5 65% / Xbox 25% / Steam (PC) 10%
+- **EA Sports FC** — PS5 65% / Xbox 25% / Steam (PC) 10%
+
+Derivation factors for these IPs: PS5 = Steam × 6.5, Xbox = Steam × 2.5.
+Units are back-computed from the derived revenue the same way as the
+general rule (`units = derived_revenue / (asp_usd_cents / 100)`).
+
+Match is a case-insensitive prefix regex on the display name after
+edition rollup, so every current and future year/edition of each
+franchise is covered automatically (NBA 2K25/26/27, Madden NFL 25/26,
+EA Sports FC 25/26, EA Sports College Football 25/26/27, etc.). Adding
+a new IP to this list is a one-line change in
+`server/routes-console-leaderboards.ts::IP_OVERRIDE_RULES` and must be
+reflected here.
+
 **Why the previous approach was wrong.** The agent kept treating the 47/36/12/5
 split as a UNIT share and letting per-platform multipliers independently drive
 per-platform revenue. That produces platform revenue mixes that drift from the

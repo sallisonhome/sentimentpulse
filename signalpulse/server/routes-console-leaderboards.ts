@@ -729,6 +729,39 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         ps5:  37.9 / 49.5,   // ≈ 0.7657
         xbox: 12.6 / 49.5,   // ≈ 0.2545
       };
+
+      // ── Per-IP mix overrides ────────────────────────────────────
+      // Annual sports/sim IPs skew heavily console-dominant, so the general
+      // 47/36/12/5 mix under-reads PS5/Xbox and over-reads Steam. For these
+      // IPs the mix is pinned to PS5 65% / Xbox 25% / Steam (PC) 10%, still
+      // immutable across every windowed calculation. We continue to lever
+      // off Steam revenue as the anchor because Steam is the platform we
+      // calibrate directly; the derivation factors just get much bigger
+      // (PS5 = Steam × 6.5, Xbox = Steam × 2.5) to reflect the small Steam
+      // share.
+      //
+      // Match is case-insensitive IP-prefix on the leaderboard row's
+      // display name AFTER edition rollup, so every current and future
+      // edition/year in the franchise is covered automatically.
+      const IP_OVERRIDE_RULES: Array<{ pattern: RegExp; label: string; ps5: number; xbox: number; steam: number }> = [
+        { pattern: /^\s*nba\s*2k/i,                     label: "NBA 2K",                      ps5: 65, xbox: 25, steam: 10 },
+        { pattern: /^\s*madden\s*nfl/i,                 label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
+        { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
+        { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
+      ];
+      // Derivation factor vs Steam for a matched title, indexed by platform.
+      // ps5_factor = ps5_pct / steam_pct; xbox_factor = xbox_pct / steam_pct.
+      const ipOverrideFactorFor = (displayName: string | null | undefined, plat: Platform): { factor: number; label: string } | null => {
+        if (plat !== "ps5" && plat !== "xbox") return null;
+        if (!displayName) return null;
+        for (const r of IP_OVERRIDE_RULES) {
+          if (r.pattern.test(displayName)) {
+            const numer = plat === "ps5" ? r.ps5 : r.xbox;
+            return { factor: numer / r.steam, label: r.label };
+          }
+        }
+        return null;
+      };
       try {
         const win = window;
 
@@ -846,8 +879,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // then back-compute units from that derived revenue so units and
           // revenue stay internally consistent.
           //
-          // Revenue derivation: derived_revenue = steam_revenue × consoleRatio.
-          // Unit derivation:    derived_units   = derived_revenue / (asp_usd_cents / 100).
+          // Revenue derivation: derived_revenue = steam_revenue × factor.
+          //   factor = per-IP override if the title matches an IP rule
+          //            (e.g. NBA 2K, Madden NFL, EA Sports FC, EA Sports
+          //            College Football — PS5 = Steam × 6.5, Xbox = Steam
+          //            × 2.5); otherwise consoleRatio (the general
+          //            immutable mix).
+          // Unit derivation:    derived_units = derived_revenue / (asp_usd_cents / 100).
           //
           // If we left units at the estimator's independent output the row
           // would show a revenue and a units count whose implied ASP diverges
@@ -860,7 +898,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           if (consoleRatio != null) {
             const s = steamRevenueByTitle.get(g.titleId);
             if (s) {
-              const derivedRevenue = s.revenue * consoleRatio;
+              const ipOverride = ipOverrideFactorFor(g.name as string | null | undefined, platform);
+              const factor = ipOverride ? ipOverride.factor : consoleRatio;
+              const derivedRevenue = s.revenue * factor;
               g.revenueMidUsdEstimated = g.revenueMidUsd;
               g.revenueMidUsd = derivedRevenue;
               g.unitsMidEstimated = g.unitsMid;
@@ -868,9 +908,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               if (aspCents != null && aspCents > 0) {
                 g.unitsMid = Math.round(derivedRevenue / (aspCents / 100));
               }
-              g.dataSource = "derived_from_steam";
-              g.derivationRatio = consoleRatio;
+              g.dataSource = ipOverride ? "derived_from_steam_ip_override" : "derived_from_steam";
+              g.derivationRatio = factor;
               g.derivationSteamSource = s.source; // 'anchor' | 'estimator'
+              if (ipOverride) g.derivationIpOverride = ipOverride.label;
               pathBDerived++;
               continue;
             }
