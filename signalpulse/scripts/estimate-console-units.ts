@@ -386,6 +386,42 @@ async function main() {
     return Math.min(1, ratio);
   }
 
+  // Return the monotonic 4-window Steam ratio record for a console title in one
+  // pass. Invariant: r7 ≤ r30 ≤ r90 ≤ r_m12. Enforced by taking the running max
+  // from short → long after raw ratio computation. Returns null when the Steam
+  // sibling is missing or fails the noise gate (matches steamWindowRatio's own
+  // guards so callers can substitute this without changing rung 4 behavior).
+  //
+  // Why: individual per-window ratios can come out non-monotonic when a Steam
+  // sibling's review velocity is bursty (e.g. a review-bomb day inside the d30
+  // window that inflates r30 above r90). Console rows inherit that inversion,
+  // producing d30 > d90 on the leaderboard. This helper guarantees the resolver
+  // never emits an inverted window sequence for a title backed by steam-pace.
+  function steamWindowRatiosMonotonic(
+    titleId: number,
+  ): { d7: number; d30: number; d90: number; m12: number } | null {
+    const steamTid = bridgedSteamTitleId(titleId);
+    if (steamTid == null) return null;
+    const ltd = steamLtdSignal(steamTid);
+    if (ltd == null || ltd < 100 || ltd <= 0) return null;
+    const w7  = steamWindowSignal(steamTid, 7);
+    const w30 = steamWindowSignal(steamTid, 30);
+    const w90 = steamWindowSignal(steamTid, 90);
+    const w365 = steamWindowSignal(steamTid, 365);
+    if (w7 == null || w30 == null || w90 == null || w365 == null) return null;
+    let r7  = Math.min(1, Math.max(0, w7  / ltd));
+    let r30 = Math.min(1, Math.max(0, w30 / ltd));
+    let r90 = Math.min(1, Math.max(0, w90 / ltd));
+    let r_m12 = Math.min(1, Math.max(0, w365 / ltd));
+    // Running max short → long. If Steam produced d7 > d30 (bursty week), pull
+    // d30 up to d7; if d30 > d90, pull d90 up; etc. Preserves the tighter window
+    // as the floor because it's the more recent observation.
+    if (r30 < r7)  r30 = r7;
+    if (r90 < r30) r90 = r30;
+    if (r_m12 < r90) r_m12 = r90;
+    return { d7: r7, d30: r30, d90: r90, m12: r_m12 };
+  }
+
   // ─── 7. Forward-history depth per platform, and per-window historical LTD lookup ─
   //     For each (title, platform, window) we may need the LTD count as-of
   //     (today − window_days). If it exists AND the row's current LTD > it, that
@@ -515,8 +551,21 @@ async function main() {
     //    title also ships on Steam and has enough LTD to be trustworthy, the
     //    fraction of its ratings that fell in the last N days on Steam is a
     //    strong prior for the console version's own pace.
+    //
+    //    Uses the monotonic 4-window ratio record so d7 ≤ d30 ≤ d90 ≤ m12 is
+    //    guaranteed across the resolver's outputs for a single title. Falls
+    //    back to the per-window steamWindowRatio when the monotonic helper
+    //    can't fire (e.g. one of the four Steam windows is null while the
+    //    requested one isn't).
     if (ltdNow != null) {
-      const ratio = steamWindowRatio(titleId, winDays);
+      const mono = steamWindowRatiosMonotonic(titleId);
+      const ratio = mono != null
+        ? (window === "d7"  ? mono.d7
+         : window === "d30" ? mono.d30
+         : window === "d90" ? mono.d90
+         : window === "m12" ? mono.m12
+         : null)
+        : steamWindowRatio(titleId, winDays);
       if (ratio != null) {
         return { signal: Math.round(ltdNow * ratio), methodTag: "backfill-steam-pace" };
       }

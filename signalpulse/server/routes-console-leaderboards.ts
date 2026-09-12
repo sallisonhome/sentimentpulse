@@ -376,30 +376,40 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         AND ${nameSourceExpr} NOT LIKE '%for pc%'
       ` : '';
 
-      // Cascade-to-LTD revenue gate: when the chosen window is not 'ltd' and the
-      // cascade falls all the way through to LTD (only w${last}.units_mid is set),
-      // treat that as insufficient window signal — the LTD unit count is a
-      // lifetime total, not a d7/d30/d90/m12 quantity, and blindly multiplying it
-      // by ASP overstates window revenue by orders of magnitude. Emit NULL for
-      // units, revenue, and windowUsed in that case, and tag gatedReason so the
-      // client can badge 'gated: ltd-only signal'.
+      // Cascade-cliff gate: reject rows whose earliest non-null cascade rung is
+      // >1 step from the requested window. Without this gate a d7 request that
+      // has no d7/d30/d90 signal falls all the way through to m12 or ltd, and
+      // the UI badges 'EST. VIA M12' with a units number that is actually a
+      // year- or lifetime-total masquerading as a 7-day quantity.
       //
-      // For window='ltd' the whole cascade IS just ['ltd'], so no gate applies.
+      // Rule: only w0 (the requested window) and w1 (the next wider window)
+      // are permitted contributors. If both are null, drop the row from this
+      // window's leaderboard. Cascade fallback of one step (d7 → d30) is still
+      // a badgeable approximation the operator understands; two-plus steps
+      // (d7 → d90/m12/ltd) is actively misleading.
+      //
+      // For window='ltd' the whole cascade IS just ['ltd'] (length 1) and no
+      // gate applies. For window='m12' cascade length is 2 (['m12','ltd']) and
+      // the existing behavior is preserved — both rungs count.
       const gateToLtd = window !== 'ltd' && cascade.length >= 2;
-      // 'preLtd' = the pre-LTD levels of the cascade (all levels except the last).
-      // The gate fires when NONE of the pre-LTD levels produced a unit signal.
-      const preLtdHasSignal = cascade.slice(0, -1).map((_, i) => `w${i}.units_mid IS NOT NULL`).join(' OR ');
+      // The cliff filter admits any row where w0 OR w1 has a signal. For
+      // cascades of length ≥ 3 this is tighter than the prior 'any pre-LTD
+      // rung has signal' rule; for length 2 it collapses to the prior rule
+      // (w0 OR w1 IS w0 OR w_last).
+      const nearRungHasSignal = cascade.length >= 2
+        ? `w0.units_mid IS NOT NULL OR w1.units_mid IS NOT NULL`
+        : `w0.units_mid IS NOT NULL`;
       const cascadeUnitsGated = gateToLtd
-        ? `CASE WHEN ${preLtdHasSignal} THEN ${cascadeCoalesce('units_mid')} ELSE NULL END`
+        ? `CASE WHEN ${nearRungHasSignal} THEN ${cascadeCoalesce('units_mid')} ELSE NULL END`
         : cascadeCoalesce('units_mid');
       const cascadeOwnersGated = gateToLtd
-        ? `CASE WHEN ${preLtdHasSignal} THEN ${cascadeCoalesce('owners_mid')} ELSE NULL END`
+        ? `CASE WHEN ${nearRungHasSignal} THEN ${cascadeCoalesce('owners_mid')} ELSE NULL END`
         : cascadeCoalesce('owners_mid');
       const cascadeWindowUsedGated = gateToLtd
-        ? `CASE WHEN ${preLtdHasSignal} THEN (${cascadeWindowUsed}) ELSE NULL END`
+        ? `CASE WHEN ${nearRungHasSignal} THEN (${cascadeWindowUsed}) ELSE NULL END`
         : cascadeWindowUsed;
       const gatedReasonExpr = gateToLtd
-        ? `CASE WHEN ${preLtdHasSignal} THEN ${cascadeCoalesce('gated_reason')} ELSE 'ltd_only_signal' END`
+        ? `CASE WHEN ${nearRungHasSignal} THEN ${cascadeCoalesce('gated_reason')} ELSE 'cascade_cliff' END`
         : cascadeCoalesce('gated_reason');
       // Recompute the sort expression on the gated units so revenue/units sorts
       // treat a gated row as NULL (sinks to bottom) instead of using LTD units.
