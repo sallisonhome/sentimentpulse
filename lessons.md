@@ -4,6 +4,34 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-12 — Xbox console leaderboard: 19 title_id collisions caused by (a) stale-counter allocator racing two discovery runs, and (b) writing F2P rows into a paid-only leaderboard's platform_sku_map
+
+**What happened.** Xbox console leaderboard page rendered 19 rows where two SKUs shared the same `title_id` in `platform_sku_map`, e.g. title_id 10231 held both a Fortnite bigId (F2P, created 2026-09-11T00:07:38Z) and a Frostpunk 2 bigId (paid, created 2026-09-11T01:19:14Z). All 19 collisions lived in the consecutive range 10224–10242. In 16/19 pairs, the SKUs were F2P (00:07 batch) + paid (01:19 batch). In 3/19 pairs both SKUs were paid (title_ids 10239, 10241, 10242).
+
+**Root cause — dual bug.**
+
+*Bug A: stale-counter allocator race.* `scripts/verify-discovery.ts::titleIdFor` seeded an in-process counter from `SELECT MAX(title_id)` once at discovery start, then incremented in memory. Two discovery runs kicked off 72 minutes apart both read the same MAX (10223), both minted 10224, 10225, … locally, and `upsertSkuMap` happily inserted both because the unique constraint is on `(platform, external_sku)`, not `title_id`. `title_id` in `platform_sku_map` is a per-title logical group id, not a row key.
+
+*Bug B: F2P written to a paid-only store.* Xbox discovery pulls from Microsoft's `top-paid-games` emerald channel. The channel name is misleading — it's a top-grossing list that includes F2P titles (Fortnite, Roblox, Apex Legends, EA FC 26 F2P edition, etc.) whenever they're grossing enough via IAP to rank. `classifyXboxBigIds` correctly tags those as `business_model='free_to_play'` via displaycatalog price = 0. The classifier's output then flowed straight into `xboxRows` and `upsertSkuMap` with no filter. The route that renders the leaderboard filters `WHERE business_model='paid'` at query time, so users never saw the F2P rows — but they occupied title_ids on Bug A's watch. When run 2 saw genuinely-paid titles at what had been F2P positions (channel order drifts by the hour), Bug A minted colliding fresh title_ids.
+
+**Fix.**
+
+1. **Atomic title_id allocator.** Rewrote `titleIdFor` in `scripts/verify-discovery.ts` to allocate inside a `BEGIN IMMEDIATE` transaction using better-sqlite3's `tx.immediate()`, re-reading `MAX(title_id)` inside the tx and inserting a reservation row via `INSERT ... ON CONFLICT DO NOTHING`. Regression test `scripts/test-title-id-allocator.ts` proves the old allocator reproduces 20 collisions across two concurrent processes, the new allocator produces 0.
+2. **Hard invariant: no F2P in `platform_sku_map`, ever.** Two-layer defence in `server/signals/console/discovery.ts`:
+   - `runFullDiscovery` filters F2P out of each platform's classified rows before building `steamRows` / `xboxRows` / `ps5DiscoveredRows`. Logs the drop count.
+   - `upsertSkuMap` throws a hard error if any non-manual-override caller ever passes an F2P row. Belt-and-suspenders so no future caller can silently reintroduce this class of bug.
+   `unknown` classifications ARE preserved (self-heal on the next ON CONFLICT update) — deleting them would lose the SKU until it re-appeared in top-sellers.
+3. **One-shot migration** (`scripts/fix-xbox-title-id-collisions.ts`, dispatched via `signalpulse-fix-xbox-collisions.yml`): (i) delete all F2P rows across all platforms, (ii) resolve the 3 paid+paid collisions using live-top-paid-channel evidence baked into the script (verdicts computed once, not at runtime), (iii) refresh `console_title_igdb` for every surviving Xbox SKU in the previously-colliding range.
+
+**Winner-selection rule for the 3 paid+paid pairs.** For each pair I fetched the current `top-paid-games` channel (~250 positions) and picked the SKU present on the live channel; the SKU absent from the channel was the stale one from an earlier discovery run. This matched the F2P/paid pattern exactly (01:19 batch = current-truth). Verdicts: 10239→Gotham Knights (#119, drop Madden 26), 10241→It Takes Two Digital (#90, drop College Football 26), 10242→BO3 Zombies Deluxe (#103, drop Dead by Daylight).
+
+**Rules going forward.**
+
+- Any allocator that mints monotonically-increasing ids from a `MAX()` seed MUST allocate inside `BEGIN IMMEDIATE` and re-read MAX inside the transaction, or use a real sequence/counter table with `ON CONFLICT`. Never trust an in-process counter across concurrent processes.
+- If a downstream render filter excludes some `business_model`, don't write it upstream either. "We filter it at render" is not a defense against burning shared id-space (title_id, cluster_id, concept_id). Filter at the write boundary; enforce with a hard invariant check in the writer.
+- When a data-source channel name suggests a filter ("top-**paid**-games"), verify with the underlying pricing signal that every item actually matches. Storefront channel curation is not a reliable classifier.
+- Diagnostic ordering during the incident: query `platform_sku_map.business_model` directly before trusting any browser-based PDP verification. The first attempt used a subagent to visit `/p/-/{bigId}` URLs and misread the pages; the DB's own classifier is the ground truth for how discovery categorized each SKU.
+
 ## 2026-09-10 — Top Topics widget empty despite 725 posts of daily volume; adjacent-community reddit_comment flood was starving the on-topic Steam-native corpus
 
 **What happened.** User screenshotted the Space Marine 2 (game_id=24) dashboard showing ~725 posts on the Post Volume by Source chart (overwhelmingly Reddit orange) but Top Topics reading "Not enough posts with definitive signal to surface topics here." `/api/games/24/dashboard?period=today` confirmed `top_topics_summary.negative=[]`, `positive=[]`, `neutral=[]` server-side. Same shape on Halloween: The Game (140) and Aliens: Fireteam Elite 2 (146). Sampled negative posts for SM2 via `/api/games/24/posts?period=today&sentiment=negative`: 49 of 50 sampled were `reddit_comment` rows from Warhammer 40k community subs (r/Warhammer40k and family). Actual content was tabletop chat — arquebus damage tables, Yamnin XuanWu Centaur APC stats, Codex-book refund complaints, mini-painting jokes, power-scaling debates on Kharn vs Rhulk — none about the video game.
