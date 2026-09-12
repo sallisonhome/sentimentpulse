@@ -1160,6 +1160,33 @@ export async function runFullDiscovery(opts: {
     log(`xbox self-heal: pass failed: ${e instanceof Error ? e.message : e}`);
   }
 
+  // Xbox title-cache landing pass (2026-09-12).
+  //
+  // Source of truth for Xbox name/art is xbox_title_cache, keyed by bigId.
+  // Once a bigId is landed there, its name/art are IMMUTABLE — no subsequent
+  // discovery run overwrites them, and title_id collisions in
+  // platform_sku_map cannot corrupt the leaderboard display. Any bigId that
+  // doesn't resolve on any of the three sources (SSR page, displaycatalog,
+  // marketplace PDP) is queued in xbox_bigid_retry_queue for hourly retry.
+  //
+  // See server/signals/console/xbox-title-resolver.ts for the full contract.
+  try {
+    const { landXboxBigIds } = await import("./xbox-title-resolver");
+    const xboxBigIds = xboxCls.map(c => c.bigId).filter(b => typeof b === "string" && b.length > 0);
+    if (xboxBigIds.length > 0) {
+      const r = await landXboxBigIds(xboxBigIds);
+      log(
+        `xbox-title-cache: total=${r.total} alreadyLanded=${r.alreadyLanded} ` +
+        `newlyLanded=${r.newlyLanded} queuedForRetry=${r.queuedForRetry} ` +
+        `[ssr=${r.landedBySource.ssr_productsummaries} ` +
+        `dc=${r.landedBySource.displaycatalog} ` +
+        `pdp=${r.landedBySource.marketplace_pdp}]`,
+      );
+    }
+  } catch (e) {
+    log(`xbox-title-cache: pass failed: ${e instanceof Error ? e.message : e}`);
+  }
+
   // Aggregate PS stats across auto + manual (dedupe by productId for accurate
   // discovered/paid counts).
   const psAll = new Map<string, PsClassification>();

@@ -1,0 +1,131 @@
+name: SignalPulse — Seed xbox_title_cache (one-off)
+
+# One-off dispatchable seed of the new immutable xbox_title_cache.
+#
+# Runs scripts/seed-xbox-title-cache.ts on the droplet, which:
+#   1. Copies every existing Xbox name/art from console_title_igdb into
+#      xbox_title_cache (source='seeded_from_cti'). This rescues historical
+#      good data even for the title_id-collision cases: whichever title_id
+#      row had a name at the time of the seed gets copied to the bigId.
+#   2. Runs the 3-source resolver (SSR + displaycatalog + marketplace PDP)
+#      against every Xbox bigId still missing. Failures land in
+#      xbox_bigid_retry_queue and are handled hourly by
+#      signalpulse-xbox-drain-retry.
+#
+# Idempotent — safe to re-run. xbox_title_cache rows are IMMUTABLE, so the
+# seed never overwrites a landed name/art.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — resolve but don't write"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          [ -n "$WD" ] || { echo "ERR: could not resolve signalpulse WorkingDirectory"; exit 1; }
+          echo "Working dir: $WD"
+          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/seed-xbox-title-cache.ts" ] || { echo "ERR: seed script missing — deploy first"; exit 1; }
+          [ -f "$WD/server/signals/console/xbox-title-resolver.ts" ] || { echo "ERR: resolver missing — deploy first"; exit 1; }
+          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
+
+          echo ""
+          echo "── Pre-run: xbox_title_cache health ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT
+              (SELECT COUNT(*) FROM platform_sku_map WHERE platform='xbox' AND business_model='paid' AND sku_role='base') AS xbox_paid_base,
+              (SELECT COUNT(*) FROM xbox_title_cache)                                                                   AS cache_size,
+              (SELECT COUNT(*) FROM xbox_bigid_retry_queue)                                                             AS queue_size,
+              (
+                SELECT COUNT(*) FROM platform_sku_map psm
+                LEFT JOIN xbox_title_cache xtc ON xtc.big_id = psm.external_sku
+                WHERE psm.platform='xbox' AND psm.business_model='paid' AND psm.sku_role='base' AND xtc.big_id IS NULL
+              )                                                                                                        AS missing_from_cache;
+          "
+          REMOTE
+
+      - name: Run seed-xbox-title-cache
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+
+          DRY_RUN="${DRY_RUN:-true}"
+
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+
+          echo "════════════════════════════════════════════════════════"
+          echo "  seed-xbox-title-cache.ts"
+          echo "  DRY_RUN=${DRY_RUN:-unset}"
+          echo "════════════════════════════════════════════════════════"
+
+          t0=$(date +%s)
+          # 200 bigIds * 3 sources * ~300ms budget = ~180s worst case per
+          # resolver pass; give the whole thing 15 minutes.
+          timeout 900 ./node_modules/.bin/tsx scripts/seed-xbox-title-cache.ts
+          rc=$?
+          t1=$(date +%s)
+          echo ""
+          echo "Elapsed: $((t1 - t0))s  exit=$rc"
+          exit $rc
+          REMOTE
+
+      - name: Post-run row counts
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          echo "── Post-run: xbox_title_cache health ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT
+              (SELECT COUNT(*) FROM platform_sku_map WHERE platform='xbox' AND business_model='paid' AND sku_role='base') AS xbox_paid_base,
+              (SELECT COUNT(*) FROM xbox_title_cache)                                                                   AS cache_size,
+              (SELECT COUNT(*) FROM xbox_bigid_retry_queue)                                                             AS queue_size,
+              (
+                SELECT COUNT(*) FROM platform_sku_map psm
+                LEFT JOIN xbox_title_cache xtc ON xtc.big_id = psm.external_sku
+                WHERE psm.platform='xbox' AND psm.business_model='paid' AND psm.sku_role='base' AND xtc.big_id IS NULL
+              )                                                                                                        AS missing_from_cache;
+            SELECT source, COUNT(*) AS n FROM xbox_title_cache GROUP BY source ORDER BY n DESC;
+          "
+          REMOTE

@@ -452,12 +452,19 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           --   IGDB refresh path. This fixes cases like Steam appid 3219630
           --   ("Halloween: The Game") whose IGDB search happened to match
           --   "Solitaire Game Halloween 2".
+          -- Xbox override (2026-09-12): xbox_title_cache is the source of
+          -- truth for Xbox name/art, keyed by bigId (=psm.external_sku).
+          -- Once landed there, name/art are immutable and never fall back
+          -- to a numeric title_id render on the client. If xtc.name is
+          -- NULL for an Xbox row, that row is filtered out below.
           CASE
+            WHEN psm.platform = 'xbox' THEN xtc.name
             WHEN igdb.match_confidence = 'low'
               THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
             ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
           END                                       AS name,
           CASE
+            WHEN psm.platform = 'xbox' THEN xtc.art_url
             WHEN igdb.match_confidence = 'low'
               THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
@@ -553,10 +560,22 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               AND srs.capture_date = lr.max_date
         LEFT JOIN console_title_igdb igdb
                ON igdb.title_id = psm.title_id
+        -- Xbox source-of-truth cache (2026-09-12): immutable name/art per bigId.
+        -- LEFT JOIN so non-Xbox rows are unaffected; the CASE in the select list
+        -- gates on psm.platform='xbox' before reading xtc columns.
+        LEFT JOIN xbox_title_cache xtc
+               ON psm.platform = 'xbox' AND xtc.big_id = psm.external_sku
         ${cascadeJoins}
        WHERE psm.platform = ?
          AND psm.business_model = 'paid'
          AND psm.sku_role = 'base'
+         -- Xbox integrity gate (2026-09-12): a paid Xbox row with no
+         -- xbox_title_cache entry NEVER appears on the leaderboard. The
+         -- bigId is instead sitting in xbox_bigid_retry_queue; it will
+         -- appear as soon as one of the 3 resolvers lands its name/art.
+         -- This is what prevents 12-char bigIds from ever rendering in
+         -- place of a real title.
+         AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
          ${dlcBundleFilter}
          ${pcOnlyFilter}
        -- NULL sort values sink so the client still gets a full 100 rows even
@@ -744,6 +763,46 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   // calibrated on YYYY-MM-DD from N verified sales anchors." No individual
   // anchor titles are exposed. If no calibration has ever run for the
   // platform, returns { calibrated: false }.
+  // Health endpoint (2026-09-12): observable count of Xbox rows that would
+  // be filtered off the leaderboard because no xbox_title_cache entry
+  // exists yet. Also reports retry-queue depth. Zero on both = the daily
+  // leaderboard is complete. Non-zero here → there are bigIds sighted on
+  // the store chart that no resolver has landed yet; the hourly worker is
+  // handling them.
+  app.get("/api/console/xbox-title-health", (_req, res) => {
+    try {
+      const totalPaid = (rawSqlite.prepare(
+        `SELECT COUNT(*) AS n FROM platform_sku_map WHERE platform = 'xbox' AND business_model = 'paid' AND sku_role = 'base'`,
+      ).get() as { n: number }).n;
+      const missingCache = (rawSqlite.prepare(
+        `SELECT COUNT(*) AS n
+           FROM platform_sku_map psm
+           LEFT JOIN xbox_title_cache xtc ON xtc.big_id = psm.external_sku
+          WHERE psm.platform = 'xbox' AND psm.business_model = 'paid' AND psm.sku_role = 'base'
+            AND xtc.big_id IS NULL`,
+      ).get() as { n: number }).n;
+      const queueDepth = (rawSqlite.prepare(
+        `SELECT COUNT(*) AS n FROM xbox_bigid_retry_queue`,
+      ).get() as { n: number }).n;
+      const dueNow = (rawSqlite.prepare(
+        `SELECT COUNT(*) AS n FROM xbox_bigid_retry_queue WHERE next_attempt_at <= ?`,
+      ).get(new Date().toISOString()) as { n: number }).n;
+      const cacheSize = (rawSqlite.prepare(
+        `SELECT COUNT(*) AS n FROM xbox_title_cache`,
+      ).get() as { n: number }).n;
+      res.json({
+        totalXboxPaidBase: totalPaid,
+        missingFromCache: missingCache,
+        retryQueueDepth: queueDepth,
+        retryQueueDueNow: dueNow,
+        cacheSize,
+        healthy: missingCache === 0,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/console/leaderboards/:platform/calibration", (req, res) => {
     try {
       const platform = req.params.platform as Platform;
@@ -820,6 +879,19 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                rating, rating_count AS ratingCount, refreshed_at AS refreshedAt
           FROM console_title_igdb WHERE title_id = ?
       `).get(titleId) as Record<string, any> | undefined;
+
+      // Xbox override (2026-09-12): xbox_title_cache is the source of truth
+      // for Xbox name/art. Look it up per Xbox SKU under this title_id and,
+      // if we have one, prefer its name/art for the PDP header. Multiple
+      // Xbox SKUs under one title_id (which shouldn't happen, but historic
+      // collisions may leave that shape) → prefer the earliest-landed one.
+      const xboxSkus = skus.filter(s => s.platform === "xbox").map(s => s.externalSku as string);
+      const xboxCache = xboxSkus.length > 0 ? rawSqlite.prepare(
+        `SELECT big_id, name, art_url, first_landed_at
+           FROM xbox_title_cache
+          WHERE big_id IN (${xboxSkus.map(() => "?").join(",")})
+          ORDER BY first_landed_at ASC LIMIT 1`,
+      ).get(...xboxSkus) as { big_id: string; name: string; art_url: string | null } | undefined : undefined;
 
       // Current LTD-ish rating snapshot per platform (most recent capture)
       const latestPerPlatform = rawSqlite.prepare(`
@@ -982,6 +1054,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         cascade,
         skus,
         igdb: parsedIgdb,
+        // Xbox source-of-truth override (immutable-once-landed).
+        // Client should prefer these over igdb.name / igdb.coverUrl when present.
+        xboxTitle: xboxCache ? { bigId: xboxCache.big_id, name: xboxCache.name, artUrl: xboxCache.art_url } : null,
         latestPerPlatform,
         windowKpisPerPlatform,
       });

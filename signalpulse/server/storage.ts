@@ -895,6 +895,57 @@ function initializeDatabase() {
       created_at TEXT NOT NULL
     );
 
+    -- Xbox title cache (2026-09-12): IMMUTABLE-ONCE-LANDED name/art per bigId.
+    --
+    -- The Xbox leaderboard reads name/art from HERE (keyed by external_sku =
+    -- bigId), NOT from console_title_igdb via title_id. This removes two
+    -- historical failure modes at once:
+    --   1. title_id collisions: multiple Xbox bigIds allocated to the same
+    --      title_id caused one bigId's name to silently overwrite another's
+    --      in console_title_igdb. Keying on bigId directly makes collision
+    --      impossible by construction.
+    --   2. Transient displaycatalog failures re-writing NULL over a good
+    --      name. Once a row here has a non-empty name, no automated path is
+    --      allowed to overwrite it. Only the manual xbox-force-refresh
+    --      script (operator-run) may update name/art.
+    --
+    -- The daily discovery cron INSERTs missing bigIds and NEVER updates
+    -- existing ones. last_verified_at is bumped on every successful
+    -- displaycatalog hit purely for observability -- the name/art columns
+    -- are frozen from first_landed_at onward.
+    --
+    -- New bigIds sighted on the chart but not yet resolved live in
+    -- xbox_bigid_retry_queue (below) until a resolver succeeds. They do
+    -- NOT appear on the leaderboard until they land here.
+    CREATE TABLE IF NOT EXISTS xbox_title_cache (
+      big_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      art_url TEXT,
+      source TEXT NOT NULL,               -- 'displaycatalog' | 'ssr_productsummaries' | 'marketplace_pdp' | 'manual'
+      first_landed_at TEXT NOT NULL,
+      last_verified_at TEXT NOT NULL,
+      verified_count INTEGER NOT NULL DEFAULT 1
+    );
+
+    -- Retry queue for bigIds sighted on the chart but not yet resolved to a
+    -- (name, art) pair. Written by discovery when a new bigId appears and
+    -- all three sources missed on the first try. Drained by an hourly worker.
+    --
+    -- attempts_count + last_attempt_at + next_attempt_at let the worker
+    -- back off from hourly (first 24h) to daily (after 24h) without needing
+    -- separate schedule tables. Once a bigId lands in xbox_title_cache, its
+    -- row here is deleted.
+    CREATE TABLE IF NOT EXISTS xbox_bigid_retry_queue (
+      big_id TEXT PRIMARY KEY,
+      first_sighted_at TEXT NOT NULL,
+      last_attempt_at TEXT,
+      next_attempt_at TEXT NOT NULL,
+      attempts_count INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS xbox_bigid_retry_queue_next
+      ON xbox_bigid_retry_queue (next_attempt_at ASC);
+
     -- Storefront rank snapshot (Push 2, Change 11, 2026-09-11).
     -- Daily record of "what did each storefront's ranked shelf look like"
     -- for each of the console platforms + sort keys we discovery-scan. Feeds

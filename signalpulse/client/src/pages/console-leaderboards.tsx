@@ -371,7 +371,16 @@ function PlatformColumn({
                       <div className="h-8 w-6 rounded-sm bg-muted shrink-0" />
                     )}
                     <span className="flex-1 min-w-0 flex items-center gap-1.5 text-sm">
-                      <span className="truncate">{t.name || t.externalSku}</span>
+                      {/*
+                        2026-09-12: server-side integrity gate on the Xbox
+                        route (xbox_title_cache LEFT JOIN + WHERE xtc.name
+                        IS NOT NULL for platform='xbox') guarantees `name`
+                        is set for every row that reaches the client, so
+                        the 12-char bigId is never rendered as a title. If
+                        an old client ever received a row without a name,
+                        we prefer an empty cell over exposing the raw SKU.
+                      */}
+                      <span className="truncate">{t.name || ""}</span>
                       {t.isRecentHot ? (
                         <Badge
                           variant="secondary"
@@ -490,8 +499,10 @@ export function ConsoleLeaderboardsPlatform() {
   const displayRows = data ? (
     sort === "title"
       ? [...data.titles].sort((a, b) => {
-          const av = (a.name || a.externalSku || "").toLocaleLowerCase();
-          const bv = (b.name || b.externalSku || "").toLocaleLowerCase();
+          // 2026-09-12: prefer null-name rows to sort last rather than
+          // by their raw SKU, which is meaningless to the user.
+          const av = (a.name || "").toLocaleLowerCase();
+          const bv = (b.name || "").toLocaleLowerCase();
           const cmp = av.localeCompare(bv);
           return dir === "asc" ? cmp : -cmp;
         }).slice(0, FULL_TOP_N)
@@ -636,7 +647,7 @@ export function ConsoleLeaderboardsPlatform() {
                     <Link href={`/console-leaderboards/${platform}/${t.titleId}`}>
                       <span className="cursor-pointer hover:underline flex items-center gap-2" data-testid={`link-title-${t.titleId}`}>
                         {t.coverUrl && <img src={t.coverUrl} alt="" className="h-8 w-6 object-cover rounded-sm" />}
-                        <span>{t.name || t.externalSku}</span>
+                        <span>{t.name || ""}</span>
                         {t.isRecentHot ? (
                           <Badge
                             variant="secondary"
