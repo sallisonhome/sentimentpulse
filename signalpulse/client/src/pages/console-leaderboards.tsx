@@ -45,7 +45,10 @@ const WINDOWS: Array<{ id: WindowKey; label: string }> = [
   { id: "ltd", label: "Lifetime"  },
 ];
 
-const HUB_TOP_N = 20; // Rows per column on the hub — matches howmanyareplaying Top 20.
+const HUB_TOP_N = 20;  // Rows per column on the hub (top-level presentation).
+const FULL_TOP_N = 40; // Rows shown on the per-platform full-page view.
+// The backend still returns up to LIMIT 250 and the daily discovery cron still
+// walks the full ~150-title corpus per platform; we just cap what's rendered.
 
 interface LeaderboardRow {
   titleId: number;
@@ -277,7 +280,7 @@ function PlatformColumn({
               className="text-xs text-muted-foreground hover:text-foreground cursor-pointer inline-flex items-center gap-0.5"
               data-testid={`link-viewall-${platform}`}
             >
-              View top 100
+              View top 40
               <ChevronRight className="h-3 w-3" />
             </span>
           </Link>
@@ -417,7 +420,7 @@ function PlatformColumn({
               style={{ color: accent }}
               data-testid={`link-viewall-footer-${platform}`}
             >
-              See top 100 <ChevronRight className="h-3 w-3" />
+              See top 40 <ChevronRight className="h-3 w-3" />
             </span>
           </Link>
         </div>
@@ -455,6 +458,8 @@ export function ConsoleLeaderboardsPlatform() {
 
   // Client-side sort for the `title` column (server doesn't know how). All
   // other keys arrive already sorted from the server, so we pass them through.
+  // Cap at FULL_TOP_N so the full-page view stays a curated top-40 rather than
+  // exposing the noisy long-tail from the server's LIMIT 250 fetch.
   const displayRows = data ? (
     sort === "title"
       ? [...data.titles].sort((a, b) => {
@@ -462,8 +467,8 @@ export function ConsoleLeaderboardsPlatform() {
           const bv = (b.name || b.externalSku || "").toLocaleLowerCase();
           const cmp = av.localeCompare(bv);
           return dir === "asc" ? cmp : -cmp;
-        })
-      : data.titles
+        }).slice(0, FULL_TOP_N)
+      : data.titles.slice(0, FULL_TOP_N)
   ) : [];
 
   return (
