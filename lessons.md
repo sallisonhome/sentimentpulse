@@ -2298,3 +2298,22 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 2. `scripts/lock-saber-seed-overrides.ts` + `.github/workflows/signalpulse-lock-saber-seed-overrides.yml`: one-shot dispatchable migration that flips `is_manual_override=1` on the 5 already-landed rows via `WHERE business_model_source='saber_manual_seed_2026-09-12'`. Idempotent.
 
 **Rule.** When writing an upsert helper, every column the caller can set must be in either the INSERT list AND the ON CONFLICT SET, OR explicitly documented as "insert-only." Silent partial updates on conflict are worst-of-both-worlds: they look right at insert time and drift on refresh. Regression check would be: `upsertSkuMap` unit test that inserts a placeholder row, then re-upserts with `isManualOverride=true`, asserts `SELECT is_manual_override FROM platform_sku_map WHERE ... = 1`.
+
+## 2026-09-12 (signalpulse) — First live revenue calibration: Steam multiplier 25 → 74.6
+
+**Context.** The Steam ownership multiplier converts rating-count velocity signals into estimated units and revenue. Prior methods (GameDiscoverCo baseline @55, anchor-cross-checked @40, ltd-anchor-median-v03 @25) were all essentially blind fits: LTD anchors from broad public data, no ability to cross-check against realized sales. This changed once Saber's own actuals landed in `steam_sales_daily` — for the first time the ratio between the estimator's `units_mid` and verified revenue could be computed per title, per window.
+
+**Result.** 4 baseline anchors (SM2 m12+ltd, SnowRunner m12+ltd) joined the estimator. Weighted-median ratio (weight = window length in days) = 2.985×. Applied 25 → 74.6 (id=13 in `ownership_multipliers`, effective 2026-09-12), one row in `calibration_events` audit table.
+
+**Findings that mattered.**
+1. **The compaction summary lied about the current multiplier** — the summary said 55, live DB said 25. Third time in this project a summary claim about a mutable production value diverged from ground truth. Confirms the "verify against live DB, do not trust summaries" rule is not paranoia; it is required.
+2. **Only 2 of 11 anchored titles contributed** because the other 9 (all newly-backfilled) have no `window_estimates_daily` rows. The estimator needs `console_ratings_daily` history to produce windows, and those 9 title_ids only entered `platform_sku_map` today. Path B calibration is currently gated on estimator coverage, not anchor coverage.
+3. **The MAX_STEP=3× safety cap was almost hit** — uncapped proposal was 74.6, cap was 75.0. Two takeaways: (a) the cap saved us from a wild swing if the median had been higher, but (b) when the raw sits right at the cap, we're likely still under-fit and next refit will push again. The cap is one-sided friction and needs a companion floor rule (e.g. don't apply if uncapped exceeds cap without a wider anchor sample).
+4. **Sale-state detector fired on 10 of 55 rows.** Detector = `implied_asp_pct_msrp < 0.70 × rolling_90d_median`. Split roughly by window length: shorter windows (d7/d30) had more `active_sale` flags than longer (m12/ltd). That matches intuition — short windows overlap sales more.
+5. **Two AS_OF_DATE parse bugs** in the first dry-run — empty `AS_OF_DATE=""` env passed through as set-but-empty and hit `new Date("") → RangeError`. Fixed by defensive `/^\d{4}-\d{2}-\d{2}$/` check. Any env passthrough via `-e KEY=$VAL` in workflow_dispatch needs both an emptiness AND a shape check, not just an emptiness check.
+
+**Rule.** For any calibration-style workflow that mutates a production coefficient:
+- Write an audit-events table BEFORE the mutation path so every apply and dry-run has a persistent record.
+- Cap changes step-wise (MAX_STEP), and log the ratio between uncapped-proposed and applied so "we hit the cap" is queryable.
+- MIN_ANCHORS should default to ≥2, and the runtime should refuse to apply when the anchor sample is single-title (i.e. all anchors have the same `title_id`). Today's run passed only because 2 titles contributed — with 1, the median is that title's ratio and the cap is the only guardrail.
+- Surface the sample-size limitation in the consumer banner. Do not name the anchor titles or the publisher — describe the mechanism only.
