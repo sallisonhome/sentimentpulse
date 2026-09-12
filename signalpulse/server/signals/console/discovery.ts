@@ -21,6 +21,45 @@ import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from ".
 import { fetchXboxRatingSignal } from "./xbox";
 import { writeRankSnapshot, computeTop50Churn } from "./rankSnapshot";
 
+// ─── SKU-to-base-title remap (2026-09-12) ─────────────────────────────────
+//
+// Some storefront listings are region variants (US UP-prefix vs EU EP-prefix)
+// or edition variants of a title that is already in the DB under a different
+// title_id. Without intervention, discovery allocates a fresh title_id for
+// each new SKU it sees on the live storefront, which creates a duplicate
+// leaderboard row for the same game.
+//
+// Rather than dropping the SKU entirely (which would lose the region's
+// pricing/signal contribution), this map redirects the SKU to the existing
+// base title_id. `upsertSkuMap` then writes the row into platform_sku_map
+// under that base title_id — the leaderboard row we already display keeps
+// its history, and no new duplicate is created.
+//
+// Keyed on `${platform}:${externalSku}` exactly as it lands in the pipeline.
+// Value is the base title_id to absorb it into. Add a comment for every
+// entry explaining which base row owns the SKU.
+//
+// This is a targeted patch for known duplicates, NOT a general remap. Do not
+// use it for "titles we don't want on the leaderboard"; use gated_reason /
+// release-gate logic for that.
+const SKU_BASE_TITLE_ID: ReadonlyMap<string, number> = new Map<string, number>([
+  // Resident Evil Requiem — US Deluxe SKU. Base title 10335 owns the EU
+  // Deluxe SKU (EP0102-PPSA31246_00-REREQUIEMDX00000) as its base row with
+  // the $79.99 msrp; the US variant is the same product on the US
+  // storefront and belongs on the same leaderboard row.
+  ["ps5:UP0102-PPSA30803_00-REREQUIEMDX00000", 10335],
+  // Marvel's Spider-Man 2 — US SKU. Base title 10352 owns the EU SKU
+  // (EP9000-PPSA08338_00-MARVELSPIDERMAN2). Same game, US storefront.
+  ["ps5:UP9000-PPSA03016_00-MARVELSPIDERMAN2", 10352],
+  // Dying Light: The Beast — US SKU. Base title 10386 owns the EU SKU
+  // (EP2911-PPSA24003_00-DLTHEBEASTP5EU00). Same game, US storefront.
+  ["ps5:UP3050-PPSA24002_00-DLTHEBEASTP5US00", 10386],
+]);
+
+function remapTitleId(platform: string, externalSku: string, defaultTitleId: number): number {
+  return SKU_BASE_TITLE_ID.get(`${platform}:${externalSku}`) ?? defaultTitleId;
+}
+
 // ─── Steam ───────────────────────────────────────────────────────────────────
 
 interface SteamSearchResponse {
@@ -876,13 +915,17 @@ export async function runFullDiscovery(opts: {
     businessModelSource: `xbox_displaycatalog.MSRP`,
   }));
   const ps5DiscoveredRows: UpsertRow[] = ps5DiscoveredCls.map(c => ({
-    platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),
+    platform: "ps5", externalSku: c.productId,
+    // Remap known duplicate SKUs onto their base title_id so discovery never
+    // re-creates a rival row for the same game. See SKU_BASE_TITLE_ID above.
+    titleId: remapTitleId("ps5", c.productId, opts.titleIdFor("ps5", c.productId, c.name)),
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `ps_categoryGridRetrieve.sales30`,
   }));
   const psManualRows: UpsertRow[] = psManualCls.map(c => ({
-    platform: "ps5", externalSku: c.productId, titleId: opts.titleIdFor("ps5", c.productId, c.name),
+    platform: "ps5", externalSku: c.productId,
+    titleId: remapTitleId("ps5", c.productId, opts.titleIdFor("ps5", c.productId, c.name)),
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `ps_manual_seed`,
@@ -958,18 +1001,28 @@ export async function runFullDiscovery(opts: {
     headerImageUrl: c.headerImageUrl,
     releaseDateIso: c.releaseDateIso,
   });
-  for (const c of ps5DiscoveredCls) if (c.name) nameRows.push({
-    titleId: opts.titleIdFor("ps5", c.productId, c.name),
-    name: c.name,
-    headerImageUrl: c.headerImageUrl,
-    releaseDateIso: c.releaseDateIso,
-  });
-  for (const c of psManualCls) if (c.name) nameRows.push({
-    titleId: opts.titleIdFor("ps5", c.productId, c.name),
-    name: c.name,
-    headerImageUrl: c.headerImageUrl,
-    releaseDateIso: c.releaseDateIso,
-  });
+  for (const c of ps5DiscoveredCls) if (c.name) {
+    // Skip name bootstrap for remapped SKUs so the base title's clean name
+    // is never overwritten by the region-variant's storefront edition name
+    // (e.g. "Resident Evil Requiem: Deluxe Edition" clobbering "Resident
+    // Evil Requiem" on 10335).
+    if (SKU_BASE_TITLE_ID.has(`ps5:${c.productId}`)) continue;
+    nameRows.push({
+      titleId: opts.titleIdFor("ps5", c.productId, c.name),
+      name: c.name,
+      headerImageUrl: c.headerImageUrl,
+      releaseDateIso: c.releaseDateIso,
+    });
+  }
+  for (const c of psManualCls) if (c.name) {
+    if (SKU_BASE_TITLE_ID.has(`ps5:${c.productId}`)) continue;
+    nameRows.push({
+      titleId: opts.titleIdFor("ps5", c.productId, c.name),
+      name: c.name,
+      headerImageUrl: c.headerImageUrl,
+      releaseDateIso: c.releaseDateIso,
+    });
+  }
   bootstrapConsoleTitleNames(nameRows);
 
   // Aggregate PS stats across auto + manual (dedupe by productId for accurate
