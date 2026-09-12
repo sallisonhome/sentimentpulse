@@ -1096,10 +1096,14 @@ export default function Leaderboards() {
                   {sortedRevenueRows.map((row) => (
                     <TableRow key={row.productId} data-testid={`row-revenue-leaderboard-${row.productId}`}>
                       <TableCell>
-                        <div className="flex flex-col gap-1">
+                        <a
+                          href={`#/ccu/${row.productId}`}
+                          className="flex flex-col gap-1 group"
+                          data-testid={`link-revenue-title-${row.productId}`}
+                        >
                           <div className="flex items-center gap-3">
                             <GameKeyart headerImage={row.headerImage} title={row.title} />
-                            <span className="font-medium text-sm truncate">{row.title}</span>
+                            <span className="font-medium text-sm truncate group-hover:underline">{row.title}</span>
                             {row.isStale && (
                               <span
                                 className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0"
@@ -1118,7 +1122,7 @@ export default function Leaderboards() {
                               testId={`badge-on-promo-revenue-${row.productId}`}
                             />
                           ) : null}
-                        </div>
+                        </a>
                       </TableCell>
                       <TableCell className="text-center">
                         <ChartButton
@@ -1218,10 +1222,14 @@ export default function Leaderboards() {
                 {sortedRows.map((row) => (
                   <TableRow key={row.productId} data-testid={`row-leaderboard-${row.productId}`}>
                     <TableCell>
-                      <div className="flex flex-col gap-1">
+                      <a
+                        href={`#/ccu/${row.productId}`}
+                        className="flex flex-col gap-1 group"
+                        data-testid={`link-wishlist-title-${row.productId}`}
+                      >
                         <div className="flex items-center gap-3">
                           <GameKeyart headerImage={row.headerImage} title={row.title} />
-                          <span className="font-medium text-sm truncate">{row.title}</span>
+                          <span className="font-medium text-sm truncate group-hover:underline">{row.title}</span>
                         </div>
                         {/* On-Promo badge — renders nothing when the title has no active promos.
                             Wrapped in a flex row so the badge shrinks to its content instead of
@@ -1233,7 +1241,7 @@ export default function Leaderboards() {
                             testId={`badge-on-promo-wishlist-${row.productId}`}
                           />
                         ) : null}
-                      </div>
+                      </a>
                     </TableCell>
                     <TableCell className="text-center">
                       <ChartButton
