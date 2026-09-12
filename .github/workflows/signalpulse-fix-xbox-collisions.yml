@@ -1,0 +1,149 @@
+name: SignalPulse — Fix Xbox title_id collisions + F2P prune
+
+# One-off migration for the 2026-09-11 Xbox title_id collision incident.
+#
+# Phase 1: prune every free_to_play row from platform_sku_map (all platforms).
+#          The leaderboard is paid-only end-to-end; F2P rows are invisible
+#          at render but caused this incident by burning title_ids on
+#          channel positions that later got re-used by real paid titles.
+#
+# Phase 2: resolve the 3 remaining paid+paid collisions using live evidence
+#          from Xbox's top-paid-games channel (verdicts baked into the
+#          script — no runtime picking).
+#
+# Phase 3: refresh console_title_igdb rows for every previously-colliding
+#          title_id so the surviving SKU's name/art is the one displayed.
+#
+# Safe to re-run: fully idempotent. Never touches is_manual_override=1 rows.
+# Detailed logic in scripts/fix-xbox-title-id-collisions.ts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — preview mutations without writing"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight — script + creds present + pre-state
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          if [ -z "$WD" ]; then
+            echo "ERR: could not resolve signalpulse WorkingDirectory"
+            exit 1
+          fi
+          echo "Working dir: $WD"
+          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/fix-xbox-title-id-collisions.ts" ] || {
+            echo "ERR: scripts/fix-xbox-title-id-collisions.ts missing on droplet — deploy first"
+            exit 1
+          }
+          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
+
+          echo ""
+          echo "── Pre-run state ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT platform, business_model, COUNT(*) AS n
+            FROM platform_sku_map
+            GROUP BY platform, business_model
+            ORDER BY platform, business_model;"
+          echo ""
+          echo "── Pre-run Xbox collisions ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT title_id, COUNT(*) AS n_skus
+            FROM platform_sku_map
+            WHERE platform='xbox'
+            GROUP BY title_id
+            HAVING COUNT(*) > 1
+            ORDER BY title_id;"
+          REMOTE
+
+      - name: Run fix-xbox-title-id-collisions
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+
+          DRY_RUN="${DRY_RUN:-true}"
+
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+
+          echo "════════════════════════════════════════════════════════"
+          echo "  fix-xbox-title-id-collisions.ts"
+          echo "  DRY_RUN=${DRY_RUN:-unset}"
+          echo "════════════════════════════════════════════════════════"
+
+          t0=$(date +%s)
+          # 19 refetches * 300ms/req = 6s minimum; plus deletes; 5min ceiling.
+          timeout 300 ./node_modules/.bin/tsx scripts/fix-xbox-title-id-collisions.ts
+          rc=$?
+          t1=$(date +%s)
+          echo ""
+          echo "Elapsed: $((t1 - t0))s  exit=$rc"
+          exit $rc
+          REMOTE
+
+      - name: Post-run verification
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          echo "── Post-run state ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT platform, business_model, COUNT(*) AS n
+            FROM platform_sku_map
+            GROUP BY platform, business_model
+            ORDER BY platform, business_model;"
+          echo ""
+          echo "── Post-run Xbox collisions (should be empty) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT title_id, COUNT(*) AS n_skus
+            FROM platform_sku_map
+            WHERE platform='xbox'
+            GROUP BY title_id
+            HAVING COUNT(*) > 1
+            ORDER BY title_id;"
+          echo ""
+          echo "── Remaining F2P rows (should be 0 non-override) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT platform, is_manual_override, COUNT(*) AS n
+            FROM platform_sku_map
+            WHERE business_model='free_to_play'
+            GROUP BY platform, is_manual_override;"
+          REMOTE

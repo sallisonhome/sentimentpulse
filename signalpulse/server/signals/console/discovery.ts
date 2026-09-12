@@ -791,6 +791,17 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
     `SELECT 1 FROM platform_sku_map WHERE platform = ? AND external_sku = ?`
   );
 
+  // Hard invariant enforcement (2026-09-12): reject F2P at the write boundary.
+  // Caller-side filter in runFullDiscovery is the primary defense; this is a
+  // belt-and-suspenders check so no future caller can silently reintroduce
+  // the class of bug that caused the 2026-09-11 title_id collisions.
+  // Manual overrides are exempt — they are explicit human decisions.
+  const f2pRejected = rows.filter(r => r.businessModel === "free_to_play" && !r.isManualOverride);
+  if (f2pRejected.length > 0) {
+    const sample = f2pRejected.slice(0, 3).map(r => `${r.platform}:${r.externalSku}`).join(", ");
+    throw new Error(`upsertSkuMap: refusing to write ${f2pRejected.length} free_to_play row(s) (paid-only leaderboard invariant). Sample: ${sample}`);
+  }
+
   let inserted = 0, updated = 0, preservedOverride = 0;
   const runTx = rawSqlite.transaction((batch: UpsertRow[]) => {
     for (const r of batch) {
@@ -926,20 +937,46 @@ export async function runFullDiscovery(opts: {
     classifyPsManualSeed(manualSeeds),
   ]);
 
-  // Write to platform_sku_map
-  const steamRows: UpsertRow[] = steamCls.map(c => ({
+  // Write to platform_sku_map.
+  //
+  // HARD INVARIANT (2026-09-12): F2P classifications are DROPPED before write.
+  // The system is a paid-titles leaderboard end-to-end — the leaderboard
+  // route filters `business_model='paid'` at render, so F2P rows are already
+  // invisible to users. But keeping them in platform_sku_map caused the
+  // 2026-09-11 collision incident: Microsoft's "top-paid-games" channel
+  // returns F2P grossers (Fortnite, Roblox, Apex, etc.) at real positions.
+  // Discovery burned title_ids on those SKUs; a later run at a different
+  // moment saw genuinely-paid titles at those same positions and — with the
+  // stale-counter allocator — minted colliding title_ids. Stopping F2P at
+  // the write boundary eliminates the entire class of problem.
+  //
+  // `unknown` classifications ARE kept: they self-heal on the next run's
+  // ON CONFLICT update if the classifier recovers, whereas deleting them
+  // would lose the SKU until it re-appears in top-sellers.
+  const dropF2p = <T extends { businessModel: BusinessModel }>(rows: T[], platform: string) => {
+    const kept = rows.filter(r => r.businessModel !== "free_to_play");
+    const dropped = rows.length - kept.length;
+    if (dropped > 0) log(`${platform} discovery: dropped ${dropped} free_to_play row(s) before upsert (paid-only leaderboard invariant)`);
+    return kept;
+  };
+
+  const steamPaid = dropF2p(steamCls, "steam");
+  const xboxPaid  = dropF2p(xboxCls, "xbox");
+  const ps5Paid   = dropF2p(ps5DiscoveredCls, "ps5");
+
+  const steamRows: UpsertRow[] = steamPaid.map(c => ({
     platform: "steam", externalSku: c.appId, titleId: opts.titleIdFor("steam", c.appId, c.name),
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `steam_appdetails.is_free=${c.businessModel === "free_to_play"};type=${c.type ?? "?"}`,
   }));
-  const xboxRows: UpsertRow[] = xboxCls.map(c => ({
+  const xboxRows: UpsertRow[] = xboxPaid.map(c => ({
     platform: "xbox", externalSku: c.bigId, titleId: opts.titleIdFor("xbox", c.bigId, c.name),
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `xbox_displaycatalog.MSRP`,
   }));
-  const ps5DiscoveredRows: UpsertRow[] = ps5DiscoveredCls.map(c => ({
+  const ps5DiscoveredRows: UpsertRow[] = ps5Paid.map(c => ({
     platform: "ps5", externalSku: c.productId,
     // Remap known duplicate SKUs onto their base title_id so discovery never
     // re-creates a rival row for the same game. See SKU_BASE_TITLE_ID above.

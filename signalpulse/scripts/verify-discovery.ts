@@ -19,26 +19,73 @@
 import { rawSqlite } from "../server/storage";
 import { runFullDiscovery, upsertSkuMap } from "../server/signals/console/discovery";
 
-// Prefer the DB's existing title_id when a row already exists — upsertSkuMap
-// pins title_id on conflict (it is IMMUTABLE once written), so consulting the
-// DB first keeps this in-process allocator from burning fresh numbers on every
-// run and drifting the visible id relative to what the DB holds. New SKUs get
-// a fresh id from the counter; the counter is seeded above the current max so
-// it never collides with an existing id.
-const maxRow = rawSqlite.prepare(
-  `SELECT COALESCE(MAX(title_id), 9999) AS max_id FROM platform_sku_map`
-).get() as { max_id: number };
-let nextTitleId = maxRow.max_id + 1;
+// title_id allocation MUST be atomic per (platform, external_sku).
+//
+// Prior design bug (fixed 2026-09-12): the allocator kept an in-process
+// counter seeded from `MAX(title_id)+1` at startup. When two discovery
+// processes ran on the same day (as happened 2026-09-11 at 00:07 and 01:19
+// UTC), both processes seeded their counters from the same stale MAX, then
+// each minted fresh sequential ids for their own new-SKU population.
+// Nineteen Xbox title_ids ended up owning two different SKUs each, which
+// silently corrupted the leaderboard (blank / wrong display names) and
+// would eventually contaminate historical joins on title_id.
+//
+// New allocator: every new-title_id decision runs inside a
+// `BEGIN IMMEDIATE` transaction that (a) re-checks the DB for an existing
+// row, (b) reads MAX(title_id)+1 from live state, and (c) INSERTs a
+// placeholder reservation row. Because SQLite serializes writers under
+// `BEGIN IMMEDIATE`, a concurrent second process blocks until the first
+// commits, then sees the freshly-written id and picks the next one.
+// The subsequent `upsertSkuMap` call updates the placeholder row's
+// classification fields via its ON CONFLICT clause; title_id is pinned.
+//
+// An in-process cache still short-circuits repeated calls within the same
+// run, avoiding a transaction per SKU when we already know the answer.
 const titleIdByKey = new Map<string, number>();
 const existingLookup = rawSqlite.prepare(
   `SELECT title_id FROM platform_sku_map WHERE platform = ? AND external_sku = ?`
+);
+const maxTitleIdStmt = rawSqlite.prepare(
+  `SELECT COALESCE(MAX(title_id), 9999) AS max_id FROM platform_sku_map`
+);
+const reserveStmt = rawSqlite.prepare(
+  `INSERT INTO platform_sku_map
+     (title_id, platform, external_sku, concept_id, sku_role,
+      business_model, msrp_usd_cents, business_model_source, is_manual_override,
+      refreshed_at, created_at)
+   VALUES (?, ?, ?, NULL, 'base', 'unknown', NULL, 'allocator_reservation', 0, ?, ?)
+   ON CONFLICT(platform, external_sku) DO NOTHING`
 );
 function titleIdFor(platform: string, sku: string, _name: string | null): number {
   const key = `${platform}:${sku}`;
   const cached = titleIdByKey.get(key);
   if (cached != null) return cached;
+
+  // Fast path (no transaction): row already in DB from a prior run.
   const existing = existingLookup.get(platform, sku) as { title_id: number } | undefined;
-  const id = existing?.title_id ?? nextTitleId++;
+  if (existing) {
+    titleIdByKey.set(key, existing.title_id);
+    return existing.title_id;
+  }
+
+  // Allocation path: serialize on the DB write lock so concurrent processes
+  // can never mint the same fresh id for different SKUs.
+  const nowIso = new Date().toISOString();
+  const allocateTx = rawSqlite.transaction((): number => {
+    // Re-check inside the transaction — another process may have inserted
+    // this same SKU while we were waiting on the write lock.
+    const inside = existingLookup.get(platform, sku) as { title_id: number } | undefined;
+    if (inside) return inside.title_id;
+    const { max_id } = maxTitleIdStmt.get() as { max_id: number };
+    const fresh = max_id + 1;
+    reserveStmt.run(fresh, platform, sku, nowIso, nowIso);
+    return fresh;
+  });
+  // better-sqlite3's default transaction() uses DEFERRED; call .immediate()
+  // so the write lock is acquired at BEGIN rather than at first write.
+  // Without this, two processes could both pass the SELECT and then race the
+  // INSERT before either upgrades to a writer.
+  const id = allocateTx.immediate();
   titleIdByKey.set(key, id);
   return id;
 }
