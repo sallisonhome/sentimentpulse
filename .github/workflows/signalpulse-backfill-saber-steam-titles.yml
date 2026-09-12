@@ -1,0 +1,120 @@
+name: SignalPulse — Backfill Saber Steam titles
+
+# One-off backfill for 5 released Saber Steam titles that were absent from
+# platform_sku_map as of 2026-09-12: World War Z, Insurgency: Sandstorm,
+# Tempest Rising, John Carpenter's Toxic Commando, RoadCraft.
+#
+# These titles have full actuals in steam_sales_daily but never made it into
+# platform_sku_map because the daily discovery cron only ingests the current
+# Steam top-sellers page, which these mid-catalog titles have long since
+# dropped off. Backfilling them lets them serve as revenue-calibration anchors
+# regardless of whether they qualify for the top-100 display leaderboard.
+#
+# Rows are written with is_manual_override=1 so future discovery runs cannot
+# clobber MSRP or business_model.
+#
+# Safe to re-run: idempotent (upsertSkuMap ON CONFLICT preserves title_id).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — preview writes without applying"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/backfill-saber-steam-titles.ts" ] || {
+            echo "ERR: scripts/backfill-saber-steam-titles.ts missing on droplet — deploy first"
+            exit 1
+          }
+          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
+          echo "Working dir: $WD"
+          echo ""
+          echo "── Steam platform_sku_map count (pre) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT platform, business_model, COUNT(*) AS n
+            FROM platform_sku_map WHERE platform='steam'
+            GROUP BY platform, business_model
+            ORDER BY business_model;"
+          REMOTE
+
+      - name: Run backfill-saber-steam-titles
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+          DRY_RUN="${DRY_RUN:-true}"
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+
+          echo "════════════════════════════════════════════════════════"
+          echo "  backfill-saber-steam-titles.ts"
+          echo "  DRY_RUN=${DRY_RUN:-unset}"
+          echo "════════════════════════════════════════════════════════"
+
+          t0=$(date +%s)
+          timeout 60 ./node_modules/.bin/tsx scripts/backfill-saber-steam-titles.ts
+          rc=$?
+          t1=$(date +%s)
+          echo ""
+          echo "Elapsed: $((t1 - t0))s  exit=$rc"
+          exit $rc
+          REMOTE
+
+      - name: Post-run verification
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          echo "── Steam platform_sku_map count (post) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT platform, business_model, COUNT(*) AS n
+            FROM platform_sku_map WHERE platform='steam'
+            GROUP BY platform, business_model
+            ORDER BY business_model;"
+          echo ""
+          echo "── Saber-seeded Steam rows ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT external_sku, title_id, business_model, msrp_usd_cents, is_manual_override, business_model_source
+            FROM platform_sku_map
+            WHERE platform='steam' AND business_model_source LIKE 'saber_manual_seed%'
+            ORDER BY external_sku;"
+          REMOTE
