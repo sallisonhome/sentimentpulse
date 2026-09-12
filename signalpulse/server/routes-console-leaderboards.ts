@@ -655,10 +655,22 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   });
 
   // ─── PDP header ────────────────────────────────────────────────────────────
+  //
+  // Accepts `?window=d7|d30|d90|m12|ltd` (default `ltd`). The response now
+  // includes a `windowKpisPerPlatform` array with window-scoped estimates
+  // (units, owners, revenue) and a rating delta over the same window, so the
+  // client can bind KPI tiles to the tab the user selected. `latestPerPlatform`
+  // is preserved for backwards compat and continues to reflect the most
+  // recent absolute capture (LTD-ish snapshot).
   app.get("/api/console/titles/:titleId", (req, res) => {
     try {
       const titleId = parseInt(req.params.titleId, 10);
       if (!Number.isFinite(titleId)) return res.status(400).json({ error: "invalid titleId" });
+
+      const window = (req.query.window as string) || "ltd";
+      if (!["d7", "d30", "d90", "m12", "ltd"].includes(window)) {
+        return res.status(400).json({ error: "invalid window" });
+      }
 
       const skus = rawSqlite.prepare(`
         SELECT platform, external_sku AS externalSku, concept_id AS conceptId, sku_role AS skuRole,
@@ -690,6 +702,135 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
          WHERE srs.title_id = ?
       `).all(titleId, titleId) as Array<Record<string, any>>;
 
+      // ── Window-scoped KPIs per platform ────────────────────────────────
+      // Reuses the same cascade rule as the leaderboard: bias toward the
+      // requested window, widen to the next tier only when the requested
+      // window has no estimate. Never narrows.
+      const CASCADE_BY_WINDOW_PDP: Record<string, string[]> = {
+        d7:  ["d7", "d30", "d90", "m12", "ltd"],
+        d30: ["d30", "d90", "m12", "ltd"],
+        d90: ["d90", "m12", "ltd"],
+        m12: ["m12", "ltd"],
+        ltd: ["ltd"],
+      };
+      const cascade = CASCADE_BY_WINDOW_PDP[window];
+
+      // For each SKU, walk the cascade and find the first (platform, window)
+      // with a units_mid row. Emit units/owners/revenue and the windowUsed tag.
+      // Rating delta is a separate query per platform: end_count − start_count
+      // over the same window (LTD = latest capture only, so delta is null).
+      const WINDOW_DAYS: Record<string, number | null> = { d7: 7, d30: 30, d90: 90, m12: 365, ltd: null };
+      const daysBack = WINDOW_DAYS[window];
+
+      // Single lookup per (platform, window) — small N (up to 3 platforms × 5
+      // cascade levels = 15 statements). Prepared once per handler call.
+      const winStmt = rawSqlite.prepare(`
+        SELECT units_mid AS unitsMid, owners_mid AS ownersMid, method, as_of_date AS asOfDate
+          FROM window_estimates_daily
+         WHERE title_id = ? AND platform = ? AND window = ?
+         ORDER BY as_of_date DESC LIMIT 1
+      `);
+
+      const ratingDeltaStmt = rawSqlite.prepare(`
+        SELECT capture_date AS captureDate, rating_count AS ratingCount, avg_rating AS avgRating
+          FROM store_rating_signal_daily
+         WHERE title_id = ? AND platform = ?
+           AND capture_date >= date('now', ?)
+         ORDER BY capture_date ASC
+      `);
+      const ratingLatestStmt = rawSqlite.prepare(`
+        SELECT capture_date AS captureDate, rating_count AS ratingCount, avg_rating AS avgRating
+          FROM store_rating_signal_daily
+         WHERE title_id = ? AND platform = ?
+         ORDER BY capture_date DESC LIMIT 1
+      `);
+
+      const windowKpisPerPlatform = skus.map((sku) => {
+        const platform = sku.platform as Platform;
+        const msrpUsdCents = sku.msrpUsdCents as number | null;
+        const asp = aspFactorFor(platform);
+        const aspUsdCents = msrpUsdCents != null ? Math.round(msrpUsdCents * asp) : null;
+
+        // Walk cascade for units_mid / owners_mid.
+        let winRow: { unitsMid: number | null; ownersMid: number | null; method: string | null; asOfDate: string } | null = null;
+        let windowUsed: string | null = null;
+        for (const w of cascade) {
+          const row = winStmt.get(titleId, platform, w) as any;
+          if (row && row.unitsMid != null) {
+            winRow = row;
+            windowUsed = w;
+            break;
+          }
+        }
+
+        // Cascade-to-LTD gate: same rule as the leaderboard. If the request
+        // is for a bounded window but the only signal we have is LTD, don't
+        // multiply LTD units by ASP as if it were a window quantity — emit
+        // nulls and set gatedReason so the client can badge it.
+        const gateToLtd = window !== "ltd" && cascade.length >= 2;
+        const gatedLtdOnly = gateToLtd && windowUsed === "ltd";
+        const unitsMid = gatedLtdOnly ? null : (winRow?.unitsMid ?? null);
+        const ownersMid = gatedLtdOnly ? null : (winRow?.ownersMid ?? null);
+        const revenueMidUsd = (unitsMid != null && aspUsdCents != null)
+          ? Math.round((unitsMid * aspUsdCents) / 100)
+          : null;
+        const gatedReason = gatedLtdOnly ? "ltd_only_signal"
+          : (winRow == null ? "no_estimate" : (msrpUsdCents == null ? "no_msrp" : null));
+
+        // Rating delta over the window. LTD returns the absolute latest count
+        // and null delta (nothing to compare against).
+        let ratingCountStart: number | null = null;
+        let ratingCountEnd: number | null = null;
+        let ratingDelta: number | null = null;
+        let avgRatingLatest: number | null = null;
+        let captureLatestDate: string | null = null;
+        if (daysBack == null) {
+          const latest = ratingLatestStmt.get(titleId, platform) as any;
+          if (latest) {
+            ratingCountEnd = latest.ratingCount;
+            avgRatingLatest = latest.avgRating;
+            captureLatestDate = latest.captureDate;
+          }
+        } else {
+          const rows = ratingDeltaStmt.all(titleId, platform, `-${daysBack} days`) as any[];
+          if (rows.length >= 2) {
+            ratingCountStart = rows[0].ratingCount;
+            ratingCountEnd = rows[rows.length - 1].ratingCount;
+            avgRatingLatest = rows[rows.length - 1].avgRating;
+            captureLatestDate = rows[rows.length - 1].captureDate;
+            if (ratingCountStart != null && ratingCountEnd != null) {
+              ratingDelta = ratingCountEnd - ratingCountStart;
+            }
+          } else if (rows.length === 1) {
+            // Only one capture in the window: report it as the end value with a
+            // null delta rather than pretending we have a window measurement.
+            ratingCountEnd = rows[0].ratingCount;
+            avgRatingLatest = rows[0].avgRating;
+            captureLatestDate = rows[0].captureDate;
+          }
+        }
+
+        return {
+          platform,
+          window,
+          windowUsed,
+          cascade,
+          unitsMid,
+          ownersMid,
+          revenueMidUsd,
+          aspUsdCents,
+          msrpUsdCents,
+          method: winRow?.method ?? null,
+          asOfDate: winRow?.asOfDate ?? null,
+          gatedReason,
+          ratingCountStart,
+          ratingCountEnd,
+          ratingDelta,
+          avgRatingLatest,
+          captureLatestDate,
+        };
+      });
+
       // Parse JSON columns
       const parsedIgdb = igdb ? {
         ...igdb,
@@ -701,7 +842,15 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         publishers: igdb.publishersJson ? JSON.parse(igdb.publishersJson) : [],
       } : null;
 
-      res.json({ titleId, skus, igdb: parsedIgdb, latestPerPlatform });
+      res.json({
+        titleId,
+        window,
+        cascade,
+        skus,
+        igdb: parsedIgdb,
+        latestPerPlatform,
+        windowKpisPerPlatform,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

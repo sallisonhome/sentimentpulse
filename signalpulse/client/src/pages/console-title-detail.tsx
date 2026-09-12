@@ -53,11 +53,34 @@ interface IgdbData {
   rating: number | null;
   ratingCount: number | null;
 }
+type KpiWindow = "d7" | "d30" | "d90" | "m12" | "ltd";
+interface WindowKpi {
+  platform: Platform;
+  window: KpiWindow;
+  windowUsed: KpiWindow | null;
+  cascade: KpiWindow[];
+  unitsMid: number | null;
+  ownersMid: number | null;
+  revenueMidUsd: number | null;
+  aspUsdCents: number | null;
+  msrpUsdCents: number | null;
+  method: string | null;
+  asOfDate: string | null;
+  gatedReason: "ltd_only_signal" | "no_estimate" | "no_msrp" | null;
+  ratingCountStart: number | null;
+  ratingCountEnd: number | null;
+  ratingDelta: number | null;
+  avgRatingLatest: number | null;
+  captureLatestDate: string | null;
+}
 interface TitleDetail {
   titleId: number;
+  window: KpiWindow;
+  cascade: KpiWindow[];
   skus: Sku[];
   igdb: IgdbData | null;
   latestPerPlatform: Array<{ platform: Platform; captureDate: string; ratingCount: number | null; avgRating: number | null; windowLabel: string | null }>;
+  windowKpisPerPlatform: WindowKpi[];
 }
 
 const PLATFORM_LABEL: Record<Platform, string> = { steam: "Steam", xbox: "Xbox", ps5: "PlayStation 5" };
@@ -74,6 +97,30 @@ const PRESETS: Array<{ id: PresetRange; label: string; days?: number }> = [
   { id: "ltd", label: "LTD" },
   { id: "custom", label: "Custom" },
 ];
+// The tile-window switcher scopes the KPI cards to the same window the leaderboard
+// filter uses. Keep this list in sync with CASCADE_BY_WINDOW_PDP on the server.
+const KPI_WINDOWS: Array<{ id: KpiWindow; label: string }> = [
+  { id: "d7", label: "7d" },
+  { id: "d30", label: "30d" },
+  { id: "d90", label: "90d" },
+  { id: "m12", label: "12m" },
+  { id: "ltd", label: "LTD" },
+];
+function formatMoney(cents: number | null | undefined): string {
+  if (cents == null || !Number.isFinite(cents)) return "—";
+  const dollars = cents; // Endpoint returns whole USD dollars already.
+  if (dollars >= 1_000_000) return `$${(dollars / 1_000_000).toFixed(1)}M`;
+  if (dollars >= 1_000) return `$${(dollars / 1_000).toFixed(1)}K`;
+  return `$${Math.round(dollars).toLocaleString()}`;
+}
+function formatSignedCount(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : n < 0 ? "−" : "";
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}${abs.toLocaleString()}`;
+}
 
 function isoToday(): string { return new Date().toISOString().slice(0, 10); }
 function daysAgoIso(d: number): string { return subDays(new Date(), d).toISOString().slice(0, 10); }
@@ -89,10 +136,13 @@ export default function ConsoleTitleDetail() {
   const platform = params.platform;
   const titleId = parseInt(params.titleId!, 10);
 
+  const [kpiWindow, setKpiWindow] = useState<KpiWindow>("d30");
+
   const { data: detail, isLoading } = useQuery<TitleDetail>({
-    queryKey: [`/api/console/titles/${titleId}`],
+    queryKey: [`/api/console/titles/${titleId}`, { kpiWindow }],
     queryFn: async () => {
-      const r = await fetch(`/signal/api/console/titles/${titleId}`, { credentials: "include" });
+      const q = new URLSearchParams({ window: kpiWindow });
+      const r = await fetch(`/signal/api/console/titles/${titleId}?${q.toString()}`, { credentials: "include" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -168,30 +218,71 @@ export default function ConsoleTitleDetail() {
         </div>
       )}
 
-      {/* KPI tiles per platform */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        {detail.latestPerPlatform.map(l => (
-          <Card key={l.platform} className={`p-4 ${l.platform === platform ? "border-primary/50" : ""}`}>
-            <div className="text-xs text-muted-foreground uppercase">{PLATFORM_LABEL[l.platform]}</div>
-            <div className="text-2xl font-mono mt-1">{formatCompact(l.ratingCount)}</div>
-            <div className="text-xs text-muted-foreground">
-              ratings · avg {
-                // Steam's avg_rating is a 0-5 rescale of the up/(up+down) recommendation rate
-                // (collector: (up/total)*5). Show it as the native percent on Steam rows so
-                // "70%" doesn't display as 3.5 and read like a positive score; keep the 0-5
-                // mean on PS5/Xbox where that's the native unit.
-                l.avgRating != null
-                  ? (l.platform === "steam"
-                      ? `${Math.round(l.avgRating * 20)}%`
-                      : l.avgRating.toFixed(2))
-                  : "—"
-              }
-            </div>
-            <div className="text-xs text-muted-foreground mt-1">captured {l.captureDate}</div>
-          </Card>
+      {/* KPI window switcher */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="text-xs text-muted-foreground uppercase tracking-wide">Window</div>
+        {KPI_WINDOWS.map(w => (
+          <Button
+            key={w.id}
+            variant={kpiWindow === w.id ? "default" : "outline"}
+            size="sm"
+            onClick={() => setKpiWindow(w.id)}
+            data-testid={`btn-kpi-window-${w.id}`}
+          >
+            {w.label}
+          </Button>
         ))}
-        {detail.latestPerPlatform.length === 0 && (
-          <Card className="p-4 col-span-3 text-sm text-muted-foreground">No captured snapshots yet.</Card>
+      </div>
+
+      {/* KPI tiles per platform — window-scoped */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {detail.windowKpisPerPlatform.map(k => {
+          const latest = detail.latestPerPlatform.find(l => l.platform === k.platform);
+          const isLtd = k.window === "ltd";
+          const primary = isLtd
+            ? formatCompact(latest?.ratingCount ?? k.ratingCountEnd)
+            : formatMoney(k.revenueMidUsd);
+          const primaryLabel = isLtd ? "ratings (LTD)" : "est. revenue";
+          const secondary = isLtd
+            ? `avg ${
+                latest?.avgRating != null
+                  ? (k.platform === "steam"
+                      ? `${Math.round(latest.avgRating * 20)}%`
+                      : latest.avgRating.toFixed(2))
+                  : "—"
+              }`
+            : `${formatCompact(k.unitsMid)} units · ${formatCompact(k.ownersMid)} owners`;
+          const badge = !isLtd && k.windowUsed && k.windowUsed !== k.window
+            ? `est. via ${k.windowUsed}`
+            : null;
+          const gated = !isLtd && k.gatedReason;
+          return (
+            <Card key={k.platform} className={`p-4 ${k.platform === platform ? "border-primary/50" : ""}`}>
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-muted-foreground uppercase">{PLATFORM_LABEL[k.platform]}</div>
+                {badge && <Badge variant="outline" className="text-[10px]">{badge}</Badge>}
+              </div>
+              <div className="text-2xl font-mono mt-1">{primary}</div>
+              <div className="text-xs text-muted-foreground">{primaryLabel}</div>
+              <div className="text-xs text-muted-foreground mt-2">{secondary}</div>
+              {!isLtd && (
+                <div className="text-xs text-muted-foreground mt-1">
+                  ratings Δ {formatSignedCount(k.ratingDelta)} over {k.window}
+                </div>
+              )}
+              {gated && (
+                <div className="text-[10px] text-amber-500 mt-1">
+                  gated: {gated.replace(/_/g, " ")}
+                </div>
+              )}
+              {isLtd && latest && (
+                <div className="text-xs text-muted-foreground mt-1">captured {latest.captureDate}</div>
+              )}
+            </Card>
+          );
+        })}
+        {detail.windowKpisPerPlatform.length === 0 && (
+          <Card className="p-4 col-span-3 text-sm text-muted-foreground">No SKUs.</Card>
         )}
       </div>
 
