@@ -249,11 +249,17 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       //   wider window so the row still ranks. Order: d7 → d30 → d90 → m12 → ltd.
       //   Never widen NARROWER (e.g. d30 request doesn't fall to d7): that would
       //   break the semantics of a user asking specifically for the 30d view.
+      //
+      // m12 explicitly does NOT fall through to ltd. LTD is a lifetime cumulative
+      // that spans arbitrary years — showing it as a 12-month value routinely
+      // inflated legacy titles (CoD MW4 at $1.82B m12 = actually the full lifetime
+      // total). The cascade-cliff gate below sinks m12 rows lacking a real m12
+      // estimate, matching how d7/d30/d90 sink when their nearest rung is missing.
       const CASCADE_BY_WINDOW: Record<string, string[]> = {
-        d7:  ["d7", "d30", "d90", "m12", "ltd"],
-        d30: ["d30", "d90", "m12", "ltd"],
-        d90: ["d90", "m12", "ltd"],
-        m12: ["m12", "ltd"],
+        d7:  ["d7", "d30", "d90", "m12"],
+        d30: ["d30", "d90", "m12"],
+        d90: ["d90", "m12"],
+        m12: ["m12"],
         ltd: ["ltd"],
       };
       const cascade = CASCADE_BY_WINDOW[window];
@@ -716,11 +722,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Reuses the same cascade rule as the leaderboard: bias toward the
       // requested window, widen to the next tier only when the requested
       // window has no estimate. Never narrows.
+      // Same rule as the leaderboard cascade: LTD is excluded from all windowed
+      // rungs so a legacy title's lifetime total never masquerades as a 12-month
+      // value on the standalone PDP. See CASCADE_BY_WINDOW comment above.
       const CASCADE_BY_WINDOW_PDP: Record<string, string[]> = {
-        d7:  ["d7", "d30", "d90", "m12", "ltd"],
-        d30: ["d30", "d90", "m12", "ltd"],
-        d90: ["d90", "m12", "ltd"],
-        m12: ["m12", "ltd"],
+        d7:  ["d7", "d30", "d90", "m12"],
+        d30: ["d30", "d90", "m12"],
+        d90: ["d90", "m12"],
+        m12: ["m12"],
         ltd: ["ltd"],
       };
       const cascade = CASCADE_BY_WINDOW_PDP[window];

@@ -54,6 +54,31 @@ const SKU_BASE_TITLE_ID: ReadonlyMap<string, number> = new Map<string, number>([
   // Dying Light: The Beast — US SKU. Base title 10386 owns the EU SKU
   // (EP2911-PPSA24003_00-DLTHEBEASTP5EU00). Same game, US storefront.
   ["ps5:UP3050-PPSA24002_00-DLTHEBEASTP5US00", 10386],
+  // ─── 2026-09-12 batch: 9 additional US/EU duplicate pairs surfaced by
+  //     the m12 flat-value survey. Every pair has an EU (EP-prefix) base row
+  //     that pre-dates the US (UP-prefix) discovery seed; the US row inherits
+  //     the EU base's title_id so the leaderboard shows a single unified row.
+  // Call of Duty®: Modern Warfare® 4 - Vault Edition. Base 10312 (EU EP0002).
+  ["ps5:UP0002-PPSA01649_00-CODMW4VAULT00001", 10312],
+  // Grand Theft Auto V: Premium Edition & Great White Shark Card Bundle.
+  // Base 10318 (EU EP1004). Note: this is the bundled SKU, distinct from base
+  // GTA V Enhanced (10021) which Sony sells as its own product.
+  ["ps5:UP1004-PPSA03420_00-GTAVANDGWSBUNDLE", 10318],
+  // Tom Clancy's Rainbow Six Siege X: Elite Edition. Base 10394 (EU EP0001).
+  ["ps5:UP0001-PPSA01396_00-RB6SIEGEELITEY10", 10394],
+  // Ghost of Tsushima: Director's Cut. Base 10447 (EU EP9000-PPSA03208).
+  ["ps5:UP9000-PPSA02225_00-GHOSTDIRECTORPS5", 10447],
+  // God of War Ragnarök. Base 10370 (EU EP9000-PPSA08330).
+  ["ps5:UP9000-PPSA08329_00-GOWRAGNAROK00000", 10370],
+  // No Man's Sky PS4 & PS5. Base 10350 (EU EP2034-PPSA01412).
+  ["ps5:UP2034-PPSA02110_00-NOMANSSKYHG00001", 10350],
+  // Astro Bot. Base 10357 (EU EP9000-PPSA21567). The US SKU sits on a
+  // sibling productId (PPSA21564) but is the same game.
+  ["ps5:UP9000-PPSA21564_00-0000000000000000", 10357],
+  // Hitman World of Assassination. Base 10333 (EU EP3969-PPSA01769).
+  ["ps5:UP4572-PPSA01768_00-0000000000000WOA", 10333],
+  // Final Fantasy VII Rebirth: Digital Deluxe Edition. Base 10364 (EU EP0082-PPSA08668).
+  ["ps5:UP0082-PPSA08666_00-0978938405039882", 10364],
 ]);
 
 function remapTitleId(platform: string, externalSku: string, defaultTitleId: number): number {

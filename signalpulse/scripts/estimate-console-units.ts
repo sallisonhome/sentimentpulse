@@ -559,15 +559,30 @@ async function main() {
     //    requested one isn't).
     if (ltdNow != null) {
       const mono = steamWindowRatiosMonotonic(titleId);
-      const ratio = mono != null
-        ? (window === "d7"  ? mono.d7
-         : window === "d30" ? mono.d30
-         : window === "d90" ? mono.d90
-         : window === "m12" ? mono.m12
-         : null)
-        : steamWindowRatio(titleId, winDays);
-      if (ratio != null) {
-        return { signal: Math.round(ltdNow * ratio), methodTag: "backfill-steam-pace" };
+      // Degenerate-pace guard. When a title's Steam sibling has been on the
+      // market long enough that its recent-window review counts are near
+      // identical to its lifetime count, all four ratios collapse toward 1.0
+      // (or toward each other). Applying that flat vector to console LTD
+      // produces d7 = d30 = d90 = m12, and the leaderboard renders MK1's
+      // ~1.9M lifetime units at every filter. Rule: if the year window has
+      // already captured >=50% of lifetime AND spread from d7 to m12 is <5%
+      // of LTD, the pace vector isn't windowed enough to be trustworthy —
+      // skip steam-pace entirely for windows narrower than m12. LTD is
+      // computed independently and the lifetime view is unaffected.
+      const degenerate = mono != null && mono.m12 >= 0.5 && (mono.m12 - mono.d7) < 0.05;
+      if (degenerate && window !== "m12") {
+        // fall through to null — no per-window steam-pace estimate for this title
+      } else {
+        const ratio = mono != null
+          ? (window === "d7"  ? mono.d7
+           : window === "d30" ? mono.d30
+           : window === "d90" ? mono.d90
+           : window === "m12" ? mono.m12
+           : null)
+          : steamWindowRatio(titleId, winDays);
+        if (ratio != null) {
+          return { signal: Math.round(ltdNow * ratio), methodTag: "backfill-steam-pace" };
+        }
       }
     }
 
