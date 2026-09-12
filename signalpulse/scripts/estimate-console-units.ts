@@ -237,6 +237,27 @@ async function main() {
     [10221, 10058], // Forza Horizon 6 Xbox Standard Edition → Forza Horizon 6
     [10411, 10602], // The Texas Chain Saw Massacre Xbox → TCM (steam)
     [10431, 10603], // Party Animals Xbox → Party Animals (steam)
+    // 2026-09-11 PS5 expansion — unlocks d7/d30/d90/m12 pace curves for
+    // PS5 top-100 titles previously stuck at ltd-only signal. New Steam
+    // anchors 10604-10614 seeded in the same deploy. Each Steam appid
+    // was live-probed via store.steampowered.com/api/appdetails before
+    // commit. R6 Siege dropped (F2P base can't anchor Elite Edition);
+    // Battlefield 6 dropped (Steam appid not yet live).
+    [10321, 10103], // PS5 AC Black Flag Resynced → steam
+    [10312, 10455], // PS5 CoD MW4 Vault Ed → steam CoD MW4
+    [10396, 10082], // PS5 Skyrim AE → steam Skyrim SE
+    [10377, 10016], // PS5 Rust Console → steam Rust
+    [10356, 9002],  // PS5 RE4 Gold → steam RE4+CV bundle
+    [10358, 10604], // PS5 Jedi Survivor → new steam anchor (appid 1774580)
+    [10373, 10605], // PS5 Witcher 3 Complete → new steam anchor (appid 292030)
+    [10329, 10607], // PS5 Split Fiction → new steam anchor (appid 2001120)
+    [10378, 10608], // PS5 Teardown → new steam anchor (appid 1167630)
+    [10398, 10609], // PS5 Sea of Thieves 2026 → new steam anchor (appid 1172620)
+    [10336, 10610], // PS5 Plague Tale Legacy → new steam anchor (Innocence appid 752590)
+    [10372, 10611], // PS5 LOTR: WitN Legacy → new steam anchor (appid 2523770)
+    [10448, 10612], // PS5 MGS Master Coll Vol.1 → new steam anchor (appid 2131630)
+    [10397, 10613], // PS5 Black Myth: Wukong → new steam anchor (appid 2358720)
+    [10386, 10614], // PS5 Dying Light: The Beast → new steam anchor (appid 3008130)
   ];
 
   {
