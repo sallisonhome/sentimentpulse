@@ -1050,6 +1050,68 @@ export async function runFullDiscovery(opts: {
   }
   bootstrapConsoleTitleNames(nameRows);
 
+  // Self-heal pass for Xbox title_ids stuck without a console_title_igdb row.
+  //
+  // classifyXboxBigIds catches every displaycatalog failure and yields
+  // { name: null }, which the loops above skip. If displaycatalog was
+  // unhealthy for a given bigId when discovery first met it, no cti row
+  // was ever inserted for its title_id. On the leaderboard the LEFT JOIN
+  // into cti then returns NULL and the client falls back to displaying
+  // the raw title_id (e.g. "10287").
+  //
+  // Prior daily runs never revisited those pre-existing bigIds because
+  // classify+bootstrap only ran against that day's discovery batch. Fix:
+  // enumerate Xbox platform_sku_map rows that still have no cti row and
+  // take one retry pass. Capped so a truly-retired-bigId cohort can't turn
+  // the daily discovery into an O(N) call storm.
+  try {
+    const XBOX_SELF_HEAL_MAX = 100;
+    const missingRows = rawSqlite.prepare(`
+      SELECT psm.title_id AS title_id, psm.external_sku AS big_id
+      FROM platform_sku_map psm
+      LEFT JOIN console_title_igdb cti ON cti.title_id = psm.title_id
+      WHERE psm.platform = 'xbox'
+        AND cti.title_id IS NULL
+      ORDER BY psm.title_id DESC
+      LIMIT ?
+    `).all(XBOX_SELF_HEAL_MAX) as Array<{ title_id: number; big_id: string }>;
+
+    if (missingRows.length > 0) {
+      log(`xbox self-heal: retrying ${missingRows.length} title_ids with no console_title_igdb row (cap ${XBOX_SELF_HEAL_MAX})`);
+      const retryRows: Array<{ titleId: number; name: string; headerImageUrl?: string | null; releaseDateIso?: string | null }> = [];
+      let recovered = 0;
+      let stillFailed = 0;
+      for (const m of missingRows) {
+        try {
+          const r = await fetchXboxRatingSignal({ titleId: m.title_id, bigId: m.big_id });
+          if (r.productTitle && r.productTitle.trim().length > 0) {
+            retryRows.push({
+              titleId: m.title_id,
+              name: r.productTitle.trim(),
+              headerImageUrl: r.storeHeaderImageUrl ?? null,
+              releaseDateIso: r.storeReleaseDateIso ?? null,
+            });
+            recovered++;
+          } else {
+            stillFailed++;
+          }
+        } catch {
+          stillFailed++;
+        }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      if (retryRows.length > 0) {
+        const heal = bootstrapConsoleTitleNames(retryRows);
+        log(`xbox self-heal: recovered=${recovered} still_failed=${stillFailed} inserted=${heal.inserted} kept=${heal.kept}`);
+      } else {
+        log(`xbox self-heal: recovered=0 still_failed=${stillFailed} — displaycatalog still unavailable for these bigIds`);
+      }
+    }
+  } catch (e) {
+    // Self-heal is best-effort; never fail the whole discovery because of it.
+    log(`xbox self-heal: pass failed: ${e instanceof Error ? e.message : e}`);
+  }
+
   // Aggregate PS stats across auto + manual (dedupe by productId for accurate
   // discovered/paid counts).
   const psAll = new Map<string, PsClassification>();

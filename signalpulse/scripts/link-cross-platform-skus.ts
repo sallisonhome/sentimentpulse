@@ -67,6 +67,11 @@ import { rawSqlite, storage } from "../server/storage";
 const DRY_RUN = process.env.DRY_RUN === "1";
 const ALLOW_MERGES = process.argv.includes("--allow-merges");
 const ALLOW_STEAM_ADDS = !process.argv.includes("--no-steam-adds");
+// --require-high restricts Pass 1 merges to groups where at least one member
+// has match_confidence='high'. Blank/unknown-only groups are logged but
+// skipped. Use this to execute the safer Tier A pass first and hold the
+// blank-only Tier B set for a spot-check review.
+const REQUIRE_HIGH = process.argv.includes("--require-high");
 const MAX_STEAM_ADDS = parseInt(process.env.MAX_STEAM_ADDS || "50", 10);
 const IGDB_RPS = 4;
 const STEAM_RPS = 2;
@@ -254,6 +259,13 @@ function findMergeCandidates(): MergeCandidate[] {
     // Skip if ANY member is in the operator-curated remap list.
     if (group.some(g => MANUALLY_REMAPPED_TITLE_IDS.has(g.title_id))) {
       console.log(`skip igdb_id=${igdbId} — member in MANUALLY_REMAPPED_TITLE_IDS`);
+      continue;
+    }
+    // --require-high gate: only merge groups that have at least one 'high'
+    // confidence member. Groups made entirely of blank/unknown members are
+    // logged as tier-B and held for review.
+    if (REQUIRE_HIGH && !group.some(g => g.conf === "high")) {
+      console.log(`skip igdb_id=${igdbId} (${group.map(x => `${x.title_id}(${x.conf || 'blank'})`).join(",")}) — tier-B (no high-conf member; --require-high active)`);
       continue;
     }
     const sorted = [...group].sort((a, b) => a.title_id - b.title_id);

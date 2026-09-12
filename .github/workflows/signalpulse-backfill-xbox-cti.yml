@@ -1,0 +1,135 @@
+name: SignalPulse — Backfill Xbox console_title_igdb names
+
+# One-off (dispatchable) backfill for Xbox `console_title_igdb` rows that
+# never got created. Symptom on the leaderboard: 36+ Xbox rows show raw
+# title_ids (e.g. "10287") because the LEFT JOIN into console_title_igdb
+# returns NULL for both `name` and `store_name`.
+#
+# Root cause (see script docstring): the daily discovery orchestrator
+# calls `bootstrapConsoleTitleNames` on the current batch. If displaycatalog
+# was down when a particular Xbox bigId was classified, the classify pass
+# yielded `{ name: null }` for that bigId and it was skipped. Nothing
+# re-visits pre-existing platform_sku_map rows that never got a cti row
+# written on subsequent runs.
+#
+# This workflow runs `scripts/backfill-xbox-cti-names.ts`, which:
+#   1. finds every Xbox platform_sku_map row whose title_id has NO cti row
+#   2. re-hits displaycatalog for each external_sku (bigId)
+#   3. writes results via bootstrapConsoleTitleNames — same primitive the
+#      daily discovery uses, so behavior is consistent with the rest of
+#      the codebase.
+#
+# Safe to re-run: idempotent. bootstrapConsoleTitleNames ON CONFLICT
+# updates store_name / store_header_image_url / store_release_date every
+# time and only rewrites `name` when igdb_id IS NULL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — fetch names but don't write to console_title_igdb"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight — script + creds present
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          if [ -z "$WD" ]; then
+            echo "ERR: could not resolve signalpulse WorkingDirectory"
+            exit 1
+          fi
+          echo "Working dir: $WD"
+          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/backfill-xbox-cti-names.ts" ] || {
+            echo "ERR: scripts/backfill-xbox-cti-names.ts missing on droplet — deploy first"
+            exit 1
+          }
+          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
+
+          echo ""
+          echo "── Pre-run: Xbox title_ids missing from console_title_igdb ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT COUNT(*) AS missing_xbox_cti_rows
+            FROM platform_sku_map psm
+            LEFT JOIN console_title_igdb cti ON cti.title_id = psm.title_id
+            WHERE psm.platform = 'xbox' AND cti.title_id IS NULL;"
+          REMOTE
+
+      - name: Run backfill-xbox-cti-names
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+
+          DRY_RUN="${DRY_RUN:-true}"
+
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+
+          echo "════════════════════════════════════════════════════════"
+          echo "  backfill-xbox-cti-names.ts"
+          echo "  DRY_RUN=${DRY_RUN:-unset}"
+          echo "════════════════════════════════════════════════════════"
+
+          t0=$(date +%s)
+          # 500 missing rows * 300ms/req = 150s worst case; 10 min ceiling for headroom.
+          timeout 600 ./node_modules/.bin/tsx scripts/backfill-xbox-cti-names.ts
+          rc=$?
+          t1=$(date +%s)
+          echo ""
+          echo "Elapsed: $((t1 - t0))s  exit=$rc"
+          exit $rc
+          REMOTE
+
+      - name: Post-run row counts
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          echo "── Post-run: Xbox title_ids missing from console_title_igdb ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT COUNT(*) AS missing_xbox_cti_rows
+            FROM platform_sku_map psm
+            LEFT JOIN console_title_igdb cti ON cti.title_id = psm.title_id
+            WHERE psm.platform = 'xbox' AND cti.title_id IS NULL;
+            SELECT COUNT(*) AS xbox_cti_rows_with_display_name
+            FROM platform_sku_map psm
+            JOIN console_title_igdb cti ON cti.title_id = psm.title_id
+            WHERE psm.platform = 'xbox'
+              AND COALESCE(NULLIF(cti.name,''), NULLIF(cti.store_name,'')) IS NOT NULL;"
+          REMOTE

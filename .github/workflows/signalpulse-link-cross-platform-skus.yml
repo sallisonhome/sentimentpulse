@@ -52,6 +52,12 @@ on:
         default: "false"
         type: choice
         options: ["true", "false"]
+      require_high_confidence:
+        description: "Merge only Tier-A groups (at least one high-conf member)"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
       allow_steam_adds:
         description: "Run Pass 2 Steam-SKU discovery + insert"
         required: false
@@ -113,18 +119,21 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           ALLOW_MERGES: ${{ github.event.inputs.allow_merges || 'false' }}
           ALLOW_STEAM_ADDS: ${{ github.event.inputs.allow_steam_adds || 'true' }}
+          REQUIRE_HIGH: ${{ github.event.inputs.require_high_confidence || 'true' }}
           MAX_STEAM_ADDS: ${{ github.event.inputs.max_steam_adds || '50' }}
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
               root@104.236.239.46 \
               DRY_RUN="$DRY_RUN" ALLOW_MERGES="$ALLOW_MERGES" \
-              ALLOW_STEAM_ADDS="$ALLOW_STEAM_ADDS" MAX_STEAM_ADDS="$MAX_STEAM_ADDS" \
+              ALLOW_STEAM_ADDS="$ALLOW_STEAM_ADDS" REQUIRE_HIGH="$REQUIRE_HIGH" \
+              MAX_STEAM_ADDS="$MAX_STEAM_ADDS" \
               bash -s <<'REMOTE'
           set -euo pipefail
 
           DRY_RUN="${DRY_RUN:-true}"
           ALLOW_MERGES="${ALLOW_MERGES:-false}"
           ALLOW_STEAM_ADDS="${ALLOW_STEAM_ADDS:-true}"
+          REQUIRE_HIGH="${REQUIRE_HIGH:-true}"
           MAX_STEAM_ADDS="${MAX_STEAM_ADDS:-50}"
 
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
@@ -146,10 +155,11 @@ jobs:
           ARGS=""
           if [ "$ALLOW_MERGES" = "true" ]; then ARGS="$ARGS --allow-merges"; fi
           if [ "$ALLOW_STEAM_ADDS" = "false" ]; then ARGS="$ARGS --no-steam-adds"; fi
+          if [ "$REQUIRE_HIGH" = "true" ]; then ARGS="$ARGS --require-high"; fi
 
           echo "════════════════════════════════════════════════════════"
           echo "  link-cross-platform-skus.ts"
-          echo "  DRY_RUN=${DRY_RUN:-unset}  ALLOW_MERGES=$ALLOW_MERGES  ALLOW_STEAM_ADDS=$ALLOW_STEAM_ADDS  MAX_STEAM_ADDS=$MAX_STEAM_ADDS  ARGS='$ARGS'"
+          echo "  DRY_RUN=${DRY_RUN:-unset}  ALLOW_MERGES=$ALLOW_MERGES  ALLOW_STEAM_ADDS=$ALLOW_STEAM_ADDS  REQUIRE_HIGH=$REQUIRE_HIGH  MAX_STEAM_ADDS=$MAX_STEAM_ADDS  ARGS='$ARGS'"
           echo "════════════════════════════════════════════════════════"
 
           t0=$(date +%s)
