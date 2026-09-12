@@ -29,12 +29,25 @@ const DRY_RUN = process.env.DRY_RUN === "1";
 // platform_sku_map as of 2026-09-12. Backfilled to enable revenue-calibration
 // anchoring for these titles, whether or not they qualify for the top-100
 // display leaderboard on any given day.
+//
+// First batch (2026-09-12, deployed): 5 external-catalog titles that had no
+// platform_sku_map row. Second batch (2026-09-12, this commit): 4 recently-
+// released Saber-published pipeline titles that also have real sales data
+// (BusBound, Hellraiser, Docked, Twisted Tower) — verified by live
+// steam_sales_daily row counts and Steam appdetails MSRPs (all non-sale).
+// The script is idempotent: existing rows are updated by upsertSkuMap and
+// the atomic allocator will return the existing title_id for any row that
+// was seeded earlier.
 const SABER_STEAM_BACKFILL = [
   { appId: "699130",  name: "World War Z",                          msrpUsdCents: 2999 },
   { appId: "581320",  name: "Insurgency: Sandstorm",                msrpUsdCents: 2999 },
   { appId: "1486920", name: "Tempest Rising",                       msrpUsdCents: 3999 },
   { appId: "2157830", name: "John Carpenter's Toxic Commando",      msrpUsdCents: 3999 },
   { appId: "2104890", name: "RoadCraft",                            msrpUsdCents: 3999 },
+  { appId: "2095420", name: "Bus Bound",                            msrpUsdCents: 2999 },
+  { appId: "1551980", name: "Clive Barker's Hellraiser: Revival",   msrpUsdCents: 3999 },
+  { appId: "2487300", name: "Docked",                               msrpUsdCents: 2999 },
+  { appId: "1575990", name: "Twisted Tower",                        msrpUsdCents: 1499 },
 ];
 
 // Atomic allocator (same pattern as verify-discovery.ts).

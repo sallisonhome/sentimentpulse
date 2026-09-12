@@ -30,7 +30,11 @@
 import { rawSqlite } from "../server/storage";
 
 const DRY_RUN = process.env.DRY_RUN === "1";
-const AS_OF = process.env.AS_OF_DATE ?? new Date().toISOString().slice(0, 10);
+const AS_OF = (() => {
+  const raw = (process.env.AS_OF_DATE ?? "").trim();
+  if (raw && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return new Date().toISOString().slice(0, 10);
+})();
 const MIN_ANCHORS = parseInt(process.env.MIN_ANCHORS ?? "2", 10);
 const MAX_STEP = parseFloat(process.env.MAX_STEP ?? "3.0"); // cap: |new/old| ≤ MAX_STEP
 const COHORT = "default"; // single-cohort world today

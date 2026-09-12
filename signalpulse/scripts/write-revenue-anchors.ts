@@ -31,7 +31,11 @@
 import { rawSqlite } from "../server/storage";
 
 const DRY_RUN = process.env.DRY_RUN === "1";
-const AS_OF = process.env.AS_OF_DATE ?? new Date().toISOString().slice(0, 10);
+const AS_OF = (() => {
+  const raw = (process.env.AS_OF_DATE ?? "").trim();
+  if (raw && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  return new Date().toISOString().slice(0, 10);
+})();
 
 const WINDOWS: Array<{ key: string; days: number | null }> = [
   { key: "d7",  days: 7 },
