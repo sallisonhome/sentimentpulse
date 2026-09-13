@@ -4,6 +4,34 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-13 — xbox_title_cache joins on big_id=external_sku, NEVER on title_id
+
+Shipped a broken join (`xtc.title_id = psm.title_id`) in two new multiplatform
+endpoints. `xbox_title_cache` has NO `title_id` column — its PK is `big_id`
+(the Xbox marketplace product ID). The correct pattern, already used by the
+per-platform leaderboard and the per-title PDP, is:
+
+    LEFT JOIN xbox_title_cache xtc
+      ON psm.platform = 'xbox' AND xtc.big_id = psm.external_sku
+
+Any new query that reaches into Xbox name/art MUST use this exact join, and
+MUST also include the Xbox integrity gate in the WHERE:
+
+    AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
+
+Root cause of the miss: I paraphrased the existing pattern from memory instead
+of grepping the working handler and copying it verbatim. Rule: **before adding
+a new query that joins any table with a non-obvious FK pattern, grep for an
+existing working join of that table in the same file and copy its ON clause
+character-for-character.**
+
+Also: run the CLAUDE.md §7 live probe against the *deployed* endpoint before
+declaring done. A 401 from an SSO-gated endpoint proves the route registered
+but says nothing about whether the SQL executes. When you can't get an
+authenticated response, execute the exact SQL against the live DB via the
+`signalpulse-db-query.yml` workflow as the substitute probe — that catches
+column/name mismatches the typechecker cannot see.
+
 ## 2026-09-12 — Sony first-party IP override (PS5 90 / Steam 10 / Xbox 0) + PS5-exclusive fallback
 
 Extended the IP override registry with Sony first-party franchises whose PS5
