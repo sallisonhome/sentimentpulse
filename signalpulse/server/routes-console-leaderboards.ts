@@ -1052,6 +1052,30 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // preserved, so groups[0..99] is the final leaderboard.
       const collapsed = groups.slice(0, 100);
 
+      // Re-derive ASP for rolled-up (multi-SKU) groups only. Each row's
+      // aspUsdCents was computed per-SKU (MSRP × platform factor) before
+      // rollup; revenueMidUsd/unitsMid are then SUMMED across sibling
+      // editions above, but the display row's aspUsdCents is inherited
+      // untouched from whichever single SKU won the `...r` spread. That
+      // leaves the advertised identity "revenue = units × ASP" (see the
+      // client tooltip) broken for any multi-edition family: units and
+      // revenue reflect all SKUs, ASP reflects only one. Recompute ASP as
+      // the revenue-weighted blend across the summed totals so the
+      // identity holds again and the column reads as "effective price
+      // realized across all editions" rather than one SKU's raw price.
+      // Standalone (editionCount === 0) rows are left untouched — their
+      // per-row aspUsdCents was already exact.
+      for (const g of collapsed) {
+        if (
+          g.editionCount > 0 &&
+          typeof g.revenueMidUsd === "number" &&
+          typeof g.unitsMid === "number" &&
+          g.unitsMid > 0
+        ) {
+          g.aspUsdCents = Math.round((g.revenueMidUsd * 100) / g.unitsMid);
+        }
+      }
+
       res.json({ platform, window, sort, dir, aspFactor, cascade, count: collapsed.length, titles: collapsed });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
