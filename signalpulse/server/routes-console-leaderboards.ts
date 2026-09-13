@@ -1118,11 +1118,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           ${cascadeWindowExpr}                            AS windowUsed
         FROM platform_sku_map psm
         LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
-        LEFT JOIN xbox_title_cache  xtc  ON xtc.title_id  = psm.title_id AND psm.platform = 'xbox'
+        LEFT JOIN xbox_title_cache  xtc  ON psm.platform = 'xbox' AND xtc.big_id = psm.external_sku
         ${cascadeJoins}
         WHERE psm.platform IN ('steam','ps5','xbox')
           AND psm.business_model = 'paid'
           AND psm.sku_role = 'base'
+          -- Xbox integrity gate (2026-09-12): filter Xbox rows with no xtc entry
+          AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
       `).all() as Array<{
         titleId: number;
         platform: Platform;
@@ -1482,11 +1484,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           ${cascadeWindowExpr} AS windowUsed
         FROM platform_sku_map psm
         LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
-        LEFT JOIN xbox_title_cache  xtc  ON xtc.title_id = psm.title_id AND psm.platform = 'xbox'
+        LEFT JOIN xbox_title_cache  xtc  ON psm.platform = 'xbox' AND xtc.big_id = psm.external_sku
         ${cascadeJoins}
         WHERE psm.platform IN ('steam','ps5','xbox')
           AND psm.business_model = 'paid'
           AND psm.sku_role = 'base'
+          -- Xbox integrity gate (2026-09-12): filter Xbox rows with no xtc entry
+          AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
       `).all() as Array<{ titleId: number; platform: Platform; msrpUsdCents: number | null; name: string | null; coverUrl: string | null; unitsMid: number | null; windowUsed: string | null }>;
 
       // Filter to this key.
