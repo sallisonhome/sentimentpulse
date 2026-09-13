@@ -95,6 +95,47 @@ export function editionGroupKey(name: string | null | undefined): string {
   // Collapse whitespace early so " - " / ": " separators normalize.
   s = s.replace(/\s+/g, " ").trim();
 
+  // Strip trailing parenthesized platform tags — e.g.
+  //   "Cyberpunk 2077: Ultimate Edition (Xbox Series X|S)"
+  // Store listings on Xbox often append the platform in parens rather than
+  // as a colon/dash-separated suffix. Without this the Xbox SKU falls into a
+  // different editionGroupKey than its Steam/PS5 twins and drops out of the
+  // multiplatform join. Run in a small loop so nested parens like
+  //   "Foo (Deluxe) (Xbox Series X|S)" collapse in one pass.
+  const PAREN_PLATFORM_TAGS = [
+    "xbox series x|s",
+    "xbox series x/s",
+    "xbox series x\\|s",
+    "xbox series x",
+    "xbox one",
+    "xbox one & xbox series x|s",
+    "xbox one and xbox series x|s",
+    "ps5",
+    "ps4",
+    "ps4 & ps5",
+    "ps4 and ps5",
+    "playstation 5",
+    "playstation 4",
+    "pc",
+    "windows",
+    "steam",
+  ];
+  let parenChanged = true;
+  let parenGuard = 0;
+  while (parenChanged && parenGuard++ < 4) {
+    parenChanged = false;
+    for (const tag of PAREN_PLATFORM_TAGS) {
+      const tagEsc = tag.replace(/[|]/g, "\\|").replace(/[.*+?^${}()]/g, "\\$&");
+      const re = new RegExp(`\\s*\\(\\s*${tagEsc}\\s*\\)\\s*$`, "i");
+      const next = s.replace(re, "");
+      if (next !== s && next.length >= 2) {
+        s = next.trim();
+        parenChanged = true;
+        break;
+      }
+    }
+  }
+
   // Ordered list of edition suffixes. Long/specific first so multi-word suffixes
   // are recognized before their sub-strings. Match at end-of-string only; the
   // pattern anchors at (a) end or (b) end after a colon/dash separator.
