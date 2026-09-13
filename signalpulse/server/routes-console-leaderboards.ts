@@ -156,6 +156,19 @@ export function editionGroupKey(name: string | null | undefined): string {
     "eclipse edition",
     "legacy edition",
     "enhanced edition",
+    // Rockstar-style bundle suffixes with in-game currency card DLC
+    // (Shark Cards for GTA V, Gold Bars for RDR2, etc). The bundle SKU is
+    // still the base game with a DLC add-on — collapse to base for the
+    // multiplatform join. Long/specific first so they match before their
+    // sub-strings.
+    "& great white shark card bundle",
+    "& tiger shark cash card bundle",
+    "& bull shark cash card bundle",
+    "& megalodon shark cash card bundle",
+    "& whale shark cash card bundle",
+    "& shark cash card bundle",
+    "and great white shark card bundle",
+    "and shark cash card bundle",
     "kickoff bundle",
     "digital version",
     "friend's pass",
