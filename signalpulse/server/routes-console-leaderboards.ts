@@ -888,12 +888,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // Only applies when the LTD anchor is verified (data_source starts
         // with 'manual_anchor_verified_'), NOT for portal_fetch anchors —
         // those already track actual per-window revenue in their own row.
-        let ltdAnchorMap: Map<number, {actual_revenue_usd:number; data_source:string}> = new Map();
+        let ltdAnchorMap: Map<number, {actual_revenue_usd:number; actual_units:number|null; data_source:string}> = new Map();
         let ltdEstimatorRevByTitleId: Map<number, number> = new Map();
+        let ltdEstimatorUnitsByTitleId: Map<number, number> = new Map();
         const isShorterWindow = win !== 'ltd';
         if (isShorterWindow) {
           const ltdAnchorRows = rawSqlite.prepare(`
-            SELECT title_id, actual_revenue_usd, data_source
+            SELECT title_id, actual_revenue_usd, actual_units, data_source
               FROM revenue_calibration_anchors
              WHERE platform = ? AND window = 'ltd'
                AND data_source LIKE 'manual_anchor_verified_%'
@@ -903,7 +904,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                     WHERE platform = ? AND window = 'ltd'
                     GROUP BY title_id
                )
-          `).all(platform, platform) as Array<{title_id:number; actual_revenue_usd:number; data_source:string}>;
+          `).all(platform, platform) as Array<{title_id:number; actual_revenue_usd:number; actual_units:number|null; data_source:string}>;
           for (const a of ltdAnchorRows) ltdAnchorMap.set(a.title_id, a);
         }
 
@@ -1102,31 +1103,71 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // adjust proportionally" behavior the user requested.
           const ltdAnchor = ltdAnchorMap.get(g.titleId);
           if (isShorterWindow && ltdAnchor) {
-            // Estimator LTD for this same title—read from window_estimates_daily.
-            // Cache-through: compute per-title on demand and memoize.
-            let estLtdRev = ltdEstimatorRevByTitleId.get(g.titleId);
-            if (estLtdRev === undefined) {
-              const ltdRow = rawSqlite.prepare(`
-                SELECT COALESCE(SUM(units_mid), 0) AS units
-                  FROM window_estimates_daily
-                 WHERE title_id = ? AND platform = ? AND window = 'ltd'
-                   AND as_of_date = (
-                     SELECT MAX(as_of_date) FROM window_estimates_daily
-                      WHERE title_id = ? AND platform = ? AND window = 'ltd'
-                   )
-              `).get(g.titleId, platform, g.titleId, platform) as { units: number } | undefined;
-              const units = ltdRow?.units ?? 0;
-              const msrp = (g.msrpUsdCents ?? 0) / 100;
-              estLtdRev = units * msrp * aspFactor;
-              ltdEstimatorRevByTitleId.set(g.titleId, estLtdRev);
+            // Compute the scaling ratio. Prefer units-based when the anchor
+            // carries actual_units — that ratio is independent of the LTD
+            // realized ASP, so an operator can inflate LTD revenue to reflect
+            // historical pricing (e.g. GTA V originally $59.99 later $29.99)
+            // without inflating d7/d30/d90 revenue, which should stay at
+            // current-price economics.
+            //
+            // Fallback: revenue-based ratio (legacy behavior) when the anchor
+            // has no actual_units. Preserves back-compat for older anchors.
+            let ratio: number | null = null;
+            let ratioBasis: 'units' | 'revenue' = 'revenue';
+
+            if (typeof ltdAnchor.actual_units === 'number' && ltdAnchor.actual_units > 0) {
+              let estLtdUnits = ltdEstimatorUnitsByTitleId.get(g.titleId);
+              if (estLtdUnits === undefined) {
+                const ltdRow = rawSqlite.prepare(`
+                  SELECT COALESCE(SUM(units_mid), 0) AS units
+                    FROM window_estimates_daily
+                   WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                     AND as_of_date = (
+                       SELECT MAX(as_of_date) FROM window_estimates_daily
+                        WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                     )
+                `).get(g.titleId, platform, g.titleId, platform) as { units: number } | undefined;
+                estLtdUnits = ltdRow?.units ?? 0;
+                ltdEstimatorUnitsByTitleId.set(g.titleId, estLtdUnits);
+              }
+              if (estLtdUnits > 0) {
+                ratio = ltdAnchor.actual_units / estLtdUnits;
+                ratioBasis = 'units';
+              }
             }
-            if (estLtdRev > 0) {
-              const ratio = ltdAnchor.actual_revenue_usd / estLtdRev;
+
+            if (ratio === null) {
+              // Legacy revenue-based scaling for anchors without actual_units.
+              let estLtdRev = ltdEstimatorRevByTitleId.get(g.titleId);
+              if (estLtdRev === undefined) {
+                const ltdRow = rawSqlite.prepare(`
+                  SELECT COALESCE(SUM(units_mid), 0) AS units
+                    FROM window_estimates_daily
+                   WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                     AND as_of_date = (
+                       SELECT MAX(as_of_date) FROM window_estimates_daily
+                        WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                     )
+                `).get(g.titleId, platform, g.titleId, platform) as { units: number } | undefined;
+                const units = ltdRow?.units ?? 0;
+                const msrp = (g.msrpUsdCents ?? 0) / 100;
+                estLtdRev = units * msrp * aspFactor;
+                ltdEstimatorRevByTitleId.set(g.titleId, estLtdRev);
+              }
+              if (estLtdRev > 0) {
+                ratio = ltdAnchor.actual_revenue_usd / estLtdRev;
+                ratioBasis = 'revenue';
+              }
+            }
+
+            if (ratio !== null) {
               g.revenueMidUsdEstimated = g.revenueMidUsd;
               g.revenueMidUsd = g.revenueMidUsd * ratio;
               g.unitsMid = Math.round(g.unitsMid * ratio);
               g.ownersMid = Math.round((g.ownersMid ?? g.unitsMid) * ratio);
-              g.dataSource = 'scaled_to_verified_ltd_anchor';
+              g.dataSource = ratioBasis === 'units'
+                ? 'scaled_to_verified_ltd_anchor_units'
+                : 'scaled_to_verified_ltd_anchor';
               g.anchorAsOfDate = null;
               continue;
             }
