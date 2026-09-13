@@ -143,12 +143,33 @@ def _ingest_job() -> None:
     """
     APScheduler entry-point for the daily run.
     Imports are deferred to avoid circular-import issues at module load time.
+
+    2026-09-13 cron hardening: wraps run_ingestion() in
+    services.cron_alerts.run_with_retry. A transient failure (e.g. a
+    Reddit rate-limit spike or a Bluesky auth blip in the middle of the
+    run) triggers up to 3 retries at 5-, 15-, and 60-minute backoff
+    (4 attempts total). On final failure the module emits a Resend
+    alert to CRON_ALERT_TO. The APScheduler misfire_grace_time is 12h,
+    so the up-to-80-minute retry envelope stays well inside the grace
+    window.
     """
     # Deferred import — scheduler.py is imported by main.py before services
     from services.ingestor import run_ingestion, set_next_run  # noqa: PLC0415
+    from services.cron_alerts import run_with_retry  # noqa: PLC0415
 
     logger.info("Scheduled daily ingestion starting.")
-    run_ingestion()
+
+    def _do(attempt: int) -> None:
+        logger.info("daily_ingestion attempt %d", attempt)
+        run_ingestion()
+
+    try:
+        run_with_retry(job_name="daily_ingestion", job=_do, max_attempts=4)
+    except Exception:
+        # run_with_retry has already logged the exception and sent the
+        # alert email. Swallow here so APScheduler's own error path
+        # does NOT ALSO log/notify (we already told the operator).
+        logger.error("daily_ingestion final failure after retries", exc_info=True)
 
     # Sync the next_run_at field in the ingestor status dict
     next_iso = get_next_run_time()

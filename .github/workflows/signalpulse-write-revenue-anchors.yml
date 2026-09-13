@@ -10,12 +10,29 @@ name: SignalPulse — Write revenue calibration anchors
 # median implied ASP. See scripts/write-revenue-anchors.ts for details.
 #
 # Idempotent per as_of_date: safe to re-run.
+#
+# 2026-09-13 cron hardening:
+#   * Adds a daily schedule at 11:15 UTC (~30 min after the SentimentPulse
+#     ingest cron fires; 6:15 ET / 7:15 EDT). Scheduled fires run LIVE
+#     (DRY_RUN=false) so anchors stay fresh. Manual dispatches keep their
+#     dry_run default of "true" so an operator can still preview.
+#   * Retries the anchor writer up to 4 times (1 initial + 3 retries) with
+#     5/15/60 min backoff on transient failures (network, SSH, timeout,
+#     script exit != 0). Because the script is idempotent per AS_OF_DATE,
+#     retries are safe.
+#   * On final failure, sends a Resend email to CRON_ALERT_TO (default:
+#     sallisonhome@yahoo.com) via `python -m services.cron_alerts alert`.
 
 on:
+  schedule:
+    # 11:15 UTC daily (6:15 ET winter / 7:15 ET summer). Sits ~30 min after
+    # the 10:45 UTC SentimentPulse ingest, which is the upstream data source
+    # for the anchor writer.
+    - cron: '15 11 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Dry run"
+        description: "Dry run (manual dispatch only)"
         required: false
         default: "true"
         type: choice
@@ -32,7 +49,9 @@ concurrency:
 jobs:
   write:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # 4 attempts × up to 5 min each = 20 min; plus 5+15+60 min backoff =
+    # ~100 min total. Round up to 110.
+    timeout-minutes: 110
     steps:
       - name: Configure SSH
         run: |
@@ -41,29 +60,92 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Run write-revenue-anchors
+      - name: Run write-revenue-anchors (with retries)
+        id: run
         env:
-          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+          # Scheduled fires always go live. Manual dispatch honors the input,
+          # which defaults to "true" (dry run). Runners with an empty
+          # inputs.dry_run (scheduled) fall through to "false".
+          DRY_RUN: ${{ github.event.inputs.dry_run || (github.event_name == 'schedule' && 'false' || 'true') }}
           AS_OF_DATE: ${{ github.event.inputs.as_of_date || '' }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-              root@104.236.239.46 \
-              DRY_RUN="$DRY_RUN" \
-              AS_OF_DATE="$AS_OF_DATE" \
-              bash -s <<'REMOTE'
+          set +e
+          BACKOFF=(300 900 3600)  # 5m, 15m, 60m — seconds between attempts 1→2, 2→3, 3→4
+          MAX_ATTEMPTS=4
+          LOG=/tmp/anchors.log
+          : > "$LOG"
+
+          run_once() {
+            local attempt="$1"
+            echo "════════════════════════════════════════════════════════" | tee -a "$LOG"
+            echo "  attempt ${attempt}/${MAX_ATTEMPTS} at $(date -u +%FT%TZ)"  | tee -a "$LOG"
+            echo "  DRY_RUN=${DRY_RUN} AS_OF_DATE=${AS_OF_DATE:-today}"        | tee -a "$LOG"
+            echo "════════════════════════════════════════════════════════" | tee -a "$LOG"
+
+            # Interpolate DRY_RUN / AS_OF_DATE INTO the remote script at the
+            # runner side (double-quoted heredoc). Also strip the leading
+            # 12 spaces so we don't ship indented heredoc bodies over SSH.
+            ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+                root@104.236.239.46 bash -s 2>&1 <<REMOTE | tee -a "$LOG"
           set -euo pipefail
           DRY_RUN="${DRY_RUN:-true}"
-          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
-          cd "$WD"
+          AS_OF_DATE="${AS_OF_DATE:-}"
+          WD=\$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "\$WD"
           if [ -f /etc/signalpulse/env ]; then set -a; . /etc/signalpulse/env; set +a; fi
-          export NODE_ENV="${NODE_ENV:-production}"
-          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
-          if [ -n "${AS_OF_DATE:-}" ]; then export AS_OF_DATE; fi
-          [ -f "$WD/scripts/write-revenue-anchors.ts" ] || {
+          export NODE_ENV="\${NODE_ENV:-production}"
+          if [ "\$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+          if [ -n "\${AS_OF_DATE:-}" ]; then export AS_OF_DATE="\$AS_OF_DATE"; fi
+          [ -f "\$WD/scripts/write-revenue-anchors.ts" ] || {
             echo "ERR: scripts/write-revenue-anchors.ts missing on droplet — deploy first"; exit 1;
           }
-          echo "════════════════════════════════════════════════════════"
-          echo "  write-revenue-anchors.ts DRY_RUN=${DRY_RUN:-unset} AS_OF_DATE=${AS_OF_DATE:-today}"
-          echo "════════════════════════════════════════════════════════"
+          echo "---- write-revenue-anchors.ts DRY_RUN=\${DRY_RUN:-unset} AS_OF_DATE=\${AS_OF_DATE:-today} ----"
           timeout 300 ./node_modules/.bin/tsx scripts/write-revenue-anchors.ts
           REMOTE
+            return "${PIPESTATUS[0]}"
+          }
+
+          rc=1
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            run_once "$attempt"
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo ">>> attempt $attempt succeeded" | tee -a "$LOG"
+              exit 0
+            fi
+            echo ">>> attempt $attempt failed (rc=$rc)" | tee -a "$LOG"
+            if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+              sleep_s=${BACKOFF[$((attempt - 1))]}
+              echo ">>> sleeping ${sleep_s}s before next attempt" | tee -a "$LOG"
+              sleep "$sleep_s"
+            fi
+          done
+          echo "=== write-revenue-anchors FAILED after ${MAX_ATTEMPTS} attempts (rc=$rc) ===" | tee -a "$LOG"
+          exit "$rc"
+
+      - name: Send failure alert email
+        if: failure()
+        run: |
+          # /tmp/anchors.log was written inside the previous step by tee.
+          tail -c 32768 /tmp/anchors.log > /tmp/anchors.tail.log || true
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            /tmp/anchors.tail.log root@104.236.239.46:/tmp/anchors.tail.log
+
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          # cron_alerts.py lives in the SentimentPulse backend tree (both apps
+          # ship the same code from this monorepo). Use the SP backend venv so
+          # we don't rely on system python3 having anything installed.
+          cd /opt/sentimentpulse/backend
+          if [ -f /etc/sentimentpulse/env ]; then set -a; . /etc/sentimentpulse/env; set +a; fi
+          PY=./venv/bin/python
+          [ -x "$PY" ] || PY=python3
+          "$PY" -m services.cron_alerts alert \
+            --job "signalpulse-write-revenue-anchors" \
+            --attempts 4 \
+            --error "write-revenue-anchors FAILED after 4 attempts (see attached log)" \
+            --extra-file /tmp/anchors.tail.log || true
+          REMOTE
+
+          exit 1

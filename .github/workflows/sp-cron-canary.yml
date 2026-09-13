@@ -6,9 +6,18 @@ name: SP Daily Cron Canary
 # fails LOUDLY if either (a) zero posts today, or (b) any single source has
 # zero writes across the whole portfolio (silent-source regression).
 #
-# Failure alerts show up as red X on the workflow run history. Steve can
-# subscribe to workflow-failure emails or check https://github.com/sallisonhome/sentimentpulse/actions
-# to catch drift before it accumulates.
+# 2026-09-13 cron hardening:
+#   * Retry the canary check itself up to 4x (1 initial + 3 retries) on
+#     transient failures (network, API 5xx, canary-condition red) with
+#     5‑15‑60 min backoff between attempts. Inline Python so we don't lose
+#     intermediate context between attempts.
+#   * On final failure, POST a Resend email to CRON_ALERT_TO (default:
+#     sallisonhome@yahoo.com) using RESEND_API_KEY from the droplet env,
+#     driven via `python -m services.cron_alerts alert` on the droplet.
+#     Never mask the red exit — alert send is best-effort.
+#
+# Failure alerts also still show up as red X on the workflow run history for
+# a second layer of visibility.
 
 on:
   schedule:
@@ -16,95 +25,165 @@ on:
     - cron: '45 13 * * *'
   workflow_dispatch:
 
+concurrency:
+  # Only one canary at a time — back-to-back retries or a manual dispatch
+  # while an earlier fire is still retrying would double-count activity.
+  group: sp-cron-canary
+  cancel-in-progress: false
+
 jobs:
   canary:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 4 attempts × up to 2 min each ≈ 8 min plus 5+15+60 min backoff ≈ 88
+    # min. Round up to 100 to allow for slow API responses.
+    timeout-minutes: 100
     steps:
-      - name: Query today's ingest activity
+      - name: Query today's ingest activity (with retries)
+        id: canary
         run: |
-          python3 <<'PY'
-          import urllib.request, urllib.parse, json, sys
+          python3 <<'PY' 2>&1 | tee /tmp/canary.log
+          import urllib.request, urllib.parse, json, sys, time
           from datetime import datetime, timezone
           from collections import Counter
 
-          today = datetime.now(timezone.utc).date().isoformat()
-          print(f"Canary date (UTC): {today}")
-          print(f"Now (UTC): {datetime.now(timezone.utc).isoformat()}")
+          # 2026-09-13 hardening: wrap the probe in a 4-attempt retry
+          # with 5m / 15m / 60m backoff between attempts (matches the
+          # standard cron-hardening budget used in cron_alerts.py).
+          BACKOFF = [5 * 60, 15 * 60, 60 * 60]  # sleeps between attempts 1→2, 2→3, 3→4
+          MAX_ATTEMPTS = 4
 
-          # 1. Ingest status should show today's last_run_at and status=success
-          with urllib.request.urlopen("http://104.236.239.46/api/ingest/status", timeout=15) as r:
-              status = json.loads(r.read())
-          print(f"\n--- Ingest status ---")
-          print(f"  last_run_at: {status.get('last_run_at')}")
-          print(f"  last_run_status: {status.get('last_run_status')}")
-          print(f"  games_processed: {status.get('games_processed')}")
-          print(f"  posts_collected: {status.get('posts_collected')}")
+          def _attempt() -> None:
+              today = datetime.now(timezone.utc).date().isoformat()
+              print(f"Canary date (UTC): {today}")
+              print(f"Now (UTC): {datetime.now(timezone.utc).isoformat()}")
 
-          failed = False
+              # 1. Ingest status should show today's last_run_at and status=success
+              with urllib.request.urlopen("http://104.236.239.46/api/ingest/status", timeout=15) as r:
+                  status = json.loads(r.read())
+              print(f"\n--- Ingest status ---")
+              print(f"  last_run_at: {status.get('last_run_at')}")
+              print(f"  last_run_status: {status.get('last_run_status')}")
+              print(f"  games_processed: {status.get('games_processed')}")
+              print(f"  posts_collected: {status.get('posts_collected')}")
 
-          # Check 1: last_run_at should be today
-          lra = status.get("last_run_at") or ""
-          if not lra.startswith(today):
-              print(f"\nFAIL: last_run_at is not today ({lra})")
-              failed = True
+              failed = False
 
-          # Check 2: last_run_status should be success or partial (not error / never)
-          lrs = status.get("last_run_status") or ""
-          if lrs not in ("success", "partial"):
-              print(f"\nFAIL: last_run_status is '{lrs}' (expected 'success' or 'partial')")
-              failed = True
-
-          # Check 3: games_processed should be >= 30 (portfolio has 34 active games)
-          gp = status.get("games_processed") or 0
-          if gp < 30:
-              print(f"\nFAIL: games_processed={gp} (expected >=30)")
-              failed = True
-
-          # 2. Portfolio-wide post count across all 5 sources for today
-          with urllib.request.urlopen("http://104.236.239.46/api/games?is_active=true&page_size=200", timeout=15) as r:
-              d = json.loads(r.read())
-          games = d.get("items", d) if isinstance(d, dict) else d
-
-          by_src = Counter()
-          for g in games:
-              gid = g["id"]
-              for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
-                  u = f"http://104.236.239.46/api/games/{gid}/posts?" + urllib.parse.urlencode(
-                      {"source": src, "days": 1, "page_size": 200}
-                  )
-                  try:
-                      with urllib.request.urlopen(u, timeout=10) as r:
-                          dd = json.loads(r.read())
-                      for p in dd.get("items", []):
-                          ca = p.get("collected_at") or ""
-                          if ca.startswith(today):
-                              by_src[src] += 1
-                  except Exception as exc:
-                      print(f"  WARN: fetch {name} {src} failed: {exc}")
-
-          print(f"\n--- Portfolio Aug {today} writes by source ---")
-          for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
-              cnt = by_src.get(src, 0)
-              print(f"  {src}: {cnt:,}")
-          total = sum(by_src.values())
-          print(f"  TOTAL: {total:,}")
-
-          # Check 4: at least 500 total posts
-          if total < 500:
-              print(f"\nFAIL: total portfolio writes today ({total}) < 500 threshold")
-              failed = True
-
-          # Check 5: each of the 5 sources should have at least SOME writes.
-          # A source at 0 signals a silent-failure regression (e.g. Reddit API
-          # blocked, Bluesky auth expired, Steam Forum scraper broken).
-          for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
-              if by_src.get(src, 0) == 0:
-                  print(f"\nFAIL: source '{src}' has ZERO writes today (silent-failure regression)")
+              # Check 1: last_run_at should be today
+              lra = status.get("last_run_at") or ""
+              if not lra.startswith(today):
+                  print(f"\nFAIL: last_run_at is not today ({lra})")
                   failed = True
 
-          if failed:
-              print("\n=== CANARY FAILED ===")
+              # Check 2: last_run_status should be success or partial (not error / never)
+              lrs = status.get("last_run_status") or ""
+              if lrs not in ("success", "partial"):
+                  print(f"\nFAIL: last_run_status is '{lrs}' (expected 'success' or 'partial')")
+                  failed = True
+
+              # Check 3: games_processed should be >= 30 (portfolio has 34 active games)
+              gp = status.get("games_processed") or 0
+              if gp < 30:
+                  print(f"\nFAIL: games_processed={gp} (expected >=30)")
+                  failed = True
+
+              # 2. Portfolio-wide post count across all 5 sources for today
+              with urllib.request.urlopen("http://104.236.239.46/api/games?is_active=true&page_size=200", timeout=15) as r:
+                  d = json.loads(r.read())
+              games = d.get("items", d) if isinstance(d, dict) else d
+
+              by_src = Counter()
+              for g in games:
+                  gid = g["id"]
+                  for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
+                      u = f"http://104.236.239.46/api/games/{gid}/posts?" + urllib.parse.urlencode(
+                          {"source": src, "days": 1, "page_size": 200}
+                      )
+                      try:
+                          with urllib.request.urlopen(u, timeout=10) as r:
+                              dd = json.loads(r.read())
+                          for p in dd.get("items", []):
+                              ca = p.get("collected_at") or ""
+                              if ca.startswith(today):
+                                  by_src[src] += 1
+                      except Exception as exc:
+                          # NB: original file had `{name}` here (NameError). Fixed.
+                          gname = g.get("name") if isinstance(g, dict) else "?"
+                          print(f"  WARN: fetch {gname} {src} failed: {exc}")
+
+              print(f"\n--- Portfolio {today} writes by source ---")
+              for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
+                  cnt = by_src.get(src, 0)
+                  print(f"  {src}: {cnt:,}")
+              total = sum(by_src.values())
+              print(f"  TOTAL: {total:,}")
+
+              # Check 4: at least 500 total posts
+              if total < 500:
+                  print(f"\nFAIL: total portfolio writes today ({total}) < 500 threshold")
+                  failed = True
+
+              # Check 5: each of the 5 sources should have at least SOME writes.
+              # A source at 0 signals a silent-failure regression (e.g. Reddit API
+              # blocked, Bluesky auth expired, Steam Forum scraper broken).
+              for src in ("reddit", "reddit_comment", "bluesky", "steam_forum", "steam_review"):
+                  if by_src.get(src, 0) == 0:
+                      print(f"\nFAIL: source '{src}' has ZERO writes today (silent-failure regression)")
+                      failed = True
+
+              if failed:
+                  raise RuntimeError("canary checks failed — see log above for details")
+              print("\n=== CANARY PASSED ===")
+
+          last_exc = None
+          for attempt in range(1, MAX_ATTEMPTS + 1):
+              print(f"\n>>> canary attempt {attempt}/{MAX_ATTEMPTS} at {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}")
+              try:
+                  _attempt()
+                  last_exc = None
+                  break
+              except Exception as exc:
+                  last_exc = exc
+                  print(f">>> attempt {attempt} failed: {exc!r}")
+                  if attempt < MAX_ATTEMPTS:
+                      sleep_s = BACKOFF[attempt - 1]
+                      print(f">>> sleeping {sleep_s}s before retry")
+                      time.sleep(sleep_s)
+          if last_exc is not None:
+              print(f"\n=== CANARY FAILED after {MAX_ATTEMPTS} attempts: {last_exc} ===")
               sys.exit(1)
-          print("\n=== CANARY PASSED ===")
           PY
+
+      - name: Send failure alert email
+        if: failure()
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Ship the last 32KB of the canary log so the alert email includes
+          # what actually broke. tee wrote it to /tmp/canary.log on the runner.
+          tail -c 32768 /tmp/canary.log > /tmp/canary.tail.log || true
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            /tmp/canary.tail.log root@104.236.239.46:/tmp/canary.tail.log
+
+          # Reuse the shared alert path from backend/services/cron_alerts.py
+          # by shelling into the droplet at the SentimentPulse backend WD.
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          # SentimentPulse backend layout is /opt/sentimentpulse/backend with a
+          # venv at ./venv (see sp-debug-import.yml for precedent).
+          cd /opt/sentimentpulse/backend
+          if [ -f /etc/sentimentpulse/env ]; then set -a; . /etc/sentimentpulse/env; set +a; fi
+          PY=./venv/bin/python
+          [ -x "$PY" ] || PY=python3
+          "$PY" -m services.cron_alerts alert \
+            --job "sp-cron-canary" \
+            --attempts 4 \
+            --error "canary FAILED after 4 attempts (see attached log)" \
+            --extra-file /tmp/canary.tail.log || true
+          REMOTE
+
+          # Preserve the red status — alert is best-effort.
+          exit 1
