@@ -1147,8 +1147,23 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                 ltdEstimatorUnitsByTitleId.set(g.titleId, estLtdUnits);
               }
               if (estLtdUnits > 0) {
-                ratio = ltdAnchor.actual_units / estLtdUnits;
-                ratioBasis = 'units';
+                const rawRatio = ltdAnchor.actual_units / estLtdUnits;
+                // Guard against broken-estimator pathology: if the LTD
+                // estimator reports fewer units than the anchor, the shorter
+                // windows are almost certainly untrustworthy too, and scaling
+                // by (anchor / est_ltd) can produce absurd revenues (e.g.
+                // MK1 Steam: est_ltd=43k, anchor=600k -> 13.7x lift on
+                // already-wrong d7=87k -> \$71M/week nonsense). In that
+                // case, leave the shorter window at its raw estimator value
+                // rather than amplifying an untrustworthy signal.
+                if (rawRatio <= 1.0) {
+                  ratio = rawRatio;
+                  ratioBasis = 'units';
+                } else {
+                  // Estimator LTD < anchor — broken. Skip the LTD-anchor
+                  // shorter-window overlay; let raw estimator flow through
+                  // (or Path B derivation for non-Steam) instead.
+                }
               }
             }
 
