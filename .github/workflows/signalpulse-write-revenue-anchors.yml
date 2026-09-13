@@ -138,8 +138,10 @@ jobs:
           # ship the same code from this monorepo). Use the SP backend venv so
           # we don't rely on system python3 having anything installed.
           cd /opt/sentimentpulse/backend
-          if [ -f /etc/sentimentpulse/env ]; then set -a; . /etc/sentimentpulse/env; set +a; fi
-          PY=./venv/bin/python
+          # Env file lives at /opt/sentimentpulse/.env (per deploy.yml) so
+          # RESEND_API_KEY is available. venv is at ./.venv (dot-prefixed).
+          if [ -f /opt/sentimentpulse/.env ]; then set -a; . /opt/sentimentpulse/.env; set +a; fi
+          PY=./.venv/bin/python
           [ -x "$PY" ] || PY=python3
           "$PY" -m services.cron_alerts alert \
             --job "signalpulse-write-revenue-anchors" \

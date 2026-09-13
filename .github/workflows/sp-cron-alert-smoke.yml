@@ -30,8 +30,10 @@ jobs:
             root@104.236.239.46 bash -s <<'REMOTE'
           set -euo pipefail
           cd /opt/sentimentpulse/backend
-          if [ -f /etc/sentimentpulse/env ]; then set -a; . /etc/sentimentpulse/env; set +a; fi
-          PY=./venv/bin/python
+          # Env file is /opt/sentimentpulse/.env (see deploy.yml). Venv is
+          # /opt/sentimentpulse/backend/.venv (see deploy.yml line 143).
+          if [ -f /opt/sentimentpulse/.env ]; then set -a; . /opt/sentimentpulse/.env; set +a; fi
+          PY=./.venv/bin/python
           [ -x "$PY" ] || PY=python3
           echo "Testing cron_alerts CLI with PY=$PY"
           echo "RESEND_API_KEY present: $([ -n "${RESEND_API_KEY:-}" ] && echo YES || echo NO)"

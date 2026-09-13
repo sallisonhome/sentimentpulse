@@ -172,11 +172,13 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             root@104.236.239.46 bash -s <<'REMOTE'
           set -euo pipefail
-          # SentimentPulse backend layout is /opt/sentimentpulse/backend with a
-          # venv at ./venv (see sp-debug-import.yml for precedent).
+          # SentimentPulse backend layout: /opt/sentimentpulse/backend with a
+          # venv at ./.venv (see deploy.yml `cd backend; source .venv/bin/activate`).
           cd /opt/sentimentpulse/backend
-          if [ -f /etc/sentimentpulse/env ]; then set -a; . /etc/sentimentpulse/env; set +a; fi
-          PY=./venv/bin/python
+          # Env file lives at /opt/sentimentpulse/.env (see deploy.yml) — not
+          # /etc/sentimentpulse/env. Source it so RESEND_API_KEY etc. are set.
+          if [ -f /opt/sentimentpulse/.env ]; then set -a; . /opt/sentimentpulse/.env; set +a; fi
+          PY=./.venv/bin/python
           [ -x "$PY" ] || PY=python3
           "$PY" -m services.cron_alerts alert \
             --job "sp-cron-canary" \

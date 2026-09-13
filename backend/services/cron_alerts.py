@@ -257,7 +257,7 @@ def _render_html(
   {tb_block}
   <p style='color:#6b7280;margin-top:18px;font-size:12px'>
     Sent by services/cron_alerts.py. To reroute this email, set
-    <code>CRON_ALERT_TO</code> in /etc/sentimentpulse/env.
+    <code>CRON_ALERT_TO</code> in /opt/sentimentpulse/.env.
   </p>
 </div>"""
 
