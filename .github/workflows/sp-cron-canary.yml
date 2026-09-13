@@ -175,11 +175,10 @@ jobs:
           # SentimentPulse backend layout: /opt/sentimentpulse/backend with a
           # venv at ./.venv (see deploy.yml `cd backend; source .venv/bin/activate`).
           cd /opt/sentimentpulse/backend
-          # Env file lives at /opt/sentimentpulse/.env (see deploy.yml) — not
-          # /etc/sentimentpulse/env. Source it so RESEND_API_KEY etc. are set.
-          if [ -f /opt/sentimentpulse/.env ]; then set -a; . /opt/sentimentpulse/.env; set +a; fi
+          # cron_alerts.py loads /opt/sentimentpulse/.env itself via
+          # python-dotenv at module import time. Just run under the venv.
           PY=./.venv/bin/python
-          [ -x "$PY" ] || PY=python3
+          [ -x "$PY" ] || { echo "ERR: .venv missing at $(pwd)/.venv"; exit 1; }
           "$PY" -m services.cron_alerts alert \
             --job "sp-cron-canary" \
             --attempts 4 \

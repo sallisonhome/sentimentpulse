@@ -41,6 +41,26 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# Load .env before reading module-level env vars. When invoked from the
+# in-process scheduler this is a no-op (backend/config.py already ran
+# load_dotenv). When invoked as `python -m services.cron_alerts` from a
+# GH Actions workflow, importing backend.config would create a bunch of
+# unwanted side effects (DB connect, pydantic Settings init, etc.), so
+# do the minimal dotenv load directly.
+try:
+    from dotenv import load_dotenv as _load_dotenv  # noqa: PLC0415
+    _this_dir = os.path.dirname(os.path.abspath(__file__))            # backend/services
+    _backend_dir = os.path.dirname(_this_dir)                          # backend
+    _project_root = os.path.dirname(_backend_dir)                      # /opt/sentimentpulse
+    for _p in (os.path.join(_project_root, ".env"), os.path.join(_backend_dir, ".env")):
+        if os.path.exists(_p):
+            _load_dotenv(_p, override=False)  # don't clobber real env vars set upstream
+            break
+except Exception:  # noqa: BLE001
+    # python-dotenv missing (should never happen in the SP venv) — fall
+    # back to reading whatever the process env already has.
+    pass
+
 # Backoff schedule in seconds. Deliberately long tail — the crons are
 # daily jobs, so an extra hour of wall-clock delay to survive a flaky
 # upstream is preferable to a false-red run.

@@ -32,14 +32,13 @@ jobs:
             root@104.236.239.46 bash -s <<'REMOTE'
           set -euo pipefail
           cd /opt/sentimentpulse/backend
-          # Env file is /opt/sentimentpulse/.env (see deploy.yml). Venv is
-          # /opt/sentimentpulse/backend/.venv (see deploy.yml line 143).
-          if [ -f /opt/sentimentpulse/.env ]; then set -a; . /opt/sentimentpulse/.env; set +a; fi
+          # cron_alerts.py loads /opt/sentimentpulse/.env itself via
+          # python-dotenv at module import time (2026-09-13 update). So
+          # we just need to run it under the SentimentPulse venv (which
+          # has python-dotenv installed) and not fight bash env parsing.
           PY=./.venv/bin/python
-          [ -x "$PY" ] || PY=python3
+          [ -x "$PY" ] || { echo "ERR: .venv missing at $(pwd)/.venv"; exit 1; }
           echo "Testing cron_alerts CLI with PY=$PY"
-          echo "RESEND_API_KEY present: $([ -n "${RESEND_API_KEY:-}" ] && echo YES || echo NO)"
-          echo "CRON_ALERT_TO: ${CRON_ALERT_TO:-<default: sallisonhome@yahoo.com>}"
           cat > /tmp/smoke-extra.log <<'LOG'
           SMOKE TEST — this is a synthetic failure payload
           used to verify the alert delivery path.
