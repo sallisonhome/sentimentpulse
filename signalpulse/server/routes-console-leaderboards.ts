@@ -102,20 +102,23 @@ export function editionGroupKey(name: string | null | undefined): string {
   // different editionGroupKey than its Steam/PS5 twins and drops out of the
   // multiplatform join. Run in a small loop so nested parens like
   //   "Foo (Deluxe) (Xbox Series X|S)" collapse in one pass.
+  // Longest / most-specific first — the strip loop breaks on the first hit,
+  // so a shorter tag ('xbox series x') must never be tried before a longer
+  // superset ('xbox one & xbox series x|s'). Also: never write a literal
+  // backslash here — the regex builder handles pipe-escaping.
   const PAREN_PLATFORM_TAGS = [
-    "xbox series x|s",
-    "xbox series x/s",
-    "xbox series x\\|s",
-    "xbox series x",
-    "xbox one",
     "xbox one & xbox series x|s",
     "xbox one and xbox series x|s",
-    "ps5",
-    "ps4",
     "ps4 & ps5",
     "ps4 and ps5",
     "playstation 5",
     "playstation 4",
+    "xbox series x|s",
+    "xbox series x/s",
+    "xbox series x",
+    "xbox one",
+    "ps5",
+    "ps4",
     "pc",
     "windows",
     "steam",
