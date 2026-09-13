@@ -47,7 +47,8 @@
  *     Admin-only re-cache of IGDB metadata for one title.
  */
 
-import type { Express } from "express";
+import type { Express, Request } from "express";
+import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 
@@ -243,7 +244,38 @@ function ipOverrideFactorFor(displayName: string | null | undefined, plat: Platf
 // threshold in the per-platform overlay.
 const STEAM_MEANINGFUL_REVENUE_FLOOR_USD = 1000;
 
+// Public rate limiter (2026-09-13). Attached only to the four routes that
+// saber-auth's PUBLIC_READ_PATHS / PUBLIC_READ_PREFIXES exempt from JWT
+// enforcement, so unauthenticated public traffic can't saturate the shared
+// node process. 120 req/min/IP tracks the kickoff-doc budget and gives hmap
+// generous headroom (its own /api/buying pass-through caches for 5 min, so
+// per-visitor traffic to SignalPulse is well below this). Authenticated
+// operator traffic through the SPA never hits these paths as public reads,
+// so it's unaffected. Standard headers on so hmap's pass-through can surface
+// RateLimit-* headers to the client if we ever want to.
+const publicLeaderboardLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 120,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  // Rate-limit only unauthenticated public reads. An authenticated operator
+  // (req.saberUser set by saber-auth middleware upstream) is exempt so the
+  // SPA's own dashboards never hit the limiter. saber-auth runs before this
+  // limiter, so req.saberUser is populated by the time we're called.
+  skip: (req) => Boolean((req as Request & { saberUser?: unknown }).saberUser),
+  message: { error: "rate_limited", detail: "Too many requests, please try again shortly." },
+});
+
 export function registerConsoleLeaderboardRoutes(app: Express) {
+  // Attach the public limiter to the exact paths saber-auth exposes
+  // unauthenticated. GET-only — the mount uses app.get so it does not
+  // affect any future POST/PUT to these paths (which would 404 anyway,
+  // but stay behind JWT if ever added).
+  app.get("/api/console/leaderboards/steam", publicLeaderboardLimiter);
+  app.get("/api/console/leaderboards/ps5", publicLeaderboardLimiter);
+  app.get("/api/console/leaderboards/xbox", publicLeaderboardLimiter);
+  app.get("/api/console/leaderboards-multiplatform", publicLeaderboardLimiter);
+
 
   // ─── Leaderboard list ─────────────────────────────────────────────────────
   app.get("/api/console/leaderboards/:platform", (req, res) => {

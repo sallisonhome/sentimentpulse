@@ -141,12 +141,66 @@ const EXEMPT_PREFIXES = [
                     // no PII.
 ];
 
+// ─── Public read-only exemption (2026-09-13) ────────────────────────────────
+// A separate trust boundary from EXEMPT_PATHS_READ_ONLY_CROSS_APP: those are
+// loopback-only calls from sibling Saber Suite services over the droplet's
+// nginx. The paths below are exposed to the open internet so hmap
+// (howmanyareplaying.com, a public site) can render SignalPulse's console
+// sales leaderboards without a saber JWT.
+//
+// Trust posture required to add a path here:
+//   1. Response contains no PII and no partner-confidential rows.
+//   2. Read-only. Enforced by isExempt() gating on GET/HEAD/OPTIONS only —
+//      any POST/PUT/PATCH/DELETE to these paths still hits JWT enforcement.
+//   3. Rate-limited at the route file (see registerConsoleLeaderboardRoutes)
+//      so a public path can't be used to DoS the shared node process.
+//
+// Current members (all served from routes-console-leaderboards.ts):
+//   /api/console/leaderboards/steam|ps5|xbox  → per-platform top-100 by
+//     platform + window + sort + dir. Response is aggregate revenue/units
+//     estimates keyed on titleId + editionGroupKey; no per-user data.
+//   /api/console/leaderboards-multiplatform   → cross-platform aggregate,
+//     same shape, keyed on editionGroupKey.
+//
+// Explicitly NOT public: /api/console/leaderboards/:platform/calibration
+//   (exposes anchor counts + calibration event timestamps that are internal
+//    operator signal), and every /api/console/titles/... PDP route.
+const PUBLIC_READ_PATHS = new Set([
+  "/api/console/leaderboards-multiplatform",
+]);
+const PUBLIC_READ_PREFIXES = [
+  "/api/console/leaderboards/", // matches /steam, /ps5, /xbox.
+                                  // ALSO matches /:platform/calibration —
+                                  // filtered out below in isPublicRead().
+];
+// Deny-list for the prefix above: paths whose prefix qualifies but which
+// must stay authenticated. Keep this narrow — only entries that would
+// otherwise slip through the prefix match.
+const PUBLIC_READ_PATH_DENYLIST = new Set<string>([
+  // /calibration is per-platform, so match by suffix in isPublicRead().
+]);
+
+function isPublicRead(req: Request): boolean {
+  const method = (req.method || "").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") return false;
+  const path = req.path;
+  if (PUBLIC_READ_PATH_DENYLIST.has(path)) return false;
+  // Suffix-based denials for parameterized paths.
+  if (path.startsWith("/api/console/leaderboards/") && path.endsWith("/calibration")) return false;
+  if (PUBLIC_READ_PATHS.has(path)) return true;
+  for (const pfx of PUBLIC_READ_PREFIXES) {
+    if (path.startsWith(pfx)) return true;
+  }
+  return false;
+}
+
 function isExempt(req: Request): boolean {
   if (EXEMPT_PATHS.has(req.path)) return true;
   if (EXEMPT_PATHS_READ_ONLY_CROSS_APP.has(req.path)) return true;
   for (const pfx of EXEMPT_PREFIXES) {
     if (req.path.startsWith(pfx)) return true;
   }
+  if (isPublicRead(req)) return true;
   // Static assets, HMR, the SPA HTML shell — not our concern.
   if (!req.path.startsWith("/api/")) return true;
   return false;
