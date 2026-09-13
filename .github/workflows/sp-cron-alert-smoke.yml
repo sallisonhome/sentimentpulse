@@ -12,7 +12,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-droplet
+  # Own group — the smoke test is a one-shot alert email, safe to run
+  # concurrently with deploy/other droplet workflows.
+  group: sp-cron-alert-smoke
   cancel-in-progress: false
 
 jobs:
