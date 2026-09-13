@@ -824,7 +824,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // Path A on Steam AND for the LTD-preserved exception on
         // PS5/Xbox anchored titles).
         const anchorRows = rawSqlite.prepare(`
-          SELECT title_id, actual_revenue_usd, sale_state, as_of_date
+          SELECT title_id, actual_revenue_usd, sale_state, as_of_date, data_source
             FROM revenue_calibration_anchors
            WHERE platform = ? AND window = ?
              AND (title_id, as_of_date) IN (
@@ -833,9 +833,38 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                   WHERE platform = ? AND window = ?
                   GROUP BY title_id
              )
-        `).all(platform, win, platform, win) as Array<{title_id:number; actual_revenue_usd:number; sale_state:string; as_of_date:string}>;
-        const anchorMap = new Map<number, {actual_revenue_usd:number; sale_state:string; as_of_date:string}>();
+        `).all(platform, win, platform, win) as Array<{title_id:number; actual_revenue_usd:number; sale_state:string; as_of_date:string; data_source:string}>;
+        const anchorMap = new Map<number, {actual_revenue_usd:number; sale_state:string; as_of_date:string; data_source:string}>();
         for (const a of anchorRows) anchorMap.set(a.title_id, a);
+
+        // Also load the LTD anchor for THIS platform (any title_id) so that
+        // when a shorter-window row (d7/d30/d90) doesn't have its own
+        // anchor, we can scale it by the LTD anchor/estimator ratio. This
+        // is the "filters adjust appropriately" behavior: correcting an
+        // inflated LTD must proportionally shrink the shorter windows,
+        // otherwise (e.g.) a d90 revenue would exceed the anchored LTD.
+        //
+        // Only applies when the LTD anchor is verified (data_source starts
+        // with 'manual_anchor_verified_'), NOT for portal_fetch anchors —
+        // those already track actual per-window revenue in their own row.
+        let ltdAnchorMap: Map<number, {actual_revenue_usd:number; data_source:string}> = new Map();
+        let ltdEstimatorRevByTitleId: Map<number, number> = new Map();
+        const isShorterWindow = win !== 'ltd';
+        if (isShorterWindow) {
+          const ltdAnchorRows = rawSqlite.prepare(`
+            SELECT title_id, actual_revenue_usd, data_source
+              FROM revenue_calibration_anchors
+             WHERE platform = ? AND window = 'ltd'
+               AND data_source LIKE 'manual_anchor_verified_%'
+               AND (title_id, as_of_date) IN (
+                   SELECT title_id, MAX(as_of_date)
+                     FROM revenue_calibration_anchors
+                    WHERE platform = ? AND window = 'ltd'
+                    GROUP BY title_id
+               )
+          `).all(platform, platform) as Array<{title_id:number; actual_revenue_usd:number; data_source:string}>;
+          for (const a of ltdAnchorRows) ltdAnchorMap.set(a.title_id, a);
+        }
 
         let pathAOverlaid = 0;
         let pathBDerived = 0;
@@ -990,17 +1019,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // Path A precedence:
           //   * Steam platform: always wins. Steam anchors are the whole
           //     point of the calibration pipeline (portal_fetch actuals).
-          //   * PS5/Xbox platform: Path A NEVER wins today. Every PS5/Xbox
-          //     anchor currently in revenue_calibration_anchors was written
-          //     by the anchor writer FROM the estimator (there is no
-          //     verified-console-LTD source yet). Letting them win would
-          //     re-inflate exactly the Game-Pass/rating-driven distortions
-          //     the platform revenue ratio is meant to correct (Minecraft
-          //     Xbox LTD = \$1.5B is the canonical failure). When a real
-          //     verified-console-LTD source lands, gate this on that
-          //     source flag instead of the platform.
+          //   * PS5/Xbox platform: only anchors whose data_source starts
+          //     with 'manual_anchor_verified_' win. These are executive-
+          //     verified LTD figures written specifically to correct the
+          //     Game-Pass / rating-driven distortions the platform ratio
+          //     alone can't fix (Minecraft Xbox, Spider-Man family PS5).
+          //     Other PS5/Xbox anchor rows (auto-derived from the
+          //     estimator) are ignored on Path A — letting them win would
+          //     re-inflate the very distortions the Path B ratio is
+          //     meant to correct.
           const a = anchorMap.get(g.titleId);
-          const anchorWins = a && platform === "steam";
+          const isVerifiedAnchor = a && a.data_source && a.data_source.startsWith('manual_anchor_verified_');
+          const anchorWins = a && (platform === "steam" || isVerifiedAnchor);
           if (anchorWins && a) {
             g.revenueMidUsdEstimated = g.revenueMidUsd;
             g.revenueMidUsd = a.actual_revenue_usd;
@@ -1009,6 +1039,44 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             g.anchorAsOfDate = a.as_of_date;
             pathAOverlaid++;
             continue;
+          }
+
+          // Verified-LTD shorter-window scaling: when a title has a
+          // manual_anchor_verified_ltd row on this platform but no
+          // direct anchor for this shorter window, scale the estimator
+          // revenue by (anchor_ltd / estimator_ltd_for_same_title). This
+          // preserves the "anchor drives the ceiling and shorter windows
+          // adjust proportionally" behavior the user requested.
+          const ltdAnchor = ltdAnchorMap.get(g.titleId);
+          if (isShorterWindow && ltdAnchor) {
+            // Estimator LTD for this same title—read from window_estimates_daily.
+            // Cache-through: compute per-title on demand and memoize.
+            let estLtdRev = ltdEstimatorRevByTitleId.get(g.titleId);
+            if (estLtdRev === undefined) {
+              const ltdRow = rawSqlite.prepare(`
+                SELECT COALESCE(SUM(units_mid), 0) AS units
+                  FROM window_estimates_daily
+                 WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                   AND as_of_date = (
+                     SELECT MAX(as_of_date) FROM window_estimates_daily
+                      WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                   )
+              `).get(g.titleId, platform, g.titleId, platform) as { units: number } | undefined;
+              const units = ltdRow?.units ?? 0;
+              const msrp = (g.msrpUsdCents ?? 0) / 100;
+              estLtdRev = units * msrp * aspFactor;
+              ltdEstimatorRevByTitleId.set(g.titleId, estLtdRev);
+            }
+            if (estLtdRev > 0) {
+              const ratio = ltdAnchor.actual_revenue_usd / estLtdRev;
+              g.revenueMidUsdEstimated = g.revenueMidUsd;
+              g.revenueMidUsd = g.revenueMidUsd * ratio;
+              g.unitsMid = Math.round(g.unitsMid * ratio);
+              g.ownersMid = Math.round((g.ownersMid ?? g.unitsMid) * ratio);
+              g.dataSource = 'scaled_to_verified_ltd_anchor';
+              g.anchorAsOfDate = null;
+              continue;
+            }
           }
           // Path B: derive PS5/Xbox windowed revenue from Steam via ratio,
           // then back-compute units from that derived revenue so units and
