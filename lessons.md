@@ -4,6 +4,21 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-12 — Sony first-party IP override (PS5 90 / Steam 10 / Xbox 0)
+
+Extended the IP override registry with Sony first-party franchises whose PS5
+release sells vastly more than the eventual PC port and never ships on Xbox:
+Spider-Man (incl. Marvel's Spider-Man 2, Remastered, Miles Morales), God of
+War, The Last of Us, Horizon (Zero/Forbidden/Call of the Mountain), Gran
+Turismo, Uncharted, Ratchet & Clank. All use PS5 90 / Steam 10 / Xbox 0.
+Xbox factor 0 forces \$0 on any stray Xbox SKU (defensive; there shouldn't be
+any). PS5 = Steam × 9.0 so a Spider-Man 2-style title with Steam d30 est
+\$4.27M lands at PS5 \$38.4M — an order of magnitude bigger than the general
+0.7657 multiplier would allow, and much closer to a Sony flagship's real
+mix. This is the second immutable IP class, alongside the sports 65/25/10
+family; both live in the same `IP_OVERRIDE_RULES` array and lever off Steam
+via the same `ipOverrideFactorFor()` helper.
+
 ## 2026-09-12 — Cross-platform Path B lookup MUST use editionGroupKey, not title_id
 
 **Symptom:** After landing the immutable platform revenue ratio and the sports

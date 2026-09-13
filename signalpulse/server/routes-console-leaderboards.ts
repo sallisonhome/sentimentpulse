@@ -744,10 +744,24 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // display name AFTER edition rollup, so every current and future
       // edition/year in the franchise is covered automatically.
       const IP_OVERRIDE_RULES: Array<{ pattern: RegExp; label: string; ps5: number; xbox: number; steam: number }> = [
+        // Sports IPs — console-dominant mix (PS5 65 / Xbox 25 / Steam 10).
         { pattern: /^\s*nba\s*2k/i,                     label: "NBA 2K",                      ps5: 65, xbox: 25, steam: 10 },
         { pattern: /^\s*madden\s*nfl/i,                 label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
         { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
         { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
+        // Sony first-party IPs — PS5 flagship mix (PS5 90 / Steam 10 / Xbox 0).
+        // These franchises release on PS5 first, with a late PC port and no
+        // Xbox release. Xbox factor = 0 forces \$0 on any stray Xbox SKU
+        // (defensive; there should be none). PS5 = Steam × 9.0. Match on the
+        // canonical franchise prefix (case-insensitive, tolerant of
+        // possessive apostrophe on "Marvel's").
+        { pattern: /^\s*(marvel'?s\s+)?spider-?man/i,   label: "Spider-Man",                  ps5: 90, xbox: 0,  steam: 10 },
+        { pattern: /^\s*god\s*of\s*war/i,               label: "God of War",                  ps5: 90, xbox: 0,  steam: 10 },
+        { pattern: /^\s*the\s+last\s+of\s+us/i,         label: "The Last of Us",              ps5: 90, xbox: 0,  steam: 10 },
+        { pattern: /^\s*horizon\s+(zero|forbidden|call)/i, label: "Horizon",                  ps5: 90, xbox: 0,  steam: 10 },
+        { pattern: /^\s*gran\s*turismo/i,               label: "Gran Turismo",                ps5: 90, xbox: 0,  steam: 10 },
+        { pattern: /^\s*uncharted/i,                    label: "Uncharted",                   ps5: 90, xbox: 0,  steam: 10 },
+        { pattern: /^\s*ratchet\s*(&|and)\s*clank/i,    label: "Ratchet & Clank",             ps5: 90, xbox: 0,  steam: 10 },
       ];
       // Derivation factor vs Steam for a matched title, indexed by platform.
       // ps5_factor = ps5_pct / steam_pct; xbox_factor = xbox_pct / steam_pct.
