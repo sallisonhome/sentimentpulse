@@ -39,17 +39,6 @@ jobs:
           PY=./.venv/bin/python
           [ -x "$PY" ] || { echo "ERR: .venv missing at $(pwd)/.venv"; exit 1; }
           echo "Testing cron_alerts CLI with PY=$PY"
-          echo "---env introspection---"
-          "$PY" - <<'PYDBG'
-          from dotenv import dotenv_values
-          vals = dotenv_values('/opt/sentimentpulse/.env')
-          def _mask(v):
-              if not v: return '<unset>'
-              return v if len(v) < 12 else v[:4] + '...' + v[-4:]
-          for k in ('RESEND_API_KEY', 'RESEND_FROM', 'CRON_ALERT_TO', 'CRON_ALERT_FROM'):
-              print(f'  {k}: {_mask(vals.get(k))}')
-          PYDBG
-          echo "---end env introspection---"
           cat > /tmp/smoke-extra.log <<'LOG'
           SMOKE TEST — this is a synthetic failure payload
           used to verify the alert delivery path.

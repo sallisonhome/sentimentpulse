@@ -67,12 +67,17 @@ except Exception:  # noqa: BLE001
 _BACKOFF_SECONDS = (5 * 60, 15 * 60, 60 * 60)  # 5m, 15m, 60m
 
 # Alert-mail defaults. Overridable via env to swap operator without a
-# code push.
+# code push. CRON_ALERT_FROM overrides for cron-specific sender; falls
+# back to RESEND_FROM (the verified domain the digest service already
+# uses successfully) so alerts don't hit the resend.dev test-mode
+# recipient restriction. Only the resend.dev fallback last-resort
+# would fail; every prod droplet has RESEND_FROM set (verified 2026-09-13
+# via sp-cron-alert-smoke introspection).
 _ALERT_TO = os.getenv("CRON_ALERT_TO", "sallisonhome@yahoo.com")
-_ALERT_FROM = os.getenv(
-    "CRON_ALERT_FROM",
-    # NB: uses the same verified sender the digest emails use.
-    "SentimentPulse Ops <onboarding@resend.dev>",
+_ALERT_FROM = (
+    os.getenv("CRON_ALERT_FROM")
+    or os.getenv("RESEND_FROM")
+    or "SentimentPulse Ops <onboarding@resend.dev>"
 )
 
 _RESEND_URL = "https://api.resend.com/emails"
