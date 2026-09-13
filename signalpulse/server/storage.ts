@@ -816,6 +816,33 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS ownership_multipliers_lookup
       ON ownership_multipliers (platform, cohort_key, effective_from DESC);
 
+    -- Per-title multiplier overrides (2026-09-13). When the platform-wide
+    -- multiplier produces a per-title copies-per-review ratio that is provably
+    -- wrong (e.g. Wardogs at ~149 on Steam d7 against a Team17/Everplay Group
+    -- RNS disclosure of ~30), we insert a title-scoped multiplier here rather
+    -- than moving the whole platform multiplier. The estimator prefers the
+    -- override row when one exists; missing rows fall back to the platform
+    -- default. Columns confidence and method describe the anchor,
+    -- e.g. confidence='publisher-disclosed', method='press_release_anchor_2026_09'.
+    CREATE TABLE IF NOT EXISTS title_multiplier_overrides (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      multiplier REAL NOT NULL,
+      ci_pct REAL NOT NULL,
+      digital_unit_share REAL NOT NULL,
+      confidence TEXT NOT NULL,
+      method TEXT NOT NULL,
+      notes TEXT,
+      source_url TEXT,
+      effective_from TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS title_multiplier_overrides_active
+      ON title_multiplier_overrides (title_id, platform, effective_from);
+    CREATE INDEX IF NOT EXISTS title_multiplier_overrides_lookup
+      ON title_multiplier_overrides (title_id, platform, effective_from DESC);
+
     -- Ground-truth revenue anchors for calibration. Rows are written by the
     -- nightly anchor-writer script when a title has verified sales data
     -- (steam_sales_daily.source='portal_fetch'). Each row is a
