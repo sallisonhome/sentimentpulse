@@ -9,9 +9,13 @@
  *
  * Seeds two overrides:
  *
- *   Wardogs (Steam)  — 30 copies/review
+ *   Wardogs (Steam)  — 19 copies/review
  *     Team17/Everplay Group RNS 2026-09-11 disclosed 1.25M copies at
- *     ~41.9k Steam reviews at that snapshot.
+ *     ~41.9k Steam reviews at that snapshot. Growth has since slowed;
+ *     working assumption as of 2026-09-13 is ~1.6M LTD units against
+ *     ~83k cumulative signal (windowed reviews-added), which resolves
+ *     to a 19× multiplier. Reconciles with the manual LTD anchor
+ *     written to revenue_calibration_anchors on 2026-09-13.
  *     https://www.pcgamer.com/games/fps/wardogs-sold-over-1-million-copies-in-its-first-24-hours-making-its-launch-a-bright-spot-in-an-otherwise-tough-year-for-multiplayer-shooters/
  *     https://videogamescritic.com/game/wardogs-1867240
  *
@@ -52,12 +56,12 @@ const SEEDS: OverrideSeed[] = [
   {
     nameLike: "wardogs",
     platform: "steam",
-    multiplier: 30,
+    multiplier: 19,
     ci_pct: 0.30,
     digital_unit_share: 1.0,
     confidence: "publisher-disclosed",
     method: "team17_everplay_rns_2026_09_11",
-    notes: "Team17/Everplay Group RNS 2026-09-11: 1.25M copies at ~41.9k Steam reviews snapshot.",
+    notes: "Team17/Everplay Group RNS 2026-09-11: 1.25M copies at ~41.9k Steam reviews snapshot; tuned 2026-09-13 to 19x to reconcile with 1.6M LTD anchor at ~83k cumulative windowed signal.",
     source_url: "https://www.pcgamer.com/games/fps/wardogs-sold-over-1-million-copies-in-its-first-24-hours-making-its-launch-a-bright-spot-in-an-otherwise-tough-year-for-multiplayer-shooters/",
   },
   {
