@@ -824,7 +824,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // Path A on Steam AND for the LTD-preserved exception on
         // PS5/Xbox anchored titles).
         const anchorRows = rawSqlite.prepare(`
-          SELECT title_id, actual_revenue_usd, sale_state, as_of_date, data_source
+          SELECT title_id, actual_revenue_usd, actual_units, sale_state, as_of_date, data_source
             FROM revenue_calibration_anchors
            WHERE platform = ? AND window = ?
              AND (title_id, as_of_date) IN (
@@ -833,8 +833,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                   WHERE platform = ? AND window = ?
                   GROUP BY title_id
              )
-        `).all(platform, win, platform, win) as Array<{title_id:number; actual_revenue_usd:number; sale_state:string; as_of_date:string; data_source:string}>;
-        const anchorMap = new Map<number, {actual_revenue_usd:number; sale_state:string; as_of_date:string; data_source:string}>();
+        `).all(platform, win, platform, win) as Array<{title_id:number; actual_revenue_usd:number; actual_units:number|null; sale_state:string; as_of_date:string; data_source:string}>;
+        const anchorMap = new Map<number, {actual_revenue_usd:number; actual_units:number|null; sale_state:string; as_of_date:string; data_source:string}>();
         for (const a of anchorRows) anchorMap.set(a.title_id, a);
 
         // Also load the LTD anchor for THIS platform (any title_id) so that
@@ -1037,6 +1037,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             g.dataSource = "actual";
             g.anchorSaleState = a.sale_state;
             g.anchorAsOfDate = a.as_of_date;
+            // For verified anchors (executive-provided LTD numbers), the
+            // anchor row carries authoritative actual_units too — overwrite
+            // the estimator units so the UI shows the exec-provided figure
+            // instead of the pre-anchor estimator's cascaded units_mid.
+            // Steam anchors from portal_fetch intentionally leave units
+            // alone: during active sales the estimator's units count is
+            // ASP-distorted vs actual, so replacing them there would
+            // misrepresent per-unit economics. See lessons.md 2026-09-12.
+            if (isVerifiedAnchor && typeof a.actual_units === 'number' && a.actual_units > 0) {
+              g.unitsMid = a.actual_units;
+              g.ownersMid = a.actual_units;
+            }
             pathAOverlaid++;
             continue;
           }
