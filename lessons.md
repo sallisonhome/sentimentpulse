@@ -4,7 +4,7 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
-## 2026-09-12 — Sony first-party IP override (PS5 90 / Steam 10 / Xbox 0)
+## 2026-09-12 — Sony first-party IP override (PS5 90 / Steam 10 / Xbox 0) + PS5-exclusive fallback
 
 Extended the IP override registry with Sony first-party franchises whose PS5
 release sells vastly more than the eventual PC port and never ships on Xbox:
@@ -18,6 +18,18 @@ any). PS5 = Steam × 9.0 so a Spider-Man 2-style title with Steam d30 est
 mix. This is the second immutable IP class, alongside the sports 65/25/10
 family; both live in the same `IP_OVERRIDE_RULES` array and lever off Steam
 via the same `ipOverrideFactorFor()` helper.
+
+**PS5-exclusive fallback.** Some Sony IPs have no PC port at all — Gran
+Turismo 7 has no Steam SKU. Under a Steam-anchored derivation, Steam × 9.0
+= \$0 would erase GT7 from the PS5 leaderboard. Path B now falls through to
+`estimated_console_exclusive` (raw PS5 estimator unchanged) whenever the
+Steam anchor+estimator for the group key is below a \$1k floor — either
+because no Steam SKU exists (undefined) or because the Steam SKU is
+delisted / stale. This preserves the general immutable-ratio behavior for
+cross-platform titles while letting genuinely PS5-exclusive Sony IPs land
+on the leaderboard with their own console estimator. The \$1k floor is
+generous enough to guard against noise but tight enough not to swallow
+real small PC ports.
 
 ## 2026-09-12 — Cross-platform Path B lookup MUST use editionGroupKey, not title_id
 

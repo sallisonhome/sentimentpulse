@@ -992,7 +992,15 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           if (consoleRatio != null) {
             const gk = (g.editionGroupKey as string | undefined) ?? "";
             const s = gk.length >= 2 ? steamRevenueByKey.get(gk) : undefined;
-            if (s) {
+            // Steam-anchored derivation requires a MEANINGFUL Steam revenue.
+            // PS5-exclusive Sony IPs (e.g. Gran Turismo 7) have no Steam SKU
+            // at all -> s is undefined -> we fall through to
+            // 'estimated_console_exclusive' and keep the raw PS5 estimator.
+            // Also fall through when a Steam SKU exists but reports \$0 for
+            // this window (e.g. a delisted PC port), because Steam × factor
+            // = 0 would zero out an otherwise-real console row.
+            const hasMeaningfulSteam = s != null && s.revenue >= 1000; // \$1k threshold
+            if (hasMeaningfulSteam && s) {
               const ipOverride = ipOverrideFactorFor(g.name as string | null | undefined, platform);
               const factor = ipOverride ? ipOverride.factor : consoleRatio;
               const derivedRevenue = s.revenue * factor;
