@@ -1416,6 +1416,15 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         releaseDate: string | null;
         rawRevenueUsd: number;           // pre-overlay (SKU-native)
         anchoredRevenueUsd: number | null; // sum of anchors across SKUs in this key, if any
+        // De-dup guard: platform_sku_map can have multiple external_sku rows
+        // (US + EU regions) that share the same title_id. Anchors are keyed by
+        // (title_id, platform), so we only add each anchor once per distinct
+        // title_id in the group — otherwise the anchor doubles.
+        countedAnchorTitleIds: Set<number>;
+        // Same de-dup for raw revenue: if two rows share the same title_id,
+        // they read the same units_mid from window_estimates_daily and would
+        // double-count if summed as-if independent SKUs.
+        countedRawTitleIds: Set<number>;
       };
       const perKeyPerPlatform = new Map<string, Partial<Record<Platform, PerPlatformAgg>>>();
       let filteredMissingSteam = 0;
@@ -1437,6 +1446,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const bucket = perKeyPerPlatform.get(key) ?? {};
         const prev = bucket[r.platform];
         if (!prev) {
+          const countedAnchor = new Set<number>();
+          const countedRaw = new Set<number>();
+          if (anchor != null) countedAnchor.add(r.titleId);
+          if (skuRawRevenue > 0) countedRaw.add(r.titleId);
           bucket[r.platform] = {
             titleId: r.titleId,
             name: r.name,
@@ -1444,14 +1457,25 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             releaseDate: r.releaseDate,
             rawRevenueUsd: skuRawRevenue,
             anchoredRevenueUsd: anchor,
+            countedAnchorTitleIds: countedAnchor,
+            countedRawTitleIds: countedRaw,
           };
         } else {
-          // Multiple SKUs in the same edition family for the same platform
-          // (e.g. NBA 2K27 base + Deluxe on PS5). Sum revenues; keep the
-          // metadata from the higher-revenue SKU so the badge picks the
-          // canonical listing.
-          prev.rawRevenueUsd += skuRawRevenue;
-          if (anchor != null) prev.anchoredRevenueUsd = (prev.anchoredRevenueUsd ?? 0) + anchor;
+          // Multiple SKUs in the same edition family for the same platform.
+          // Two shapes to handle correctly:
+          //   a) Genuinely distinct SKUs (base + Deluxe on PS5) — sum both
+          //      the raw revenue and any per-SKU anchors.
+          //   b) One title_id mapped to multiple region SKUs (US + EU) —
+          //      raw units and anchor are the SAME data; add each only once
+          //      per distinct title_id.
+          if (!prev.countedRawTitleIds.has(r.titleId)) {
+            prev.rawRevenueUsd += skuRawRevenue;
+            if (skuRawRevenue > 0) prev.countedRawTitleIds.add(r.titleId);
+          }
+          if (anchor != null && !prev.countedAnchorTitleIds.has(r.titleId)) {
+            prev.anchoredRevenueUsd = (prev.anchoredRevenueUsd ?? 0) + anchor;
+            prev.countedAnchorTitleIds.add(r.titleId);
+          }
           if (skuRawRevenue > (perKeyPerPlatform.get(key)?.[r.platform]?.rawRevenueUsd ?? 0)) {
             prev.titleId = r.titleId;
             prev.name = r.name ?? prev.name;
