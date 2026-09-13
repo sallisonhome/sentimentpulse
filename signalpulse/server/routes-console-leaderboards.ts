@@ -467,6 +467,32 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         AND ${nameSourceExpr} NOT LIKE '%for pc%'
       ` : '';
 
+      // Unreleased-title filter (2026-09-13). A preorder-window SKU accumulates
+      // rating-count-like signal from wishlists/store activity before launch;
+      // multiplied by the ownership multiplier this produces windowed revenue
+      // values that are definitionally wrong — the game has not sold anything
+      // yet. Seen in production 2026-09-13 with COD Modern Warfare 4 (release
+      // 2026-10-23) leading the multiplatform d7 board at $1.82B. Excluded
+      // here at the query level so the row never enters revenue aggregation.
+      //
+      // Rows with genuinely unknown release_date (both igdb.release_date and
+      // igdb.store_release_date are NULL) are preserved, matching the rest
+      // of the codebase's preference for inclusive handling of missing data.
+      // Those rows historically don't hit this failure mode because they lack
+      // strong signal in the first place.
+      const unreleasedFilter = `
+        AND (
+          (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
+          OR date(
+               CASE
+                 WHEN igdb.match_confidence = 'low'
+                   THEN COALESCE(igdb.store_release_date, igdb.release_date)
+                 ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+               END
+             ) <= date('now')
+        )
+      `;
+
       // Cascade-cliff gate: reject rows whose earliest non-null cascade rung is
       // >1 step from the requested window. Without this gate a d7 request that
       // has no d7/d30/d90 signal falls all the way through to m12 or ltd, and
@@ -655,6 +681,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
          AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
          ${dlcBundleFilter}
          ${pcOnlyFilter}
+         ${unreleasedFilter}
        -- NULL sort values sink so the client still gets a full 100 rows even
        -- before the estimator has populated every window. rating_count is a
        -- stable-sort tie-breaker for every sort mode.
@@ -1157,6 +1184,21 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           AND psm.sku_role = 'base'
           -- Xbox integrity gate (2026-09-12): filter Xbox rows with no xtc entry
           AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
+          -- Unreleased-title filter (2026-09-13): mirrors per-platform routes;
+          -- prevents preorder-window signal from producing windowed revenue for
+          -- games that haven't launched yet (e.g. COD MW4 at $1.82B on d7).
+          -- See unreleasedFilter definition earlier in this file for the full
+          -- rationale. Rows with unknown release_date are preserved.
+          AND (
+            (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
+            OR date(
+                 CASE
+                   WHEN igdb.match_confidence = 'low'
+                     THEN COALESCE(igdb.store_release_date, igdb.release_date)
+                   ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+                 END
+               ) <= date('now')
+          )
       `).all() as Array<{
         titleId: number;
         platform: Platform;
@@ -1523,6 +1565,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           AND psm.sku_role = 'base'
           -- Xbox integrity gate (2026-09-12): filter Xbox rows with no xtc entry
           AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
+          -- Unreleased-title filter (2026-09-13): mirrors per-platform routes.
+          -- See leaderboards listing route above for full rationale.
+          AND (
+            (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
+            OR date(
+                 CASE
+                   WHEN igdb.match_confidence = 'low'
+                     THEN COALESCE(igdb.store_release_date, igdb.release_date)
+                   ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+                 END
+               ) <= date('now')
+          )
       `).all() as Array<{ titleId: number; platform: Platform; msrpUsdCents: number | null; name: string | null; coverUrl: string | null; unitsMid: number | null; windowUsed: string | null }>;
 
       // Filter to this key.

@@ -172,10 +172,32 @@ function main() {
     : proposedNew;
   const wasCapped = cappedNew !== proposedNew;
 
+  // Absolute-bound industry-band clamp (2026-09-13). The step-cap above
+  // limits how much a single refit can move; it does NOT prevent a chain
+  // of in-cap steps from drifting the multiplier out of the defensible
+  // industry range (Boxleiter post-2022: ~12.5–24.9 copies per Steam
+  // review; VideoGamesCritic post-2022 $30+ methodology confirms same
+  // band). We saw a run to ~149 on Steam in production (2026-09-13,
+  // Wardogs row on d7). If a proposed multiplier lands outside the band
+  // configured in app_settings, we write the calibration_events row with
+  // applied=0 (audit trail preserved) and refuse to insert the new
+  // ownership_multipliers row. Human must set a new active row manually.
+  const bandMinRow = rawSqlite.prepare(`SELECT value FROM app_settings WHERE key = ?`).get(`multiplier_min_${platform}`) as {value:string}|undefined;
+  const bandMaxRow = rawSqlite.prepare(`SELECT value FROM app_settings WHERE key = ?`).get(`multiplier_max_${platform}`) as {value:string}|undefined;
+  const bandMin = bandMinRow?.value ? parseFloat(bandMinRow.value) : null;
+  const bandMax = bandMaxRow?.value ? parseFloat(bandMaxRow.value) : null;
+  const outOfBand =
+    (bandMin !== null && Number.isFinite(bandMin) && cappedNew < bandMin) ||
+    (bandMax !== null && Number.isFinite(bandMax) && cappedNew > bandMax);
+
   console.log(`\nWeighted median ratio (act/est): ${obsRatio.toFixed(3)}×`);
   console.log(`Current multiplier             : ${cur.multiplier.toFixed(3)}`);
   console.log(`Proposed new (uncapped)        : ${proposedNew.toFixed(3)}`);
   if (wasCapped) console.log(`⚠ Capped at ${MAX_STEP}× step → ${cappedNew.toFixed(3)}`);
+  if (bandMin !== null || bandMax !== null) {
+    console.log(`Industry band                  : [${bandMin ?? "-∞"}, ${bandMax ?? "+∞"}]`);
+  }
+  if (outOfBand) console.log(`⚠⚠ Proposed ${cappedNew.toFixed(3)} outside industry band — refusing to apply.`);
   console.log(`Change                         : ${((cappedNew / cur.multiplier - 1) * 100).toFixed(1)}%`);
 
   const nowIso = new Date().toISOString();
@@ -184,6 +206,10 @@ function main() {
     ratio: Number(r.ratio.toFixed(3)),
     weight: r.weight,
   }));
+  const noteParts: string[] = [];
+  if (wasCapped) noteParts.push(`capped from ${proposedNew.toFixed(3)} at ${MAX_STEP}× step`);
+  if (outOfBand) noteParts.push(`refused: ${cappedNew.toFixed(3)} outside industry band [${bandMin ?? "-inf"}, ${bandMax ?? "+inf"}]`);
+
   const eventRow = {
     as_of_date: AS_OF,
     platform,
@@ -196,8 +222,8 @@ function main() {
     old_multiplier: cur.multiplier,
     new_multiplier: cappedNew,
     method: "calibrated_from_actuals_v1",
-    applied: DRY_RUN ? 0 : 1,
-    notes: wasCapped ? `capped from ${proposedNew.toFixed(3)} at ${MAX_STEP}× step` : null,
+    applied: (DRY_RUN || outOfBand) ? 0 : 1,
+    notes: noteParts.length ? noteParts.join("; ") : null,
     created_at: nowIso,
   };
 
@@ -206,6 +232,27 @@ function main() {
     console.log(JSON.stringify(eventRow, null, 2));
     console.log(`\n(DRY_RUN) would insert ownership_multipliers row with:`);
     console.log(`  platform=${platform} cohort=${COHORT} multiplier=${cappedNew.toFixed(3)} effective_from=${AS_OF} method=calibrated_from_actuals_v1`);
+    process.exit(0);
+  }
+
+  if (outOfBand) {
+    // Write the audit row so a human can see what the fit wanted, but do
+    // NOT insert into ownership_multipliers. The active row is unchanged.
+    rawSqlite.prepare(`
+      INSERT INTO calibration_events (
+        as_of_date, platform, cohort_key, anchor_count, anchor_sample_json,
+        window_used, weight_method, observed_ratio, old_multiplier, new_multiplier,
+        method, applied, notes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      eventRow.as_of_date, eventRow.platform, eventRow.cohort_key,
+      eventRow.anchor_count, eventRow.anchor_sample_json,
+      eventRow.window_used, eventRow.weight_method,
+      eventRow.observed_ratio, eventRow.old_multiplier, eventRow.new_multiplier,
+      eventRow.method, eventRow.applied, eventRow.notes, eventRow.created_at,
+    );
+    console.log(`\n⚠⚠ Out-of-band. Audit row written with applied=0. ownership_multipliers NOT updated.`);
+    console.log(`   Fix: correct anchors or manually set a new active multiplier row within the band.`);
     process.exit(0);
   }
 

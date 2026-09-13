@@ -169,6 +169,46 @@ async function main() {
     }
   }
 
+  // ─── 2a. Per-title multiplier overrides (2026-09-13) ─────────────────
+  // Latest active override per (title_id, platform). When present, overrides
+  // the platform-wide multiplier for that title only. Seeded from public
+  // anchors (publisher press releases, filed 8-Ks, verified sales portals)
+  // when the platform multiplier is known to disagree with reality on a
+  // specific title. Example: Wardogs Steam at ~30 copies-per-review from
+  // Team17/Everplay Group RNS 2026-09-11 vs. Steam platform ~55.
+  type OverrideRow = {
+    title_id: number;
+    platform: string;
+    multiplier: number;
+    ci_pct: number;
+    digital_unit_share: number;
+    confidence: string;
+    method: string;
+  };
+  const overrideByKey = new Map<string, OverrideRow>();
+  {
+    const rows = db.prepare(
+      `SELECT tmo.title_id, tmo.platform, tmo.multiplier, tmo.ci_pct,
+              tmo.digital_unit_share, tmo.confidence, tmo.method
+         FROM title_multiplier_overrides tmo
+         JOIN (
+           SELECT title_id, platform, MAX(effective_from) AS mx
+             FROM title_multiplier_overrides
+            WHERE effective_from <= ?
+            GROUP BY title_id, platform
+         ) latest
+           ON latest.title_id = tmo.title_id
+          AND latest.platform = tmo.platform
+          AND latest.mx       = tmo.effective_from`
+    ).all(nowIso) as OverrideRow[];
+    for (const r of rows) {
+      overrideByKey.set(`${r.title_id}|${r.platform}`, r);
+    }
+    if (rows.length > 0) {
+      console.log(`[estimate-console-units] loaded ${rows.length} per-title multiplier override(s)`);
+    }
+  }
+
   // ─── 2b. is_gamepass flags per (title_id, platform) ────────────────────
   // Only xbox rows carry a GP flag today; keep the map platform-agnostic so
   // future PS Plus day-one segmentation slots in the same way.
@@ -710,11 +750,24 @@ async function main() {
       const deflator = isGp && mult.gp_rating_deflator ? mult.gp_rating_deflator : 1;
       const effectiveSignal = signal / deflator;
 
-      // ─── Apply multiplier ──────────────────────────────────────────────
-      const ownersMid = effectiveSignal * mult.multiplier;
-      const ownersLow = ownersMid * (1 - mult.ci_pct);
-      const ownersHigh = ownersMid * (1 + mult.ci_pct);
-      const unitsMid = ownersMid / mult.digital_unit_share;
+      // ─── Apply multiplier (per-title override wins over platform default)
+      // 2026-09-13: title_multiplier_overrides lets us pin a per-title
+      // multiplier when a public anchor disproves the platform value. When
+      // an override is present we substitute its multiplier + ci_pct +
+      // digital_unit_share, and retag `method` for auditability so the row
+      // shows up on the leaderboard as override-derived instead of falsely
+      // claiming the platform calibration was used.
+      const override = overrideByKey.get(`${titleId}|${platform}`);
+      const appliedMultiplier   = override?.multiplier         ?? mult.multiplier;
+      const appliedCiPct        = override?.ci_pct             ?? mult.ci_pct;
+      const appliedDigitalShare = override?.digital_unit_share ?? mult.digital_unit_share;
+      if (override) {
+        row.method = `override:${override.method}`;
+      }
+      const ownersMid = effectiveSignal * appliedMultiplier;
+      const ownersLow = ownersMid * (1 - appliedCiPct);
+      const ownersHigh = ownersMid * (1 + appliedCiPct);
+      const unitsMid = ownersMid / appliedDigitalShare;
 
       row.ownersMid = Math.round(ownersMid);
       row.ownersLow = Math.round(ownersLow);
