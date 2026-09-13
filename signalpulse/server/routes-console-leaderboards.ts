@@ -198,6 +198,51 @@ function aspFactorFor(platform: Platform): number {
   return ASP_FACTOR_DEFAULTS[platform];
 }
 
+// ─── Immutable platform revenue-mix + per-IP overrides ────────────────────
+// Lifted from inside the per-platform handler so the multiplatform endpoint
+// can reuse the exact same math (see routes-console-leaderboards.ts:Path B
+// and lessons.md 2026-09-12 entries). Values must stay in sync across every
+// consumer — do not fork.
+const PLATFORM_RATIO_VS_STEAM: Partial<Record<Platform, number>> = {
+  ps5:  37.9 / 49.5,   // ≈ 0.7657
+  xbox: 12.6 / 49.5,   // ≈ 0.2545
+};
+
+type IpOverrideRule = { pattern: RegExp; label: string; ps5: number; xbox: number; steam: number };
+const IP_OVERRIDE_RULES: IpOverrideRule[] = [
+  // Sports IPs — console-dominant mix (PS5 65 / Xbox 25 / Steam 10).
+  { pattern: /^\s*nba\s*2k/i,                     label: "NBA 2K",                      ps5: 65, xbox: 25, steam: 10 },
+  { pattern: /^\s*madden\s*nfl/i,                 label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
+  { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
+  { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
+  // Sony first-party IPs — PS5 flagship mix (PS5 90 / Steam 10 / Xbox 0).
+  { pattern: /^\s*(marvel'?s\s+)?spider-?man/i,   label: "Spider-Man",                  ps5: 90, xbox: 0,  steam: 10 },
+  { pattern: /^\s*god\s*of\s*war/i,               label: "God of War",                  ps5: 90, xbox: 0,  steam: 10 },
+  { pattern: /^\s*the\s+last\s+of\s+us/i,         label: "The Last of Us",              ps5: 90, xbox: 0,  steam: 10 },
+  { pattern: /^\s*horizon\s+(zero|forbidden|call)/i, label: "Horizon",                  ps5: 90, xbox: 0,  steam: 10 },
+  { pattern: /^\s*gran\s*turismo/i,               label: "Gran Turismo",                ps5: 90, xbox: 0,  steam: 10 },
+  { pattern: /^\s*uncharted/i,                    label: "Uncharted",                   ps5: 90, xbox: 0,  steam: 10 },
+  { pattern: /^\s*ratchet\s*(&|and)\s*clank/i,    label: "Ratchet & Clank",             ps5: 90, xbox: 0,  steam: 10 },
+];
+
+function ipOverrideFactorFor(displayName: string | null | undefined, plat: Platform): { factor: number; label: string } | null {
+  if (plat !== "ps5" && plat !== "xbox") return null;
+  if (!displayName) return null;
+  for (const r of IP_OVERRIDE_RULES) {
+    if (r.pattern.test(displayName)) {
+      const numer = plat === "ps5" ? r.ps5 : r.xbox;
+      return { factor: numer / r.steam, label: r.label };
+    }
+  }
+  return null;
+}
+
+// Threshold below which a Steam revenue value is treated as "no meaningful
+// Steam signal" (delisted PC port, missing SKU, etc.) so console rows fall
+// through to their raw estimator instead of getting zeroed. Matches the
+// threshold in the per-platform overlay.
+const STEAM_MEANINGFUL_REVENUE_FLOOR_USD = 1000;
+
 export function registerConsoleLeaderboardRoutes(app: Express) {
 
   // ─── Leaderboard list ─────────────────────────────────────────────────────
@@ -698,84 +743,21 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // sale-active window. See lessons.md 2026-09-12 anchor entry.
       //
       // ── Path B: Platform revenue-ratio derivation (PS5 / Xbox) ─────────
-      // Immutable platform revenue mix (see lessons.md 2026-09-12 entry
-      // "Platform revenue-share ratio is immutable"):
-      //   Steam 47%, PS5 36%, Xbox 12%, Switch 2 5%   (source of truth)
-      //   Renormalized for Steam/PS5/Xbox leaderboards (Switch 2 excluded):
-      //     Steam 49.5%   PS5 37.9%   Xbox 12.6%
-      //   Derivation factors:
-      //     PS5  = Steam × (37.9 / 49.5) ≈ 0.7657
-      //     Xbox = Steam × (12.6 / 49.5) ≈ 0.2545
+      // Immutable platform revenue mix + per-IP overrides live at MODULE
+      // scope so the multiplatform endpoint can reuse them; see the
+      // PLATFORM_RATIO_VS_STEAM, IP_OVERRIDE_RULES, and ipOverrideFactorFor
+      // definitions near the top of this file. Do not fork.
       //
-      // For every PS5 / Xbox group whose title_id ALSO has a Steam SKU in
-      // platform_sku_map (cross-platform title), the console revenue is
-      // DERIVED from Steam revenue for the same window, not computed
-      // independently from the platform's own multiplier × MSRP × ASP.
-      // Steam revenue used as the anchor is, in preference order:
-      //   1. Steam's anchor row (actual_revenue_usd) if one exists for the
-      //      same (title_id, window). Handles anchored titles for every
-      //      window, including LTD.
+      // For every PS5 / Xbox group whose editionGroupKey ALSO has a Steam
+      // SKU in platform_sku_map (cross-platform title), the console revenue
+      // is DERIVED from Steam revenue for the same window, not computed
+      // independently. Steam revenue used as the anchor is, in preference:
+      //   1. Steam's anchor row (actual_revenue_usd) if one exists.
       //   2. Steam's live estimator revenue = cascaded units_mid ×
-      //      msrp_usd_cents × steam_asp_factor / 100. Same cascade rule
-      //      as the requested platform, keyed off the SAME as_of_date
-      //      selection logic.
+      //      msrp_usd_cents × steam_asp_factor / 100.
       //
-      // Console-exclusive titles (no Steam SKU for that title_id) fall
-      // through to the SQL-computed revenue unchanged. LTD windows for
-      // anchored non-Saber PS5/Xbox titles are preserved: if a console
-      // anchor row exists for the requested window it wins (Path A wins
-      // over Path B for that specific window).
-      const PLATFORM_RATIO_VS_STEAM: Partial<Record<Platform, number>> = {
-        ps5:  37.9 / 49.5,   // ≈ 0.7657
-        xbox: 12.6 / 49.5,   // ≈ 0.2545
-      };
-
-      // ── Per-IP mix overrides ────────────────────────────────────
-      // Annual sports/sim IPs skew heavily console-dominant, so the general
-      // 47/36/12/5 mix under-reads PS5/Xbox and over-reads Steam. For these
-      // IPs the mix is pinned to PS5 65% / Xbox 25% / Steam (PC) 10%, still
-      // immutable across every windowed calculation. We continue to lever
-      // off Steam revenue as the anchor because Steam is the platform we
-      // calibrate directly; the derivation factors just get much bigger
-      // (PS5 = Steam × 6.5, Xbox = Steam × 2.5) to reflect the small Steam
-      // share.
-      //
-      // Match is case-insensitive IP-prefix on the leaderboard row's
-      // display name AFTER edition rollup, so every current and future
-      // edition/year in the franchise is covered automatically.
-      const IP_OVERRIDE_RULES: Array<{ pattern: RegExp; label: string; ps5: number; xbox: number; steam: number }> = [
-        // Sports IPs — console-dominant mix (PS5 65 / Xbox 25 / Steam 10).
-        { pattern: /^\s*nba\s*2k/i,                     label: "NBA 2K",                      ps5: 65, xbox: 25, steam: 10 },
-        { pattern: /^\s*madden\s*nfl/i,                 label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
-        { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
-        { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
-        // Sony first-party IPs — PS5 flagship mix (PS5 90 / Steam 10 / Xbox 0).
-        // These franchises release on PS5 first, with a late PC port and no
-        // Xbox release. Xbox factor = 0 forces \$0 on any stray Xbox SKU
-        // (defensive; there should be none). PS5 = Steam × 9.0. Match on the
-        // canonical franchise prefix (case-insensitive, tolerant of
-        // possessive apostrophe on "Marvel's").
-        { pattern: /^\s*(marvel'?s\s+)?spider-?man/i,   label: "Spider-Man",                  ps5: 90, xbox: 0,  steam: 10 },
-        { pattern: /^\s*god\s*of\s*war/i,               label: "God of War",                  ps5: 90, xbox: 0,  steam: 10 },
-        { pattern: /^\s*the\s+last\s+of\s+us/i,         label: "The Last of Us",              ps5: 90, xbox: 0,  steam: 10 },
-        { pattern: /^\s*horizon\s+(zero|forbidden|call)/i, label: "Horizon",                  ps5: 90, xbox: 0,  steam: 10 },
-        { pattern: /^\s*gran\s*turismo/i,               label: "Gran Turismo",                ps5: 90, xbox: 0,  steam: 10 },
-        { pattern: /^\s*uncharted/i,                    label: "Uncharted",                   ps5: 90, xbox: 0,  steam: 10 },
-        { pattern: /^\s*ratchet\s*(&|and)\s*clank/i,    label: "Ratchet & Clank",             ps5: 90, xbox: 0,  steam: 10 },
-      ];
-      // Derivation factor vs Steam for a matched title, indexed by platform.
-      // ps5_factor = ps5_pct / steam_pct; xbox_factor = xbox_pct / steam_pct.
-      const ipOverrideFactorFor = (displayName: string | null | undefined, plat: Platform): { factor: number; label: string } | null => {
-        if (plat !== "ps5" && plat !== "xbox") return null;
-        if (!displayName) return null;
-        for (const r of IP_OVERRIDE_RULES) {
-          if (r.pattern.test(displayName)) {
-            const numer = plat === "ps5" ? r.ps5 : r.xbox;
-            return { factor: numer / r.steam, label: r.label };
-          }
-        }
-        return null;
-      };
+      // Console-exclusive titles (no Steam SKU under the same key) fall
+      // through to the SQL-computed revenue unchanged.
       try {
         const win = window;
 
@@ -1058,6 +1040,292 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     }
   });
 
+  // ─── Multiplatform leaderboard (top-20 combined-revenue) ────────────
+  //
+  // Ranks titles that ship on Steam AND at least one of {PS5, Xbox}, by
+  // combined revenue across the platforms that have a base SKU. Uses the
+  // SAME immutable ratio + IP override + PS5-exclusive fallback overlay as
+  // the per-platform boards, so a title's per-platform revenue here always
+  // matches what appears in its Steam / PS5 / Xbox column.
+  //
+  // Query: window=d7|d30|d90|m12|ltd  (default d7)
+  //        limit=1..20                 (default 20)
+  //
+  // Response: { window, count, titles: MultiplatformRow[] } where
+  //   MultiplatformRow = {
+  //     editionGroupKey,
+  //     name, coverUrl, releaseDate,
+  //     steamTitleId, ps5TitleId?, xboxTitleId?,
+  //     platforms: ("steam"|"ps5"|"xbox")[],  // in Steam,PS5,Xbox order
+  //     revenueSteam, revenuePs5, revenueXbox,
+  //     revenueCombined,
+  //     revenueSource: "overlay-ratio" | "overlay-ip-override" | "ps5-exclusive-fallback" | "mixed",
+  //   }
+  //
+  // Ranking key: revenueCombined desc.
+  // Path: /api/console/leaderboards-multiplatform  (matches per-platform prefix).
+  app.get("/api/console/leaderboards-multiplatform", (req, res) => {
+    try {
+      const window = ((req.query.window as string) || "d7").toLowerCase();
+      if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
+      const limit = Math.min(20, Math.max(1, parseInt((req.query.limit as string) || "20", 10) || 20));
+
+      const steamAspFactor = aspFactorFor("steam");
+      const ps5AspFactor   = aspFactorFor("ps5");
+      const xboxAspFactor  = aspFactorFor("xbox");
+
+      // Cascade order matches the per-platform handler.
+      const CASCADE = ["d7","d30","d90","m12","ltd"] as const;
+      const cascade = CASCADE.slice(CASCADE.indexOf(window as any));
+
+      // Fetch every paid base SKU across the three platforms with the
+      // metadata we need for edition rollup, IGDB display, and revenue math.
+      // We cascade window_estimates_daily within SQL via LEFT JOINs so a
+      // single-window miss doesn't drop a title.
+      //
+      // Cascade selection expression is materialised in JS so we can reuse
+      // the same cascade order as the per-platform overlay without a giant
+      // parameterised CASE.
+      const cascadeUnitsExpr = cascade
+        .map((w, i) => `w${i}.units_mid`)
+        .reduce((acc, e) => `COALESCE(${acc}, ${e})`);
+      const cascadeWindowExpr = cascade
+        .map((w, i) => `CASE WHEN w${i}.units_mid IS NOT NULL THEN '${w}' END`)
+        .reduce((acc, e) => `COALESCE(${acc}, ${e})`);
+      const cascadeJoins = cascade
+        .map((w, i) => `LEFT JOIN window_estimates_daily w${i}\n          ON w${i}.title_id = psm.title_id\n         AND w${i}.platform = psm.platform\n         AND w${i}.window   = '${w}'\n         AND w${i}.as_of_date = (\n              SELECT MAX(as_of_date) FROM window_estimates_daily\n               WHERE title_id = psm.title_id AND platform = psm.platform AND window = '${w}'\n             )`)
+        .join("\n        ");
+
+      const rows = rawSqlite.prepare(`
+        SELECT
+          psm.title_id                                    AS titleId,
+          psm.platform                                    AS platform,
+          psm.msrp_usd_cents                              AS msrpUsdCents,
+          CASE
+            WHEN psm.platform = 'xbox' THEN xtc.name
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
+            ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
+          END                                             AS name,
+          CASE
+            WHEN psm.platform = 'xbox' THEN xtc.art_url
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
+            ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
+          END                                             AS coverUrl,
+          igdb.release_date                               AS releaseDate,
+          ${cascadeUnitsExpr}                             AS unitsMid,
+          ${cascadeWindowExpr}                            AS windowUsed
+        FROM platform_sku_map psm
+        LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
+        LEFT JOIN xbox_title_cache  xtc  ON xtc.title_id  = psm.title_id AND psm.platform = 'xbox'
+        ${cascadeJoins}
+        WHERE psm.platform IN ('steam','ps5','xbox')
+          AND psm.business_model = 'paid'
+          AND psm.sku_role = 'base'
+      `).all() as Array<{
+        titleId: number;
+        platform: Platform;
+        msrpUsdCents: number | null;
+        name: string | null;
+        coverUrl: string | null;
+        releaseDate: string | null;
+        unitsMid: number | null;
+        windowUsed: string | null;
+      }>;
+
+      // Latest anchor per (title_id, platform, window) for the requested window.
+      const anchorRows = rawSqlite.prepare(`
+        SELECT rca.title_id AS titleId, rca.platform AS platform, rca.actual_revenue_usd AS revenue
+        FROM revenue_calibration_anchors rca
+        JOIN (
+          SELECT title_id, platform, MAX(as_of_date) AS mx
+          FROM revenue_calibration_anchors
+          WHERE window = ? AND platform IN ('steam','ps5','xbox')
+          GROUP BY title_id, platform
+        ) latest
+          ON latest.title_id = rca.title_id AND latest.platform = rca.platform
+         AND latest.mx = rca.as_of_date
+        WHERE rca.window = ?
+      `).all(window, window) as Array<{ titleId: number; platform: Platform; revenue: number }>;
+      const anchorByTitleIdPlatform = new Map<string, number>();
+      for (const a of anchorRows) anchorByTitleIdPlatform.set(`${a.titleId}|${a.platform}`, a.revenue);
+
+      // Roll up per-platform SKUs by editionGroupKey. Sum unit-derived and
+      // anchor revenues at the SKU level, then aggregate to a per-key,
+      // per-platform revenue value that mirrors what the per-platform
+      // handler computes group-wise.
+      type PerPlatformAgg = {
+        titleId: number;                 // primary SKU (highest revenue)
+        name: string | null;
+        coverUrl: string | null;
+        releaseDate: string | null;
+        rawRevenueUsd: number;           // pre-overlay (SKU-native)
+        anchoredRevenueUsd: number | null; // sum of anchors across SKUs in this key, if any
+      };
+      const perKeyPerPlatform = new Map<string, Partial<Record<Platform, PerPlatformAgg>>>();
+      let filteredMissingSteam = 0;
+
+      for (const r of rows) {
+        const key = editionGroupKey(r.name);
+        if (!key) continue;
+
+        // Xbox rows without a resolved name/cover are still filtered off
+        // the leaderboard (same rule as the per-platform handler).
+        if (r.platform === "xbox" && (!r.name || !r.coverUrl)) { filteredMissingSteam++; continue; }
+
+        const aspFactor = r.platform === "steam" ? steamAspFactor : r.platform === "ps5" ? ps5AspFactor : xboxAspFactor;
+        const skuRawRevenue = (r.unitsMid != null && r.msrpUsdCents != null)
+          ? r.unitsMid * r.msrpUsdCents * aspFactor / 100
+          : 0;
+        const anchor = anchorByTitleIdPlatform.get(`${r.titleId}|${r.platform}`) ?? null;
+
+        const bucket = perKeyPerPlatform.get(key) ?? {};
+        const prev = bucket[r.platform];
+        if (!prev) {
+          bucket[r.platform] = {
+            titleId: r.titleId,
+            name: r.name,
+            coverUrl: r.coverUrl,
+            releaseDate: r.releaseDate,
+            rawRevenueUsd: skuRawRevenue,
+            anchoredRevenueUsd: anchor,
+          };
+        } else {
+          // Multiple SKUs in the same edition family for the same platform
+          // (e.g. NBA 2K27 base + Deluxe on PS5). Sum revenues; keep the
+          // metadata from the higher-revenue SKU so the badge picks the
+          // canonical listing.
+          prev.rawRevenueUsd += skuRawRevenue;
+          if (anchor != null) prev.anchoredRevenueUsd = (prev.anchoredRevenueUsd ?? 0) + anchor;
+          if (skuRawRevenue > (perKeyPerPlatform.get(key)?.[r.platform]?.rawRevenueUsd ?? 0)) {
+            prev.titleId = r.titleId;
+            prev.name = r.name ?? prev.name;
+            prev.coverUrl = r.coverUrl ?? prev.coverUrl;
+            prev.releaseDate = r.releaseDate ?? prev.releaseDate;
+          }
+        }
+        perKeyPerPlatform.set(key, bucket);
+      }
+
+      // Build multiplatform rows. Cross-platform gate: MUST have Steam + at
+      // least one of {PS5, Xbox}.
+      type MultiRow = {
+        editionGroupKey: string;
+        name: string; coverUrl: string | null; releaseDate: string | null;
+        steamTitleId: number; ps5TitleId?: number; xboxTitleId?: number;
+        platforms: Platform[];
+        revenueSteam: number; revenuePs5: number; revenueXbox: number;
+        revenueCombined: number;
+        revenueSource: "overlay-ratio" | "overlay-ip-override" | "ps5-exclusive-fallback" | "mixed";
+      };
+      const multiRows: MultiRow[] = [];
+      let overlayRatioCount = 0, overlayIpCount = 0, exclusiveFallbackCount = 0;
+
+      for (const [key, byPlatform] of Array.from(perKeyPerPlatform.entries())) {
+        const steam = byPlatform.steam;
+        const ps5   = byPlatform.ps5;
+        const xbox  = byPlatform.xbox;
+        if (!steam) continue;                            // must be on Steam
+        if (!ps5 && !xbox) continue;                     // and at least one console
+
+        // Steam revenue: anchor wins over estimator.
+        const steamRevenue = steam.anchoredRevenueUsd != null ? steam.anchoredRevenueUsd : steam.rawRevenueUsd;
+        const hasMeaningfulSteam = steamRevenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
+
+        // Choose a canonical display name for IP-override matching (Steam
+        // first — IGDB-cleanest source — falling back to console name).
+        const displayName = steam.name || ps5?.name || xbox?.name || null;
+        const ipOverridePs5  = ps5  ? ipOverrideFactorFor(displayName, "ps5")  : null;
+        const ipOverrideXbox = xbox ? ipOverrideFactorFor(displayName, "xbox") : null;
+        const usedIpOverride = Boolean(ipOverridePs5 || ipOverrideXbox);
+
+        // Console revenue derivation. Anchor for that console+window wins
+        // absolutely (Path A). Otherwise Path B: overlay from Steam; if the
+        // Steam signal is not meaningful, fall back to that console's raw
+        // estimator revenue (PS5-exclusive fallback covers this).
+        let revenuePs5 = 0;
+        let revenueXbox = 0;
+        let usedFallback = false;
+
+        if (ps5) {
+          if (ps5.anchoredRevenueUsd != null) {
+            revenuePs5 = ps5.anchoredRevenueUsd;
+          } else if (hasMeaningfulSteam) {
+            const factor = ipOverridePs5 ? ipOverridePs5.factor : (PLATFORM_RATIO_VS_STEAM.ps5 as number);
+            revenuePs5 = steamRevenue * factor;
+          } else {
+            revenuePs5 = ps5.rawRevenueUsd;
+            usedFallback = true;
+          }
+        }
+        if (xbox) {
+          if (xbox.anchoredRevenueUsd != null) {
+            revenueXbox = xbox.anchoredRevenueUsd;
+          } else if (hasMeaningfulSteam) {
+            const factor = ipOverrideXbox ? ipOverrideXbox.factor : (PLATFORM_RATIO_VS_STEAM.xbox as number);
+            revenueXbox = steamRevenue * factor;
+          } else {
+            revenueXbox = xbox.rawRevenueUsd;
+            usedFallback = true;
+          }
+        }
+
+        const revenueCombined = steamRevenue + revenuePs5 + revenueXbox;
+        if (revenueCombined <= 0) continue; // no signal on any platform
+
+        // Track source category for observability.
+        let revenueSource: MultiRow["revenueSource"];
+        const flags = [usedIpOverride, usedFallback];
+        if (usedFallback && usedIpOverride) revenueSource = "mixed";
+        else if (usedIpOverride)             revenueSource = "overlay-ip-override";
+        else if (usedFallback)               revenueSource = "ps5-exclusive-fallback";
+        else                                 revenueSource = "overlay-ratio";
+        void flags;
+        if (revenueSource === "overlay-ratio") overlayRatioCount++;
+        else if (revenueSource === "overlay-ip-override") overlayIpCount++;
+        else if (revenueSource === "ps5-exclusive-fallback") exclusiveFallbackCount++;
+
+        const platforms: Platform[] = [];
+        if (steam) platforms.push("steam");
+        if (ps5)   platforms.push("ps5");
+        if (xbox)  platforms.push("xbox");
+
+        multiRows.push({
+          editionGroupKey: key,
+          name: (steam.name || ps5?.name || xbox?.name || key) as string,
+          coverUrl: steam.coverUrl || ps5?.coverUrl || xbox?.coverUrl || null,
+          releaseDate: steam.releaseDate || ps5?.releaseDate || xbox?.releaseDate || null,
+          steamTitleId: steam.titleId,
+          ps5TitleId:  ps5?.titleId,
+          xboxTitleId: xbox?.titleId,
+          platforms,
+          revenueSteam: steamRevenue,
+          revenuePs5:   revenuePs5,
+          revenueXbox:  revenueXbox,
+          revenueCombined,
+          revenueSource,
+        });
+      }
+
+      multiRows.sort((a, b) => b.revenueCombined - a.revenueCombined);
+      const trimmed = multiRows.slice(0, limit);
+
+      // Observability log line, mirrors the per-platform overlay log style.
+      console.log(`[multiplatform-leaderboard] window=${window} candidates=${multiRows.length} returned=${trimmed.length} overlayRatio=${overlayRatioCount} overlayIp=${overlayIpCount} exclusiveFallback=${exclusiveFallbackCount} xboxFilteredNoName=${filteredMissingSteam}`);
+
+      res.json({
+        window,
+        cascade,
+        count: trimmed.length,
+        candidatesCount: multiRows.length,
+        titles: trimmed,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── Calibration status ────────────────────────────────────────────
   //
   // Backs the leaderboard banner. Returns latest applied calibration_events
@@ -1154,6 +1422,193 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   // client can bind KPI tiles to the tab the user selected. `latestPerPlatform`
   // is preserved for backwards compat and continues to reflect the most
   // recent absolute capture (LTD-ish snapshot).
+  // ─── Multiplatform PDP endpoint ───────────────────────────────
+  //
+  // Route: GET /api/console/multiplatform-title/:key
+  // Query: window=d7|d30|d90|m12|ltd  (default ltd)
+  //
+  // :key is a URL-encoded editionGroupKey. Returns:
+  //   {
+  //     editionGroupKey, name, coverUrl, artworkUrl?, screenshots?, genres?,
+  //     developers?, publishers?, summary?, releaseDate?, platforms,
+  //     perPlatform: { steam?, ps5?, xbox? } where each is
+  //       { titleId, revenueUsd, unitsMid, windowUsed, msrpUsdCents,
+  //         ratingCount?, avgRating?, source: "anchor"|"overlay"|"raw" },
+  //     combinedRevenueUsd,
+  //     combinedUnits,
+  //     window,
+  //   }
+  //
+  // Revenue is computed with the SAME overlay pipeline as the leaderboard.
+  app.get("/api/console/multiplatform-title/:key", (req, res) => {
+    try {
+      const key = decodeURIComponent(req.params.key || "");
+      if (!key) return res.status(400).json({ error: "invalid key" });
+      const window = ((req.query.window as string) || "ltd").toLowerCase();
+      if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
+
+      const steamAspFactor = aspFactorFor("steam");
+      const ps5AspFactor   = aspFactorFor("ps5");
+      const xboxAspFactor  = aspFactorFor("xbox");
+
+      const CASCADE = ["d7","d30","d90","m12","ltd"] as const;
+      const cascade = CASCADE.slice(CASCADE.indexOf(window as any));
+      const cascadeUnitsExpr = cascade.map((w, i) => `w${i}.units_mid`).reduce((a, e) => `COALESCE(${a}, ${e})`);
+      const cascadeWindowExpr = cascade.map((w, i) => `CASE WHEN w${i}.units_mid IS NOT NULL THEN '${w}' END`).reduce((a, e) => `COALESCE(${a}, ${e})`);
+      const cascadeJoins = cascade.map((w, i) => `LEFT JOIN window_estimates_daily w${i}
+          ON w${i}.title_id = psm.title_id AND w${i}.platform = psm.platform
+         AND w${i}.window = '${w}'
+         AND w${i}.as_of_date = (SELECT MAX(as_of_date) FROM window_estimates_daily
+                                   WHERE title_id = psm.title_id AND platform = psm.platform AND window = '${w}')`).join("\n        ");
+
+      // Pull every paid base SKU across steam/ps5/xbox with name+cover.
+      const rows = rawSqlite.prepare(`
+        SELECT
+          psm.title_id AS titleId, psm.platform AS platform,
+          psm.msrp_usd_cents AS msrpUsdCents,
+          CASE
+            WHEN psm.platform = 'xbox' THEN xtc.name
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
+            ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
+          END AS name,
+          CASE
+            WHEN psm.platform = 'xbox' THEN xtc.art_url
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
+            ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
+          END AS coverUrl,
+          ${cascadeUnitsExpr} AS unitsMid,
+          ${cascadeWindowExpr} AS windowUsed
+        FROM platform_sku_map psm
+        LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
+        LEFT JOIN xbox_title_cache  xtc  ON xtc.title_id = psm.title_id AND psm.platform = 'xbox'
+        ${cascadeJoins}
+        WHERE psm.platform IN ('steam','ps5','xbox')
+          AND psm.business_model = 'paid'
+          AND psm.sku_role = 'base'
+      `).all() as Array<{ titleId: number; platform: Platform; msrpUsdCents: number | null; name: string | null; coverUrl: string | null; unitsMid: number | null; windowUsed: string | null }>;
+
+      // Filter to this key.
+      const matching = rows.filter(r => editionGroupKey(r.name) === key);
+      if (matching.length === 0) return res.status(404).json({ error: "key not found" });
+
+      // Anchor lookup for this window.
+      const anchorRows = rawSqlite.prepare(`
+        SELECT rca.title_id AS titleId, rca.platform AS platform, rca.actual_revenue_usd AS revenue
+        FROM revenue_calibration_anchors rca
+        JOIN (SELECT title_id, platform, MAX(as_of_date) AS mx FROM revenue_calibration_anchors WHERE window = ? GROUP BY title_id, platform) l
+          ON l.title_id = rca.title_id AND l.platform = rca.platform AND l.mx = rca.as_of_date
+        WHERE rca.window = ?
+      `).all(window, window) as Array<{ titleId: number; platform: Platform; revenue: number }>;
+      const anchorMap = new Map<string, number>();
+      for (const a of anchorRows) anchorMap.set(`${a.titleId}|${a.platform}`, a.revenue);
+
+      // Aggregate per platform.
+      type PerPlat = { titleId: number; msrpUsdCents: number | null; rawRevenue: number; anchorRevenue: number | null; unitsMid: number; windowUsed: string | null };
+      const perPlatform: Partial<Record<Platform, PerPlat>> = {};
+      const skuList: Array<{ titleId: number; platform: Platform; name: string | null; coverUrl: string | null }> = [];
+      for (const r of matching) {
+        skuList.push({ titleId: r.titleId, platform: r.platform, name: r.name, coverUrl: r.coverUrl });
+        const asp = r.platform === "steam" ? steamAspFactor : r.platform === "ps5" ? ps5AspFactor : xboxAspFactor;
+        const raw = (r.unitsMid != null && r.msrpUsdCents != null) ? r.unitsMid * r.msrpUsdCents * asp / 100 : 0;
+        const anchor = anchorMap.get(`${r.titleId}|${r.platform}`) ?? null;
+        const prev = perPlatform[r.platform];
+        if (!prev) {
+          perPlatform[r.platform] = { titleId: r.titleId, msrpUsdCents: r.msrpUsdCents, rawRevenue: raw, anchorRevenue: anchor, unitsMid: r.unitsMid ?? 0, windowUsed: r.windowUsed };
+        } else {
+          prev.rawRevenue += raw;
+          if (anchor != null) prev.anchorRevenue = (prev.anchorRevenue ?? 0) + anchor;
+          prev.unitsMid += r.unitsMid ?? 0;
+          if (raw > 0 && prev.msrpUsdCents == null) prev.msrpUsdCents = r.msrpUsdCents;
+        }
+      }
+
+      // Overlay-final revenue per platform.
+      const steam = perPlatform.steam;
+      const steamRevenue = steam ? (steam.anchorRevenue ?? steam.rawRevenue) : 0;
+      const hasMeaningfulSteam = steamRevenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
+
+      // Pick a display name (prefer Steam SKU's name).
+      const steamSku = skuList.find(s => s.platform === "steam") ?? skuList[0];
+      const displayName = steamSku?.name ?? key;
+      const ipPs5  = ipOverrideFactorFor(displayName, "ps5");
+      const ipXbox = ipOverrideFactorFor(displayName, "xbox");
+
+      type PerPlatOut = { titleId: number; revenueUsd: number; unitsMid: number; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw" };
+      const out: Partial<Record<Platform, PerPlatOut>> = {};
+      if (steam) {
+        out.steam = {
+          titleId: steam.titleId, revenueUsd: steamRevenue, unitsMid: steam.unitsMid, windowUsed: steam.windowUsed,
+          msrpUsdCents: steam.msrpUsdCents, source: steam.anchorRevenue != null ? "anchor" : (steam.rawRevenue > 0 ? "raw" : "raw"),
+        };
+      }
+      const ps5 = perPlatform.ps5;
+      if (ps5) {
+        let revenue = ps5.rawRevenue;
+        let src: "anchor" | "overlay" | "raw" = "raw";
+        if (ps5.anchorRevenue != null) { revenue = ps5.anchorRevenue; src = "anchor"; }
+        else if (hasMeaningfulSteam) { revenue = steamRevenue * (ipPs5 ? ipPs5.factor : (PLATFORM_RATIO_VS_STEAM.ps5 as number)); src = "overlay"; }
+        out.ps5 = { titleId: ps5.titleId, revenueUsd: revenue, unitsMid: ps5.unitsMid, windowUsed: ps5.windowUsed, msrpUsdCents: ps5.msrpUsdCents, source: src };
+      }
+      const xbox = perPlatform.xbox;
+      if (xbox) {
+        let revenue = xbox.rawRevenue;
+        let src: "anchor" | "overlay" | "raw" = "raw";
+        if (xbox.anchorRevenue != null) { revenue = xbox.anchorRevenue; src = "anchor"; }
+        else if (hasMeaningfulSteam) { revenue = steamRevenue * (ipXbox ? ipXbox.factor : (PLATFORM_RATIO_VS_STEAM.xbox as number)); src = "overlay"; }
+        out.xbox = { titleId: xbox.titleId, revenueUsd: revenue, unitsMid: xbox.unitsMid, windowUsed: xbox.windowUsed, msrpUsdCents: xbox.msrpUsdCents, source: src };
+      }
+
+      const combinedRevenueUsd = (out.steam?.revenueUsd ?? 0) + (out.ps5?.revenueUsd ?? 0) + (out.xbox?.revenueUsd ?? 0);
+      const combinedUnits = (out.steam?.unitsMid ?? 0) + (out.ps5?.unitsMid ?? 0) + (out.xbox?.unitsMid ?? 0);
+
+      // Pull IGDB detail from the Steam SKU when we have one; otherwise
+      // fall back to the highest-revenue console SKU that has an IGDB row.
+      const preferredTitleId = steamSku?.titleId ?? matching[0].titleId;
+      const igdb = rawSqlite.prepare(`
+        SELECT igdb_id AS igdbId, slug, name, summary, release_date AS releaseDate,
+               cover_url AS coverUrl, artwork_url AS artworkUrl,
+               screenshots_json AS screenshotsJson, genres_json AS genresJson,
+               themes_json AS themesJson, platforms_json AS platformsJson,
+               developers_json AS developersJson, publishers_json AS publishersJson,
+               rating, rating_count AS ratingCount, refreshed_at AS refreshedAt
+          FROM console_title_igdb WHERE title_id = ?
+      `).get(preferredTitleId) as Record<string, any> | undefined;
+
+      // JSON columns.
+      const jsonParse = (s: string | null | undefined): any => { if (!s) return null; try { return JSON.parse(s); } catch { return null; } };
+
+      const platforms: Platform[] = [];
+      if (out.steam) platforms.push("steam");
+      if (out.ps5)   platforms.push("ps5");
+      if (out.xbox)  platforms.push("xbox");
+
+      res.json({
+        editionGroupKey: key,
+        name: displayName,
+        coverUrl: steamSku?.coverUrl ?? matching[0].coverUrl,
+        artworkUrl: igdb?.artworkUrl ?? null,
+        screenshots: jsonParse(igdb?.screenshotsJson),
+        genres: jsonParse(igdb?.genresJson),
+        themes: jsonParse(igdb?.themesJson),
+        developers: jsonParse(igdb?.developersJson),
+        publishers: jsonParse(igdb?.publishersJson),
+        summary: igdb?.summary ?? null,
+        releaseDate: igdb?.releaseDate ?? null,
+        platforms,
+        perPlatform: out,
+        combinedRevenueUsd,
+        combinedUnits,
+        window,
+        cascade,
+        skus: skuList,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/console/titles/:titleId", (req, res) => {
     try {
       const titleId = parseInt(req.params.titleId, 10);

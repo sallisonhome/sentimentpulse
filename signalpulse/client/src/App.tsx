@@ -17,6 +17,7 @@ import AmazonIndex from "@/pages/amazon";
 import AmazonProductDetail from "@/pages/amazon/product-detail";
 import ConsoleLeaderboards, { ConsoleLeaderboardsPlatform } from "@/pages/console-leaderboards";
 import ConsoleTitleDetail from "@/pages/console-title-detail";
+import ConsoleMultiplatformDetail from "@/pages/console-multiplatform-detail";
 import NotFound from "@/pages/not-found";
 import { useEffect, useState } from "react";
 import { AddProductDialog } from "@/components/add-product-dialog";
@@ -39,6 +40,11 @@ function AppRouter() {
             picks the other sub-tabs; /amazon/product/:asin drills in. */}
         <Route path="/amazon/product/:asin" component={AmazonProductDetail} />
         <Route path="/console-leaderboards" component={ConsoleLeaderboards} />
+        {/* Multiplatform PDP MUST precede the generic /:platform matcher
+            below so wouter doesn't treat "multiplatform" as a platform.
+            No standalone listing page — the front-page section is the
+            only surface for the top-20 (operator direction 2026-09-13). */}
+        <Route path="/console-leaderboards/multiplatform/:key" component={ConsoleMultiplatformDetail} />
         <Route path="/console-leaderboards/:platform/:titleId" component={ConsoleTitleDetail} />
         <Route path="/console-leaderboards/:platform" component={ConsoleLeaderboardsPlatform} />
         <Route path="/amazon/:section" component={AmazonIndex} />

@@ -160,6 +160,47 @@ function usePlatformLeaderboard(
   });
 }
 
+// ─── Multiplatform (Steam + ≥1 console) top-20 hook ───────────────────────
+// Matches the response shape of /api/console/leaderboards-multiplatform in
+// server/routes-console-leaderboards.ts. Every field is derived from the
+// SAME overlay pipeline as the per-platform boards, so the combined revenue
+// value is the sum of the same per-platform revenues you see in each column.
+interface MultiplatformRow {
+  editionGroupKey: string;
+  name: string;
+  coverUrl: string | null;
+  releaseDate: string | null;
+  steamTitleId: number;
+  ps5TitleId?: number;
+  xboxTitleId?: number;
+  platforms: Platform[];
+  revenueSteam: number;
+  revenuePs5: number;
+  revenueXbox: number;
+  revenueCombined: number;
+  revenueSource: "overlay-ratio" | "overlay-ip-override" | "ps5-exclusive-fallback" | "mixed";
+}
+interface MultiplatformResponse {
+  window: WindowKey;
+  cascade: WindowKey[];
+  count: number;
+  candidatesCount: number;
+  titles: MultiplatformRow[];
+}
+
+function useMultiplatformLeaderboard(window: WindowKey, limit = 20) {
+  return useQuery<MultiplatformResponse>({
+    queryKey: [`/signal/api/console/leaderboards-multiplatform`, { window, limit }],
+    queryFn: async () => {
+      const url = `/signal/api/console/leaderboards-multiplatform?window=${window}&limit=${limit}`;
+      const r = await fetch(url, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    staleTime: 5 * 60_000,
+  });
+}
+
 interface CalibrationStatus {
   calibrated: boolean;
   platform: string;
@@ -202,6 +243,7 @@ export default function ConsoleLeaderboardsHub() {
   const steamQ = usePlatformLeaderboard("steam", window);
   const xboxQ  = usePlatformLeaderboard("xbox",  window);
   const ps5Q   = usePlatformLeaderboard("ps5",   window);
+  const multiQ = useMultiplatformLeaderboard(window, 20);
 
   const queries: Record<Platform, ReturnType<typeof usePlatformLeaderboard>> = {
     steam: steamQ, xbox: xboxQ, ps5: ps5Q,
@@ -275,8 +317,178 @@ export default function ConsoleLeaderboardsHub() {
           </div>
         ))}
       </div>
+
+      {/* Full-width multiplatform section below the 3-column grid. Same
+          `window` state as the columns — flipping the window pill filters
+          all four surfaces together. Positioned BELOW per operator direction:
+          the 3-column presentation stays the primary read; combined-revenue
+          is a secondary, deeper look. */}
+      <MultiplatformSection window={window} query={multiQ} />
     </div>
   );
+}
+
+// ─── Multiplatform section ──────────────────────────────────────────
+// Full-width card. Rows show title + SKU badges (Steam / PS5 / Xbox) + the
+// per-platform revenue split + a large combined-revenue value on the right.
+// Click a row → multiplatform PDP. Click a platform badge → that platform's
+// per-title PDP (existing route).
+function MultiplatformSection({
+  window: windowKey,
+  query,
+}: {
+  window: WindowKey;
+  query: ReturnType<typeof useMultiplatformLeaderboard>;
+}) {
+  const rows = query.data?.titles ?? [];
+  const candidatesCount = query.data?.candidatesCount ?? 0;
+
+  return (
+    <Card
+      className="overflow-hidden flex flex-col border-t-4"
+      style={{ borderTopColor: "#a855f7" /* purple: distinct from steam/ps5/xbox accents */ }}
+      data-testid="multiplatform-section"
+    >
+      <div className="p-4 border-b border-border flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="font-semibold text-base" style={{ color: "#a855f7" }}>
+              Cross-Platform Leaders — Combined Revenue
+            </h2>
+            <Badge variant="outline" className="text-[10px] uppercase tracking-wide">top 20</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Titles shipping on Steam AND at least one console, ranked by summed in-window revenue across the platforms that carry a base SKU. Per-platform figures use the same overlay math (immutable revenue-share ratio, IP overrides, PS5-exclusive fallback) as the three columns above.
+          </p>
+        </div>
+        {candidatesCount > 0 ? (
+          <div className="text-xs text-muted-foreground shrink-0">
+            {candidatesCount} qualifying titles
+          </div>
+        ) : null}
+      </div>
+
+      <div className="flex-1">
+        {query.isLoading && (
+          <div className="p-3 space-y-2">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <Skeleton key={i} className="h-10 w-full rounded" />
+            ))}
+          </div>
+        )}
+
+        {query.isError && (
+          <div className="p-6 text-sm text-destructive text-center">
+            Failed to load multiplatform leaderboard: {(query.error as Error)?.message || "unknown error"}
+          </div>
+        )}
+
+        {!query.isLoading && !query.isError && rows.length === 0 && (
+          <div className="p-6 text-sm text-muted-foreground text-center">
+            No cross-platform titles for this window yet.
+          </div>
+        )}
+
+        {!query.isLoading && !query.isError && rows.length > 0 && (
+          <ol className="divide-y divide-border" data-testid="list-multiplatform">
+            {rows.map((t, i) => (
+              <li key={t.editionGroupKey}>
+                <Link href={`/console-leaderboards/multiplatform/${encodeURIComponent(t.editionGroupKey)}`}>
+                  <a
+                    className="grid grid-cols-[2rem_2rem_1fr_auto] md:grid-cols-[2rem_2rem_1fr_10rem_auto] items-center gap-2 md:gap-3 px-3 py-2 hover:bg-muted/40 transition-colors cursor-pointer"
+                    data-testid={`row-multiplatform-${t.editionGroupKey}`}
+                  >
+                    <span className="text-xs font-mono text-muted-foreground text-right tabular-nums shrink-0">
+                      {i + 1}
+                    </span>
+                    {t.coverUrl ? (
+                      <img src={t.coverUrl} alt="" loading="lazy" className="h-8 w-6 object-cover rounded-sm shrink-0" />
+                    ) : (
+                      <div className="h-8 w-6 rounded-sm bg-muted shrink-0" />
+                    )}
+                    <div className="min-w-0 flex flex-col">
+                      <span className="truncate text-sm">{t.name}</span>
+                      <div className="flex items-center gap-1 mt-0.5">
+                        {t.platforms.includes("steam") && (
+                          <PlatformChip label="Steam" color="#66c0f4" />
+                        )}
+                        {t.platforms.includes("ps5") && (
+                          <PlatformChip label="PS5" color="#0070d1" />
+                        )}
+                        {t.platforms.includes("xbox") && (
+                          <PlatformChip label="Xbox" color="#107c10" />
+                        )}
+                        {t.revenueSource !== "overlay-ratio" ? (
+                          <span
+                            className="text-[9px] uppercase tracking-wide text-muted-foreground ml-1"
+                            title={revenueSourceTooltip(t.revenueSource)}
+                          >
+                            {revenueSourceShortLabel(t.revenueSource)}
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    {/* Per-platform split — hidden on mobile to keep row height sane. */}
+                    <div className="hidden md:flex flex-col items-end leading-tight text-[10px] font-mono tabular-nums text-muted-foreground">
+                      {t.platforms.includes("steam") && (
+                        <span title="Steam revenue (overlay-final)">S {formatUsdCompact(t.revenueSteam)}</span>
+                      )}
+                      {t.platforms.includes("ps5") && (
+                        <span title="PS5 revenue (overlay-final)">P {formatUsdCompact(t.revenuePs5)}</span>
+                      )}
+                      {t.platforms.includes("xbox") && (
+                        <span title="Xbox revenue (overlay-final)">X {formatUsdCompact(t.revenueXbox)}</span>
+                      )}
+                    </div>
+                    <div className="flex flex-col items-end shrink-0 leading-tight">
+                      <span
+                        className="font-mono text-sm tabular-nums font-semibold"
+                        title={`Combined revenue (${windowKey}) = Steam + PS5 + Xbox overlay-final`}
+                      >
+                        {formatUsdCompact(t.revenueCombined)}
+                      </span>
+                      <span className="text-[9px] uppercase tracking-wide text-muted-foreground">
+                        combined
+                      </span>
+                    </div>
+                  </a>
+                </Link>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function PlatformChip({ label, color }: { label: string; color: string }) {
+  return (
+    <span
+      className="text-[9px] uppercase tracking-wide px-1.5 py-[1px] rounded border"
+      style={{ color, borderColor: color + "66" /* ~40% alpha */ }}
+      title={label}
+    >
+      {label}
+    </span>
+  );
+}
+
+function revenueSourceShortLabel(src: MultiplatformRow["revenueSource"]): string {
+  switch (src) {
+    case "overlay-ip-override":     return "ip mix";
+    case "ps5-exclusive-fallback":  return "exclusive";
+    case "mixed":                    return "mixed";
+    default:                         return "";
+  }
+}
+function revenueSourceTooltip(src: MultiplatformRow["revenueSource"]): string {
+  switch (src) {
+    case "overlay-ip-override":     return "Console revenue derived using the per-IP mix override (e.g. sports, Sony first-party) rather than the general 47/36/12 mix.";
+    case "ps5-exclusive-fallback":  return "Steam signal was below the meaningful-revenue floor — console revenue kept from its own estimator instead of derived from Steam.";
+    case "mixed":                    return "One platform used an IP override; another fell back to its own estimator.";
+    default:                         return "General immutable revenue-share ratio";
+  }
 }
 
 function PlatformColumn({
