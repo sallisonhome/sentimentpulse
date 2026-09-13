@@ -1,0 +1,51 @@
+name: SP Cron Alert Smoke Test
+
+# One-shot verification that backend/services/cron_alerts.py can actually
+# deliver a Resend email from the droplet. Run manually right after the
+# 2026-09-13 cron-hardening deploy to confirm CRON_ALERT_TO receives mail;
+# leave in place for future regressions of the alert path.
+#
+# Sends a labeled "SMOKE TEST" alert so it's obvious in the inbox this is
+# not a real cron failure.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: SSH and invoke cron_alerts CLI
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          cd /opt/sentimentpulse/backend
+          if [ -f /etc/sentimentpulse/env ]; then set -a; . /etc/sentimentpulse/env; set +a; fi
+          PY=./venv/bin/python
+          [ -x "$PY" ] || PY=python3
+          echo "Testing cron_alerts CLI with PY=$PY"
+          echo "RESEND_API_KEY present: $([ -n "${RESEND_API_KEY:-}" ] && echo YES || echo NO)"
+          echo "CRON_ALERT_TO: ${CRON_ALERT_TO:-<default: sallisonhome@yahoo.com>}"
+          cat > /tmp/smoke-extra.log <<'LOG'
+          SMOKE TEST — this is a synthetic failure payload
+          used to verify the alert delivery path.
+          - Sent from: sp-cron-alert-smoke.yml
+          - Purpose: post-deploy verification of cron_alerts.py
+          - Expected: single Resend email to CRON_ALERT_TO
+          LOG
+          "$PY" -m services.cron_alerts alert \
+            --job "sp-cron-alert-smoke" \
+            --attempts 1 \
+            --error "SMOKE TEST — synthetic failure; no action needed" \
+            --extra-file /tmp/smoke-extra.log
+          REMOTE
