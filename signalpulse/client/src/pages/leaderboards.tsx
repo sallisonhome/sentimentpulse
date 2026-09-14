@@ -6,13 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Table,
   TableHeader,
   TableBody,
   TableRow,
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+import { DualScrollTable } from "@/components/dual-scroll-table";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ChevronUp,
@@ -386,6 +386,14 @@ interface AmazonLeaderboardResponse {
 const SABER_ACCENT = "#C0553A";
 const RANK_DOWN_MUTED = "#7A9E7E";
 
+// Keeps the Game Title (or Competitor) column visible while a leaderboard
+// scrolls horizontally under its many stat columns. bg-card gives the
+// cell an opaque backing so scrolled-under columns do not show through;
+// each usage below pairs it with a group-hover tint matching that row's
+// own hover treatment so the sticky cell still highlights with the rest
+// of the row.
+const STICKY_COL = "sticky left-0 z-20 bg-card";
+
 // Compact-number formatter for the sales-estimate column (7,921 → "7.9K",
 // 1,204,000 → "1.2M"). Keeps the table row height stable when the numbers
 // span 3-7 digits across the slate.
@@ -498,10 +506,10 @@ function AmazonBoardRow({ title, delta }: { title: AmazonLeaderboardTitle; delta
   return (
     <>
       <TableRow
-        className={"hover:bg-accent/50 transition-colors" + (detailHref ? " cursor-pointer" : "")}
+        className={"group hover:bg-accent/50 transition-colors" + (detailHref ? " cursor-pointer" : "")}
         data-testid={`row-amazon-saber-${title.productId}`}
       >
-        <TableCell className="align-top py-3">
+        <TableCell className={STICKY_COL + " align-top py-3 group-hover:bg-accent/50"}>
           {detailHref ? (
             <a href={`#${detailHref}`} className="block truncate">{titleContent}</a>
           ) : (
@@ -537,10 +545,10 @@ function AmazonBoardRow({ title, delta }: { title: AmazonLeaderboardTitle; delta
         return (
           <TableRow
             key={c.sentimentpulseGameId}
-            className="bg-muted/20 hover:bg-accent/40 transition-colors"
+            className="group bg-muted/20 hover:bg-accent/40 transition-colors"
             data-testid={`row-amazon-competitor-${c.sentimentpulseGameId}`}
           >
-            <TableCell className="align-top py-2 pl-8">
+            <TableCell className={STICKY_COL.replace("bg-card", "bg-muted/20") + " align-top py-2 pl-8 group-hover:bg-accent/40"}>
               {compHref ? (
                 <a href={`#${compHref}`} className="block truncate text-xs text-foreground/90">{c.name}</a>
               ) : (
@@ -637,16 +645,16 @@ function SaberAmazonBoard({
             No Saber titles pinned yet. Add ASIN mappings from the Amazon Retail app to populate this leaderboard.
           </div>
         ) : (
-          <Table>
+          <DualScrollTable>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[38%] min-w-[220px]">Game Title</TableHead>
+                <TableHead className={STICKY_COL + " w-[38%] min-w-[220px]"}>Game Title</TableHead>
                 <TableHead className="text-right">PS5</TableHead>
                 <TableHead className="text-right">Xbox</TableHead>
                 <TableHead className="text-right">Switch</TableHead>
               </TableRow>
               <TableRow className="border-t-0">
-                <TableCell className="py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">
+                <TableCell className={STICKY_COL + " py-1 text-[10px] uppercase tracking-wider text-muted-foreground/70"}>
                   Rank / est. units / recent sales
                 </TableCell>
                 <TableCell colSpan={3} className="py-1 text-[10px] text-right uppercase tracking-wider text-muted-foreground/70">
@@ -659,7 +667,7 @@ function SaberAmazonBoard({
                 <AmazonBoardRow key={t.productId} title={t} delta={delta} />
               ))}
             </TableBody>
-          </Table>
+          </DualScrollTable>
         )}
       </Card>
 
@@ -674,10 +682,10 @@ function SaberAmazonBoard({
             </span>
             <span className="text-xs text-muted-foreground ml-2">{compTitles.length} pinned</span>
           </div>
-          <Table>
+          <DualScrollTable>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[38%] min-w-[220px]">Competitor</TableHead>
+                <TableHead className={STICKY_COL + " w-[38%] min-w-[220px]"}>Competitor</TableHead>
                 <TableHead className="text-right">PS5</TableHead>
                 <TableHead className="text-right">Xbox</TableHead>
                 <TableHead className="text-right">Switch</TableHead>
@@ -688,9 +696,9 @@ function SaberAmazonBoard({
                 <TableRow
                   key={c.sentimentpulseGameId}
                   data-testid={`row-amazon-flat-competitor-${c.sentimentpulseGameId}`}
-                  className="hover:bg-accent/40 transition-colors"
+                  className="group hover:bg-accent/40 transition-colors"
                 >
-                  <TableCell className="align-top py-2">
+                  <TableCell className={STICKY_COL + " align-top py-2 group-hover:bg-accent/40"}>
                     <div className="min-w-0">
                       <div className="text-xs truncate">{c.name}</div>
                       {c.parentTitle ? (
@@ -710,7 +718,7 @@ function SaberAmazonBoard({
                 </TableRow>
               ))}
             </TableBody>
-          </Table>
+          </DualScrollTable>
         </Card>
       ) : null}
     </div>
@@ -1021,10 +1029,10 @@ export default function Leaderboards() {
           </div>
         ) : (
           <Card className="overflow-hidden mb-6">
-            <Table>
+            <DualScrollTable>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[260px]">Game Title</TableHead>
+                  <TableHead className={STICKY_COL + " w-[260px]"}>Game Title</TableHead>
                   <SortableHead label="Global Rank" sortKey="globalRank" activeSort={ccuSort} onSort={handleCcuSort} />
                   <SortableHead label="Current CCU" sortKey="currentCcu" activeSort={ccuSort} onSort={handleCcuSort} />
                   <SortableHead label="24h Peak" sortKey="peak24h" activeSort={ccuSort} onSort={handleCcuSort} />
@@ -1036,10 +1044,10 @@ export default function Leaderboards() {
                 {sortedCcuRows.map((row) => (
                   <TableRow
                     key={row.productId}
-                    className="hover:bg-accent/50 transition-colors cursor-pointer"
+                    className="group hover:bg-accent/50 transition-colors cursor-pointer"
                     data-testid={`row-ccu-leaderboard-${row.productId}`}
                   >
-                    <TableCell>
+                    <TableCell className={STICKY_COL + " group-hover:bg-accent/50"}>
                       <a
                         href={`#/ccu/${row.productId}`}
                         className="flex flex-col gap-1 group"
@@ -1089,7 +1097,7 @@ export default function Leaderboards() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+            </DualScrollTable>
           </Card>
         )
       ) : board === "revenue" ? (
@@ -1113,10 +1121,10 @@ export default function Leaderboards() {
         ) : (
           <>
             <Card className="overflow-hidden mb-6">
-              <Table>
+              <DualScrollTable>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[220px]">Game Title</TableHead>
+                    <TableHead className={STICKY_COL + " w-[220px]"}>Game Title</TableHead>
                     <TableHead className="w-[56px] text-center">Chart</TableHead>
                     <SortableHead label="24h Units" sortKey="units24h" activeSort={revenueSort} onSort={handleRevenueSort} />
                     <SortableHead label="24h Units Δ%" sortKey="unitsDeltaPct24h" activeSort={revenueSort} onSort={handleRevenueSort} />
@@ -1133,8 +1141,8 @@ export default function Leaderboards() {
                 </TableHeader>
                 <TableBody>
                   {sortedRevenueRows.map((row) => (
-                    <TableRow key={row.productId} data-testid={`row-revenue-leaderboard-${row.productId}`}>
-                      <TableCell>
+                    <TableRow key={row.productId} className="group" data-testid={`row-revenue-leaderboard-${row.productId}`}>
+                      <TableCell className={STICKY_COL + " group-hover:bg-muted/50"}>
                         <a
                           href={`#/ccu/${row.productId}`}
                           className="flex flex-col gap-1 group"
@@ -1183,7 +1191,7 @@ export default function Leaderboards() {
                     </TableRow>
                   ))}
                 </TableBody>
-              </Table>
+              </DualScrollTable>
             </Card>
 
             {!revenueKpisLoading && revenueKpis && (
@@ -1240,10 +1248,10 @@ export default function Leaderboards() {
       ) : (
         <>
           <Card className="overflow-hidden mb-6">
-            <Table>
+            <DualScrollTable>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[240px]">Game Title</TableHead>
+                  <TableHead className={STICKY_COL + " w-[240px]"}>Game Title</TableHead>
                   <TableHead className="w-[56px] text-center">Chart</TableHead>
                   <SortableHead label="Total WL" sortKey="wishlistTotal" activeSort={sort} onSort={handleSort} />
                   <SortableHead label="1D WL Δ" sortKey="wishlistDelta1d" activeSort={sort} onSort={handleSort} />
@@ -1259,8 +1267,8 @@ export default function Leaderboards() {
               </TableHeader>
               <TableBody>
                 {sortedRows.map((row) => (
-                  <TableRow key={row.productId} data-testid={`row-leaderboard-${row.productId}`}>
-                    <TableCell>
+                  <TableRow key={row.productId} className="group" data-testid={`row-leaderboard-${row.productId}`}>
+                    <TableCell className={STICKY_COL + " group-hover:bg-muted/50"}>
                       <a
                         href={`#/ccu/${row.productId}`}
                         className="flex flex-col gap-1 group"
@@ -1303,7 +1311,7 @@ export default function Leaderboards() {
                   </TableRow>
                 ))}
               </TableBody>
-            </Table>
+            </DualScrollTable>
           </Card>
 
           {!kpisLoading && kpis && (
