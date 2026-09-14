@@ -1,0 +1,72 @@
+name: SignalPulse Cleanup Pre-Admin Backups
+
+# One-off maintenance: removes the point-in-time DB snapshots that
+# signalpulse-db-admin.yml creates on every run (`data.pre-admin.*.db`).
+# These accumulate on the droplet and can fill the disk.
+#
+# Only touches files matching the exact pattern; refuses to run without
+# CONFIRM=YES.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type YES to acknowledge deletion of pre-admin backups"
+        required: true
+        default: ""
+      keep_days:
+        description: "Keep backups newer than N days (default 1)"
+        required: false
+        default: "1"
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Gate on CONFIRM
+        env:
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          if [ "$CONFIRM" != "YES" ]; then
+            echo "ERROR: confirm must be YES (got '$CONFIRM')"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: List and remove pre-admin backups
+        env:
+          KEEP_DAYS: ${{ github.event.inputs.keep_days }}
+        run: |
+          set -e
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          WD=$($SSH "systemctl show -p WorkingDirectory --value signalpulse")
+          echo "WorkingDirectory: $WD"
+          echo ""
+          echo "── Disk before ──"
+          $SSH "df -h $WD | head -3"
+          echo ""
+          echo "── Pre-admin backups present ──"
+          $SSH "ls -lh $WD/data.pre-admin.*.db 2>/dev/null || echo '(none)'"
+          echo ""
+          echo "── Deleting backups older than ${KEEP_DAYS} day(s) ──"
+          $SSH "find $WD -maxdepth 1 -name 'data.pre-admin.*.db' -type f -mtime +${KEEP_DAYS} -print -delete"
+          echo ""
+          echo "── Also removing today's pre-admin backups except the newest one ──"
+          $SSH "cd $WD && ls -1t data.pre-admin.*.db 2>/dev/null | tail -n +2 | xargs -r -I{} sh -c 'rm -v \"{}\"'"
+          echo ""
+          echo "── Disk after ──"
+          $SSH "df -h $WD | head -3"
+          echo ""
+          echo "── Remaining pre-admin backups ──"
+          $SSH "ls -lh $WD/data.pre-admin.*.db 2>/dev/null || echo '(none)'"
