@@ -5,6 +5,14 @@ import lightLogo from "@assets/saber-logo-light-mode.jpg";
 interface LeaderboardBannerProps {
   title: string;
   subtitle?: string;
+  /**
+   * Optional refresh cadence + last-updated note, rendered as a small line
+   * under the subtitle. Callers compose the string themselves so pages
+   * that show hourly CCU can differ from pages that show daily wishlist/
+   * revenue/Amazon boards — e.g. "Refreshed daily · Latest data: 2026-09-14"
+   * or "Refreshed hourly · Last capture: 2026-09-14 13:00 UTC".
+   */
+  refreshNote?: string;
 }
 
 /**
@@ -13,7 +21,7 @@ interface LeaderboardBannerProps {
  * "bold professional title treatment/font for the Leaderboard titles"
  * requirement (CLAUDE_STEAM_LEADERBOARDS.md §6.1).
  */
-export function LeaderboardBanner({ title, subtitle }: LeaderboardBannerProps) {
+export function LeaderboardBanner({ title, subtitle, refreshNote }: LeaderboardBannerProps) {
   const { theme } = useTheme();
   const logo = theme === "dark" ? darkLogo : lightLogo;
 
@@ -37,6 +45,14 @@ export function LeaderboardBanner({ title, subtitle }: LeaderboardBannerProps) {
         </h1>
         {subtitle && (
           <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
+        )}
+        {refreshNote && (
+          <p
+            className="text-[11px] text-muted-foreground/80 mt-0.5"
+            data-testid="text-leaderboard-refresh-note"
+          >
+            {refreshNote}
+          </p>
         )}
       </div>
     </div>

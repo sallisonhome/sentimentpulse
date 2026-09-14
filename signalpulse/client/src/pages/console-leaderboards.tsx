@@ -98,6 +98,12 @@ interface LeaderboardResponse {
   count: number;
   aspFactor?: number;
   titles: LeaderboardRow[];
+  // Latest capture_date backing this platform's rating snapshots; drives
+  // the "Latest data: YYYY-MM-DD" banner note. Null when the table is
+  // empty for the platform.
+  latestCaptureDate?: string | null;
+  // Human-readable cron cadence label for the daily refresh (UTC).
+  refreshCronUtc?: string;
 }
 
 function formatNumberCompact(n: number | null | undefined): string {
@@ -186,6 +192,8 @@ interface MultiplatformResponse {
   count: number;
   candidatesCount: number;
   titles: MultiplatformRow[];
+  latestCaptureDate?: string | null;
+  refreshCronUtc?: string;
 }
 
 function useMultiplatformLeaderboard(window: WindowKey, limit = 20) {
@@ -260,6 +268,31 @@ export default function ConsoleLeaderboardsHub() {
           </div>
           <p className="text-sm text-muted-foreground mt-1">
             Top premium paid titles across Steam, Xbox, and PlayStation, ranked by estimated in-window revenue (units × ASP). Free-to-play titles are excluded. Rating count is the underlying sales-momentum signal that feeds the estimator.
+          </p>
+          {/*
+           * Refresh cadence note. The seed-console-data workflow runs daily
+           * at 09:15 UTC (see .github/workflows/signalpulse-seed-console-data.yml).
+           * `latestCaptureDate` comes from MAX(capture_date) in
+           * store_rating_signal_daily on the server; showing it as a plain
+           * YYYY-MM-DD keeps timezone assumptions out of the UI.
+           */}
+          <p
+            className="text-xs text-muted-foreground mt-1"
+            data-testid="text-leaderboard-refresh-note"
+          >
+            Refreshed daily at ~09:15 UTC
+            {(() => {
+              // Prefer any platform's response that has surfaced a date;
+              // fall back to the multiplatform response, which reads MAX
+              // across all three platforms.
+              const anyDate =
+                steamQ.data?.latestCaptureDate ??
+                ps5Q.data?.latestCaptureDate ??
+                xboxQ.data?.latestCaptureDate ??
+                multiQ.data?.latestCaptureDate ??
+                null;
+              return anyDate ? ` · Latest data: ${anyDate}` : "";
+            })()}
           </p>
         </div>
         <div className="flex gap-1 flex-wrap" role="tablist" aria-label="Window">
@@ -735,6 +768,14 @@ export function ConsoleLeaderboardsPlatform() {
             <h1 className="text-2xl font-semibold">{platformLabel} · Top Paid Titles</h1>
             <Badge variant="outline" className="text-[10px] uppercase tracking-wide">experimental</Badge>
           </div>
+          {/* Refresh cadence + latest capture date. See hub page comment for provenance. */}
+          <p
+            className="text-xs text-muted-foreground mt-1"
+            data-testid="text-leaderboard-refresh-note"
+          >
+            Refreshed daily at ~09:15 UTC
+            {data?.latestCaptureDate ? ` · Latest data: ${data.latestCaptureDate}` : ""}
+          </p>
         </div>
         <div className="flex gap-1 flex-wrap" role="tablist" aria-label="Window">
           {WINDOWS.map(w => (

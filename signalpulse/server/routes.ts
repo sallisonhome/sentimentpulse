@@ -1,6 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage, type SteamWishlistSummary } from "./storage";
+import { storage, rawSqlite, type SteamWishlistSummary } from "./storage";
 import { calculateDynamicForecasts, calculateDynamicForecastsFull, computeForecastScenarios, STEAM_WISHLIST_FIRST_MONTH_MULTIPLIER } from "./forecast";
 import { generateDefaultMilestones } from "./pls-generator";
 import { seedDatabase } from "./seed";
@@ -2435,6 +2435,40 @@ export async function registerRoutes(
   });
 
   // ─── Steam Leaderboards ─────────────────────────────────────────────────────
+
+  // Leaderboard refresh status. Powers the "Refreshed <cadence> · Latest
+  // data: <timestamp>" banner note on the four Steam leaderboards
+  // (wishlist / revenue / CCU / Amazon). Rather than plumb a date onto
+  // every existing row endpoint (four separate shapes), one small endpoint
+  // reports MAX(date/at) from each backing table plus the human-readable
+  // cadence copy. Dates are the raw string form used by the tables so we
+  // don't accidentally shift a timezone in the UI. CCU is a datetime
+  // because the poll runs hourly and a date alone would look stale within
+  // the same day.
+  app.get("/api/leaderboards/refresh-status", (_req, res) => {
+    try {
+      const maxDate = (sql: string): string | null => {
+        try {
+          const row = rawSqlite.prepare(sql).get() as { d: string | null } | undefined;
+          return row?.d ?? null;
+        } catch {
+          return null;
+        }
+      };
+      const wishlistLatest = maxDate(`SELECT MAX(date) AS d FROM steam_wishlist_reporting_daily`);
+      const revenueLatest  = maxDate(`SELECT MAX(date) AS d FROM steam_sales_daily`);
+      const ccuLatest      = maxDate(`SELECT MAX(captured_at) AS d FROM ccu_snapshots_steam`);
+      const amazonLatest   = maxDate(`SELECT MAX(snapshot_date) AS d FROM amazon_product_daily`);
+      res.json({
+        wishlist: { latest: wishlistLatest, cadence: "Daily" },
+        revenue:  { latest: revenueLatest,  cadence: "Daily" },
+        ccu:      { latest: ccuLatest,      cadence: "Hourly" },
+        amazon:   { latest: amazonLatest,   cadence: "Daily" },
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
 
   // Pre-Release Steam Wishlist Leaderboard (Phase 2). Never more than ~20
   // rows (pre-release Saber titles with a steamAppId), so all sorting

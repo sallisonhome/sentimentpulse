@@ -757,6 +757,21 @@ export default function Leaderboards() {
     enabled: board === "wishlist",
   });
 
+  // Refresh-status feed for the banner note ("Refreshed <cadence> · Latest
+  // data: <timestamp>"). One tiny fetch behind the four tabs; we pick the
+  // right slice depending on which board is active. Kept as its own query
+  // (not merged into each board's row endpoint) so we don't touch the
+  // shape of long-established row payloads.
+  const { data: refreshStatus } = useQuery<{
+    wishlist: { latest: string | null; cadence: string };
+    revenue:  { latest: string | null; cadence: string };
+    ccu:      { latest: string | null; cadence: string };
+    amazon:   { latest: string | null; cadence: string };
+  }>({
+    queryKey: ["/api/leaderboards/refresh-status"],
+    staleTime: 60_000,
+  });
+
   const { data: kpis, isLoading: kpisLoading } = useQuery<WishlistLeaderboardKpis>({
     queryKey: ["/api/leaderboards/wishlist/kpis"],
     enabled: board === "wishlist",
@@ -903,6 +918,29 @@ export default function Leaderboards() {
     return (rows ?? []).map((r) => ({ productId: r.productId, title: r.title }));
   }, [board, rows, revenueRows]);
 
+  // Compose the banner's refresh note from the tab and the refresh-status
+  // feed. Wishlist/revenue/Amazon are date-granular (daily boards); CCU is
+  // datetime-granular (hourly). We keep the raw string from the DB and
+  // only trim the seconds so 2026-09-14T13:07:41.882Z reads as
+  // "2026-09-14 13:07 UTC" without pulling in a full timezone lib.
+  const status = refreshStatus?.[
+    board === "wishlist" ? "wishlist"
+    : board === "revenue" ? "revenue"
+    : board === "ccu" ? "ccu"
+    : "amazon"
+  ];
+  const refreshNote = (() => {
+    if (!status) return undefined;
+    const cadence = status.cadence.toLowerCase(); // "daily" | "hourly"
+    if (!status.latest) return `Refreshed ${cadence}`;
+    // CCU stores ISO datetimes; other boards store YYYY-MM-DD.
+    const iso = status.latest;
+    const label = /T\d{2}:\d{2}/.test(iso)
+      ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`
+      : iso;
+    return `Refreshed ${cadence} · Latest data: ${label}`;
+  })();
+
   return (
     <div className="p-6 max-w-7xl mx-auto">
       <LeaderboardBanner
@@ -921,6 +959,7 @@ export default function Leaderboards() {
             ? "Hourly-refreshed concurrent player counts and global Steam rank for every released Saber title"
             : "Daily Amazon retail chart position for every Saber title across PS5, Xbox, and Nintendo Switch"
         }
+        refreshNote={refreshNote}
       />
 
       <div className="flex items-center justify-between mb-5 flex-wrap gap-3">

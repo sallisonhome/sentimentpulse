@@ -1294,7 +1294,31 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // preserved, so groups[0..99] is the final leaderboard.
       const collapsed = groups.slice(0, 100);
 
-      res.json({ platform, window, sort, dir, aspFactor, cascade, count: collapsed.length, titles: collapsed });
+      // Latest data date for this platform — read from the most recent
+      // capture in store_rating_signal_daily. Powers the "Refreshed daily
+      // at ~09:15 UTC · Latest data: YYYY-MM-DD" banner note. Kept as a
+      // string date (YYYY-MM-DD) because that's what the daily discovery
+      // stamps into capture_date. Null if the table is empty for this
+      // platform.
+      let latestCaptureDate: string | null = null;
+      try {
+        const latestRow = rawSqlite.prepare(
+          `SELECT MAX(capture_date) AS d
+             FROM store_rating_signal_daily
+            WHERE platform = ?`,
+        ).get(platform) as { d: string | null } | undefined;
+        latestCaptureDate = latestRow?.d ?? null;
+      } catch (latestErr: any) {
+        console.log(`[leaderboard-latest] platform=${platform} lookup failed: ${latestErr?.message ?? latestErr}`);
+      }
+
+      res.json({
+        platform, window, sort, dir, aspFactor, cascade,
+        count: collapsed.length,
+        titles: collapsed,
+        latestCaptureDate,
+        refreshCronUtc: "09:15",
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1615,12 +1639,28 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Observability log line, mirrors the per-platform overlay log style.
       console.log(`[multiplatform-leaderboard] window=${window} candidates=${multiRows.length} returned=${trimmed.length} overlayRatio=${overlayRatioCount} overlayIp=${overlayIpCount} exclusiveFallback=${exclusiveFallbackCount} xboxFilteredNoName=${filteredMissingSteam}`);
 
+      // Latest data date across ANY platform — the multiplatform board
+      // pulls from all three, so we show the maximum capture_date across
+      // the store_rating_signal_daily table so the banner note reflects
+      // the freshest input feeding this view.
+      let latestCaptureDate: string | null = null;
+      try {
+        const latestRow = rawSqlite.prepare(
+          `SELECT MAX(capture_date) AS d FROM store_rating_signal_daily`,
+        ).get() as { d: string | null } | undefined;
+        latestCaptureDate = latestRow?.d ?? null;
+      } catch (latestErr: any) {
+        console.log(`[multiplatform-leaderboard-latest] lookup failed: ${latestErr?.message ?? latestErr}`);
+      }
+
       res.json({
         window,
         cascade,
         count: trimmed.length,
         candidatesCount: multiRows.length,
         titles: trimmed,
+        latestCaptureDate,
+        refreshCronUtc: "09:15",
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
