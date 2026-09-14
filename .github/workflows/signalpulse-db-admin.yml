@@ -99,3 +99,16 @@ jobs:
           echo "── Post-run audit ──"
           # Show ownership_multipliers state as a general-purpose sanity block.
           $SSH "sqlite3 -header -column \"$DB_PATH\" 'SELECT platform, cohort_key, multiplier, ci_pct, digital_unit_share, gp_rating_deflator, effective_from, confidence FROM ownership_multipliers ORDER BY platform, effective_from DESC'"
+
+          # 4. Auto-prune this run's backup on success. `set -e` above means
+          # we only reach here if every prior step exited 0. On failure the
+          # backup is intentionally preserved for a manual rewind. We also
+          # trim any older pre-admin backups beyond the newest 3, so bursty
+          # sessions can't refill the disk (2026-09-13: 23 backups filled
+          # /dev/vda1 during MK1 SKU cleanup).
+          echo ""
+          echo "── Auto-prune backups (keep newest 3) ──"
+          WD=$(dirname "$DB_PATH")
+          $SSH "rm -v '$BACKUP' 2>/dev/null || true"
+          $SSH "cd '$WD' && ls -1t data.pre-admin.*.db 2>/dev/null | tail -n +4 | xargs -r rm -v"
+          $SSH "df -h '$WD' | head -3"
