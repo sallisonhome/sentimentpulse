@@ -2549,3 +2549,42 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 **Anti-pattern this prevents.** "Discovery ran successfully so the state is fresh." Discovery is a snapshot at a point in time; without a per-SKU daily re-read, any downstream filter that depends on that state can silently reject a title for hours or days after the underlying storefront has updated. On the leaderboard side this manifests as a released title being invisible; on the pricing side it would manifest as stale MSRP; on the naming side it would manifest as a renamed title appearing under its old name.
 
 **Verification pattern.** After deploy, live-probe: `SELECT title_id, store_release_date FROM console_title_igdb WHERE title_id=10304` should show `store_release_date='2026-09-04'` on the next PS5 collector run. Broader: `SELECT COUNT(*) FROM console_title_igdb WHERE title_id IN (SELECT title_id FROM platform_sku_map WHERE platform='ps5') AND store_release_date IS NOT NULL` should climb from 1 toward parity with Steam/Xbox over 24-48h.
+
+## 2026-09-14 — Steam multiplier recalibration: uniform-cohort model breaks on tenured titles
+
+**Context.** After the 2026-09-12 Steam multiplier fit landed at 74.6 (up from 25), leaderboard revenue for tenured, high-review titles inflated far above their public ground truth. RUST was the flagship symptom: live-DB probe on 2026-09-14 showed RUST Steam LTD units=94.8M and rev=$2.50B, versus Facepunch's own mid-2025 recap of 20M+ Steam LTD copies as of July 2025. Overshoot: ~4.5× on LTD, ~8-9× on m12 ($299M vs a defensible ~$35-45M). Star Wars: Zero Company (release 2026-08-27) and Onimusha: Way of the Sword (release 2026-09-04), both recent launches, looked correct — narrowing the failure to tenured titles only.
+
+**Root cause.** The 2026-09-12 refit's anchor set had exactly ONE title older than 5 years (SnowRunner 2020-04-28). Every other anchor was a 2024-2026 launch. The weighted-median ratio of act/est therefore reflected recent-launch dynamics — where the "owners-per-positive-review" coefficient is high because the rating pipeline hasn't saturated yet — and got applied uniformly to the entire Steam catalog, including titles with 10+ years of accumulated rating-count. For those older titles, real "owners-per-positive-review" is closer to 15-20 (per Steampageanalyzer's tenured-title heuristic and per the anchor math on RUST, DbD, Terraria, BG3, Elden Ring), not 74.6.
+
+**Structural finding.** A single Steam multiplier cannot simultaneously fit tenured and recent-launch titles. The two cohorts have systematically different reviews-per-owner ratios. The 2026-09-12 anchor sample happened to include only one cohort, and the fit propagated that cohort's characteristics platform-wide.
+
+**Fix applied (2026-09-14).**
+1. Added 5 tenured-title LTD anchors to `revenue_calibration_anchors` at `sale_state='baseline'`, `as_of_date='2026-09-14'` (Rust 20M, DbD 19.8M, Terraria 33M, BG3 15M, Elden Ring 30M), each with `notes` field carrying the source URL and derivation math. Fixed RUST `release_date` from an incorrect 2024-04-15 to the correct 2013-12-11 (Steam early-access launch).
+2. Re-ran `signalpulse-refit-multipliers.yml` (dry_run=false, min_anchors=2, max_step=5, as_of=2026-09-14). Weighted median of the now-25 anchors: 0.539×. Platform multiplier dropped from 74.6 → 40.20 (uncapped, inside [20,70] industry band). Written to `ownership_multipliers` as id=14.
+3. Added 5 per-title rows to `title_multiplier_overrides` at `confidence='public-corroborated'`, `method='public_corroborated_anchor_2026_09_14'`, pegged to each title's target = `target_ltd_units / current_positive_reviews`:
+   - Rust: 15.74 (20M / 1.27M reviews)
+   - Dead by Daylight: 26.25 (19.8M / 754k)
+   - Baldur's Gate III: 19.22 (15M / 780k)
+   - Terraria: 24.67 (33M / 1.34M)
+   - Elden Ring: 34.04 (30M / 881k)
+4. Re-ran `estimate-console-units.ts` via `signalpulse-seed-title-multiplier-overrides.yml` — wrote 3,300 fresh rows to `window_estimates_daily`. All 5 anchor titles now show `method='override:public_corroborated_anchor_2026_09_14'` with LTD units snapping exactly to targets.
+
+**Live-verified outcome.** RUST Steam LTD 20.0M / $528M gross (was 94.8M / $2.50B). RUST m12 2.39M / $63.1M (was 11.34M / $299M). Peer anchors all snap to public truth. Non-anchor tenured titles benefit from the 40.20 → recent-launch cohort mid-point but still overshoot; SnowRunner (10185) is now under-estimating at LTD 1.95M vs its recorded actual $71.5M anchor (act 3.79M units at $18.87 asp), a byproduct of the platform-wide 46% multiplier cut.
+
+**Rule.** When calibrating a single platform-level coefficient from an anchor set:
+1. **Verify age-cohort balance before applying**: the anchor set must include titles from at least three tenure buckets (0-2yr, 2-5yr, 5+yr) to trust a uniform fit. A pre-flight check in `refit-ownership-multipliers.ts` should reject or warn when >80% of anchors are within a single 3-year window.
+2. **Cross-check against public-corroborated LTD for at least one tenured title** as a sanity gate before applying. RUST's Facepunch number was a documented, non-Saber-proprietary datapoint the entire time — nothing prevented catching this on Sept 12.
+3. **Per-title overrides are a tactical patch, not the durable fix.** The durable fix is a cohort-split model: separate multipliers by `date('now') - release_date` band (or by first_seen_ratings_at age). Until that lands, any new tenured Steam title that gains prominence on the leaderboard is at risk of the same 4-5× overshoot.
+
+**Anti-pattern this prevents.** "The refit ran successfully and the audit row was written, therefore the calibration is correct." A calibration-events audit row proves the fit converged; it does not prove the fit is valid. A converged fit against a biased sample is a converged wrong answer. The audit table needs a companion `calibration_sanity_checks` row for each apply that captures at least: (a) age-cohort distribution of the anchor sample, (b) delta vs the top-3 public-corroborated tenured titles the model was NOT calibrated against.
+
+**Verification pattern.**
+- Post-refit, live-probe `SELECT title_id, window, units_mid, method FROM window_estimates_daily WHERE title_id IN (…anchors…) AND as_of_date=date('now')` — every LTD row must show method starting with `override:` and units_mid within 1% of target.
+- Cross-check one non-anchor tenured title (e.g. Team Fortress 2, PUBG, Skyrim, GTA V) against a public LTD estimate. If it overshoots by >2×, the cohort split is still needed.
+- Ratio audit: `weighted_median(act/est) after the refit should be ≈ 1.0 across anchors; if it drifts >0.3 from 1.0 within a week, another refit is warranted or the cohort model is drifting.
+
+**Followups to file in `docs/calibration-anchors-todo.md`.**
+- Add `cohort_key` splits by title age band and refit each cohort independently.
+- Backfill SnowRunner (10185) with a `public-corroborated` override to fix its post-refit under-estimation; the anchor is already there.
+- Add a top-tier tenured-title sanity list (~10 titles) to the refit script that logs their pre/post ratios so cohort drift is visible in the workflow output.
+- Fix `signalpulse-db-admin.yml` SQL wrapping: the workflow already wraps in a transaction, so callers should NOT include BEGIN/COMMIT. Today's write appeared to fail (exit=1) because the second EXPLAIN pass saw an already-resolved transaction; the writes did land but the run showed red. Either strip caller BEGIN/COMMIT in the workflow or document the rule prominently in `.github/workflows/signalpulse-db-admin.yml`.
