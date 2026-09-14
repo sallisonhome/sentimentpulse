@@ -569,6 +569,24 @@ async function main() {
     return rel >= daysAgoIso(days) && rel <= todayIso;
   }
 
+  // Title age in days as of `asOfDate`. Returns null when no effective
+  // release date is on file (unknown-release rows opt out of the age gate).
+  //
+  // Used by the window-vs-age gate below: when a title's age is less than
+  // the requested window's day count (e.g. a 4-day-old title with a d30
+  // request), the window and LTD contain the same underlying data — the
+  // title has no history outside the window — and the row is gated to
+  // avoid presenting d7/d30/d90/m12 as if they were distinct measurements.
+  function titleAgeDays(titleId: number): number | null {
+    const rel = releaseByTitle.get(titleId);
+    if (!rel) return null;
+    const a = new Date(todayIso + "T00:00:00Z").getTime();
+    const b = new Date(rel + "T00:00:00Z").getTime();
+    if (Number.isNaN(a) || Number.isNaN(b)) return null;
+    const diff = Math.floor((a - b) / 86400000);
+    return diff < 0 ? 0 : diff;
+  }
+
   // ─── 8. Per-platform signal resolver ─────────────────────────────────────
   //
   // Signal resolution cascade (from best to worst confidence):
@@ -740,6 +758,32 @@ async function main() {
         row.gatedReason = "signal_too_small";
         rows.push(row);
         continue;
+      }
+
+      // ─── Window-vs-age gate (2026-09-14) ─────────────────────────────
+      //     Rule: when a title's age (today − effective_release_date) is
+      //     less than the requested window's day count, the last-N-days
+      //     view and the lifetime view contain the same underlying data —
+      //     the title has no history outside the window. Emitting a value
+      //     produces d7 = d30 = d90 = m12 = ltd for young titles, which
+      //     looks broken on the leaderboard even though the math is
+      //     truthful. Solution: gate the shorter-than-age windows so only
+      //     windows the title has actually lived through, plus LTD, carry
+      //     units. The client badges the LTD row with 'since launch (Xd)'
+      //     using days_since_release exposed by the leaderboard API.
+      //
+      //     LTD is never age-gated (it has no upper age constraint).
+      //     Titles with no effective release date opt out of the gate —
+      //     unknown-release rows historically don't hit this failure mode
+      //     because they lack the signal strength to matter.
+      if (window !== "ltd") {
+        const age = titleAgeDays(titleId);
+        if (age != null && age < WINDOW_DAYS[window]!) {
+          row.signalValue = signal;  // preserve for audit
+          row.gatedReason = "window_exceeds_title_age";
+          rows.push(row);
+          continue;
+        }
       }
 
       // ─── Game Pass rating deflator (v0.3, xbox only today) ───────────
