@@ -116,12 +116,86 @@ export interface PsCollectorOutput {
   storeDisplayClassification: string | null;
   productName: string | null;
   usedFallback: boolean;                     // true → PDP-HTML fallback fired; runner should write divergence row
+  /**
+   * Release date extracted from the PSN PDP HTML during the daily collector
+   * run (YYYY-MM-DD). Null when the PDP fetch failed or the marker was not
+   * present. Never blocks the primary rating signal — a PDP failure is
+   * silently absorbed, leaving pdpReleaseDate=null. Wired 2026-09-14 to fix
+   * the stale-IGDB-release_date failure mode (Onimusha: Way of the Sword
+   * PS5, whose IGDB release_date lagged Capcom's Sept-4 launch by 3 weeks
+   * and caused the leaderboard's unreleasedFilter to drop the row).
+   */
+  pdpReleaseDate: string | null;
 }
 
 function buildGraphqlUrl(productId: string, hash: string): string {
   const variables = encodeURIComponent(JSON.stringify({ productId }));
   const extensions = encodeURIComponent(JSON.stringify({ persistedQuery: { version: 1, sha256Hash: hash } }));
   return `https://web.np.playstation.com/api/graphql/v1/op?operationName=wcaProductStarRatingRetrive&variables=${variables}&extensions=${extensions}`;
+}
+
+/**
+ * Build the region-appropriate PSN PDP URL for a Sony productId.
+ *
+ * PSN's PDP path uses `/en-us/`, `/en-gb/`, etc. — mismatched region locale
+ * for a productId prefix would 404. Mirrors the LOCALE_BY_REGION table used
+ * by the star-rating call so PDP fetches follow the same region contract.
+ */
+function buildPsPdpUrl(productId: string): string {
+  const prefix = productId.slice(0, 2).toUpperCase();
+  const pathLocale =
+    prefix === "EP" ? "en-gb" :
+    prefix === "HP" ? "en-sg" :
+    prefix === "JP" ? "ja-jp" :
+    "en-us";
+  return `https://store.playstation.com/${pathLocale}/product/${productId}`;
+}
+
+/**
+ * Fetch the release date from a PSN PDP by scraping the embedded state blob.
+ *
+ * The PSN PDP HTML contains the Apollo/Next.js state serialized as a JSON
+ * blob; inside that blob every product concept carries a `releaseDate` field
+ * in ISO-8601 UTC form: `"releaseDate":"2026-09-04T04:00:00Z"`. Verified
+ * against Onimusha: Way of the Sword (UP0102-PPSA27836_00) on 2026-09-14.
+ *
+ * Returns YYYY-MM-DD or null. NEVER throws — a failed PDP fetch or missing
+ * marker is soft-fail so the primary rating collector never regresses. The
+ * intent is opportunistic: capture the release date when Sony renders it,
+ * skip silently when they don't.
+ *
+ * Uses a 10s timeout (tighter than the 15s GraphQL timeout) so a slow PDP
+ * can't stretch each per-title budget past the star-rating call's own SLO.
+ */
+export async function fetchPsPdpReleaseDate(productId: string): Promise<string | null> {
+  const url = buildPsPdpUrl(productId);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const res = await fetch(url, {
+      headers: {
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const html = await res.text();
+    // Anchored to the Apollo-state key. Regex is intentionally strict — we
+    // want YYYY-MM-DD followed by a `T` (ISO-8601 time separator) so we
+    // never accidentally match a non-date field named similarly. The first
+    // occurrence is the product-level releaseDate; PSN sometimes has a
+    // duplicate on the concept object and either is authoritative.
+    const m = html.match(/"releaseDate":"(\d{4}-\d{2}-\d{2})T/);
+    return m ? m[1] : null;
+  } catch {
+    // AbortError, network failure, non-string body — all soft-fail.
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function fetchPsRatingSignal(input: PsCollectorInput): Promise<PsCollectorOutput> {
@@ -199,6 +273,11 @@ export async function fetchPsRatingSignal(input: PsCollectorInput): Promise<PsCo
     }),
   };
 
+  // Opportunistic PDP release-date capture. Runs AFTER the primary signal
+  // is committed to `snapshot`, so any PDP failure cannot affect the rating
+  // ingestion. Timeout is bounded inside fetchPsPdpReleaseDate — never throws.
+  const pdpReleaseDate = await fetchPsPdpReleaseDate(input.productId);
+
   return {
     input,
     snapshot,
@@ -206,6 +285,7 @@ export async function fetchPsRatingSignal(input: PsCollectorInput): Promise<PsCo
     storeDisplayClassification: pr.storeDisplayClassification ?? null,
     productName: pr.name ?? null,
     usedFallback,
+    pdpReleaseDate,
   };
 }
 

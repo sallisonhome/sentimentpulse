@@ -16,6 +16,7 @@ import { log } from "../../log";
 import { collectSteamSignals, type SteamCollectorInput } from "./steam";
 import { collectXboxSignals, type XboxCollectorInput } from "./xbox";
 import { collectPsSignals, type PsCollectorInput } from "./ps";
+import { bootstrapConsoleTitleNames } from "./discovery";
 import type { BusinessModel, ConsolePlatform, StoreRatingSnapshot, SteamReviewBucket } from "./types";
 
 interface RunResult {
@@ -244,6 +245,21 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
   // Consume outputs by input identity, NOT by positional index. Failed AND
   // soft-skipped inputs are excluded from `res.ok`, so `res.ok[i]` does not
   // align with `eligible[i]`. See PsCollectorOutput.input docstring.
+  //
+  // Also batch up PDP-scraped release dates for a single bootstrapConsoleTitleNames
+  // call after the ratings-insert loop. bootstrapConsoleTitleNames uses
+  // COALESCE(excluded.store_release_date, console_title_igdb.store_release_date)
+  // so a null value never wipes an existing captured date — rows with
+  // pdpReleaseDate=null are simply omitted from the batch to skip the write.
+  //
+  // The batch is required because the leaderboard's unreleasedFilter reads
+  // COALESCE(igdb.release_date, igdb.store_release_date). Any released title
+  // whose IGDB release_date lags the storefront (as with Onimusha WotS PS5
+  // on 2026-09-14 — IGDB carried the original 2026-09-25 date after Capcom
+  // moved the launch to 2026-09-04) is silently dropped from the board. The
+  // daily PDP scrape keeps store_release_date in sync so the cascade heals
+  // stale IGDB dates automatically without a separate cron.
+  const nameRefreshRows: Array<{ titleId: number; name: string; releaseDateIso: string | null }> = [];
   for (const out of res.ok) {
     insertStoreRatingSnapshot(out.input.titleId, out.snapshot);
     if (out.usedFallback) {
@@ -256,7 +272,23 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
         valueB: out.snapshot.ratingCount,
       });
     }
+    if (out.pdpReleaseDate != null && out.productName != null) {
+      nameRefreshRows.push({
+        titleId: out.input.titleId,
+        name: out.productName,
+        releaseDateIso: out.pdpReleaseDate,
+      });
+    }
     ingested++;
+  }
+  if (nameRefreshRows.length > 0) {
+    try {
+      const heal = bootstrapConsoleTitleNames(nameRefreshRows);
+      log(`ps pdp release-date refresh: inserted=${heal.inserted} updatedName=${heal.updatedName} kept=${heal.kept} (store_release_date coalesced on ${nameRefreshRows.length} rows)`);
+    } catch (e) {
+      // Soft-fail: bootstrap error must not roll back the rating snapshots.
+      log(`ps pdp release-date refresh FAILED (rating snapshots kept): ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   const skips = res.skipped ?? [];
