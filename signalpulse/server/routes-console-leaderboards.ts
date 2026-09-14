@@ -1168,7 +1168,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             }
 
             if (ratio === null) {
-              // Legacy revenue-based scaling for anchors without actual_units.
+              // Legacy revenue-based scaling for anchors without actual_units,
+              // OR fallback when the units-based path was skipped because the
+              // estimator LTD was broken. Same > 1.0 cap applies here — a
+              // ratio > 1 amplifies an already-untrustworthy signal.
               let estLtdRev = ltdEstimatorRevByTitleId.get(g.titleId);
               if (estLtdRev === undefined) {
                 const ltdRow = rawSqlite.prepare(`
@@ -1186,8 +1189,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                 ltdEstimatorRevByTitleId.set(g.titleId, estLtdRev);
               }
               if (estLtdRev > 0) {
-                ratio = ltdAnchor.actual_revenue_usd / estLtdRev;
-                ratioBasis = 'revenue';
+                const rawRatio = ltdAnchor.actual_revenue_usd / estLtdRev;
+                if (rawRatio <= 1.0) {
+                  ratio = rawRatio;
+                  ratioBasis = 'revenue';
+                }
+                // else: skip. Untrustworthy LTD estimator. Fall through to
+                // Path B or raw estimator for this shorter window.
               }
             }
 
