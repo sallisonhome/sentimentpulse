@@ -1533,12 +1533,23 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         perKeyPerPlatform.set(key, bucket);
       }
 
-      // Build multiplatform rows. Cross-platform gate: MUST have Steam + at
-      // least one of {PS5, Xbox}.
+      // Build multiplatform rows. Cross-platform gate: EITHER
+      //   (a) Steam present + at least one of {PS5, Xbox}, OR
+      //   (b) BOTH PS5 and Xbox are ANCHOR-backed (anchoredRevenueUsd != null).
+      //
+      // Branch (b) exists so console-only franchises with no Steam SKU can
+      // still appear on the multiplatform LTD board when we have durable,
+      // executive-verified anchors on both consoles. Anchored-only is the
+      // gate — raw estimator revenue alone is not enough to bypass Steam,
+      // because the overlay ratio is what normally makes cross-platform
+      // scale coherent, and without anchors on both sides a noisy per-
+      // platform estimate could pop into the multi-board with no signal to
+      // sanity-check it. Requiring anchors on both consoles keeps the bar
+      // high (Minecraft is the canonical case).
       type MultiRow = {
         editionGroupKey: string;
         name: string; coverUrl: string | null; releaseDate: string | null;
-        steamTitleId: number; ps5TitleId?: number; xboxTitleId?: number;
+        steamTitleId?: number; ps5TitleId?: number; xboxTitleId?: number;
         platforms: Platform[];
         revenueSteam: number; revenuePs5: number; revenueXbox: number;
         revenueCombined: number;
@@ -1547,20 +1558,32 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const multiRows: MultiRow[] = [];
       let overlayRatioCount = 0, overlayIpCount = 0, exclusiveFallbackCount = 0;
 
+      let noSteamAnchoredCount = 0;
       for (const [key, byPlatform] of Array.from(perKeyPerPlatform.entries())) {
         const steam = byPlatform.steam;
         const ps5   = byPlatform.ps5;
         const xbox  = byPlatform.xbox;
-        if (!steam) continue;                            // must be on Steam
-        if (!ps5 && !xbox) continue;                     // and at least one console
+        // Branch (b): no Steam, but both consoles have anchored revenue.
+        // Skip the Steam-required checks and continue with steam=undefined
+        // downstream. revenueSteam falls to 0 (no Steam SKU exists), and
+        // the console anchors alone drive revenueCombined.
+        const bothConsolesAnchored = !steam
+          && ps5?.anchoredRevenueUsd != null
+          && xbox?.anchoredRevenueUsd != null;
+        if (!steam && !bothConsolesAnchored) continue;   // must be on Steam or dual-anchored
+        if (steam && !ps5 && !xbox) continue;            // Steam alone is not cross-platform
+        if (bothConsolesAnchored) noSteamAnchoredCount++;
 
-        // Steam revenue: anchor wins over estimator.
-        const steamRevenue = steam.anchoredRevenueUsd != null ? steam.anchoredRevenueUsd : steam.rawRevenueUsd;
-        const hasMeaningfulSteam = steamRevenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
+        // Steam revenue: anchor wins over estimator. Zero when there is no
+        // Steam SKU (dual-anchored branch b).
+        const steamRevenue = steam
+          ? (steam.anchoredRevenueUsd != null ? steam.anchoredRevenueUsd : steam.rawRevenueUsd)
+          : 0;
+        const hasMeaningfulSteam = steam != null && steamRevenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
 
         // Choose a canonical display name for IP-override matching (Steam
         // first — IGDB-cleanest source — falling back to console name).
-        const displayName = steam.name || ps5?.name || xbox?.name || null;
+        const displayName = steam?.name || ps5?.name || xbox?.name || null;
         const ipOverridePs5  = ps5  ? ipOverrideFactorFor(displayName, "ps5")  : null;
         const ipOverrideXbox = xbox ? ipOverrideFactorFor(displayName, "xbox") : null;
         const usedIpOverride = Boolean(ipOverridePs5 || ipOverrideXbox);
@@ -1618,10 +1641,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
         multiRows.push({
           editionGroupKey: key,
-          name: (steam.name || ps5?.name || xbox?.name || key) as string,
-          coverUrl: steam.coverUrl || ps5?.coverUrl || xbox?.coverUrl || null,
-          releaseDate: steam.releaseDate || ps5?.releaseDate || xbox?.releaseDate || null,
-          steamTitleId: steam.titleId,
+          name: (steam?.name || ps5?.name || xbox?.name || key) as string,
+          coverUrl: steam?.coverUrl || ps5?.coverUrl || xbox?.coverUrl || null,
+          releaseDate: steam?.releaseDate || ps5?.releaseDate || xbox?.releaseDate || null,
+          // steamTitleId is now optional on the wire; consumers should not
+          // assume every multiplatform row has a Steam SKU. When absent, no
+          // Steam PDP link exists for this row.
+          steamTitleId: steam?.titleId as number | undefined,
           ps5TitleId:  ps5?.titleId,
           xboxTitleId: xbox?.titleId,
           platforms,
@@ -1637,7 +1663,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const trimmed = multiRows.slice(0, limit);
 
       // Observability log line, mirrors the per-platform overlay log style.
-      console.log(`[multiplatform-leaderboard] window=${window} candidates=${multiRows.length} returned=${trimmed.length} overlayRatio=${overlayRatioCount} overlayIp=${overlayIpCount} exclusiveFallback=${exclusiveFallbackCount} xboxFilteredNoName=${filteredMissingSteam}`);
+      console.log(`[multiplatform-leaderboard] window=${window} candidates=${multiRows.length} returned=${trimmed.length} overlayRatio=${overlayRatioCount} overlayIp=${overlayIpCount} exclusiveFallback=${exclusiveFallbackCount} noSteamAnchored=${noSteamAnchoredCount} xboxFilteredNoName=${filteredMissingSteam}`);
 
       // Latest data date across ANY platform — the multiplatform board
       // pulls from all three, so we show the maximum capture_date across
