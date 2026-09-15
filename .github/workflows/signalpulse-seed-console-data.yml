@@ -288,7 +288,12 @@ jobs:
           echo "  PHASE 4 ESTIMATOR: estimate-console-units.ts"
           echo "═════════════════════════════════════════════════════════"
           te0=$(date +%s)
-          timeout 120 "$TSX" scripts/estimate-console-units.ts || {
+          # Pass through LTD_ACCUMULATOR_ENABLED from systemd env so the
+          # daily cron estimator run honors the flag (SSH sessions don't
+          # inherit systemd unit env).
+          LTD_ACCUMULATOR_ENABLED=$(systemctl show -p Environment signalpulse | tr ' ' '\n' | grep '^LTD_ACCUMULATOR_ENABLED=' | cut -d= -f2 || echo "")
+          echo "LTD_ACCUMULATOR_ENABLED=${LTD_ACCUMULATOR_ENABLED:-<unset>}"
+          LTD_ACCUMULATOR_ENABLED="${LTD_ACCUMULATOR_ENABLED}" timeout 120 "$TSX" scripts/estimate-console-units.ts || {
             echo "WARN: estimator exited rc=$? — continuing to audit"
           }
           te1=$(date +%s)
