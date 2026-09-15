@@ -6,6 +6,12 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 - Improved
 
+  ### Daily refresh now runs under a hardened systemd wrapper on the droplet
+
+  The oneshot `signalpulse-daily.service` used to run its four-phase pipeline (verify-discovery → verify-console-collectors → estimate-console-units → write-revenue-anchors) from an inline `ExecStart=/bin/sh -c '…'` chain with nested backslash-quoting across multiline continuations. Systemd's argument parser kept rejecting the reloaded unit with `status=2/INVALIDARGUMENT` before executing any phase (confirmed on the 13:12 UTC install fire today). Extracted the entire shell body into `deploy/signalpulse-daily.sh` running under `set -Eeuo pipefail`, invoked from a one-line `ExecStart=` that resolves `WorkingDirectory` from `signalpulse.service` dynamically. Each phase has its own timeout guard (360s / 360s / 300s / 120s) and its own distinct exit code (10/20/30/40) so a `journalctl` grep for `status=X` pinpoints which phase broke without reading the full pipeline output. The install workflow's preflight now verifies the wrapper is present and executable before enabling the timer, so a partial deploy can't silently reintroduce the same failure mode. Added a `signalpulse-run-daily.yml` dispatch workflow that fires the service and reports the run's `ExecMainStatus` and journal, and used it to verify a clean end-to-end run at 16:58-17:06 UTC (2437 estimates, 55 revenue anchors written).
+
+- Improved
+
   ### Fresh top-20 releases get a rank-anchored floor on d7 units
 
   When a title released within the last 30 days sits at rank ≤ 20 on the PSN sales30 or Xbox top-paid chart, the d7 unit estimate is now floored against the mean units of its 6 nearest stabilised peers (peers released > 30 days ago), tapered by a power law on chart rank (`∝ rank^-0.7`). This closes the gap between where the storefront ranks a fresh AAA launch and where our ratings-derived signal puts it while the rating count is still catching up. The floor auto-releases the moment natural ratings exceed the anchor, and rows tagged `rank_anchor:<sort_key>` write the audit trail into `window_estimates_daily.method`.
