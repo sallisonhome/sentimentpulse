@@ -164,7 +164,17 @@ const EXEMPT_PREFIXES = [
 //
 // Explicitly NOT public: /api/console/leaderboards/:platform/calibration
 //   (exposes anchor counts + calibration event timestamps that are internal
-//    operator signal), and every /api/console/titles/... PDP route.
+//    operator signal).
+//
+// PDP routes /api/console/titles/:titleId and /api/console/titles/:titleId/timeseries
+//   were promoted to public-read on 2026-09-15 so hmap's public Buying pages
+//   can link each leaderboard row to a title-detail page. The response bodies
+//   surface the same aggregate modeled quantities the leaderboard already
+//   ships (units_mid, owners_mid, revenue_mid_usd, ASP, IGDB metadata, rating
+//   counts, cascade windowUsed) — no user data, no calibration anchors, no
+//   internal operator signal. Any future /api/console/titles/... route that
+//   would expose non-aggregate data MUST be added to PUBLIC_READ_PATH_DENYLIST
+//   or gated by a suffix rule in isPublicRead().
 const PUBLIC_READ_PATHS = new Set([
   "/api/console/leaderboards-multiplatform",
 ]);
@@ -172,6 +182,9 @@ const PUBLIC_READ_PREFIXES = [
   "/api/console/leaderboards/", // matches /steam, /ps5, /xbox.
                                   // ALSO matches /:platform/calibration —
                                   // filtered out below in isPublicRead().
+  "/api/console/titles/",         // matches /:titleId and /:titleId/timeseries;
+                                  // /:titleId/... admin routes (e.g. /refresh)
+                                  // are POST and never match GET-only public gate.
 ];
 // Deny-list for the prefix above: paths whose prefix qualifies but which
 // must stay authenticated. Keep this narrow — only entries that would
