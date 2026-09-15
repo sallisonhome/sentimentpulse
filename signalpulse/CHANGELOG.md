@@ -4,6 +4,14 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 15, 2026 (evening)
 
+- Fixed
+
+  ### d7 estimates no longer collapse into d30 for launches aged 8–19 days
+
+  When a title released 8–19 days ago (older than the d7 window, younger than our per-title collection horizon of typically a few days), the d7 signal resolver fell through to `backfill-steam-pace`, which multiplies PS5 LTD by the Steam sibling's stabilised d7/LTD ratio. For old Steam siblings that ratio is ~0.007, producing a nonsense d7 signal of ~19 that gets gated `signal_too_small`. The leaderboard route's cascade then fell back to d30, which for the same window band is bootstrap-filled from LTD, so d7 rendered numerically identical to d30 (and to LTD) for every fresh launch. Resonance: A Plague Tale Legacy (PS5, released 2026-08-27) surfaced the pattern: d7 signal=19 gated, cascade to d30 showing 86,053 units, same as m12 and LTD.
+
+  Added a `backfill-observed-pace` step ahead of `backfill-steam-pace`: when the title's per-title collection history is ≥3 days but shorter than the window, scale the actual observed rating-count delta (`ltd_today − ltd_first_snap`) linearly to the requested window. For Resonance this produces a d7 signal of ~450 (real observed pace of ~64 ratings/day × 7d), well above the noise gate. The method tag `backfill-observed-pace` writes the audit trail. Guards: requires ≥3 days of history, positive delta, and skips when history already exceeds `winDays` (forward-delta handles that case natively).
+
 - Improved
 
   ### Daily refresh now runs under a hardened systemd wrapper on the droplet

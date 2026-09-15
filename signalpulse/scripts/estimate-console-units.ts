@@ -540,6 +540,23 @@ async function main() {
     if (!r || r.rating_count == null) return null;
     return r.rating_count;
   }
+
+  // Oldest snapshot for (title, platform). Returns null if none. Used by the
+  // observed-pace fallback to compute the per-title collection horizon (which
+  // differs from the platform-wide `forwardDaysByPlatform` — a title that
+  // launched after collection started has fewer days of history than the
+  // platform as a whole).
+  const firstSnapStmt = db.prepare(
+    `SELECT rating_count, capture_date
+       FROM store_rating_signal_daily
+      WHERE title_id = ? AND platform = ?
+      ORDER BY capture_date ASC
+      LIMIT 1`
+  );
+  function firstSnap(titleId: number, platform: string): { rating_count: number | null; capture_date: string } | null {
+    const r = firstSnapStmt.get(titleId, platform) as { rating_count: number | null; capture_date: string } | undefined;
+    return r ?? null;
+  }
   function daysAgoIso(days: number): string {
     const d = new Date();
     d.setUTCDate(d.getUTCDate() - days);
@@ -640,6 +657,53 @@ async function main() {
     const bootstrapHorizon = Math.min(winDays, BOOTSTRAP_MAX_DAYS);
     if (ltdNow != null && isReleasedWithin(titleId, bootstrapHorizon)) {
       return { signal: ltdNow, methodTag: "backfill-bootstrap" };
+    }
+
+    // 3b. BACKFILL-OBSERVED-PACE — When bootstrap can't fire (title is older
+    //    than the window) AND forward-delta hasn't kicked in yet (collection
+    //    history for this title is shorter than the window), extrapolate from
+    //    the observed daily pace: linear scale of
+    //    (ltd_today − ltd_first_snap) / days_of_history × winDays.
+    //
+    //    This is truthful — it's the real observed delta of ratings scaled
+    //    proportionally. Fires strictly when neither forward-delta nor
+    //    bootstrap covers the case, which happens for launches whose age is
+    //    between `winDays` and `BOOTSTRAP_MAX_DAYS`.
+    //
+    //    Example: Resonance: A Plague Tale Legacy (PS5, released 2026-08-27).
+    //    On 2026-09-15, age = 19d, PS5 collection began 2026-09-11 (5 days).
+    //    d7 request: forward-delta needs >7d of history (have 4), bootstrap
+    //    needs release within 7d (was 19d ago). Steam-pace previously fired,
+    //    but its ratio comes from the Steam sibling's stabilised d7/LTD
+    //    (~0.007 for an old Steam title), producing d7 signal = 19 — well
+    //    below the noise gate — and cascading the d7 leaderboard to d30's
+    //    bootstrap value, so d7 == d30 == LTD.
+    //
+    //    With observed-pace: (2725 − 2468) / 4d × 7d ≈ 450, above the gate,
+    //    producing a real d7 estimate distinct from d30.
+    //
+    //    Guards:
+    //    - Require ≥ 3 days of collection to avoid noise-amplified extrapolation
+    //    - Require positive delta (rating counts can't monotonically decrease)
+    //    - Skip when history already >= winDays (forward-delta handles that)
+    //    - Only fires when ltdNow != null (needed for the pace calc)
+    if (ltdNow != null) {
+      const first = firstSnap(titleId, platform);
+      if (first != null && first.rating_count != null) {
+        const historyDays = Math.max(0,
+          Math.floor(
+            (new Date(asOfDate + "T00:00:00Z").getTime() -
+             new Date(first.capture_date + "T00:00:00Z").getTime()) / 86400000
+          )
+        );
+        if (historyDays >= 3 && historyDays < winDays) {
+          const delta = ltdNow - first.rating_count;
+          if (delta > 0) {
+            const paced = Math.round((delta / historyDays) * winDays);
+            return { signal: paced, methodTag: "backfill-observed-pace" };
+          }
+        }
+      }
     }
 
     // 4. BACKFILL-STEAM-PACE — Same-title cross-platform ratio. When the same
