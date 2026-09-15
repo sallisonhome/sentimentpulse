@@ -1,0 +1,79 @@
+name: SignalPulse — Seed LTD accumulator state
+
+# One-off dispatchable workflow that seeds title_ltd_state.
+#
+# Inputs:
+#   dry_run: "1" (default) prints proposed rows without writing.
+#            "0" commits the seed to title_ltd_state.
+#
+# Uses same SSH pattern as other estimator workflows. Idempotent.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '"1" to preview only, "0" to commit'
+        required: false
+        default: "1"
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  seed-ltd-state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          echo "Working dir: $WD"
+          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/seed-title-ltd-state.ts" ] || { echo "ERR: seed script missing — deploy first"; exit 1; }
+          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
+          echo "── Pre-run: title_ltd_state row count (should be 0 on first run) ──"
+          sqlite3 -header -column "$WD/data.db" "SELECT COUNT(*) AS current_rows FROM title_ltd_state;" \
+            || echo "(table may not exist yet — will be created by service boot)"
+          REMOTE
+
+      - name: Run seed script
+        env:
+          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "DRY_RUN=$DRY_RUN_INPUT bash -s" <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+          echo "── Running seed-title-ltd-state.ts (DRY_RUN=${DRY_RUN:-1}) ──"
+          DRY_RUN="${DRY_RUN:-1}" DB_PATH="$WD/data.db" \
+            node_modules/.bin/tsx scripts/seed-title-ltd-state.ts
+          REMOTE
+
+      - name: Post-run audit
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          echo "── Post-run: title_ltd_state row count + breakdown ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT ltd_source, COUNT(*) AS rows FROM title_ltd_state GROUP BY ltd_source;
+            SELECT '' AS sep;
+            SELECT title_id, platform, ROUND(ltd_units) AS ltd_units, ltd_source, seeded_from
+              FROM title_ltd_state
+              WHERE title_id IN (10000, 10185, 10336)
+              ORDER BY title_id, platform;
+          "
+          REMOTE

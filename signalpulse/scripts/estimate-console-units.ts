@@ -777,6 +777,185 @@ async function main() {
     }
   }
 
+  // ─── 8b. LTD accumulator (2026-09-14, behind LTD_ACCUMULATOR_ENABLED flag) ─
+  //
+  // Before writing rows, mutate the LTD row for each title to use the
+  // authoritative accumulator value from title_ltd_state instead of the
+  // naive-derived LTD signal path. Three regimes:
+  //
+  //   override_anchor      — override row exists → keep the naive LTD (already
+  //                          computed through the override multiplier); UPDATE
+  //                          title_ltd_state with today's value.
+  //   derived_max_windows  — age < 366d, no override → ltd_units =
+  //                          max(units[d7], units[d30], units[d90], units[m12],
+  //                              row.unitsMid, existing state.ltd_units).
+  //                          Guarantees monotonicity and that LTD is never
+  //                          smaller than any measured window.
+  //   accumulator          — age >= 366d, no override → ltd_units =
+  //                          state.ltd_units + max(0, delta_since_last) *
+  //                            multiplier / digital_share. Only positive
+  //                          deltas add. Seeded on transition by
+  //                          scripts/seed-title-ltd-state.ts.
+  //
+  // Flag defaults to false. When false, LTD is written exactly as before.
+  // When true, LTD rows use title_ltd_state as source of truth.
+  const LTD_ACCUMULATOR_ENABLED = process.env.LTD_ACCUMULATOR_ENABLED === "1";
+  if (LTD_ACCUMULATOR_ENABLED) {
+    console.log(`[estimate-console-units] LTD_ACCUMULATOR_ENABLED=1 — using title_ltd_state`);
+
+    // Preload existing state
+    const stateRows = db
+      .prepare(`SELECT title_id, platform, ltd_units, ltd_source, last_signal_value FROM title_ltd_state`)
+      .all() as Array<{
+      title_id: number;
+      platform: string;
+      ltd_units: number;
+      ltd_source: string;
+      last_signal_value: number | null;
+    }>;
+    const stateByKey = new Map<string, { ltd_units: number; ltd_source: string; last_signal_value: number | null }>();
+    for (const s of stateRows) {
+      stateByKey.set(`${s.title_id}|${s.platform}`, {
+        ltd_units: s.ltd_units,
+        ltd_source: s.ltd_source,
+        last_signal_value: s.last_signal_value,
+      });
+    }
+
+    // Index today's rows by (title, platform) for max-windows computation
+    const rowsByTP = new Map<string, EstimateRow[]>();
+    for (const r of rows) {
+      const k = `${r.titleId}|${r.platform}`;
+      if (!rowsByTP.has(k)) rowsByTP.set(k, []);
+      rowsByTP.get(k)!.push(r);
+    }
+
+    function titleAgeDays(titleId: number): number | null {
+      const rel = releaseByTitle.get(titleId);
+      if (!rel) return null;
+      const today = new Date(asOfDate + "T00:00:00Z").getTime();
+      const relT = new Date(rel + "T00:00:00Z").getTime();
+      return Math.floor((today - relT) / 86400000);
+    }
+
+    // Prepare an upsert for title_ltd_state that we'll fire in the same tx as
+    // window_estimates_daily below
+    const stateUpserts: Array<{
+      title_id: number;
+      platform: string;
+      ltd_units: number;
+      ltd_source: string;
+      last_signal_value: number | null;
+    }> = [];
+
+    for (const [key, titleRows] of rowsByTP) {
+      const ltdRow = titleRows.find((r) => r.window === "ltd");
+      if (!ltdRow || ltdRow.gatedReason) continue; // skip if LTD row was gated
+      const [titleIdStr, platform] = key.split("|");
+      const titleId = parseInt(titleIdStr, 10);
+      const state = stateByKey.get(key);
+      const hasOverride = overrideByKey.has(key);
+
+      let newLtdUnits: number | null = null;
+      let newSource: string;
+
+      if (hasOverride) {
+        // Regime 1: override_anchor wins. Trust the naive LTD row.
+        newLtdUnits = ltdRow.unitsMid;
+        newSource = "override_anchor";
+      } else {
+        const age = titleAgeDays(titleId);
+        if (age == null || age < 366) {
+          // Regime 2: derived_max_windows
+          const windowValues = titleRows
+            .filter((r) => r.window !== "ltd" && r.gatedReason == null && r.unitsMid != null)
+            .map((r) => r.unitsMid as number);
+          const naiveLtd = ltdRow.unitsMid ?? 0;
+          const existing = state?.ltd_units ?? 0;
+          newLtdUnits = Math.max(...windowValues, naiveLtd, existing);
+          newSource = "derived_max_windows";
+        } else {
+          // Regime 3: accumulator (age >= 366d)
+          if (!state || state.ltd_source !== "accumulator") {
+            // Not yet transitioned. Seed at transition: max of naive LTD and
+            // existing state (if any). The dedicated seed script does the
+            // Option B replay; here we take a conservative seed if it hasn't
+            // been run yet.
+            newLtdUnits = Math.max(ltdRow.unitsMid ?? 0, state?.ltd_units ?? 0);
+          } else {
+            // Steady-state accumulator: add positive delta of raw signal
+            const currentSignal = ltdRow.signalValue;
+            const lastSignal = state.last_signal_value;
+            if (currentSignal != null && lastSignal != null && currentSignal > lastSignal) {
+              const mult = multipliers.get(platform);
+              const override = overrideByKey.get(key);
+              const m = override?.multiplier ?? mult?.multiplier ?? null;
+              const ds = override?.digital_unit_share ?? mult?.digital_unit_share ?? null;
+              if (m != null && ds != null && ds > 0) {
+                const delta = currentSignal - lastSignal;
+                const addedUnits = (delta * m) / ds;
+                newLtdUnits = state.ltd_units + addedUnits;
+              } else {
+                newLtdUnits = state.ltd_units; // hold
+              }
+            } else {
+              // Signal missing or non-positive delta — hold yesterday's value
+              newLtdUnits = state.ltd_units;
+            }
+          }
+          newSource = "accumulator";
+        }
+      }
+
+      if (newLtdUnits == null || !isFinite(newLtdUnits)) continue;
+      newLtdUnits = Math.round(newLtdUnits);
+
+      // Mutate the LTD row so it flows through to window_estimates_daily with the
+      // accumulator's value. Keep ownersMid proportional so the units/owners ratio
+      // stays consistent for downstream consumers.
+      if (ltdRow.unitsMid && ltdRow.unitsMid > 0) {
+        const scale = newLtdUnits / ltdRow.unitsMid;
+        ltdRow.unitsMid = newLtdUnits;
+        if (ltdRow.ownersMid) ltdRow.ownersMid = Math.round(ltdRow.ownersMid * scale);
+        if (ltdRow.ownersLow) ltdRow.ownersLow = Math.round(ltdRow.ownersLow * scale);
+        if (ltdRow.ownersHigh) ltdRow.ownersHigh = Math.round(ltdRow.ownersHigh * scale);
+      } else {
+        ltdRow.unitsMid = newLtdUnits;
+      }
+      // Tag method so client can distinguish accumulator-sourced LTD
+      if (newSource !== "override_anchor") {
+        ltdRow.method = `${ltdRow.method}+ltd_state:${newSource}`;
+      }
+
+      stateUpserts.push({
+        title_id: titleId,
+        platform,
+        ltd_units: newLtdUnits,
+        ltd_source: newSource,
+        last_signal_value: ltdRow.signalValue,
+      });
+    }
+
+    // Write title_ltd_state
+    const stateUpsert = db.prepare(
+      `INSERT INTO title_ltd_state
+         (title_id, platform, ltd_units, ltd_source, last_signal_value, last_updated_iso, seeded_from)
+       VALUES (?, ?, ?, ?, ?, ?, NULL)
+       ON CONFLICT(title_id, platform) DO UPDATE SET
+         ltd_units          = excluded.ltd_units,
+         ltd_source         = excluded.ltd_source,
+         last_signal_value  = excluded.last_signal_value,
+         last_updated_iso   = excluded.last_updated_iso`,
+    );
+    const stateTx = db.transaction((upserts: typeof stateUpserts) => {
+      for (const u of upserts) {
+        stateUpsert.run(u.title_id, u.platform, u.ltd_units, u.ltd_source, u.last_signal_value, nowIso);
+      }
+    });
+    stateTx(stateUpserts);
+    console.log(`[estimate-console-units] title_ltd_state upserts: ${stateUpserts.length}`);
+  }
+
   // ─── 9. UPSERT into window_estimates_daily ───────────────────────────────
   const upsert = db.prepare(
     `INSERT INTO window_estimates_daily

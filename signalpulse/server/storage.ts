@@ -843,6 +843,47 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS title_multiplier_overrides_lookup
       ON title_multiplier_overrides (title_id, platform, effective_from DESC);
 
+    -- LTD accumulator state (2026-09-14). Prior to this table, window_estimates_daily.ltd
+    -- was re-derived from raw signal on every daily estimator run, which caused three
+    -- problems: (1) young titles where lifetime fits inside a window showed identical
+    -- values across d7/d30/d90/m12/ltd; (2) if the upstream signal fetch flaked, LTD
+    -- would zero out or drop; (3) LTD could regress when Steam's review-vector
+    -- degenerate-pace guard kicked in.
+    --
+    -- title_ltd_state holds a persistent, monotonic (never-decreasing) LTD units figure
+    -- per (title_id, platform). It's populated by three regimes, evaluated in this order:
+    --
+    --   1. override_anchor    — a title_multiplier_overrides row exists → LTD is that
+    --                           anchor's method applied to today's signal. Always wins.
+    --   2. derived_max_windows — title age < 366 days, no override → ltd_units =
+    --                            max(units[d7], units[d30], units[d90], units[m12],
+    --                                yesterday's ltd_units). The max() ensures LTD is
+    --                            never smaller than any measured window, and yesterday's
+    --                            value guarantees monotonicity.
+    --   3. accumulator        — title age >= 366 days, no override → each day we add the
+    --                            positive delta (rating_count[today] - rating_count[yesterday])
+    --                            × multiplier / digital_share. Only adds positive deltas so
+    --                            noise or vendor corrections can't pull LTD backward.
+    --                            Seeded on transition-to-accumulator with an Option B replay
+    --                            summing historical daily deltas from store_rating_signal_daily,
+    --                            then max()'d with yesterday's derived_max_windows value.
+    --
+    -- ltd_source values: 'override_anchor' | 'derived_max_windows' | 'accumulator'.
+    -- seeded_from records the pass that populated the row (e.g. 'option_b_replay_2026_09_14')
+    -- for audit and future re-seed capability.
+    CREATE TABLE IF NOT EXISTS title_ltd_state (
+      title_id INTEGER NOT NULL,
+      platform TEXT NOT NULL,
+      ltd_units REAL NOT NULL,
+      ltd_source TEXT NOT NULL,
+      last_signal_value REAL,
+      last_updated_iso TEXT NOT NULL,
+      seeded_from TEXT,
+      PRIMARY KEY (title_id, platform)
+    );
+    CREATE INDEX IF NOT EXISTS title_ltd_state_source
+      ON title_ltd_state (ltd_source);
+
     -- Ground-truth revenue anchors for calibration. Rows are written by the
     -- nightly anchor-writer script when a title has verified sales data
     -- (steam_sales_daily.source='portal_fetch'). Each row is a
