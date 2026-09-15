@@ -1,0 +1,103 @@
+name: SignalPulse — Manual daily-refresh run
+
+# Manually invokes signalpulse-daily.service on the droplet, waits for it to
+# finish (or timeout), and captures the journal output for the run. This is
+# the controlled fire we use to verify the systemd path before retiring the
+# GitHub-Actions cron in signalpulse-seed-console-data.yml.
+#
+# Purpose:
+#   - Runs the SAME oneshot service the timer fires at 09:15 UTC daily, so
+#     a clean invocation here is the strongest possible signal that the
+#     scheduled fire will also be clean.
+#   - Captures BOTH the service exit code AND the full journal, so an
+#     operator reading this workflow's output alone can tell whether all
+#     four pipeline phases (verify-discovery, verify-console-collectors,
+#     estimate-console-units, write-revenue-anchors) succeeded.
+#
+# Concurrency: shares 'deploy-droplet' with the deploy workflows so this
+# cannot race a mid-deploy restart.
+
+on:
+  workflow_dispatch:
+    inputs:
+      journal_lines:
+        description: 'Max journal lines to return (default 500, cap 5000)'
+        required: false
+        default: '500'
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  run-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Invoke signalpulse-daily.service and capture journal
+        env:
+          JOURNAL_LINES: ${{ inputs.journal_lines }}
+        run: |
+          set -e
+          n="${JOURNAL_LINES:-500}"
+          if [ "$n" -gt 5000 ]; then n=5000; fi
+
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=40 root@104.236.239.46"
+
+          echo "=========================================="
+          echo "Invoking signalpulse-daily.service on droplet"
+          echo "  (systemctl start is synchronous for Type=oneshot)"
+          echo "=========================================="
+
+          # Snapshot the last run timestamp BEFORE we fire, so we can identify
+          # the invocation that this workflow triggered vs a prior fire.
+          # ExecMainStartTimestampMonotonic gives us a monotonic reference we
+          # can compare after the run to prove this workflow's fire happened.
+          $SSH "systemctl show -p ExecMainStartTimestamp,Result,ExecMainStatus signalpulse-daily.service --no-page || true"
+
+          echo ""
+          echo "── start ──"
+          # `systemctl start` on a Type=oneshot unit blocks until ExecStart
+          # exits. Capture its exit code separately from the SSH command's
+          # exit so a systemctl failure doesn't get masked by SSH channel
+          # noise; we still report SSH errors distinctly.
+          set +e
+          $SSH "systemctl start signalpulse-daily.service; echo START_EXIT=\$?"
+          SSH_EXIT=$?
+          set -e
+          echo "ssh exit: $SSH_EXIT"
+
+          echo ""
+          echo "── post-run status ──"
+          $SSH "systemctl show -p ExecMainStartTimestamp,ExecMainExitTimestamp,Result,ExecMainStatus signalpulse-daily.service --no-page"
+          $SSH "systemctl status signalpulse-daily.service --no-pager | head -30 || true"
+
+          echo ""
+          echo "── journal (signalpulse-daily.service, last ${n} lines) ──"
+          $SSH "journalctl -u signalpulse-daily.service -n ${n} --no-pager"
+
+          echo ""
+          echo "── final result ──"
+          # ExecMainStatus is the last ExecStart's exit code. Anything non-zero
+          # means the pipeline failed — surface that as the workflow's exit
+          # so a red 'X' in the Actions UI corresponds to a broken run.
+          RESULT="$($SSH \"systemctl show -p ExecMainStatus --value signalpulse-daily.service\")"
+          echo "ExecMainStatus=$RESULT"
+          if [ "$RESULT" != "0" ]; then
+            echo "FAIL: pipeline exited with status $RESULT (see journal above)"
+            echo "  10 = PHASE 1 (verify-discovery) failed"
+            echo "  20 = PHASE 2 (verify-console-collectors) failed"
+            echo "  30 = PHASE 3 (estimate-console-units) failed"
+            echo "  40 = PHASE 4 (write-revenue-anchors) failed"
+            echo "   2 = tsx binary missing"
+            echo "   1 = could not resolve WorkingDirectory"
+            exit "$RESULT"
+          fi
+          echo "OK: signalpulse-daily.service completed successfully"

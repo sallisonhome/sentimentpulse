@@ -45,13 +45,22 @@ jobs:
 
           case "$ACTION" in
             install)
-              # Copy the two unit files from the deployed working dir into /etc/systemd/system
-              [ -f "$WD/deploy/signalpulse-daily.service" ] || { echo "ERR: service unit not deployed"; exit 1; }
-              [ -f "$WD/deploy/signalpulse-daily.timer"   ] || { echo "ERR: timer unit not deployed";   exit 1; }
+              # Preflight: verify BOTH unit files AND the runner wrapper are deployed.
+              # `enable --now` fires the service immediately, so a missing wrapper
+              # would cause an immediate exit 2 (INVALIDARGUMENT) — exactly the bug
+              # this rewrite is fixing. Bail before enabling if anything is missing.
+              [ -f "$WD/deploy/signalpulse-daily.service" ] || { echo "ERR: service unit not deployed";   exit 1; }
+              [ -f "$WD/deploy/signalpulse-daily.timer"   ] || { echo "ERR: timer unit not deployed";     exit 1; }
+              [ -x "$WD/deploy/signalpulse-daily.sh"      ] || { echo "ERR: daily runner wrapper missing or not executable at $WD/deploy/signalpulse-daily.sh"; exit 1; }
+
               install -m 0644 "$WD/deploy/signalpulse-daily.service" /etc/systemd/system/signalpulse-daily.service
               install -m 0644 "$WD/deploy/signalpulse-daily.timer"   /etc/systemd/system/signalpulse-daily.timer
               systemctl daemon-reload
-              systemctl enable --now signalpulse-daily.timer
+              # `enable` WITHOUT --now — the timer starts on schedule; a controlled
+              # first run is done via signalpulse-run-daily.yml so we capture its
+              # journal output and gate GHA-cron retirement on a clean invocation.
+              systemctl enable signalpulse-daily.timer
+              systemctl start signalpulse-daily.timer
               echo "── Timer status ──"
               systemctl status signalpulse-daily.timer --no-pager | head -20 || true
               echo ""
