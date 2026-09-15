@@ -4,6 +4,12 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 15, 2026
 
+- Fixed
+
+  ### LTD KPI tile shows revenue as primary for young titles too
+
+  On the console title PDP, the LTD window tile now leads with estimated revenue whenever the API returns one — including titles under 12 months whose LTD derives from the longest valid shorter window (`derived_max_windows`). The `est. via {window}` badge fires on LTD in that case so the derivation source stays visible. Ratings-first fallback is reserved for platforms that genuinely have no revenue estimate (gated / no MSRP / signal-only), matching the LTD leaderboard behaviour landed yesterday.
+
 - New
 
   ### Estimated daily revenue chart on console title PDPs

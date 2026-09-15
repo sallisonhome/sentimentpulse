@@ -240,23 +240,30 @@ export default function ConsoleTitleDetail() {
         {detail.windowKpisPerPlatform.map(k => {
           const latest = detail.latestPerPlatform.find(l => l.platform === k.platform);
           const isLtd = k.window === "ltd";
-          const primary = isLtd
+          // LTD tiles show revenue as primary whenever we have one — including
+          // young titles whose LTD derives from the longest valid shorter window
+          // (derived_max_windows). Fall back to ratings-first only when the
+          // platform truly has no revenue estimate (gated / no MSRP / signal-only).
+          const hasRevenue = k.revenueMidUsd != null;
+          const showRatingsFirst = isLtd && !hasRevenue;
+          const primary = showRatingsFirst
             ? formatCompact(latest?.ratingCount ?? k.ratingCountEnd)
             : formatMoney(k.revenueMidUsd);
-          const primaryLabel = isLtd ? "ratings (LTD)" : "est. revenue";
-          const secondary = isLtd
-            ? `avg ${
-                latest?.avgRating != null
-                  ? (k.platform === "steam"
-                      ? `${Math.round(latest.avgRating * 20)}%`
-                      : latest.avgRating.toFixed(2))
-                  : "—"
-              }`
+          const primaryLabel = showRatingsFirst ? "ratings (LTD)" : "est. revenue";
+          const avgRatingText = latest?.avgRating != null
+            ? (k.platform === "steam"
+                ? `${Math.round(latest.avgRating * 20)}%`
+                : latest.avgRating.toFixed(2))
+            : "—";
+          const secondary = showRatingsFirst
+            ? `avg ${avgRatingText}`
             : `${formatCompact(k.unitsMid)} units · ${formatCompact(k.ownersMid)} owners`;
-          const badge = !isLtd && k.windowUsed && k.windowUsed !== k.window
+          // Show the "est. via X" badge whenever windowUsed differs from the
+          // requested window — including LTD-on-young-title (windowUsed = d30, m12, …).
+          const badge = !showRatingsFirst && k.windowUsed && k.windowUsed !== k.window
             ? `est. via ${k.windowUsed}`
             : null;
-          const gated = !isLtd && k.gatedReason;
+          const gated = !showRatingsFirst && k.gatedReason;
           return (
             <Card key={k.platform} className={`p-4 ${k.platform === platform ? "border-primary/50" : ""}`}>
               <div className="flex items-center justify-between">
@@ -269,6 +276,11 @@ export default function ConsoleTitleDetail() {
               {!isLtd && (
                 <div className="text-xs text-muted-foreground mt-1">
                   ratings Δ {formatSignedCount(k.ratingDelta)} over {k.window}
+                </div>
+              )}
+              {isLtd && hasRevenue && (
+                <div className="text-xs text-muted-foreground mt-1">
+                  {formatCompact(latest?.ratingCount ?? k.ratingCountEnd)} ratings · avg {avgRatingText}
                 </div>
               )}
               {gated && (
