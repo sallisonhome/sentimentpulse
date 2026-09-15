@@ -73,15 +73,24 @@ log "═══ signalpulse-daily start ═══"
 log "WD=$WD"
 log "LTD_ACCUMULATOR_ENABLED='${LTD_ACCUMULATOR_ENABLED}'"
 
+# Per-phase timeouts — sized against observed production durations on the
+# GHA-SSH path (which had a de-facto 10min channel budget). Phase 1 is the
+# heaviest network step (241 Steam appdetails + 100 Xbox displaycatalog + 100
+# PS5 categoryGrid, all rate-limited); the old 120s cap was too tight, and
+# a 2026-09-15 16:41 UTC systemd fire timed out mid-classification even though
+# earlier discovery fetches all completed in <10s. Ceilings are generous by
+# design — the systemd unit's TimeoutStartSec=1200 is the real ceiling; these
+# per-phase caps only prevent ONE stuck phase from starving the others.
+
 log "── PHASE 1: verify-discovery ──"
-if ! timeout 120 "$TSX" scripts/verify-discovery.ts; then
-  log "PHASE 1 failed (timeout=120s)"
+if ! timeout 360 "$TSX" scripts/verify-discovery.ts; then
+  log "PHASE 1 failed (timeout=360s)"
   exit 10
 fi
 
 log "── PHASE 2: verify-console-collectors ──"
-if ! timeout 180 "$TSX" scripts/verify-console-collectors.ts; then
-  log "PHASE 2 failed (timeout=180s)"
+if ! timeout 360 "$TSX" scripts/verify-console-collectors.ts; then
+  log "PHASE 2 failed (timeout=360s)"
   exit 20
 fi
 

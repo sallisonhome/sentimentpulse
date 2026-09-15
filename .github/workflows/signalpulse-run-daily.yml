@@ -88,7 +88,11 @@ jobs:
           # ExecMainStatus is the last ExecStart's exit code. Anything non-zero
           # means the pipeline failed — surface that as the workflow's exit
           # so a red 'X' in the Actions UI corresponds to a broken run.
-          RESULT="$($SSH \"systemctl show -p ExecMainStatus --value signalpulse-daily.service\")"
+          #
+          # Note: we run the SSH command WITHOUT nested quoting on the remote
+          # side. Backslash-quoted assignments inside heredoc-like GHA steps
+          # collapse to literal command strings that bash then tries to exec.
+          RESULT=$($SSH systemctl show -p ExecMainStatus --value signalpulse-daily.service | tr -d '\r')
           echo "ExecMainStatus=$RESULT"
           if [ "$RESULT" != "0" ]; then
             echo "FAIL: pipeline exited with status $RESULT (see journal above)"
