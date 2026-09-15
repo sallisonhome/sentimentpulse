@@ -2,6 +2,32 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 15, 2026
+
+- New
+
+  ### Estimated daily revenue chart on console title PDPs
+
+  Console title pages now include an all-platforms line chart of estimated daily revenue derived from day-over-day change in the persistent LTD unit accumulator (Steam / PS5 / Xbox / combined). Range presets 7d / 30d / 90d / "since 2026-09-14", per-series toggles, and a footnote that explains the collection-start caveat so early sparse dates read as expected.
+
+- New
+
+  ### `/api/console/titles/:titleId/revenue-daily` endpoint
+
+  New public-read endpoint returns per-day incremental revenue per platform, computed as `max(0, unitsMid_ltd[D] − unitsMid_ltd[D−1]) × msrp × aspFactor / 100` from `window_estimates_daily`. Uses each platform's primary SKU MSRP and the same ASP factors as the leaderboards (Steam 0.66, PS5 0.80, Xbox 0.80). Days before 2026-09-14 return null.
+
+- Improved
+
+  ### Multiplatform LTD leaderboard admits no-Steam titles with dual-anchored consoles
+
+  The multiplatform LTD aggregator gate now has two admission branches: (a) Steam + at least one console (unchanged), or (b) no Steam SKU but BOTH PS5 and Xbox anchored to verified revenue. Branch (b) is the Minecraft path — the title has no Steam presence but has manual-anchor revenue on both consoles, so it now shows up on the multiplatform LTD board where it belongs. Anchored-on-both requirement keeps the admission bar high; raw estimator signal alone can't bypass Steam.
+
+- Fixed
+
+  ### Manual LTD anchor writes for GTA V and Minecraft SKUs
+
+  Wrote calibrated anchors to `revenue_calibration_anchors` for GTA V (Steam 10021 / PS5 10318 / Xbox 10205) and Minecraft (Xbox 10209 / PS5 10314) based on verified franchise LTD figures (Take-Two Q1 FY27, Guinness/Mojang). GTA V now sits at #1 on multiplatform LTD ($7.658B combined).
+
 ## September 1, 2026
 
 - Improved

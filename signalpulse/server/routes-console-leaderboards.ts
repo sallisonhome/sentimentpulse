@@ -2242,6 +2242,104 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     }
   });
 
+  // ─── Estimated daily revenue (all platforms) ──────────────────────────────
+  //
+  // Derives per-day incremental revenue from day-over-day change in the LTD
+  // unit accumulator (window_estimates_daily where window='ltd'), priced with
+  // the primary SKU MSRP × ASP factor for each platform.
+  //
+  //   dailyRevenue[D, p] = max(0, unitsMid_ltd[D, p] - unitsMid_ltd[D-1, p])
+  //                        × msrp_usd_cents(p) × aspFactor(p) / 100
+  //
+  // Only positive deltas produce revenue (the accumulator is monotonic, so
+  // negative diffs only appear when an override anchor was seeded — those
+  // days should not be treated as revenue events). Combined = steam+ps5+xbox.
+  //
+  // Data-collection start: 2026-09-14 (title_ltd_state introduced). Dates
+  // before that in a requested window are returned as null.
+  app.get("/api/console/titles/:titleId/revenue-daily", (req, res) => {
+    try {
+      const titleId = parseInt(req.params.titleId, 10);
+      if (!Number.isFinite(titleId)) return res.status(400).json({ error: "invalid titleId" });
+      const to = parseDate(req.query.to as string | undefined, todayIsoDate());
+      const from = parseDate(req.query.from as string | undefined, daysAgo(90));
+      const COLLECTION_START = "2026-09-14";
+
+      // Pull LTD units per platform per day.
+      const rows = rawSqlite.prepare(`
+        SELECT platform, as_of_date AS date, units_mid AS units
+          FROM window_estimates_daily
+         WHERE title_id = ? AND window = 'ltd'
+           AND as_of_date >= ? AND as_of_date <= ?
+         ORDER BY platform, as_of_date
+      `).all(titleId, from, to) as Array<{ platform: Platform; date: string; units: number | null }>;
+
+      // Primary SKU MSRP per platform (lowest-priced anchor SKU per platform).
+      const skuRows = rawSqlite.prepare(`
+        SELECT platform, MIN(msrp_usd_cents) AS msrp_usd_cents
+          FROM platform_sku_map
+         WHERE title_id = ? AND msrp_usd_cents IS NOT NULL
+         GROUP BY platform
+      `).all(titleId) as Array<{ platform: Platform; msrp_usd_cents: number | null }>;
+      const msrpByPlatform: Partial<Record<Platform, number>> = {};
+      for (const r of skuRows) if (r.msrp_usd_cents != null) msrpByPlatform[r.platform] = r.msrp_usd_cents;
+
+      // Group by platform, then compute day-over-day diff.
+      const byPlatform: Partial<Record<Platform, Array<{ date: string; units: number | null }>>> = {};
+      for (const r of rows) {
+        const arr = byPlatform[r.platform] ?? (byPlatform[r.platform] = []);
+        arr.push({ date: r.date, units: r.units });
+      }
+
+      // Union of all dates across platforms in range.
+      const dateSet = new Set<string>();
+      for (const p of Object.keys(byPlatform) as Platform[]) {
+        for (const row of byPlatform[p] ?? []) dateSet.add(row.date);
+      }
+      const dates = Array.from(dateSet).sort();
+
+      // For each platform, compute incremental revenue for each date.
+      const dailyByPlatform: Partial<Record<Platform, Record<string, number | null>>> = {};
+      for (const p of Object.keys(byPlatform) as Platform[]) {
+        const arr = byPlatform[p] ?? [];
+        const msrpCents = msrpByPlatform[p];
+        const aspFactor = aspFactorFor(p);
+        const dailyRev: Record<string, number | null> = {};
+        let prev: number | null = null;
+        for (const row of arr) {
+          if (row.date < COLLECTION_START) {
+            dailyRev[row.date] = null;
+            prev = row.units;
+            continue;
+          }
+          const cur = row.units;
+          if (prev == null || cur == null || msrpCents == null) {
+            dailyRev[row.date] = null;
+          } else {
+            const deltaUnits = Math.max(0, cur - prev);
+            const rev = (deltaUnits * msrpCents * aspFactor) / 100;
+            dailyRev[row.date] = rev;
+          }
+          prev = cur;
+        }
+        dailyByPlatform[p] = dailyRev;
+      }
+
+      const points = dates.map((d) => {
+        const steam = dailyByPlatform.steam?.[d] ?? null;
+        const ps5   = dailyByPlatform.ps5?.[d]   ?? null;
+        const xbox  = dailyByPlatform.xbox?.[d]  ?? null;
+        const parts = [steam, ps5, xbox].filter((v): v is number => typeof v === "number");
+        const combined = parts.length > 0 ? parts.reduce((a, b) => a + b, 0) : null;
+        return { date: d, steam, ps5, xbox, combined };
+      });
+
+      res.json({ titleId, from, to, collectionStart: COLLECTION_START, points });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── IGDB manual refresh (admin) ───────────────────────────────────────────
   app.post("/api/console/igdb/refresh/:titleId", async (req, res) => {
     try {

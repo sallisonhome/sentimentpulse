@@ -20,6 +20,7 @@ import { useState, useMemo } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  LineChart, Line, Legend,
 } from "recharts";
 import { format, parseISO, subDays } from "date-fns";
 
@@ -336,6 +337,9 @@ export default function ConsoleTitleDetail() {
         )}
       </Card>
 
+      {/* Estimated daily revenue (all platforms) */}
+      <DailyRevenueCard titleId={titleId} />
+
       {/* SKU debug */}
       <details className="text-xs">
         <summary className="cursor-pointer text-muted-foreground">Platform SKUs ({detail.skus.length})</summary>
@@ -350,3 +354,162 @@ export default function ConsoleTitleDetail() {
     </div>
   );
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * DailyRevenueCard — per-day incremental revenue derived from LTD unit deltas
+ *
+ * Overlays one line per platform (steam / ps5 / xbox) plus a combined total.
+ * Data source: GET /api/console/titles/:titleId/revenue-daily
+ * See routes-console-leaderboards.ts for the derivation formula.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+type DailyRevPoint = {
+  date: string;
+  steam: number | null;
+  ps5: number | null;
+  xbox: number | null;
+  combined: number | null;
+};
+type DailyRevResp = {
+  titleId: number;
+  from: string;
+  to: string;
+  collectionStart: string;
+  points: DailyRevPoint[];
+};
+
+const DAILY_PRESETS: Array<{ id: PresetRange; label: string; days?: number }> = [
+  { id: "7d",  label: "7d",  days: 7   },
+  { id: "30d", label: "30d", days: 30  },
+  { id: "90d", label: "90d", days: 90  },
+  { id: "ltd", label: "Since 2026-09-14" },
+];
+
+function formatMoneyFull(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
+  if (v >= 1_000_000)     return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000)         return `$${(v / 1_000).toFixed(1)}K`;
+  return `$${Math.round(v).toLocaleString()}`;
+}
+
+function DailyRevenueCard({ titleId }: { titleId: number }) {
+  const [preset, setPreset] = useState<PresetRange>("30d");
+  const [visible, setVisible] = useState<Record<"steam" | "ps5" | "xbox" | "combined", boolean>>({
+    steam: true, ps5: true, xbox: true, combined: true,
+  });
+
+  const { from, to } = useMemo(() => {
+    if (preset === "ltd") return { from: "2026-09-14", to: isoToday() };
+    const days = DAILY_PRESETS.find(p => p.id === preset)?.days ?? 30;
+    return { from: daysAgoIso(days), to: isoToday() };
+  }, [preset]);
+
+  const { data, isLoading } = useQuery<DailyRevResp>({
+    queryKey: [`/api/console/titles/${titleId}/revenue-daily`, { from, to }],
+    queryFn: async () => {
+      const q = new URLSearchParams({ from, to });
+      const r = await fetch(`/signal/api/console/titles/${titleId}/revenue-daily?${q.toString()}`, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    },
+    enabled: Number.isFinite(titleId),
+  });
+
+  const points = data?.points ?? [];
+  const hasAnyValue = points.some(p =>
+    (p.steam != null) || (p.ps5 != null) || (p.xbox != null),
+  );
+
+  return (
+    <Card className="p-4 space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-sm font-medium">Estimated daily revenue · all platforms</div>
+        <div className="flex gap-1 flex-wrap items-center">
+          {DAILY_PRESETS.map(p => (
+            <Button
+              key={p.id}
+              variant={preset === p.id ? "default" : "outline"}
+              size="sm"
+              onClick={() => setPreset(p.id)}
+              data-testid={`btn-daily-rev-range-${p.id}`}
+            >
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      </div>
+
+      {/* Series toggle chips */}
+      <div className="flex gap-2 flex-wrap text-xs">
+        {(["steam", "ps5", "xbox", "combined"] as const).map(k => (
+          <button
+            key={k}
+            type="button"
+            onClick={() => setVisible(v => ({ ...v, [k]: !v[k] }))}
+            className={`px-2 py-0.5 rounded border ${visible[k] ? "bg-muted" : "opacity-50"}`}
+            data-testid={`btn-daily-rev-series-${k}`}
+          >
+            <span
+              className="inline-block w-2 h-2 rounded-full mr-1 align-middle"
+              style={{ background: DAILY_REV_COLORS[k] }}
+            />
+            {DAILY_REV_LABELS[k]}
+          </button>
+        ))}
+      </div>
+
+      {isLoading ? (
+        <Skeleton className="h-64 w-full" />
+      ) : hasAnyValue ? (
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={points}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} tickFormatter={d => format(parseISO(d), "MMM d")} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={v => formatMoneyFull(Number(v))} />
+              <Tooltip
+                labelFormatter={d => format(parseISO(String(d)), "PPP")}
+                formatter={(v: number, name: string) => [formatMoneyFull(v), DAILY_REV_LABELS[name as keyof typeof DAILY_REV_LABELS] ?? name]}
+              />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {visible.steam && (
+                <Line type="monotone" dataKey="steam" name="steam" stroke={DAILY_REV_COLORS.steam} strokeWidth={2} dot={false} connectNulls />
+              )}
+              {visible.ps5 && (
+                <Line type="monotone" dataKey="ps5" name="ps5" stroke={DAILY_REV_COLORS.ps5} strokeWidth={2} dot={false} connectNulls />
+              )}
+              {visible.xbox && (
+                <Line type="monotone" dataKey="xbox" name="xbox" stroke={DAILY_REV_COLORS.xbox} strokeWidth={2} dot={false} connectNulls />
+              )}
+              {visible.combined && (
+                <Line type="monotone" dataKey="combined" name="combined" stroke={DAILY_REV_COLORS.combined} strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <div className="h-64 flex items-center justify-center text-sm text-muted-foreground text-center px-6">
+          No daily-revenue points in this range yet. Chart will populate over time as new daily estimates land.
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Estimated daily revenue is derived from day-over-day change in the persistent LTD unit accumulator. Collection began on {data?.collectionStart ?? "2026-09-14"}; early dates will be sparse and the chart will fill in as more daily cron runs land.
+      </p>
+    </Card>
+  );
+}
+
+const DAILY_REV_COLORS = {
+  steam:    "#66c0f4",
+  ps5:      "#006fcd",
+  xbox:     "#107c10",
+  combined: "#e0a020",
+} as const;
+const DAILY_REV_LABELS: Record<"steam" | "ps5" | "xbox" | "combined", string> = {
+  steam:    "Steam",
+  ps5:      "PlayStation 5",
+  xbox:     "Xbox",
+  combined: "Combined",
+};
