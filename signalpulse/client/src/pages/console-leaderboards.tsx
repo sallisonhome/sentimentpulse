@@ -119,25 +119,8 @@ function gatedTooltip(reason: string | null | undefined): string {
     case "insufficient_history": return "This window needs more days of forward-only collection than we have yet";
     case "no_signal": return "No rating snapshot available for this title today";
     case "no_multiplier": return "No calibration multiplier configured for this platform";
-    case "window_exceeds_title_age": return "Title is younger than this window — the last-N-days view would equal lifetime. Check the LTD board for the since-launch figure.";
-    case "cascade_cliff": return "No estimate for this window or the next wider one — falling through to a much wider window would misrepresent the requested window.";
     default: return reason || "Estimate unavailable";
   }
-}
-
-// Days between an ISO release date (YYYY-MM-DD) and today. Returns null if the
-// input is missing or malformed. Used by the "since launch (Xd)" badge that
-// dresses up LTD rows for titles too young to have distinct d7/d30/d90/m12
-// slices — those windows are gated at the estimator via 'window_exceeds_title_age'
-// but LTD still surfaces, and the badge tells the reader why d7 wouldn't have
-// been separately meaningful.
-function daysSinceReleaseIso(releaseDate: string | null | undefined): number | null {
-  if (!releaseDate) return null;
-  const rel = new Date(releaseDate + "T00:00:00Z").getTime();
-  const now = Date.now();
-  if (Number.isNaN(rel)) return null;
-  const d = Math.floor((now - rel) / 86400000);
-  return d < 0 ? 0 : d;
 }
 
 function formatUsd(cents: number | null): string {
@@ -646,25 +629,6 @@ function PlatformColumn({
                         we prefer an empty cell over exposing the raw SKU.
                       */}
                       <span className="truncate">{t.name || ""}</span>
-                      {window === "ltd" && (() => {
-                        // Bootstrap-capped badge (2026-09-14): on the LTD board, mark titles
-                        // whose age is still smaller than d30 (≤ 30 days) so the reader knows
-                        // the LTD figure is effectively a since-launch d≤30 number and the
-                        // other window boards do not yet carry a distinct value for this
-                        // title (they are gated 'window_exceeds_title_age' by the estimator).
-                        const age = daysSinceReleaseIso(t.releaseDate);
-                        if (age == null || age >= 30) return null;
-                        return (
-                          <Badge
-                            variant="outline"
-                            className="text-[9px] uppercase tracking-wide text-muted-foreground shrink-0"
-                            title={`Released ${age}d ago — LTD is this title's since-launch total. Shorter-window boards (d7/d30/d90/m12) are gated because the title's lifetime already fits inside those windows.`}
-                            data-testid={`badge-launch-${t.titleId}`}
-                          >
-                            since launch ({age}d)
-                          </Badge>
-                        );
-                      })()}
                       {t.isRecentHot ? (
                         <Badge
                           variant="secondary"
