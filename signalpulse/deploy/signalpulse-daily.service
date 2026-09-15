@@ -1,0 +1,38 @@
+[Unit]
+Description=SignalPulse daily refresh (signal collection + revenue anchors + estimator)
+Wants=network-online.target
+After=network-online.target signalpulse.service
+
+[Service]
+Type=oneshot
+# Runs on the droplet as root (matches signalpulse.service). No SSH hop.
+# WorkingDirectory is resolved dynamically to match signalpulse.service
+# so we don't hard-code /opt/sentimentpulse/signalpulse here.
+ExecStartPre=/bin/sh -c 'WD=$(systemctl show -p WorkingDirectory --value signalpulse); [ -n "$WD" ] || exit 1; echo "WD=$WD"'
+ExecStart=/bin/sh -c '\
+  set -euo pipefail; \
+  WD=$(systemctl show -p WorkingDirectory --value signalpulse); \
+  cd "$WD"; \
+  TSX="$WD/node_modules/.bin/tsx"; \
+  export LTD_ACCUMULATOR_ENABLED="$(systemctl show -p Environment signalpulse | tr \" \" \"\\n\" | grep \"^LTD_ACCUMULATOR_ENABLED=\" | cut -d= -f2 || true)"; \
+  echo "═══ signalpulse-daily start $(date -Iseconds) ═══"; \
+  echo "LTD_ACCUMULATOR_ENABLED=${LTD_ACCUMULATOR_ENABLED:-<unset>}"; \
+  echo "── PHASE 1: verify-discovery ──"; \
+  timeout 120 "$TSX" scripts/verify-discovery.ts; \
+  echo "── PHASE 2: verify-console-collectors ──"; \
+  timeout 180 "$TSX" scripts/verify-console-collectors.ts; \
+  echo "── PHASE 3: estimator ──"; \
+  timeout 300 "$TSX" scripts/estimate-console-units.ts; \
+  echo "── PHASE 4: revenue anchors ──"; \
+  timeout 120 "$TSX" scripts/write-revenue-anchors.ts; \
+  echo "═══ signalpulse-daily done $(date -Iseconds) ═══"'
+StandardOutput=journal
+StandardError=journal
+# Never hang the timer; kill the pipeline after 20 min hard cap.
+TimeoutStartSec=1200
+# Failure of any phase should be visible but should not block the next
+# day's timer from firing.
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,83 @@
+name: SignalPulse — Install/Update daily systemd timer
+
+# Installs signalpulse-daily.{service,timer} on the droplet and enables
+# the timer. Idempotent — re-run any time to refresh the unit files.
+#
+# Purpose: replace the unreliable GitHub Actions cron with a host-local
+# systemd timer that fires on time (Persistent=true catches up if the
+# droplet was down at the scheduled instant).
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: '"install" (default), "disable", or "status"'
+        required: false
+        default: "install"
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  manage-timer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Apply
+        env:
+          ACTION_INPUT: ${{ inputs.action }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "ACTION=$ACTION_INPUT bash -s" <<'REMOTE'
+          set -euo pipefail
+          ACTION="${ACTION:-install}"
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          [ -n "$WD" ] || { echo "ERR: signalpulse not installed"; exit 1; }
+          echo "WD=$WD  ACTION=$ACTION"
+
+          case "$ACTION" in
+            install)
+              # Copy the two unit files from the deployed working dir into /etc/systemd/system
+              [ -f "$WD/deploy/signalpulse-daily.service" ] || { echo "ERR: service unit not deployed"; exit 1; }
+              [ -f "$WD/deploy/signalpulse-daily.timer"   ] || { echo "ERR: timer unit not deployed";   exit 1; }
+              install -m 0644 "$WD/deploy/signalpulse-daily.service" /etc/systemd/system/signalpulse-daily.service
+              install -m 0644 "$WD/deploy/signalpulse-daily.timer"   /etc/systemd/system/signalpulse-daily.timer
+              systemctl daemon-reload
+              systemctl enable --now signalpulse-daily.timer
+              echo "── Timer status ──"
+              systemctl status signalpulse-daily.timer --no-pager | head -20 || true
+              echo ""
+              echo "── Timer schedule ──"
+              systemctl list-timers signalpulse-daily.timer --no-pager
+              ;;
+
+            disable)
+              systemctl disable --now signalpulse-daily.timer || true
+              echo "── Post-disable status ──"
+              systemctl is-active signalpulse-daily.timer || echo "(inactive — good)"
+              ;;
+
+            status)
+              echo "── Timer status ──"
+              systemctl status signalpulse-daily.timer --no-pager | head -20 || true
+              echo ""
+              echo "── Timer schedule ──"
+              systemctl list-timers signalpulse-daily.timer --no-pager || true
+              echo ""
+              echo "── Recent journal (last 50 lines) ──"
+              journalctl -u signalpulse-daily.service -n 50 --no-pager || true
+              ;;
+
+            *)
+              echo "unknown action: $ACTION"; exit 1
+              ;;
+          esac
+          REMOTE

@@ -1,0 +1,26 @@
+[Unit]
+Description=SignalPulse daily refresh timer
+Requires=signalpulse-daily.service
+
+[Timer]
+# 09:15 UTC daily — same clock time as the old GitHub Actions cron.
+# Change to `OnCalendar=*-*-* 09:15:00 UTC` explicitly to avoid host
+# TZ ambiguity.
+OnCalendar=*-*-* 09:15:00 UTC
+
+# If the droplet was down at the scheduled time, run as soon as it comes
+# back up. This is the reliability property GitHub Actions cron does not
+# give us.
+Persistent=true
+
+# Small jitter so we don't hit Steam/Xbox/PS storefronts at exactly the
+# same second every day.
+RandomizedDelaySec=60
+
+# Ensure the timer's start time is anchored consistently to boot.
+AccuracySec=30s
+
+Unit=signalpulse-daily.service
+
+[Install]
+WantedBy=timers.target
