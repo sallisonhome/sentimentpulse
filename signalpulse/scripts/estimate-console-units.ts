@@ -860,9 +860,18 @@ async function main() {
       let newSource: string;
 
       if (hasOverride) {
-        // Regime 1: override_anchor wins. Trust the naive LTD row.
-        newLtdUnits = ltdRow.unitsMid;
-        newSource = "override_anchor";
+        // Regime 1: override_anchor is a FLOOR, not a ceiling.
+        // If reality (any big window or accumulator state) exceeds the anchor,
+        // take the larger value. Overrides prevent LTD from cratering; they
+        // never suppress observed sales.
+        const windowValues = titleRows
+          .filter((r) => r.window !== "ltd" && r.gatedReason == null && r.unitsMid != null)
+          .map((r) => r.unitsMid as number);
+        const anchorLtd = ltdRow.unitsMid ?? 0;
+        const existing = state?.ltd_units ?? 0;
+        newLtdUnits = Math.max(anchorLtd, existing, ...windowValues);
+        // Tag which side won so audits are trivial.
+        newSource = newLtdUnits > anchorLtd ? "override_floor_exceeded" : "override_anchor";
       } else {
         const age = titleAgeDays(titleId);
         if (age == null || age < 366) {
