@@ -40,6 +40,7 @@
 /* eslint-disable no-console */
 
 import { rawSqlite } from "../server/storage";
+import { getPeerRankNeighbors, type SortKey } from "../server/signals/console/rankSnapshot";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -774,6 +775,135 @@ async function main() {
       row.ownersHigh = Math.round(ownersHigh);
       row.unitsMid = Math.round(unitsMid);
       rows.push(row);
+    }
+  }
+
+  // ─── 8a. Rank-anchor floor for fresh top-20 releases (2026-09-15) ────────
+  //
+  // Problem: when a AAA console title launches, the storefront chart shows it
+  // at rank #1–5 on day one but our ratings-derived signal is thin — the
+  // pre-order + first-24h rating count is a fraction of what the concept will
+  // hold within a week. That produces a d7 leaderboard row that ranks the game
+  // dozens of positions BELOW where it actually sits on the storefront chart,
+  // which fails the intuition test for anyone comparing our board to Sony's
+  // sales30 chart or Microsoft's top-paid channel.
+  //
+  // Fix (d7 only): if a title released within the last 30 days AND currently
+  // sits at rank ≤ 20 on the storefront's sales chart, compute a peer-based
+  // floor from the nearest 6 STABILISED neighbours (peers released >30 days
+  // ago so their unitsMid is a mature ratings-derived estimate), scaled by a
+  // power-law taper on rank (∝ rank^-0.7). Floor the ratings-derived unitsMid
+  // against this value. Tag row.method='rank_anchor:<sort_key>' so the client
+  // can badge the row and it disappears organically once ratings catch up.
+  //
+  // Only d7 is floored. d30 depends on 30 days of history, which by
+  // construction isn't available for a title released <30d ago (bootstrap or
+  // steam-pace do that job). LTD flows through the derived_max_windows path
+  // in section 8b and inherits the floor automatically.
+  //
+  // Peer set:
+  //   - Radius 3 above + 3 below anchor rank on the same (platform, sort_key)
+  //     snapshot, filtered to titles released MORE than 30 days ago and not
+  //     gated (has a non-null d7 unitsMid in this run).
+  //   - PSN sort_key: psn_api_sales30. Xbox sort_key: xbox_api_top_paid.
+  //   - If the anchor has fewer than 3 usable peers after filtering, we still
+  //     apply the floor from whatever remains (down to 1 peer) — a rank-anchor
+  //     with 2 peers is still more truthful than a 61-rating signal on a
+  //     top-5 launch. If 0 peers after filtering, skip (no floor applied).
+  //
+  // Formula: anchor_unit_d7 = mean(peer.unitsMid_d7) × (anchor_rank^-0.7)
+  //                                                    / (peer_avg_rank^-0.7)
+  //   where peer_avg_rank is the harmonic-style geometric normaliser: we take
+  //   the mean of peers' power-law weights (rank^-0.7), so the anchor's weight
+  //   divided by that mean gives the correct "lifted to peer average, then
+  //   tapered by anchor's rank" scaling. This makes the floor equal to the
+  //   peer mean when the anchor sits AT the peer average rank, and lifts it
+  //   above when the anchor ranks higher.
+  {
+    const RANK_ANCHOR_MAX_RELEASE_AGE_DAYS = 30;
+    const RANK_ANCHOR_MAX_RANK             = 20;
+    const RANK_ANCHOR_TAPER_EXPONENT       = 0.7;
+    const RANK_ANCHOR_RADIUS               = 3;
+    const RANK_ANCHOR_SORT_KEY: Record<"ps5" | "xbox", SortKey> = {
+      ps5:  "psn_api_sales30",
+      xbox: "xbox_api_top_paid",
+    };
+
+    // Build a d7 unitsMid lookup keyed by title|platform for peer lookups.
+    // Use rows we JUST computed above.
+    const d7UnitsByKey = new Map<string, number>();
+    for (const r of rows) {
+      if (r.window !== "d7") continue;
+      if (r.unitsMid == null) continue;
+      d7UnitsByKey.set(`${r.titleId}|${r.platform}`, r.unitsMid);
+    }
+
+    let anchoredCount = 0;
+    let skippedNoPeers = 0;
+    for (const row of rows) {
+      if (row.window !== "d7") continue;
+      if (row.platform !== "ps5" && row.platform !== "xbox") continue;
+      if (!isReleasedWithin(row.titleId, RANK_ANCHOR_MAX_RELEASE_AGE_DAYS)) continue;
+      const sortKey = RANK_ANCHOR_SORT_KEY[row.platform];
+
+      const { anchorRank, peers } = getPeerRankNeighbors(
+        row.platform, sortKey, row.titleId,
+        RANK_ANCHOR_RADIUS, RANK_ANCHOR_MAX_RANK,
+        asOfDate,
+      );
+      if (anchorRank == null) continue;                       // not on today's chart
+      if (anchorRank > RANK_ANCHOR_MAX_RANK) continue;         // outside top-20
+
+      // Filter peers: stabilised (release > 30d ago) AND has a d7 units row.
+      const stabilisedPeers = peers.filter(p => {
+        if (isReleasedWithin(p.titleId, RANK_ANCHOR_MAX_RELEASE_AGE_DAYS)) return false;
+        const u = d7UnitsByKey.get(`${p.titleId}|${row.platform}`);
+        return u != null && u > 0;
+      }).map(p => ({
+        titleId: p.titleId,
+        rank: p.rank,
+        units: d7UnitsByKey.get(`${p.titleId}|${row.platform}`)!,
+      }));
+
+      if (stabilisedPeers.length === 0) { skippedNoPeers++; continue; }
+
+      // Power-law taper: floor = mean(peer_units) × (anchor_rank^-α) / mean(peer_rank^-α)
+      const alpha = RANK_ANCHOR_TAPER_EXPONENT;
+      const peerUnitMean = stabilisedPeers.reduce((s, p) => s + p.units, 0) / stabilisedPeers.length;
+      const peerWeightMean = stabilisedPeers.reduce((s, p) => s + Math.pow(p.rank, -alpha), 0) / stabilisedPeers.length;
+      const anchorWeight = Math.pow(anchorRank, -alpha);
+      const anchorFloor = peerUnitMean * (anchorWeight / peerWeightMean);
+
+      if (row.unitsMid != null && row.unitsMid >= anchorFloor) continue; // natural signal already exceeds floor
+
+      // Apply floor. Preserve owners* ratio to units so downstream LTD math
+      // still lines up: scale ownersMid by the same ratio, and rebuild the CI
+      // envelope using the platform (or override) ci_pct.
+      const mult = multipliers.get(row.platform);
+      if (!mult) continue;
+      const override = overrideByKey.get(`${row.titleId}|${row.platform}`);
+      const appliedCiPct        = override?.ci_pct             ?? mult.ci_pct;
+      const appliedDigitalShare = override?.digital_unit_share ?? mult.digital_unit_share;
+
+      const flooredUnits = Math.round(anchorFloor);
+      const flooredOwners = Math.round(flooredUnits * appliedDigitalShare);
+      row.unitsMid = flooredUnits;
+      row.ownersMid = flooredOwners;
+      row.ownersLow  = Math.round(flooredOwners * (1 - appliedCiPct));
+      row.ownersHigh = Math.round(flooredOwners * (1 + appliedCiPct));
+      row.method = `rank_anchor:${sortKey}`;
+      row.gatedReason = null;                                   // un-gate if noise-gate had tripped
+      // Keep signal_value as-is (audit trail of what ratings gave us) so the
+      // floor's contribution over the raw signal is visible in the DB.
+      // Update the peer map so downstream anchors see this row's floor as its
+      // baseline d7 units — not required for correctness (peers must be >30d
+      // old anyway), just keeps the map internally consistent.
+      d7UnitsByKey.set(`${row.titleId}|${row.platform}`, flooredUnits);
+      anchoredCount++;
+    }
+
+    if (anchoredCount > 0 || skippedNoPeers > 0) {
+      console.log(`[estimate-console-units] rank-anchor floor: applied=${anchoredCount} skipped_no_peers=${skippedNoPeers}`);
     }
   }
 

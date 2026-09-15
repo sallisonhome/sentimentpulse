@@ -2,6 +2,32 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 15, 2026 (evening)
+
+- Improved
+
+  ### Fresh top-20 releases get a rank-anchored floor on d7 units
+
+  When a title released within the last 30 days sits at rank ≤ 20 on the PSN sales30 or Xbox top-paid chart, the d7 unit estimate is now floored against the mean units of its 6 nearest stabilised peers (peers released > 30 days ago), tapered by a power law on chart rank (`∝ rank^-0.7`). This closes the gap between where the storefront ranks a fresh AAA launch and where our ratings-derived signal puts it while the rating count is still catching up. The floor auto-releases the moment natural ratings exceed the anchor, and rows tagged `rank_anchor:<sort_key>` write the audit trail into `window_estimates_daily.method`.
+
+- Improved
+
+  ### PS5 discovery now writes every edition SKU under one title_id
+
+  PSN's sales30 chart lists each edition of a game as its own row (Standard, Deluxe, Ultimate). Discovery now groups every row that shares an `npTitleId` and emits ONE base SKU (lowest MSRP wins) plus one `sku_role='edition'` row per sibling, all under the base row's `title_id`. This keeps the leaderboard showing one unified row per game with the accurate base-price MSRP (previously Sony's ranking order could hand base status to the $79.99 Deluxe over the $69.99 Standard, inflating ASP).
+
+- Fixed
+
+  ### PS5 ratings collector no longer double-counts editions
+
+  Sony's PSN productRetrieve returns the same rating count for every edition SKU on a shared concept (they aggregate at the concept, not per-SKU). Verified live for Wolverine, Halloween, NBA 2K27, and Blood of Dawnwalker. The runtime collector now filters to `sku_role='base'` before polling, so a title with N editions no longer writes N identical rating snapshots per day and inflates the ratings-derived unit signal by N×.
+
+- Fixed
+
+  ### Marvel's Wolverine (tid=10302) SKU normalisation
+
+  Manually inserted the Standard SKU ($69.99) as the base row under Wolverine's `title_id`, downgraded the Deluxe SKU ($79.99) to `sku_role='edition'`, and reset the display name from the Deluxe-specific storefront string to "Marvel's Wolverine". Both rows latched with `is_manual_override=1` so tomorrow's discovery can't reset them. The paired discovery + collector changes above prevent this class of one-off cleanup from being needed on the next AAA launch.
+
 ## September 15, 2026
 
 - Fixed

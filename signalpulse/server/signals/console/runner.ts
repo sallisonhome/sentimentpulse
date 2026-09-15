@@ -49,18 +49,24 @@ interface SkuGateRow {
   title_id: number;
   external_sku: string;
   business_model: BusinessModel;
+  sku_role: string;               // 'base' | 'edition' | 'dlc' | 'bundle' — free-text on the schema side
 }
 
 /**
  * Look up business_model for every candidate SKU on a platform in one query.
  * Absent = 'unknown' (gated out). We build the IN(...) placeholders inline
  * because better-sqlite3 doesn't do array binding.
+ *
+ * Also returns sku_role so callers can filter edition/bundle SKUs before
+ * hitting the storefront. That matters for PSN, where Sony aggregates ratings
+ * at the concept level — polling every edition would triple-count the same
+ * rating count and inflate the derived unit signal (see runPsCollector).
  */
 function loadSkuGate(platform: ConsolePlatform, skus: string[]): Map<string, SkuGateRow> {
   if (skus.length === 0) return new Map();
   const placeholders = skus.map(() => "?").join(",");
   const stmt = rawSqlite.prepare(
-    `SELECT title_id, external_sku, business_model
+    `SELECT title_id, external_sku, business_model, sku_role
        FROM platform_sku_map
       WHERE platform = ?
         AND external_sku IN (${placeholders})`
@@ -231,14 +237,29 @@ export async function runXboxCollector(inputs: XboxCollectorInput[]): Promise<Pl
 export async function runPsCollector(inputs: PsCollectorInput[]): Promise<PlatformRunResult> {
   const gate = loadSkuGate("ps5", inputs.map(i => i.productId));
   const eligible: PsCollectorInput[] = [];
-  let gatedF2P = 0, gatedUnknown = 0;
+  let gatedF2P = 0, gatedUnknown = 0, gatedNonBase = 0;
   for (const inp of inputs) {
     const g = gate.get(inp.productId);
     if (!g) { gatedUnknown++; log(`ps gate: skipping productId=${inp.productId} — not in platform_sku_map`); continue; }
+    // 2026-09-15: PSN productRetrieve returns the SAME rating count for every
+    // edition SKU on a shared concept (Sony aggregates at concept level, not
+    // per-SKU). Verified live for Wolverine (Std+Deluxe both report 6818 on
+    // concept 10002861), Halloween (both 6070), NBA 2K27 (both 2845), Blood
+    // of Dawnwalker (single-SKU baseline 8621). If we polled every edition we
+    // would insert the same rating count N times per day per title_id and
+    // inflate the ratings-derived unit signal by N×. Poll only sku_role='base'
+    // — the collector's per-title snapshot already covers every edition's
+    // ratings via the concept-level roll-up.
+    if (g.sku_role !== "base") {
+      gatedNonBase++;
+      log(`ps gate: skipping productId=${inp.productId} — sku_role='${g.sku_role}' (base-only invariant; concept ratings shared across editions)`);
+      continue;
+    }
     if (g.business_model === "paid") { eligible.push({ ...inp, titleId: g.title_id }); continue; }
     if (g.business_model === "free_to_play") { gatedF2P++; log(`ps gate: skipping productId=${inp.productId} — free_to_play`); continue; }
     gatedUnknown++;
   }
+  if (gatedNonBase > 0) log(`ps gate: gated ${gatedNonBase} non-base edition SKU(s) (concept-level ratings dedup)`);
 
   const res = await collectPsSignals(eligible);
   let ingested = 0;

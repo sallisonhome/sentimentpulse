@@ -160,6 +160,62 @@ export function getRankVelocity(
   return { velocity: y - t, todayBestRank: t, yesterdayBestRank: y };
 }
 
+/**
+ * Nearest neighbors by storefront rank on ONE (platform, sort_key) for a given
+ * anchor title, returning the up-to `2*radius` closest peers by |rank–anchorRank|
+ * (up to `radius` above and `radius` below, filtered to ranks in [1, rankCap]).
+ *
+ * Used by the rank-anchor floor in the estimator (see estimate-console-units.ts):
+ * a fresh top-20 release with a thin ratings signal gets its d7 units floored
+ * against the mean of the nearest 6 stabilised peers, scaled by a power-law
+ * on rank. "Stabilised" and "gated" filters are applied by the CALLER against
+ * the returned title_ids because rankSnapshot has no visibility into release
+ * dates or business_model — those live in console_title_igdb / platform_sku_map.
+ *
+ * Ties (same |rank–anchorRank| on both sides): the caller ends up with both
+ * neighbors; if their filter drops one it just gets a smaller peer set. The
+ * anchor title itself is excluded.
+ *
+ * `snapshotDate` defaults to today UTC. Returns entries in ascending rank
+ * order so the caller can log/inspect them easily.
+ */
+export function getPeerRankNeighbors(
+  platform: "ps5" | "xbox",
+  sortKey: SortKey,
+  anchorTitleId: number,
+  radius: number = 3,
+  rankCap: number = 100,
+  snapshotDate?: string,
+): { anchorRank: number | null; peers: Array<{ titleId: number; rank: number }> } {
+  const date = snapshotDate ?? todayIsoUtc();
+  const anchorRow = rawSqlite.prepare(`
+    SELECT rank FROM console_storefront_rank_daily
+     WHERE platform = ? AND sort_key = ? AND snapshot_date = ? AND title_id = ?
+  `).get(platform, sortKey, date, anchorTitleId) as { rank: number } | undefined;
+  if (!anchorRow) return { anchorRank: null, peers: [] };
+
+  const above = rawSqlite.prepare(`
+    SELECT title_id, rank FROM console_storefront_rank_daily
+     WHERE platform = ? AND sort_key = ? AND snapshot_date = ?
+       AND rank < ? AND rank >= 1 AND rank <= ?
+     ORDER BY rank DESC
+     LIMIT ?
+  `).all(platform, sortKey, date, anchorRow.rank, rankCap, radius) as Array<{ title_id: number; rank: number }>;
+
+  const below = rawSqlite.prepare(`
+    SELECT title_id, rank FROM console_storefront_rank_daily
+     WHERE platform = ? AND sort_key = ? AND snapshot_date = ?
+       AND rank > ? AND rank <= ?
+     ORDER BY rank ASC
+     LIMIT ?
+  `).all(platform, sortKey, date, anchorRow.rank, rankCap, radius) as Array<{ title_id: number; rank: number }>;
+
+  const peers = [...above, ...below]
+    .map(r => ({ titleId: r.title_id, rank: r.rank }))
+    .sort((a, b) => a.rank - b.rank);
+  return { anchorRank: anchorRow.rank, peers };
+}
+
 // UTC helpers kept local so this module doesn't depend on discovery internals.
 function todayIsoUtc(): string {
   return new Date().toISOString().slice(0, 10);

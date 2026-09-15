@@ -79,6 +79,12 @@ const SKU_BASE_TITLE_ID: ReadonlyMap<string, number> = new Map<string, number>([
   ["ps5:UP4572-PPSA01768_00-0000000000000WOA", 10333],
   // Final Fantasy VII Rebirth: Digital Deluxe Edition. Base 10364 (EU EP0082-PPSA08668).
   ["ps5:UP0082-PPSA08666_00-0978938405039882", 10364],
+  // ─── 2026-09-15: Marvel's Wolverine edition SKU. Base 10302 owns the Standard
+  //     SKU (UP9000-PPSA03671_00-MARVELSWOLVERINE, $69.99). The Deluxe Edition
+  //     ($79.99) shares npTitleId PPSA03671_00 with Standard, so pre-refactor
+  //     discovery could allocate a new title_id if it ever hit Deluxe first on
+  //     the sales chart. Remap keeps the game consolidated.
+  ["ps5:UP9000-PPSA03671_00-WOLVERINEDELUXE0", 10302],
 ]);
 
 function remapTitleId(platform: string, externalSku: string, defaultTitleId: number): number {
@@ -492,6 +498,32 @@ export interface Ps5TopProduct {
                                                  // NULL when the row is F2P, subscription, or the string couldn't be parsed.
   headerImageUrl: string | null;                 // Best available cover from the grid `media` array.
   releaseDateIso: string | null;                 // Parsed ISO date, YYYY-MM-DD.
+  /**
+   * Additional PSN products that share this row's npTitleId (Standard/Deluxe/
+   * Ultimate/Bundle editions of the same underlying game). Populated 2026-09-15
+   * so discovery no longer silently drops the alt editions. Every entry here
+   * is written to platform_sku_map with sku_role='edition' under the base row's
+   * title_id, so the leaderboard shows one unified row per game while the map
+   * still carries every SKU for price/anchor purposes. Empty when only one SKU
+   * exists for the npTitleId (the common case).
+   *
+   * The BASE row (this object) is the LOWEST-MSRP variant of the group — that
+   * mirrors how the estimator anchors revenue (MIN(msrp_usd_cents) join in
+   * platform_sku_map) and matches customer intuition (Standard → Deluxe upsell,
+   * not the other way). If prices tie, the first product returned by Sony wins.
+   */
+  editions: Ps5EditionProduct[];
+}
+
+/**
+ * A sibling SKU on the same npTitleId. Same fields the writer needs, minus the
+ * grouping metadata that only makes sense on the base row.
+ */
+export interface Ps5EditionProduct {
+  productId: string;
+  name: string | null;
+  msrpUsdCents: number | null;
+  storeDisplayClassification: string | null;
 }
 
 type PsGridSort = "sales30" | "sales7";
@@ -577,11 +609,30 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
   // (not first) so sales30 keeps the dedup slots.
   const pageSize = 100;
   const maxPages = Math.max(2, Math.ceil((topN * 1.3) / pageSize));
-  const out: Ps5TopProduct[] = [];
-  const seen = new Set<string>();
+
+  // Group rows by npTitleId. Every row Sony returns is one edition SKU on some
+  // underlying game; the grouping map lets us keep ALL edition SKUs (not just
+  // the first-seen one) so downstream discovery can write them as edition rows
+  // under a shared title_id. See Ps5TopProduct.editions.
+  //
+  // Before 2026-09-15 we dedupe-dropped every non-first row on a shared
+  // npTitleId at parse time, then allocated title_ids off the first row's
+  // productId. Two bad consequences:
+  //   1. On release day, whichever edition ranked highest on Sony's sales30
+  //      chart became the base SKU for the game — e.g. Wolverine Deluxe ($79.99)
+  //      won base row over the Standard ($69.99), inflating ASP by $8.
+  //   2. If a later refresh flipped which edition ranked first (a common
+  //      pattern as Deluxe pre-order buzz normalises to Standard volume), we
+  //      could have re-allocated a fresh title_id for what was actually the
+  //      same game, splitting the game's ratings history across two rows.
+  // Both failure modes vanish once we keep the full edition set and let the
+  // writer pick the base by lowest MSRP.
+  interface EditionCandidate { p: PsGridProduct; msrpUsdCents: number | null }
+  const groupsByNpTitleId = new Map<string, EditionCandidate[]>();
+  const groupOrder: string[] = [];   // preserves rank order of first-seen npTitleId
 
   const drainSort = async (sortName: PsGridSort) => {
-    for (let page = 0; page < maxPages && out.length < topN; page++) {
+    for (let page = 0; page < maxPages && groupOrder.length < topN; page++) {
       let products: PsGridProduct[];
       try {
         products = await fetchPs5GridPage(page * pageSize, pageSize, sortName);
@@ -592,39 +643,28 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
       if (products.length === 0) break;
 
       for (const p of products) {
-        // Dedupe by npTitleId (Standard/Deluxe/Ultimate editions share one),
-        // but record the FULL concept-productId `p.id` as external_sku —
-        // that's the value productRetrieve needs.
         const npTitleId = p.npTitleId;
         const productId = p.id;
         if (!npTitleId || !productId) continue;
-        if (seen.has(npTitleId)) continue;
         // Enforce PS5-only at the row level even though the category is scoped:
         // hybrid SKUs list both platforms; require PS5 to be present.
         const platforms = Array.isArray(p.platforms) ? p.platforms : [];
         if (!platforms.includes("PS5")) continue;
-        seen.add(npTitleId);
-        // Pull USD MSRP from price.basePrice (populated when the caller sent
-        // Accept-Language: en-US). F2P titles come back as "Free" and parse to 0;
-        // paid parses to positive cents. Anything else — unavailable, add-on-only,
-        // “Available with subscription” — parses to null and the writer leaves it null.
         const basePrice = (p.price && p.price.basePrice) ?? null;
         const msrpUsdCents = parsePs5UsdBasePriceCents(basePrice);
-        const headerImageUrl = pickPsGridHeaderImage(p.media);
-        const releaseDateIso = parsePsGridReleaseDate(p.releaseDate);
-        out.push({
-          productId,
-          npTitleId,
-          name: p.name ?? null,
-          platforms,
-          storeDisplayClassification: p.storeDisplayClassification ?? null,
-          msrpUsdCents,
-          headerImageUrl,
-          releaseDateIso,
-        });
-        if (out.length >= topN) break;
+
+        if (!groupsByNpTitleId.has(npTitleId)) {
+          if (groupOrder.length >= topN) continue;   // don't start a new group past the budget
+          groupsByNpTitleId.set(npTitleId, []);
+          groupOrder.push(npTitleId);
+        }
+        // Guard against duplicate productId within one page batch (Sony has
+        // been observed returning the same edition twice under sales7 outages).
+        const bucket = groupsByNpTitleId.get(npTitleId)!;
+        if (bucket.some(e => e.p.id === productId)) continue;
+        bucket.push({ p, msrpUsdCents });
       }
-      if (out.length < topN && page < maxPages - 1) {
+      if (groupOrder.length < topN && page < maxPages - 1) {
         await new Promise(r => setTimeout(r, 250));
       }
     }
@@ -633,7 +673,48 @@ export async function discoverPs5TopSelling(topN: number = 100): Promise<Ps5TopP
   // 30-day sales chart is the sole discovery source. sales7 dropped 2026-09-11
   // due to endpoint degradation (see comment block above).
   await drainSort("sales30");
-  log(`ps5 discovery: sales30 only (sales7 dropped 2026-09-11) → ${out.length} unique npTitleIds`);
+
+  // Finalise: for each npTitleId group, pick the LOWEST-MSRP row as base (ties
+  // broken by first-seen order, which is Sony's rank order). Everything else
+  // in the group becomes an edition SKU.
+  //
+  // MSRP=null rows are placed LAST in the ranking so a priced edition always
+  // wins base over an unpriced one; if the whole group is unpriced, first-seen
+  // wins.
+  const out: Ps5TopProduct[] = [];
+  for (const npTitleId of groupOrder) {
+    const bucket = groupsByNpTitleId.get(npTitleId) ?? [];
+    if (bucket.length === 0) continue;
+    const sorted = [...bucket].sort((a, b) => {
+      const av = a.msrpUsdCents ?? Number.POSITIVE_INFINITY;
+      const bv = b.msrpUsdCents ?? Number.POSITIVE_INFINITY;
+      return av - bv;
+    });
+    const base = sorted[0].p;
+    const baseMsrp = sorted[0].msrpUsdCents;
+    // `productId` is guaranteed non-null by the parse loop above (we skipped
+    // any row without one). Assert for the type system.
+    const editions: Ps5EditionProduct[] = sorted.slice(1).map(e => ({
+      productId: e.p.id!,
+      name: e.p.name ?? null,
+      msrpUsdCents: e.msrpUsdCents,
+      storeDisplayClassification: e.p.storeDisplayClassification ?? null,
+    }));
+    out.push({
+      productId: base.id!,
+      npTitleId,
+      name: base.name ?? null,
+      platforms: Array.isArray(base.platforms) ? base.platforms : [],
+      storeDisplayClassification: base.storeDisplayClassification ?? null,
+      msrpUsdCents: baseMsrp,
+      headerImageUrl: pickPsGridHeaderImage(base.media),
+      releaseDateIso: parsePsGridReleaseDate(base.releaseDate),
+      editions,
+    });
+  }
+
+  const editionCount = out.reduce((n, r) => n + r.editions.length, 0);
+  log(`ps5 discovery: sales30 only (sales7 dropped 2026-09-11) → ${out.length} unique npTitleIds (with ${editionCount} sibling edition SKUs)`);
   return out;
 }
 
@@ -672,6 +753,18 @@ export interface PsClassification {
   storeDisplayClassification: string | null;
   headerImageUrl: string | null;
   releaseDateIso: string | null;
+  /**
+   * Sibling SKUs on the same npTitleId. Same shape as the base row minus
+   * grouping metadata. Discovery writes each as sku_role='edition' under the
+   * base row's title_id. Empty (default) when the caller doesn't know about
+   * or care about edition SKUs — e.g. classifyPsManualSeed.
+   */
+  editions?: Array<{
+    productId: string;
+    businessModel: BusinessModel;
+    msrpUsdCents: number | null;
+    name: string | null;
+  }>;
 }
 
 /**
@@ -714,20 +807,23 @@ export async function classifyPsManualSeed(seeds: Array<{
  *      seeds an override.
  */
 export async function classifyPs5TopSelling(rows: Ps5TopProduct[]): Promise<PsClassification[]> {
-  return rows.map(r => {
-    const bm: BusinessModel = r.msrpUsdCents === 0
-      ? "free_to_play"
-      : "paid";
-    return {
-      productId: r.productId,
-      businessModel: bm,
-      msrpUsdCents: r.msrpUsdCents,
-      name: r.name,
-      storeDisplayClassification: r.storeDisplayClassification,
-      headerImageUrl: r.headerImageUrl,
-      releaseDateIso: r.releaseDateIso,
-    };
-  });
+  const classifyBm = (msrp: number | null): BusinessModel =>
+    msrp === 0 ? "free_to_play" : "paid";
+  return rows.map(r => ({
+    productId: r.productId,
+    businessModel: classifyBm(r.msrpUsdCents),
+    msrpUsdCents: r.msrpUsdCents,
+    name: r.name,
+    storeDisplayClassification: r.storeDisplayClassification,
+    headerImageUrl: r.headerImageUrl,
+    releaseDateIso: r.releaseDateIso,
+    editions: r.editions.map(e => ({
+      productId: e.productId,
+      businessModel: classifyBm(e.msrpUsdCents),
+      msrpUsdCents: e.msrpUsdCents,
+      name: e.name,
+    })),
+  }));
 }
 
 // ─── Writer ──────────────────────────────────────────────────────────────────
@@ -987,15 +1083,38 @@ export async function runFullDiscovery(opts: {
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `xbox_displaycatalog.MSRP`,
   }));
-  const ps5DiscoveredRows: UpsertRow[] = ps5Paid.map(c => ({
-    platform: "ps5", externalSku: c.productId,
-    // Remap known duplicate SKUs onto their base title_id so discovery never
-    // re-creates a rival row for the same game. See SKU_BASE_TITLE_ID above.
-    titleId: remapTitleId("ps5", c.productId, opts.titleIdFor("ps5", c.productId, c.name)),
-    conceptId: null, skuRole: "base",
-    businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
-    businessModelSource: `ps_categoryGridRetrieve.sales30`,
-  }));
+  // Emit ONE base row per npTitleId group plus one edition row per sibling SKU.
+  // The base row's title_id is used for every edition in the group so the
+  // leaderboard shows one unified row per game. Discovery's base SKU is the
+  // LOWEST-MSRP variant in the group (see discoverPs5TopSelling.finalise).
+  //
+  // Editions are dropped from the F2P filter the same way base rows are; a
+  // F2P edition of a paid title is rare (usually a demo variant) and the
+  // upsertSkuMap writer enforces the paid-only invariant regardless.
+  const ps5DiscoveredRows: UpsertRow[] = [];
+  for (const c of ps5Paid) {
+    const baseTitleId = remapTitleId("ps5", c.productId, opts.titleIdFor("ps5", c.productId, c.name));
+    ps5DiscoveredRows.push({
+      platform: "ps5", externalSku: c.productId,
+      titleId: baseTitleId,
+      conceptId: null, skuRole: "base",
+      businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
+      businessModelSource: `ps_categoryGridRetrieve.sales30`,
+    });
+    for (const ed of c.editions ?? []) {
+      if (ed.businessModel === "free_to_play") continue;
+      ps5DiscoveredRows.push({
+        platform: "ps5", externalSku: ed.productId,
+        // Editions inherit the base's title_id (SKU_BASE_TITLE_ID still wins
+        // if an explicit remap exists — e.g. a legacy US/EU duplicate that
+        // was manually pinned to a different base).
+        titleId: remapTitleId("ps5", ed.productId, baseTitleId),
+        conceptId: null, skuRole: "edition",
+        businessModel: ed.businessModel, msrpUsdCents: ed.msrpUsdCents,
+        businessModelSource: `ps_categoryGridRetrieve.sales30.edition`,
+      });
+    }
+  }
   const psManualRows: UpsertRow[] = psManualCls.map(c => ({
     platform: "ps5", externalSku: c.productId,
     titleId: remapTitleId("ps5", c.productId, opts.titleIdFor("ps5", c.productId, c.name)),

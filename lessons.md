@@ -4,6 +4,53 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-15 — PSN productRetrieve returns concept-level ratings, NOT per-SKU
+
+When a PSN concept has multiple edition SKUs (Standard / Deluxe / Ultimate),
+calling wcaProductStarRatingRetrive against ANY of the edition productIds
+returns the SAME `count` and `avg` — Sony aggregates ratings at the concept
+level (identified by `conceptId` on the productRetrieve response), not the SKU
+level. Verified live for Marvel's Wolverine (Std+Deluxe both 6818 / concept
+10002861), Halloween (both 6070 / concept 10014718), NBA 2K27 (both 2845 /
+concept 10018502), and Blood of Dawnwalker (single-SKU baseline 8621 /
+concept 10013855).
+
+Operational rule: **poll only ONE SKU per npTitleId on PSN** — specifically the
+`sku_role='base'` row. `runPsCollector` in `server/signals/console/runner.ts`
+enforces this via a `sku_role='base'` gate. Polling every edition would insert
+the same rating count N times per day per `title_id` and inflate the ratings-
+derived unit signal by N× (a 3-edition top-10 launch would report 3× real d7
+units, blowing past every reasonable multiplier calibration).
+
+Corollary for discovery (`discoverPs5TopSelling` in `discovery.ts`): edition
+SKUs from the sales chart are still tracked in `platform_sku_map` (so revenue
+math and price-anchor lookups see every edition) but under `sku_role='edition'`
+rolled up to the SAME `title_id` as the base row, so the leaderboard shows
+one unified row per game and MSRP defaults to the base price for aggregate
+views.
+
+If a future storefront exposes ratings PER-SKU rather than per-concept, the
+base-only gate above must be revisited platform-by-platform — do not port it
+to Xbox or Steam without re-verifying the underlying data model first.
+
+## 2026-09-15 — PS5 discovery pre-refactor could hand base status to Deluxe
+
+Old `discoverPs5TopSelling` deduplicated Sony's sales chart by `npTitleId` at
+parse time — whichever edition ranked higher on the chart became the
+`title_id`'s base SKU, and every other edition was silently dropped from
+`platform_sku_map`. On release day, the Deluxe edition of a AAA title
+frequently outranks the Standard (pre-order buzz + auto-upgraded editions),
+so the base row landed as the $79.99 Deluxe rather than the $69.99 Standard.
+Revenue estimates on those titles were inflated by ~$8 per unit until a
+manual operator intervention swapped the SKU roles.
+
+The refactor keeps the FULL edition set from Sony's chart, then picks base
+by MIN(msrp_usd_cents), so a $69.99 Standard always wins base over a $79.99
+Deluxe. Also add a `SKU_BASE_TITLE_ID` entry when a specific edition SKU has
+already been observed under a different `title_id` — the remap keeps siblings
+consolidated even if the auto-picker fires in an unexpected order.
+
+
 ## 2026-09-13 — xbox_title_cache joins on big_id=external_sku, NEVER on title_id
 
 Shipped a broken join (`xtc.title_id = psm.title_id`) in two new multiplatform
