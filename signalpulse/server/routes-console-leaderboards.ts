@@ -2265,14 +2265,21 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const from = parseDate(req.query.from as string | undefined, daysAgo(90));
       const COLLECTION_START = "2026-09-14";
 
-      // Pull LTD units per platform per day.
+      // Pull LTD units + method per platform per day. Method is needed so
+      // we can suppress the first-day accumulator initialization spike:
+      // when the LTD engine first switches from a pure bootstrap tag to an
+      // `ltd_state:derived_max_windows` or `ltd_state:accumulator` tag,
+      // the resulting units_mid jumps by orders of magnitude in a single
+      // day, and treating that delta as revenue produces cartoon-scale
+      // numbers (e.g. Wolverine's Sep 14→15 diff of 317,653 units × PS5
+      // MSRP shows a $17.8M single-day revenue point that never happened).
       const rows = rawSqlite.prepare(`
-        SELECT platform, as_of_date AS date, units_mid AS units
+        SELECT platform, as_of_date AS date, units_mid AS units, method
           FROM window_estimates_daily
          WHERE title_id = ? AND window = 'ltd'
            AND as_of_date >= ? AND as_of_date <= ?
          ORDER BY platform, as_of_date
-      `).all(titleId, from, to) as Array<{ platform: Platform; date: string; units: number | null }>;
+      `).all(titleId, from, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null }>;
 
       // Primary SKU MSRP per platform (lowest-priced anchor SKU per platform).
       const skuRows = rawSqlite.prepare(`
@@ -2285,11 +2292,23 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       for (const r of skuRows) if (r.msrp_usd_cents != null) msrpByPlatform[r.platform] = r.msrp_usd_cents;
 
       // Group by platform, then compute day-over-day diff.
-      const byPlatform: Partial<Record<Platform, Array<{ date: string; units: number | null }>>> = {};
+      const byPlatform: Partial<Record<Platform, Array<{ date: string; units: number | null; method: string | null }>>> = {};
       for (const r of rows) {
         const arr = byPlatform[r.platform] ?? (byPlatform[r.platform] = []);
-        arr.push({ date: r.date, units: r.units });
+        arr.push({ date: r.date, units: r.units, method: r.method });
       }
+
+      // Suppression rule: the day the LTD engine transitions from a
+      // bootstrap-only method (no `ltd_state:` suffix) to an accumulator
+      // method that reflects the real ratings-derived LTD, the delta is
+      // an initialization jump — not a real 24-hour sales event. Also
+      // suppress any single day whose delta is > 20× the median of the
+      // prior 7 days of positive deltas on the same platform (defense-
+      // in-depth against future method transitions we don't enumerate).
+      const isAccumulatorMethod = (m: string | null): boolean =>
+        !!m && m.includes("ltd_state:");
+      const isBootstrapOnlyMethod = (m: string | null): boolean =>
+        !!m && !m.includes("ltd_state:");
 
       // Union of all dates across platforms in range.
       const dateSet = new Set<string>();
@@ -2305,11 +2324,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const msrpCents = msrpByPlatform[p];
         const aspFactor = aspFactorFor(p);
         const dailyRev: Record<string, number | null> = {};
+        const rollingDeltas: number[] = []; // positive deltas we accepted, for the 20× median guard
         let prev: number | null = null;
+        let prevMethod: string | null = null;
         for (const row of arr) {
           if (row.date < COLLECTION_START) {
             dailyRev[row.date] = null;
             prev = row.units;
+            prevMethod = row.method;
             continue;
           }
           const cur = row.units;
@@ -2317,10 +2339,34 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             dailyRev[row.date] = null;
           } else {
             const deltaUnits = Math.max(0, cur - prev);
-            const rev = (deltaUnits * msrpCents * aspFactor) / 100;
-            dailyRev[row.date] = rev;
+
+            // Rule 1: method-transition suppression. First day the engine
+            // moved from bootstrap-only to an accumulator tag is an init
+            // jump, not revenue.
+            const isInitTransition =
+              isBootstrapOnlyMethod(prevMethod) && isAccumulatorMethod(row.method);
+
+            // Rule 2: outlier delta guard. If we have >=3 prior accepted
+            // deltas, suppress a new delta that exceeds 20× the median.
+            let isOutlier = false;
+            if (!isInitTransition && rollingDeltas.length >= 3 && deltaUnits > 0) {
+              const recent = rollingDeltas.slice(-7).slice().sort((a, b) => a - b);
+              const median = recent[Math.floor(recent.length / 2)];
+              if (median > 0 && deltaUnits > 20 * median) {
+                isOutlier = true;
+              }
+            }
+
+            if (isInitTransition || isOutlier) {
+              dailyRev[row.date] = null;
+            } else {
+              const rev = (deltaUnits * msrpCents * aspFactor) / 100;
+              dailyRev[row.date] = rev;
+              if (deltaUnits > 0) rollingDeltas.push(deltaUnits);
+            }
           }
           prev = cur;
+          prevMethod = row.method;
         }
         dailyByPlatform[p] = dailyRev;
       }

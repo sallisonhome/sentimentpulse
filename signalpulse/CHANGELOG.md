@@ -6,6 +6,20 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 - Fixed
 
+  ### PDP daily-revenue chart no longer draws a cartoon-scale spike on the day the LTD engine initialises
+
+  The `/api/console/titles/:titleId/revenue-daily` endpoint derives per-day revenue from day-over-day change in `window_estimates_daily` where `window='ltd'`, priced by MSRP × ASP-factor. The `max(0, cur − prev)` guard originally in place only suppressed negative diffs from override anchors — not the positive step change that happens the first day the LTD engine transitions from a bootstrap-only method tag (units_mid still tiny) to an `ltd_state:derived_max_windows` / `ltd_state:accumulator` tag (units_mid jumps to the real ratings-derived LTD). Marvel's Wolverine on 2026-09-15 surfaced this: units_mid rose from 1,926 to 319,579 in one day, which the chart drew as $17.8M of PS5 revenue in a single 24-hour window — not a real sales event, an accumulator initialisation.
+
+  Added two layered suppressions in the revenue-daily route: (1) if the previous day's `method` was bootstrap-only (no `ltd_state:` suffix) and the current day's `method` contains `ltd_state:`, return `null` for that day's per-platform revenue; (2) once we have ≥3 prior accepted positive deltas on the same platform, suppress any new delta that exceeds 20× the median of the trailing 7-day window — defense in depth against future method transitions we haven't enumerated. The `combined` series continues to sum the surviving per-platform values, so a suppressed platform drops out of the combined line for that day only.
+
+- Fixed
+
+  ### Static-asset content-type now carries `charset=utf-8` so mobile Safari stops rendering `\u00b7` literally
+
+  `express.static` served built JS/CSS as `application/javascript` / `text/css` with no charset. Some iOS Safari builds default to Latin-1 in that case, and the UTF-8 byte pair `\xc2\xb7` (middle-dot U+00B7 in the PDP chart title "Estimated daily revenue · all platforms") was decoded either as mojibake ("Â·") or as a literal `\u00b7` escape when React re-stringified the source. Extended `serveStatic` to set `; charset=utf-8` on `.js` / `.mjs` / `.css` / `.json` / `.svg` responses. Reproduces cleanly against the previous bundle on iOS Safari; new bundle renders the dot correctly.
+
+- Fixed
+
   ### d7 estimates no longer collapse into d30 for launches aged 8–19 days
 
   When a title released 8–19 days ago (older than the d7 window, younger than our per-title collection horizon of typically a few days), the d7 signal resolver fell through to `backfill-steam-pace`, which multiplies PS5 LTD by the Steam sibling's stabilised d7/LTD ratio. For old Steam siblings that ratio is ~0.007, producing a nonsense d7 signal of ~19 that gets gated `signal_too_small`. The leaderboard route's cascade then fell back to d30, which for the same window band is bootstrap-filled from LTD, so d7 rendered numerically identical to d30 (and to LTD) for every fresh launch. Resonance: A Plague Tale Legacy (PS5, released 2026-08-27) surfaced the pattern: d7 signal=19 gated, cascade to d30 showing 86,053 units, same as m12 and LTD.
