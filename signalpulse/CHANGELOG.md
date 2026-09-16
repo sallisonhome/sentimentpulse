@@ -2,6 +2,18 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 16, 2026 (late)
+
+- Reverted
+
+  ### Rolled back both speculative `\u00b7` charset "fixes" — neither could have worked and neither was verified
+
+  The two charset changes shipped on Sep 15 evening were speculation, not diagnosis. (1) The `server/static.ts` `setHeaders` block that appended `charset=utf-8` to `.js` / `.css` / `.json` / `.svg` responses is a guaranteed no-op: nginx serves `/signal/assets/*` directly via `alias` from the built bundle, so the express handler never sees those requests. A 30-second grep of the nginx config before drafting the fix would have caught this. (2) The `signalpulse/nginx/sentimentpulse.conf` file was written at the wrong path — the `sp-nginx-sync` workflow syncs from the repo-root `nginx/sentimentpulse.conf`, not from a signalpulse subdirectory copy, so this file was dead code sitting in HEAD. Neither change was ever supported by evidence — the actual bundle bytes on the wire are correct UTF-8 (`\xc2\xb7`, verified via hexdump of the deployed `index-BBSb-iQg.js` at offset 1283914), and the iOS Safari symptom was never reproduced with the browser. The Latin-1 fallback hypothesis was never proven and cannot explain the specific symptom (Latin-1 decoding of `\xc2\xb7` produces mojibake `Â·`, not the literal six-character text `\u00b7` that appears in the screenshot).
+
+  What stays: the revenue-daily spike suppression logic in `server/routes-console-leaderboards.ts` from commit 74d547f is intact and verified working live (Wolverine Sep 15 spike suppressed, Valheim's real 5,052-unit day renders normally, Resonance's real Sep 14 day-1 bootstrap renders at $115,180 PS5). That fix mattered and it works.
+
+  The `\u00b7` symptom stays open pending real diagnosis — next session will drive Safari against the actual PDP, inspect the rendered DOM, and figure out what's actually happening before touching any more code.
+
 ## September 15, 2026 (evening)
 
 - Fixed
