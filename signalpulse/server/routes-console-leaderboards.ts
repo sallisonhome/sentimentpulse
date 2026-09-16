@@ -2298,13 +2298,33 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         arr.push({ date: r.date, units: r.units, method: r.method });
       }
 
-      // Suppression rule: the day the LTD engine transitions from a
-      // bootstrap-only method (no `ltd_state:` suffix) to an accumulator
-      // method that reflects the real ratings-derived LTD, the delta is
-      // an initialization jump — not a real 24-hour sales event. Also
-      // suppress any single day whose delta is > 20× the median of the
-      // prior 7 days of positive deltas on the same platform (defense-
-      // in-depth against future method transitions we don't enumerate).
+      // Suppression rules for accumulator initialization jumps. The
+      // /api/console/titles/:titleId/revenue-daily route derives per-day
+      // revenue from day-over-day change in `window_estimates_daily`
+      // where `window='ltd'`. The signal for a real 24-hour sales event
+      // is a modest delta consistent with the trailing rate. The signal
+      // for an accumulator initialization is a huge one-day jump the
+      // first time the LTD engine transitions from a bootstrap-only
+      // method tag (no `ltd_state:` suffix) to an accumulator tag
+      // (`ltd_state:derived_max_windows` / `ltd_state:accumulator`).
+      //
+      // We can't suppress the method transition day unconditionally:
+      // most titles' bootstrap value tracks the real accumulator value
+      // closely (Valheim's Sep 15 accumulator delta was 5,052 units, in
+      // line with 5k/day bootstrap growth). We only suppress when the
+      // transition-day delta is BOTH abnormally large AND coincident
+      // with the method flip. Two layered rules:
+      //   Rule A: outlier guard — once we have >=2 prior accepted
+      //     positive deltas on a platform, suppress a new delta that
+      //     exceeds 20× the median of the trailing 7-day window.
+      //   Rule B: method-transition outlier — on the first day the
+      //     engine flips from bootstrap-only to accumulator, if we have
+      //     any prior accepted positive deltas, suppress if the flip-day
+      //     delta exceeds 20× the max of prior deltas.
+      // Wolverine (Sep 14=1,926 bootstrap; Sep 15=319,579 accumulator)
+      // trips Rule B (max prior delta on Sep 15 is bootstrap increment;
+      // 319,577 ≫ 20× max_prior). Valheim (Sep 14=60,853 bootstrap; Sep
+      // 15=65,905 accumulator) trips neither and renders normally.
       const isAccumulatorMethod = (m: string | null): boolean =>
         !!m && m.includes("ltd_state:");
       const isBootstrapOnlyMethod = (m: string | null): boolean =>
@@ -2324,7 +2344,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const msrpCents = msrpByPlatform[p];
         const aspFactor = aspFactorFor(p);
         const dailyRev: Record<string, number | null> = {};
-        const rollingDeltas: number[] = []; // positive deltas we accepted, for the 20× median guard
+        // All positive deltas we've accepted so far on this platform,
+        // used by both outlier rules below. Bootstrap-era deltas count
+        // toward this baseline so a real accumulator jump on the flip
+        // day has something to be compared against.
+        const rollingDeltas: number[] = [];
         let prev: number | null = null;
         let prevMethod: string | null = null;
         for (const row of arr) {
@@ -2339,25 +2363,38 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             dailyRev[row.date] = null;
           } else {
             const deltaUnits = Math.max(0, cur - prev);
-
-            // Rule 1: method-transition suppression. First day the engine
-            // moved from bootstrap-only to an accumulator tag is an init
-            // jump, not revenue.
-            const isInitTransition =
+            const isTransitionDay =
               isBootstrapOnlyMethod(prevMethod) && isAccumulatorMethod(row.method);
 
-            // Rule 2: outlier delta guard. If we have >=3 prior accepted
-            // deltas, suppress a new delta that exceeds 20× the median.
-            let isOutlier = false;
-            if (!isInitTransition && rollingDeltas.length >= 3 && deltaUnits > 0) {
-              const recent = rollingDeltas.slice(-7).slice().sort((a, b) => a - b);
-              const median = recent[Math.floor(recent.length / 2)];
-              if (median > 0 && deltaUnits > 20 * median) {
-                isOutlier = true;
+            let suppress = false;
+
+            if (deltaUnits > 0) {
+              // Rule A: general outlier guard. Once we have >=2 prior
+              // accepted positive deltas, suppress a new delta that
+              // exceeds 20x the median of the trailing 7-day window.
+              if (rollingDeltas.length >= 2) {
+                const recent = rollingDeltas.slice(-7).slice().sort((a, b) => a - b);
+                const median = recent[Math.floor(recent.length / 2)];
+                if (median > 0 && deltaUnits > 20 * median) {
+                  suppress = true;
+                }
+              }
+
+              // Rule B: method-transition outlier. On the flip from
+              // bootstrap-only to accumulator, suppress only if the
+              // flip-day delta is >20x the MAX of prior accepted deltas.
+              // Distinguishes Wolverine-style init jumps from Valheim-
+              // style clean handovers where bootstrap already tracked
+              // the real value.
+              if (!suppress && isTransitionDay && rollingDeltas.length >= 1) {
+                const maxPrior = Math.max(...rollingDeltas);
+                if (maxPrior > 0 && deltaUnits > 20 * maxPrior) {
+                  suppress = true;
+                }
               }
             }
 
-            if (isInitTransition || isOutlier) {
+            if (suppress) {
               dailyRev[row.date] = null;
             } else {
               const rev = (deltaUnits * msrpCents * aspFactor) / 100;
