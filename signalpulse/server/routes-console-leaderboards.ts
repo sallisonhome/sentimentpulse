@@ -2265,29 +2265,98 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const from = parseDate(req.query.from as string | undefined, daysAgo(90));
       const COLLECTION_START = "2026-09-14";
 
-      // Pull LTD units + method per platform per day. Method is needed so
-      // we can suppress the first-day accumulator initialization spike:
-      // when the LTD engine first switches from a pure bootstrap tag to an
-      // `ltd_state:derived_max_windows` or `ltd_state:accumulator` tag,
-      // the resulting units_mid jumps by orders of magnitude in a single
-      // day, and treating that delta as revenue produces cartoon-scale
-      // numbers (e.g. Wolverine's Sep 14→15 diff of 317,653 units × PS5
-      // MSRP shows a $17.8M single-day revenue point that never happened).
+      // Cross-platform sibling resolution (2026-09-16). This endpoint powers
+      // the PDP's "Estimated daily revenue · all platforms" chart, which is
+      // per-title × three-platform by design. In the DB each store SKU is
+      // its own title_id, so "Onimusha: Way of the Sword" lives as
+      // steam=10011, ps5=10304, xbox=10407 — three rows, one per platform.
+      // Without sibling resolution the chart shows one platform's line only
+      // (whichever titleId was in the URL), which reads as "broken".
+      //
+      // Resolution mirrors the multiplatform leaderboard's editionGroupKey
+      // join: get the requested title's display name via the same rule
+      // (xbox_title_cache for xbox rows, console_title_igdb name/store_name
+      // per match_confidence otherwise), then find every base+paid SKU
+      // whose title's display name resolves to the same editionGroupKey.
+      // We keep the requested titleId in the response envelope (its route
+      // still owns the PDP) but broaden the two SQL queries below to the
+      // sibling set. Single-platform titles with no siblings degrade to the
+      // previous behavior (one platform, chart draws one line).
+      const seedNameRow = rawSqlite.prepare(`
+        SELECT DISTINCT
+          CASE
+            WHEN psm.platform = 'xbox' THEN xtc.name
+            WHEN igdb.match_confidence = 'low'
+              THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
+            ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
+          END AS name
+        FROM platform_sku_map psm
+        LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
+        LEFT JOIN xbox_title_cache  xtc  ON psm.platform = 'xbox' AND xtc.big_id = psm.external_sku
+        WHERE psm.title_id = ?
+        LIMIT 1
+      `).get(titleId) as { name: string | null } | undefined;
+      const seedKey = editionGroupKey(seedNameRow?.name ?? null);
+
+      // If we can't resolve a key, fall back to the requested titleId only.
+      // sibs is guaranteed to contain the requested titleId.
+      let siblingIds: number[] = [titleId];
+      if (seedKey) {
+        const sibRows = rawSqlite.prepare(`
+          SELECT DISTINCT psm.title_id AS titleId,
+            CASE
+              WHEN psm.platform = 'xbox' THEN xtc.name
+              WHEN igdb.match_confidence = 'low'
+                THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
+              ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
+            END AS name
+          FROM platform_sku_map psm
+          LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
+          LEFT JOIN xbox_title_cache  xtc  ON psm.platform = 'xbox' AND xtc.big_id = psm.external_sku
+          WHERE psm.platform IN ('steam','ps5','xbox')
+            AND psm.business_model = 'paid'
+            AND psm.sku_role = 'base'
+        `).all() as Array<{ titleId: number; name: string | null }>;
+        const matched = new Set<number>([titleId]);
+        for (const r of sibRows) {
+          if (editionGroupKey(r.name) === seedKey) matched.add(r.titleId);
+        }
+        siblingIds = Array.from(matched);
+      }
+      const idPlaceholders = siblingIds.map(() => "?").join(",");
+
+      // Pull LTD units + method per platform per day across the sibling set.
+      // Method is needed so we can suppress the first-day accumulator
+      // initialization spike: when the LTD engine first switches from a pure
+      // bootstrap tag to an `ltd_state:derived_max_windows` or
+      // `ltd_state:accumulator` tag, the resulting units_mid jumps by orders
+      // of magnitude in a single day, and treating that delta as revenue
+      // produces cartoon-scale numbers (e.g. Wolverine's Sep 14→15 diff of
+      // 317,653 units × PS5 MSRP shows a $17.8M single-day revenue point
+      // that never happened).
+      //
+      // If two sibling titleIds happen to share a platform (should not
+      // happen for base+paid SKUs post-Push 2, but the multiplatform join
+      // guards against it too), we keep both rows and let the per-platform
+      // grouping below use whichever set is non-null on the same date. In
+      // practice sibling sets are one-titleId-per-platform.
       const rows = rawSqlite.prepare(`
         SELECT platform, as_of_date AS date, units_mid AS units, method
           FROM window_estimates_daily
-         WHERE title_id = ? AND window = 'ltd'
+         WHERE title_id IN (${idPlaceholders}) AND window = 'ltd'
            AND as_of_date >= ? AND as_of_date <= ?
          ORDER BY platform, as_of_date
-      `).all(titleId, from, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null }>;
+      `).all(...siblingIds, from, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null }>;
 
-      // Primary SKU MSRP per platform (lowest-priced anchor SKU per platform).
+      // Primary SKU MSRP per platform across the sibling set (lowest-priced
+      // anchor SKU on each platform, regardless of which sibling titleId
+      // owns it).
       const skuRows = rawSqlite.prepare(`
         SELECT platform, MIN(msrp_usd_cents) AS msrp_usd_cents
           FROM platform_sku_map
-         WHERE title_id = ? AND msrp_usd_cents IS NOT NULL
+         WHERE title_id IN (${idPlaceholders}) AND msrp_usd_cents IS NOT NULL
          GROUP BY platform
-      `).all(titleId) as Array<{ platform: Platform; msrp_usd_cents: number | null }>;
+      `).all(...siblingIds) as Array<{ platform: Platform; msrp_usd_cents: number | null }>;
       const msrpByPlatform: Partial<Record<Platform, number>> = {};
       for (const r of skuRows) if (r.msrp_usd_cents != null) msrpByPlatform[r.platform] = r.msrp_usd_cents;
 
