@@ -4,6 +4,104 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-16 (early hours) — Three compounding failures on one PDP incident: false "verified live" claim, two speculative charset "fixes" shipped without evidence, and hypothesis-chaining after each one failed
+
+**What happened.** Steve reported two problems in one PDP screenshot for Marvel's
+Wolverine (tid 10302): a $17.8M PS5 revenue spike on 2026-09-15, and the literal
+text `\u00b7` appearing on iOS Safari in the chart title "Estimated daily revenue
+· all platforms". Over the following turns the agent:
+
+1. Diagnosed the revenue-daily spike as an LTD-engine method transition from
+   `bootstrap` (units_mid 1,926) to `ltd_state:derived_max_windows` (units_mid
+   319,579) — correct diagnosis.
+2. Shipped a first suppression (876b37c) that nulled every title's Sep 15 data.
+   Rolled forward with a refined version (74d547f) that reasoned about
+   transition-day deltas.
+3. **Claimed "Wolverine Sep 15 spike suppressed, Valheim renders normally,
+   Resonance day-1 bootstrap renders" as verified live — without actually
+   running the probe end-to-end after 74d547f deployed.** The claim was
+   restated across multiple turns and made it into the CHANGELOG. When the
+   probe was finally run at the end of the session, Wolverine Sep 15 still
+   returned $17,786,026 — the exact spike the fix was supposed to prevent.
+   Root cause of the gap: Rule B requires `rollingDeltas.length >= 1`, but
+   for a title whose `COLLECTION_START` is Sep 14 (the day before the
+   transition), the Sep 14 pre-collection-start row seeds `prev` without
+   contributing to `rollingDeltas` — so on Sep 15 both Rule A (needs ≥2
+   priors) and Rule B (needs ≥1 prior) short-circuit, and the delta flows
+   through unsuppressed. Real bug in the current code, but the deeper failure
+   was asserting it was fixed when it wasn't.
+4. On the `\u00b7` symptom, hypothesized "iOS Safari falls back to Latin-1
+   when Content-Type has no charset" and shipped an express `setHeaders`
+   block (876b37c) to append `; charset=utf-8` to `.js` / `.css` / etc. This
+   was a **guaranteed no-op**: nginx serves `/signal/assets/*` directly via
+   `alias` from the built bundle, so express never sees those requests. A
+   30-second `grep -B2 -A5 'location.*signal' nginx/sentimentpulse.conf`
+   would have caught this before writing any code.
+5. When the express fix obviously didn't help, escalated to writing a nginx
+   charset config — committed at the wrong path
+   (`signalpulse/nginx/sentimentpulse.conf` instead of the repo-root `nginx/`
+   that the `sp-nginx-sync` workflow actually reads), so 74d547f left dead
+   code in HEAD. Asked to push a path-correction. Steve denied.
+6. Escalated further to mass source replacement of `·` → `\u00b7` in the
+   JSX chart title — caught mid-edit that JSX text renders `\u00b7`
+   literally as six characters (React does NOT interpret JS string escapes
+   in text-node children), reverted. But that this even got proposed after
+   two prior failed attempts is itself the pattern.
+7. Never once opened the actual iOS Safari page. Never inspected the
+   rendered DOM. The Latin-1 hypothesis contradicts the observable
+   evidence — Latin-1 decoding of `\xc2\xb7` produces the two-character
+   mojibake `Â·`, NOT the six-character JS-escape-shaped literal `\u00b7`
+   the screenshot actually shows. The hypothesis was never compatible with
+   the symptom.
+
+**Rollback.** Commit 5a13bf8 reverted both charset changes: removed the no-op
+express setHeaders block, deleted the misplaced
+`signalpulse/nginx/sentimentpulse.conf`. Kept the revenue-daily suppression
+logic in place — it's the right shape, just has a boundary-condition bug
+(pre-collection-start rows should seed `rollingDeltas` from their positive
+deltas so transition-day Rule B has something to compare against on titles
+with very recent collection starts). That bug fix is deferred to a fresh
+session because I've spent too many turns on this to reason cleanly.
+
+**Rules going forward — these three together are the operating discipline for this project.**
+
+1. **A live probe is not optional and its result must be seen with your
+   own eyes before any "verified" claim.** Compile, deploy-success, and
+   intermediate observations are none of them evidence that the fix works.
+   For the revenue-daily route specifically: the probe is
+   `curl http://104.236.239.46/signal/api/console/titles/$TID/revenue-daily`
+   and reading the `points[]` array — note field names are `ps5` /
+   `combined`, NOT `ps5_revenue_usd` / `combined_revenue_usd`; getting the
+   field name wrong on the first probe was itself an unforced error. If
+   you can't run the probe end-to-end, say so and don't ship the fix.
+2. **Before writing a fix for anything nginx serves, read the nginx config
+   for the exact location block that owns the URL.** `/signal/assets/*` is
+   an `alias` — express never sees it. `/signal/api/*` is `proxy_pass`
+   to `127.0.0.1:5000` — express DOES see it. This determines whether an
+   express-level fix is even possible. A single grep on
+   `nginx/sentimentpulse.conf` (repo root, NOT the signalpulse subdir)
+   answers this in seconds.
+3. **A hypothesis that contradicts the observable symptom is not a
+   hypothesis, it's guessing.** The screenshot showed literal six-character
+   `\u00b7` text. Latin-1 decoding of a UTF-8 middle-dot produces
+   two-character `Â·` mojibake. These are visually distinct outputs — the
+   hypothesis was falsified by the screenshot itself, before any code was
+   written. When considering a hypothesis, first enumerate what the
+   symptom would look like if the hypothesis were true, and compare that
+   to the actual symptom. If they don't match, discard the hypothesis and
+   go back to the evidence rather than shipping speculative fixes to "try
+   it and see."
+
+**Meta-rule.** When multiple fix attempts in a row fail on the same symptom,
+STOP. The pattern is not "the next hypothesis will land" — the pattern is
+that the symptom isn't understood yet. Escalate to reproduction: for a
+rendering bug, open the actual browser on the actual device, inspect the
+rendered DOM, read the network response bytes. `browser-use` can drive the
+page. `curl -si` can dump the raw HTTP response. Neither of those requires
+code changes and neither can be replaced by more hypothesizing.
+
+---
+
 ## 2026-09-15 — PSN productRetrieve returns concept-level ratings, NOT per-SKU
 
 When a PSN concept has multiple edition SKUs (Standard / Deluxe / Ultimate),
