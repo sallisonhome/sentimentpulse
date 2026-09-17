@@ -2089,7 +2089,35 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
          ORDER BY capture_date DESC LIMIT 1
       `);
 
-      const windowKpisPerPlatform = skus.map((sku) => {
+      // One KPI card per platform. Units/owners live at (title_id, platform),
+      // not per SKU: PSN ratings are concept-level (lessons.md 2026-09-15),
+      // so Standard and Deluxe of the same title share one units_mid. Mapping
+      // every SKU produced duplicate cards with identical units/owners and
+      // different revenues (Wolverine base $69.99 vs deluxe $79.99 both showed
+      // 790,326 units). Pick sku_role='base' per platform; if none, lowest MSRP.
+      // Edition SKUs remain on the `skus` array for the SKU list; they just
+      // don't mint their own KPI tile.
+      const skuForKpiByPlatform = new Map<string, (typeof skus)[number]>();
+      for (const sku of skus) {
+        const prev = skuForKpiByPlatform.get(sku.platform as string);
+        if (!prev) {
+          skuForKpiByPlatform.set(sku.platform as string, sku);
+          continue;
+        }
+        const prevIsBase = prev.skuRole === "base";
+        const curIsBase = sku.skuRole === "base";
+        if (curIsBase && !prevIsBase) {
+          skuForKpiByPlatform.set(sku.platform as string, sku);
+          continue;
+        }
+        if (curIsBase === prevIsBase) {
+          const prevMsrp = typeof prev.msrpUsdCents === "number" ? prev.msrpUsdCents : Number.POSITIVE_INFINITY;
+          const curMsrp = typeof sku.msrpUsdCents === "number" ? sku.msrpUsdCents : Number.POSITIVE_INFINITY;
+          if (curMsrp < prevMsrp) skuForKpiByPlatform.set(sku.platform as string, sku);
+        }
+      }
+
+      const windowKpisPerPlatform = Array.from(skuForKpiByPlatform.values()).map((sku) => {
         const platform = sku.platform as Platform;
         const msrpUsdCents = sku.msrpUsdCents as number | null;
         const asp = aspFactorFor(platform);
