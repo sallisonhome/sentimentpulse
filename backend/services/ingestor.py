@@ -1246,6 +1246,27 @@ def _step1_discover_games(
 
 # ── Step 2: Steam Reviews ─────────────────────────────────────────────────────
 
+def _resolve_steam_appids(game: Game) -> list[int]:
+    """Return the ordered list of Steam appids the ingest should fetch for
+    this game: primary first, then any aliases (deduplicated, ints only).
+
+    2026-09-18 (Landing A of parent/child support): reads the new
+    `alias_steam_app_ids` JSON column. NULL / empty / non-list values
+    fall back to primary-only, matching pre-Landing-A behavior exactly.
+    """
+    appids: list[int] = [int(game.steam_app_id)]
+    aliases = getattr(game, "alias_steam_app_ids", None)
+    if isinstance(aliases, list):
+        for a in aliases:
+            try:
+                a_int = int(a)
+            except (TypeError, ValueError):
+                continue
+            if a_int and a_int not in appids:
+                appids.append(a_int)
+    return appids
+
+
 def _step2_steam_reviews(
     db: Session,
     game: Game,
@@ -1258,39 +1279,67 @@ def _step2_steam_reviews(
         (saved, fetched).  Fetched counts the reviews returned by the Steam
         API (duplicates included); the run loop uses per-source fetched
         totals to detect silent-failure regressions.
-    """
-    try:
-        known_ids: set[str] = {
-            row[0]
-            for row in db.query(RawPost.external_id).filter(
-                RawPost.game_id == game.id,
-                RawPost.source == SourceEnum.steam_review,
-            )
-        }
-        reviews = fetch_reviews(game.steam_app_id, known_ids=known_ids)
-    except Exception as exc:
-        msg = f"[Step 2] Steam reviews failed for '{game.name}': {exc}"
-        errors.append(msg)
-        logger.error(msg)
-        return 0, 0
 
-    saved = _bulk_save_posts(db, game.id, SourceEnum.steam_review, reviews, errors)
-    log_lines.append(
-        f"[Step 2] '{game.name}': {saved} new review(s) (fetched {len(reviews)})."
-    )
+    2026-09-18 (Landing A of parent/child support): when the game has
+    alias_steam_app_ids populated, this step fetches reviews for the
+    primary appid AND each alias in sequence and writes ALL rows under
+    the same game.id. Existing external_id uniqueness on RawPost keeps
+    the write path idempotent — a review already in DB is a dedup, not
+    a duplicate row.
+    """
+    known_ids: set[str] = {
+        row[0]
+        for row in db.query(RawPost.external_id).filter(
+            RawPost.game_id == game.id,
+            RawPost.source == SourceEnum.steam_review,
+        )
+    }
+    appids = _resolve_steam_appids(game)
+    all_reviews: list[dict] = []
+    per_appid_fetched: list[tuple[int, int]] = []  # for logging
+    for appid in appids:
+        try:
+            batch = fetch_reviews(appid, known_ids=known_ids)
+        except Exception as exc:
+            msg = f"[Step 2] Steam reviews failed for '{game.name}' (appid={appid}): {exc}"
+            errors.append(msg)
+            logger.error(msg)
+            per_appid_fetched.append((appid, 0))
+            continue
+        # Track known_ids across appids so we don't refetch the same
+        # external_id via a second appid (rare but possible for bundle
+        # cross-listings).
+        for r in batch:
+            eid = r.get("external_id") or r.get("recommendationid")
+            if eid:
+                known_ids.add(str(eid))
+        all_reviews.extend(batch)
+        per_appid_fetched.append((appid, len(batch)))
+
+    saved = _bulk_save_posts(db, game.id, SourceEnum.steam_review, all_reviews, errors)
+    if len(appids) == 1:
+        log_lines.append(
+            f"[Step 2] '{game.name}': {saved} new review(s) (fetched {len(all_reviews)})."
+        )
+    else:
+        breakdown = ", ".join(f"appid {a}: {n}" for a, n in per_appid_fetched)
+        log_lines.append(
+            f"[Step 2] '{game.name}': {saved} new review(s) across {len(appids)} appids "
+            f"({breakdown}); total fetched {len(all_reviews)}."
+        )
     # v0028 (2026-08-28): distinguishing zero-log so silent failures
     # are grep-able. See lessons.md 2026-08-28 rule 3.
-    if saved == 0 and len(reviews) == 0:
+    if saved == 0 and len(all_reviews) == 0:
         log_lines.append(
             f"[Step 2] '{game.name}': ZERO FETCH — Steam Reviews API returned no rows "
             f"(possible: app id invalid, no reviews yet, or reviews API down)."
         )
-    elif saved == 0 and len(reviews) > 0:
+    elif saved == 0 and len(all_reviews) > 0:
         log_lines.append(
-            f"[Step 2] '{game.name}': ZERO SAVE — fetched {len(reviews)} reviews but "
+            f"[Step 2] '{game.name}': ZERO SAVE — fetched {len(all_reviews)} reviews but "
             f"all were duplicates already in DB (steady-state on quiet review pages)."
         )
-    return saved, len(reviews)
+    return saved, len(all_reviews)
 
 
 # ── Step 3: Steam Forums ──────────────────────────────────────────────────────
@@ -1301,53 +1350,80 @@ def _step3_steam_forums(
     log_lines: list,
     errors: list,
 ) -> tuple[int, int]:
-    """Scrape Steam forum threads.  Returns (saved, fetched)."""
-    try:
-        # v5 (2026-07-28): daily ingest walks Steam forum listing pages
-        # AND per-thread comment pagination (via since_epoch cutoff),
-        # with a per-game wallclock budget so no single stale forum can
-        # eat the whole daily run. See scrape_forum_threads v4 for the
-        # listing short-circuit + skip-if-stale behavior that makes this
-        # budget realistic.
-        # since_epoch = 2 days ago — wide enough to cover overnight
-        # ingest gaps and late replies without walking ancient history.
-        # _bulk_save_posts dedupes on external_id so re-scraping is free.
-        import time as _t
-        _since_epoch = int(_t.time()) - 2 * 24 * 3600  # last 48h
-        # Per-game budget: 90s covers a typical fresh forum (10-30 hot
-        # threads at ~2-3s/each) with headroom, and hard-stops a runaway
-        # walk before it starves the next game in the queue.
-        posts = scrape_forum_threads(
-            game.steam_app_id,
-            max_threads=200,
-            max_pages=15,
-            since_epoch=_since_epoch,
-            wallclock_budget_s=90,
-        )
-    except Exception as exc:
-        msg = f"[Step 3] Steam forums failed for '{game.name}': {exc}"
-        errors.append(msg)
-        logger.error(msg)
-        return 0, 0
+    """Scrape Steam forum threads.  Returns (saved, fetched).
 
-    saved = _bulk_save_posts(db, game.id, SourceEnum.steam_forum, posts, errors)
-    log_lines.append(
-        f"[Step 3] '{game.name}': {saved} new forum post(s) (fetched {len(posts)})."
-    )
+    2026-09-18 (Landing A of parent/child support): when the game has
+    alias_steam_app_ids populated, this step walks the forum for the
+    primary appid AND each alias in sequence and writes ALL rows under
+    the same game.id. Steam's demo apps CAN host forum threads even
+    when their parent main-game app is still pre-release, so this is
+    the primary place demo signal gets combined into the parent.
+    """
+    # v5 (2026-07-28): daily ingest walks Steam forum listing pages
+    # AND per-thread comment pagination (via since_epoch cutoff),
+    # with a per-game wallclock budget so no single stale forum can
+    # eat the whole daily run.
+    # since_epoch = 2 days ago — wide enough to cover overnight
+    # ingest gaps and late replies without walking ancient history.
+    # _bulk_save_posts dedupes on external_id so re-scraping is free.
+    import time as _t
+    _since_epoch = int(_t.time()) - 2 * 24 * 3600  # last 48h
+
+    appids = _resolve_steam_appids(game)
+    all_posts: list[dict] = []
+    per_appid_fetched: list[tuple[int, int]] = []
+
+    # Per-game wallclock budget applies across ALL appids for this game.
+    # 90s was tuned for one forum; when a game has an alias appid, we
+    # split evenly and give each appid its own share. This preserves
+    # the total-time invariant so an aliased game doesn't starve the
+    # next game in the queue.
+    total_budget_s = 90
+    per_appid_budget_s = max(30, total_budget_s // len(appids))
+
+    for appid in appids:
+        try:
+            posts = scrape_forum_threads(
+                appid,
+                max_threads=200,
+                max_pages=15,
+                since_epoch=_since_epoch,
+                wallclock_budget_s=per_appid_budget_s,
+            )
+        except Exception as exc:
+            msg = f"[Step 3] Steam forums failed for '{game.name}' (appid={appid}): {exc}"
+            errors.append(msg)
+            logger.error(msg)
+            per_appid_fetched.append((appid, 0))
+            continue
+        all_posts.extend(posts)
+        per_appid_fetched.append((appid, len(posts)))
+
+    saved = _bulk_save_posts(db, game.id, SourceEnum.steam_forum, all_posts, errors)
+    if len(appids) == 1:
+        log_lines.append(
+            f"[Step 3] '{game.name}': {saved} new forum post(s) (fetched {len(all_posts)})."
+        )
+    else:
+        breakdown = ", ".join(f"appid {a}: {n}" for a, n in per_appid_fetched)
+        log_lines.append(
+            f"[Step 3] '{game.name}': {saved} new forum post(s) across {len(appids)} appids "
+            f"({breakdown}); total fetched {len(all_posts)}."
+        )
     # v0028 (2026-08-28): distinguishing zero-log.
-    if saved == 0 and len(posts) == 0:
+    if saved == 0 and len(all_posts) == 0:
         log_lines.append(
             f"[Step 3] '{game.name}': ZERO FETCH — no forum threads in the 48h window "
             f"(possible: quiet forum, age-gate blocking, or Steam DOM change; "
             f"see steam_service.scrape_forum_threads log for pages/refs/skipped)."
         )
-    elif saved == 0 and len(posts) > 0:
+    elif saved == 0 and len(all_posts) > 0:
         log_lines.append(
-            f"[Step 3] '{game.name}': ZERO SAVE — fetched {len(posts)} forum rows but "
+            f"[Step 3] '{game.name}': ZERO SAVE — fetched {len(all_posts)} forum rows but "
             f"all were duplicates already in DB (steady state — no new activity since "
             f"last ingest)."
         )
-    return saved, len(posts)
+    return saved, len(all_posts)
 
 
 # ── Step 4: Reddit ────────────────────────────────────────────────────────────
