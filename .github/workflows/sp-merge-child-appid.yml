@@ -54,11 +54,15 @@ jobs:
           # Translate the mode input into the script's mutually-exclusive flag.
           if [ "$MODE" = "commit" ]; then MODE_FLAG="--commit"; else MODE_FLAG="--dry-run"; fi
 
+          # v2 (2026-09-18): use the droplet's actual venv path
+          # (/opt/sentimentpulse/.venv, per deploy.yml). v1 tried
+          # /opt/sentimentpulse/venv/bin/python which does not exist.
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
               root@104.236.239.46 \
-              "cd /opt/sentimentpulse/backend && \
-               PYTHONPATH=/opt/sentimentpulse/backend \
-               /opt/sentimentpulse/venv/bin/python -m scripts.merge_child_appid_into_parent \
+              "cd /opt/sentimentpulse && \
+               source .venv/bin/activate && \
+               cd backend && \
+               python -m scripts.merge_child_appid_into_parent \
                  --parent-id $PARENT_ID \
                  --child-id $CHILD_ID \
                  --alias-appid $ALIAS_APPID \
