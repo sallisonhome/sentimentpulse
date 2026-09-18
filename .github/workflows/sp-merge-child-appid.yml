@@ -1,0 +1,65 @@
+name: SP Merge Child AppID into Parent
+
+on:
+  workflow_dispatch:
+    inputs:
+      parent_id:
+        description: "Parent game_id to keep (rows move INTO this one)."
+        required: true
+        type: string
+      child_id:
+        description: "Child game_id to merge (rows move OUT of this one and it's deactivated)."
+        required: true
+        type: string
+      alias_appid:
+        description: "Child's steam_app_id (redundant with lookup; required as a guard)."
+        required: true
+        type: string
+      mode:
+        description: "dry-run (safe, default) or commit (writes to prod DB)."
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - commit
+
+# 2026-09-18 Landing B of the Hellraiser Revival demo work.
+# Runs backend/scripts/merge_child_appid_into_parent.py on the droplet.
+# Dry-run is idempotent and cheap; commit is a one-shot data write and
+# refuses to run twice for the same parent+alias pair (the script's
+# own idempotency guard).
+#
+# Manual dispatch only. Never fires on push or schedule.
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run merge script on droplet
+        env:
+          PARENT_ID: ${{ github.event.inputs.parent_id }}
+          CHILD_ID:  ${{ github.event.inputs.child_id }}
+          ALIAS_APPID: ${{ github.event.inputs.alias_appid }}
+          MODE:      ${{ github.event.inputs.mode }}
+        run: |
+          # Translate the mode input into the script's mutually-exclusive flag.
+          if [ "$MODE" = "commit" ]; then MODE_FLAG="--commit"; else MODE_FLAG="--dry-run"; fi
+
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              "cd /opt/sentimentpulse/backend && \
+               PYTHONPATH=/opt/sentimentpulse/backend \
+               /opt/sentimentpulse/venv/bin/python -m scripts.merge_child_appid_into_parent \
+                 --parent-id $PARENT_ID \
+                 --child-id $CHILD_ID \
+                 --alias-appid $ALIAS_APPID \
+                 $MODE_FLAG"
