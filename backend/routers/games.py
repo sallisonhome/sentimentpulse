@@ -270,6 +270,51 @@ def update_game(
             )
         game.distinctive_keywords = cleaned
 
+    if data.alias_steam_app_ids is not None:
+        # 2026-09-18 Landing A: replace the full alias list.
+        # Validation:
+        #   1. Only accept positive integers.
+        #   2. Reject if any alias equals the game's own primary steam_app_id
+        #      (would be a no-op self-reference and confuses the ingest loop).
+        #   3. Reject if any alias equals ANY OTHER game's PRIMARY
+        #      steam_app_id (would create routing ambiguity). Aliases
+        #      appearing as another game's alias is allowed but flagged
+        #      via the response for the caller to reconcile.
+        cleaned_aliases: list[int] = []
+        for a in data.alias_steam_app_ids:
+            if not isinstance(a, int) or a <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"alias_steam_app_ids must be a list of positive integers; got {a!r}.",
+                )
+            if a == game.steam_app_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Alias {a} equals this game's primary steam_app_id. "
+                        f"Aliases must be different appids."
+                    ),
+                )
+            if a not in cleaned_aliases:
+                cleaned_aliases.append(a)
+        if cleaned_aliases:
+            conflict = (
+                db.query(Game)
+                .filter(Game.id != game.id, Game.steam_app_id.in_(cleaned_aliases))
+                .first()
+            )
+            if conflict is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Alias appid {conflict.steam_app_id} is the PRIMARY "
+                        f"steam_app_id of game id={conflict.id} ('{conflict.name}'). "
+                        f"Deactivate or remove that game first before aliasing "
+                        f"its appid under this one."
+                    ),
+                )
+        game.alias_steam_app_ids = cleaned_aliases or None
+
     try:
         db.commit()
         db.refresh(game)

@@ -57,6 +57,9 @@ class GameResponse(BaseModel):
     commercial_context: Optional[str] = None
     # CLAUDE.md §24 demographic + IP-awareness brief (per-title)
     demographic_context: Optional[str] = None
+    # 2026-09-18 Landing A: additional Steam appids grouped under this game
+    # for ingest (demos, DLCs, region variants). See models.Game docstring.
+    alias_steam_app_ids: Optional[list] = None
     created_at: datetime
 
 
@@ -80,6 +83,12 @@ class GameSettingsUpdate(BaseModel):
     # rejected server-side because a game without keywords cannot get
     # sentiment records (per the user's non-negotiable rule).
     distinctive_keywords: Optional[List[str]] = None
+    # 2026-09-18 Landing A: full replacement of the alias appid list.
+    # Pass [] to clear all aliases (unlike distinctive_keywords, empty
+    # aliases is safe — the game keeps its primary appid). Server-side
+    # validation rejects an alias appid that appears as any other game's
+    # PRIMARY steam_app_id (would create a routing ambiguity).
+    alias_steam_app_ids: Optional[List[int]] = None
 
 
 class GameCreate(BaseModel):

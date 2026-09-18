@@ -67,6 +67,16 @@ class Game(Base):
         Integer, ForeignKey("publishers.id"), nullable=False, index=True
     )
     steam_app_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
+    # JSON list of ADDITIONAL Steam appids that belong under the same game
+    # for ingest purposes (demos, DLCs, region variants). Landing A of the
+    # 2026-09-18 parent/child-support work. When populated, Step 2 (reviews)
+    # and Step 3 (forums) fetch for [steam_app_id, *alias_steam_app_ids]
+    # and write ALL rows under this game.id. Uniqueness of the primary
+    # steam_app_id is still enforced at the schema level; alias appids are
+    # NOT globally unique (rare but possible for the same demo to belong
+    # under multiple main-game rows, e.g. bundles). See lessons.md
+    # 2026-09-18 (Hellraiser Revival demo) for the motivating case.
+    alias_steam_app_ids: Mapped[Optional[list]] = mapped_column(JSON, nullable=True, default=list)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     release_date: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
