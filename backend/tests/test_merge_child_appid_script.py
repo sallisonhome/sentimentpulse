@@ -280,6 +280,58 @@ class TestInputValidation:
 # ---------------------------------------------------------------------------
 
 
+class TestSourceFetchCursorConflict:
+    def test_conflicting_source_fetch_cursor_is_dropped_before_update(self, db, parent_child_setup):
+        """Regression guard for the 2026-09-18 dry-run failure. Both parent
+        and child had a source_fetch_cursor for (source=steam_forum,
+        scope_key='') and the mover's naive UPDATE hit
+        UNIQUE(game_id, source, scope_key). The fix DELETEs the child's
+        colliding cursor first, then UPDATEs the rest."""
+        from models import SourceFetchCursor
+        setup = parent_child_setup
+
+        # Parent has a steam_forum cursor at epoch 100.
+        parent_cur = SourceFetchCursor(
+            game_id=setup["parent"].id,
+            source="steam_forum", scope_key="",
+            last_seen_epoch=100, last_updated_at=datetime.now(timezone.utc),
+        )
+        # Child has a steam_forum cursor at epoch 200 (would collide).
+        child_cur_dup = SourceFetchCursor(
+            game_id=setup["child"].id,
+            source="steam_forum", scope_key="",
+            last_seen_epoch=200, last_updated_at=datetime.now(timezone.utc),
+        )
+        # Child also has a steam_review cursor (no conflict).
+        child_cur_unique = SourceFetchCursor(
+            game_id=setup["child"].id,
+            source="steam_review", scope_key="",
+            last_seen_epoch=300, last_updated_at=datetime.now(timezone.utc),
+        )
+        db.add_all([parent_cur, child_cur_dup, child_cur_unique])
+        db.commit()
+
+        rc = merge_run(parent_id=setup["parent"].id, child_id=setup["child"].id,
+                       alias_appid=5184670, commit=True)
+        assert rc == 0
+        db.expire_all()
+
+        # Parent still has its original steam_forum cursor (winner).
+        parent_forum = db.query(SourceFetchCursor).filter_by(
+            game_id=setup["parent"].id, source="steam_forum", scope_key="").first()
+        assert parent_forum is not None
+        assert parent_forum.last_seen_epoch == 100  # parent's value survives
+        # steam_review moved to parent (no conflict).
+        parent_review = db.query(SourceFetchCursor).filter_by(
+            game_id=setup["parent"].id, source="steam_review", scope_key="").first()
+        assert parent_review is not None
+        assert parent_review.last_seen_epoch == 300
+        # Child has no cursors left.
+        child_cursors = db.query(SourceFetchCursor).filter_by(
+            game_id=setup["child"].id).count()
+        assert child_cursors == 0
+
+
 class TestAggregateCleanup:
     def test_child_daily_summary_is_deleted(self, db, parent_child_setup):
         """The child's auto-generated daily_summary has placeholder Sonar
