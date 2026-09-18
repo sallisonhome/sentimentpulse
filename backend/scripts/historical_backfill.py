@@ -47,6 +47,7 @@ from database import SessionLocal  # noqa: E402
 from models import Game, SourceEnum  # noqa: E402
 from services.ingestor import (  # noqa: E402
     _bulk_save_posts,
+    _resolve_steam_appids,
     _step5_classify_sentiment,
     _step6_extract_topics,
     _step7_daily_summary,
@@ -330,63 +331,64 @@ def backfill_steam_forums_for_game(
 
     Each returned post has a post_date; we filter to posts newer than
     start_dt before saving (deduplicated by external_id in _bulk_save_posts).
+
+    2026-09-18 (Landing A.1): when the game has alias_steam_app_ids
+    populated, this helper walks the forum for the primary appid AND
+    each alias in sequence. All rows are written under the same game.id.
+    Wallclock budget is split across appids so an aliased game doesn't
+    silently starve one of its own appids.
     """
     if not game.steam_app_id:
         return 0
 
-    try:
-        # v2 (2026-07-28): pass the same since_epoch to scrape_forum_threads
-        # so the listing-walk short-circuit and per-thread skip-if-stale
-        # kick in during backfill too. Historical mode still needs a
-        # wallclock ceiling so a broken forum can't hang the whole backfill
-        # job — 15 minutes per game is enough for a from-scratch fill on
-        # even the heaviest active forums.
-        posts = scrape_forum_threads(
-            game.steam_app_id,
-            max_threads=500,       # allow all 264 ILL threads through
-            max_pages=25,          # 25 x 15 = up to 375 threads visible per game
-            since_epoch=int(start_dt.timestamp()),
-            wallclock_budget_s=15 * 60,
-        )
-    except Exception as exc:
-        logger.error("Steam forum backfill fetch failed for %s: %s", game.name, exc)
-        errors.append(f"steam_forum backfill {game.name}: {exc}")
-        return 0
-
+    appids = _resolve_steam_appids(game)
+    per_appid_budget_s = max(5 * 60, (15 * 60) // len(appids))
+    total_saved = 0
     start_naive = start_dt.replace(tzinfo=None)
-    in_window = [
-        p for p in posts
-        if p.get("post_date") and p["post_date"] >= start_naive
-    ]
-    dropped_old = len(posts) - len(in_window)
+    for appid in appids:
+        try:
+            posts = scrape_forum_threads(
+                appid,
+                max_threads=500,       # allow all 264 ILL threads through
+                max_pages=25,          # 25 x 15 = up to 375 threads visible per game
+                since_epoch=int(start_dt.timestamp()),
+                wallclock_budget_s=per_appid_budget_s,
+            )
+        except Exception as exc:
+            logger.error("Steam forum backfill fetch failed for %s appid=%d: %s", game.name, appid, exc)
+            errors.append(f"steam_forum backfill {game.name} appid={appid}: {exc}")
+            continue
 
-    if not in_window:
-        logger.info(
-            "  Steam Forum (%s): scraped %d posts total, none newer than %s",
-            game.name, len(posts), start_dt.date(),
+        in_window = [
+            p for p in posts
+            if p.get("post_date") and p["post_date"] >= start_naive
+        ]
+        dropped_old = len(posts) - len(in_window)
+
+        if not in_window:
+            logger.info(
+                "  Steam Forum (%s, appid=%d): scraped %d posts, none newer than %s",
+                game.name, appid, len(posts), start_dt.date(),
+            )
+            continue
+
+        saved = _bulk_save_posts(
+            db, game.id, SourceEnum.steam_forum, in_window, errors,
         )
-        return 0
-
-    saved = _bulk_save_posts(
-        db, game.id, SourceEnum.steam_forum, in_window, errors,
-    )
-    logger.info(
-        "  Steam Forum (%s): scraped %d posts (%d in window since %s, %d older), saved %d new",
-        game.name, len(posts), len(in_window), start_dt.date(), dropped_old, saved,
-    )
-    return saved
+        total_saved += saved
+        logger.info(
+            "  Steam Forum (%s, appid=%d): scraped %d posts (%d in window since %s, %d older), saved %d new",
+            game.name, appid, len(posts), len(in_window), start_dt.date(), dropped_old, saved,
+        )
+    return total_saved
 
 
-def backfill_steam_reviews_for_game(
-    db, game: Game, start_dt: datetime, errors: list[str],
+def _backfill_steam_reviews_for_appid(
+    db, game: Game, appid: int, start_dt: datetime, errors: list[str],
 ) -> int:
-    """
-    Steam Reviews API supports cursor-based paging. Walk the history
-    until we cross the start-date boundary.
-    """
-    if not game.steam_app_id:
-        return 0
-
+    """Fetch reviews for ONE appid, cursor-paginated, and write them under
+    game.id. Shared inner loop for backfill_steam_reviews_for_game so the
+    same walk works for the primary appid and each alias."""
     total_saved = 0
     cursor = "*"
     pages_fetched = 0
@@ -395,7 +397,7 @@ def backfill_steam_reviews_for_game(
     while True:
         try:
             r = httpx.get(
-                STEAM_REVIEWS_BASE.format(app_id=game.steam_app_id),
+                STEAM_REVIEWS_BASE.format(app_id=appid),
                 params={
                     "json": "1",
                     "filter": "recent",
@@ -409,11 +411,12 @@ def backfill_steam_reviews_for_game(
             )
             time.sleep(1.0)
             if r.status_code != 200:
-                logger.warning("Steam Reviews HTTP %d for app %d", r.status_code, game.steam_app_id)
+                logger.warning("Steam Reviews HTTP %d for app %d", r.status_code, appid)
                 break
             data = r.json()
         except Exception as exc:
-            logger.error("Steam Reviews request failed for %s: %s", game.name, exc)
+            logger.error("Steam Reviews request failed for %s appid=%d: %s", game.name, appid, exc)
+            errors.append(f"steam_review backfill {game.name} appid={appid}: {exc}")
             break
 
         reviews = data.get("reviews", []) or []
@@ -438,7 +441,7 @@ def backfill_steam_reviews_for_game(
                 "author": str(author),
                 "title": "",
                 "body": (rev.get("review", "") or "")[:2000],
-                "url": f"https://steamcommunity.com/profiles/{author}/recommended/{game.steam_app_id}/",
+                "url": f"https://steamcommunity.com/profiles/{author}/recommended/{appid}/",
                 "upvotes": int(rev.get("votes_up", 0) or 0),
                 "post_date": datetime.fromtimestamp(ts, tz=timezone.utc),
             })
@@ -458,10 +461,33 @@ def backfill_steam_reviews_for_game(
             break
 
         if pages_fetched >= 20:
-            logger.warning("Steam Reviews 20-page cap hit for %s", game.name)
+            logger.warning("Steam Reviews 20-page cap hit for %s appid=%d", game.name, appid)
             break
 
-    logger.info("  Steam Reviews (%s): %d pages, %d new posts", game.name, pages_fetched, total_saved)
+    logger.info("  Steam Reviews (%s, appid=%d): %d pages, %d new posts",
+                game.name, appid, pages_fetched, total_saved)
+    return total_saved
+
+
+def backfill_steam_reviews_for_game(
+    db, game: Game, start_dt: datetime, errors: list[str],
+) -> int:
+    """
+    Steam Reviews API supports cursor-based paging. Walk the history
+    until we cross the start-date boundary.
+
+    2026-09-18 (Landing A.1): when the game has alias_steam_app_ids
+    populated, this helper walks reviews for the primary appid AND each
+    alias in sequence, writing all rows under the same game.id. This is
+    the historical-backfill counterpart to Landing A's daily-cron loop
+    (services.ingestor._step2_steam_reviews).
+    """
+    if not game.steam_app_id:
+        return 0
+
+    total_saved = 0
+    for appid in _resolve_steam_appids(game):
+        total_saved += _backfill_steam_reviews_for_appid(db, game, appid, start_dt, errors)
     return total_saved
 
 
