@@ -109,11 +109,40 @@ def _perform_move(session, parent: Game, child: Game, alias_appid: int) -> dict[
         affected[f"{table}_deleted"] = r.rowcount or 0
 
     # Step 4: move user-authored / cursor rows.
-    for table in ("editorial_articles", "timeline_events", "source_fetch_cursors"):
-        # Guard against UNIQUE violations on tables that have (game_id, ...)
-        # composite uniques by using ON CONFLICT DO NOTHING semantics; if not
-        # supported by the driver, we just UPDATE and let a real conflict
-        # surface (there shouldn't be any given the small demo row count).
+    # These tables all carry composite UNIQUE constraints that include
+    # game_id, so a naive UPDATE can hit an integrity error if the parent
+    # already has a row that would collide with the child's row on the
+    # other tuple columns. For each table we first DELETE the child rows
+    # whose (other-columns) tuple already exists under the parent (parent
+    # wins — keep the older / more authoritative row), then UPDATE the
+    # remaining child rows to the parent's game_id.
+    #
+    # Discovered via dry-run against Hellraiser Revival on 2026-09-18:
+    # source_fetch_cursors UNIQUE(game_id, source, scope_key) collided
+    # because both id=21 and id=155 had a cursor for the same source /
+    # empty scope_key.
+    _MOVE_TABLES: dict[str, list[str]] = {
+        # table: [other-columns in the composite unique after game_id]
+        "editorial_articles": ["scope", "cycle_start", "url"],
+        "timeline_events":    ["event_date", "name"],
+        "source_fetch_cursors": ["source", "scope_key"],
+    }
+    for table, other_cols in _MOVE_TABLES.items():
+        if other_cols:
+            # DELETE child rows that would collide with an existing parent row.
+            on_expr = " AND ".join(f"c.{c} = p.{c}" for c in other_cols)
+            r = session.execute(
+                text(
+                    f"DELETE FROM {table} WHERE id IN ("
+                    f"  SELECT c.id FROM {table} c"
+                    f"  WHERE c.game_id = :cid"
+                    f"    AND EXISTS (SELECT 1 FROM {table} p"
+                    f"                WHERE p.game_id = :pid AND {on_expr})"
+                    f")"
+                ),
+                {"pid": parent_id, "cid": child_id},
+            )
+            affected[f"{table}_dropped_as_conflict"] = r.rowcount or 0
         r = session.execute(
             text(f"UPDATE {table} SET game_id = :pid WHERE game_id = :cid"),
             {"pid": parent_id, "cid": child_id},
