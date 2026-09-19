@@ -257,13 +257,22 @@ def get_app_details(steam_app_id: int) -> Optional[dict]:
 def fetch_reviews(
     steam_app_id: int,
     known_ids: Optional[set] = None,
-    max_pages: int = 5,
+    max_pages: int = 10,
+    language: str = "all",
 ) -> list[dict]:
     """
-    Fetch recent English reviews using cursor-based pagination.
+    Fetch recent reviews using cursor-based pagination.
 
     Fetches up to max_pages * 100 reviews per run, stopping early when a
     page has >50% overlap with known_ids (already collected reviews).
+
+    2026-09-19: max_pages bumped 5 → 10 (per-appid per-run cap 500 → 1000)
+    and default language changed from 'english' to 'all'. Verified against
+    Hellraiser Revival demo (appid 5184670): Steam reported 940 total
+    reviews / 883 positive, we had only 638 English rows in DB. The
+    non-English tail (Chinese, Russian, ...) carries real signal for
+    a demo release. Steady-state cost is minimal because the 50%-overlap
+    early-exit still terminates the walk once we catch up.
 
     Each returned dict has:
         external_id, author, title (None), body, url, upvotes, post_date
@@ -278,7 +287,7 @@ def fetch_reviews(
             params={
                 "json": "1",
                 "filter": "recent",
-                "language": "english",
+                "language": language,
                 "review_type": "all",
                 "purchase_type": "all",
                 "num_per_page": 100,

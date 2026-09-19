@@ -250,7 +250,10 @@ class TestStep3WithAliases:
             log_lines, errors = [], []
             _step3_steam_forums(db, game, log_lines, errors)
         # Two appids × 45s each = 90s total.
-        assert seen_budgets == [45, 45]
+        # 2026-09-19: total_budget_s bumped 90 -> 180, so 2 appids get 90s each.
+        # See tests/test_steam_ingest_deeper_coverage.py::TestForumBudget for
+        # the current invariants.
+        assert seen_budgets == [90, 90]
 
     def test_alias_error_does_not_lose_primary_batch(self, db, game):
         game.alias_steam_app_ids = [5184670]
