@@ -1,0 +1,160 @@
+name: SignalPulse — Revise Wolverine PS5 override -15% + re-estimate
+
+# One-off dispatchable workflow that:
+#   1. Runs scripts/revise-title-multiplier-override-2026-09-19-wolverine-minus15pct.ts
+#      to cut the existing Wolverine (PS5) multiplier override 15% below its
+#      original Alinea-anchor value (57.7x -> 49.045x), per explicit user
+#      direction on 2026-09-19. Same-day upsert on the same
+#      (title_id, platform, effective_from) key as the original seed.
+#   2. Reruns scripts/estimate-console-units.ts so window_estimates_daily
+#      (and the LTD accumulator's title_ltd_state) pick up the revised value.
+#
+# NOTE: the pre/post audit curl steps use `.titles[]`, not `.rows[]` — the
+# live API's top-level key is `titles` (confirmed 2026-09-19). The prior
+# Wolverine seed workflow used `.rows[]` and its jq audit step silently
+# failed both pre- and post-run; this workflow fixes that so the audit
+# actually verifies the live leaderboard row.
+#
+# The revision script is idempotent (ON CONFLICT UPDATE per
+# (title_id, platform, effective_from)), and the estimator has been
+# idempotent all along. Safe to re-run.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  revise-and-estimate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Preflight
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          [ -n "$WD" ] || { echo "ERR: could not resolve signalpulse WorkingDirectory"; exit 1; }
+          echo "Working dir: $WD"
+          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
+          [ -f "$WD/scripts/revise-title-multiplier-override-2026-09-19-wolverine-minus15pct.ts" ] || { echo "ERR: revision script missing — deploy first"; exit 1; }
+          [ -f "$WD/scripts/estimate-console-units.ts" ] || { echo "ERR: estimator missing"; exit 1; }
+          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
+
+          echo ""
+          echo "── Pre-run: title_multiplier_overrides state (ps5) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT title_id, platform, multiplier, ci_pct, confidence, method, effective_from
+              FROM title_multiplier_overrides
+              WHERE platform = 'ps5'
+              ORDER BY title_id, effective_from DESC LIMIT 20;
+          " || echo "(no ps5 overrides yet)"
+
+          echo ""
+          echo "── Pre-run: title_ltd_state for title_id=10302 (Wolverine) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT * FROM title_ltd_state WHERE title_id = 10302;
+          " || echo "(no ltd_state row yet)"
+
+          echo ""
+          echo "── Pre-run: Wolverine PS5 ltd row (baseline for comparison) ──"
+          curl -sS "http://127.0.0.1:5000/signal/api/console/leaderboards/ps5?window=ltd&sort=revenue&dir=desc&limit=200" \
+            | jq '.titles[] | select(.name | test("wolverine"; "i")) | {name, unitsMid, revenueMidUsd, ratingCount, estimateMethod}' \
+            || echo "(no wolverine row found or endpoint unreachable)"
+          REMOTE
+
+      - name: Run revise-title-multiplier-override-2026-09-19-wolverine-minus15pct
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+
+          echo "════════════════════════════════════════════════════════"
+          echo "  revise-title-multiplier-override-2026-09-19-wolverine-minus15pct.ts"
+          echo "════════════════════════════════════════════════════════"
+          t0=$(date +%s)
+          timeout 120 ./node_modules/.bin/tsx scripts/revise-title-multiplier-override-2026-09-19-wolverine-minus15pct.ts
+          rc=$?
+          t1=$(date +%s)
+          echo ""
+          echo "Elapsed: $((t1 - t0))s  exit=$rc"
+          exit $rc
+          REMOTE
+
+      - name: Rerun estimate-console-units
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+
+          if [ -f /etc/signalpulse/env ]; then
+            set -a
+            . /etc/signalpulse/env
+            set +a
+          fi
+          export NODE_ENV="${NODE_ENV:-production}"
+
+          echo "════════════════════════════════════════════════════════"
+          echo "  estimate-console-units.ts (rerun to pick up revised override)"
+          echo "════════════════════════════════════════════════════════"
+          t0=$(date +%s)
+          LTD_ACCUMULATOR_ENABLED=$(systemctl show -p Environment signalpulse | tr ' ' '\n' | grep '^LTD_ACCUMULATOR_ENABLED=' | cut -d= -f2 || echo "")
+          echo "LTD_ACCUMULATOR_ENABLED=${LTD_ACCUMULATOR_ENABLED:-<unset>}"
+          LTD_ACCUMULATOR_ENABLED="${LTD_ACCUMULATOR_ENABLED}" timeout 600 ./node_modules/.bin/tsx scripts/estimate-console-units.ts
+          rc=$?
+          t1=$(date +%s)
+          echo ""
+          echo "Elapsed: $((t1 - t0))s  exit=$rc"
+          exit $rc
+          REMOTE
+
+      - name: Post-run audit
+        if: always()
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+
+          echo "── Post-run: title_multiplier_overrides rows (ps5) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT title_id, platform, multiplier, ci_pct, digital_unit_share,
+                   confidence, method, effective_from
+              FROM title_multiplier_overrides
+              WHERE platform = 'ps5'
+              ORDER BY title_id, effective_from DESC;
+          "
+
+          echo ""
+          echo "── Post-run: title_ltd_state for title_id=10302 (Wolverine) ──"
+          sqlite3 -header -column "$WD/data.db" "
+            SELECT * FROM title_ltd_state WHERE title_id = 10302;
+          "
+
+          echo ""
+          echo "── Post-run: Wolverine PS5 ltd row (should reflect the revised 49.045x override) ──"
+          curl -sS "http://127.0.0.1:5000/signal/api/console/leaderboards/ps5?window=ltd&sort=revenue&dir=desc&limit=200" \
+            | jq '.titles[] | select(.name | test("wolverine"; "i")) | {name, unitsMid, revenueMidUsd, ratingCount, estimateMethod}' \
+            || echo "(no wolverine row found or endpoint unreachable)"
+          REMOTE
