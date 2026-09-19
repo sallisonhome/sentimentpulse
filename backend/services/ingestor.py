@@ -1374,11 +1374,15 @@ def _step3_steam_forums(
     per_appid_fetched: list[tuple[int, int]] = []
 
     # Per-game wallclock budget applies across ALL appids for this game.
-    # 90s was tuned for one forum; when a game has an alias appid, we
-    # split evenly and give each appid its own share. This preserves
-    # the total-time invariant so an aliased game doesn't starve the
-    # next game in the queue.
-    total_budget_s = 90
+    # 2026-09-19: bumped 90 -> 180 based on Hellraiser Revival demo data.
+    # With 90s split across 2 appids the daily cron was hitting the budget
+    # cap and returning ~46 posts against ~347 available in the past 24h
+    # on the main game's active forum (thread-scan cost ~3.5s/thread, so a
+    # 45s/appid budget only walks ~13 threads). 180s total keeps aliased
+    # games at a comfortable 90s/appid and gives solo forums enough room
+    # to walk their full active-thread set on release-day surges. The 30s
+    # floor is preserved in case an aliased game ever grows past 6 appids.
+    total_budget_s = 180
     per_appid_budget_s = max(30, total_budget_s // len(appids))
 
     for appid in appids:
