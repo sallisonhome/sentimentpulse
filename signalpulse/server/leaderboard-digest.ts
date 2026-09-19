@@ -29,7 +29,7 @@ import {
   type WeekWindow, type WeeklyWishlistRow, type WeeklyRevenueRow,
   type WeeklyMover, type WeeklyRevenueMover,
 } from "./leaderboard-digest-weekly";
-import { callSonar, sonarAvailable, type SonarResult } from "./sonar-client";
+import { callLlm, sonarAvailable, type SonarResult } from "./sonar-client";
 import { log } from "./index";
 import { getActivePromosFor, type ActivePromo } from "./promo-calendar-client";
 
@@ -232,7 +232,10 @@ async function generateDigestNarrative(
   const prompt = section === "wishlist"
     ? `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam wishlist/follower/rank movement for our pre-release titles. For each title, research whether it had any real, dated news during or just before this week (Steam festival/event inclusion, demo drop, reveal trailer, showcase appearance, patch/DLC news, review coverage) that could plausibly explain a notable move in its numbers — only mention this when you find an actual dated source. If a data line includes a bracketed "[ON PROMO NOW: ...]" tag, that is a live Promo Calendar sale drawn from our own system and you should always call it out as a driver when it aligns with a notable move. Data:\n${summary}`
     : `Write a short internal digest paragraph summarizing this week's (${weekLabel}) Steam sales revenue (game + DLC) for our released/pre-purchase titles. For each title, research whether it had a Steam storefront sale/discount, a sales event/festival inclusion, or another news beat (patch/DLC release, review, controversy, esports/streamer coverage) during or just before this week that could plausibly explain a notable move in its units or revenue — only mention this when you find an actual dated source. If a data line includes a bracketed "[ON PROMO NOW: ...]" tag, that is a live Promo Calendar sale drawn from our own system and you should always call it out as the primary driver when it aligns with a notable move. Data:\n${summary}`;
-  return callSonar(prompt, {
+  // Routed through callLlm so we transparently pick Sonar (default) or
+  // Agent API (when LLM_PRIMARY_DIGEST=agent-api). Return shape is
+  // identical either way.
+  return callLlm(prompt, {
     searchAfterDateFilter: toSonarDateFilter(window.weekStart, -3),
     searchBeforeDateFilter: toSonarDateFilter(window.weekEnd, 1),
   });
