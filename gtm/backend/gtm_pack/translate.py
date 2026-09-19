@@ -53,8 +53,16 @@ import urllib.error as _urllib_error
 import urllib.request as _urllib_request
 
 _SONAR_URL = "https://api.perplexity.ai/chat/completions"
+_AGENT_URL = "https://api.perplexity.ai/v1/agent"
 _DEFAULT_MODEL = "sonar-pro"
 _DEFAULT_TIMEOUT = 180  # seconds
+
+# 2026-09-19 Landing 4: Perplexity Sonar Chat Completions is being
+# deprecated on 2026-09-27. Callers can flip the backend without a code
+# deploy by setting LLM_PRIMARY_TRANSLATE (or the global LLM_PRIMARY) on
+# the GTM Studio process env. Values: 'sonar' (default, wire-identical
+# to today) or 'agent-api' (POST /v1/agent with preset='low' + no
+# tools — translation doesn't need web search).
 
 _DEFAULT_SYSTEM = (
     "You are a professional translator. You translate every value in the "
@@ -65,8 +73,21 @@ _DEFAULT_SYSTEM = (
 
 
 def sonar_available() -> bool:
-    """True iff PERPLEXITY_API_KEY is set in the process environment."""
+    """True iff PERPLEXITY_API_KEY is set in the process environment.
+
+    Named for historical reasons — the same key covers both Sonar and
+    Agent API since they share auth.
+    """
     return bool(_os.environ.get("PERPLEXITY_API_KEY"))
+
+
+def _selected_backend() -> str:
+    """Return the backend key for this call. LLM_PRIMARY_TRANSLATE wins,
+    then legacy LLM_PRIMARY, then default 'sonar' for zero-change behavior.
+    Anything other than 'agent-api' falls back to 'sonar' so a typo in
+    the env var can't silently break translation."""
+    raw = (_os.environ.get("LLM_PRIMARY_TRANSLATE") or _os.environ.get("LLM_PRIMARY") or "").strip().lower()
+    return "agent-api" if raw == "agent-api" else "sonar"
 
 
 class _SonarResponse:
@@ -157,6 +178,162 @@ def call_sonar(
         model, len(prompt), len(text or ""), elapsed,
     )
     return _SonarResponse(text=text or "")
+
+
+# ---------------------------------------------------------------------------
+# Agent API path (Landing 4, 2026-09-19)
+# ---------------------------------------------------------------------------
+
+
+def _extract_agent_text(parsed: dict) -> str:
+    """Walk Agent API's output[] for the first message item's text.
+    Falls back to top-level output_text on shapes that expose it.
+    Returns "" on malformed / empty responses.
+    """
+    output = parsed.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "message":
+                continue
+            contents = item.get("content")
+            if not isinstance(contents, list):
+                continue
+            for c in contents:
+                if isinstance(c, dict):
+                    txt = c.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        return txt.strip()
+    fallback = parsed.get("output_text")
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback.strip()
+    return ""
+
+
+def _call_agent_api(
+    prompt: str,
+    *,
+    system: str | None = None,
+    max_tokens: int = 4000,
+    temperature: float = 0.2,
+    timeout: int = _DEFAULT_TIMEOUT,
+) -> _SonarResponse:
+    """POST a single user prompt to Perplexity Agent API and return the
+    response text. Raises RuntimeError on any failure (mirror-image of
+    call_sonar so the caller's try/except doesn't have to know which
+    backend won).
+
+    Wire mapping vs Sonar:
+      messages         -> input (role/content items)
+      system message   -> instructions (top-level)
+      model 'sonar-pro' -> preset 'low' (behavioral match per Perplexity's
+                         official models-and-presets.md)
+      max_tokens       -> max_output_tokens
+
+    Translation doesn't need web search, so no tools[] block is sent.
+    That's cheaper and keeps the response tight (no search_results item
+    to walk past).
+    """
+    api_key = _os.environ.get("PERPLEXITY_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("Perplexity API key not configured (PERPLEXITY_API_KEY empty).")
+
+    body = {
+        "preset": "low",
+        "instructions": system or _DEFAULT_SYSTEM,
+        "input": [
+            {"role": "user", "content": prompt},
+        ],
+        "max_output_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    body_bytes = _json.dumps(body).encode("utf-8")
+
+    req = _urllib_request.Request(
+        _AGENT_URL,
+        data=body_bytes,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    started = _time.monotonic()
+    try:
+        with _urllib_request.urlopen(req, timeout=timeout) as resp:
+            raw_bytes = resp.read()
+    except _urllib_error.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Agent API HTTP {e.code}: {e.reason} | body={err_body!r}"
+        ) from e
+    except _urllib_error.URLError as e:
+        raise RuntimeError(f"Agent API URLError: {e.reason}") from e
+    except Exception as e:
+        raise RuntimeError(f"Agent API unexpected error: {e}") from e
+
+    elapsed = _time.monotonic() - started
+
+    try:
+        parsed = _json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:
+        raise RuntimeError(
+            f"Agent API response not JSON ({len(raw_bytes)} bytes): {e}"
+        ) from e
+
+    text = _extract_agent_text(parsed)
+    if not text:
+        raise RuntimeError(
+            f"Agent API response missing message text: {parsed!r}"
+        )
+
+    logger.info(
+        "gtm_pack.translate Agent API call OK preset=low prompt_chars=%d resp_chars=%d elapsed=%.2fs",
+        len(prompt), len(text), elapsed,
+    )
+    return _SonarResponse(text=text)
+
+
+def _call_llm(
+    prompt: str,
+    *,
+    system: str | None = None,
+    max_tokens: int = 4000,
+    temperature: float = 0.2,
+    timeout: int = _DEFAULT_TIMEOUT,
+    search_context_size: str = "low",
+) -> _SonarResponse:
+    """Router: dispatch to Sonar (default) or Agent API per env var.
+    Same signature/return shape as call_sonar so translate_form_inputs()
+    doesn't need to know which backend it hit.
+    """
+    backend = _selected_backend()
+    if backend == "agent-api":
+        # Agent API path ignores search_context_size (no web search on this call)
+        # but accepts the kwarg for signature parity with call_sonar.
+        del search_context_size  # explicit unused-var marker
+        return _call_agent_api(
+            prompt,
+            system=system,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            timeout=timeout,
+        )
+    return call_sonar(
+        prompt,
+        system=system,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+        search_context_size=search_context_size,
+    )
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
@@ -375,7 +552,10 @@ def translate_form_inputs(
     prompt = _build_prompt(payload, target_lang)
 
     try:
-        response = call_sonar(
+        # 2026-09-19 Landing 4: routed through _call_llm which picks Sonar
+        # (default) or Agent API based on LLM_PRIMARY_TRANSLATE env var.
+        # Same _SonarResponse return shape either way.
+        response = _call_llm(
             prompt,
             system=(
                 "You are a professional game-marketing localization "
@@ -388,7 +568,7 @@ def translate_form_inputs(
             search_context_size="low",
         )
     except RuntimeError as e:
-        raise TranslationError(f"Sonar call failed: {e}") from e
+        raise TranslationError(f"LLM call failed: {e}") from e
 
     translated_payload = _extract_json(response.text)
     return _merge_translated(inputs, translated_payload)
