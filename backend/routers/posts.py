@@ -185,8 +185,23 @@ def get_posts(
     total: int = q.count()
     total_pages = math.ceil(total / page_size) if total else 1
 
+    # 2026-09-19: sort by CONTENT recency (post_date), falling back to
+    # collected_at when the source didn't provide one. The previous
+    # default (collected_at desc) let bulk-ingested sources drown each
+    # other out: Steam writes ~155 rows at the SAME second, then Bluesky
+    # / reddit_comment stream in per-row a few seconds later, so any
+    # top-N-by-collected_at cutoff pushes Steam off page 1 even when its
+    # post_date content is the freshest on the game. Ordering by
+    # COALESCE(post_date, collected_at) makes the default
+    # "Recent Posts" view show what a human would call "recent".
+    # RawPost.id is the tie-breaker so the sort is deterministic under
+    # same-second bulk writes (larger id == newer insertion).
+    from sqlalchemy import func as _func
     posts: List[RawPost] = (
-        q.order_by(RawPost.collected_at.desc())
+        q.order_by(
+            _func.coalesce(RawPost.post_date, RawPost.collected_at).desc(),
+            RawPost.id.desc(),
+        )
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
