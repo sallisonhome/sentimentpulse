@@ -1,0 +1,140 @@
+name: SP LLM Primary Flip
+
+# Reusable one-shot workflow to flip the LLM backend for one production
+# block on one service, ahead of the 2026-09-27 Sonar sunset. Modeled
+# after signalpulse-auth-flip.yml. Manual-dispatch only.
+#
+# Each production block reads an env var of the form LLM_PRIMARY_<BLOCK>
+# (values: 'sonar' | 'anthropic' | 'agent-api'). The router in
+# services/llm_client.py, signalpulse/server/sonar-client.ts, and
+# gtm/backend/gtm_pack/translate.py all fall back to 'sonar' when the
+# env var is unset or unrecognized, so setting value=unset removes the
+# override and reverts to Sonar.
+#
+# Env-file map (verified against deploy.yml, signalpulse-deploy.yml,
+# gtm/systemd/gtmstudio.service):
+#   sentimentpulse -> /opt/sentimentpulse/.env         -> sentimentpulse.service
+#   signalpulse    -> /etc/signalpulse/env             -> signalpulse.service
+#   gtm            -> /etc/gtm/.env                    -> gtmstudio.service
+#
+# Rollback is: dispatch the same workflow with value=unset (removes the
+# override) or value=sonar (explicit).
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Which service's env file/systemd unit to touch"
+        required: true
+        type: choice
+        options:
+          - sentimentpulse
+          - signalpulse
+          - gtm
+      block:
+        description: "Which production block. Sets LLM_PRIMARY_<BLOCK> (uppercased)."
+        required: true
+        type: choice
+        options:
+          - TOPICS
+          - SUMMARY
+          - DIGEST
+          - TRANSLATE
+          - TRIPREPORT
+      value:
+        description: "Backend to route this block to. 'unset' removes the override (default=sonar)."
+        required: true
+        default: "agent-api"
+        type: choice
+        options:
+          - agent-api
+          - sonar
+          - anthropic
+          - unset
+
+jobs:
+  flip:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH to droplet and flip LLM_PRIMARY_<BLOCK>
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 104.236.239.46
+          username: root
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -e
+            SERVICE="${{ inputs.service }}"
+            BLOCK="${{ inputs.block }}"
+            VALUE="${{ inputs.value }}"
+            ENVKEY="LLM_PRIMARY_${BLOCK}"
+
+            # Resolve env file + service unit per service.
+            case "$SERVICE" in
+              sentimentpulse)
+                ENVFILE=/opt/sentimentpulse/.env
+                UNIT=sentimentpulse.service
+                ;;
+              signalpulse)
+                ENVFILE=/etc/signalpulse/env
+                UNIT=signalpulse.service
+                ;;
+              gtm)
+                ENVFILE=/etc/gtm/.env
+                UNIT=gtmstudio.service
+                ;;
+              *)
+                echo "ERROR: unknown service '$SERVICE'"
+                exit 1
+                ;;
+            esac
+
+            if [ ! -f "$ENVFILE" ]; then
+              echo "ERROR: env file $ENVFILE does not exist. Service never deployed?"
+              exit 1
+            fi
+
+            echo "== Target: $SERVICE ($UNIT), block=$BLOCK, value=$VALUE =="
+            echo "== Env file: $ENVFILE =="
+            echo ""
+
+            echo "== Before =="
+            grep "^${ENVKEY}=" "$ENVFILE" || echo "(no ${ENVKEY} line)"
+            echo ""
+
+            # Apply the change.
+            if [ "$VALUE" = "unset" ]; then
+              # Remove the override line entirely; router falls back to 'sonar'.
+              if grep -q "^${ENVKEY}=" "$ENVFILE"; then
+                sed -i "/^${ENVKEY}=/d" "$ENVFILE"
+                echo "Removed ${ENVKEY} line."
+              else
+                echo "No ${ENVKEY} line to remove."
+              fi
+            else
+              # Replace or append.
+              if grep -q "^${ENVKEY}=" "$ENVFILE"; then
+                sed -i "s|^${ENVKEY}=.*|${ENVKEY}=${VALUE}|" "$ENVFILE"
+                echo "Updated ${ENVKEY}=${VALUE}."
+              else
+                echo "${ENVKEY}=${VALUE}" >> "$ENVFILE"
+                echo "Appended ${ENVKEY}=${VALUE}."
+              fi
+            fi
+            # Preserve secure permissions on env files.
+            chmod 600 "$ENVFILE"
+
+            echo ""
+            echo "== After =="
+            grep "^${ENVKEY}=" "$ENVFILE" || echo "(no ${ENVKEY} line \u2014 router will use default 'sonar')"
+            echo ""
+
+            echo "== Restarting $UNIT =="
+            systemctl restart "$UNIT"
+            sleep 3
+
+            echo "== Post-restart status =="
+            systemctl is-active "$UNIT" && echo "$UNIT is active."
+
+            echo ""
+            echo "Done. Reminder: verify the block emits expected output on its next fire."
