@@ -2014,7 +2014,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                screenshots_json AS screenshotsJson, genres_json AS genresJson,
                themes_json AS themesJson, platforms_json AS platformsJson,
                developers_json AS developersJson, publishers_json AS publishersJson,
-               rating, rating_count AS ratingCount, refreshed_at AS refreshedAt
+               rating, rating_count AS ratingCount, refreshed_at AS refreshedAt,
+               store_name AS storeName, store_header_image_url AS storeHeaderImageUrl,
+               store_release_date AS storeReleaseDate, match_confidence AS matchConfidence
           FROM console_title_igdb WHERE title_id = ?
       `).get(titleId) as Record<string, any> | undefined;
 
@@ -2203,15 +2205,40 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         };
       });
 
-      // Parse JSON columns
+      // Parse JSON columns, applying the same match_confidence fallback the
+      // leaderboard routes already use (see routes-console-leaderboards.ts
+      // single-platform query comment, ~line 600). When IGDB's name search
+      // matched the wrong game (match_confidence='low', set by
+      // refreshIgdbForTitle's release-date sanity check), name/coverUrl/
+      // releaseDate fall back to the storefront-truthed store_name /
+      // store_header_image_url / store_release_date columns. Descriptive
+      // fields with no store-truthed equivalent (summary, developers,
+      // publishers, genres, themes, screenshots) are suppressed rather than
+      // shown from the wrong game — this is exactly the bug reported
+      // 2026-09-19: Steam SKU 3219630 "Halloween: The Game" PDP showed
+      // "Solitaire Game Halloween 2" title, cover, and credits because this
+      // route returned igdb.* unconditionally while the leaderboard list
+      // (which already had this fallback) showed the correct name.
+      const igdbLowConfidence = igdb?.matchConfidence === "low";
       const parsedIgdb = igdb ? {
         ...igdb,
-        screenshots: igdb.screenshotsJson ? JSON.parse(igdb.screenshotsJson) : [],
-        genres: igdb.genresJson ? JSON.parse(igdb.genresJson) : [],
-        themes: igdb.themesJson ? JSON.parse(igdb.themesJson) : [],
+        name: igdbLowConfidence
+          ? (igdb.storeName || igdb.name)
+          : (igdb.name || igdb.storeName),
+        coverUrl: igdbLowConfidence
+          ? (igdb.storeHeaderImageUrl || igdb.coverUrl)
+          : (igdb.coverUrl || igdb.storeHeaderImageUrl),
+        releaseDate: igdbLowConfidence
+          ? (igdb.storeReleaseDate || igdb.releaseDate)
+          : (igdb.releaseDate || igdb.storeReleaseDate),
+        nameSource: igdbLowConfidence ? "store" : (igdb.name ? "igdb" : "store"),
+        summary: igdbLowConfidence ? null : igdb.summary,
+        screenshots: igdbLowConfidence ? [] : (igdb.screenshotsJson ? JSON.parse(igdb.screenshotsJson) : []),
+        genres: igdbLowConfidence ? [] : (igdb.genresJson ? JSON.parse(igdb.genresJson) : []),
+        themes: igdbLowConfidence ? [] : (igdb.themesJson ? JSON.parse(igdb.themesJson) : []),
         platforms: igdb.platformsJson ? JSON.parse(igdb.platformsJson) : [],
-        developers: igdb.developersJson ? JSON.parse(igdb.developersJson) : [],
-        publishers: igdb.publishersJson ? JSON.parse(igdb.publishersJson) : [],
+        developers: igdbLowConfidence ? [] : (igdb.developersJson ? JSON.parse(igdb.developersJson) : []),
+        publishers: igdbLowConfidence ? [] : (igdb.publishersJson ? JSON.parse(igdb.publishersJson) : []),
       } : null;
 
       res.json({
