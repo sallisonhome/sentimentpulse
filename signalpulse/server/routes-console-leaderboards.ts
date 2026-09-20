@@ -52,6 +52,7 @@ import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
+import { safeTitleMetadata } from "./console-title-metadata";
 
 type Platform = "steam" | "xbox" | "ps5";
 const PLATFORMS: Platform[] = ["steam", "xbox", "ps5"];
@@ -1399,7 +1400,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
           END                                             AS coverUrl,
-          igdb.release_date                               AS releaseDate,
+          CASE WHEN igdb.match_confidence = 'low'
+            THEN igdb.store_release_date
+            ELSE COALESCE(igdb.release_date, igdb.store_release_date)
+          END                                             AS releaseDate,
           ${cascadeUnitsExpr}                             AS unitsMid,
           ${cascadeWindowExpr}                            AS windowUsed
         FROM platform_sku_map psm
@@ -1968,22 +1972,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                screenshots_json AS screenshotsJson, genres_json AS genresJson,
                themes_json AS themesJson, platforms_json AS platformsJson,
                developers_json AS developersJson, publishers_json AS publishersJson,
-               rating, rating_count AS ratingCount, refreshed_at AS refreshedAt
+               rating, rating_count AS ratingCount, refreshed_at AS refreshedAt,
+               store_name AS storeName, store_header_image_url AS storeHeaderImageUrl,
+               store_release_date AS storeReleaseDate, match_confidence AS matchConfidence
           FROM console_title_igdb WHERE title_id = ?
       `).get(preferredTitleId) as Record<string, any> | undefined;
 
       // JSON columns. Nested `igdb` matches /api/console/titles/:titleId so the
       // combined PDP can reuse the parent-title header without a second fetch.
-      const jsonParse = (s: string | null | undefined): any => { if (!s) return null; try { return JSON.parse(s); } catch { return null; } };
-      const parsedIgdb: Record<string, any> | null = igdb ? {
-        ...igdb,
-        screenshots: jsonParse(igdb.screenshotsJson) ?? [],
-        genres: jsonParse(igdb.genresJson) ?? [],
-        themes: jsonParse(igdb.themesJson) ?? [],
-        platforms: jsonParse(igdb.platformsJson) ?? [],
-        developers: jsonParse(igdb.developersJson) ?? [],
-        publishers: jsonParse(igdb.publishersJson) ?? [],
-      } : null;
+      const parsedIgdb = safeTitleMetadata(
+        igdb,
+        Boolean(igdb?.name && editionGroupKey(igdb.name) !== key),
+      );
 
       const platforms: Platform[] = [];
       if (out.steam) platforms.push("steam");
@@ -2247,27 +2247,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // "Solitaire Game Halloween 2" title, cover, and credits because this
       // route returned igdb.* unconditionally while the leaderboard list
       // (which already had this fallback) showed the correct name.
-      const igdbLowConfidence = igdb?.matchConfidence === "low";
-      const parsedIgdb = igdb ? {
-        ...igdb,
-        name: igdbLowConfidence
-          ? (igdb.storeName || igdb.name)
-          : (igdb.name || igdb.storeName),
-        coverUrl: igdbLowConfidence
-          ? (igdb.storeHeaderImageUrl || igdb.coverUrl)
-          : (igdb.coverUrl || igdb.storeHeaderImageUrl),
-        releaseDate: igdbLowConfidence
-          ? (igdb.storeReleaseDate || igdb.releaseDate)
-          : (igdb.releaseDate || igdb.storeReleaseDate),
-        nameSource: igdbLowConfidence ? "store" : (igdb.name ? "igdb" : "store"),
-        summary: igdbLowConfidence ? null : igdb.summary,
-        screenshots: igdbLowConfidence ? [] : (igdb.screenshotsJson ? JSON.parse(igdb.screenshotsJson) : []),
-        genres: igdbLowConfidence ? [] : (igdb.genresJson ? JSON.parse(igdb.genresJson) : []),
-        themes: igdbLowConfidence ? [] : (igdb.themesJson ? JSON.parse(igdb.themesJson) : []),
-        platforms: igdb.platformsJson ? JSON.parse(igdb.platformsJson) : [],
-        developers: igdbLowConfidence ? [] : (igdb.developersJson ? JSON.parse(igdb.developersJson) : []),
-        publishers: igdbLowConfidence ? [] : (igdb.publishersJson ? JSON.parse(igdb.publishersJson) : []),
-      } : null;
+      const parsedIgdb = safeTitleMetadata(igdb);
 
       res.json({
         titleId,
