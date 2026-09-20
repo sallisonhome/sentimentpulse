@@ -53,6 +53,9 @@ import { rawSqlite } from "./storage";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
+import { steamPortrait } from "./console-portrait-art";
+import { ensureMixSchema, mixStatus, runMixShadow } from "./revenue-mix-shadow";
+import type { Mix } from "./revenue-mix-model";
 
 type Platform = "steam" | "xbox" | "ps5";
 const PLATFORMS: Platform[] = ["steam", "xbox", "ps5"];
@@ -303,6 +306,14 @@ function ipOverrideFactorFor(displayName: string | null | undefined, plat: Platf
 // threshold in the per-platform overlay.
 const STEAM_MEANINGFUL_REVENUE_FLOOR_USD = 1000;
 
+export function evaluateRevenueMixShadow() {
+  const weights = [1, PLATFORM_RATIO_VS_STEAM.ps5!, PLATFORM_RATIO_VS_STEAM.xbox!];
+  const total = weights.reduce((a,b) => a+b,0);
+  return runMixShadow(rawSqlite, editionGroupKey,
+    name => IP_OVERRIDE_RULES.some(r => r.pattern.test(name)),
+    weights.map(n => n/total) as Mix);
+}
+
 // Public rate limiter (2026-09-13). Attached only to the four routes that
 // saber-auth's PUBLIC_READ_PATHS / PUBLIC_READ_PREFIXES exempt from JWT
 // enforcement, so unauthenticated public traffic can't saturate the shared
@@ -326,6 +337,27 @@ const publicLeaderboardLimiter = rateLimit({
 });
 
 export function registerConsoleLeaderboardRoutes(app: Express) {
+  ensureMixSchema(rawSqlite);
+  setImmediate(() => {
+    try { console.log("[revenue-mix-shadow]", evaluateRevenueMixShadow()); }
+    catch (error) { console.error("[revenue-mix-shadow] audit failed; published estimates unchanged", error); }
+  });
+  // Match the same safe storefront family used by the leaderboard. A console
+  // SKU may share the verified family's Steam portrait, never an unrelated IGDB hit.
+  async function portraitCandidates(name: string | null, cover: string | null, titleId: number) {
+    const key = editionGroupKey(name);
+    const steamRows = rawSqlite.prepare(`
+      SELECT p.external_sku AS appId, p.title_id AS titleId,
+        CASE WHEN i.match_confidence = 'low' THEN i.store_name
+             ELSE COALESCE(i.name, i.store_name) END AS name
+      FROM platform_sku_map p JOIN console_title_igdb i ON i.title_id = p.title_id
+      WHERE p.platform = 'steam' AND p.sku_role = 'base' AND p.business_model = 'paid'
+    `).all() as Array<{appId: string; titleId: number; name: string}>;
+    const steam = steamRows.find(s => s.titleId === titleId)
+      ?? (key ? steamRows.find(s => editionGroupKey(s.name) === key) : undefined);
+    const portrait = steam ? await steamPortrait(steam.appId) : null;
+    return Array.from(new Set([portrait, cover].filter((url): url is string => Boolean(url))));
+  }
   // Attach the public limiter to the exact paths saber-auth exposes
   // unauthenticated. GET-only — the mount uses app.get so it does not
   // affect any future POST/PUT to these paths (which would 404 anyway,
@@ -1691,7 +1723,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         count: trimmed.length,
         candidatesCount: multiRows.length,
         titles: trimmed,
-        revenueSummary: revenueSummary(trimmed, window),
+        revenueSummary: { ...revenueSummary(trimmed, window), calibration: mixStatus(rawSqlite) },
         latestCaptureDate,
         refreshCronUtc: "09:15",
       });
@@ -1816,7 +1848,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   //   }
   //
   // Revenue is computed with the SAME overlay pipeline as the leaderboard.
-  app.get("/api/console/multiplatform-title/:key", (req, res) => {
+  app.get("/api/console/multiplatform-title/:key", async (req, res) => {
     try {
       const key = decodeURIComponent(req.params.key || "");
       if (!key) return res.status(400).json({ error: "invalid key" });
@@ -1989,11 +2021,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       if (out.steam) platforms.push("steam");
       if (out.ps5)   platforms.push("ps5");
       if (out.xbox)  platforms.push("xbox");
+      const covers = await portraitCandidates(parsedIgdb?.name ?? displayName, parsedIgdb?.coverUrl ?? null, preferredTitleId);
+      if (parsedIgdb) parsedIgdb.coverUrl = covers[0] ?? null;
 
       res.json({
         editionGroupKey: key,
         name: parsedIgdb?.name ?? displayName,
-        coverUrl: parsedIgdb?.coverUrl ?? steamSku?.coverUrl ?? matching[0].coverUrl,
+        coverUrl: covers[0] ?? null,
+        portraitCandidates: covers,
         artworkUrl: parsedIgdb?.artworkUrl ?? null,
         screenshots: parsedIgdb?.screenshots ?? null,
         genres: parsedIgdb?.genres ?? null,
@@ -2008,7 +2043,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         combinedRevenueUsd,
         combinedUnits,
         combinedOwners,
-        revenueSummary: familyRevenueSummary,
+        revenueSummary: { ...familyRevenueSummary, calibration: mixStatus(rawSqlite) },
         window,
         cascade,
         skus: skuList,
@@ -2018,7 +2053,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     }
   });
 
-  app.get("/api/console/titles/:titleId", (req, res) => {
+  app.get("/api/console/titles/:titleId", async (req, res) => {
     try {
       const titleId = parseInt(req.params.titleId, 10);
       if (!Number.isFinite(titleId)) return res.status(400).json({ error: "invalid titleId" });
@@ -2248,9 +2283,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // route returned igdb.* unconditionally while the leaderboard list
       // (which already had this fallback) showed the correct name.
       const parsedIgdb = safeTitleMetadata(igdb);
+      const covers = await portraitCandidates(xboxCache?.name ?? parsedIgdb?.name ?? null,
+        parsedIgdb?.coverUrl ?? xboxCache?.art_url ?? null, titleId);
+      if (parsedIgdb) parsedIgdb.coverUrl = covers[0] ?? null;
 
       res.json({
         titleId,
+        portraitCandidates: covers,
         window,
         cascade,
         skus,

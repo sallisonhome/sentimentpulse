@@ -40,6 +40,7 @@
 /* eslint-disable no-console */
 
 import { rawSqlite } from "../server/storage";
+import { evaluateRevenueMixShadow } from "../server/routes-console-leaderboards";
 import { getPeerRankNeighbors, type SortKey } from "../server/signals/console/rankSnapshot";
 
 const NOISE_GATE_DEFAULT = 50;
@@ -1359,6 +1360,8 @@ async function main() {
     byOutcome[key] = (byOutcome[key] ?? 0) + 1;
   }
   console.log(`[estimate-console-units] wrote ${rows.length} rows to window_estimates_daily`);
+  try { console.log("[revenue-mix-shadow]", evaluateRevenueMixShadow()); }
+  catch (error) { console.error("[revenue-mix-shadow] audit failed; baseline estimates retained", error); }
   for (const [k, v] of Object.entries(byOutcome).sort((a, b) => b[1] - a[1])) {
     console.log(`  ${k.padEnd(24)} ${v}`);
   }

@@ -10,6 +10,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
+import { PortraitCover } from "@/components/portrait-cover";
 import { useParams, Link } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -75,6 +76,7 @@ interface WindowKpi {
   captureLatestDate: string | null;
 }
 interface TitleDetail {
+  portraitCandidates?: string[];
   titleId: number;
   window: KpiWindow;
   cascade: KpiWindow[];
@@ -192,7 +194,7 @@ export default function ConsoleTitleDetail() {
       {/* Header */}
       <div className="flex gap-4 items-start">
         {igdb?.coverUrl && (
-          <img src={igdb.coverUrl} alt="" className="w-32 h-44 object-cover rounded-md shadow-md shrink-0" />
+          <PortraitCover candidates={detail.portraitCandidates ?? [igdb.coverUrl]} className="w-32 h-44 rounded-md shadow-md shrink-0" />
         )}
         <div className="flex-1 min-w-0">
           <div className="text-xs text-muted-foreground uppercase tracking-wide">{PLATFORM_LABEL[platform]}</div>

@@ -4,6 +4,7 @@ const COLORS: Record<string, string> = { steam: "#66c0f4", ps5: "#818cf8", xbox:
 const PERIODS: Record<string, string> = { d7: "7 days", d30: "30 days", d90: "90 days", m12: "12 months", ltd: "Lifetime" };
 const money = (n: number) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 export interface RevenueSummary {
+  calibration?: { mode: string; applied: boolean; note: string };
   window: string; titleCount: number; combinedRevenueUsd: number;
   platforms: { platform: string; revenueUsd: number; sharePct: number | null }[];
 }
@@ -29,5 +30,6 @@ export function RevenueShare({ summary, pie = false }: { summary?: RevenueSummar
     <p className="text-xs text-muted-foreground mt-2">
       {pie ? "Editions are grouped into one title family." : "Revenue share of the titles in this table only."} Estimates retain the selected period's fallback rules.
     </p>
+    {summary.calibration?.note && <p className="text-xs text-muted-foreground mt-2" role="note">{summary.calibration.note}</p>}
   </section>;
 }
