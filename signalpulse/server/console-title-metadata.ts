@@ -11,7 +11,10 @@ export function safeTitleMetadata(igdb: Record<string, any> | undefined, identit
     igdbId: unsafe ? null : igdb.igdbId,
     slug: unsafe ? null : igdb.slug,
     name: unsafe ? (igdb.storeName || null) : (igdb.name || igdb.storeName),
-    coverUrl: unsafe ? (igdb.storeHeaderImageUrl || null) : (igdb.coverUrl || igdb.storeHeaderImageUrl),
+    // A header is landscape/square, not a portrait. Store portraits are resolved
+    // separately from exact SKU assets; never recycle a known-wrong IGDB cover.
+    coverUrl: unsafe ? null : (igdb.coverUrl || null),
+    headerImageUrl: igdb.storeHeaderImageUrl || null,
     releaseDate: unsafe ? (igdb.storeReleaseDate || null) : (igdb.releaseDate || igdb.storeReleaseDate),
     nameSource: unsafe ? "store" : (igdb.name ? "igdb" : "store"),
     summary: unsafe ? null : igdb.summary,

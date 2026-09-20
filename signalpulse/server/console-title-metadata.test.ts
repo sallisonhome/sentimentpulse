@@ -12,7 +12,8 @@ const halloween = {
 test("Halloween rejects all mismatched enrichment and uses storefront identity", () => {
   const m = safeTitleMetadata(halloween)!;
   assert.equal(m.name, "Halloween: The Game");
-  assert.equal(m.coverUrl, "store-cover");
+  assert.equal(m.coverUrl, null);
+  assert.equal(m.headerImageUrl, "store-cover");
   assert.equal(m.releaseDate, "2026-09-08");
   for (const key of ["summary","artworkUrl","igdbId","slug","screenshotsJson"]) assert.equal(m[key],null);
   for (const key of ["screenshots","developers","publishers","platforms"]) assert.deepEqual(m[key],[]);

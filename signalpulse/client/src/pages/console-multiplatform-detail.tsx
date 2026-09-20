@@ -14,6 +14,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
+import { PortraitCover } from "@/components/portrait-cover";
 import { Link, useParams } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +64,7 @@ interface IgdbBlob {
 }
 
 interface MultiplatformDetailResponse {
+  portraitCandidates?: string[];
   editionGroupKey: string;
   name: string;
   coverUrl: string | null;
@@ -178,7 +180,7 @@ export default function ConsoleMultiplatformDetail() {
           {/* Header — same IGDB block as per-platform parent PDP */}
           <div className="flex gap-4 items-start">
             {displayCover && (
-              <img src={displayCover} alt="" className="w-32 h-44 object-cover rounded-md shadow-md shrink-0" />
+              <PortraitCover candidates={data?.portraitCandidates ?? [displayCover]} className="w-32 h-44 rounded-md shadow-md shrink-0" />
             )}
             <div className="flex-1 min-w-0">
               <div className="text-xs text-muted-foreground uppercase tracking-wide">Cross-platform</div>
