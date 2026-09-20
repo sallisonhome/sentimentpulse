@@ -2220,14 +2220,28 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // route returned igdb.* unconditionally while the leaderboard list
       // (which already had this fallback) showed the correct name.
       const igdbLowConfidence = igdb?.matchConfidence === "low";
+      const resolvedCoverUrl: string | null = igdb
+        ? (igdbLowConfidence
+            ? (igdb.storeHeaderImageUrl || igdb.coverUrl || null)
+            : (igdb.coverUrl || igdb.storeHeaderImageUrl || null))
+        : null;
+      // Steam's store_header_image_url is always the storefront marketing
+      // banner (fixed ~460x215 landscape aspect). igdb.cover_url is always a
+      // portrait box-art crop (~2:3, matching IGDB's t_cover_big). The client
+      // renders the PDP cover in a fixed portrait frame sized for the box-art
+      // case, so whenever the resolved image is actually the landscape banner
+      // — either because of a low-confidence match (this title) or because
+      // IGDB simply has no cover_url — that portrait crop turns the banner
+      // into an unreadable sliver. coverIsBanner tells the client which frame
+      // shape to use instead of guessing from the URL.
+      const coverIsBanner = !!resolvedCoverUrl && resolvedCoverUrl === igdb?.storeHeaderImageUrl;
       const parsedIgdb = igdb ? {
         ...igdb,
         name: igdbLowConfidence
           ? (igdb.storeName || igdb.name)
           : (igdb.name || igdb.storeName),
-        coverUrl: igdbLowConfidence
-          ? (igdb.storeHeaderImageUrl || igdb.coverUrl)
-          : (igdb.coverUrl || igdb.storeHeaderImageUrl),
+        coverUrl: resolvedCoverUrl,
+        coverIsBanner,
         releaseDate: igdbLowConfidence
           ? (igdb.storeReleaseDate || igdb.releaseDate)
           : (igdb.releaseDate || igdb.storeReleaseDate),
