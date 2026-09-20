@@ -2,6 +2,14 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 20, 2026
+
+- Improved
+
+  ### Multiplatform title PDP is public-read and ships combined owners + nested IGDB
+
+  `GET /api/console/multiplatform-title/:key` is now on the public-read prefix list (same gate as `/api/console/titles/` and the leaderboard routes) so howmanyareplaying's Buying hub can link Cross-Platform Leaders rows without a session cookie. The envelope now nests `igdb` in the same parsed shape as the per-platform parent PDP (screenshots / genres / developers / publishers / summary / cover) and adds `ownersMid` per platform plus `combinedOwners` summed across base SKUs. Combined revenue / units still use the leaderboard overlay cascade (`d7→d30→d90→m12→ltd`) so the PDP matches the clicked row. Default window is `d7` to match the hub. The SPA multiplatform detail page now uses that IGDB header plus a combined KPI row (revenue, units, owners) above the per-platform cards.
+
 ## September 16, 2026 (late)
 
 - Reverted

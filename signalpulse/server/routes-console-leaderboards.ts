@@ -332,6 +332,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   app.get("/api/console/leaderboards/ps5", publicLeaderboardLimiter);
   app.get("/api/console/leaderboards/xbox", publicLeaderboardLimiter);
   app.get("/api/console/leaderboards-multiplatform", publicLeaderboardLimiter);
+  app.get("/api/console/multiplatform-title/:key", publicLeaderboardLimiter);
 
 
   // ─── Leaderboard list ─────────────────────────────────────────────────────
@@ -1799,10 +1800,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   //     editionGroupKey, name, coverUrl, artworkUrl?, screenshots?, genres?,
   //     developers?, publishers?, summary?, releaseDate?, platforms,
   //     perPlatform: { steam?, ps5?, xbox? } where each is
-  //       { titleId, revenueUsd, unitsMid, windowUsed, msrpUsdCents,
-  //         ratingCount?, avgRating?, source: "anchor"|"overlay"|"raw" },
+  //       { titleId, revenueUsd, unitsMid, ownersMid, windowUsed, msrpUsdCents,
+  //         source: "anchor"|"overlay"|"raw" },
   //     combinedRevenueUsd,
   //     combinedUnits,
+  //     combinedOwners,
+  //     igdb: same nested blob as /api/console/titles/:titleId (parent header),
   //     window,
   //   }
   //
@@ -1811,7 +1814,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     try {
       const key = decodeURIComponent(req.params.key || "");
       if (!key) return res.status(400).json({ error: "invalid key" });
-      const window = ((req.query.window as string) || "ltd").toLowerCase();
+      const window = ((req.query.window as string) || "d7").toLowerCase();
       if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
 
       const steamAspFactor = aspFactorFor("steam");
@@ -1821,6 +1824,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const CASCADE = ["d7","d30","d90","m12","ltd"] as const;
       const cascade = CASCADE.slice(CASCADE.indexOf(window as any));
       const cascadeUnitsExpr = cascade.map((w, i) => `w${i}.units_mid`).reduce((a, e) => `COALESCE(${a}, ${e})`);
+      const cascadeOwnersExpr = cascade.map((w, i) => `w${i}.owners_mid`).reduce((a, e) => `COALESCE(${a}, ${e})`);
       const cascadeWindowExpr = cascade.map((w, i) => `CASE WHEN w${i}.units_mid IS NOT NULL THEN '${w}' END`).reduce((a, e) => `COALESCE(${a}, ${e})`);
       const cascadeJoins = cascade.map((w, i) => `LEFT JOIN window_estimates_daily w${i}
           ON w${i}.title_id = psm.title_id AND w${i}.platform = psm.platform
@@ -1846,6 +1850,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
           END AS coverUrl,
           ${cascadeUnitsExpr} AS unitsMid,
+          ${cascadeOwnersExpr} AS ownersMid,
           ${cascadeWindowExpr} AS windowUsed
         FROM platform_sku_map psm
         LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
@@ -1868,7 +1873,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                  END
                ) <= date('now')
           )
-      `).all() as Array<{ titleId: number; platform: Platform; msrpUsdCents: number | null; name: string | null; coverUrl: string | null; unitsMid: number | null; windowUsed: string | null }>;
+      `).all() as Array<{ titleId: number; platform: Platform; msrpUsdCents: number | null; name: string | null; coverUrl: string | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null }>;
 
       // Filter to this key.
       const matching = rows.filter(r => editionGroupKey(r.name) === key);
@@ -1886,7 +1891,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       for (const a of anchorRows) anchorMap.set(`${a.titleId}|${a.platform}`, a.revenue);
 
       // Aggregate per platform.
-      type PerPlat = { titleId: number; msrpUsdCents: number | null; rawRevenue: number; anchorRevenue: number | null; unitsMid: number; windowUsed: string | null };
+      type PerPlat = { titleId: number; msrpUsdCents: number | null; rawRevenue: number; anchorRevenue: number | null; unitsMid: number; ownersMid: number | null; windowUsed: string | null };
       const perPlatform: Partial<Record<Platform, PerPlat>> = {};
       const skuList: Array<{ titleId: number; platform: Platform; name: string | null; coverUrl: string | null }> = [];
       for (const r of matching) {
@@ -1896,11 +1901,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const anchor = anchorMap.get(`${r.titleId}|${r.platform}`) ?? null;
         const prev = perPlatform[r.platform];
         if (!prev) {
-          perPlatform[r.platform] = { titleId: r.titleId, msrpUsdCents: r.msrpUsdCents, rawRevenue: raw, anchorRevenue: anchor, unitsMid: r.unitsMid ?? 0, windowUsed: r.windowUsed };
+          perPlatform[r.platform] = { titleId: r.titleId, msrpUsdCents: r.msrpUsdCents, rawRevenue: raw, anchorRevenue: anchor, unitsMid: r.unitsMid ?? 0, ownersMid: r.ownersMid, windowUsed: r.windowUsed };
         } else {
           prev.rawRevenue += raw;
           if (anchor != null) prev.anchorRevenue = (prev.anchorRevenue ?? 0) + anchor;
           prev.unitsMid += r.unitsMid ?? 0;
+          if (r.ownersMid != null) prev.ownersMid = (prev.ownersMid ?? 0) + r.ownersMid;
           if (raw > 0 && prev.msrpUsdCents == null) prev.msrpUsdCents = r.msrpUsdCents;
         }
       }
@@ -1916,11 +1922,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const ipPs5  = ipOverrideFactorFor(displayName, "ps5");
       const ipXbox = ipOverrideFactorFor(displayName, "xbox");
 
-      type PerPlatOut = { titleId: number; revenueUsd: number; unitsMid: number; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw" };
+      type PerPlatOut = { titleId: number; revenueUsd: number; unitsMid: number; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw" };
       const out: Partial<Record<Platform, PerPlatOut>> = {};
       if (steam) {
         out.steam = {
-          titleId: steam.titleId, revenueUsd: steamRevenue, unitsMid: steam.unitsMid, windowUsed: steam.windowUsed,
+          titleId: steam.titleId, revenueUsd: steamRevenue, unitsMid: steam.unitsMid, ownersMid: steam.ownersMid, windowUsed: steam.windowUsed,
           msrpUsdCents: steam.msrpUsdCents, source: steam.anchorRevenue != null ? "anchor" : (steam.rawRevenue > 0 ? "raw" : "raw"),
         };
       }
@@ -1930,7 +1936,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         let src: "anchor" | "overlay" | "raw" = "raw";
         if (ps5.anchorRevenue != null) { revenue = ps5.anchorRevenue; src = "anchor"; }
         else if (hasMeaningfulSteam) { revenue = steamRevenue * (ipPs5 ? ipPs5.factor : (PLATFORM_RATIO_VS_STEAM.ps5 as number)); src = "overlay"; }
-        out.ps5 = { titleId: ps5.titleId, revenueUsd: revenue, unitsMid: ps5.unitsMid, windowUsed: ps5.windowUsed, msrpUsdCents: ps5.msrpUsdCents, source: src };
+        out.ps5 = { titleId: ps5.titleId, revenueUsd: revenue, unitsMid: ps5.unitsMid, ownersMid: ps5.ownersMid, windowUsed: ps5.windowUsed, msrpUsdCents: ps5.msrpUsdCents, source: src };
       }
       const xbox = perPlatform.xbox;
       if (xbox) {
@@ -1938,11 +1944,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         let src: "anchor" | "overlay" | "raw" = "raw";
         if (xbox.anchorRevenue != null) { revenue = xbox.anchorRevenue; src = "anchor"; }
         else if (hasMeaningfulSteam) { revenue = steamRevenue * (ipXbox ? ipXbox.factor : (PLATFORM_RATIO_VS_STEAM.xbox as number)); src = "overlay"; }
-        out.xbox = { titleId: xbox.titleId, revenueUsd: revenue, unitsMid: xbox.unitsMid, windowUsed: xbox.windowUsed, msrpUsdCents: xbox.msrpUsdCents, source: src };
+        out.xbox = { titleId: xbox.titleId, revenueUsd: revenue, unitsMid: xbox.unitsMid, ownersMid: xbox.ownersMid, windowUsed: xbox.windowUsed, msrpUsdCents: xbox.msrpUsdCents, source: src };
       }
 
       const combinedRevenueUsd = (out.steam?.revenueUsd ?? 0) + (out.ps5?.revenueUsd ?? 0) + (out.xbox?.revenueUsd ?? 0);
       const combinedUnits = (out.steam?.unitsMid ?? 0) + (out.ps5?.unitsMid ?? 0) + (out.xbox?.unitsMid ?? 0);
+      const ownerParts = [out.steam?.ownersMid, out.ps5?.ownersMid, out.xbox?.ownersMid].filter((n): n is number => n != null);
+      const combinedOwners = ownerParts.length > 0 ? ownerParts.reduce((a, b) => a + b, 0) : null;
 
       // Pull IGDB detail from the Steam SKU when we have one; otherwise
       // fall back to the highest-revenue console SKU that has an IGDB row.
@@ -1957,8 +1965,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           FROM console_title_igdb WHERE title_id = ?
       `).get(preferredTitleId) as Record<string, any> | undefined;
 
-      // JSON columns.
+      // JSON columns. Nested `igdb` matches /api/console/titles/:titleId so the
+      // combined PDP can reuse the parent-title header without a second fetch.
       const jsonParse = (s: string | null | undefined): any => { if (!s) return null; try { return JSON.parse(s); } catch { return null; } };
+      const parsedIgdb: Record<string, any> | null = igdb ? {
+        ...igdb,
+        screenshots: jsonParse(igdb.screenshotsJson) ?? [],
+        genres: jsonParse(igdb.genresJson) ?? [],
+        themes: jsonParse(igdb.themesJson) ?? [],
+        platforms: jsonParse(igdb.platformsJson) ?? [],
+        developers: jsonParse(igdb.developersJson) ?? [],
+        publishers: jsonParse(igdb.publishersJson) ?? [],
+      } : null;
 
       const platforms: Platform[] = [];
       if (out.steam) platforms.push("steam");
@@ -1967,20 +1985,22 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
       res.json({
         editionGroupKey: key,
-        name: displayName,
-        coverUrl: steamSku?.coverUrl ?? matching[0].coverUrl,
-        artworkUrl: igdb?.artworkUrl ?? null,
-        screenshots: jsonParse(igdb?.screenshotsJson),
-        genres: jsonParse(igdb?.genresJson),
-        themes: jsonParse(igdb?.themesJson),
-        developers: jsonParse(igdb?.developersJson),
-        publishers: jsonParse(igdb?.publishersJson),
-        summary: igdb?.summary ?? null,
-        releaseDate: igdb?.releaseDate ?? null,
+        name: parsedIgdb?.name ?? displayName,
+        coverUrl: parsedIgdb?.coverUrl ?? steamSku?.coverUrl ?? matching[0].coverUrl,
+        artworkUrl: parsedIgdb?.artworkUrl ?? null,
+        screenshots: parsedIgdb?.screenshots ?? null,
+        genres: parsedIgdb?.genres ?? null,
+        themes: parsedIgdb?.themes ?? null,
+        developers: parsedIgdb?.developers ?? null,
+        publishers: parsedIgdb?.publishers ?? null,
+        summary: parsedIgdb?.summary ?? null,
+        releaseDate: parsedIgdb?.releaseDate ?? null,
+        igdb: parsedIgdb,
         platforms,
         perPlatform: out,
         combinedRevenueUsd,
         combinedUnits,
+        combinedOwners,
         window,
         cascade,
         skus: skuList,

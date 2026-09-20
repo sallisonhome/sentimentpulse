@@ -4,6 +4,14 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-20 — Multiplatform title PDP was auth-gated; Buying hub rows cannot link until the prefix is public-read
+
+**What happened.** SignalPulse already had `GET /api/console/multiplatform-title/:key` and a logged-in SPA page, but `PUBLIC_READ_PREFIXES` only listed `/api/console/leaderboards/` and `/api/console/titles/`. Live unauthenticated GET against `/signal/api/console/multiplatform-title/the%20blood%20of%20dawnwalker` returned HTTP 401. howmanyareplaying's hub therefore left Cross-Platform Leaders rows unlinked.
+
+**Hard rule.** Any new console-sales read that a public Buying page needs must be added to `PUBLIC_READ_PATHS` / `PUBLIC_READ_PREFIXES` *and* get `publicLeaderboardLimiter` in the same change as the hmap proxy. Probe unauthenticated against `http://104.236.239.46/signal/api/...` before claiming the hub can link it. Do not infer public-read from "the SPA page already works" — the SPA sends credentials.
+
+**Self-check.** Unauth GET 200 on the new path; combined revenue on the PDP matches the clicked leaderboard row's `revenueCombined` for the same window.
+
 ## 2026-09-16 (early hours) — Three compounding failures on one PDP incident: false "verified live" claim, two speculative charset "fixes" shipped without evidence, and hypothesis-chaining after each one failed
 
 **What happened.** Steve reported two problems in one PDP screenshot for Marvel's

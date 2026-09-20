@@ -175,6 +175,12 @@ const EXEMPT_PREFIXES = [
 //   internal operator signal. Any future /api/console/titles/... route that
 //   would expose non-aggregate data MUST be added to PUBLIC_READ_PATH_DENYLIST
 //   or gated by a suffix rule in isPublicRead().
+//
+// /api/console/multiplatform-title/:key was promoted to public-read on
+//   2026-09-20 so the Buying hub Cross-Platform Leaders (top 20) can link
+//   each editionGroupKey row to a combined-SKU PDP. Same aggregate quantities
+//   the multiplatform leaderboard already ships, plus the parent-title IGDB
+//   blob. No user data, no calibration internals.
 const PUBLIC_READ_PATHS = new Set([
   "/api/console/leaderboards-multiplatform",
 ]);
@@ -185,6 +191,7 @@ const PUBLIC_READ_PREFIXES = [
   "/api/console/titles/",         // matches /:titleId and /:titleId/timeseries;
                                   // /:titleId/... admin routes (e.g. /refresh)
                                   // are POST and never match GET-only public gate.
+  "/api/console/multiplatform-title/", // matches /:key (editionGroupKey).
 ];
 // Deny-list for the prefix above: paths whose prefix qualifies but which
 // must stay authenticated. Keep this narrow — only entries that would
