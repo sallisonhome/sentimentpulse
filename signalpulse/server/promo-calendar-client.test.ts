@@ -56,15 +56,67 @@ test("active beats from /live-now are returned without requiring an is_active fi
           game_code: "SM2",
           today: "2026-09-07",
           beats: [
-            { campaign_id: 1, game_code: "SM2", game_label: "SM2", platform: "Steam", program: "Sale", start_date: "2026-09-03", end_date: "2026-09-14", max_discount_pct: 0.7, days_until_start: -4, is_active: true },
+            { campaign_id: 1, game_code: "SM2", game_label: "SM2", platform: "Steam", program: "Sale", start_date: "2026-09-03", end_date: "2026-09-14", max_discount_pct: 0.7, days_until_start: -4 },
           ],
         }),
         { status: 200 },
       )) as any,
     () => getActivePromosFor(MAPPED_APP_ID, "2026-09-07"),
   );
-  assert.deepEqual(result, [{ platform: "Steam", end_date: "2026-09-14" }]);
-  assert.equal(getPromoCalendarHealth().lastErrorKind, null, "a successful call must not leave a stale error recorded");
+  assert.deepEqual(result, [{
+    platform: "Steam", end_date: "2026-09-14", start_date: "2026-09-03",
+    program: "Sale", max_discount_pct: 0.7, game_label: "SM2",
+  }]);
+  assert.equal(getPromoCalendarHealth().lastErrorKind, null, "a successful call must not introduce an error");
+});
+
+test("explicitly active beats are retained and explicitly inactive beats are excluded", async () => {
+  __resetPromoCalendarCache();
+  __resetPromoCalendarHealth();
+  const promo = {
+    platform: "Steam", end_date: "2026-09-14", start_date: "2026-09-03",
+    program: "Sale", max_discount_pct: 0.7, game_label: "SM2",
+  };
+  const result = await withMockedFetch(
+    (async () => new Response(JSON.stringify({ beats: [
+      { ...promo, is_active: true },
+      { ...promo, platform: "Sony", is_active: false },
+      { ...promo, end_date: "2026-09-30", is_active: false },
+    ] }), { status: 200 })) as typeof fetch,
+    () => getActivePromosFor(MAPPED_APP_ID, "2026-09-07"),
+  );
+  assert.deepEqual(result, [promo]);
+});
+
+test("overlapping promos preserve the complete winning beat and sort by soonest end date", async () => {
+  __resetPromoCalendarCache();
+  __resetPromoCalendarHealth();
+  const early = {
+    platform: "Steam", end_date: "2026-09-12", start_date: "2026-09-01",
+    program: "Early deep discount", max_discount_pct: 0.9, game_label: "Early label",
+  };
+  const later = {
+    platform: "Steam", end_date: "2026-09-14", start_date: "2026-09-03",
+    program: "Later sale", max_discount_pct: 0.4, game_label: "Later label",
+  };
+  const winner = {
+    ...later, start_date: "2026-09-05", program: "Winning sale",
+    max_discount_pct: 0.7, game_label: "Winning label",
+  };
+  const sony = { ...early, platform: "Sony", end_date: "2026-09-10" };
+  // Both input orders guard against accidentally retaining the first/last
+  // beat instead of comparing end date, then discount, as a complete record.
+  for (const beats of [
+    [early, later, winner, sony],
+    [sony, winner, later, early],
+  ]) {
+    __resetPromoCalendarCache();
+    const result = await withMockedFetch(
+      (async () => new Response(JSON.stringify({ beats }), { status: 200 })) as typeof fetch,
+      () => getActivePromosFor(MAPPED_APP_ID, "2026-09-07"),
+    );
+    assert.deepEqual(result, [sony, winner]);
+  }
 });
 
 test("a 200 response missing the beats array is treated as a loud contract violation, not a silent empty", async () => {
