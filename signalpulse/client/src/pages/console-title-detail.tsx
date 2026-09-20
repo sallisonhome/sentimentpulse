@@ -44,6 +44,7 @@ interface IgdbData {
   summary: string | null;
   releaseDate: string | null;
   coverUrl: string | null;
+  coverIsBanner?: boolean;
   artworkUrl: string | null;
   screenshots: string[];
   genres: string[];
@@ -192,7 +193,21 @@ export default function ConsoleTitleDetail() {
       {/* Header */}
       <div className="flex gap-4 items-start">
         {igdb?.coverUrl && (
-          <img src={igdb.coverUrl} alt="" className="w-32 h-44 object-cover rounded-md shadow-md shrink-0" />
+          // igdb.coverIsBanner: the resolved coverUrl is the storefront's
+          // landscape marketing banner (~460x215), not IGDB's portrait
+          // box-art crop (~2:3) — happens on a low-confidence IGDB match or
+          // when IGDB has no cover_url at all. The default w-32 h-44 portrait
+          // frame crops a banner into an unreadable sliver, so use a
+          // matching landscape frame instead.
+          <img
+            src={igdb.coverUrl}
+            alt=""
+            className={
+              igdb.coverIsBanner
+                ? "w-[220px] h-[103px] object-cover rounded-md shadow-md shrink-0"
+                : "w-32 h-44 object-cover rounded-md shadow-md shrink-0"
+            }
+          />
         )}
         <div className="flex-1 min-w-0">
           <div className="text-xs text-muted-foreground uppercase tracking-wide">{PLATFORM_LABEL[platform]}</div>
