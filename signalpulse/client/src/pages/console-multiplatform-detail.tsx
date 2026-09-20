@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { useState } from "react";
+import { RevenueShare, type RevenueSummary } from "@/components/console-revenue-share";
 
 type Platform = "steam" | "xbox" | "ps5";
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
@@ -79,6 +80,7 @@ interface MultiplatformDetailResponse {
   combinedRevenueUsd: number;
   combinedUnits: number;
   combinedOwners: number | null;
+  revenueSummary?: RevenueSummary;
   window: WindowKey;
   cascade: WindowKey[];
   skus: Array<{ titleId: number; platform: Platform; name: string | null; coverUrl: string | null }>;
@@ -105,7 +107,10 @@ function formatNumberCompact(n: number | null | undefined): string {
 export default function ConsoleMultiplatformDetail() {
   const params = useParams<{ key: string }>();
   const key = decodeURIComponent(params.key ?? "");
-  const [window, setWindow] = useState<WindowKey>("d7");
+  const [window, setWindow] = useState<WindowKey>(() => {
+    const value = new URLSearchParams(globalThis.location.search).get("window");
+    return WINDOWS.some(w => w.id === value) ? value as WindowKey : "d7";
+  });
 
   const { data, isLoading, isError, error } = useQuery<MultiplatformDetailResponse>({
     queryKey: [`/signal/api/console/multiplatform-title/${key}`, { window }],
@@ -221,6 +226,7 @@ export default function ConsoleMultiplatformDetail() {
             </Card>
           </div>
 
+          <RevenueShare summary={data.revenueSummary} pie />
           {/* Per-platform cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             {(["steam", "ps5", "xbox"] as Platform[]).map(p => {

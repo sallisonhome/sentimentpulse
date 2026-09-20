@@ -51,6 +51,7 @@ import type { Express, Request } from "express";
 import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
+import { revenueSummary } from "./console-revenue-share";
 
 type Platform = "steam" | "xbox" | "ps5";
 const PLATFORMS: Platform[] = ["steam", "xbox", "ps5"];
@@ -1686,6 +1687,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         count: trimmed.length,
         candidatesCount: multiRows.length,
         titles: trimmed,
+        revenueSummary: revenueSummary(trimmed, window),
         latestCaptureDate,
         refreshCronUtc: "09:15",
       });
@@ -1951,6 +1953,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const combinedUnits = (out.steam?.unitsMid ?? 0) + (out.ps5?.unitsMid ?? 0) + (out.xbox?.unitsMid ?? 0);
       const ownerParts = [out.steam?.ownersMid, out.ps5?.ownersMid, out.xbox?.ownersMid].filter((n): n is number => n != null);
       const combinedOwners = ownerParts.length > 0 ? ownerParts.reduce((a, b) => a + b, 0) : null;
+      const familyRevenueSummary = revenueSummary([{
+        revenueSteam: out.steam?.revenueUsd ?? 0,
+        revenuePs5: out.ps5?.revenueUsd ?? 0,
+        revenueXbox: out.xbox?.revenueUsd ?? 0,
+      }], window);
 
       // Pull IGDB detail from the Steam SKU when we have one; otherwise
       // fall back to the highest-revenue console SKU that has an IGDB row.
@@ -2001,6 +2008,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         combinedRevenueUsd,
         combinedUnits,
         combinedOwners,
+        revenueSummary: familyRevenueSummary,
         window,
         cascade,
         skus: skuList,

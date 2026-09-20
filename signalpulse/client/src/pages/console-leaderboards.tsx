@@ -27,6 +27,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { ArrowRight, ChevronRight } from "lucide-react";
 import { useState } from "react";
+import { RevenueShare } from "@/components/console-revenue-share";
 
 type Platform = "steam" | "xbox" | "ps5";
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
@@ -187,6 +188,7 @@ interface MultiplatformRow {
   revenueSource: "overlay-ratio" | "overlay-ip-override" | "ps5-exclusive-fallback" | "mixed";
 }
 interface MultiplatformResponse {
+  revenueSummary?: import("@/components/console-revenue-share").RevenueSummary;
   window: WindowKey;
   cascade: WindowKey[];
   count: number;
@@ -401,6 +403,9 @@ function MultiplatformSection({
         ) : null}
       </div>
 
+      {!query.isLoading && !query.isError && query.data?.revenueSummary?.window === windowKey && (
+        <div className="p-4"><RevenueShare summary={query.data.revenueSummary} /></div>
+      )}
       <div className="flex-1">
         {query.isLoading && (
           <div className="p-3 space-y-2">
@@ -426,7 +431,7 @@ function MultiplatformSection({
           <ol className="divide-y divide-border" data-testid="list-multiplatform">
             {rows.map((t, i) => (
               <li key={t.editionGroupKey}>
-                <Link href={`/console-leaderboards/multiplatform/${encodeURIComponent(t.editionGroupKey)}`}>
+                <Link href={`/console-leaderboards/multiplatform/${encodeURIComponent(t.editionGroupKey)}?window=${windowKey}`}>
                   <a
                     className="grid grid-cols-[2rem_2rem_1fr_auto] md:grid-cols-[2rem_2rem_1fr_10rem_auto] items-center gap-2 md:gap-3 px-3 py-2 hover:bg-muted/40 transition-colors cursor-pointer"
                     data-testid={`row-multiplatform-${t.editionGroupKey}`}

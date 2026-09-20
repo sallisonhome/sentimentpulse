@@ -1,0 +1,16 @@
+/** Presentation aggregates only: never changes the estimator or allocations. */
+export const SHARE_PLATFORMS = ["steam", "ps5", "xbox"] as const;
+type BoardRow = { revenueSteam: number; revenuePs5: number; revenueXbox: number };
+export function revenueSummary(rows: BoardRow[], window: string) {
+  const fields = { steam: "revenueSteam", ps5: "revenuePs5", xbox: "revenueXbox" } as const;
+  const totals = SHARE_PLATFORMS.map(platform => ({
+    platform, revenueUsd: rows.reduce((sum, row) => sum + row[fields[platform]], 0),
+  }));
+  const combinedRevenueUsd = totals.reduce((sum, row) => sum + row.revenueUsd, 0);
+  return {
+    window, titleCount: rows.length, combinedRevenueUsd,
+    platforms: totals.map(row => ({
+      ...row, sharePct: combinedRevenueUsd > 0 ? row.revenueUsd / combinedRevenueUsd * 100 : null,
+    })),
+  };
+}

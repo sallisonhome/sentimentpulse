@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 20, 2026
 
+- New: platform revenue-share pies on combined title-family PDPs and revenue-share banners above the combined Top 20. SignalPulse returns `revenueSummary` on both endpoints using final displayed revenue and the selected period. Steam, PS5, and Xbox are the only slices; editions remain grouped into their parent family. Empty totals return unavailable percentages. hmap rebroadcasts the same envelope without recalculating.
+- Fixed: combined leaderboard links carry the selected period into the SignalPulse PDP.
+
 - Improved
 
   ### Multiplatform title PDP is public-read and ships combined owners + nested IGDB
