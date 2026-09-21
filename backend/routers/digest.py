@@ -10,6 +10,7 @@ Digest router (all under /api/digest):
   GET    /api/digest/preview/monthly    — render the monthly digest HTML (no send)
   POST   /api/digest/send/weekly        — send the weekly digest NOW (operator action)
   POST   /api/digest/send/monthly       — send the monthly digest NOW (operator action)
+  POST   /api/digest/prewarm/weekly     — prewarm WindowSummary cache for current anchor Sun
 
   GET    /api/digest/skip                — read current skip-until timestamps
   POST   /api/digest/skip                — defer next weekly/monthly digest
@@ -119,6 +120,13 @@ def preview_monthly(db: Session = Depends(get_db)):
 _SEND_INFLIGHT_LOCK = threading.Lock()
 _SEND_INFLIGHT: set[str] = set()
 
+# Same dedupe pattern for the manual /prewarm/weekly trigger. Independent
+# of _SEND_INFLIGHT because a prewarm can safely run WHILE a send is
+# in progress (they both use SessionLocal and the WindowSummary cache is
+# unique-constrained).
+_PREWARM_INFLIGHT_LOCK = threading.Lock()
+_PREWARM_INFLIGHT: set[str] = set()
+
 
 def _send_digest_background(kind: str) -> None:
     """Run send_weekly_digest / send_monthly_digest on a daemon thread
@@ -188,6 +196,112 @@ def send_monthly_now(db: Session = Depends(get_db)):
     See the docstring on send_weekly_now.
     """
     return _start_send_background("monthly")
+
+
+# ── Manual prewarm trigger ───────────────────────────────────────────────────
+#
+# The scheduled prewarm runs every Monday 00:30 ET (see backend/scheduler.py
+# `_weekly_prewarm_job`). This endpoint exists so an operator can fire the
+# same work on demand — useful after a data-repair push, or the very first
+# time after the Mon–Sun window fix landed and no prewarm cron had run yet
+# against the new anchor date.
+#
+# Same fire-and-forget shape as /send/*: returns in <100ms with
+# {status, kind, window_end} while the background thread runs.
+
+
+def _prewarm_weekly_background() -> None:
+    """Run the weekly prewarm on a daemon thread with its own SessionLocal.
+
+    This is a thin wrapper that reuses the same logic as scheduler._weekly_prewarm_job
+    so on-demand and scheduled paths always cache exactly the same rows.
+    """
+    from database import SessionLocal  # noqa: PLC0415
+    from services import period_summary_service as _pss  # noqa: PLC0415
+    from services.digest_service import (  # noqa: PLC0415
+        PRIORITY_TITLES,
+        _weekly_window_end,
+    )
+    from datetime import date as _date  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    session = SessionLocal()
+    try:
+        today = _date.today()
+        window_end = _weekly_window_end(today)
+        logger.info(
+            "On-demand weekly prewarm starting for anchor Sunday %s (%d titles).",
+            window_end.isoformat(),
+            len(PRIORITY_TITLES),
+        )
+        started_at = _time.monotonic()
+        ok, fail = 0, 0
+        for game_id, name in PRIORITY_TITLES:
+            t0 = _time.monotonic()
+            try:
+                _pss.generate_window_summary(
+                    session, game_id=game_id, days=7, end_date=window_end,
+                )
+                dt = _time.monotonic() - t0
+                logger.info(
+                    "On-demand prewarm ok: game_id=%d %r in %.1fs", game_id, name, dt,
+                )
+                ok += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "On-demand prewarm FAILED for game_id=%d %r", game_id, name,
+                )
+                fail += 1
+        total = _time.monotonic() - started_at
+        logger.info(
+            "On-demand weekly prewarm complete for anchor %s: %d ok / %d failed in %.1fs.",
+            window_end.isoformat(), ok, fail, total,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("On-demand weekly prewarm crashed")
+    finally:
+        session.close()
+        with _PREWARM_INFLIGHT_LOCK:
+            _PREWARM_INFLIGHT.discard("weekly")
+
+
+@router.post("/prewarm/weekly")
+def prewarm_weekly_now(db: Session = Depends(get_db)):
+    """Trigger an on-demand WindowSummary prewarm for the current anchor Sunday.
+
+    Fire-and-forget: returns immediately with {status, kind, window_end}.
+    The background thread generates WindowSummary rows for every priority
+    title so the next /preview/weekly or /send/weekly (or the Monday
+    07:00 ET digest cron) reads from cache instead of doing on-demand LLM
+    work. Total wall-time is typically 3–5 minutes cold; <10s if the
+    scheduled prewarm already ran for this anchor.
+
+    Idempotent: overlapping calls with the same kind return
+    {status: 'already_running'} instead of spawning a second thread.
+    """
+    from services.digest_service import _weekly_window_end  # noqa: PLC0415
+    from datetime import date as _date  # noqa: PLC0415
+
+    with _PREWARM_INFLIGHT_LOCK:
+        if "weekly" in _PREWARM_INFLIGHT:
+            return {
+                "status": "already_running",
+                "kind": "weekly",
+                "window_end": _weekly_window_end(_date.today()).isoformat(),
+            }
+        _PREWARM_INFLIGHT.add("weekly")
+
+    threading.Thread(
+        target=_prewarm_weekly_background,
+        name="digest-prewarm-weekly",
+        daemon=True,
+    ).start()
+    logger.info("digest prewarm/weekly background started")
+    return {
+        "status": "started",
+        "kind": "weekly",
+        "window_end": _weekly_window_end(_date.today()).isoformat(),
+    }
 
 
 # ── One-time skip flags for the scheduled digest jobs ───────────────────────
