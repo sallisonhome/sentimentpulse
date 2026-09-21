@@ -1,0 +1,104 @@
+name: SP Dashboard EXPLAIN (one-shot query-plan diagnostic)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: EXPLAIN QUERY PLAN + timing for the two dashboard aggregation queries
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            DB=/opt/sentimentpulse/backend/sentimentpulse.db
+
+            echo "══════════════════════════════════════════════════════"
+            echo "## 1. Existing indexes on raw_posts and sentiment_records"
+            echo "══════════════════════════════════════════════════════"
+            sqlite3 -header -column "$DB" ".indexes raw_posts"
+            echo ""
+            sqlite3 -header -column "$DB" ".indexes sentiment_records"
+            echo ""
+            sqlite3 -header -column "$DB" "SELECT name, sql FROM sqlite_master WHERE type='index' AND (tbl_name='raw_posts' OR tbl_name='sentiment_records');"
+            echo ""
+
+            echo "══════════════════════════════════════════════════════"
+            echo "## 2. Row counts + Hellraiser posts in wide-period ranges"
+            echo "══════════════════════════════════════════════════════"
+            sqlite3 -header -column "$DB" "SELECT (SELECT COUNT(*) FROM raw_posts) AS all_raw_posts, (SELECT COUNT(*) FROM sentiment_records) AS all_sr, (SELECT COUNT(*) FROM raw_posts WHERE game_id=21) AS hellraiser_raw_posts;"
+            echo ""
+
+            echo "══════════════════════════════════════════════════════"
+            echo "## 3. EXPLAIN QUERY PLAN — the KPI query (period=monthly)"
+            echo "══════════════════════════════════════════════════════"
+            sqlite3 "$DB" "EXPLAIN QUERY PLAN
+              SELECT sr.sentiment, COUNT(sr.id)
+              FROM sentiment_records sr
+              JOIN raw_posts rp ON sr.raw_post_id = rp.id
+              WHERE rp.game_id = 21
+                AND rp.post_date IS NOT NULL
+                AND rp.is_off_topic_drift = 0
+                AND DATE(rp.post_date) >= '2026-08-23'
+              GROUP BY sr.sentiment;"
+            echo ""
+
+            echo "══════════════════════════════════════════════════════"
+            echo "## 4. TIME the KPI query for Hellraiser monthly"
+            echo "══════════════════════════════════════════════════════"
+            sqlite3 "$DB" ".timer on
+            SELECT sr.sentiment, COUNT(sr.id)
+            FROM sentiment_records sr
+            JOIN raw_posts rp ON sr.raw_post_id = rp.id
+            WHERE rp.game_id = 21
+              AND rp.post_date IS NOT NULL
+              AND rp.is_off_topic_drift = 0
+              AND DATE(rp.post_date) >= '2026-08-23'
+            GROUP BY sr.sentiment;
+            .timer off"
+            echo ""
+
+            echo "══════════════════════════════════════════════════════"
+            echo "## 5. TIME the same query WITHOUT DATE() wrap (comparison via string prefix)"
+            echo "══════════════════════════════════════════════════════"
+            sqlite3 "$DB" ".timer on
+            SELECT sr.sentiment, COUNT(sr.id)
+            FROM sentiment_records sr
+            JOIN raw_posts rp ON sr.raw_post_id = rp.id
+            WHERE rp.game_id = 21
+              AND rp.post_date IS NOT NULL
+              AND rp.is_off_topic_drift = 0
+              AND rp.post_date >= '2026-08-23'
+            GROUP BY sr.sentiment;
+            .timer off"
+            echo ""
+
+            echo "══════════════════════════════════════════════════════"
+            echo "## 6. TIME with LIFETIME window (no date filter)"
+            echo "══════════════════════════════════════════════════════"
+            sqlite3 "$DB" ".timer on
+            SELECT sr.sentiment, COUNT(sr.id)
+            FROM sentiment_records sr
+            JOIN raw_posts rp ON sr.raw_post_id = rp.id
+            WHERE rp.game_id = 21
+              AND rp.post_date IS NOT NULL
+              AND rp.is_off_topic_drift = 0
+            GROUP BY sr.sentiment;
+            .timer off"
+            echo ""
+
+            echo "══════════════════════════════════════════════════════"
+            echo "## 7. Schema of the key columns"
+            echo "══════════════════════════════════════════════════════"
+            sqlite3 -header -column "$DB" "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('raw_posts') WHERE name IN ('game_id','post_date','is_off_topic_drift','id');"
+            echo ""
+            sqlite3 -header -column "$DB" "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('sentiment_records') WHERE name IN ('raw_post_id','sentiment','id');"
+          EOF
