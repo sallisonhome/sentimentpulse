@@ -45,7 +45,6 @@ interface PerPlatformKpi {
   titleId: number;
   revenueUsd: number;
   unitsMid: number;
-  ownersMid: number | null;
   windowUsed: string | null;
   msrpUsdCents: number | null;
   source: "anchor" | "overlay" | "raw";
@@ -81,7 +80,6 @@ interface MultiplatformDetailResponse {
   perPlatform: Partial<Record<Platform, PerPlatformKpi>>;
   combinedRevenueUsd: number;
   combinedUnits: number;
-  combinedOwners: number | null;
   revenueSummary?: RevenueSummary;
   window: WindowKey;
   cascade: WindowKey[];
@@ -210,7 +208,7 @@ export default function ConsoleMultiplatformDetail() {
           )}
 
           {/* Combined KPIs — summed across every base SKU in the family */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3" data-testid="combined-kpi-row">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-testid="combined-kpi-row">
             <Card className="p-4 border-violet-500/40">
               <div className="text-[10px] uppercase text-muted-foreground tracking-wide">Combined est. revenue</div>
               <div className="font-mono text-2xl font-semibold tabular-nums mt-1">{formatUsdCompact(data.combinedRevenueUsd)}</div>
@@ -220,11 +218,6 @@ export default function ConsoleMultiplatformDetail() {
               <div className="text-[10px] uppercase text-muted-foreground tracking-wide">Combined units (est.)</div>
               <div className="font-mono text-2xl font-semibold tabular-nums mt-1">{formatNumberCompact(data.combinedUnits)}</div>
               <div className="text-xs text-muted-foreground mt-1">Sum of window unit estimates</div>
-            </Card>
-            <Card className="p-4 border-violet-500/40">
-              <div className="text-[10px] uppercase text-muted-foreground tracking-wide">Combined owners (est.)</div>
-              <div className="font-mono text-2xl font-semibold tabular-nums mt-1">{formatNumberCompact(data.combinedOwners)}</div>
-              <div className="text-xs text-muted-foreground mt-1">Sum of window owner estimates</div>
             </Card>
           </div>
 
@@ -242,7 +235,7 @@ export default function ConsoleMultiplatformDetail() {
                     <div className="font-mono text-xl font-semibold tabular-nums mt-1">{formatUsdCompact(k.revenueUsd)}</div>
                     <div className="text-xs text-muted-foreground mt-1">est. revenue · {k.source}</div>
                     <div className="text-xs text-muted-foreground mt-2">
-                      {formatNumberCompact(k.unitsMid)} units · {formatNumberCompact(k.ownersMid)} owners
+                      {formatNumberCompact(k.unitsMid)} units
                     </div>
                     {k.windowUsed && k.windowUsed !== window ? (
                       <div className="text-[10px] text-muted-foreground mt-1">est. via {k.windowUsed}</div>
