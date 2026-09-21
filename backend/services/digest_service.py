@@ -160,6 +160,30 @@ def _weekly_period_label(end_date: date) -> str:
     return f"{start.strftime('%b %d')} – {end_date.strftime('%b %d, %Y')}"
 
 
+def _weekly_window_end(today: date) -> date:
+    """Return the correct end-of-window date for a Monday-morning weekly
+    digest fired on `today`.
+
+    The digest is scheduled at Monday 07:00 ET and must cover the calendar
+    week that just ended — i.e. the previous Monday through the previous
+    Sunday. Anchoring on Sunday (today - 1 when today is Monday) yields a
+    7-day window of Mon–Sun.
+
+    For robustness across manual runs or scheduler retries fired on a
+    non-Monday, we always roll `today` back to the most recent Sunday and
+    return that. If today IS Sunday we roll back to the prior Sunday too
+    (never include the current day in a weekly-review email).
+
+    Examples:
+      today = 2026-09-21 (Mon) → 2026-09-20 (prev Sun)
+      today = 2026-09-22 (Tue) → 2026-09-20 (prev Sun)
+      today = 2026-09-20 (Sun) → 2026-09-13 (prior Sun)
+    """
+    # weekday(): Mon=0, Sun=6. We want the most-recent-Sunday strictly
+    # before today, i.e. subtract (weekday+1) days.
+    return today - timedelta(days=today.weekday() + 1)
+
+
 def _monthly_period_label(year: int, month: int) -> str:
     return date(year, month, 1).strftime("%B %Y")
 
@@ -177,37 +201,56 @@ def build_weekly_block(
     db: Session, game_id: int, name: str, today: Optional[date] = None
 ) -> TitleBlock:
     """
-    Fetch the latest 7-day WindowSummary for `game_id`, regenerating if it's
-    older than today.  Falls back to an empty placeholder block on failure
-    rather than aborting the whole digest.
+    Fetch (or lazily generate) the 7-day WindowSummary for `game_id`
+    covering the CALENDAR WEEK that just ended (previous Monday–Sunday).
+
+    2026-09-21 (v0032): the digest used to key the WindowSummary on
+    `today`, which meant the Monday-morning run covered Tuesday–Monday
+    (the last 7 days ending on the send day). That included the current
+    day — which has almost no data at 07:00 — and split every real week
+    across two consecutive digests. Fixed by anchoring the window to the
+    most-recent Sunday via `_weekly_window_end(today)` and passing that
+    as `end_date` to generate_window_summary(), which now honors an
+    explicit anchor rather than falling back to MAX(post_date). See
+    lessons.md 2026-09-21.
+
+    Falls back to an empty placeholder block on failure rather than
+    aborting the whole digest.
     """
     today = today or date.today()
-    period_label = _weekly_period_label(today)
+    window_end = _weekly_window_end(today)
+    period_label = _weekly_period_label(window_end)
 
     summary: Optional[WindowSummary] = None
     try:
-        # Try cached first
+        # Try cached first — keyed by (game_id, window_days, ingest_date)
+        # where ingest_date is the anchor Sunday, not `today`.
         summary = (
             db.query(WindowSummary)
-            .filter_by(game_id=game_id, window_days=7, ingest_date=today)
+            .filter_by(game_id=game_id, window_days=7, ingest_date=window_end)
             .first()
         )
         if summary is None:
-            # Lazy regenerate; same call path as POST /api/games/{id}/window-summary
+            # Lazy regenerate anchored to the calendar-week end (Sunday).
             from services import period_summary_service as _pss  # noqa: PLC0415
-            summary = _pss.generate_window_summary(db, game_id=game_id, days=7)
+            summary = _pss.generate_window_summary(
+                db, game_id=game_id, days=7, end_date=window_end,
+            )
     except Exception as exc:
         logger.exception("digest: failed to fetch/generate WindowSummary for game_id=%s: %s",
                          game_id, exc)
 
     if summary is None or summary.total_posts == 0:
+        # v0032: competitor bullets share the same 7-day Mon–Sun window
+        # as the title block. Pass window_end (Sunday), not today, so the
+        # competitor comparison covers the same calendar week.
         empty_bullets = _build_competitor_bullets(
             db,
             parent_game_id=game_id,
             parent_positive=0, parent_negative=0, parent_total=0,
             parent_name=name,
             period="weekly",
-            today=today,
+            today=window_end,
         )
         return TitleBlock(
             game_id=game_id, name=name, total_posts=0,
@@ -237,8 +280,11 @@ def build_weekly_block(
     # commentary. Both numbers now count the same posts: those in the
     # game's dedicated Reddit sub + Steam Forum + Steam Reviews. Broad-
     # keyword Bluesky/general-sub matches don't reach either.
+    # v0032: both totals and competitor bullets must cover the SAME
+    # Mon–Sun calendar window as the WindowSummary above — not "the last
+    # 7 days ending today". Pass window_end (Sunday), not today.
     d_pos, d_neg, d_neu = _load_dedicated_pos_neg_neu_totals(
-        db, game_id, days=7, today=today,
+        db, game_id, days=7, today=window_end,
     )
     d_total = d_pos + d_neg + d_neu
 
@@ -250,7 +296,7 @@ def build_weekly_block(
         parent_total=d_total,
         parent_name=name,
         period="weekly",
-        today=today,
+        today=window_end,
     )
 
     return TitleBlock(
@@ -1789,8 +1835,16 @@ def build_weekly_digest(db: Session, today: Optional[date] = None) -> dict:
     """Return {subject, html, blocks, end_date} for the weekly digest.
 
     Does NOT send.  Used by the preview endpoint and by send_weekly_digest().
+
+    v0032 (2026-09-21): the digest covers the calendar week that just
+    ended — previous Monday through previous Sunday — anchored on
+    `window_end = _weekly_window_end(today)` (most-recent Sunday strictly
+    before today). Subject line, header subtitle, and returned end_date
+    all reflect that Sunday, not today. See build_weekly_block() and
+    lessons.md 2026-09-21.
     """
     today = today or date.today()
+    window_end = _weekly_window_end(today)
     blocks = [build_weekly_block(db, gid, name, today=today)
               for gid, name in PRIORITY_TITLES]
 
@@ -1813,14 +1867,14 @@ def build_weekly_digest(db: Session, today: Optional[date] = None) -> dict:
             f"strategic big ideas follow."
         )
 
-    period_label = _weekly_period_label(today)
+    period_label = _weekly_period_label(window_end)
     subject = f"SentimentPulse — Weekly Digest · {period_label}"
     title = "Weekly Executive Digest"
     subtitle = f"7-day sentiment, topics, and strategic recommendations · {period_label}"
     html_body = render_digest_html(blocks, title, subtitle, portfolio_brief)
     return {
         "subject": subject, "html": html_body, "blocks": blocks,
-        "end_date": today.isoformat(),
+        "end_date": window_end.isoformat(),
     }
 
 

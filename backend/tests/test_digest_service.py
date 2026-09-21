@@ -142,10 +142,16 @@ class TestBuildWeeklyBlock:
         patch `_load_dedicated_pos_neg_neu_totals` to echo the seeded
         WindowSummary values — which is what the block's metrics strip
         expects.
+
+        v0032 (2026-09-21): the digest anchors the WindowSummary on the
+        most-recent Sunday before `today` (previous Mon–Sun calendar
+        week), NOT `today` itself. Test seeds ingest_date on the anchor
+        Sunday (2026-06-21) and calls with the following Monday
+        (2026-06-22) as `today`.
         """
         _seed_game(db, 1, "Test Game", 100)
         _seed_window_summary(
-            db, 1, ingest_date=date(2026, 6, 24),
+            db, 1, ingest_date=date(2026, 6, 21),  # Sunday anchor
             positive=30, negative=5, neutral=15, total=50,
         )
         # If cache exists, generate_window_summary must NOT be called
@@ -156,7 +162,7 @@ class TestBuildWeeklyBlock:
             "services.digest_service._load_dedicated_pos_neg_neu_totals",
             return_value=(30, 5, 15),
         ):
-            block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 24))
+            block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 22))
             assert mock_gen.call_count == 0
         assert block.has_data is True
         assert block.total_posts == 50
@@ -278,16 +284,19 @@ class TestRenderDigest:
         """v0030 (2026-09-01): patch `_load_dedicated_pos_neg_neu_totals`
         to echo the seeded WindowSummary totals so the block reflects the
         seeded values (build_weekly_block otherwise overrides them).
+
+        v0032 (2026-09-21): WindowSummary seeded on Sunday, digest fired
+        on the following Monday.
         """
         from unittest.mock import patch
         _seed_game(db, 1, "Test Game", 100)
-        _seed_window_summary(db, 1, ingest_date=date(2026, 6, 24),
+        _seed_window_summary(db, 1, ingest_date=date(2026, 6, 21),  # Sun
                              positive=22, negative=3, neutral=11, total=36)
         with patch(
             "services.digest_service._load_dedicated_pos_neg_neu_totals",
             return_value=(22, 3, 11),
         ):
-            block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 24))
+            block = ds.build_weekly_block(db, 1, "Test Game", today=date(2026, 6, 22))
         strip = ds._render_metrics_strip(block)
         # Counts present
         assert "36" in strip
@@ -303,18 +312,21 @@ class TestRenderDigest:
         # full real-world payload, even if most are no-data placeholders.
         for gid, name in ds.PRIORITY_TITLES:
             _seed_game(db, gid, name, 1000 + gid)
-        # Only seed data for two
-        _seed_window_summary(db, 134, ingest_date=date(2026, 6, 24),
+        # Only seed data for two.
+        # v0032: ingest_date is the anchor Sunday (2026-06-21) matching
+        # the following Monday's (2026-06-22) build_weekly_digest call.
+        _seed_window_summary(db, 134, ingest_date=date(2026, 6, 21),
                              positive=32, negative=3, neutral=42, total=77)
-        _seed_window_summary(db, 24,  ingest_date=date(2026, 6, 24),
+        _seed_window_summary(db, 24,  ingest_date=date(2026, 6, 21),
                              positive=80, negative=10, neutral=50, total=140)
 
-        built = ds.build_weekly_digest(db, today=date(2026, 6, 24))
+        built = ds.build_weekly_digest(db, today=date(2026, 6, 22))
         html = built["html"]
 
         # Subject + structure
         assert "Weekly Executive Digest" in html
-        assert "Jun 18 – Jun 24, 2026" in html
+        # Window: prev Mon 2026-06-15 – prev Sun 2026-06-21.
+        assert "Jun 15 – Jun 21, 2026" in html
         # Names of all 8 priority titles are present
         for _, name in ds.PRIORITY_TITLES:
             import html as _h
@@ -328,14 +340,15 @@ class TestRenderDigest:
 
     def test_html_escapes_user_text(self, db):
         _seed_game(db, 24, "Warhammer 40,000: Space Marine 2", 1024)
+        # v0032: seed on Sunday, call on following Monday.
         _seed_window_summary(
-            db, 24, ingest_date=date(2026, 6, 24),
+            db, 24, ingest_date=date(2026, 6, 21),
             positive=10, negative=1, neutral=5, total=16,
             exec_summary="Issue with <script>alert('xss')</script> tag.",
             rec_actions="1. Fix <iframe>",
             bold_ideas=["Use a & b together"],
         )
-        built = ds.build_weekly_digest(db, today=date(2026, 6, 24))
+        built = ds.build_weekly_digest(db, today=date(2026, 6, 22))
         html = built["html"]
         # Raw <script> must not appear unescaped
         assert "<script>" not in html
