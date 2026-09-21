@@ -187,10 +187,22 @@ class TopTopicsSummary(BaseModel):
     only when its volume is ≥ 70% of the leader's — that heuristic keeps
     the widget concise while still showing a genuinely close second.
 
-    Ordering: highest volume first."""
+    Ordering: highest volume first.
+
+    v0031b (2026-09-21): `status` distinguishes cache states so the
+    /dashboard/topics endpoint can return instantly even on cold cache:
+    • 'ready'   — all three sentiments hit the synthesizer TTL cache;
+                   arrays are the real data.
+    • 'pending' — at least one sentiment was uncached and background
+                   synthesis was kicked off; arrays are empty. Frontend
+                   should poll; a follow-up request within seconds–minutes
+                   will return status='ready'.
+    The field defaults to 'ready' for schema backwards compatibility.
+    """
     positive: List[TopicSummary]
     negative: List[TopicSummary]
     neutral: List[TopicSummary]
+    status: str = "ready"
 
 
 class VolumePoint(BaseModel):

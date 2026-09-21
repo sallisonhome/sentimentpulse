@@ -37,6 +37,10 @@ export interface TopTopicsSummary {
   positive: TopicSummary[]
   negative: TopicSummary[]
   neutral:  TopicSummary[]
+  // v0031b (2026-09-21): 'pending' means the server kicked off
+  // background LLM synthesis and returned immediately — the hook
+  // will keep polling until this flips to 'ready'.
+  status?:  'ready' | 'pending'
 }
 
 interface TopTopicsPanelProps {
@@ -67,6 +71,12 @@ function periodAnchor(period: PeriodValue): string {
 export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) {
   const { data, isLoading, error } = useDashboardTopics(gameId, period)
 
+  // Show the loading state both when the request is still in-flight AND
+  // when the endpoint has already returned but the server-side LLM
+  // synthesis is still running (status='pending'). The hook polls every
+  // 4s and will flip status to 'ready' when the data lands.
+  const showLoading = isLoading || (data?.status === 'pending')
+
   return (
     <Card>
       <CardHeader>
@@ -88,7 +98,7 @@ export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) 
           <TabsContent value="positive">
             <TopicSummaryList
               items={data?.positive ?? []}
-              isLoading={isLoading}
+              isLoading={showLoading}
               hasError={!!error}
               period={period}
             />
@@ -96,7 +106,7 @@ export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) 
           <TabsContent value="negative">
             <TopicSummaryList
               items={data?.negative ?? []}
-              isLoading={isLoading}
+              isLoading={showLoading}
               hasError={!!error}
               period={period}
             />
@@ -104,7 +114,7 @@ export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) 
           <TabsContent value="neutral">
             <TopicSummaryList
               items={data?.neutral ?? []}
-              isLoading={isLoading}
+              isLoading={showLoading}
               hasError={!!error}
               period={period}
             />

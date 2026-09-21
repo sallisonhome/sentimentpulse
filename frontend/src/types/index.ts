@@ -167,6 +167,12 @@ export interface TopTopicsSummary {
   positive: TopicSummary[]
   negative: TopicSummary[]
   neutral:  TopicSummary[]
+  // v0031b (2026-09-21): the /dashboard/topics endpoint is
+  // non-blocking — 'pending' means server-side LLM synthesis is
+  // still running and the hook should keep polling. 'ready' means
+  // the arrays hold the real data. Field is optional for schema
+  // backwards compatibility with older clients.
+  status?:  'ready' | 'pending'
 }
 
 export interface DashboardData {

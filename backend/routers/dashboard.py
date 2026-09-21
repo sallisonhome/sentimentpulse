@@ -179,6 +179,50 @@ def get_dashboard(
     return response
 
 
+# v0031b (2026-09-21): background-compute state for the topics endpoint.
+# Tracks which (game_id, period) tuples are currently being synthesized
+# so overlapping requests don't spawn duplicate LLM work.
+_TOPICS_INFLIGHT_LOCK = threading.Lock()
+_TOPICS_INFLIGHT: set[tuple[int, str]] = set()
+
+
+def _synthesize_topics_background(game_id: int, game_name: str, period_key: str, period_start):
+    """Run generate_feedback_summary for all three sentiments in a background
+    thread. Uses a short-lived DB session (background threads must not reuse
+    request-scoped sessions). Result is written into the synthesizer's own
+    TTL cache; a later foreground request will find it and return status='ready'.
+    """
+    from database import SessionLocal
+    from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+    key = (game_id, period_key)
+    session = SessionLocal()
+    try:
+        for sentiment in (SentimentEnum.positive, SentimentEnum.negative, SentimentEnum.neutral):
+            try:
+                generate_feedback_summary(
+                    db=session,
+                    game_id=game_id,
+                    game_name=game_name,
+                    sentiment=sentiment,
+                    period_key=period_key,
+                    period_start=period_start,
+                )
+            except Exception:  # noqa: BLE001 — background thread; log and continue
+                logger.exception(
+                    "topics background synth failed game=%d period=%s sentiment=%s",
+                    game_id, period_key, sentiment.value,
+                )
+    finally:
+        session.close()
+        with _TOPICS_INFLIGHT_LOCK:
+            _TOPICS_INFLIGHT.discard(key)
+        logger.info(
+            "topics background synth complete game=%d period=%s",
+            game_id, period_key,
+        )
+
+
 @router.get("/{game_id}/dashboard/topics", response_model=TopTopicsSummary)
 def get_dashboard_topics(
     game_id: int,
@@ -195,10 +239,15 @@ def get_dashboard_topics(
     the fast dashboard first and calls this endpoint separately with its
     own loading state.
 
-    The underlying generate_feedback_summary() function has its own TTL
-    cache keyed on (game_id, period_key, sentiment.value), so warm calls
-    are fast even here — the cost you pay is only on the first cold visit
-    per (game, period, sentiment) tuple.
+    v0031b (2026-09-21): this endpoint is now NON-BLOCKING. Instead of
+    synchronously waiting up to ~120s for LLM synthesis and 504'ing at
+    the nginx proxy timeout, we probe the synthesizer's own TTL cache
+    (see services/dashboard_feedback_synthesizer.py::_CACHE):
+      • all three sentiments cached → return status='ready' with the data
+      • any sentiment uncached → kick off a background thread to compute
+        all three, return status='pending' with empty arrays immediately
+    Frontend polls; a follow-up request seconds/minutes later will find
+    the cache warm and return the real data.
     """
     game = db.query(Game).filter_by(id=game_id).first()
     if not game:
@@ -206,26 +255,64 @@ def get_dashboard_topics(
 
     p_start = _period_start(period)
 
-    from services.dashboard_feedback_synthesizer import generate_feedback_summary
+    from services.dashboard_feedback_synthesizer import (
+        _cache_get as _synth_cache_get,
+        generate_feedback_summary,
+    )
 
-    def _for(sentiment: SentimentEnum) -> list[TopicSummary]:
-        results = generate_feedback_summary(
-            db=db,
-            game_id=game_id,
-            game_name=game.name,
-            sentiment=sentiment,
-            period_key=period.value,
-            period_start=p_start,
-        )
+    def _cached_for(sentiment: SentimentEnum):
+        cached = _synth_cache_get((game_id, period.value, sentiment.value))
+        if cached is None:
+            return None
         return [
-            TopicSummary(label=r.label, detail=r.detail, volume=r.volume)
-            for r in results
+            TopicSummary(label=c["label"], detail=c["detail"], volume=c["volume"])
+            for c in cached
         ]
 
+    positive = _cached_for(SentimentEnum.positive)
+    negative = _cached_for(SentimentEnum.negative)
+    neutral = _cached_for(SentimentEnum.neutral)
+
+    if positive is not None and negative is not None and neutral is not None:
+        # All warm — return the real data.
+        return TopTopicsSummary(
+            positive=positive,
+            negative=negative,
+            neutral=neutral,
+            status="ready",
+        )
+
+    # Cold or partial: kick off background synthesis (if not already running
+    # for this (game, period) tuple) and return pending immediately.
+    key = (game_id, period.value)
+    with _TOPICS_INFLIGHT_LOCK:
+        already_running = key in _TOPICS_INFLIGHT
+        if not already_running:
+            _TOPICS_INFLIGHT.add(key)
+
+    if not already_running:
+        thread = threading.Thread(
+            target=_synthesize_topics_background,
+            args=(game_id, game.name, period.value, p_start),
+            name=f"topics-synth-{game_id}-{period.value}",
+            daemon=True,
+        )
+        thread.start()
+        logger.info(
+            "topics background synth started game=%d period=%s",
+            game_id, period.value,
+        )
+    else:
+        logger.info(
+            "topics background synth already running game=%d period=%s",
+            game_id, period.value,
+        )
+
     return TopTopicsSummary(
-        positive=_for(SentimentEnum.positive),
-        negative=_for(SentimentEnum.negative),
-        neutral=_for(SentimentEnum.neutral),
+        positive=positive or [],
+        negative=negative or [],
+        neutral=neutral or [],
+        status="pending",
     )
 
 
