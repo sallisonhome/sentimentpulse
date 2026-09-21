@@ -57,7 +57,14 @@ pyyaml==6.0.1
 # GUI/display needed on the droplet).
 matplotlib>=3.8.0
 
-# ── Testing ───────────────────────────────────────────────────────────────────
+# ── Dashboard TTL cache (2026-09-20) ────────────────────────────────────────
+# Used by backend/routers/dashboard.py to memoize the heavy per-period
+# SentimentRecord rollup so the dashboard endpoint doesn't recompute ~10k-row
+# aggregations on every request. See the cache-block docstring in that file
+# for TTL/key/invalidation rationale.
+cachetools>=5.3.0
+
+# ── Testing ─────────────────────────────────────────────────────────────────
 pytest==8.3.1
 pytest-asyncio==0.23.7
 requests-mock>=1.12.1
