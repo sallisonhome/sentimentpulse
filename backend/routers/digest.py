@@ -349,9 +349,10 @@ def _send_digest_background(kind: str, banner_html: str | None = None) -> None:
             # Monthly banner support can be added the same way when needed.
             result = digest_service.send_monthly_digest(session)
         logger.info(
-            "digest send/%s background complete: sent=%s reason=%s subject=%r banner=%s",
+            "digest send/%s background complete: sent=%s reason=%s subject=%r "
+            "banner=%s provider_id=%s inline_images=%s",
             kind, result.get("sent"), result.get("reason"), result.get("subject"),
-            bool(banner_html),
+            bool(banner_html), result.get("provider_id"), result.get("inline_images"),
         )
     except Exception:  # noqa: BLE001 — background thread, log + swallow
         logger.exception("digest send/%s background failed", kind)

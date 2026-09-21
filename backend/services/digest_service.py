@@ -38,6 +38,7 @@ deploy + preview before credentials are wired.
 """
 from __future__ import annotations
 
+import base64
 import html
 import json
 import logging
@@ -1938,9 +1939,56 @@ def _active_recipients(db: Session) -> list[str]:
     return [r.email for r in rows]
 
 
+_INLINE_PNG_DATA_URI_RE = re.compile(
+    r"""src=(?P<quote>["'])data:image/png;base64,"""
+    r"""(?P<content>[A-Za-z0-9+/=]+)(?P=quote)""",
+    flags=re.IGNORECASE,
+)
+
+
+def _prepare_email_inline_images(html_body: str) -> tuple[str, list[dict]]:
+    """Convert PNG data URIs into CID attachments for email delivery.
+
+    The browser preview intentionally keeps data URIs so it remains a
+    self-contained document. Gmail and other webmail clients do not reliably
+    render data URIs in received HTML, so only the provider payload is
+    converted to standards-compatible ``cid:`` references.
+
+    Raises ValueError instead of sending a digest with an invalid or partially
+    converted chart.
+    """
+    attachments: list[dict] = []
+
+    def replace(match: re.Match) -> str:
+        content = match.group("content")
+        try:
+            raw = base64.b64decode(content, validate=True)
+        except Exception as exc:
+            raise ValueError("digest chart contains invalid Base64") from exc
+        if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("digest chart data URI is not a PNG")
+
+        number = len(attachments) + 1
+        content_id = f"digest-chart-{number}"
+        attachments.append({
+            "content": content,
+            "filename": f"{content_id}.png",
+            "content_type": "image/png",
+            "content_id": content_id,
+        })
+        quote = match.group("quote")
+        return f"src={quote}cid:{content_id}{quote}"
+
+    converted = _INLINE_PNG_DATA_URI_RE.sub(replace, html_body)
+    if "data:image/png;base64," in converted.lower():
+        raise ValueError("digest contains an unsupported PNG data URI shape")
+    return converted, attachments
+
+
 def _post_to_resend(
     api_key: str, from_addr: str, subject: str,
     to: list[str], html_body: str,
+    attachments: Optional[list[dict]] = None,
 ) -> dict:
     """
     Single POST to the Resend API.  Classifies the outcome so the caller
@@ -1952,12 +2000,15 @@ def _post_to_resend(
       "fatal"     — 4xx auth/validation (retry won't help)
       "network"   — connection/DNS/TLS error (retry once)
     """
-    body = json.dumps({
+    payload = {
         "from": from_addr,
         "to": to,
         "subject": subject,
         "html": html_body,
-    }).encode("utf-8")
+    }
+    if attachments:
+        payload["attachments"] = attachments
+    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         _RESEND_URL,
         data=body,
@@ -1977,7 +2028,16 @@ def _post_to_resend(
         with urllib.request.urlopen(req, timeout=_RESEND_TIMEOUT) as resp:
             status = resp.status
             preview = (resp.read(200) or b"").decode("utf-8", errors="replace")
-            return {"kind": "ok", "status": status, "body": preview}
+            try:
+                provider_id = json.loads(preview).get("id")
+            except (json.JSONDecodeError, AttributeError):
+                provider_id = None
+            return {
+                "kind": "ok",
+                "status": status,
+                "body": preview,
+                "provider_id": provider_id,
+            }
     except urllib.error.HTTPError as e:
         text = (e.read(300) or b"").decode("utf-8", errors="replace")
         if e.code == 429 or 500 <= e.code <= 599:
@@ -2004,10 +2064,27 @@ def _send_via_resend(
         "SentimentPulse Intelligence <onboarding@resend.dev>",
     )
 
-    first = _post_to_resend(api_key, from_addr, subject, recipients, html_body)
+    try:
+        email_html, attachments = _prepare_email_inline_images(html_body)
+    except ValueError as exc:
+        logger.error("digest send aborted: %s", exc)
+        return {
+            "sent": False,
+            "reason": "invalid_inline_image",
+            "error": str(exc),
+        }
+
+    first = _post_to_resend(
+        api_key, from_addr, subject, recipients, email_html, attachments,
+    )
     if first["kind"] == "ok":
-        return {"sent": True, "recipients": len(recipients),
-                "provider": "resend"}
+        return {
+            "sent": True,
+            "recipients": len(recipients),
+            "provider": "resend",
+            "provider_id": first.get("provider_id"),
+            "inline_images": len(attachments),
+        }
     if first["kind"] == "fatal":
         err = f"Resend {first['status']}: {first['body']}"
         logger.error("digest send fatal: %s", err)
@@ -2026,11 +2103,19 @@ def _send_via_resend(
         )
     time.sleep(_RESEND_RETRY_BACKOFF_SECONDS)
 
-    second = _post_to_resend(api_key, from_addr, subject, recipients, html_body)
+    second = _post_to_resend(
+        api_key, from_addr, subject, recipients, email_html, attachments,
+    )
     if second["kind"] == "ok":
         logger.info("digest send: Resend retry succeeded")
-        return {"sent": True, "recipients": len(recipients),
-                "provider": "resend", "retried": True}
+        return {
+            "sent": True,
+            "recipients": len(recipients),
+            "provider": "resend",
+            "provider_id": second.get("provider_id"),
+            "inline_images": len(attachments),
+            "retried": True,
+        }
     if second["kind"] == "fatal":
         err = f"Resend {second['status']} (after retry): {second['body']}"
         return {"sent": False, "reason": "resend_fatal", "error": err}

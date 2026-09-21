@@ -12,6 +12,39 @@ session date so future agents can reconstruct context.
 
 **Self-check.** Unauth GET 200 on the new path; combined revenue on the PDP matches the clicked leaderboard row's `revenueCombined` for the same window.
 
+## 2026-09-21 — Valid PNG data URIs corrupted in Gmail; provider acceptance is not delivery
+
+**What happened.** The corrected weekly digest rendered correctly in the browser
+preview and all four embedded chart PNGs decoded and passed Pillow verification.
+The sent Gmail message nevertheless showed corrupted/broken charts. The email HTML
+put each PNG directly in an `<img src="data:image/png;base64,...">` attribute.
+That is a browser-safe representation, not a reliable email representation:
+Gmail/webmail may strip or refuse data-URI images. Resend had accepted the API
+request, but the app discarded the returned email ID and logged the result as
+`sent=True`, which was incorrectly treated as proof of recipient delivery.
+
+**Root cause.** Preview transport and email transport were conflated. A
+self-contained HTML preview can use data URIs; a delivered email needs MIME/CID
+inline attachments (or stable hosted HTTPS images). The generated image bytes were
+not corrupt. Their packaging was incompatible with the receiving client.
+
+**Hard rules.**
+
+1. Browser-preview success is not email-client QA. Validate the exact provider
+   payload and visually inspect at least the primary receiving client before
+   declaring an email change complete.
+2. Never send `data:image/*;base64,...` in digest email HTML. Keep data URIs in
+   browser previews, but convert each image at send time to a `cid:` reference plus
+   a Resend attachment with `content`, `filename`, `content_type`, and `content_id`.
+3. Conversion is fail-closed. If Base64 is invalid, the PNG signature is missing,
+   or any data URI remains after conversion, abort before calling the provider.
+4. Capture and log the provider email ID. HTTP acceptance means accepted for
+   processing, not delivered to every recipient. Never report acceptance as inbox
+   delivery.
+5. A correction resend is not complete until: subject/window verified, outgoing
+   HTML contains no data URIs, attachment count matches chart count, provider ID is
+   recorded, and the received copy is visually checked.
+
 ## 2026-09-16 (early hours) — Three compounding failures on one PDP incident: false "verified live" claim, two speculative charset "fixes" shipped without evidence, and hypothesis-chaining after each one failed
 
 **What happened.** Steve reported two problems in one PDP screenshot for Marvel's
