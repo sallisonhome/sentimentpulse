@@ -6,8 +6,9 @@ Digest router (all under /api/digest):
   DELETE /api/digest/recipients/{id}    — remove a recipient
   PATCH  /api/digest/recipients/{id}    — toggle is_active
 
-  GET    /api/digest/preview/weekly     — render the weekly digest HTML (no send)
+  GET    /api/digest/preview/weekly     — render the weekly digest HTML (cache-first, non-blocking)
   GET    /api/digest/preview/monthly    — render the monthly digest HTML (no send)
+  GET    /api/digest/preview/weekly/status — JSON status for cache-first preview
   POST   /api/digest/send/weekly        — send the weekly digest NOW (operator action)
   POST   /api/digest/send/monthly       — send the monthly digest NOW (operator action)
   POST   /api/digest/prewarm/weekly     — prewarm WindowSummary cache for current anchor Sun
@@ -94,16 +95,214 @@ def delete_recipient(recipient_id: int, db: Session = Depends(get_db)):
 
 
 # ── Preview + manual send ────────────────────────────────────────────────────
+#
+# v0032 (2026-09-21) — /preview/weekly cache-first, non-blocking
+# ───────────────────────────────────────────────────────────────
+#
+# The weekly-preview build takes 3–5 min on a cold cache (see the
+# comment above the SEND path). Even after PR #100 added the Monday
+# 00:30 ET prewarm cron, an operator peeking at the preview at an
+# unusual moment (mid-week, right after a redeploy that dropped the
+# WindowSummary cache, first Monday after the Mon–Sun window fix) can
+# still hit a cold build. Making /preview stay synchronous with a
+# route-specific nginx timeout was tried (PR #99, closed) and rejected
+# as a hack — the right fix is to remove the slow build from the
+# request path entirely.
+#
+# Contract:
+#   GET /api/digest/preview/weekly
+#     — cache hit → HTMLResponse 200 (the full digest, <100ms)
+#     — cache miss + build not running → spawn background build, return
+#       a tiny HTML placeholder with meta-refresh=15s. The browser will
+#       reload and pick up the HTML from cache once the build finishes.
+#     — cache miss + build already running → same placeholder.
+#   GET /api/digest/preview/weekly/status
+#     — JSON: {status: 'ready' | 'pending' | 'error', window_end,
+#       built_at?, error?}. For programmatic polling (health checks,
+#       CI QA scripts) instead of the meta-refresh page.
+#
+# The cache is in-memory (a dict keyed by (kind, window_end)) with a
+# soft ceiling of 4 entries — enough for the current + last few
+# anchors, doesn't grow unbounded. Restarting the service clears the
+# cache, which is fine: the prewarm cron repopulates on the next Monday
+# 00:30 ET, or an operator can hit /prewarm/weekly on-demand.
+
+_PREVIEW_CACHE_LOCK = threading.Lock()
+_PREVIEW_CACHE: dict[tuple[str, str], dict] = {}
+# Structure: _PREVIEW_CACHE[("weekly", "2026-09-20")] = {
+#   "html": "<html>...</html>",
+#   "subject": "SentimentPulse Weekly Executive Digest — Sep 14 – Sep 20, 2026",
+#   "built_at": "2026-09-21T14:30:00+00:00",
+# }
+_PREVIEW_BUILD_INFLIGHT: set[tuple[str, str]] = set()
+# Rolling error state for /status — cleared on the next successful build.
+_PREVIEW_LAST_ERROR: dict[tuple[str, str], str] = {}
+_PREVIEW_CACHE_MAX_ENTRIES = 4
+
+
+def _preview_placeholder_html(kind: str, window_end: str) -> str:
+    """Small placeholder page with meta-refresh so browsers reload once
+    the background build finishes. Deliberately minimal — do NOT wire in
+    real design tokens here; the whole point is that this page never
+    ships as the actual preview.
+    """
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Building {kind} digest preview…</title>
+  <meta http-equiv="refresh" content="15">
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            max-width: 40rem; margin: 4rem auto; padding: 0 1rem;
+            color: #333; line-height: 1.5; }}
+    code {{ background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px; }}
+  </style>
+</head>
+<body>
+  <h1>Building the {kind} digest…</h1>
+  <p>The preview isn't cached yet for anchor Sunday <code>{window_end}</code>. The build has been started in the background and typically takes 3–5 minutes on a cold cache.</p>
+  <p>This page auto-reloads every 15 seconds; you can also poll <code>/api/digest/preview/{kind}/status</code> for a JSON status.</p>
+</body>
+</html>"""
+
+
+def _cache_evict_if_needed():
+    """Keep at most _PREVIEW_CACHE_MAX_ENTRIES. Oldest built_at goes first.
+    Called with _PREVIEW_CACHE_LOCK held."""
+    if len(_PREVIEW_CACHE) <= _PREVIEW_CACHE_MAX_ENTRIES:
+        return
+    # Sort keys by built_at ascending, evict the oldest.
+    keys_by_age = sorted(
+        _PREVIEW_CACHE.keys(),
+        key=lambda k: _PREVIEW_CACHE[k].get("built_at", ""),
+    )
+    for k in keys_by_age[: len(_PREVIEW_CACHE) - _PREVIEW_CACHE_MAX_ENTRIES]:
+        logger.info("digest preview cache: evicting %s", k)
+        _PREVIEW_CACHE.pop(k, None)
+
+
+def _build_weekly_preview_background(window_end_iso: str) -> None:
+    """Build the weekly digest HTML and stash it in _PREVIEW_CACHE. Uses
+    its own SessionLocal (background thread must not reuse a request
+    session)."""
+    from database import SessionLocal  # noqa: PLC0415
+    from datetime import datetime as _dt, timezone as _tz  # noqa: PLC0415
+
+    key = ("weekly", window_end_iso)
+    session = SessionLocal()
+    try:
+        logger.info("preview/weekly background build starting for anchor %s", window_end_iso)
+        built = digest_service.build_weekly_digest(session)
+        entry = {
+            "html": built["html"],
+            "subject": built.get("subject", ""),
+            "built_at": _dt.now(tz=_tz.utc).isoformat(),
+        }
+        with _PREVIEW_CACHE_LOCK:
+            _PREVIEW_CACHE[key] = entry
+            _PREVIEW_LAST_ERROR.pop(key, None)
+            _cache_evict_if_needed()
+        logger.info(
+            "preview/weekly background build complete for anchor %s: subject=%r bytes=%d",
+            window_end_iso, entry["subject"], len(entry["html"]),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("preview/weekly background build FAILED for anchor %s", window_end_iso)
+        with _PREVIEW_CACHE_LOCK:
+            _PREVIEW_LAST_ERROR[key] = f"{type(exc).__name__}: {exc}"
+    finally:
+        session.close()
+        with _PREVIEW_CACHE_LOCK:
+            _PREVIEW_BUILD_INFLIGHT.discard(key)
+
 
 @router.get("/preview/weekly", response_class=HTMLResponse)
 def preview_weekly(db: Session = Depends(get_db)):
-    """Render the weekly digest HTML directly in the browser — no send.
+    """Render the weekly digest HTML — cache-first, non-blocking.
 
-    Useful before the first scheduled run to QA layout, ratio formatting,
-    and per-title content against live data.
+    v0032 (2026-09-21): rewritten from synchronous build to cache-first
+    with background build fallback. See the block comment above.
     """
-    built = digest_service.build_weekly_digest(db)
-    return HTMLResponse(content=built["html"])
+    from datetime import date as _date  # noqa: PLC0415
+
+    window_end = digest_service._weekly_window_end(_date.today())
+    window_end_iso = window_end.isoformat()
+    key = ("weekly", window_end_iso)
+
+    # Cache hit — return the built HTML immediately.
+    with _PREVIEW_CACHE_LOCK:
+        cached = _PREVIEW_CACHE.get(key)
+    if cached is not None:
+        return HTMLResponse(content=cached["html"])
+
+    # Cache miss. Kick off a background build if one isn't already running,
+    # then return the placeholder so the browser can retry.
+    with _PREVIEW_CACHE_LOCK:
+        if key not in _PREVIEW_BUILD_INFLIGHT:
+            _PREVIEW_BUILD_INFLIGHT.add(key)
+            spawn = True
+        else:
+            spawn = False
+
+    if spawn:
+        threading.Thread(
+            target=_build_weekly_preview_background,
+            args=(window_end_iso,),
+            name=f"preview-weekly-{window_end_iso}",
+            daemon=True,
+        ).start()
+        logger.info("preview/weekly background build spawned for anchor %s", window_end_iso)
+
+    # 202 Accepted signals to programmatic clients that the resource is
+    # being prepared; browsers still render the meta-refresh HTML.
+    return HTMLResponse(
+        content=_preview_placeholder_html("weekly", window_end_iso),
+        status_code=202,
+    )
+
+
+@router.get("/preview/weekly/status")
+def preview_weekly_status(db: Session = Depends(get_db)):
+    """JSON status for the cache-first weekly preview.
+
+    Useful for programmatic polling (CI QA scripts, monitoring probes)
+    that don't want to parse the meta-refresh HTML. Statuses:
+
+      - 'ready'   — cache hit, HTML available at /preview/weekly.
+                    Includes 'built_at' ISO timestamp and 'subject'.
+      - 'pending' — build in progress; retry in a few seconds.
+      - 'error'   — last build for this anchor raised; details in 'error'.
+                    Clears on next successful build.
+      - 'idle'    — no build has run for this anchor and none is queued.
+                    Hit GET /preview/weekly (or /prewarm/weekly) to
+                    trigger one.
+    """
+    from datetime import date as _date  # noqa: PLC0415
+
+    window_end = digest_service._weekly_window_end(_date.today())
+    window_end_iso = window_end.isoformat()
+    key = ("weekly", window_end_iso)
+
+    with _PREVIEW_CACHE_LOCK:
+        if key in _PREVIEW_CACHE:
+            entry = _PREVIEW_CACHE[key]
+            return {
+                "status": "ready",
+                "window_end": window_end_iso,
+                "built_at": entry.get("built_at"),
+                "subject": entry.get("subject"),
+            }
+        if key in _PREVIEW_BUILD_INFLIGHT:
+            return {"status": "pending", "window_end": window_end_iso}
+        err = _PREVIEW_LAST_ERROR.get(key)
+        if err is not None:
+            return {
+                "status": "error",
+                "window_end": window_end_iso,
+                "error": err,
+            }
+        return {"status": "idle", "window_end": window_end_iso}
 
 
 @router.get("/preview/monthly", response_class=HTMLResponse)
