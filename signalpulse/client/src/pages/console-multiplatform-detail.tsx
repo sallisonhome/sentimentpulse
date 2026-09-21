@@ -43,11 +43,12 @@ const PLATFORM_META: Record<Platform, { label: string; accent: string }> = {
 
 interface PerPlatformKpi {
   titleId: number;
-  revenueUsd: number;
-  unitsMid: number;
+  revenueUsd: number | null;
+  unitsMid: number | null;
   windowUsed: string | null;
   msrpUsdCents: number | null;
   source: "anchor" | "overlay" | "raw";
+  dataSource?: string;
 }
 
 interface IgdbBlob {
@@ -79,7 +80,7 @@ interface MultiplatformDetailResponse {
   platforms: Platform[];
   perPlatform: Partial<Record<Platform, PerPlatformKpi>>;
   combinedRevenueUsd: number;
-  combinedUnits: number;
+  combinedUnits: number | null;
   revenueSummary?: RevenueSummary;
   window: WindowKey;
   cascade: WindowKey[];
@@ -233,7 +234,7 @@ export default function ConsoleMultiplatformDetail() {
                   <Card className="p-4 h-full hover:bg-muted/40 transition-colors cursor-pointer">
                     <div className="text-[10px] uppercase tracking-wide" style={{ color: PLATFORM_META[p].accent }}>{PLATFORM_META[p].label}</div>
                     <div className="font-mono text-xl font-semibold tabular-nums mt-1">{formatUsdCompact(k.revenueUsd)}</div>
-                    <div className="text-xs text-muted-foreground mt-1">est. revenue · {k.source}</div>
+                    <div className="text-xs text-muted-foreground mt-1">est. revenue · {k.dataSource === "derived_from_steam_daily_mix" ? "daily adjusted" : k.source}</div>
                     <div className="text-xs text-muted-foreground mt-2">
                       {formatNumberCompact(k.unitsMid)} units
                     </div>
