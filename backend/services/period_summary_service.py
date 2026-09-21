@@ -230,37 +230,52 @@ def generate_window_summary(
     db: Session,
     game_id: int,
     days: int = 7,
+    end_date: Optional[date] = None,
 ) -> WindowSummary:
     """
     Return (cache-hit) or generate a WindowSummary for (game_id, days).
 
-    Finds the latest ingest_date by querying MAX(COALESCE(post_date, collected_at))
-    from raw_posts for this game. Window covers [ingest_date - days + 1, ingest_date].
+    If `end_date` is provided, the window is explicitly anchored to that
+    date and covers [end_date - days + 1, end_date]. This is what the
+    Monday-morning weekly digest passes so its 7-day window always
+    covers Monday–Sunday of the just-completed calendar week rather
+    than "the last 7 days from whenever the latest post landed" (which
+    made the Monday digest cover Tue–Mon and include the current day
+    with almost no data). See build_weekly_block() and lessons.md
+    2026-09-21.
 
-    Cache: if a WindowSummary already exists for (game_id, days, ingest_date), return it.
+    If `end_date` is None (default — dashboard "lifetime", ad-hoc calls,
+    tests), we fall back to the legacy behaviour and find the latest
+    ingest_date via MAX(COALESCE(post_date, collected_at)) from
+    raw_posts for this game.
+
+    Cache key: (game_id, days, ingest_date).
     """
     game: Optional[Game] = db.query(Game).filter_by(id=game_id).first()
     if not game:
         raise ValueError(f"Game {game_id} not found.")
 
-    effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
-
-    # Find the latest date with posts for this game
-    max_dt = (
-        db.query(func.max(effective_date))
-        .filter(RawPost.game_id == game_id)
-        .scalar()
-    )
-
-    if max_dt is None:
-        # No posts at all — use today as anchor
-        ingest_date = date.today()
-    elif isinstance(max_dt, datetime):
-        ingest_date = max_dt.date()
-    elif isinstance(max_dt, date):
-        ingest_date = max_dt
+    if end_date is not None:
+        ingest_date = end_date
     else:
-        ingest_date = date.today()
+        effective_date = func.coalesce(RawPost.post_date, RawPost.collected_at)
+
+        # Find the latest date with posts for this game
+        max_dt = (
+            db.query(func.max(effective_date))
+            .filter(RawPost.game_id == game_id)
+            .scalar()
+        )
+
+        if max_dt is None:
+            # No posts at all — use today as anchor
+            ingest_date = date.today()
+        elif isinstance(max_dt, datetime):
+            ingest_date = max_dt.date()
+        elif isinstance(max_dt, date):
+            ingest_date = max_dt
+        else:
+            ingest_date = date.today()
 
     # Cache lookup
     cached: Optional[WindowSummary] = (
