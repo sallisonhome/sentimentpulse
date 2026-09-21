@@ -327,23 +327,31 @@ _PREWARM_INFLIGHT_LOCK = threading.Lock()
 _PREWARM_INFLIGHT: set[str] = set()
 
 
-def _send_digest_background(kind: str) -> None:
+def _send_digest_background(kind: str, banner_html: str | None = None) -> None:
     """Run send_weekly_digest / send_monthly_digest on a daemon thread
     with its own DB session (background threads must not reuse the
     request-scoped session). Logs the outcome so operators can trace it
     in journalctl -u sentimentpulse.
+
+    `banner_html` is the optional one-shot correction banner — forwarded
+    to send_weekly_digest so it lands right after <body> in the sent
+    HTML. Never persisted; only affects THIS one send.
     """
     from database import SessionLocal  # noqa: PLC0415
 
     session = SessionLocal()
     try:
         if kind == "weekly":
-            result = digest_service.send_weekly_digest(session)
+            result = digest_service.send_weekly_digest(
+                session, banner_html=banner_html,
+            )
         else:
+            # Monthly banner support can be added the same way when needed.
             result = digest_service.send_monthly_digest(session)
         logger.info(
-            "digest send/%s background complete: sent=%s reason=%s subject=%r",
+            "digest send/%s background complete: sent=%s reason=%s subject=%r banner=%s",
             kind, result.get("sent"), result.get("reason"), result.get("subject"),
+            bool(banner_html),
         )
     except Exception:  # noqa: BLE001 — background thread, log + swallow
         logger.exception("digest send/%s background failed", kind)
@@ -353,7 +361,7 @@ def _send_digest_background(kind: str) -> None:
             _SEND_INFLIGHT.discard(kind)
 
 
-def _start_send_background(kind: str) -> dict:
+def _start_send_background(kind: str, banner_html: str | None = None) -> dict:
     """Idempotent fire-and-forget: spawn the background sender if not
     already running for this digest kind. Returns immediately.
     """
@@ -364,17 +372,36 @@ def _start_send_background(kind: str) -> dict:
 
     thread = threading.Thread(
         target=_send_digest_background,
-        args=(kind,),
+        args=(kind, banner_html),
         name=f"digest-send-{kind}",
         daemon=True,
     )
     thread.start()
-    logger.info("digest send/%s background started", kind)
-    return {"status": "started", "kind": kind}
+    logger.info("digest send/%s background started (banner=%s)", kind, bool(banner_html))
+    return {
+        "status": "started",
+        "kind": kind,
+        "banner_injected": bool(banner_html),
+    }
+
+
+class _WeeklySendBody(BaseModel):
+    """Body for POST /api/digest/send/weekly.
+
+    `banner_html` is optional; when provided it's injected right after
+    <body> in the sent HTML. Used for operator resends that need to
+    explain a correction (e.g. the Sep 14–20 v0032 resend that had to
+    note the date-window fix vs the buggy Tue–Mon window). Never
+    persisted; only affects THIS one send.
+    """
+    banner_html: Optional[str] = None
 
 
 @router.post("/send/weekly")
-def send_weekly_now(db: Session = Depends(get_db)):
+def send_weekly_now(
+    body: Optional[_WeeklySendBody] = None,
+    db: Session = Depends(get_db),
+):
     """Trigger an immediate weekly digest send to all active recipients.
 
     v0032 (2026-09-21): NON-BLOCKING. The build step is slow on cold
@@ -383,8 +410,12 @@ def send_weekly_now(db: Session = Depends(get_db)):
     proxy_read_timeout. This now returns {status: 'started' | 'already_running'}
     in <100ms and runs the actual build + Resend send on a background
     thread. Follow-up in journalctl -u sentimentpulse for the outcome.
+
+    Optional JSON body: {"banner_html": "<div>…</div>"} injects a
+    one-shot correction banner right after <body> in the sent HTML.
     """
-    return _start_send_background("weekly")
+    banner_html = body.banner_html if body else None
+    return _start_send_background("weekly", banner_html=banner_html)
 
 
 @router.post("/send/monthly")

@@ -186,16 +186,82 @@ class TestManualSend:
     result on a fixture with zero recipients; that outcome now shows up
     only in the journalctl log, not the HTTP response.
     """
-    def test_send_weekly_returns_started(self, client, publisher):
+    def _drain_inflight(self):
+        from routers import digest as _d
+        with _d._SEND_INFLIGHT_LOCK:
+            _d._SEND_INFLIGHT.clear()
+
+    def test_send_weekly_returns_started(self, client, publisher, monkeypatch):
+        monkeypatch.setattr("routers.digest._send_digest_background", lambda *args: None)
+        self._drain_inflight()
         r = client.post("/api/digest/send/weekly")
         assert r.status_code == 200
         body = r.json()
         assert body["status"] in ("started", "already_running")
         assert body["kind"] == "weekly"
+        # Default: no banner requested.
+        assert body.get("banner_injected") is False
 
-    def test_send_monthly_returns_started(self, client, publisher):
+    def test_send_monthly_returns_started(self, client, publisher, monkeypatch):
+        monkeypatch.setattr("routers.digest._send_digest_background", lambda *args: None)
+        self._drain_inflight()
         r = client.post("/api/digest/send/monthly")
         assert r.status_code == 200
         body = r.json()
         assert body["status"] in ("started", "already_running")
         assert body["kind"] == "monthly"
+
+    def test_send_weekly_with_banner_flag(self, client, publisher, monkeypatch):
+        """POST /send/weekly with {banner_html: "..."} echoes
+        banner_injected=True and forwards the banner to the background
+        sender. We verify the HTTP contract here; the actual injection
+        into the sent HTML is exercised by test_inject_banner_* below.
+        """
+        monkeypatch.setattr("routers.digest._send_digest_background", lambda *args: None)
+        self._drain_inflight()
+        r = client.post(
+            "/api/digest/send/weekly",
+            json={"banner_html": "<div>correction notice</div>"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["status"] in ("started", "already_running")
+        assert body["kind"] == "weekly"
+        assert body["banner_injected"] is True
+
+
+class TestInjectBanner:
+    """Direct tests of digest_service._inject_banner — pure string surgery,
+    no DB or LLM dependencies."""
+
+    def test_injects_after_body_tag(self):
+        from services.digest_service import _inject_banner
+        html = "<html><head></head><body><h1>digest</h1></body></html>"
+        out = _inject_banner(html, "<div>BANNER</div>")
+        assert out == "<html><head></head><body><div>BANNER</div><h1>digest</h1></body></html>"
+
+    def test_no_body_tag_prepends(self):
+        from services.digest_service import _inject_banner
+        out = _inject_banner("<h1>digest</h1>", "<div>B</div>")
+        assert out.startswith("<div>B</div>")
+
+    def test_styled_body_preserves_valid_document(self):
+        from services.digest_service import _inject_banner
+        html = '<!DOCTYPE html><html><body style="margin:0"><h1>digest</h1></body></html>'
+        out = _inject_banner(html, "<div>Correction</div>")
+        assert out.startswith("<!DOCTYPE html>")
+        assert '<body style="margin:0"><div>Correction</div><h1>' in out
+
+    def test_uppercase_body(self):
+        from services.digest_service import _inject_banner
+        assert _inject_banner("<BODY class='email'>x</BODY>", "B") == "<BODY class='email'>Bx</BODY>"
+
+    def test_empty_banner_is_noop(self):
+        from services.digest_service import _inject_banner
+        html = "<html><body>x</body></html>"
+        assert _inject_banner(html, "") == html
+
+    def test_none_banner_is_noop(self):
+        from services.digest_service import _inject_banner
+        html = "<html><body>x</body></html>"
+        assert _inject_banner(html, None) == html

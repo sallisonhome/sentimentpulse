@@ -13,6 +13,32 @@ from services import digest_service as ds
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
+def test_weekly_correction_sent_copy_only(monkeypatch):
+    """Assert the exact content passed to the provider, with no external send."""
+    from unittest.mock import Mock
+    built = {
+        "subject": "SentimentPulse — Weekly Digest · Sep 14 – Sep 20, 2026",
+        "html": '<!DOCTYPE html><html><body style="margin:0">digest</body></html>',
+    }
+    original = built["html"]
+    recipients = ["test@example.invalid"]
+    monkeypatch.setattr(ds, "build_weekly_digest", lambda *args, **kwargs: built)
+    monkeypatch.setattr(ds, "_active_recipients", lambda db: recipients)
+    sender = Mock(side_effect=lambda *args: {"sent": True, "recipients": 1})
+    monkeypatch.setattr(ds, "_send_via_resend", sender)
+    banner = "<div>Correction: previous Monday through Sunday.</div>"
+
+    result = ds.send_weekly_digest(object(), banner_html=banner)
+    sent_subject, sent_to, sent_html = sender.call_args.args
+    assert sent_subject == built["subject"]
+    assert sent_to == recipients
+    assert '<body style="margin:0">' + banner + "digest" in sent_html
+    assert built["html"] == original
+    assert result["banner_injected"] is True
+
+    ds.send_weekly_digest(object())
+    assert sender.call_args.args[2] == original
+
 @pytest.fixture
 def db():
     eng = create_engine("sqlite:///:memory:")

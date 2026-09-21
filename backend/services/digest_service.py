@@ -2041,16 +2041,49 @@ def _send_via_resend(
             "error": f"network error (after retry): {second.get('message')}"}
 
 
-def send_weekly_digest(db: Session, today: Optional[date] = None) -> dict:
-    """Build + send the weekly digest via Resend.  Wired by APScheduler."""
+def _inject_banner(html: str, banner_html: Optional[str]) -> str:
+    """Inject a one-shot banner into the digest HTML immediately after <body>.
+    Used by operator resends that need to explain a correction (date-window
+    fix, corrected numbers, etc). Preserves the built HTML otherwise — the
+    cached preview is not mutated, only the sent copy carries the banner.
+
+    Falls back to prepending when no <body> tag is present. Safe on any
+    HTML shape the current digest renderer emits.
+    """
+    if not banner_html:
+        return html
+    body_tag = re.search(r"<body\b[^>]*>", html, flags=re.IGNORECASE)
+    if body_tag is None:
+        # No <body> — prepend, better than losing the banner.
+        return banner_html + html
+    insert_at = body_tag.end()
+    return html[:insert_at] + banner_html + html[insert_at:]
+
+
+def send_weekly_digest(
+    db: Session,
+    today: Optional[date] = None,
+    banner_html: Optional[str] = None,
+) -> dict:
+    """Build + send the weekly digest via Resend.  Wired by APScheduler.
+
+    v0032 (2026-09-21): `banner_html` (optional) is injected right after
+    <body> in the sent HTML. Used for operator resends that need to
+    explain a correction (e.g. the Sep 14–20 v0032 resend that noted
+    the date-window fix vs the buggy Tue–Mon window). NEVER passed by
+    the scheduled Monday 07:00 ET run.
+    """
     built = build_weekly_digest(db, today=today)
     recipients = _active_recipients(db)
     if not recipients:
         logger.info("weekly digest built but no active recipients — skipping send")
         return {"sent": False, "reason": "no_recipients",
                 "subject": built["subject"], "html_length": len(built["html"])}
-    result = _send_via_resend(built["subject"], recipients, built["html"])
+    html_to_send = _inject_banner(built["html"], banner_html) if banner_html else built["html"]
+    result = _send_via_resend(built["subject"], recipients, html_to_send)
     result["subject"] = built["subject"]
+    if banner_html:
+        result["banner_injected"] = True
     return result
 
 
