@@ -1,0 +1,173 @@
+name: SP Per-Query Timing (one-shot dashboard diagnostic)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run per-query timing script against prod DB
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'SSHEOF'
+            set -e
+            cd /opt/sentimentpulse/backend
+            # Run inside the same venv the API uses so all model imports resolve.
+            source .venv/bin/activate 2>/dev/null || true
+
+            python3 << 'PYEOF'
+            """Time each dashboard aggregation query individually for Hellraiser (id=21)
+            on the widest period (lifetime) so we know exactly which query is slow.
+            Read-only: opens the same sqlite file the API uses in read mode."""
+            import time
+            import sys
+            sys.path.insert(0, '/opt/sentimentpulse/backend')
+
+            from sqlalchemy import create_engine, func
+            from sqlalchemy.orm import Session
+            from models import Game, RawPost, SentimentRecord, DailySummary, SentimentEnum
+            from datetime import date, timedelta
+
+            engine = create_engine("sqlite:///sentimentpulse.db")
+            db = Session(engine)
+
+            GAME_ID = 21  # Hellraiser: Revival
+
+            _NOT_DRIFT = RawPost.is_off_topic_drift.is_(False)
+
+            def t(name, fn):
+                """Time a callable, print '  NAME: X.XXs (N rows)'."""
+                start = time.monotonic()
+                result = fn()
+                elapsed = time.monotonic() - start
+                # Count rows if it's a list; otherwise show scalar
+                if isinstance(result, list):
+                    rows = f"{len(result)} rows"
+                elif result is None:
+                    rows = "None"
+                else:
+                    rows = str(result)
+                print(f"  {name}: {elapsed:.2f}s ({rows})")
+                return elapsed
+
+            print("═══════════════════════════════════════════════════════════")
+            print(f"  Per-query timing on Hellraiser (game_id={GAME_ID}), lifetime")
+            print("═══════════════════════════════════════════════════════════")
+            print()
+
+            # 1. Game lookup (trivial)
+            t("1. Game lookup", lambda: db.query(Game).filter_by(id=GAME_ID).first())
+
+            # 2. KPI query (should now use composite index)
+            t("2. KPI (sentiment counts)", lambda: (
+                db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
+                .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+                .filter(RawPost.game_id == GAME_ID)
+                .filter(RawPost.post_date.isnot(None))
+                .filter(_NOT_DRIFT)
+                .group_by(SentimentRecord.sentiment).all()
+            ))
+
+            # 3. Trend query (group by day)
+            trend_day_expr = func.date(RawPost.post_date).label("day")
+            t("3. Trend (per-day sentiment)", lambda: (
+                db.query(trend_day_expr, SentimentRecord.sentiment, func.count(SentimentRecord.id))
+                .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+                .filter(RawPost.game_id == GAME_ID)
+                .filter(RawPost.post_date.isnot(None))
+                .filter(_NOT_DRIFT)
+                .group_by(trend_day_expr, SentimentRecord.sentiment)
+                .order_by(trend_day_expr).all()
+            ))
+
+            # 4. DailySummary top topics
+            t("4. DailySummary rows", lambda: (
+                db.query(DailySummary)
+                .filter(DailySummary.game_id == GAME_ID)
+                .filter(DailySummary.summary_date <= date.today()).all()
+            ))
+
+            # 5. Top-topics cold fallback (SentimentRecord.topics)
+            t("5. SentimentRecord.topics", lambda: (
+                db.query(SentimentRecord.topics)
+                .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+                .filter(RawPost.game_id == GAME_ID)
+                .filter(RawPost.post_date.isnot(None))
+                .filter(_NOT_DRIFT).all()
+            ))
+
+            # 6. Volume by source (this is line ~528 & ~599)
+            day_expr = func.date(RawPost.post_date).label("day")
+            t("6. Volume by source (day+source)", lambda: (
+                db.query(day_expr, RawPost.source, func.count(RawPost.id).label("cnt"))
+                .filter(RawPost.game_id == GAME_ID)
+                .filter(RawPost.post_date.isnot(None))
+                .group_by(day_expr, RawPost.source).all()
+            ))
+
+            # 7. Volume total (line ~528)
+            t("7. Volume total by day", lambda: (
+                db.query(day_expr, func.count(RawPost.id).label("cnt"))
+                .filter(RawPost.game_id == GAME_ID)
+                .filter(RawPost.post_date.isnot(None))
+                .group_by(day_expr).all()
+            ))
+
+            # 8. Sentiment velocity — recent 7d vs prior 7d
+            today = date.today()
+            recent_start = today - timedelta(days=7)
+            prior_start = today - timedelta(days=14)
+            t("8. Velocity recent 7d", lambda: (
+                db.query(SentimentRecord.sentiment, func.count(SentimentRecord.id))
+                .join(RawPost, SentimentRecord.raw_post_id == RawPost.id)
+                .filter(RawPost.game_id == GAME_ID)
+                .filter(RawPost.post_date.isnot(None))
+                .filter(_NOT_DRIFT)
+                .filter(func.date(RawPost.post_date) >= str(recent_start))
+                .group_by(SentimentRecord.sentiment).all()
+            ))
+
+            print()
+            print("═══════════════════════════════════════════════════════════")
+            print("  Now run EXPLAIN QUERY PLAN on the two most likely culprits")
+            print("═══════════════════════════════════════════════════════════")
+            print()
+
+            from sqlalchemy import text
+            with engine.connect() as conn:
+                print("EXPLAIN — query 3 (trend, group by day):")
+                for row in conn.execute(text(
+                    "EXPLAIN QUERY PLAN "
+                    "SELECT DATE(rp.post_date), sr.sentiment, COUNT(sr.id) "
+                    "FROM sentiment_records sr JOIN raw_posts rp ON sr.raw_post_id=rp.id "
+                    "WHERE rp.game_id=21 AND rp.post_date IS NOT NULL AND rp.is_off_topic_drift=0 "
+                    "GROUP BY DATE(rp.post_date), sr.sentiment"
+                )).fetchall():
+                    print(f"  {row}")
+                print()
+                print("EXPLAIN — query 5 (topics cold fallback):")
+                for row in conn.execute(text(
+                    "EXPLAIN QUERY PLAN "
+                    "SELECT sr.topics FROM sentiment_records sr JOIN raw_posts rp ON sr.raw_post_id=rp.id "
+                    "WHERE rp.game_id=21 AND rp.post_date IS NOT NULL AND rp.is_off_topic_drift=0"
+                )).fetchall():
+                    print(f"  {row}")
+                print()
+                print("EXPLAIN — query 6 (volume by source):")
+                for row in conn.execute(text(
+                    "EXPLAIN QUERY PLAN "
+                    "SELECT DATE(rp.post_date), rp.source, COUNT(rp.id) FROM raw_posts rp "
+                    "WHERE rp.game_id=21 AND rp.post_date IS NOT NULL "
+                    "GROUP BY DATE(rp.post_date), rp.source"
+                )).fetchall():
+                    print(f"  {row}")
+            PYEOF
+          SSHEOF
