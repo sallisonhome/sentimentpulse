@@ -1010,6 +1010,19 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to clear resume state on clean exit: %s", exc)
 
+        # 2026-09-20: warm the dashboard TTL cache for every (active game ×
+        # period) combo so the first post-cron dashboard visitor doesn't eat
+        # the cold-compute wall (previously 40-120s per period on high-volume
+        # titles, blowing past the 120s nginx proxy timeout on monthly/90d/All
+        # and leaving the dashboard skeleton spinning forever). Fully non-
+        # fatal: any exception is logged and swallowed so warmup problems
+        # never mark the run partial.
+        try:
+            from routers.dashboard import warmup_dashboard_cache
+            warmup_dashboard_cache(logger_override=logger)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dashboard warmup failed (non-fatal): %s", exc)
+
         db.close()
         _status["is_running"] = False
         _status["last_run_status"] = final_status

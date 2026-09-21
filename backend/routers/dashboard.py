@@ -9,9 +9,11 @@ Returns all KPI data for a single game over the requested time period:
   - Sentiment velocity (momentum gauge)
 """
 import logging
+import threading
 from datetime import date, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 
+from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
@@ -61,6 +63,52 @@ router = APIRouter(prefix="/games", tags=["dashboard"])
 _NOT_DRIFT = RawPost.is_off_topic_drift.is_(False)
 
 
+# ── Process-local TTL cache (2026-09-20) ────────────────────────────────────
+#
+# `get_dashboard` for 30d / 90d / All windows on high-volume titles routinely
+# blew past the 120s nginx proxy timeout because it recomputed a full
+# SentimentRecord ⋈ RawPost rollup on every request. The dashboard skeleton
+# loaders spun forever while the fetch 504'd. This cache short-circuits the
+# work on the second and subsequent requests within its TTL.
+#
+# Key: (game_id, period, latest_post_date_for_game)
+#   - `latest_post_date_for_game` auto-invalidates any entry the moment new
+#     posts land for that game (one cheap SELECT MAX per request, ~1-5ms),
+#     so the daily 2 AM cron's new rows can never be served stale.
+# TTL: 900 seconds (15 minutes) as a belt-and-suspenders upper bound.
+# maxsize: 512 (~43 active games × 5 periods = 215 slots, 2× headroom).
+#
+# See also: `warmup_dashboard_cache()` at the bottom of this file, which is
+# invoked by services/ingestor.py at the end of every ingest run so the first
+# post-cron dashboard visitor never eats the cold-compute wall.
+_DASHBOARD_CACHE: TTLCache = TTLCache(maxsize=512, ttl=900)
+_DASHBOARD_CACHE_LOCK = threading.Lock()
+
+
+def _latest_post_date_for_game(db: Session, game_id: int) -> Optional[date]:
+    """MAX(post_date) for the game — used as the cache-invalidation stamp.
+
+    Uses post_date only (not collected_at). Matches the exact filter the
+    dashboard rollups use so the cache stamp moves the same moment the
+    dashboard's underlying data would move.
+    """
+    val = (
+        db.query(func.max(RawPost.post_date))
+        .filter(RawPost.game_id == game_id)
+        .filter(RawPost.post_date.isnot(None))
+        .scalar()
+    )
+    return _to_date(val) if val is not None else None
+
+
+def _cache_key(game_id: int, period: PeriodEnum, stamp: Optional[date]) -> Tuple:
+    return (game_id, period.value, stamp.isoformat() if stamp else None)
+
+
+def _dashboard_cache_stats() -> dict:
+    return {"size": len(_DASHBOARD_CACHE), "maxsize": _DASHBOARD_CACHE.maxsize, "ttl": _DASHBOARD_CACHE.ttl}
+
+
 # ── Helper ────────────────────────────────────────────────────────────────────
 
 def _period_start(period: PeriodEnum) -> Optional[date]:
@@ -108,6 +156,39 @@ def get_dashboard(
     period: PeriodEnum = Query(PeriodEnum.weekly),
     db: Session = Depends(get_db),
 ):
+    # Fast path — return cached response if fresh for this (game, period,
+    # latest-post-date). See module-level cache block for rationale.
+    stamp = _latest_post_date_for_game(db, game_id)
+    key = _cache_key(game_id, period, stamp)
+    with _DASHBOARD_CACHE_LOCK:
+        cached = _DASHBOARD_CACHE.get(key)
+    if cached is not None:
+        logger.info(
+            "dashboard cache HIT game=%d period=%s stamp=%s cache_size=%d",
+            game_id, period.value, stamp, len(_DASHBOARD_CACHE),
+        )
+        return cached
+
+    logger.info(
+        "dashboard cache MISS game=%d period=%s stamp=%s cache_size=%d — computing",
+        game_id, period.value, stamp, len(_DASHBOARD_CACHE),
+    )
+    response = _compute_dashboard(game_id, period, db)
+    with _DASHBOARD_CACHE_LOCK:
+        _DASHBOARD_CACHE[key] = response
+    return response
+
+
+def _compute_dashboard(
+    game_id: int,
+    period: PeriodEnum,
+    db: Session,
+) -> DashboardResponse:
+    """Compute a fresh DashboardResponse. Do not call directly from a route
+    handler — always go through `get_dashboard` so the TTL cache is populated.
+    Exposed at module level so the ingest post-hook (warmup_dashboard_cache)
+    and any future warming code path can share the exact same compute path.
+    """
     game = db.query(Game).filter_by(id=game_id).first()
     if not game:
         raise HTTPException(status_code=404, detail="Game not found.")
@@ -909,3 +990,113 @@ def get_competitor_timeseries(
     return CompetitorTimeseriesResponse(
         games=games_out, timeseries=timeseries, events=events_out,
     )
+
+
+# ── Post-ingest warmup (2026-09-20) ──────────────────────────────────────────
+#
+# Called by services/ingestor.py at the end of every daily ingest run so the
+# TTL cache is already warm before the first dashboard visitor lands. Without
+# this hook, the first user to hit /api/games/{id}/dashboard?period=monthly
+# for a high-volume title after ingest would eat the full 40-120s cold-compute
+# wall (and likely 504 through the 120s proxy timeout for 30d/90d/All).
+#
+# Runs synchronously in the caller's process. Budget-bounded: each per-(game,
+# period) compute is wrapped in a try/except so one slow / broken game never
+# blocks the rest. Per-game DB session is opened via the same `SessionLocal`
+# the ingest run already uses.
+
+
+def warmup_dashboard_cache(logger_override=None) -> dict:
+    """Precompute and cache the dashboard response for every active game
+    across every user-visible period. Idempotent — repeat calls simply
+    refresh the cached entries.
+
+    Returns a dict summary: {games_warmed, entries_written, errors, elapsed_s}.
+    Safe to call from the ingest post-hook or from a diagnostic endpoint.
+    """
+    import time
+    from database import SessionLocal  # local import — avoids circular import at module load
+
+    log = logger_override or logger
+    started = time.monotonic()
+    entries_written = 0
+    games_warmed = 0
+    errors: list[dict] = []
+
+    # Warm every period that the front-end period filter can select.
+    periods_to_warm = [
+        PeriodEnum.today,
+        PeriodEnum.weekly,
+        PeriodEnum.monthly,
+        PeriodEnum.quarterly,
+        PeriodEnum.lifetime,
+    ]
+
+    db = SessionLocal()
+    try:
+        # Active-and-not-merged games only — matches the games directory the
+        # front-end shows in the game picker. Merged/inactive titles are hidden
+        # from the picker so warming them would just burn CPU.
+        active_games = (
+            db.query(Game)
+            .filter(Game.is_active.is_(True))
+            .filter(Game.merged_into_id.is_(None))
+            .all()
+        )
+        log.info("dashboard warmup starting: %d active games × %d periods", len(active_games), len(periods_to_warm))
+
+        for game in active_games:
+            games_warmed += 1
+            for period in periods_to_warm:
+                try:
+                    stamp = _latest_post_date_for_game(db, game.id)
+                    key = _cache_key(game.id, period, stamp)
+                    # Skip if already warm (unlikely on a first post-cron call
+                    # but useful when this is invoked repeatedly).
+                    with _DASHBOARD_CACHE_LOCK:
+                        if key in _DASHBOARD_CACHE:
+                            continue
+                    response = _compute_dashboard(game.id, period, db)
+                    with _DASHBOARD_CACHE_LOCK:
+                        _DASHBOARD_CACHE[key] = response
+                    entries_written += 1
+                except Exception as exc:  # noqa: BLE001 — must not abort warmup loop
+                    errors.append({"game_id": game.id, "period": period.value, "error": repr(exc)})
+                    log.warning(
+                        "dashboard warmup FAILED game=%d period=%s: %s",
+                        game.id, period.value, exc,
+                    )
+    finally:
+        db.close()
+
+    elapsed = round(time.monotonic() - started, 2)
+    summary = {
+        "games_warmed": games_warmed,
+        "entries_written": entries_written,
+        "errors": errors,
+        "elapsed_s": elapsed,
+        "cache_stats": _dashboard_cache_stats(),
+    }
+    log.info(
+        "dashboard warmup complete: games=%d entries=%d errors=%d elapsed=%.2fs",
+        games_warmed, entries_written, len(errors), elapsed,
+    )
+    return summary
+
+
+@router.post("/dashboard/warmup", tags=["dashboard-admin"])
+def dashboard_warmup_endpoint():
+    """Manual trigger for warmup_dashboard_cache. Useful for post-deploy
+    warming and for diagnostic runs. No auth (matches the rest of the API);
+    the endpoint is a no-op on already-warm entries so it's safe to hit
+    repeatedly.
+    """
+    return warmup_dashboard_cache()
+
+
+@router.get("/dashboard/cache-stats", tags=["dashboard-admin"])
+def dashboard_cache_stats_endpoint():
+    """Return current dashboard TTL cache size / capacity / ttl. Handy for
+    verifying the cache is populating after a deploy or a warmup call.
+    """
+    return _dashboard_cache_stats()
