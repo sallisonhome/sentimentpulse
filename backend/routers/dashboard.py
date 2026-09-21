@@ -1034,13 +1034,20 @@ def warmup_dashboard_cache(logger_override=None) -> dict:
 
     db = SessionLocal()
     try:
-        # Active-and-not-merged games only — matches the games directory the
-        # front-end shows in the game picker. Merged/inactive titles are hidden
-        # from the picker so warming them would just burn CPU.
+        # Active games only — matches the games directory the front-end shows
+        # in the game picker. Inactive titles are hidden from the picker so
+        # warming them would just burn CPU.
+        #
+        # NOTE: this codebase has NO `Game.merged_into_id` column — that field
+        # exists in the SignalPulse codebase, not here. `is_active=False` is
+        # the only "do not show" signal SentimentPulse uses. An earlier version
+        # of this function referenced Game.merged_into_id and 500'd every
+        # invocation, silently keeping the cache empty and making cold visits
+        # 504 even after the post-ingest warmup ran. See
+        # tests/test_dashboard_cache.py::TestWarmupFieldReferences.
         active_games = (
             db.query(Game)
             .filter(Game.is_active.is_(True))
-            .filter(Game.merged_into_id.is_(None))
             .all()
         )
         log.info("dashboard warmup starting: %d active games × %d periods", len(active_games), len(periods_to_warm))
