@@ -70,7 +70,6 @@ interface LeaderboardRow {
   avgRatingPercent: number | null;
   avgRatingLabel: string | null;
   ratingCapturedAt: string | null;
-  ownersMid: number | null;
   unitsMid: number | null;
   revenueMidUsd: number | null;
   gatedReason: string | null;

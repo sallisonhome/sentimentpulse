@@ -6,7 +6,7 @@
  *   - Header: cover art, title, IGDB summary, genres, developer, release date
  *   - Per-platform KPI tiles (LTD rating count, avg rating)
  *   - Timeseries chart with date-range picker (7d / 30d / 90d / 12m / LTD / custom)
- *   - Metric switcher: rating count / avg rating / owners_mid
+ *   - Metric switcher: rating count / avg rating
  */
 
 import { useQuery } from "@tanstack/react-query";
@@ -26,7 +26,7 @@ import {
 import { format, parseISO, subDays } from "date-fns";
 
 type Platform = "steam" | "xbox" | "ps5";
-type Metric = "rating_count" | "avg_rating" | "owners_mid";
+type Metric = "rating_count" | "avg_rating";
 type PresetRange = "7d" | "30d" | "90d" | "12m" | "ltd" | "custom";
 
 interface Sku {
@@ -62,7 +62,6 @@ interface WindowKpi {
   windowUsed: KpiWindow | null;
   cascade: KpiWindow[];
   unitsMid: number | null;
-  ownersMid: number | null;
   revenueMidUsd: number | null;
   aspUsdCents: number | null;
   msrpUsdCents: number | null;
@@ -90,7 +89,6 @@ const PLATFORM_LABEL: Record<Platform, string> = { steam: "Steam", xbox: "Xbox",
 const METRICS: Array<{ id: Metric; label: string }> = [
   { id: "rating_count", label: "Rating count" },
   { id: "avg_rating", label: "Avg rating" },
-  { id: "owners_mid", label: "Est. owners" },
 ];
 const PRESETS: Array<{ id: PresetRange; label: string; days?: number }> = [
   { id: "7d", label: "7d", days: 7 },
@@ -259,7 +257,7 @@ export default function ConsoleTitleDetail() {
             : "—";
           const secondary = showRatingsFirst
             ? `avg ${avgRatingText}`
-            : `${formatCompact(k.unitsMid)} units · ${formatCompact(k.ownersMid)} owners`;
+            : `${formatCompact(k.unitsMid)} units`;
           // Show the "est. via X" badge whenever windowUsed differs from the
           // requested window — including LTD-on-young-title (windowUsed = d30, m12, …).
           const badge = !showRatingsFirst && k.windowUsed && k.windowUsed !== k.window
