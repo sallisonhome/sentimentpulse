@@ -970,3 +970,56 @@ html.light .bar { color: white; }
   html:not(.dark):not(.light) .pdp-card td .pctc { color: #dc2626; }
   html:not(.dark):not(.light) .bar { color: white; }
 }
+.event-performance-summary { display: flex; flex-direction: column; gap: 5px; font-size: 12px; line-height: 1.5; white-space: normal; }
+.event-performance-summary strong { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.event-performance-summary span, .performance-note { color: var(--text-muted); font-size: 12px; line-height: 1.55; }
+.event-performance-summary[data-status="invalid_window"] span { color: var(--warn); }
+.event-card > .event-performance-summary { margin: 12px 0; }
+.event-performance-detail, .event-performance-analytics { margin: 24px 0; }
+.event-performance-analytics { border-top: 1px solid var(--border); padding-top: 24px; }
+.event-performance-analytics h2 { font-size: 20px; text-transform: none; letter-spacing: -.01em; }
+.event-performance-values { display: flex; flex-wrap: wrap; gap: 40px; }
+.event-performance-values > div { display: flex; flex-direction: column; gap: 8px; }
+.event-performance-values strong { font-size: 28px; font-variant-numeric: tabular-nums; }
+.event-performance-values span { color: var(--text-muted); font-size: 12px; }
+.performance-filters { display: flex; gap: 12px; flex-wrap: wrap; margin: 18px 0; }
+.performance-filters label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.performance-filters input, .performance-filters select { min-height: 38px; min-width: 135px; max-width: 100%; border: 1px solid var(--border); border-radius: 6px; padding: 8px; color: var(--text); background: var(--surface); font: inherit; color-scheme: inherit; }
+.performance-overview { display: flex; flex-wrap: wrap; gap: 16px 28px; font-size: 13px; }
+.performance-table { overflow-x: auto; margin: 12px 0; }
+.performance-table .performance-note { display: block; margin-top: 5px; }
+.performance-table a { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
+.performance-table table { min-width: 850px; }
+@media(max-width: 600px) {
+  .performance-filters { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); }
+  .performance-filters input, .performance-filters select { min-width: 0; width: 100%; box-sizing: border-box; }
+  .event-performance-analytics .section-h { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .performance-table { border: 0; background: transparent; }
+  .performance-table table { min-width: 0; width: 100%; }
+  .performance-table thead { display: none; }
+  .performance-table tbody { display: grid; gap: 12px; }
+  .performance-table tr { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  .performance-table table.term td { text-align: left; border: 0; white-space: normal; padding: 8px; }
+  .performance-table td:first-child, .performance-table td:nth-child(4) { grid-column: 1 / -1; }
+  .performance-table td:nth-child(4) { grid-row: 2; }
+  .performance-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+}
+
+/* Preserve all navigation links in a horizontally scrollable mobile rail.
+   Scoped to the event/reporting surfaces; desktop composition is unchanged. */
+@media(max-width: 760px) {
+  .responsive-events { grid-template-columns: minmax(0,1fr); }
+  .responsive-events .sidebar { position: static; height: auto; flex-direction: row; overflow-x: auto; padding: 10px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .responsive-events .sidebar .brand, .responsive-events .nav-section-label, .responsive-events .sidebar-footer { display: none; }
+  .responsive-events .nav-item { flex-shrink: 0; min-height: 40px; }
+  .responsive-events .topbar { position: static; height: auto; min-height: 56px; flex-wrap: wrap; gap: 8px; padding: 12px 16px; }
+  .responsive-events .top-right { margin-left: 0; }
+  .responsive-events .content { padding: 20px 16px 32px; }
+  .responsive-events .evd-hero { padding: 20px; }
+  .responsive-events .evd-hero .row2 { grid-template-columns: minmax(0,1fr); gap: 14px; }
+  .responsive-events .evd-hero .discsum { text-align: left; }
+  .responsive-events .term-table-wrap { max-width: 100%; overflow-x: auto; }
+  .responsive-events .term-toolbar { flex-wrap: wrap; gap: 10px; }
+  .responsive-events .term-toolbar input { max-width: 100%; }
+  .responsive-events .strip-hd, .responsive-events .section-h { flex-wrap: wrap; gap: 8px; }
+}

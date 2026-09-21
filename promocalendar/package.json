@@ -11,7 +11,7 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "db:push": "drizzle-kit push",
-    "test": "tsx --test server/parser.test.ts"
+    "test": "tsx --tsconfig tsconfig.test.json --test server/*.test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",

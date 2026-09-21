@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import { Shell } from "../components/Shell";
 import { api, type EventSummary } from "../lib/api";
-import { useAsync, usePersistedState } from "../lib/hooks";
+import { useAsync, usePersistedState, usePendingSalesRefresh } from "../lib/hooks";
 import { getToday } from "../lib/today";
 import { Skeleton, ErrorBanner, SegToggle } from "../components/misc";
 import { PlatformChip, StatusChip, GameChip } from "../components/chips";
 import { EventCard } from "../components/EventCard";
+import { EventPerformanceSummary } from "../components/EventPerformance";
 import { fmtRange, pct, durationDays } from "../lib/format";
 import { useLocation } from "wouter";
 
@@ -25,6 +26,7 @@ export default function EventsPage() {
   );
 
   const events = evs.data?.events || [];
+  usePendingSalesRefresh(events.some(e => e.performance?.status === "pending"), evs.reload);
   const live = events.filter((e) => e.is_active);
   const upcoming = events.filter((e) => !e.is_active && !e.is_past);
   const past = events.filter((e) => e.is_past);
@@ -77,6 +79,8 @@ export default function EventsPage() {
 }
 
 function ListView({ live, upcoming, past }: { live: EventSummary[]; upcoming: EventSummary[]; past: EventSummary[] }) {
+  const [visiblePast, setVisiblePast] = useState(24);
+  const newestPast = [...past].sort((a, b) => b.end_date.localeCompare(a.end_date));
   return (
     <div className="events-grid">
       {live.length > 0 && (
@@ -96,7 +100,8 @@ function ListView({ live, upcoming, past }: { live: EventSummary[]; upcoming: Ev
       {past.length > 0 && (
         <>
           <div className="month-section-h">Past · {past.length} events</div>
-          {past.slice(0, 24).map((e) => <EventCard key={e.event_key} event={e} />)}
+          {newestPast.slice(0, visiblePast).map((e) => <EventCard key={e.event_key} event={e} />)}
+          {past.length > visiblePast && <button className="btn" onClick={() => setVisiblePast(n => n + 24)}>Show more past events ({past.length - visiblePast} remaining)</button>}
         </>
       )}
     </div>
@@ -168,6 +173,7 @@ function TableView({ events, today }: { events: EventSummary[]; today: string })
               </th>
             ))}
             <th>Status</th>
+            <th>Sales performance</th>
           </tr>
         </thead>
         <tbody>
@@ -181,10 +187,11 @@ function TableView({ events, today }: { events: EventSummary[]; today: string })
               <td className="prog">{e.program}</td>
               <td><PlatformChip platform={e.platform} /></td>
               <td className="dates">{e.start_date}</td>
-              <td className="dates">{e.end_date} <span className="rel">({durationDays(e.start_date, e.end_date)}d)</span></td>
+              <td className="dates">{e.end_date} <span className="rel">({e.end_date < e.start_date ? "check dates" : `${durationDays(e.start_date, e.end_date)}d`})</span></td>
               <td className="num">{e.title_count}</td>
               <td className={`max num${e.max_discount_pct >= 0.5 ? " hot" : e.max_discount_pct >= 0.3 ? " warn" : ""}`}>{pct(e.max_discount_pct)}</td>
-              <td><StatusChip daysUntilStart={e.days_until_start} isActive={e.is_active} /></td>
+              <td><StatusChip daysUntilStart={e.days_until_start} isActive={e.is_active} isPast={e.is_past} invalid={e.end_date < e.start_date} /></td>
+              <td><EventPerformanceSummary performance={e.performance} /></td>
             </tr>
           ))}
         </tbody>

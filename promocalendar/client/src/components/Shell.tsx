@@ -68,7 +68,7 @@ export function Shell({
   const initial = me.data?.email ? me.data.email.trim().charAt(0).toUpperCase() : "·";
 
   return (
-    <div className="app">
+    <div className={`app${active === "events" || active === "analytics" ? " responsive-events" : ""}`}>
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon" aria-hidden>

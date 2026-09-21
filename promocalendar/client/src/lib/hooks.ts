@@ -1,5 +1,14 @@
 import { useEffect, useState, useCallback } from "react";
 
+/** Poll only while first capture is pending; these reads never call upstream. */
+export function usePendingSalesRefresh(pending: boolean | undefined, reload: () => void) {
+  useEffect(() => {
+    if (!pending) return;
+    const timer = setInterval(reload, 15_000);
+    return () => clearInterval(timer);
+  }, [pending, reload]);
+}
+
 /**
  * Simple loading hook. `run` fires an async function once on mount and
  * on any dep change. Returns { data, error, loading, reload }.

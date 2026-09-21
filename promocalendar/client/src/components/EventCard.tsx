@@ -1,7 +1,7 @@
 import { useLocation } from "wouter";
 import { PlatformChip, StatusChip, GameChip } from "./chips";
-import { EventTotalRevenueChip } from "./BeatCard";
-import { fmtRange, pct, durationDays } from "../lib/format";
+import { EventPerformanceSummary } from "./EventPerformance";
+import { fmtEventRange, pct, durationDays } from "../lib/format";
 import type { EventSummary } from "../lib/api";
 
 export function EventCard({
@@ -36,16 +36,12 @@ export function EventCard({
             <PlatformChip platform={event.platform} />
           </small>
         </div>
-        <StatusChip daysUntilStart={event.days_until_start} isActive={event.is_active} />
+        <StatusChip daysUntilStart={event.days_until_start} isActive={event.is_active} isPast={event.is_past} invalid={event.end_date < event.start_date} />
       </div>
       <div className="dates">
-        {fmtRange(event.start_date, event.end_date)} · {dur} days · {event.title_count} titles
+        {fmtEventRange(event.start_date, event.end_date)} · {event.end_date < event.start_date ? "Check dates" : `${dur} days`} · {event.title_count} titles
       </div>
-      {event.is_active && (
-        <div className="chips">
-          <EventTotalRevenueChip event={event} />
-        </div>
-      )}
+      <EventPerformanceSummary performance={event.performance} />
       {codes.length > 0 && (
         <div className="titles">
           {codes.map((c) => (

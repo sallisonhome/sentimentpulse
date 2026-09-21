@@ -38,6 +38,29 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+/** Read-only batch API; strict identity/shape checks keep missing data != $0. */
+export async function getSteamRevenueBatch(
+  items: Array<{ steam_app_id: number; since: string; until: string }>,
+): Promise<SteamRevenueForWindow[]> {
+  if (!items.length) return [];
+  if (items.length > 200) throw new Error("Steam revenue batch exceeds 200");
+  const response = await fetch(`${SIGNALPULSE_BASE_URL}/api/promo-support/steam-revenue-batch`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(items), signal: AbortSignal.timeout(10_000),
+  });
+  if (!response.ok) throw new Error(`SignalPulse batch HTTP ${response.status}`);
+  const rows = await response.json();
+  if (!Array.isArray(rows) || rows.length !== items.length) throw new Error("Invalid sales batch length");
+  rows.forEach((r, i) => {
+    if (r.error || r.steam_app_id !== items[i].steam_app_id ||
+      r.since !== items[i].since || r.until !== items[i].until ||
+      !Number.isFinite(r.net_revenue_usd) || !Number.isFinite(r.gross_revenue_usd) ||
+      !Number.isInteger(r.days_covered) || r.days_covered < 0 || typeof r.found !== "boolean" ||
+      r.found !== (r.days_covered > 0)) throw new Error("Invalid sales batch row");
+  });
+  return rows;
+}
+
 /**
  * Look up Steam net + gross revenue for a single AppID between two calendar
  * dates (inclusive). `since` and `until` are YYYY-MM-DD.

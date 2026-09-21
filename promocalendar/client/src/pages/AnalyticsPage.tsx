@@ -7,6 +7,7 @@ import { Skeleton, ErrorBanner } from "../components/misc";
 import { PlatformChip } from "../components/chips";
 import { pct } from "../lib/format";
 import { useLocation } from "wouter";
+import { EventPerformanceAnalytics } from "../components/EventPerformanceAnalytics";
 
 type SortKey = "start_date" | "end_date" | "game_label" | "platform" | "program" | "max_discount_pct" | "sku_count";
 
@@ -74,6 +75,8 @@ export default function AnalyticsPage() {
           <span className="chip" style={{ background: "var(--surface-2)" }}>No live events right now</span>
         )}
       </div>
+
+      <EventPerformanceAnalytics today={today} />
 
       <div className="analytics-grid">
         <div className="analytics-card">

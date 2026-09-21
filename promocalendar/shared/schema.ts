@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, primaryKey } from "drizzle-orm/sqlite-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -22,6 +22,22 @@ export type Platform = (typeof PLATFORMS)[number];
 export const UPLOAD_HISTORY_LIMIT = 10;
 
 // ─── Tables ───────────────────────────────────────────────────────────────────
+
+export const eventArchive = sqliteTable("event_archive", {
+  calendar: text("calendar").notNull(),
+  event_key: text("event_key").notNull(),
+  detail_json: text("detail_json").notNull(),
+}, t => [primaryKey({ columns: [t.calendar, t.event_key] })]);
+
+export const eventPerformance = sqliteTable("event_performance", {
+  calendar: text("calendar").notNull(),
+  event_key: text("event_key").notNull(),
+  fingerprint: text("fingerprint").notNull(),
+  payload: text("payload"),
+  checked_at: text("checked_at"),
+  next_refresh_at: text("next_refresh_at").notNull(),
+  refresh_error: integer("refresh_error").notNull().default(0),
+}, t => [primaryKey({ columns: [t.calendar, t.event_key] })]);
 
 /**
  * Every ingest = one row here. Keeps the raw file blob for rollback.

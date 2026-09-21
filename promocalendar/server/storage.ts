@@ -12,6 +12,7 @@ import crypto, { createHash } from "node:crypto";
 // already import statically — this file is never bundled for the browser
 // (separate Vite root under client/), so there's no bundler risk here.
 import { steamAppIdForCode } from "./signalpulse-map.js";
+import { archivedEvent, archivedEvents, saveArchivedEvent } from "./event-archive.js";
 
 export function isCalendarId(x: unknown): x is CalendarId {
   return typeof x === "string" && (CALENDARS as readonly string[]).includes(x);
@@ -103,6 +104,7 @@ export function ingest(
   const now = new Date().toISOString();
 
   const tx = sqlite.transaction(() => {
+    archiveStartedEvents(calendar, serverToday(null));
     // Deactivate any existing active upload (full-replace behavior).
     sqlite
       .prepare(`UPDATE uploads SET is_active = 0 WHERE calendar = ? AND is_active = 1`)
@@ -227,6 +229,7 @@ export async function rollbackTo(
   const parsed = await parse(stored.blob);
 
   const tx = sqlite.transaction(() => {
+    archiveStartedEvents(stored.calendar, serverToday(null));
     // Deactivate current active for this calendar.
     sqlite
       .prepare(`UPDATE uploads SET is_active = 0 WHERE calendar = ? AND is_active = 1`)
@@ -978,12 +981,9 @@ export interface EventRow {
   days_until_start: number;
   is_active: boolean;
   is_past: boolean;
-  // Only populated for currently-live rows (see listEvents below) — the
-  // minimal game_code list routes.ts needs to fan out Steam revenue
-  // lookups per participating title for the event-level total-revenue
-  // enrichment. Never populated for upcoming/past rows, keeping the extra
-  // per-row hydration query bounded to the small live subset.
-  games?: { game_code: string }[];
+  // Hydrated in the grouping query, without per-event network requests.
+  games: { game_code: string }[];
+  archived?: boolean;
 }
 
 export interface EventDetail extends EventRow {
@@ -1033,6 +1033,7 @@ export function listEvents(
   calendar: CalendarId,
   today: string,
   filter: EventFilter = {},
+  includeArchive = true,
 ): EventRow[] {
   const minTitles = filter.min_titles ?? 2;
   const clauses = ["calendar = ?"];
@@ -1080,6 +1081,7 @@ export function listEvents(
 
   const sql = `
     SELECT program, platform, start_date, end_date,
+           json_group_array(DISTINCT game_code) AS game_codes,
            COUNT(DISTINCT game_code) AS title_count,
            MAX(max_discount_pct) AS max_discount_pct,
            MIN(min_discount_pct) AS min_discount_pct
@@ -1093,16 +1095,7 @@ export function listEvents(
     .prepare(sql)
     .all(...params, minTitles, ...orderByParams) as any[];
 
-  // Hydrate participating game_codes only for currently-live rows — the
-  // event-level Steam revenue enrichment (routes.ts) only ever applies to
-  // live events, so avoid an extra per-row query for the (usually much
-  // larger) upcoming/past sets.
-  const gameCodesStmt = sqlite.prepare(
-    `SELECT DISTINCT game_code FROM campaigns
-     WHERE calendar = ? AND program = ? AND platform = ? AND start_date = ? AND end_date = ?`,
-  );
-
-  return rows.map((r) => {
+  const current = rows.map((r) => {
     const daysUntil = Math.round(
       (Date.parse(r.start_date + "T00:00:00Z") -
         Date.parse(today + "T00:00:00Z")) /
@@ -1122,19 +1115,64 @@ export function listEvents(
       days_until_start: daysUntil,
       is_active: isLive,
       is_past: isPast,
+      games: JSON.parse(r.game_codes).map((game_code: string) => ({ game_code })),
     };
-    if (isLive) {
-      const codes = gameCodesStmt.all(
-        calendar,
-        r.program,
-        r.platform,
-        r.start_date,
-        r.end_date,
-      ) as { game_code: string }[];
-      row.games = codes;
-    }
     return row;
   });
+  if (!includeArchive) return current;
+  // Current workbook wins for the same key; archived metadata survives removal.
+  // Check against ALL current keys, not just the filtered query, so a corrected
+  // event cannot reappear from the archive when it fails a filter.
+  const currentKeys = new Set(listEvents(calendar, today, { min_titles: 1 }, false).map(e => e.event_key));
+  const saved = archivedEvents(calendar).filter(e => !currentKeys.has(e.event_key))
+    .map(e => ({ ...e, ...eventTiming(e, today), archived: true }))
+    .filter(e => (!filter.platform || e.platform === filter.platform) &&
+      (!filter.program || e.program === filter.program) &&
+      (!filter.from || e.end_date >= filter.from) && (!filter.to || e.start_date <= filter.to) &&
+      e.title_count >= minTitles &&
+      (when === "all" || (when === "past" ? e.is_past : when === "live" ? e.is_active : e.start_date > today)));
+  return [...current, ...saved].sort((a, b) => {
+    if (when === "past") return b.start_date.localeCompare(a.start_date) || b.end_date.localeCompare(a.end_date);
+    return a.start_date.localeCompare(b.start_date) || a.end_date.localeCompare(b.end_date);
+  });
+}
+
+function eventTiming(e: { start_date: string; end_date: string }, today: string) {
+  return {
+    days_until_start: Math.round((Date.parse(e.start_date + "T00:00:00Z") - Date.parse(today + "T00:00:00Z")) / 86400000),
+    is_active: e.start_date <= today && e.end_date >= today,
+    is_past: e.end_date < today,
+  };
+}
+
+/** Capture started event membership before a workbook can replace campaigns. */
+export function archiveStartedEvents(calendar: CalendarId, today: string): void {
+  // One catalogue read, not getEvent's reverse-lookup scan per event.
+  const campaigns = sqlite.prepare(`SELECT * FROM campaigns
+    WHERE calendar=? AND start_date<=? AND end_date>=start_date ORDER BY game_label ASC`)
+    .all(calendar, today) as any[];
+  const grouped = new Map<string, EventDetail>();
+  for (const c of campaigns) {
+    const key = eventKey(calendar, c.program, c.platform, c.start_date, c.end_date);
+    let e = grouped.get(key);
+    if (!e) {
+      e = { event_key: key, program: c.program, platform: c.platform,
+        start_date: c.start_date, end_date: c.end_date, ...eventTiming(c, today),
+        title_count: 0, max_discount_pct: c.max_discount_pct,
+        min_discount_pct: c.min_discount_pct, games: [] };
+      grouped.set(key, e);
+    }
+    e.max_discount_pct = Math.max(e.max_discount_pct, c.max_discount_pct);
+    e.min_discount_pct = Math.min(e.min_discount_pct, c.min_discount_pct);
+    e.games.push({ game_code: c.game_code, game_label: c.game_label, campaign_id: c.id,
+      sku_count: c.sku_count, max_discount_pct: c.max_discount_pct, min_discount_pct: c.min_discount_pct });
+  }
+  sqlite.transaction(() => {
+    for (const e of grouped.values()) {
+      e.title_count = new Set(e.games.map(g => g.game_code)).size;
+      if (e.title_count >= 2) saveArchivedEvent(calendar, e);
+    }
+  })();
 }
 
 /**
@@ -1168,7 +1206,10 @@ export function getEvent(
       eventKey(calendar, g.program, g.platform, g.start_date, g.end_date) ===
       event_key,
   );
-  if (!match) return null;
+  if (!match) {
+    const saved = archivedEvent(calendar, event_key);
+    return saved ? { ...saved, ...eventTiming(saved, today), archived: true } : null;
+  }
 
   const games = sqlite
     .prepare(

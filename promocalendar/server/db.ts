@@ -20,6 +20,22 @@ export const raw = sqlite;
 
 export function initSchema(): void {
   sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS event_archive (
+      calendar TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      detail_json TEXT NOT NULL,
+      PRIMARY KEY(calendar, event_key)
+    );
+    CREATE TABLE IF NOT EXISTS event_performance (
+      calendar TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      payload TEXT,
+      checked_at TEXT,
+      next_refresh_at TEXT NOT NULL,
+      refresh_error INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(calendar, event_key)
+    );
     CREATE TABLE IF NOT EXISTS uploads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       calendar TEXT NOT NULL,
