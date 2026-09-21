@@ -17,6 +17,7 @@ Digest router (all under /api/digest):
 """
 import logging
 import re
+import threading
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -110,16 +111,83 @@ def preview_monthly(db: Session = Depends(get_db)):
     return HTMLResponse(content=built["html"])
 
 
+# v0032 (2026-09-21): building the digest can take several minutes on
+# cold cache (all 9 priority titles × WindowSummary regeneration × LLM
+# synthesis per topic cluster). The old synchronous send endpoint 504'd
+# through nginx's 120s proxy_read_timeout on every cold operator send.
+# _SEND_INFLIGHT dedupes overlapping fire-and-forget invocations.
+_SEND_INFLIGHT_LOCK = threading.Lock()
+_SEND_INFLIGHT: set[str] = set()
+
+
+def _send_digest_background(kind: str) -> None:
+    """Run send_weekly_digest / send_monthly_digest on a daemon thread
+    with its own DB session (background threads must not reuse the
+    request-scoped session). Logs the outcome so operators can trace it
+    in journalctl -u sentimentpulse.
+    """
+    from database import SessionLocal  # noqa: PLC0415
+
+    session = SessionLocal()
+    try:
+        if kind == "weekly":
+            result = digest_service.send_weekly_digest(session)
+        else:
+            result = digest_service.send_monthly_digest(session)
+        logger.info(
+            "digest send/%s background complete: sent=%s reason=%s subject=%r",
+            kind, result.get("sent"), result.get("reason"), result.get("subject"),
+        )
+    except Exception:  # noqa: BLE001 — background thread, log + swallow
+        logger.exception("digest send/%s background failed", kind)
+    finally:
+        session.close()
+        with _SEND_INFLIGHT_LOCK:
+            _SEND_INFLIGHT.discard(kind)
+
+
+def _start_send_background(kind: str) -> dict:
+    """Idempotent fire-and-forget: spawn the background sender if not
+    already running for this digest kind. Returns immediately.
+    """
+    with _SEND_INFLIGHT_LOCK:
+        if kind in _SEND_INFLIGHT:
+            return {"status": "already_running", "kind": kind}
+        _SEND_INFLIGHT.add(kind)
+
+    thread = threading.Thread(
+        target=_send_digest_background,
+        args=(kind,),
+        name=f"digest-send-{kind}",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("digest send/%s background started", kind)
+    return {"status": "started", "kind": kind}
+
+
 @router.post("/send/weekly")
 def send_weekly_now(db: Session = Depends(get_db)):
-    """Trigger an immediate weekly digest send to all active recipients."""
-    return digest_service.send_weekly_digest(db)
+    """Trigger an immediate weekly digest send to all active recipients.
+
+    v0032 (2026-09-21): NON-BLOCKING. The build step is slow on cold
+    cache (all 9 priority titles × WindowSummary regeneration × LLM
+    synthesis) and the old sync endpoint 504'd through nginx's 120s
+    proxy_read_timeout. This now returns {status: 'started' | 'already_running'}
+    in <100ms and runs the actual build + Resend send on a background
+    thread. Follow-up in journalctl -u sentimentpulse for the outcome.
+    """
+    return _start_send_background("weekly")
 
 
 @router.post("/send/monthly")
 def send_monthly_now(db: Session = Depends(get_db)):
-    """Trigger an immediate monthly digest send to all active recipients."""
-    return digest_service.send_monthly_digest(db)
+    """Trigger an immediate monthly digest send to all active recipients.
+
+    v0032 (2026-09-21): NON-BLOCKING for the same reason as send/weekly.
+    See the docstring on send_weekly_now.
+    """
+    return _start_send_background("monthly")
 
 
 # ── One-time skip flags for the scheduled digest jobs ───────────────────────

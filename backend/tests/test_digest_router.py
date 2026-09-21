@@ -85,14 +85,23 @@ class TestPreview:
 # ── Manual send ──────────────────────────────────────────────────────────────
 
 class TestManualSend:
-    def test_send_weekly_with_no_recipients(self, client, publisher):
+    """v0032 (2026-09-21): the /send endpoints are now fire-and-forget
+    (non-blocking). They return {status: 'started' | 'already_running'}
+    in <100ms and run the actual build + Resend send on a background
+    thread. The old assertion `body["sent"] == False` was the *sync* build
+    result on a fixture with zero recipients; that outcome now shows up
+    only in the journalctl log, not the HTTP response.
+    """
+    def test_send_weekly_returns_started(self, client, publisher):
         r = client.post("/api/digest/send/weekly")
         assert r.status_code == 200
         body = r.json()
-        assert body["sent"] is False
-        assert body["reason"] == "no_recipients"
+        assert body["status"] in ("started", "already_running")
+        assert body["kind"] == "weekly"
 
-    def test_send_monthly_with_no_recipients(self, client, publisher):
+    def test_send_monthly_returns_started(self, client, publisher):
         r = client.post("/api/digest/send/monthly")
         assert r.status_code == 200
-        assert r.json()["sent"] is False
+        body = r.json()
+        assert body["status"] in ("started", "already_running")
+        assert body["kind"] == "monthly"
