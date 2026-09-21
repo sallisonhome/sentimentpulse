@@ -3,8 +3,9 @@
  * in an independent process; never starts ingestion, changes auth or restarts.
  * Credentials stay in the existing server DB. Logs contain no sales amounts.
  */
-import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, existsSync, chmodSync } from "node:fs";
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { storage, rawSqlite } from "../server/storage";
 import { fetchPortalPage, portalToSalesRows, portalToCountryRows } from "../server/steamworks-portal";
 import { fetchHeaderImage } from "../server/steam-header-image";
@@ -212,6 +213,49 @@ async function main() {
   console.log(JSON.stringify({phase:"audit",...checkpoint.audit}));
   assert.equal(missingWishlist.length+unavailableSales.length,0,"Source gaps remain; rerun safely");
   assert.ok(checkpoint.audit.revenueReconciled,"Revenue totals do not reconcile");
+  // Same established day-30 formula, restricted to this fully backfilled title.
+  const release = storage.getProductReleaseDate(product.id)!;
+  const windowEnd = new Date(Date.parse(release)+29*86400000).toISOString().slice(0,10);
+  const launchWindowComplete = dates(release,windowEnd).every(d=>checkpoint.sales[d]);
+  const day30 = storage.getSteamActualFirstMonthBaseUnits(product.id,release,30);
+  const preLaunch = storage.getSteamWishlistSummary(product.id,release).preLaunchNet;
+  if (launchWindowComplete && day30 != null && preLaunch && preLaunch > 0) {
+    storage.upsertWishlistConversionBenchmarkIfMissing({productId:product.id,
+      preReleaseWishlistCount:preLaunch,day30BaseUnitsSold:day30,
+      day30ConversionPct:Math.round(day30/preLaunch*10000)/100,
+      lockedAt:new Date().toISOString().slice(0,10)});
+  }
+  checkpoint.audit.benchmarkLocked = !!storage.getWishlistConversionBenchmark(product.id);
+  checkpoint.audit.salesRows = storage.getSteamSales(product.id).length;
+  checkpoint.audit.countryCoverage = rawSqlite.prepare(
+    "SELECT count(*) rows, count(DISTINCT period_start) days FROM steam_sales_by_country_period WHERE product_id=?"
+  ).get(product.id);
+  checkpoint.audit.ccuSnapshots = (rawSqlite.prepare(
+    "SELECT count(*) n FROM ccu_snapshots_steam WHERE product_id=?"
+  ).get(product.id) as {n:number}).n;
+  // Invalidate only cached summaries containing EXPE. The existing worker
+  // recomputes them; no campaign, event date, or other product data is edited.
+  const promoPath = process.env.EXPEDITIONS_PROMO_DB || "/opt/sentimentpulse/promocalendar/data.db";
+  if (existsSync(promoPath)) {
+    const promoDb = new Database(promoPath,{fileMustExist:true});
+    try {
+      promoDb.pragma("busy_timeout = 10000");
+      const backup = process.env.EXPEDITIONS_PROMO_BACKUP || "/var/lib/signalpulse/pre-expeditions-promo.db";
+      if (!existsSync(backup)) await promoDb.backup(backup);
+      chmodSync(backup,0o600);
+      const keys = (promoDb.prepare("SELECT event_key,payload FROM event_performance WHERE calendar='saber'").all() as any[])
+        .filter(r=>r.payload && JSON.parse(r.payload).titles?.some((t:any)=>t.game_code==="EXPE"))
+        .map(r=>r.event_key);
+      promoDb.transaction(()=>{
+        const q=promoDb.prepare("UPDATE event_performance SET next_refresh_at=? WHERE calendar='saber' AND event_key=?");
+        const now=new Date().toISOString();
+        for(const key of keys) q.run(now,key);
+      })();
+      checkpoint.audit.promoSummariesQueued = keys.length;
+    } finally {promoDb.close();}
+  }
+  save();
+  console.log(JSON.stringify({phase:"finalized",...checkpoint.audit}));
 }
 main().catch(error => {
   const safe = String(error?.message || "Unknown failure").replace(/(key|token|cookie)=[^&\s]+/gi,"$1=[redacted]");
