@@ -4,7 +4,7 @@ from typing import Optional, List
 
 from sqlalchemy import (
     Integer, String, Float, Boolean, Text, Date, DateTime,
-    ForeignKey, Enum, JSON, UniqueConstraint, func, text,
+    ForeignKey, Enum, JSON, UniqueConstraint, Index, func, text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -173,6 +173,14 @@ class RawPost(Base):
         UniqueConstraint(
             "external_id", "source", name="uq_raw_posts_external_id_source"
         ),
+        # Composite index on (game_id, post_date) — added by migration 0020
+        # (2026-09-21). Every dashboard aggregation filters on
+        # `game_id = ? AND post_date >= ?` and previously the planner would
+        # lead on the low-selectivity ix_raw_posts_is_off_topic_drift index,
+        # scanning ~500k rows per query and 504-ing through nginx on heavy
+        # titles. Declaring the index here so a fresh DB creation gets it
+        # and future auto-generated migrations know it exists.
+        Index("ix_raw_posts_game_id_post_date", "game_id", "post_date"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
