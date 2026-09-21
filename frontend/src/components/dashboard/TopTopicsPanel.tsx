@@ -7,10 +7,20 @@
 // raw post-volume for the selected period (the endpoint honors the
 // dashboard's `period` filter chip). Detail line describes the topic
 // itself, not the period.
+//
+// 2026-09-21 (v0031):
+// The topic-summary data now comes from its own endpoint
+// (GET /dashboard/topics) via useDashboardTopics(), rather than being
+// packed into the main dashboard payload. The main dashboard returns
+// in <2s cold now, and this panel shows its own "Analyzing…" loading
+// state while the backend runs the LLM synthesis (which can take
+// 30-60s on heavy titles for wide periods). See dashboard router
+// v0031 comment and lessons.md 2026-09-21.
 
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
 import type { Period } from '../../types'
+import { useDashboardTopics } from '../../hooks/useDashboardTopics'
 
 // Local alias so the rest of the file reads naturally. `Period` is the
 // canonical name in types/index.ts.
@@ -30,7 +40,7 @@ export interface TopTopicsSummary {
 }
 
 interface TopTopicsPanelProps {
-  summary: TopTopicsSummary
+  gameId: number | null
   period:  PeriodValue
 }
 
@@ -54,7 +64,9 @@ function periodAnchor(period: PeriodValue): string {
   }
 }
 
-export default function TopTopicsPanel({ summary, period }: TopTopicsPanelProps) {
+export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) {
+  const { data, isLoading, error } = useDashboardTopics(gameId, period)
+
   return (
     <Card>
       <CardHeader>
@@ -74,13 +86,28 @@ export default function TopTopicsPanel({ summary, period }: TopTopicsPanelProps)
             <TabsTrigger value="neutral">Neutral</TabsTrigger>
           </TabsList>
           <TabsContent value="positive">
-            <TopicSummaryList items={summary.positive} period={period} />
+            <TopicSummaryList
+              items={data?.positive ?? []}
+              isLoading={isLoading}
+              hasError={!!error}
+              period={period}
+            />
           </TabsContent>
           <TabsContent value="negative">
-            <TopicSummaryList items={summary.negative} period={period} />
+            <TopicSummaryList
+              items={data?.negative ?? []}
+              isLoading={isLoading}
+              hasError={!!error}
+              period={period}
+            />
           </TabsContent>
           <TabsContent value="neutral">
-            <TopicSummaryList items={summary.neutral} period={period} />
+            <TopicSummaryList
+              items={data?.neutral ?? []}
+              isLoading={isLoading}
+              hasError={!!error}
+              period={period}
+            />
           </TabsContent>
         </Tabs>
       </CardContent>
@@ -90,11 +117,35 @@ export default function TopTopicsPanel({ summary, period }: TopTopicsPanelProps)
 
 function TopicSummaryList({
   items,
-  period,
+  isLoading,
+  hasError,
+  period: _period,
 }: {
-  items:  TopicSummary[]
-  period: PeriodValue
+  items:     TopicSummary[]
+  isLoading: boolean
+  hasError:  boolean
+  period:    PeriodValue
 }) {
+  // Loading state — LLM synthesis is running server-side. On cold cache
+  // for a heavy title this can take 30-60s; the fast dashboard has
+  // already rendered by this point so the user sees a normal page with
+  // just this widget waiting on data.
+  if (isLoading) {
+    return (
+      <p className="py-4 text-sm text-muted-foreground">
+        Analyzing top topics…
+      </p>
+    )
+  }
+
+  if (hasError) {
+    return (
+      <p className="py-4 text-sm text-muted-foreground">
+        Couldn’t load top topics. Try switching periods or refreshing.
+      </p>
+    )
+  }
+
   if (!items.length) {
     return (
       <p className="py-4 text-sm text-muted-foreground">

@@ -128,8 +128,12 @@ export default function DashboardPage() {
               : <EmptyState title="No volume data" />
             }
           </div>
+          {/* 2026-09-21 (v0031): Top Topics widget owns its own data
+              fetch via useDashboardTopics() so the LLM synthesis work
+              (30-60s cold for heavy titles) can't block the rest of
+              the dashboard from rendering. */}
           <TopTopicsPanel
-            summary={data.top_topics_summary}
+            gameId={selectedGameId}
             period={period}
           />
         </div>

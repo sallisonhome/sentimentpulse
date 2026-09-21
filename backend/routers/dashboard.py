@@ -179,6 +179,56 @@ def get_dashboard(
     return response
 
 
+@router.get("/{game_id}/dashboard/topics", response_model=TopTopicsSummary)
+def get_dashboard_topics(
+    game_id: int,
+    period: PeriodEnum = Query(PeriodEnum.weekly),
+    db: Session = Depends(get_db),
+):
+    """LLM-driven Top Topics widget data, split off from the main dashboard
+    endpoint (v0031, 2026-09-21).
+
+    _compute_dashboard used to build this inline via _topic_summary_for(),
+    which drives Sonar/LLM synthesis calls that on cold cache take 60-120+s
+    on heavy titles — that's what was 504'ing weekly/monthly/quarterly/
+    lifetime through nginx's 120s proxy timeout. The frontend now renders
+    the fast dashboard first and calls this endpoint separately with its
+    own loading state.
+
+    The underlying generate_feedback_summary() function has its own TTL
+    cache keyed on (game_id, period_key, sentiment.value), so warm calls
+    are fast even here — the cost you pay is only on the first cold visit
+    per (game, period, sentiment) tuple.
+    """
+    game = db.query(Game).filter_by(id=game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+
+    p_start = _period_start(period)
+
+    from services.dashboard_feedback_synthesizer import generate_feedback_summary
+
+    def _for(sentiment: SentimentEnum) -> list[TopicSummary]:
+        results = generate_feedback_summary(
+            db=db,
+            game_id=game_id,
+            game_name=game.name,
+            sentiment=sentiment,
+            period_key=period.value,
+            period_start=p_start,
+        )
+        return [
+            TopicSummary(label=r.label, detail=r.detail, volume=r.volume)
+            for r in results
+        ]
+
+    return TopTopicsSummary(
+        positive=_for(SentimentEnum.positive),
+        negative=_for(SentimentEnum.negative),
+        neutral=_for(SentimentEnum.neutral),
+    )
+
+
 def _compute_dashboard(
     game_id: int,
     period: PeriodEnum,
@@ -473,29 +523,16 @@ def _compute_dashboard(
             SentimentEnum.neutral:  "discussing",
         }[sentiment]
 
-    def _topic_summary_for(sentiment: SentimentEnum) -> list[TopicSummary]:
-        # 2026-08-05 rebuild per user spec (21:24 EDT):
-        # Read the actual post corpus, filter to genuine feedback (opinion +
-        # specificity), cluster the survivors, and synthesize a written
-        # sentence per cluster via Sonar. Bypasses SentimentRecord.topics
-        # entirely because the upstream clusterer surfaces uninformative
-        # "General Discussion" labels for most games, wrapping them in a
-        # template made the widget read like nonsense.
-        from services.dashboard_feedback_synthesizer import (
-            generate_feedback_summary,
-        )
-        results = generate_feedback_summary(
-            db=db,
-            game_id=game_id,
-            game_name=game.name,
-            sentiment=sentiment,
-            period_key=period.value,
-            period_start=p_start,
-        )
-        return [
-            TopicSummary(label=r.label, detail=r.detail, volume=r.volume)
-            for r in results
-        ]
+    # v0031 (2026-09-21): the former _topic_summary_for() closure lived
+    # here and called services.dashboard_feedback_synthesizer.
+    # generate_feedback_summary() three times per dashboard load, once
+    # per sentiment. Each call fires Sonar/LLM synthesis for every topic
+    # cluster and on cold cache took 60-120+s on heavy titles — which
+    # 504'd the whole dashboard through nginx's 120s proxy_read_timeout.
+    # That work now lives in get_dashboard_topics() at the top of this
+    # file (its own GET /dashboard/topics endpoint). The frontend fetches
+    # it separately with its own loading state; see the v0031 comment on
+    # get_dashboard_topics and lessons.md 2026-09-21.
 
     # ── 4. Volume by source per day ───────────────────────────────────────────
     # Use post_date (when the post was actually made) where available,
@@ -750,10 +787,21 @@ def _compute_dashboard(
         delta_avg=round(avg_delta, 4) if avg_delta is not None else None,
     )
 
+    # v0031 (2026-09-21): top_topics_summary is now served by a SEPARATE
+    # endpoint (GET /games/{id}/dashboard/topics) because
+    # _topic_summary_for() drives Sonar/LLM synthesis calls that on cold
+    # cache take 60-120+s per period on heavy titles like Hellraiser
+    # (~9k posts across many clusters, each cluster = one LLM call). Prior
+    # to this landing, dashboards 504'd through nginx's 120s proxy timeout
+    # on every cold visit to weekly/monthly/quarterly/lifetime. Frontend
+    # now renders the fast dashboard payload first and calls the topics
+    # endpoint separately with its own loading state. Kept in the response
+    # as three empty lists so schemas.py doesn't break older clients that
+    # still read this field. See lessons.md 2026-09-21.
     top_topics_summary = TopTopicsSummary(
-        positive=_topic_summary_for(SentimentEnum.positive),
-        negative=_topic_summary_for(SentimentEnum.negative),
-        neutral=_topic_summary_for(SentimentEnum.neutral),
+        positive=[],
+        negative=[],
+        neutral=[],
     )
 
     return DashboardResponse(
