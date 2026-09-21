@@ -32,12 +32,7 @@ jobs:
             echo "════════════════════════════════════════════════════════"
             echo "## 1. What python thinks date.today() is on this host"
             echo "════════════════════════════════════════════════════════"
-            /opt/sentimentpulse/backend/.venv/bin/python3 -c "
-            from datetime import date, datetime, timezone
-            print(f'date.today()                = {date.today()}')
-            print(f'datetime.now()              = {datetime.now()}')
-            print(f'datetime.now(timezone.utc)  = {datetime.now(timezone.utc)}')
-            "
+            /opt/sentimentpulse/backend/.venv/bin/python3 -c 'from datetime import date, datetime, timezone; print(f"date.today()  = {date.today()}"); print(f"datetime.now() = {datetime.now()}"); print(f"datetime.now(UTC) = {datetime.now(timezone.utc)}")'
             echo ""
 
             echo "════════════════════════════════════════════════════════"
