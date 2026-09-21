@@ -1,0 +1,132 @@
+name: SP Dashboard Diagnose (2026-09-20 incident)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Diagnose dashboard "zero today + spinning 30d" incident
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            DB=/opt/sentimentpulse/backend/sentimentpulse.db
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 0. Environment"
+            echo "════════════════════════════════════════════════════════"
+            echo "UTC now:        $(date -u '+%Y-%m-%d %H:%M:%S %Z')"
+            echo "Server local:   $(date '+%Y-%m-%d %H:%M:%S %Z')"
+            echo "systemd tz:     $(timedatectl show --value -p Timezone)"
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 1. What python thinks date.today() is on this host"
+            echo "════════════════════════════════════════════════════════"
+            /opt/sentimentpulse/backend/.venv/bin/python3 -c "
+            from datetime import date, datetime, timezone
+            print(f'date.today()                = {date.today()}')
+            print(f'datetime.now()              = {datetime.now()}')
+            print(f'datetime.now(timezone.utc)  = {datetime.now(timezone.utc)}')
+            "
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 2. raw_posts.post_date distribution — last 7 days"
+            echo "════════════════════════════════════════════════════════"
+            sqlite3 -header -column "$DB" "
+              SELECT
+                DATE(post_date) AS post_day,
+                COUNT(*) AS n,
+                MIN(post_date) AS earliest,
+                MAX(post_date) AS latest
+              FROM raw_posts
+              WHERE post_date >= DATE('now', '-7 days')
+              GROUP BY DATE(post_date)
+              ORDER BY post_day DESC;
+            "
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 3. Post-date range specifically for Hellraiser (game_id=21)"
+            echo "════════════════════════════════════════════════════════"
+            sqlite3 -header -column "$DB" "
+              SELECT
+                DATE(post_date) AS post_day,
+                COUNT(*) AS n
+              FROM raw_posts
+              WHERE game_id = 21
+                AND post_date >= DATE('now', '-3 days')
+              GROUP BY DATE(post_date)
+              ORDER BY post_day DESC;
+            "
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 4. What the dashboard KPI query returns for Hellraiser TODAY"
+            echo "   (this is the exact SentimentRecord join get_dashboard runs"
+            echo "    with period=today, i.e. WHERE post_date >= date.today())"
+            echo "════════════════════════════════════════════════════════"
+            sqlite3 -header -column "$DB" "
+              SELECT
+                sr.sentiment,
+                COUNT(*) AS n
+              FROM sentiment_records sr
+              JOIN raw_posts rp ON sr.raw_post_id = rp.id
+              WHERE rp.game_id = 21
+                AND rp.post_date IS NOT NULL
+                AND rp.is_off_topic_drift = 0
+                AND DATE(rp.post_date) >= DATE('now')
+              GROUP BY sr.sentiment;
+            "
+            echo "(empty result = correctly explains why dashboard shows 0 today)"
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 5. And for the last 7 days (weekly period) — Hellraiser"
+            echo "════════════════════════════════════════════════════════"
+            sqlite3 -header -column "$DB" "
+              SELECT
+                sr.sentiment,
+                COUNT(*) AS n
+              FROM sentiment_records sr
+              JOIN raw_posts rp ON sr.raw_post_id = rp.id
+              WHERE rp.game_id = 21
+                AND rp.post_date IS NOT NULL
+                AND rp.is_off_topic_drift = 0
+                AND DATE(rp.post_date) >= DATE('now', '-6 days')
+              GROUP BY sr.sentiment;
+            "
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 6. Dashboard warmup evidence in the journal (last 40 min)"
+            echo "════════════════════════════════════════════════════════"
+            journalctl -u sentimentpulse --no-pager --since "40 minutes ago" 2>&1 \
+              | grep -iE "dashboard (cache|warmup)|warmup_dashboard_cache|_compute_dashboard" \
+              | tail -30
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 7. Full ingestor last-run status"
+            echo "════════════════════════════════════════════════════════"
+            curl -sS http://127.0.0.1:8000/api/ingest/status | /opt/sentimentpulse/backend/.venv/bin/python3 -m json.tool
+            echo ""
+
+            echo "════════════════════════════════════════════════════════"
+            echo "## 8. Confirm new code is running (grep for warmup fn)"
+            echo "════════════════════════════════════════════════════════"
+            grep -c "warmup_dashboard_cache\|_DASHBOARD_CACHE" /opt/sentimentpulse/backend/routers/dashboard.py \
+              || echo "(none found — new code did not deploy!)"
+            head -2 /opt/sentimentpulse/backend/requirements.txt
+            /opt/sentimentpulse/backend/.venv/bin/python3 -c "import cachetools; print(f'cachetools {cachetools.__version__} installed')" 2>&1
+          EOF
