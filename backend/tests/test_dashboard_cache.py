@@ -100,3 +100,80 @@ class TestWarmupQueryCompiles:
         assert "is_active" in compiled, (
             f"expected is_active in compiled SQL, got: {compiled}"
         )
+
+
+class TestBackgroundWarmupEndpoint:
+    """POST /dashboard/warmup must return promptly with status=started, even
+    when warmup_dashboard_cache itself would take minutes. Previously the
+    endpoint blocked and clients 504'd through nginx's 120s proxy timeout
+    even though the work was completing server-side.
+
+    The single-flight guard must prevent a second POST from spawning a
+    second thread while one is still running.
+    """
+
+    def test_endpoint_returns_immediately_with_started_status(self, monkeypatch):
+        """Simulate a slow warmup and confirm the HTTP handler returns
+        promptly."""
+        import time
+
+        call_started_at: list[float] = []
+        call_returned_at: list[float] = []
+
+        def slow_warmup(*_args, **_kwargs):
+            call_started_at.append(time.monotonic())
+            time.sleep(2.0)  # simulate a warmup that far exceeds request budget
+            call_returned_at.append(time.monotonic())
+            return {"games_warmed": 0, "entries_written": 0, "errors": [], "elapsed_s": 2.0, "cache_stats": {}}
+
+        # Reset module state and swap in the slow warmup.
+        monkeypatch.setattr(dashboard_router, "warmup_dashboard_cache", slow_warmup)
+        monkeypatch.setattr(dashboard_router, "_WARMUP_THREAD", None)
+        monkeypatch.setattr(dashboard_router, "_WARMUP_LAST_SUMMARY", None)
+
+        request_start = time.monotonic()
+        response = dashboard_router.dashboard_warmup_endpoint()
+        request_elapsed = time.monotonic() - request_start
+
+        assert response["status"] == "started", response
+        assert "started_at" in response
+        # Must be at least an order of magnitude faster than the mock warmup.
+        assert request_elapsed < 0.5, (
+            f"endpoint blocked for {request_elapsed:.2f}s; "
+            "must return before the warmup completes"
+        )
+        # The background thread should have started by now.
+        assert len(call_started_at) == 1, \
+            f"expected warmup thread to have been started, got {call_started_at}"
+
+        # Wait for the thread to finish so it doesn't leak into other tests.
+        thread = dashboard_router._WARMUP_THREAD
+        if thread is not None:
+            thread.join(timeout=5.0)
+
+    def test_second_call_while_running_returns_already_running(self, monkeypatch):
+        """Two concurrent POSTs must not spawn two warmup threads."""
+        import time
+
+        def slow_warmup(*_args, **_kwargs):
+            time.sleep(1.5)
+            return {"games_warmed": 0, "entries_written": 0, "errors": [], "elapsed_s": 1.5, "cache_stats": {}}
+
+        monkeypatch.setattr(dashboard_router, "warmup_dashboard_cache", slow_warmup)
+        monkeypatch.setattr(dashboard_router, "_WARMUP_THREAD", None)
+        monkeypatch.setattr(dashboard_router, "_WARMUP_LAST_SUMMARY", None)
+
+        first = dashboard_router.dashboard_warmup_endpoint()
+        assert first["status"] == "started", first
+
+        # Immediate second call — first thread is still sleeping.
+        second = dashboard_router.dashboard_warmup_endpoint()
+        assert second["status"] == "already_running", second
+        assert second["started_at"] == first["started_at"], (
+            "second call should reflect the ongoing warmup's start time"
+        )
+
+        # Clean up.
+        thread = dashboard_router._WARMUP_THREAD
+        if thread is not None:
+            thread.join(timeout=5.0)

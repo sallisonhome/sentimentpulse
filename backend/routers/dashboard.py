@@ -10,7 +10,7 @@ Returns all KPI data for a single game over the requested time period:
 """
 import logging
 import threading
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 from cachetools import TTLCache
@@ -1091,14 +1091,78 @@ def warmup_dashboard_cache(logger_override=None) -> dict:
     return summary
 
 
+# Background-warmup state: single-flight guard + last-run summary. A full
+# 43-game × 5-period warmup takes several minutes on the current dataset
+# (~20s per entry for heavy titles on wide periods), which is well past
+# nginx's 120s proxy_read_timeout. If we ran the warmup synchronously in
+# the HTTP handler, the client would 504 even though the work is running
+# to completion server-side — that was the deployed behaviour on
+# 2026-09-20/21 and it made it look like the fix was broken.
+#
+# Background thread with a lock so parallel POSTs coalesce.
+_WARMUP_THREAD_LOCK = threading.Lock()
+_WARMUP_THREAD: Optional[threading.Thread] = None
+_WARMUP_LAST_SUMMARY: Optional[dict] = None
+_WARMUP_LAST_STARTED_AT: Optional[str] = None
+
+
+def _background_warmup_runner() -> None:
+    """Thread target: run warmup_dashboard_cache and stash the summary
+    so /dashboard/warmup-status can report it."""
+    global _WARMUP_LAST_SUMMARY
+    try:
+        summary = warmup_dashboard_cache()
+    except Exception as exc:  # noqa: BLE001 — background thread must not crash silently
+        summary = {"failed": True, "error": repr(exc)}
+        logger.exception("dashboard background warmup crashed")
+    _WARMUP_LAST_SUMMARY = summary
+
+
 @router.post("/dashboard/warmup", tags=["dashboard-admin"])
 def dashboard_warmup_endpoint():
-    """Manual trigger for warmup_dashboard_cache. Useful for post-deploy
-    warming and for diagnostic runs. No auth (matches the rest of the API);
-    the endpoint is a no-op on already-warm entries so it's safe to hit
-    repeatedly.
+    """Kick off warmup_dashboard_cache in a background thread and return
+    immediately. Returns {status: 'started'|'already_running', ...}.
+
+    Poll GET /dashboard/warmup-status for progress and the final summary.
+
+    The endpoint is single-flight: a second POST while a warmup is already
+    running returns without starting another. That prevents the ingest
+    post-hook and a manual admin POST from stacking two full-portfolio
+    passes on top of each other.
     """
-    return warmup_dashboard_cache()
+    global _WARMUP_THREAD, _WARMUP_LAST_STARTED_AT
+    with _WARMUP_THREAD_LOCK:
+        if _WARMUP_THREAD is not None and _WARMUP_THREAD.is_alive():
+            return {
+                "status": "already_running",
+                "started_at": _WARMUP_LAST_STARTED_AT,
+                "cache_stats": _dashboard_cache_stats(),
+            }
+        _WARMUP_LAST_STARTED_AT = datetime.now(timezone.utc).isoformat()
+        _WARMUP_THREAD = threading.Thread(
+            target=_background_warmup_runner,
+            name="dashboard-warmup",
+            daemon=True,
+        )
+        _WARMUP_THREAD.start()
+    return {
+        "status": "started",
+        "started_at": _WARMUP_LAST_STARTED_AT,
+        "cache_stats": _dashboard_cache_stats(),
+    }
+
+
+@router.get("/dashboard/warmup-status", tags=["dashboard-admin"])
+def dashboard_warmup_status_endpoint():
+    """Report whether a background warmup is currently running plus the
+    most recent completed summary (if any). Safe to poll frequently."""
+    running = _WARMUP_THREAD is not None and _WARMUP_THREAD.is_alive()
+    return {
+        "running": running,
+        "started_at": _WARMUP_LAST_STARTED_AT,
+        "last_summary": _WARMUP_LAST_SUMMARY,
+        "cache_stats": _dashboard_cache_stats(),
+    }
 
 
 @router.get("/dashboard/cache-stats", tags=["dashboard-admin"])
