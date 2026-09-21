@@ -120,6 +120,8 @@ export interface MultiTitleBeat {
 }
 
 export interface EventSummary {
+  performance?: import("../../../shared/event-performance").EventPerformance;
+  archived?: boolean;
   event_key: string;
   program: string;
   platform: string;
@@ -131,12 +133,7 @@ export interface EventSummary {
   days_until_start: number;
   is_active: boolean;
   is_past: boolean;
-  // Event-level Steam revenue total — sum of per-title net/gross revenue
-  // across every participating title, from the event's start_date through
-  // today. Only ever present when is_active is true AND SignalPulse has
-  // data for at least one participating title (see server/routes.ts
-  // sumSteamRevenueForEvent). steam_titles_covered lets the UI note partial
-  // coverage ("data for 3 of 5 titles") when not every title has reported.
+  // Legacy aliases for Steam clients. New event UI uses performance.
   steam_total_net_revenue_usd?: number | null;
   steam_total_gross_revenue_usd?: number | null;
   steam_total_days_covered?: number | null;

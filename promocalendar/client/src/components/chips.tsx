@@ -5,7 +5,9 @@ export function PlatformChip({ platform }: { platform: string }) {
   return <span className={`chip ${platCls(platform)}`}>{platform}</span>;
 }
 
-export function StatusChip({ daysUntilStart, isActive }: { daysUntilStart: number; isActive: boolean }) {
+export function StatusChip({ daysUntilStart, isActive, isPast, invalid }: { daysUntilStart: number; isActive: boolean; isPast?: boolean; invalid?: boolean }) {
+  if (invalid) return <span className="chip">Check dates</span>;
+  if (isPast) return <span className="chip">Past</span>;
   if (isActive) {
     return (
       <span className="chip live">

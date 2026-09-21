@@ -5,6 +5,7 @@ import { registerRoutes } from "./routes";
 import { initSchema } from "./db";
 import { serveStatic, setupVite } from "./static";
 import { log } from "./log";
+import { startEventPerformanceRefresh } from "./event-performance";
 
 const PORT = Number(process.env.PORT || 5003);
 const app = express();
@@ -14,6 +15,7 @@ app.use(cookieParser());
 
 // Init the SQLite schema (idempotent).
 initSchema();
+startEventPerformanceRefresh();
 
 // API routes
 registerRoutes(app);

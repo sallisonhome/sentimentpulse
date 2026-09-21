@@ -26,6 +26,13 @@ export function fmtRange(a: string, b: string): string {
   return `${MO[da.getUTCMonth()]} ${da.getUTCDate()} – ${MO[db.getUTCMonth()]} ${db.getUTCDate()}`;
 }
 
+/** Historical events need the year; never silently repair reversed dates. */
+export function fmtEventRange(a: string, b: string): string {
+  if (b < a) return `${a} to ${b}`;
+  const range = fmtRange(a, b);
+  return a.slice(0, 4) === b.slice(0, 4) ? `${range}, ${a.slice(0, 4)}` : range;
+}
+
 export function fmtDay(a: string): string {
   const d = parseISO(a);
   return `${MO[d.getUTCMonth()]} ${d.getUTCDate()}`;
