@@ -26,8 +26,22 @@ test("family mismatch is rejected even if confidence flag is stale", () => {
   assert.equal(safeTitleMetadata({...halloween,matchConfidence:"high"},true)!.name,"Halloween: The Game");
 });
 test("valid enrichment remains intact and malformed JSON does not crash PDP", () => {
-  const m = safeTitleMetadata({...halloween,matchConfidence:"high",screenshotsJson:"broken"})!;
+  const m = safeTitleMetadata({...halloween,storeName:halloween.name,matchConfidence:"high",screenshotsJson:"broken"})!;
   assert.equal(m.name,halloween.name); assert.deepEqual(m.screenshots,[]);
   assert.deepEqual(m.developers,["Creobit"]);
   assert.equal(safeTitleMetadata(undefined),null);
+});
+
+test("legacy null/high confidence cannot turn No Man's Sky into a free update", () => {
+  for (const matchConfidence of [null, "high"]) {
+    const m = safeTitleMetadata({
+      name: "No Man's Sky: Worlds Part II", storeName: "No Man's Sky",
+      matchConfidence, summary: "Update 5.50", releaseDate: "2025-01-29",
+      storeReleaseDate: "2016-08-12", igdbId: 329714,
+    })!;
+    assert.equal(m.name, "No Man's Sky");
+    assert.equal(m.releaseDate, "2016-08-12");
+    assert.equal(m.summary, null);
+    assert.equal(m.igdbId, null);
+  }
 });

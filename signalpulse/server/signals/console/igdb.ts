@@ -21,6 +21,7 @@
 import { rawSqlite } from "../../storage";
 import { log } from "../../log";
 import { storage } from "../../storage";
+import { metadataMatchesStorefront } from "../../console-title-identity";
 
 let cachedToken: { access_token: string; expires_at: number } | null = null;
 
@@ -128,9 +129,11 @@ export async function refreshIgdbForTitle(titleId: number, name: string, force: 
   // needs a real match on the next enrichment tick. Skipping those would
   // permanently strand every discovery-fresh row without a cover.
   const existing = rawSqlite.prepare(
-    `SELECT refreshed_at, igdb_id FROM console_title_igdb WHERE title_id = ?`
-  ).get(titleId) as { refreshed_at: string; igdb_id: number | null } | undefined;
-  if (existing && existing.igdb_id != null && !force) {
+    `SELECT refreshed_at, igdb_id, store_name, name FROM console_title_igdb WHERE title_id = ?`
+  ).get(titleId) as { refreshed_at: string; igdb_id: number | null; store_name: string | null; name: string | null } | undefined;
+  // Never feed a previous enrichment mistake back into the next search.
+  name = existing?.store_name || name;
+  if (existing && existing.igdb_id != null && !force && metadataMatchesStorefront(name, existing.name)) {
     const ageMs = Date.now() - new Date(existing.refreshed_at).getTime();
     if (ageMs < 7 * 24 * 60 * 60 * 1000) {
       return { titleId, igdbId: existing.igdb_id, slug: null, matched: true, fromCache: true };
@@ -147,9 +150,9 @@ export async function refreshIgdbForTitle(titleId: number, name: string, force: 
     hits = await igdbQuery<IgdbGame[]>("games", byId);
     log(`igdb: applied SKU override for titleId=${titleId} → igdb_id=${override.igdbId} (${override.canonicalName})`);
   } else {
-    // Query IGDB — search by name, take top hit
+    // Search several candidates: an update may rank above the base game.
     const escaped = name.replace(/"/g, '\\"');
-    const query = `search "${escaped}"; fields id,name,slug,summary,first_release_date,cover.image_id,artworks.image_id,screenshots.image_id,genres.name,themes.name,platforms.name,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count; limit 1;`;
+    const query = `search "${escaped}"; fields id,name,slug,summary,first_release_date,cover.image_id,artworks.image_id,screenshots.image_id,genres.name,themes.name,platforms.name,involved_companies.developer,involved_companies.publisher,involved_companies.company.name,rating,rating_count; limit 10;`;
     hits = await igdbQuery<IgdbGame[]>("games", query);
   }
   if (!Array.isArray(hits) || hits.length === 0) {
@@ -162,7 +165,7 @@ export async function refreshIgdbForTitle(titleId: number, name: string, force: 
     `).run(titleId, name, nowIso, nowIso);
     return { titleId, igdbId: null, slug: null, matched: false, fromCache: false };
   }
-  const g = hits[0];
+  const g = hits.find(hit => metadataMatchesStorefront(name, hit.name)) ?? hits[0];
   const nowIso = new Date().toISOString();
   const releaseIso = g.first_release_date ? new Date(g.first_release_date * 1000).toISOString().slice(0, 10) : null;
   const cover = imageUrl(g.cover?.image_id, "cover_big");
@@ -182,7 +185,7 @@ export async function refreshIgdbForTitle(titleId: number, name: string, force: 
   // is considered high confidence; below that we still write the metadata
   // (so PDPs and searches still work) but mark match_confidence='low' so the
   // leaderboard falls back to the storefront-captured store_name.
-  const matchConfidence = classifyMatchConfidence(name, g.name);
+  const matchConfidence = metadataMatchesStorefront(name, g.name) ? classifyMatchConfidence(name, g.name) : "low";
   if (matchConfidence === "low") {
     log(`igdb: LOW-confidence match titleId=${titleId} query="${name}" → "${g.name}" — leaderboard will fall back to store_name`);
   }

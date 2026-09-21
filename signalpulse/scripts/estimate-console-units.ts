@@ -371,7 +371,9 @@ async function main() {
     interface NameRow { title_id: number; norm_name: string; strip_name: string; platform: string }
     const rowsRaw = db.prepare(
       `SELECT psm.title_id AS title_id,
-              LOWER(TRIM(COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, '')))) AS norm_name,
+              LOWER(TRIM(CASE WHEN igdb.match_confidence='low' OR console_identity_matches(igdb.store_name,igdb.name)=0
+                THEN COALESCE(NULLIF(igdb.store_name,''),NULLIF(igdb.name,''))
+                ELSE COALESCE(NULLIF(igdb.name,''),NULLIF(igdb.store_name,'')) END)) AS norm_name,
               psm.platform AS platform
          FROM platform_sku_map psm
          JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id

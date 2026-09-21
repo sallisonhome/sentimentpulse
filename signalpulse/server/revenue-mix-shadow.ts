@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { metadataMatchesStorefront } from "./console-title-identity";
 import { MIX_VERSION, MIX_PLATFORMS, proposeMix, type Evidence, type Mix } from "./revenue-mix-model";
 
 export function ensureMixSchema(db: Database.Database) {
@@ -33,7 +34,9 @@ export function runMixShadow(db: Database.Database, familyKey: (name: string) =>
   const today = day(date);
   const skus = db.prepare(`SELECT p.title_id id,p.platform,p.msrp_usd_cents price,p.is_gamepass gp,
     p.is_manual_override manual,
+    i.store_name storeName, i.name enrichedName, x.source cacheSource,
     CASE WHEN p.platform='xbox' THEN x.name WHEN i.match_confidence='low' THEN i.store_name ELSE COALESCE(i.name,i.store_name) END name,
+    i.store_release_date storeReleased,
     CASE WHEN i.match_confidence='low' THEN i.store_release_date ELSE COALESCE(i.release_date,i.store_release_date) END released,
     EXISTS(SELECT 1 FROM title_multiplier_overrides o WHERE o.title_id=p.title_id AND o.effective_from<=?) overridden,
     EXISTS(SELECT 1 FROM revenue_calibration_anchors a WHERE a.title_id=p.title_id) anchored
@@ -48,6 +51,11 @@ export function runMixShadow(db: Database.Database, familyKey: (name: string) =>
   for (const s of signals) { const k = `${s.id}|${s.platform}`; const a = history.get(k) ?? []; a.push(s); history.set(k,a); }
   const families = new Map<string, any[]>();
   for (const sku of skus) {
+    if ((sku.platform === "xbox" && sku.cacheSource === "seeded_from_cti" && sku.storeName && !metadataMatchesStorefront(sku.storeName,sku.name))
+      || !metadataMatchesStorefront(sku.storeName, sku.enrichedName)) {
+      sku.name = sku.storeName;
+      sku.released = sku.storeReleased;
+    }
     const key = familyKey(sku.name ?? ""); if (!key) continue;
     const a = families.get(key) ?? [];
     // Editions carrying the same platform/title signal must not be added together.

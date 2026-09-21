@@ -53,6 +53,7 @@ import { rawSqlite } from "./storage";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
+import { metadataMatchesStorefront, uniquePlatformTitles } from "./console-title-identity";
 import { steamPortrait } from "./console-portrait-art";
 import { ensureMixSchema, mixStatus, runMixShadow } from "./revenue-mix-shadow";
 import type { Mix } from "./revenue-mix-model";
@@ -348,7 +349,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     const key = editionGroupKey(name);
     const steamRows = rawSqlite.prepare(`
       SELECT p.external_sku AS appId, p.title_id AS titleId,
-        CASE WHEN i.match_confidence = 'low' THEN i.store_name
+        CASE WHEN i.match_confidence = 'low' OR console_identity_matches(i.store_name, i.name) = 0 THEN i.store_name
              ELSE COALESCE(i.name, i.store_name) END AS name
       FROM platform_sku_map p JOIN console_title_igdb i ON i.title_id = p.title_id
       WHERE p.platform = 'steam' AND p.sku_role = 'base' AND p.business_model = 'paid'
@@ -512,7 +513,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Cross-gen base SKUs like 'Miles Morales PS4 & PS5' or 'DOOM Eternal PS4 & PS5'
       // are NOT filtered here: they are legitimate base games Sony sells from the PS5
       // store, and Push 2 will canonicalize them alongside any PS5-only twin SKU.
-      const nameSourceExpr = `LOWER(COALESCE(NULLIF(igdb.name,''), NULLIF(igdb.store_name,''), psm.external_sku))`;
+      // Exclusion tests must use the same identity as the displayed row. A
+      // base game enriched as an update must not be filtered as paid DLC.
+      const nameSourceExpr = `LOWER(CASE WHEN igdb.match_confidence='low' OR console_identity_matches(igdb.store_name,igdb.name)=0
+        THEN COALESCE(NULLIF(igdb.store_name,''),NULLIF(igdb.name,''),psm.external_sku)
+        ELSE COALESCE(NULLIF(igdb.name,''),NULLIF(igdb.store_name,''),psm.external_sku) END)`;
       const dlcBundleFilter = `
         AND ${nameSourceExpr} NOT LIKE '%season pass%'
         AND ${nameSourceExpr} NOT LIKE '% season 1'
@@ -577,7 +582,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
           OR date(
                CASE
-                 WHEN igdb.match_confidence = 'low'
+                 WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                    THEN COALESCE(igdb.store_release_date, igdb.release_date)
                  ELSE COALESCE(igdb.release_date, igdb.store_release_date)
                END
@@ -653,14 +658,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           -- to a numeric title_id render on the client. If xtc.name is
           -- NULL for an Xbox row, that row is filtered out below.
           CASE
-            WHEN psm.platform = 'xbox' THEN xtc.name
-            WHEN igdb.match_confidence = 'low'
+            WHEN psm.platform = 'xbox' THEN CASE WHEN xtc.source = 'seeded_from_cti' AND console_identity_matches(igdb.store_name, xtc.name) = 0 THEN COALESCE(NULLIF(igdb.store_name, ''), xtc.name) ELSE xtc.name END
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
             ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
           END                                       AS name,
           CASE
             WHEN psm.platform = 'xbox' THEN xtc.art_url
-            WHEN igdb.match_confidence = 'low'
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
           END                                       AS coverUrl,
@@ -671,13 +676,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           -- own date in that case. Otherwise prefer IGDB and fall back to the
           -- store's date only when IGDB is missing.
           CASE
-            WHEN igdb.match_confidence = 'low'
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(igdb.store_release_date, igdb.release_date)
             ELSE COALESCE(igdb.release_date, igdb.store_release_date)
           END                                       AS releaseDate,
           -- nameSource lets the client badge each row.
           CASE
-            WHEN igdb.match_confidence = 'low' THEN 'store'
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0) THEN 'store'
             WHEN igdb.name IS NOT NULL AND igdb.name != '' THEN 'igdb'
             ELSE 'store'
           END                                       AS nameSource,
@@ -733,13 +738,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           -- IGDB's release_date would otherwise refer to a completely different
           -- game and hide a brand-new launch from the Recent hot badge.
           CASE WHEN (
-                 CASE WHEN igdb.match_confidence = 'low'
+                 CASE WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                    THEN COALESCE(igdb.store_release_date, igdb.release_date)
                    ELSE COALESCE(igdb.release_date, igdb.store_release_date)
                  END
                ) IS NOT NULL
                 AND (
-                 CASE WHEN igdb.match_confidence = 'low'
+                 CASE WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                    THEN COALESCE(igdb.store_release_date, igdb.release_date)
                    ELSE COALESCE(igdb.release_date, igdb.store_release_date)
                  END
@@ -783,7 +788,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
        ORDER BY (${sortExprGated} IS NULL) ASC,
                 ${sortExprGated} ${dirSql},
                 (CASE WHEN (
-                   CASE WHEN igdb.match_confidence = 'low'
+                   CASE WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                      THEN COALESCE(igdb.store_release_date, igdb.release_date)
                      ELSE COALESCE(igdb.release_date, igdb.store_release_date)
                    END
@@ -835,7 +840,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       type Row = Record<string, any>;
       const groups: Row[] = [];
       const byKey = new Map<string, Row>();
-      for (const r of rows) {
+      for (const r of uniquePlatformTitles(rows as Array<Row & { titleId: number; platform: string; msrpUsdCents: number | null }>)) {
         const rawName = (r.name ?? "") as string;
         const key = editionGroupKey(rawName);
         // Fall back to title_id-anchored key when name normalization yields
@@ -990,7 +995,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           const allSteamSkus = rawSqlite.prepare(`
             SELECT psm.title_id AS titleId,
                    CASE
-                     WHEN igdb.match_confidence = 'low'
+                     WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                        THEN COALESCE(NULLIF(igdb.store_name,''), NULLIF(igdb.name,''))
                      ELSE COALESCE(NULLIF(igdb.name,''), NULLIF(igdb.store_name,''))
                    END AS name,
@@ -1421,18 +1426,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           psm.platform                                    AS platform,
           psm.msrp_usd_cents                              AS msrpUsdCents,
           CASE
-            WHEN psm.platform = 'xbox' THEN xtc.name
-            WHEN igdb.match_confidence = 'low'
+            WHEN psm.platform = 'xbox' THEN CASE WHEN xtc.source = 'seeded_from_cti' AND console_identity_matches(igdb.store_name, xtc.name) = 0 THEN COALESCE(NULLIF(igdb.store_name, ''), xtc.name) ELSE xtc.name END
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
             ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
           END                                             AS name,
           CASE
             WHEN psm.platform = 'xbox' THEN xtc.art_url
-            WHEN igdb.match_confidence = 'low'
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
           END                                             AS coverUrl,
-          CASE WHEN igdb.match_confidence = 'low'
+          CASE WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
             THEN igdb.store_release_date
             ELSE COALESCE(igdb.release_date, igdb.store_release_date)
           END                                             AS releaseDate,
@@ -1456,7 +1461,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
             OR date(
                  CASE
-                   WHEN igdb.match_confidence = 'low'
+                   WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                      THEN COALESCE(igdb.store_release_date, igdb.release_date)
                    ELSE COALESCE(igdb.release_date, igdb.store_release_date)
                  END
@@ -1876,14 +1881,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           psm.title_id AS titleId, psm.platform AS platform,
           psm.msrp_usd_cents AS msrpUsdCents,
           CASE
-            WHEN psm.platform = 'xbox' THEN xtc.name
-            WHEN igdb.match_confidence = 'low'
+            WHEN psm.platform = 'xbox' THEN CASE WHEN xtc.source = 'seeded_from_cti' AND console_identity_matches(igdb.store_name, xtc.name) = 0 THEN COALESCE(NULLIF(igdb.store_name, ''), xtc.name) ELSE xtc.name END
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
             ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
           END AS name,
           CASE
             WHEN psm.platform = 'xbox' THEN xtc.art_url
-            WHEN igdb.match_confidence = 'low'
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(NULLIF(igdb.store_header_image_url, ''), NULLIF(igdb.cover_url, ''))
             ELSE COALESCE(NULLIF(igdb.cover_url, ''), NULLIF(igdb.store_header_image_url, ''))
           END AS coverUrl,
@@ -1905,7 +1910,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
             OR date(
                  CASE
-                   WHEN igdb.match_confidence = 'low'
+                   WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                      THEN COALESCE(igdb.store_release_date, igdb.release_date)
                    ELSE COALESCE(igdb.release_date, igdb.store_release_date)
                  END
@@ -1914,7 +1919,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       `).all() as Array<{ titleId: number; platform: Platform; msrpUsdCents: number | null; name: string | null; coverUrl: string | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null }>;
 
       // Filter to this key.
-      const matching = rows.filter(r => editionGroupKey(r.name) === key);
+      const matching = uniquePlatformTitles(rows.filter(r => editionGroupKey(r.name) === key));
       if (matching.length === 0) return res.status(404).json({ error: "key not found" });
 
       // Anchor lookup for this window.
@@ -2090,11 +2095,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // collisions may leave that shape) → prefer the earliest-landed one.
       const xboxSkus = skus.filter(s => s.platform === "xbox").map(s => s.externalSku as string);
       const xboxCache = xboxSkus.length > 0 ? rawSqlite.prepare(
-        `SELECT big_id, name, art_url, first_landed_at
+        `SELECT big_id, name, art_url, source, first_landed_at
            FROM xbox_title_cache
           WHERE big_id IN (${xboxSkus.map(() => "?").join(",")})
           ORDER BY first_landed_at ASC LIMIT 1`,
-      ).get(...xboxSkus) as { big_id: string; name: string; art_url: string | null } | undefined : undefined;
+      ).get(...xboxSkus) as { big_id: string; name: string; art_url: string | null; source: string } | undefined : undefined;
+      // Historical CTI seeds were enrichment, not storefront verification.
+      // Do not let a frozen bad seed override the exact SKU's store identity.
+      if (xboxCache?.source === "seeded_from_cti" && igdb?.storeName &&
+          !metadataMatchesStorefront(igdb.storeName, xboxCache.name)) {
+        xboxCache.name = igdb.storeName;
+        xboxCache.art_url = igdb.storeHeaderImageUrl ?? null;
+      }
 
       // Current LTD-ish rating snapshot per platform (most recent capture)
       const latestPerPlatform = rawSqlite.prepare(`
@@ -2387,8 +2399,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const seedNameRow = rawSqlite.prepare(`
         SELECT DISTINCT
           CASE
-            WHEN psm.platform = 'xbox' THEN xtc.name
-            WHEN igdb.match_confidence = 'low'
+            WHEN psm.platform = 'xbox' THEN CASE WHEN xtc.source = 'seeded_from_cti' AND console_identity_matches(igdb.store_name, xtc.name) = 0 THEN COALESCE(NULLIF(igdb.store_name, ''), xtc.name) ELSE xtc.name END
+            WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
               THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
             ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
           END AS name
@@ -2407,8 +2419,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const sibRows = rawSqlite.prepare(`
           SELECT DISTINCT psm.title_id AS titleId,
             CASE
-              WHEN psm.platform = 'xbox' THEN xtc.name
-              WHEN igdb.match_confidence = 'low'
+              WHEN psm.platform = 'xbox' THEN CASE WHEN xtc.source = 'seeded_from_cti' AND console_identity_matches(igdb.store_name, xtc.name) = 0 THEN COALESCE(NULLIF(igdb.store_name, ''), xtc.name) ELSE xtc.name END
+              WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
                 THEN COALESCE(NULLIF(igdb.store_name, ''), NULLIF(igdb.name, ''))
               ELSE COALESCE(NULLIF(igdb.name, ''), NULLIF(igdb.store_name, ''))
             END AS name

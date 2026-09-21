@@ -33,9 +33,14 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
+import { metadataMatchesStorefront } from "./console-title-identity";
 import { eq, and, desc, isNull, isNotNull, asc, gte, lte, notInArray, inArray, sql } from "drizzle-orm";
 
 const sqlite = new Database("data.db");
+// Read-time guard also protects old rows with stale/null confidence flags.
+// No persisted mutation: reverting the code restores the previous read path.
+sqlite.function("console_identity_matches", { deterministic: true },
+  (storeName: any, name: any) => Number(metadataMatchesStorefront(storeName, name)));
 sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
 
