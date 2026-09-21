@@ -15,36 +15,36 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Audit
+      - name: Export scoped read-only Hellraiser records
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
-            set -euo pipefail
-
-            echo "## sqlite3 direct count"
-            sqlite3 /opt/sentimentpulse/backend/sentimentpulse.db "SELECT COUNT(*) AS games, (SELECT COUNT(*) FROM raw_posts) AS raw_posts FROM games;"
-
-            echo ""
-            echo "## sqlite3 first 5 game names"
-            sqlite3 /opt/sentimentpulse/backend/sentimentpulse.db "SELECT id, name FROM games LIMIT 5;"
-
-            echo ""
-            echo "## /api/games via localhost"
-            curl -sS -o /tmp/games.json -w "HTTP %{http_code} bytes %{size_download}\n" http://127.0.0.1:8000/api/games
-            head -c 500 /tmp/games.json
-            echo ""
-
-            echo ""
-            echo "## /api/ingest/status via localhost"
-            curl -sS http://127.0.0.1:8000/api/ingest/status
-            echo ""
-
-            echo ""
-            echo "## /api/games via public nginx"
-            curl -sS -o /tmp/games2.json -w "HTTP %{http_code} bytes %{size_download}\n" http://104.236.239.46/api/games
-            head -c 500 /tmp/games2.json
-            echo ""
-
-            echo ""
-            echo "## Backend log lines mentioning database or sqlite (last 80 lines)"
-            journalctl -u sentimentpulse --no-pager -n 200 --since "20 minutes ago" 2>&1 | grep -iE "sqlite|database|error|traceback|sqlalchemy" | tail -20
-          EOF
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/ops/expeditions-onboarding
+          mkdir -p out
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 python3 - > out/hellraiser-sep16-21.json <<'PY'
+          import sqlite3,json,datetime
+          db=sqlite3.connect("file:/opt/sentimentpulse/backend/sentimentpulse.db?mode=ro",uri=True)
+          db.row_factory=sqlite3.Row
+          db.execute("PRAGMA query_only=ON")
+          games=[dict(r) for r in db.execute("SELECT id,name,steam_app_id,is_active FROM games WHERE id IN (21,155,156)")]
+          assert any(g["id"]==21 and g["steam_app_id"]==1551980 for g in games)
+          rows=[dict(r) for r in db.execute("""
+          SELECT p.id,p.game_id,p.source,p.external_id,p.title,p.body,p.url,
+            p.post_date,p.collected_at,p.is_relevant,p.relevance_tier,p.is_off_topic_drift,
+            s.sentiment,s.topics
+          FROM raw_posts p LEFT JOIN sentiment_records s ON s.raw_post_id=p.id
+          WHERE p.game_id IN (21,155,156)
+            AND COALESCE(p.post_date,p.collected_at)>='2026-09-16 00:00:00'
+            AND COALESCE(p.post_date,p.collected_at)<'2026-09-22 00:00:00'
+          ORDER BY p.game_id,p.id
+          """)]
+          print(json.dumps({"extracted_at":datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "window_start":"2026-09-16T00:00:00Z","window_end_exclusive":"2026-09-22T00:00:00Z",
+            "games":games,"records":rows}))
+          db.close()
+          PY
+          python3 -c 'import json; d=json.load(open("out/hellraiser-sep16-21.json")); print("Read-only export:",len(d["records"]),"records")'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hellraiser-sep16-21-readonly
+          path: out/hellraiser-sep16-21.json
+          retention-days: 3
