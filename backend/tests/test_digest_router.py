@@ -61,20 +61,114 @@ class TestRecipientsCRUD:
 # ── Preview ──────────────────────────────────────────────────────────────────
 
 class TestPreview:
-    def test_preview_weekly_returns_html(self, client, publisher):
-        # Even with no games seeded the renderer should produce valid HTML
-        # full of "no qualifying posts" placeholders.
+    """v0032 (2026-09-21): /preview/weekly is now cache-first, non-blocking.
+    Cold-cache hits return 202 + a meta-refresh placeholder (fast), warm-cache
+    hits return 200 + the real digest HTML. See routers/digest.py.
+    """
+
+    def test_preview_weekly_cold_cache_returns_placeholder_202(self, client, publisher):
+        # Fresh test-DB — no cache entry exists, so first call returns 202
+        # + the meta-refresh placeholder. The heavy build runs in a daemon
+        # thread; the request itself finishes in <100ms.
+        from routers import digest as _d
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE.clear()
+            _d._PREVIEW_BUILD_INFLIGHT.clear()
+
+        # Patch the background builder so this test never touches Claude.
+        from unittest.mock import patch
+        with patch("routers.digest._build_weekly_preview_background"):
+            r = client.get("/api/digest/preview/weekly")
+        assert r.status_code == 202
+        assert "text/html" in r.headers["content-type"]
+        assert "Building the weekly digest" in r.text
+        assert "meta http-equiv=\"refresh\"" in r.text
+
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE.clear()
+            _d._PREVIEW_BUILD_INFLIGHT.clear()
+
+    def test_preview_weekly_warm_cache_returns_html_200(self, client, publisher):
+        from routers import digest as _d
+        from services.digest_service import _weekly_window_end
+        from datetime import date
+        window_end_iso = _weekly_window_end(date.today()).isoformat()
+
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE.clear()
+            _d._PREVIEW_BUILD_INFLIGHT.clear()
+            _d._PREVIEW_CACHE[("weekly", window_end_iso)] = {
+                "html": "<!DOCTYPE html><html><body>Weekly Executive Digest — test-seeded body</body></html>",
+                "subject": "Weekly Executive Digest — test",
+                "built_at": "2026-09-21T14:00:00+00:00",
+            }
+
         r = client.get("/api/digest/preview/weekly")
         assert r.status_code == 200
-        assert "text/html" in r.headers["content-type"]
-        body = r.text
-        assert "<!DOCTYPE html>" in body
-        assert "Weekly Executive Digest" in body
-        # All 8 title names should appear in the placeholder
-        from services.digest_service import PRIORITY_TITLES
-        import html as _h
-        for _, name in PRIORITY_TITLES:
-            assert _h.escape(name) in body
+        assert "Weekly Executive Digest" in r.text
+        assert "test-seeded body" in r.text
+
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE.clear()
+
+    def test_preview_weekly_status_idle_pending_ready(self, client, publisher):
+        from routers import digest as _d
+        from services.digest_service import _weekly_window_end
+        from datetime import date
+        window_end_iso = _weekly_window_end(date.today()).isoformat()
+        key = ("weekly", window_end_iso)
+
+        # Idle.
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE.clear()
+            _d._PREVIEW_BUILD_INFLIGHT.clear()
+            _d._PREVIEW_LAST_ERROR.clear()
+        r = client.get("/api/digest/preview/weekly/status")
+        assert r.status_code == 200
+        assert r.json() == {"status": "idle", "window_end": window_end_iso}
+
+        # Pending.
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_BUILD_INFLIGHT.add(key)
+        r = client.get("/api/digest/preview/weekly/status")
+        assert r.json() == {"status": "pending", "window_end": window_end_iso}
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_BUILD_INFLIGHT.discard(key)
+
+        # Ready.
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE[key] = {
+                "html": "<html>x</html>",
+                "subject": "Test subject",
+                "built_at": "2026-09-21T14:00:00+00:00",
+            }
+        body = client.get("/api/digest/preview/weekly/status").json()
+        assert body["status"] == "ready"
+        assert body["window_end"] == window_end_iso
+        assert body["subject"] == "Test subject"
+        assert body["built_at"] == "2026-09-21T14:00:00+00:00"
+
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE.clear()
+
+    def test_preview_weekly_status_error_state(self, client, publisher):
+        from routers import digest as _d
+        from services.digest_service import _weekly_window_end
+        from datetime import date
+        window_end_iso = _weekly_window_end(date.today()).isoformat()
+        key = ("weekly", window_end_iso)
+
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_CACHE.clear()
+            _d._PREVIEW_BUILD_INFLIGHT.clear()
+            _d._PREVIEW_LAST_ERROR.clear()
+            _d._PREVIEW_LAST_ERROR[key] = "RuntimeError: simulated build failure"
+        body = client.get("/api/digest/preview/weekly/status").json()
+        assert body["status"] == "error"
+        assert body["window_end"] == window_end_iso
+        assert "simulated build failure" in body["error"]
+        with _d._PREVIEW_CACHE_LOCK:
+            _d._PREVIEW_LAST_ERROR.clear()
 
     def test_preview_monthly_returns_html(self, client, publisher):
         r = client.get("/api/digest/preview/monthly")
