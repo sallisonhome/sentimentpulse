@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # signalpulse-daily.sh — daily refresh runner invoked by signalpulse-daily.service.
 #
-# Runs the four-phase console-leaderboards pipeline against the live droplet
+# Runs the five-phase console-leaderboards pipeline against the live droplet
 # database (SQLite WAL, concurrent reads from the running signalpulse.service
 # are safe — the write set here is disjoint from the request-path writer set).
 #
@@ -24,13 +24,14 @@
 #      accumulator disabled).
 #
 # Exit codes:
-#   0   — all four phases completed successfully
+#   0   — all five phases completed successfully
 #   1   — WorkingDirectory could not be resolved
 #   2   — tsx binary missing (deploy incomplete)
 #   10  — PHASE 1 (verify-discovery) failed
 #   20  — PHASE 2 (verify-console-collectors) failed
 #   30  — PHASE 3 (estimate-console-units) failed
 #   40  — PHASE 4 (write-revenue-anchors) failed
+#   50  — PHASE 5 (evaluate-daily-revenue-mix) failed
 #
 # The DIFFERENT exit codes per phase are deliberate — journalctl greps for
 # "exited with status=X" and the operator can tell which script broke without
@@ -104,6 +105,12 @@ log "── PHASE 4: write-revenue-anchors ──"
 if ! timeout 120 "$TSX" scripts/write-revenue-anchors.ts; then
   log "PHASE 4 failed (timeout=120s)"
   exit 40
+fi
+
+log "── PHASE 5: evaluate-daily-revenue-mix ──"
+if ! timeout 60 "$TSX" scripts/evaluate-daily-revenue-mix.ts; then
+  log "PHASE 5 failed (timeout=60s)"
+  exit 50
 fi
 
 log "═══ signalpulse-daily done ═══"

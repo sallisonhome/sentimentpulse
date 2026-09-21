@@ -12,7 +12,7 @@
  *
  *     Ranking columns:
  *       revenue  = units_mid * asp_usd_cents / 100 (window-scoped, ASP-adjusted)
- *       units    = window_estimates_daily.units_mid
+ *       units    = final revenue / realized or modeled ASP (after anchors)
  *       ratings  = store_rating_signal_daily.rating_count (latest LTD snapshot)
  *       score    = store_rating_signal_daily.avg_rating   (latest LTD snapshot)
  *
@@ -55,11 +55,16 @@ import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
 import { metadataMatchesStorefront, uniquePlatformTitles } from "./console-title-identity";
 import { steamPortrait } from "./console-portrait-art";
-import { ensureMixSchema, mixStatus, runMixShadow } from "./revenue-mix-shadow";
+import { ensureMixSchema, runMixShadow } from "./revenue-mix-shadow";
 import type { Mix } from "./revenue-mix-model";
+import { resolveSalesUnits } from "./console-sales-units";
+import { ensureDailyMixSchema, runDailyMix, dailyMixStatus, publishedDailyAdjustments, applyDailyAdjustment, publishedDailyRevenue } from "./revenue-mix-daily";
 
 type Platform = "steam" | "xbox" | "ps5";
 const PLATFORMS: Platform[] = ["steam", "xbox", "ps5"];
+const SALES_CASCADE: Record<string, string[]> = {
+  d7: ["d7", "d30"], d30: ["d30", "d90"], d90: ["d90"], m12: ["m12"], ltd: ["ltd"],
+};
 
 function parseDate(v: string | undefined, fallback: string): string {
   if (!v) return fallback;
@@ -315,6 +320,17 @@ export function evaluateRevenueMixShadow() {
     weights.map(n => n/total) as Mix);
 }
 
+function dailyMixPolicy() {
+  const weights = [1, PLATFORM_RATIO_VS_STEAM.ps5!, PLATFORM_RATIO_VS_STEAM.xbox!];
+  const total = weights.reduce((a,b)=>a+b,0);
+  return { familyKey: editionGroupKey, protectedTitle: (name: string) => IP_OVERRIDE_RULES.some(r=>r.pattern.test(name)),
+    baseline: weights.map(n=>n/total) as Mix,
+    asp: [aspFactorFor("steam"),aspFactorFor("ps5"),aspFactorFor("xbox")] as Mix };
+}
+export function evaluateDailyRevenueMix() {
+  return runDailyMix(rawSqlite,dailyMixPolicy());
+}
+
 // Public rate limiter (2026-09-13). Attached only to the four routes that
 // saber-auth's PUBLIC_READ_PATHS / PUBLIC_READ_PREFIXES exempt from JWT
 // enforcement, so unauthenticated public traffic can't saturate the shared
@@ -339,9 +355,12 @@ const publicLeaderboardLimiter = rateLimit({
 
 export function registerConsoleLeaderboardRoutes(app: Express) {
   ensureMixSchema(rawSqlite);
+  ensureDailyMixSchema(rawSqlite);
   setImmediate(() => {
     try { console.log("[revenue-mix-shadow]", evaluateRevenueMixShadow()); }
     catch (error) { console.error("[revenue-mix-shadow] audit failed; published estimates unchanged", error); }
+    try { console.log("[revenue-mix-daily]", evaluateDailyRevenueMix()); }
+    catch (error) { console.error("[revenue-mix-daily] evaluation failed; baseline retained", error); }
   });
   // Match the same safe storefront family used by the leaderboard. A console
   // SKU may share the verified family's Steam portrait, never an unrelated IGDB hit.
@@ -371,10 +390,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
 
   // ─── Leaderboard list ─────────────────────────────────────────────────────
-  app.get("/api/console/leaderboards/:platform", (req, res) => {
-    try {
-      const platform = req.params.platform as Platform;
-      if (!PLATFORMS.includes(platform)) return res.status(400).json({ error: "invalid platform" });
+  // One read-side revenue/units pipeline, shared by every Buying surface.
+  // Return the complete catalog so anchors and unit sorting precede top-N slicing.
+  function platformSales(platform: Platform, window: string, sort = "revenue", dir = "desc") {
       // Default is the 7d window so fresh weekly hits (launches like
       // Halloween: The Game and How to Fish) surface first. Because the
       // estimator sometimes doesn't have 7d numbers yet for very recent
@@ -382,15 +400,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // per-row so revenue/units always fills top-100 even when a specific
       // window is thin. The `windowUsed` column on each row tells the client
       // which underlying window produced the number.
-      const window = (req.query.window as string) || "d7";
-      if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
 
       // Sort mode + direction. Whitelist rather than string-interpolate to keep
       // the query prepareable and to prevent injection through the query string.
-      const sort = ((req.query.sort as string) || "revenue").toLowerCase();
-      if (!["revenue","units","ratings","score","asp"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
-      const dir = ((req.query.dir as string) || "desc").toLowerCase();
-      if (!["asc","desc"].includes(dir)) return res.status(400).json({ error: "invalid dir" });
 
       const aspFactor = aspFactorFor(platform);
 
@@ -433,14 +445,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // displayed LTD numbers as a 7-day value. The route's near-rung cliff gate
       // (w0 OR w1) admitted the row because w1=d30 was null but w2/w3 were checked
       // via COALESCE, not the cliff. Narrowing the cascade cuts that path.
-      const CASCADE_BY_WINDOW: Record<string, string[]> = {
-        d7:  ["d7", "d30"],
-        d30: ["d30", "d90"],
-        d90: ["d90"],
-        m12: ["m12"],
-        ltd: ["ltd"],
-      };
-      const cascade = CASCADE_BY_WINDOW[window];
+      const cascade = SALES_CASCADE[window];
 
       // "Recent hot" = the title released in the last 30 days AND has any 7d
       // estimate at all. Surfaces launches like Halloween: The Game (2026-09-08)
@@ -794,13 +799,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                    END
                  ) >= ? THEN 1 ELSE 0 END) DESC,
                 COALESCE(srs.rating_count, 0) DESC
-       -- LIMIT raised from 100 → 250 (Change 10, Push 2). Edition rollup collapses
-       -- SKU variants below in JS; we need enough headroom that a family with
-       -- 3+ editions (e.g. NHL 27 Deluxe + Standard, EA FC 27 Ultimate + Standard)
-       -- still leaves 100 unique game families on the client. 250 is a safe
-       -- overshoot: current top-100 has ~10–15 edition-collapsed rows, worst-case
-       -- ~2× blowup, so 250 rows in guarantees ≥100 groups out.
-       LIMIT 250
+       -- Do not limit before final anchors, unit reconciliation, and sorting.
       `).all(
         platform,               // 1: latest_rating CTE WHERE platform = ?
         aspFactor,              // 2: SELECT aspUsdCents CAST(msrp * ? AS INTEGER)
@@ -854,6 +853,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             editionCount: 0,
             editionTitles: [rawName],
             editionGroupKey: key,
+            familyTitleIds: [r.titleId],
+            representativeRevenue: r.revenueMidUsd ?? 0,
           };
           byKey.set(groupKey, initial);
           groups.push(initial);
@@ -868,7 +869,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // If the incoming row's revenue is higher than the current display,
         // promote it to the display row (keep its metadata: title, releaseDate,
         // avgRating, coverUrl, etc.) but carry the accumulated sums forward.
-        if (rRev > eRev) {
+        if (rRev > existing.representativeRevenue ||
+            (rRev === existing.representativeRevenue && r.titleId < existing.titleId)) {
           const bumped: Row = {
             ...r,
             revenueMidUsd: rRev + eRev,
@@ -876,27 +878,36 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             editionCount: existing.editionCount + 1,
             editionTitles: [...existing.editionTitles, rawName],
             editionGroupKey: key,
+            familyTitleIds: [...existing.familyTitleIds, r.titleId],
+            representativeRevenue: rRev,
           };
           byKey.set(groupKey, bumped);
           // Replace in the ordered array at the same slot.
           const idx = groups.indexOf(existing);
           if (idx >= 0) groups[idx] = bumped;
         } else {
-          existing.revenueMidUsd = eRev + rRev || null;
-          existing.unitsMid = eUnits + rUnits || null;
+          existing.revenueMidUsd = existing.revenueMidUsd != null || r.revenueMidUsd != null ? eRev + rRev : null;
+          existing.unitsMid = existing.unitsMid != null || r.unitsMid != null ? eUnits + rUnits : null;
           existing.editionCount += 1;
           existing.editionTitles.push(rawName);
+          existing.familyTitleIds.push(r.titleId);
         }
+      }
+      for (const g of groups) {
+        g.unitsMidEstimated = g.unitsMid;
+        delete g.representativeRevenue;
+        // Weighted family ASP preserves distinct-edition economics; no penny
+        // truncation before back-solving large unit quantities.
+        g.aspUsdCents = g.unitsMid > 0 && g.revenueMidUsd != null
+          ? g.revenueMidUsd * 100 / g.unitsMid
+          : (g.msrpUsdCents != null ? g.msrpUsdCents * aspFactor : null);
       }
       // ── Path A: Steam anchor overlay (Steam platform only) ─────────────
       // For any group whose (titleId, 'steam', window) matches a row in
       // revenue_calibration_anchors for the most recent as_of_date, swap the
       // estimator revenue for the anchor's actual_revenue_usd and tag
-      // dataSource='actual'. Units stay estimated on purpose — during active
-      // sales the units count is inflated relative to the estimator's ASP
-      // model, so replacing units with actual would mis-represent the
-      // per-unit economics; only the revenue side is trustworthy for a
-      // sale-active window. See lessons.md 2026-09-12 anchor entry.
+      // dataSource='actual'. Final units are back-solved below from that
+      // revenue and ASP; stored estimator units remain untouched.
       //
       // ── Path B: Platform revenue-ratio derivation (PS5 / Xbox) ─────────
       // Immutable platform revenue mix + per-IP overrides live at MODULE
@@ -980,135 +991,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // display name (same helper the client uses to collapse editions
         // within a platform). This is the fix for Path B silently missing
         // every cross-platform title.
-        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"}>();
-        // Console group keys we need Steam revenue for.
-        const groupKeysNeeded = new Set<string>();
-        for (const g of groups) {
-          const k = (g.editionGroupKey as string | undefined) ?? "";
-          if (k.length >= 2) groupKeysNeeded.add(k);
-        }
-
-        if (consoleRatio != null && groupKeysNeeded.size > 0) {
-          // Discover every Steam base SKU whose editionGroupKey is one of
-          // the keys we need. We fetch all Steam base SKUs and filter in
-          // JS because SQLite has no way to run editionGroupKey().
-          const allSteamSkus = rawSqlite.prepare(`
-            SELECT psm.title_id AS titleId,
-                   CASE
-                     WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
-                       THEN COALESCE(NULLIF(igdb.store_name,''), NULLIF(igdb.name,''))
-                     ELSE COALESCE(NULLIF(igdb.name,''), NULLIF(igdb.store_name,''))
-                   END AS name,
-                   psm.msrp_usd_cents AS msrpUsdCents
-              FROM platform_sku_map psm
-              LEFT JOIN console_title_igdb igdb ON igdb.title_id = psm.title_id
-             WHERE psm.platform = 'steam'
-               AND psm.business_model = 'paid'
-               AND psm.sku_role = 'base'
-               AND psm.msrp_usd_cents IS NOT NULL
-               AND psm.msrp_usd_cents > 0
-          `).all() as Array<{titleId:number; name:string|null; msrpUsdCents:number}>;
-          // Map: editionGroupKey -> [{titleId, msrpUsdCents}]
-          const steamSkusByKey = new Map<string, Array<{titleId:number; msrpUsdCents:number}>>();
-          for (const s of allSteamSkus) {
-            const k = editionGroupKey(s.name);
-            if (k.length < 2 || !groupKeysNeeded.has(k)) continue;
-            const arr = steamSkusByKey.get(k) ?? [];
-            arr.push({ titleId: s.titleId, msrpUsdCents: s.msrpUsdCents });
-            steamSkusByKey.set(k, arr);
-          }
-
-          // Collect the union of Steam title_ids that matter, for one
-          // batched anchor + estimator lookup.
-          const steamTitleIds: number[] = [];
-          const steamTitleIdToKey = new Map<number, string>();
-          steamSkusByKey.forEach((list, k) => {
-            for (const s of list) {
-              steamTitleIds.push(s.titleId);
-              steamTitleIdToKey.set(s.titleId, k);
-            }
-          });
-
-          if (steamTitleIds.length > 0) {
-            const placeholders = steamTitleIds.map(() => "?").join(",");
-
-            // Steam anchors first (authoritative). Aggregate SUM by key.
-            const steamAnchors = rawSqlite.prepare(`
-              SELECT title_id, actual_revenue_usd
-                FROM revenue_calibration_anchors
-               WHERE platform = 'steam' AND window = ?
-                 AND title_id IN (${placeholders})
-                 AND (title_id, as_of_date) IN (
-                     SELECT title_id, MAX(as_of_date)
-                       FROM revenue_calibration_anchors
-                      WHERE platform = 'steam' AND window = ?
-                        AND title_id IN (${placeholders})
-                      GROUP BY title_id
-                 )
-            `).all(win, ...steamTitleIds, win, ...steamTitleIds) as Array<{title_id:number; actual_revenue_usd:number}>;
-            const anchoredKeys = new Set<string>();
-            for (const r of steamAnchors) {
-              const k = steamTitleIdToKey.get(r.title_id);
-              if (!k) continue;
-              const prev = steamRevenueByKey.get(k);
-              const nextRev = (prev?.revenue ?? 0) + r.actual_revenue_usd;
-              steamRevenueByKey.set(k, { revenue: nextRev, source: "anchor" });
-              anchoredKeys.add(k);
-            }
-
-            // Steam estimator revenue for keys we didn't find an anchor for.
-            // Aggregates across every Steam base SKU per title_id, then we
-            // sum by editionGroupKey below.
-            const needEstimatorTitleIds = steamTitleIds.filter(tid => {
-              const k = steamTitleIdToKey.get(tid);
-              return k != null && !anchoredKeys.has(k);
-            });
-            if (needEstimatorTitleIds.length > 0) {
-              const steamAspFactor = aspFactorFor("steam");
-              const ph2 = needEstimatorTitleIds.map(() => "?").join(",");
-              const steamCascadeJoins = cascade.map((w, i) => `
-                LEFT JOIN window_estimates_daily w${i}
-                       ON w${i}.title_id = psm.title_id
-                      AND w${i}.platform = 'steam'
-                      AND w${i}.window = '${w}'
-                      AND w${i}.as_of_date = (SELECT MAX(as_of_date) FROM window_estimates_daily
-                                                WHERE title_id = psm.title_id AND platform='steam' AND window = '${w}')
-              `).join("\n");
-              const steamCascadeUnits = cascade.length === 1
-                ? `w0.units_mid`
-                : `COALESCE(${cascade.map((_, i) => `w${i}.units_mid`).join(", ")})`;
-              const steamCascadeGated = cascade.length >= 2 && window !== "ltd"
-                ? `CASE WHEN (w0.units_mid IS NOT NULL OR w1.units_mid IS NOT NULL) THEN ${steamCascadeUnits} ELSE NULL END`
-                : steamCascadeUnits;
-              const steamRows = rawSqlite.prepare(`
-                SELECT psm.title_id AS titleId,
-                       SUM(
-                         COALESCE(
-                           (${steamCascadeGated}) * psm.msrp_usd_cents * ? / 100.0,
-                           0
-                         )
-                       ) AS steamRevenue
-                  FROM platform_sku_map psm
-                  ${steamCascadeJoins}
-                 WHERE psm.platform = 'steam'
-                   AND psm.business_model = 'paid'
-                   AND psm.sku_role = 'base'
-                   AND psm.msrp_usd_cents IS NOT NULL
-                   AND psm.msrp_usd_cents > 0
-                   AND psm.title_id IN (${ph2})
-                 GROUP BY psm.title_id
-                HAVING SUM(COALESCE((${steamCascadeGated}) * psm.msrp_usd_cents, 0)) > 0
-              `).all(steamAspFactor, ...needEstimatorTitleIds) as Array<{titleId:number; steamRevenue:number}>;
-              // Sum estimator revenue by editionGroupKey.
-              for (const r of steamRows) {
-                if (r.steamRevenue <= 0) continue;
-                const k = steamTitleIdToKey.get(r.titleId);
-                if (!k) continue;
-                const prev = steamRevenueByKey.get(k);
-                if (prev && prev.source === "anchor") continue; // anchor wins
-                const nextRev = (prev?.revenue ?? 0) + r.steamRevenue;
-                steamRevenueByKey.set(k, { revenue: nextRev, source: "estimator" });
-              }
+        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"; windowUsed:string|null}>();
+        if (consoleRatio != null) {
+          // Steam never enters this branch, so recursion terminates after one
+          // level. Reusing its final result also preserves verified LTD scaling,
+          // family deduplication, and future approved revenue adjustments.
+          for (const s of platformSales("steam", window).titles) {
+            if (s.editionGroupKey && s.revenueMidUsd != null) {
+              steamRevenueByKey.set(s.editionGroupKey, {
+                revenue: s.revenueMidUsd,
+                source: s.dataSource === "actual" ? "anchor" : "estimator",
+                windowUsed: s.windowUsed,
+              });
             }
           }
         }
@@ -1126,7 +1020,20 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           //     estimator) are ignored on Path A — letting them win would
           //     re-inflate the very distortions the Path B ratio is
           //     meant to correct.
-          const a = anchorMap.get(g.titleId);
+          // Anchors are keyed to distinct title IDs, not regional listings or
+          // whichever edition happens to become the display row for this sort.
+          const familyAnchors = (g.familyTitleIds as number[]).map(id => anchorMap.get(id))
+            .filter((a): a is NonNullable<typeof a> => Boolean(a &&
+              (platform === "steam" || a.data_source?.startsWith("manual_anchor_verified_"))));
+          const a = familyAnchors.length ? {
+            ...familyAnchors[0],
+            actual_revenue_usd: familyAnchors.reduce((sum,a) => sum+a.actual_revenue_usd,0),
+            actual_units: familyAnchors.every(a => a.data_source?.startsWith("manual_anchor_verified_") &&
+              typeof a.actual_units === "number" && a.actual_units > 0)
+              ? familyAnchors.reduce((sum,a) => sum+a.actual_units!,0) : null,
+            data_source: familyAnchors.every(a => a.data_source?.startsWith("manual_anchor_verified_"))
+              ? "manual_anchor_verified_family" : familyAnchors[0].data_source,
+          } : undefined;
           const isVerifiedAnchor = a && a.data_source && a.data_source.startsWith('manual_anchor_verified_');
           const anchorWins = a && (platform === "steam" || isVerifiedAnchor);
           if (anchorWins && a) {
@@ -1135,17 +1042,17 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             g.dataSource = "actual";
             g.anchorSaleState = a.sale_state;
             g.anchorAsOfDate = a.as_of_date;
+            g.windowUsed = win;
+            g.gatedReason = null;
             // For verified anchors (executive-provided LTD numbers), the
             // anchor row carries authoritative actual_units too — overwrite
             // the estimator units so the UI shows the exec-provided figure
             // instead of the pre-anchor estimator's cascaded units_mid.
-            // Steam anchors from portal_fetch intentionally leave units
-            // alone: during active sales the estimator's units count is
-            // ASP-distorted vs actual, so replacing them there would
-            // misrepresent per-unit economics. See lessons.md 2026-09-12.
+            // Other anchors use modeled ASP in the final unit resolver.
             if (isVerifiedAnchor && typeof a.actual_units === 'number' && a.actual_units > 0) {
               g.unitsMid = a.actual_units;
               g.ownersMid = a.actual_units;
+              g.verifiedAnchorUnits = a.actual_units;
             }
             pathAOverlaid++;
             continue;
@@ -1269,8 +1176,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // recomputing revenue (breaks the immutable ratio) or recomputing
           // units (this branch). We recompute units.
           //
-          // aspUsdCents may be null when MSRP is missing; in that case we
-          // preserve the estimator units rather than write a bad number.
+          // Final unit reconciliation below returns null when ASP is unknown.
           if (consoleRatio != null) {
             const gk = (g.editionGroupKey as string | undefined) ?? "";
             const s = gk.length >= 2 ? steamRevenueByKey.get(gk) : undefined;
@@ -1281,21 +1187,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             // Also fall through when a Steam SKU exists but reports \$0 for
             // this window (e.g. a delisted PC port), because Steam × factor
             // = 0 would zero out an otherwise-real console row.
-            const hasMeaningfulSteam = s != null && s.revenue >= 1000; // \$1k threshold
+            const hasMeaningfulSteam = s != null && s.revenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
             if (hasMeaningfulSteam && s) {
               const ipOverride = ipOverrideFactorFor(g.name as string | null | undefined, platform);
               const factor = ipOverride ? ipOverride.factor : consoleRatio;
               const derivedRevenue = s.revenue * factor;
               g.revenueMidUsdEstimated = g.revenueMidUsd;
               g.revenueMidUsd = derivedRevenue;
-              g.unitsMidEstimated = g.unitsMid;
-              const aspCents = typeof g.aspUsdCents === "number" ? g.aspUsdCents : null;
-              if (aspCents != null && aspCents > 0) {
-                g.unitsMid = Math.round(derivedRevenue / (aspCents / 100));
-              }
               g.dataSource = ipOverride ? "derived_from_steam_ip_override" : "derived_from_steam";
               g.derivationRatio = factor;
               g.derivationSteamSource = s.source; // 'anchor' | 'estimator'
+              g.windowUsed = s.windowUsed;
+              g.gatedReason = g.aspUsdCents == null ? "no_msrp" : null;
               if (ipOverride) { g.derivationIpOverride = ipOverride.label; ipOverridesApplied++; }
               pathBDerived++;
               continue;
@@ -1310,18 +1213,6 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           g.dataSource = "estimated";
         }
 
-        // Re-sort groups by whichever sort key the client asked for so the
-        // overlay/derivation doesn't leave rows in visually-wrong positions.
-        // Only re-sort when sort is revenue-based; other sorts (score,
-        // ratings, asp, units) operate on fields these paths don't touch.
-        if (sort === "revenue") {
-          groups.sort((a, b) => {
-            const av = typeof a.revenueMidUsd === "number" ? a.revenueMidUsd : -1;
-            const bv = typeof b.revenueMidUsd === "number" ? b.revenueMidUsd : -1;
-            return dir === "asc" ? av - bv : bv - av;
-          });
-        }
-
         if (pathAOverlaid > 0 || pathBDerived > 0) {
           console.log(`[leaderboard-overlay] platform=${platform} window=${win} pathA=${pathAOverlaid} pathB=${pathBDerived} ipOverrides=${ipOverridesApplied} pathBSkippedNoSteam=${pathBSkippedNoSteam} groups=${groups.length}`);
         }
@@ -1330,9 +1221,35 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         console.log(`[leaderboard-overlay] skipped (${overlayErr?.message ?? overlayErr}); returning estimates`);
       }
 
-      // Trim to top-100 groups. The input SQL was ordered, group order was
-      // preserved, so groups[0..99] is the final leaderboard.
-      const collapsed = groups.slice(0, 100);
+      // Apply approved, recorded daily deltas before resolving units. The older
+      // windowed shadow candidates never enter published revenue.
+      const daily = platform==="steam" ? new Map() : publishedDailyAdjustments(rawSqlite,dailyMixPolicy(),window);
+      for (const g of groups) {
+        // Only the generic baseline overlay is eligible. Verified anchors,
+        // special IP ratios and LTD-anchor scaling never enter active mode.
+        // A cascaded wider estimate is not a measured requested-window total.
+        if(g.dataSource==="derived_from_steam" && g.windowUsed===window) {
+          const adjustment=applyDailyAdjustment(g.revenueMidUsd,daily.get(g.editionGroupKey),platform);
+          if(adjustment.delta!==0){
+            g.revenueMidUsdBaseline=g.revenueMidUsd;
+            g.revenueMidUsd=adjustment.revenue;
+            g.dailyMixAdjustmentUsd=adjustment.delta;
+            g.dailyMixAdjustedDays=adjustment.days;
+            g.dataSource="derived_from_steam_daily_mix";
+          }
+        }
+        Object.assign(g, resolveSalesUnits(g.revenueMidUsd, g.aspUsdCents, g.verifiedAnchorUnits ?? null));
+        delete g.verifiedAnchorUnits;
+      }
+      if (sort === "revenue" || sort === "units" || sort === "asp") {
+        const field = sort === "revenue" ? "revenueMidUsd" : sort === "units" ? "unitsMid" : "aspUsdCents";
+        groups.sort((a, b) => {
+          if (a[field] == null) return b[field] == null ? 0 : 1;
+          if (b[field] == null) return -1;
+          return dir === "asc" ? a[field] - b[field] : b[field] - a[field];
+        });
+      }
+      const collapsed = groups;
 
       // Latest data date for this platform — read from the most recent
       // capture in store_rating_signal_daily. Powers the "Refreshed daily
@@ -1352,13 +1269,28 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         console.log(`[leaderboard-latest] platform=${platform} lookup failed: ${latestErr?.message ?? latestErr}`);
       }
 
-      res.json({
+      return {
         platform, window, sort, dir, aspFactor, cascade,
         count: collapsed.length,
         titles: collapsed,
         latestCaptureDate,
         refreshCronUtc: "09:15",
-      });
+      };
+  }
+
+  app.get("/api/console/leaderboards/:platform", (req, res) => {
+    try {
+      const platform = req.params.platform as Platform;
+      const window = (req.query.window as string) || "d7";
+      const sort = ((req.query.sort as string) || "revenue").toLowerCase();
+      const dir = ((req.query.dir as string) || "desc").toLowerCase();
+      if (!PLATFORMS.includes(platform)) return res.status(400).json({ error: "invalid platform" });
+      if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
+      if (!["revenue","units","ratings","score","asp"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
+      if (!["asc","desc"].includes(dir)) return res.status(400).json({ error: "invalid dir" });
+      const result = platformSales(platform, window, sort, dir);
+      const titles = result.titles.slice(0, 100);
+      res.json({ ...result, titles, count: titles.length });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1399,8 +1331,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const xboxAspFactor  = aspFactorFor("xbox");
 
       // Cascade order matches the per-platform handler.
-      const CASCADE = ["d7","d30","d90","m12","ltd"] as const;
-      const cascade = CASCADE.slice(CASCADE.indexOf(window as any));
+      const cascade = SALES_CASCADE[window];
 
       // Fetch every paid base SKU across the three platforms with the
       // metadata we need for edition rollup, IGDB display, and revenue math.
@@ -1523,9 +1454,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const key = editionGroupKey(r.name);
         if (!key) continue;
 
-        // Xbox rows without a resolved name/cover are still filtered off
-        // the leaderboard (same rule as the per-platform handler).
-        if (r.platform === "xbox" && (!r.name || !r.coverUrl)) { filteredMissingSteam++; continue; }
+        // Artwork availability must not drop a valid platform's revenue.
+        // Identity gating matches the per-platform/PDP handlers.
+        if (r.platform === "xbox" && !r.name) { filteredMissingSteam++; continue; }
 
         const aspFactor = r.platform === "steam" ? steamAspFactor : r.platform === "ps5" ? ps5AspFactor : xboxAspFactor;
         const skuRawRevenue = (r.unitsMid != null && r.msrpUsdCents != null)
@@ -1600,6 +1531,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       };
       const multiRows: MultiRow[] = [];
       let overlayRatioCount = 0, overlayIpCount = 0, exclusiveFallbackCount = 0;
+      const resolvedSales = new Map(PLATFORMS.map(p => [p,
+        new Map(platformSales(p, window).titles.map(r => [r.editionGroupKey, r]))]));
 
       let noSteamAnchoredCount = 0;
       for (const [key, byPlatform] of Array.from(perKeyPerPlatform.entries())) {
@@ -1611,57 +1544,22 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // downstream. revenueSteam falls to 0 (no Steam SKU exists), and
         // the console anchors alone drive revenueCombined.
         const bothConsolesAnchored = !steam
-          && ps5?.anchoredRevenueUsd != null
-          && xbox?.anchoredRevenueUsd != null;
+          && resolvedSales.get("ps5")?.get(key)?.dataSource === "actual"
+          && resolvedSales.get("xbox")?.get(key)?.dataSource === "actual";
         if (!steam && !bothConsolesAnchored) continue;   // must be on Steam or dual-anchored
         if (steam && !ps5 && !xbox) continue;            // Steam alone is not cross-platform
         if (bothConsolesAnchored) noSteamAnchoredCount++;
 
         // Steam revenue: anchor wins over estimator. Zero when there is no
         // Steam SKU (dual-anchored branch b).
-        const steamRevenue = steam
-          ? (steam.anchoredRevenueUsd != null ? steam.anchoredRevenueUsd : steam.rawRevenueUsd)
-          : 0;
-        const hasMeaningfulSteam = steam != null && steamRevenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
-
-        // Choose a canonical display name for IP-override matching (Steam
-        // first — IGDB-cleanest source — falling back to console name).
-        const displayName = steam?.name || ps5?.name || xbox?.name || null;
-        const ipOverridePs5  = ps5  ? ipOverrideFactorFor(displayName, "ps5")  : null;
-        const ipOverrideXbox = xbox ? ipOverrideFactorFor(displayName, "xbox") : null;
-        const usedIpOverride = Boolean(ipOverridePs5 || ipOverrideXbox);
-
-        // Console revenue derivation. Anchor for that console+window wins
-        // absolutely (Path A). Otherwise Path B: overlay from Steam; if the
-        // Steam signal is not meaningful, fall back to that console's raw
-        // estimator revenue (PS5-exclusive fallback covers this).
-        let revenuePs5 = 0;
-        let revenueXbox = 0;
-        let usedFallback = false;
-
-        if (ps5) {
-          if (ps5.anchoredRevenueUsd != null) {
-            revenuePs5 = ps5.anchoredRevenueUsd;
-          } else if (hasMeaningfulSteam) {
-            const factor = ipOverridePs5 ? ipOverridePs5.factor : (PLATFORM_RATIO_VS_STEAM.ps5 as number);
-            revenuePs5 = steamRevenue * factor;
-          } else {
-            revenuePs5 = ps5.rawRevenueUsd;
-            usedFallback = true;
-          }
-        }
-        if (xbox) {
-          if (xbox.anchoredRevenueUsd != null) {
-            revenueXbox = xbox.anchoredRevenueUsd;
-          } else if (hasMeaningfulSteam) {
-            const factor = ipOverrideXbox ? ipOverrideXbox.factor : (PLATFORM_RATIO_VS_STEAM.xbox as number);
-            revenueXbox = steamRevenue * factor;
-          } else {
-            revenueXbox = xbox.rawRevenueUsd;
-            usedFallback = true;
-          }
-        }
-
+        const steamRevenue = steam ? (resolvedSales.get("steam")?.get(key)?.revenueMidUsd ?? 0) : 0;
+        // Reuse the canonical final revenue, including protected LTD scaling.
+        const ps5Sales = resolvedSales.get("ps5")?.get(key);
+        const xboxSales = resolvedSales.get("xbox")?.get(key);
+        const revenuePs5 = ps5 ? (ps5Sales?.revenueMidUsd ?? 0) : 0;
+        const revenueXbox = xbox ? (xboxSales?.revenueMidUsd ?? 0) : 0;
+        const usedIpOverride = [ps5Sales, xboxSales].some(r => r?.dataSource === "derived_from_steam_ip_override");
+        const usedFallback = [ps5Sales, xboxSales].some(r => r?.dataSource === "estimated_console_exclusive");
         const revenueCombined = steamRevenue + revenuePs5 + revenueXbox;
         if (revenueCombined <= 0) continue; // no signal on any platform
 
@@ -1728,7 +1626,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         count: trimmed.length,
         candidatesCount: multiRows.length,
         titles: trimmed,
-        revenueSummary: { ...revenueSummary(trimmed, window), calibration: mixStatus(rawSqlite) },
+        revenueSummary: { ...revenueSummary(trimmed, window), calibration: dailyMixStatus(rawSqlite) },
         latestCaptureDate,
         refreshCronUtc: "09:15",
       });
@@ -1860,12 +1758,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const window = ((req.query.window as string) || "d7").toLowerCase();
       if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
 
-      const steamAspFactor = aspFactorFor("steam");
-      const ps5AspFactor   = aspFactorFor("ps5");
-      const xboxAspFactor  = aspFactorFor("xbox");
-
-      const CASCADE = ["d7","d30","d90","m12","ltd"] as const;
-      const cascade = CASCADE.slice(CASCADE.indexOf(window as any));
+      const cascade = SALES_CASCADE[window];
       const cascadeUnitsExpr = cascade.map((w, i) => `w${i}.units_mid`).reduce((a, e) => `COALESCE(${a}, ${e})`);
       const cascadeOwnersExpr = cascade.map((w, i) => `w${i}.owners_mid`).reduce((a, e) => `COALESCE(${a}, ${e})`);
       const cascadeWindowExpr = cascade.map((w, i) => `CASE WHEN w${i}.units_mid IS NOT NULL THEN '${w}' END`).reduce((a, e) => `COALESCE(${a}, ${e})`);
@@ -1922,76 +1815,37 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const matching = uniquePlatformTitles(rows.filter(r => editionGroupKey(r.name) === key));
       if (matching.length === 0) return res.status(404).json({ error: "key not found" });
 
-      // Anchor lookup for this window.
-      const anchorRows = rawSqlite.prepare(`
-        SELECT rca.title_id AS titleId, rca.platform AS platform, rca.actual_revenue_usd AS revenue
-        FROM revenue_calibration_anchors rca
-        JOIN (SELECT title_id, platform, MAX(as_of_date) AS mx FROM revenue_calibration_anchors WHERE window = ? GROUP BY title_id, platform) l
-          ON l.title_id = rca.title_id AND l.platform = rca.platform AND l.mx = rca.as_of_date
-        WHERE rca.window = ?
-      `).all(window, window) as Array<{ titleId: number; platform: Platform; revenue: number }>;
-      const anchorMap = new Map<string, number>();
-      for (const a of anchorRows) anchorMap.set(`${a.titleId}|${a.platform}`, a.revenue);
-
-      // Aggregate per platform.
-      type PerPlat = { titleId: number; msrpUsdCents: number | null; rawRevenue: number; anchorRevenue: number | null; unitsMid: number; ownersMid: number | null; windowUsed: string | null };
-      const perPlatform: Partial<Record<Platform, PerPlat>> = {};
-      const skuList: Array<{ titleId: number; platform: Platform; name: string | null; coverUrl: string | null }> = [];
-      for (const r of matching) {
-        skuList.push({ titleId: r.titleId, platform: r.platform, name: r.name, coverUrl: r.coverUrl });
-        const asp = r.platform === "steam" ? steamAspFactor : r.platform === "ps5" ? ps5AspFactor : xboxAspFactor;
-        const raw = (r.unitsMid != null && r.msrpUsdCents != null) ? r.unitsMid * r.msrpUsdCents * asp / 100 : 0;
-        const anchor = anchorMap.get(`${r.titleId}|${r.platform}`) ?? null;
-        const prev = perPlatform[r.platform];
-        if (!prev) {
-          perPlatform[r.platform] = { titleId: r.titleId, msrpUsdCents: r.msrpUsdCents, rawRevenue: raw, anchorRevenue: anchor, unitsMid: r.unitsMid ?? 0, ownersMid: r.ownersMid, windowUsed: r.windowUsed };
-        } else {
-          prev.rawRevenue += raw;
-          if (anchor != null) prev.anchorRevenue = (prev.anchorRevenue ?? 0) + anchor;
-          prev.unitsMid += r.unitsMid ?? 0;
-          if (r.ownersMid != null) prev.ownersMid = (prev.ownersMid ?? 0) + r.ownersMid;
-          if (raw > 0 && prev.msrpUsdCents == null) prev.msrpUsdCents = r.msrpUsdCents;
-        }
-      }
-
-      // Overlay-final revenue per platform.
-      const steam = perPlatform.steam;
-      const steamRevenue = steam ? (steam.anchorRevenue ?? steam.rawRevenue) : 0;
-      const hasMeaningfulSteam = steamRevenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
-
+      const skuList = matching.map(({titleId,platform,name,coverUrl}) => ({titleId,platform,name,coverUrl}));
       // Pick a display name (prefer Steam SKU's name).
       const steamSku = skuList.find(s => s.platform === "steam") ?? skuList[0];
       const displayName = steamSku?.name ?? key;
-      const ipPs5  = ipOverrideFactorFor(displayName, "ps5");
-      const ipXbox = ipOverrideFactorFor(displayName, "xbox");
 
-      type PerPlatOut = { titleId: number; revenueUsd: number; unitsMid: number; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw" };
+      type PerPlatOut = { titleId: number; revenueUsd: number | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw"; aspUsdCents?: number | null; unitsMidEstimated?: number | null; unitSource?: string; dataSource?: string };
       const out: Partial<Record<Platform, PerPlatOut>> = {};
-      if (steam) {
-        out.steam = {
-          titleId: steam.titleId, revenueUsd: steamRevenue, unitsMid: steam.unitsMid, ownersMid: steam.ownersMid, windowUsed: steam.windowUsed,
-          msrpUsdCents: steam.msrpUsdCents, source: steam.anchorRevenue != null ? "anchor" : (steam.rawRevenue > 0 ? "raw" : "raw"),
+      for (const platform of PLATFORMS) {
+        const members = matching.filter(r => r.platform === platform);
+        if (!members.length) continue;
+        const canonical = platformSales(platform, window).titles.find(r => r.editionGroupKey === key);
+        out[platform] = {
+          titleId: canonical?.titleId ?? members[0].titleId,
+          msrpUsdCents: canonical?.msrpUsdCents ?? members[0].msrpUsdCents,
+          ownersMid: members.some(r => r.ownersMid != null)
+            ? members.reduce((n,r) => n + (r.ownersMid ?? 0),0) : null,
+          revenueUsd: canonical?.revenueMidUsd ?? null,
+          unitsMid: canonical?.unitsMid ?? null,
+          unitsMidEstimated: canonical?.unitsMidEstimated ?? null,
+          aspUsdCents: canonical?.aspUsdCents ?? null,
+          unitSource: canonical?.unitSource ?? "unavailable",
+          windowUsed: canonical?.windowUsed ?? null,
+          dataSource: canonical?.dataSource ?? "unavailable",
+          source: canonical?.dataSource === "actual" ? "anchor"
+            : canonical?.dataSource?.startsWith("derived_from_steam") ? "overlay" : "raw",
         };
       }
-      const ps5 = perPlatform.ps5;
-      if (ps5) {
-        let revenue = ps5.rawRevenue;
-        let src: "anchor" | "overlay" | "raw" = "raw";
-        if (ps5.anchorRevenue != null) { revenue = ps5.anchorRevenue; src = "anchor"; }
-        else if (hasMeaningfulSteam) { revenue = steamRevenue * (ipPs5 ? ipPs5.factor : (PLATFORM_RATIO_VS_STEAM.ps5 as number)); src = "overlay"; }
-        out.ps5 = { titleId: ps5.titleId, revenueUsd: revenue, unitsMid: ps5.unitsMid, ownersMid: ps5.ownersMid, windowUsed: ps5.windowUsed, msrpUsdCents: ps5.msrpUsdCents, source: src };
-      }
-      const xbox = perPlatform.xbox;
-      if (xbox) {
-        let revenue = xbox.rawRevenue;
-        let src: "anchor" | "overlay" | "raw" = "raw";
-        if (xbox.anchorRevenue != null) { revenue = xbox.anchorRevenue; src = "anchor"; }
-        else if (hasMeaningfulSteam) { revenue = steamRevenue * (ipXbox ? ipXbox.factor : (PLATFORM_RATIO_VS_STEAM.xbox as number)); src = "overlay"; }
-        out.xbox = { titleId: xbox.titleId, revenueUsd: revenue, unitsMid: xbox.unitsMid, ownersMid: xbox.ownersMid, windowUsed: xbox.windowUsed, msrpUsdCents: xbox.msrpUsdCents, source: src };
-      }
-
       const combinedRevenueUsd = (out.steam?.revenueUsd ?? 0) + (out.ps5?.revenueUsd ?? 0) + (out.xbox?.revenueUsd ?? 0);
-      const combinedUnits = (out.steam?.unitsMid ?? 0) + (out.ps5?.unitsMid ?? 0) + (out.xbox?.unitsMid ?? 0);
+      const parts = Object.values(out);
+      const combinedUnits = parts.every(p => p.unitsMid != null)
+        ? parts.reduce((sum, p) => sum + p.unitsMid!, 0) : null;
       const ownerParts = [out.steam?.ownersMid, out.ps5?.ownersMid, out.xbox?.ownersMid].filter((n): n is number => n != null);
       const combinedOwners = ownerParts.length > 0 ? ownerParts.reduce((a, b) => a + b, 0) : null;
       const familyRevenueSummary = revenueSummary([{
@@ -2048,7 +1902,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         combinedRevenueUsd,
         combinedUnits,
         combinedOwners,
-        revenueSummary: { ...familyRevenueSummary, calibration: mixStatus(rawSqlite) },
+        revenueSummary: { ...familyRevenueSummary, calibration: dailyMixStatus(rawSqlite) },
         window,
         cascade,
         skus: skuList,
@@ -2127,14 +1981,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Same rule as the leaderboard cascade: LTD is excluded from all windowed
       // rungs so a legacy title's lifetime total never masquerades as a 12-month
       // value on the standalone PDP. See CASCADE_BY_WINDOW comment above.
-      const CASCADE_BY_WINDOW_PDP: Record<string, string[]> = {
-        d7:  ["d7", "d30", "d90", "m12"],
-        d30: ["d30", "d90", "m12"],
-        d90: ["d90", "m12"],
-        m12: ["m12"],
-        ltd: ["ltd"],
-      };
-      const cascade = CASCADE_BY_WINDOW_PDP[window];
+      const cascade = SALES_CASCADE[window];
 
       // For each SKU, walk the cascade and find the first (platform, window)
       // with a units_mid row. Emit units/owners/revenue and the windowUsed tag.
@@ -2279,6 +2126,24 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           captureLatestDate,
         };
       });
+
+      // Detail KPIs must use the very same final family/platform revenue and
+      // units as its leaderboard row, not an independent pre-anchor estimate.
+      for (const kpi of windowKpisPerPlatform) {
+        const sales = platformSales(kpi.platform, window);
+        const canonical = sales.titles.find(r => r.familyTitleIds.includes(titleId));
+        Object.assign(kpi, {
+          revenueMidUsd: canonical?.revenueMidUsd ?? null,
+          unitsMid: canonical?.unitsMid ?? null,
+          unitsMidEstimated: canonical?.unitsMidEstimated ?? null,
+          aspUsdCents: canonical?.aspUsdCents ?? null,
+          unitSource: canonical?.unitSource ?? "unavailable",
+          dataSource: canonical?.dataSource ?? "unavailable",
+          windowUsed: canonical?.windowUsed ?? null,
+          cascade: sales.cascade,
+          gatedReason: canonical?.revenueMidUsd != null ? null : kpi.gatedReason ?? "no_estimate",
+        });
+      }
 
       // Parse JSON columns, applying the same match_confidence fallback the
       // leaderboard routes already use (see routes-console-leaderboards.ts
@@ -2591,16 +2456,25 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         dailyByPlatform[p] = dailyRev;
       }
 
+      const recordedDaily = publishedDailyRevenue(rawSqlite,dailyMixPolicy(),seedKey,from,to);
+      for (const d of Array.from(recordedDaily.keys())) if(!dates.includes(d)) dates.push(d);
+      dates.sort();
       const points = dates.map((d) => {
+        const recorded = recordedDaily.get(d);
+        if(recorded) {
+          const [steam,ps5,xbox]=recorded;
+          return {date:d,steam,ps5,xbox,combined:steam+ps5+xbox,source:"daily_mix_ledger"};
+        }
         const steam = dailyByPlatform.steam?.[d] ?? null;
         const ps5   = dailyByPlatform.ps5?.[d]   ?? null;
         const xbox  = dailyByPlatform.xbox?.[d]  ?? null;
         const parts = [steam, ps5, xbox].filter((v): v is number => typeof v === "number");
         const combined = parts.length > 0 ? parts.reduce((a, b) => a + b, 0) : null;
-        return { date: d, steam, ps5, xbox, combined };
+        return { date: d, steam, ps5, xbox, combined, source:"raw_daily_estimator" };
       });
 
-      res.json({ titleId, from, to, collectionStart: COLLECTION_START, points });
+      res.json({ titleId, from, to, collectionStart: COLLECTION_START, points,
+        methodology:"Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated." });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -80,9 +80,11 @@ test("No Man's Sky family reconciles every platform and window without update or
       assert.equal(family.summary,null);
       assert.deepEqual(family.platforms,platforms);
       assert.equal(family.skus.length,3);
-      assert.equal(family.combinedUnits,units.reduce((a,b)=>a+b,0));
+      assert.equal(family.combinedUnits,Object.values(family.perPlatform).reduce((a:number,b:any)=>a+b.unitsMid,0));
       for (let i=0;i<3;i++) {
-        assert.equal(family.perPlatform[platforms[i]].unitsMid,units[i]);
+        const p = family.perPlatform[platforms[i]];
+        assert.equal(p.unitsMid,Math.round(p.revenueUsd*100/p.aspUsdCents));
+        assert.equal(p.unitsMidEstimated,units[i]);
         assert.equal(family.perPlatform[platforms[i]].windowUsed,window);
       }
       const steamRevenue=units[0]*5999*0.66/100;
@@ -99,6 +101,11 @@ test("No Man's Sky family reconciles every platform and window without update or
         const r = per.titles.find((r:any)=>r.editionGroupKey==="no man's sky");
         assert.ok(r,JSON.stringify(per));
         assert.ok(Math.abs(r.revenueMidUsd-family.perPlatform[platform].revenueUsd)<0.01);
+        assert.equal(r.unitsMid,family.perPlatform[platform].unitsMid);
+        const detail = await get(`/api/console/titles/${r.titleId}?window=${window}`);
+        const kpi = detail.windowKpisPerPlatform.find((p:any)=>p.platform===platform);
+        assert.equal(kpi.revenueMidUsd,r.revenueMidUsd);
+        assert.equal(kpi.unitsMid,r.unitsMid);
       }
     }
     for (const id of titles) {
@@ -107,6 +114,80 @@ test("No Man's Sky family reconciles every platform and window without update or
       assert.ok(pdp.portraitCandidates[0]?.includes("/275850/"));
     }
     assert.deepEqual(db.prepare("SELECT * FROM window_estimates_daily ORDER BY id").all(),before);
+    const anchor = (id:number, platform:string, window:string, revenue:number, units:number|null, source:string) =>
+      db.prepare(`INSERT OR REPLACE INTO revenue_calibration_anchors
+        (title_id,platform,window,as_of_date,actual_revenue_usd,actual_units,reference_msrp_usd_cents,sale_state,data_source,created_at)
+        VALUES(?,?,?,?,?,?,5999,'regular',?,?)`).run(id,platform,window,stamp,revenue,units,source,stamp);
+    // Each period uses its own anchor, never a lifetime value masquerading as d7.
+    for (const [wi,window] of Object.keys(quantities).entries()) {
+      anchor(10005,"steam",window,100000*(wi+1),99999999,"portal_fetch");
+      anchor(10350,"ps5",window,200000*(wi+1),5000*(wi+1),"manual_anchor_verified_ltd");
+      // Auto-derived console anchor must NOT override the Steam-based model.
+      anchor(10438,"xbox",window,999999999,null,"estimator");
+      const family = await get(`/api/console/multiplatform-title/${encodeURIComponent("no man's sky")}?window=${window}`);
+      assert.equal(family.perPlatform.steam.revenueUsd,100000*(wi+1));
+      assert.equal(family.perPlatform.steam.unitsMid,Math.round(100000*(wi+1)/39.5934));
+      assert.equal(family.perPlatform.ps5.unitsMid,5000*(wi+1));
+      assert.equal(family.perPlatform.ps5.aspUsdCents,4000);
+      assert.equal(family.perPlatform.ps5.unitSource,"verified_anchor");
+      assert.ok(Math.abs(family.perPlatform.xbox.revenueUsd-100000*(wi+1)*.126/.495)<1e-8);
+      for (const [pi,platform] of platforms.entries()) {
+        const pdp = await get(`/api/console/titles/${titles[pi]}?window=${window}`);
+        const k = pdp.windowKpisPerPlatform[0], f = family.perPlatform[platform];
+        assert.equal(k.revenueMidUsd,f.revenueUsd);
+        assert.equal(k.unitsMid,f.unitsMid);
+      }
+      const board = await get(`/api/console/leaderboards-multiplatform?window=${window}`);
+      assert.equal(board.titles[0].revenueCombined,family.combinedRevenueUsd);
+      assert.equal(board.revenueSummary.calibration.applied,false);
+    }
+    // Changes to published economics must never become training observations.
+    assert.deepEqual(db.prepare("SELECT * FROM window_estimates_daily ORDER BY id").all(),before);
+    const anchorsBefore = db.prepare("SELECT * FROM revenue_calibration_anchors ORDER BY id").all();
+    await get("/api/console/leaderboards/ps5?window=ltd&sort=units&dir=asc");
+    assert.deepEqual(db.prepare("SELECT * FROM revenue_calibration_anchors ORDER BY id").all(),anchorsBefore);
+
+    // A revenue-only anchor with missing price is unknown units, not the stale estimate.
+    db.prepare("UPDATE platform_sku_map SET msrp_usd_cents=NULL WHERE title_id=10005").run();
+    let family = await get(`/api/console/multiplatform-title/${encodeURIComponent("no man's sky")}?window=d7`);
+    assert.equal(family.perPlatform.steam.revenueUsd,100000);
+    assert.equal(family.perPlatform.steam.unitsMid,null);
+    assert.equal(family.combinedUnits,null);
+    anchor(10005,"steam","d7",0,null,"portal_fetch");
+    family = await get(`/api/console/multiplatform-title/${encodeURIComponent("no man's sky")}?window=d7`);
+    assert.equal(family.perPlatform.steam.unitsMid,0);
+    db.prepare("UPDATE platform_sku_map SET msrp_usd_cents=5999 WHERE title_id=10005").run();
+
+    // Preserve protected shorter-window scaling, and do not fall back to LTD.
+    db.prepare("DELETE FROM revenue_calibration_anchors WHERE window<>'ltd'").run();
+    family = await get(`/api/console/multiplatform-title/${encodeURIComponent("no man's sky")}?window=d7`);
+    assert.equal(family.perPlatform.ps5.dataSource,"scaled_to_verified_ltd_anchor_units");
+    assert.equal(family.perPlatform.ps5.unitsMid,Math.round(13200*25000/3787202));
+    db.prepare("DELETE FROM revenue_calibration_anchors").run();
+    db.prepare("DELETE FROM window_estimates_daily WHERE window<>'ltd'").run();
+    family = await get(`/api/console/multiplatform-title/${encodeURIComponent("no man's sky")}?window=m12`);
+    assert.equal(family.perPlatform.steam.revenueUsd,null);
+    assert.equal(family.perPlatform.ps5.unitsMid,null);
+    assert.equal(family.combinedUnits,null);
+
+    // A low raw estimate outside the old 250-row pre-anchor cut must still rank.
+    for (let i=0;i<260;i++) {
+      db.prepare(`INSERT INTO platform_sku_map(title_id,platform,external_sku,sku_role,business_model,msrp_usd_cents,refreshed_at,created_at)
+        VALUES(?,'steam',?,'base','paid',1000,?,?)`).run(20000+i,String(20000+i),stamp,stamp);
+      db.prepare(`INSERT INTO console_title_igdb(title_id,name,store_name,refreshed_at,created_at)
+        VALUES(?,?,?,?,?)`).run(20000+i,`QA catalog ${i}`,`QA catalog ${i}`,stamp,stamp);
+      db.prepare(`INSERT INTO window_estimates_daily(title_id,platform,window,as_of_date,units_mid,method,created_at)
+        VALUES(?,'steam','d7',?,?,'review_velocity',?)`).run(20000+i,stamp,10000-i,stamp);
+    }
+    anchor(20259,"steam","d7",100000000,null,"portal_fetch");
+    const descending = await get("/api/console/leaderboards/steam?window=d7&sort=units&dir=desc");
+    assert.equal(descending.titles[0].titleId,20259);
+    assert.equal(descending.count,100);
+    for (const dir of ["asc","desc"]) {
+      const sorted = await get(`/api/console/leaderboards/steam?window=d7&sort=units&dir=${dir}`);
+      const values = sorted.titles.map((r:any)=>r.unitsMid).filter((n:any)=>n!=null);
+      assert.deepEqual(values,[...values].sort((a,b)=>dir==="asc"?a-b:b-a));
+    }
     // Refresh must repair a recently cached mismatch, search the store name
     // rather than its old child title, and prefer the parent even at rank 2.
     for (const key of ["twitch_client_id","twitch_client_secret"]) {

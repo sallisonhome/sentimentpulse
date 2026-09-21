@@ -63,6 +63,7 @@ interface WindowKpi {
   cascade: KpiWindow[];
   unitsMid: number | null;
   revenueMidUsd: number | null;
+  dataSource?: string;
   aspUsdCents: number | null;
   msrpUsdCents: number | null;
   method: string | null;
@@ -249,7 +250,7 @@ export default function ConsoleTitleDetail() {
           const primary = showRatingsFirst
             ? formatCompact(latest?.ratingCount ?? k.ratingCountEnd)
             : formatMoney(k.revenueMidUsd);
-          const primaryLabel = showRatingsFirst ? "ratings (LTD)" : "est. revenue";
+          const primaryLabel = showRatingsFirst ? "ratings (LTD)" : k.dataSource === "derived_from_steam_daily_mix" ? "est. revenue · daily adjusted" : "est. revenue";
           const avgRatingText = latest?.avgRating != null
             ? (k.platform === "steam"
                 ? `${Math.round(latest.avgRating * 20)}%`
@@ -387,6 +388,7 @@ type DailyRevResp = {
   from: string;
   to: string;
   collectionStart: string;
+  methodology?: string;
   points: DailyRevPoint[];
 };
 
@@ -507,7 +509,7 @@ function DailyRevenueCard({ titleId }: { titleId: number }) {
       )}
 
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Estimated daily revenue is derived from day-over-day change in the persistent LTD unit accumulator. Collection began on {data?.collectionStart ?? "2026-09-14"}; early dates will be sparse and the chart will fill in as more daily cron runs land.
+        {data?.methodology ?? "Estimated daily revenue is derived from day-over-day changes in lifetime unit estimates."} Collection began on {data?.collectionStart ?? "2026-09-14"}; early dates will be sparse and the chart will fill in with daily updates.
       </p>
     </Card>
   );
