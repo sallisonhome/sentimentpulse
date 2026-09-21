@@ -1,0 +1,111 @@
+name: SP Digest Email Smoke (single recipient)
+
+on:
+  workflow_dispatch:
+    inputs:
+      recipient:
+        description: Single email address that receives the smoke-test digest
+        required: true
+        type: string
+      banner_text:
+        description: Optional correction/test notice shown above the digest
+        required: false
+        type: string
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Send one smoke-test digest
+        env:
+          TEST_RECIPIENT: ${{ inputs.recipient }}
+          BANNER_TEXT: ${{ inputs.banner_text }}
+        run: |
+          python3 - << 'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          values = {
+              "TEST_RECIPIENT": os.environ["TEST_RECIPIENT"],
+              "BANNER_TEXT": os.environ.get("BANNER_TEXT", ""),
+          }
+          payload = base64.b64encode(
+              json.dumps(values).encode("utf-8")
+          ).decode("ascii")
+          Path("/tmp/digest-smoke-input.b64").write_text(payload)
+          PY
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            /tmp/digest-smoke-input.b64 root@104.236.239.46:/tmp/digest-smoke-input.b64
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 bash -s << 'REMOTE'
+          set -euo pipefail
+          cd /opt/sentimentpulse/backend
+          source .venv/bin/activate
+          python3 - << 'PY'
+          import base64
+          import html
+          import json
+          import re
+          from datetime import date
+          from pathlib import Path
+
+          from database import SessionLocal
+          from services.digest_service import (
+              _inject_banner,
+              _send_via_resend,
+              build_weekly_digest,
+          )
+
+          data = json.loads(base64.b64decode(
+              Path("/tmp/digest-smoke-input.b64").read_text()
+          ))
+          recipient = data["TEST_RECIPIENT"].strip().lower()
+          if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", recipient):
+              raise SystemExit("Invalid test recipient")
+
+          db = SessionLocal()
+          try:
+              built = build_weekly_digest(db, today=date.today())
+          finally:
+              db.close()
+
+          body = built["html"]
+          banner_text = data.get("BANNER_TEXT", "").strip()
+          if banner_text:
+              banner = (
+                  '<div style="padding:16px 22px;background:#fff8e8;'
+                  'font-family:Arial,sans-serif;font-size:14px;line-height:1.5;'
+                  'color:#382c15;"><strong>Test:</strong> '
+                  + html.escape(banner_text)
+                  + "</div>"
+              )
+              body = _inject_banner(body, banner)
+
+          result = _send_via_resend(built["subject"], [recipient], body)
+          safe = {
+              "sent": result.get("sent"),
+              "reason": result.get("reason"),
+              "provider": result.get("provider"),
+              "provider_id": result.get("provider_id"),
+              "inline_images": result.get("inline_images"),
+              "recipients": result.get("recipients"),
+              "subject": built["subject"],
+          }
+          print(json.dumps(safe))
+          if not result.get("sent"):
+              raise SystemExit("Smoke-test digest was not accepted")
+          if result.get("inline_images", 0) < 1:
+              raise SystemExit("Smoke-test digest had no CID inline images")
+          PY
+          rm -f /tmp/digest-smoke-input.b64
+          REMOTE

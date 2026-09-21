@@ -1,4 +1,5 @@
 """Tests for the executive digest service (weekly + monthly)."""
+import json
 from datetime import date, datetime, timedelta
 
 import pytest
@@ -435,6 +436,52 @@ class TestSend:
         # Only one POST attempt (no retry on success)
         assert mock_post.call_count == 1
 
+    def test_send_converts_data_uri_chart_to_cid_attachment(self, monkeypatch):
+        """The provider payload uses CID attachments; browser previews retain
+        self-contained data URIs."""
+        from unittest.mock import patch
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+            "YAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        )
+        preview_html = f'<html><body><img src="data:image/png;base64,{png_b64}"></body></html>'
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        with patch(
+            "services.digest_service._post_to_resend",
+            return_value={
+                "kind": "ok",
+                "status": 200,
+                "body": '{"id":"email-123"}',
+                "provider_id": "email-123",
+            },
+        ) as mock_post:
+            result = ds._send_via_resend(
+                "subject", ["a@example.com"], preview_html,
+            )
+
+        sent_html = mock_post.call_args.args[4]
+        attachments = mock_post.call_args.args[5]
+        assert sent_html == '<html><body><img src="cid:digest-chart-1"></body></html>'
+        assert attachments == [{
+            "content": png_b64,
+            "filename": "digest-chart-1.png",
+            "content_type": "image/png",
+            "content_id": "digest-chart-1",
+        }]
+        assert preview_html.startswith("<html><body><img src=\"data:image")
+        assert result["inline_images"] == 1
+        assert result["provider_id"] == "email-123"
+
+    def test_invalid_chart_aborts_before_provider_call(self, monkeypatch):
+        from unittest.mock import patch
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+        html = '<img src="data:image/png;base64,Zm9v">'
+        with patch("services.digest_service._post_to_resend") as mock_post:
+            result = ds._send_via_resend("subject", ["a@example.com"], html)
+        assert result["sent"] is False
+        assert result["reason"] == "invalid_inline_image"
+        mock_post.assert_not_called()
+
     def test_4xx_fatal_does_not_retry(self, db, monkeypatch):
         """4xx (e.g. 401 invalid api key, 422 invalid from-address) must
         NOT be retried — those are config bugs, retrying burns API quota."""
@@ -575,6 +622,38 @@ class TestUserAgent:
             "Resend's Cloudflare edge bans default urllib UA — we MUST set one. "
             f"Got: {ua!r}"
         )
+
+    def test_request_serializes_cid_attachments_and_provider_id(self):
+        """Raw Resend REST payload uses the documented snake_case CID fields."""
+        from unittest.mock import patch
+        from services import digest_service as ds
+
+        captured = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured["payload"] = json.loads(req.data)
+            class FakeResp:
+                status = 200
+                def __enter__(self): return self
+                def __exit__(self, *a): return False
+                def read(self, n): return b'{"id":"provider-email-456"}'
+            return FakeResp()
+
+        attachments = [{
+            "content": "iVBORw0KGgo=",
+            "filename": "digest-chart-1.png",
+            "content_type": "image/png",
+            "content_id": "digest-chart-1",
+        }]
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = ds._post_to_resend(
+                "re_fake", "SentimentPulse <x@y.com>", "subj",
+                ["recipient@example.com"], '<img src="cid:digest-chart-1">',
+                attachments,
+            )
+        assert captured["payload"]["attachments"] == attachments
+        assert captured["payload"]["html"] == '<img src="cid:digest-chart-1">'
+        assert result["provider_id"] == "provider-email-456"
 
 
 class TestCitationRendering:
