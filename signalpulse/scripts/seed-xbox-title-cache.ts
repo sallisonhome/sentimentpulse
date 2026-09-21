@@ -79,16 +79,10 @@ async function main() {
   const rescueRows: Array<{ big_id: string; name: string; art_url: string | null }> = [];
   for (const c of candidates) {
     if (already.has(c.external_sku)) continue;
-    // Same fallback priority the leaderboard used:
-    //   match_confidence='low' → store_name > name
-    //   else                   → name > store_name
-    const lowConf = c.match_confidence === "low";
-    const name = lowConf
-      ? (c.store_name || c.name || "")
-      : (c.name || c.store_name || "");
-    const art = lowConf
-      ? (c.store_header_image_url || c.cover_url || null)
-      : (c.cover_url || c.store_header_image_url || null);
+    // This cache is storefront identity, not an IGDB title-name cache.
+    // Without a captured store name, defer to the live SKU resolver below.
+    const name = c.store_name || "";
+    const art = c.store_header_image_url || null;
     if (name.trim().length === 0) continue;
     rescueRows.push({ big_id: c.external_sku, name: name.trim(), art_url: art });
   }

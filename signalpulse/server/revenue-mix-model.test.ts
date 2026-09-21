@@ -51,7 +51,7 @@ test("daily collector covers five windows, preserves estimates and is idempotent
   db.exec(`CREATE TABLE app_settings(key TEXT PRIMARY KEY,value TEXT);
     CREATE TABLE platform_sku_map(title_id,platform,external_sku,sku_role,business_model,msrp_usd_cents,is_gamepass,is_manual_override);
     CREATE TABLE console_title_igdb(title_id,name,store_name,match_confidence,release_date,store_release_date);
-    CREATE TABLE xbox_title_cache(big_id,name);
+    CREATE TABLE xbox_title_cache(big_id,name,source);
     CREATE TABLE title_multiplier_overrides(title_id,effective_from);
     CREATE TABLE revenue_calibration_anchors(title_id);
     CREATE TABLE store_rating_signal_daily(title_id,platform,capture_date,rating_count,window_label);
@@ -64,7 +64,7 @@ test("daily collector covers five windows, preserves estimates and is idempotent
         const id=f*3+pi,name=`Family ${f}`;
         db.prepare("INSERT INTO platform_sku_map VALUES(?,?,?,'base','paid',6000,0,0)").run(id,p,String(id));
         db.prepare("INSERT INTO console_title_igdb VALUES(?,?,?,'high','2020-01-01','2020-01-01')").run(id,name,name);
-        if(p==="xbox") db.prepare("INSERT INTO xbox_title_cache VALUES(?,?)").run(String(id),name);
+        if(p==="xbox") db.prepare("INSERT INTO xbox_title_cache VALUES(?,?,'displaycatalog')").run(String(id),name);
         for(let d=0;d<=365;d++) {
           const date=new Date(now.getTime()-(365-d)*86400000).toISOString().slice(0,10);
           db.prepare("INSERT INTO store_rating_signal_daily VALUES(?,?,?,?,'ltd')").run(id,p,date,10000+d*(pi===0?200:pi===1?(f===0?300:100):20));

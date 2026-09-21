@@ -1,7 +1,10 @@
+import { metadataMatchesStorefront } from "./console-title-identity";
+
 /** Shared fail-closed header policy for individual and title-family PDPs. */
 export function safeTitleMetadata(igdb: Record<string, any> | undefined, identityMismatch = false): Record<string, any> | null {
   if (!igdb) return null;
-  const unsafe = igdb.matchConfidence === "low" || identityMismatch;
+  const unsafe = igdb.matchConfidence === "low" || identityMismatch ||
+    !metadataMatchesStorefront(igdb.storeName, igdb.name);
   const parse = (value: unknown): any[] => {
     try { const result = typeof value === "string" ? JSON.parse(value) : value; return Array.isArray(result) ? result : []; }
     catch { return []; }
