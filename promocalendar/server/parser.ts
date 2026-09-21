@@ -29,6 +29,7 @@
  * the ingest based on warning count.
  */
 import ExcelJS from "exceljs";
+import { correctEventDates } from "./date-corrections.js";
 import {
   GAME_NAME_MAP,
   IGNORED_SHEET_PREFIXES,
@@ -415,7 +416,8 @@ export async function parsePromoWorkbook(
         );
       }
 
-      const key = `${currentPlatform}|${program.trim()}|${isoDate(startDate)}|${isoDate(endDate)}`;
+      const dates = correctEventDates(currentPlatform, program.trim(), isoDate(startDate), isoDate(endDate));
+      const key = `${currentPlatform}|${program.trim()}|${dates.start}|${dates.end}`;
       if (key !== bufKey) {
         flushCampaign();
         bufCampaign = {
@@ -426,9 +428,9 @@ export async function parsePromoWorkbook(
           platform: currentPlatform,
           platform_raw: currentPlatformRaw ?? currentPlatform,
           program: program.trim(),
-          start_date: isoDate(startDate),
-          end_date: isoDate(endDate),
-          notes: null,
+          start_date: dates.start,
+          end_date: dates.end,
+          notes: dates.note,
           source_row_start: r,
           source_row_end: r,
           skus: [],

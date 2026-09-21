@@ -2,7 +2,8 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import { registerRoutes } from "./routes";
-import { initSchema } from "./db";
+import { initSchema, raw } from "./db";
+import { repairKnownEventDates } from "./date-corrections";
 import { serveStatic, setupVite } from "./static";
 import { log } from "./log";
 import { startEventPerformanceRefresh } from "./event-performance";
@@ -15,6 +16,8 @@ app.use(cookieParser());
 
 // Init the SQLite schema (idempotent).
 initSchema();
+const correctedCampaigns = repairKnownEventDates(raw);
+if (correctedCampaigns) log(`Corrected source dates on ${correctedCampaigns} campaign rows.`);
 startEventPerformanceRefresh();
 
 // API routes
