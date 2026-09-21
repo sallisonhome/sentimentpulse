@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _JOB_ID = "daily_ingestion"
 _SMOKE_JOB_ID = "weekly_smoke_test"
 _WEEKLY_DIGEST_JOB_ID = "weekly_executive_digest"
+_WEEKLY_PREWARM_JOB_ID = "weekly_windowsummary_prewarm"
 _MONTHLY_DIGEST_JOB_ID = "monthly_executive_digest"
 
 # Module-level scheduler instance — created once in create_scheduler()
@@ -88,6 +89,43 @@ def create_scheduler() -> BackgroundScheduler:
     #            daily ingest, so we have fresh data for the 7-day window).
     #   Monthly: 1st of every month, 07:00 ET — summarizes the PRIOR month.
     et_zone = "America/New_York"
+
+    # v0032 (2026-09-21) — Weekly WindowSummary prewarm.
+    #
+    # WHY THIS EXISTS.
+    # The weekly digest build (`build_weekly_digest` → `build_weekly_block`
+    # per priority title) calls `generate_window_summary(end_date=Sunday)`
+    # for each of the ~9 priority titles. On a cold cache each call fires
+    # LLM synthesis for topic clusters and takes several seconds; nine of
+    # them serially takes 3–5 minutes. That is fine inside APScheduler
+    # (in-process, no HTTP timeout) but any HTTP call to /preview/weekly
+    # or /send/weekly on a cold cache 504s through nginx's 120s
+    # proxy_read_timeout.
+    #
+    # This prewarm cron generates and caches the WindowSummary rows for
+    # the anchor Sunday BEFORE the Monday 07:00 ET digest fires, so both
+    # the scheduled digest AND any operator /preview or /send during
+    # Monday morning read from cache and return in <10s total.
+    #
+    # WHEN IT RUNS.
+    # Monday 00:30 ET — 6.5h before the digest fire. Sunday is fully closed
+    # by then (calendar-day boundary in ET has passed at midnight, and all
+    # Sunday-timestamped posts already landed via the previous 10:45 ingest).
+    # Anchor date = today.weekday() == 0 (Monday) → window_end = today - 1 day
+    # = Sunday, matching digest_service._weekly_window_end().
+    #
+    # SEE ALSO.
+    # - lessons.md 2026-07-01 (monthly digest cron ordering).
+    # - services/digest_service._weekly_window_end (the shared anchor helper).
+    # - PR #97 (the Mon–Sun window fix that made this prewarm valuable).
+    _scheduler.add_job(
+        _weekly_prewarm_job,
+        trigger=CronTrigger(day_of_week="mon", hour=0, minute=30, timezone=et_zone),
+        id=_WEEKLY_PREWARM_JOB_ID,
+        name="Weekly WindowSummary prewarm (populates digest cache)",
+        replace_existing=True,
+    )
+
     _scheduler.add_job(
         _weekly_digest_job,
         trigger=CronTrigger(day_of_week="mon", hour=7, minute=0, timezone=et_zone),
@@ -118,8 +156,9 @@ def create_scheduler() -> BackgroundScheduler:
 
     logger.info(
         f"Scheduler created — daily ingestion at {ingest_hour:02d}:{ingest_minute:02d}, "
-        f"weekly smoke test Sun 03:00 local, weekly digest Mon 07:00 ET, "
-        f"monthly digest 1st 12:00 ET (after Step 9 monthly-summary generation)."
+        f"weekly smoke test Sun 03:00 local, weekly prewarm Mon 00:30 ET, "
+        f"weekly digest Mon 07:00 ET, monthly digest 1st 12:00 ET (after "
+        f"Step 9 monthly-summary generation)."
     )
     return _scheduler
 
@@ -197,6 +236,7 @@ def _smoke_test_job() -> None:
 # now < that timestamp. Cleaner than manually pausing the APScheduler job
 # because it survives redeploys and requires zero SSH access.
 _WEEKLY_DIGEST_SKIP_KEY = "weekly_digest_skip_until"
+_WEEKLY_PREWARM_SKIP_KEY = "weekly_prewarm_skip_until"
 _MONTHLY_DIGEST_SKIP_KEY = "monthly_digest_skip_until"
 
 
@@ -223,6 +263,90 @@ def _is_skipped(db, key: str) -> bool:
         return False
     now = datetime.now(tz=timezone.utc)
     return now < skip_until
+
+
+def _weekly_prewarm_job() -> None:
+    """APScheduler entry-point for the Monday 00:30 ET WindowSummary prewarm.
+
+    Populates the WindowSummary cache for every priority title at the
+    anchor Sunday (yesterday when this fires) so the Monday 07:00 ET
+    digest — and any operator /preview or /send during Monday morning —
+    reads from cache instead of doing 3–5 minutes of on-demand LLM work.
+
+    Honors AppSetting[weekly_prewarm_skip_until] the same way
+    _weekly_digest_job honors its skip key.
+
+    Per-title errors are logged and swallowed; a failure on one title
+    must not skip prewarm for the rest. The digest itself will still fall
+    back to on-demand generation for any title whose prewarm failed
+    (correctness preserved, just slower on that title).
+    """
+    from database import SessionLocal  # noqa: PLC0415
+    from services import period_summary_service as _pss  # noqa: PLC0415
+    from services.digest_service import (  # noqa: PLC0415
+        PRIORITY_TITLES,
+        _weekly_window_end,
+    )
+    from datetime import date as _date, timedelta as _td  # noqa: PLC0415
+    import time as _time  # noqa: PLC0415
+
+    db = SessionLocal()
+    try:
+        if _is_skipped(db, _WEEKLY_PREWARM_SKIP_KEY):
+            logger.info(
+                "Weekly prewarm skipped by AppSetting %r.",
+                _WEEKLY_PREWARM_SKIP_KEY,
+            )
+            return
+
+        # Compute the anchor Sunday exactly the way build_weekly_block
+        # will compute it 6.5h from now, so the cache key matches.
+        today = _date.today()
+        window_end = _weekly_window_end(today)
+        logger.info(
+            "Weekly prewarm starting for anchor Sunday %s (%d priority titles).",
+            window_end.isoformat(),
+            len(PRIORITY_TITLES),
+        )
+
+        succeeded = 0
+        failed: list[tuple[int, str, str]] = []
+        started_at = _time.monotonic()
+        for game_id, name in PRIORITY_TITLES:
+            title_started_at = _time.monotonic()
+            try:
+                _pss.generate_window_summary(
+                    db, game_id=game_id, days=7, end_date=window_end,
+                )
+                dt = _time.monotonic() - title_started_at
+                logger.info(
+                    "Weekly prewarm ok: game_id=%d %r in %.1fs",
+                    game_id, name, dt,
+                )
+                succeeded += 1
+            except Exception as exc:  # noqa: BLE001
+                # Log full trace but keep going. The digest can still
+                # generate this title on-demand at 07:00 ET.
+                logger.exception(
+                    "Weekly prewarm FAILED for game_id=%d %r: %s",
+                    game_id, name, exc,
+                )
+                failed.append((game_id, name, str(exc)))
+
+        total = _time.monotonic() - started_at
+        logger.info(
+            "Weekly prewarm complete for anchor %s: %d/%d titles cached in %.1fs. "
+            "Failed: %s",
+            window_end.isoformat(),
+            succeeded,
+            len(PRIORITY_TITLES),
+            total,
+            failed or "none",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("weekly prewarm job raised: %s", exc)
+    finally:
+        db.close()
 
 
 def _weekly_digest_job() -> None:
