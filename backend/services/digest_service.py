@@ -2041,7 +2041,7 @@ def _send_via_resend(
             "error": f"network error (after retry): {second.get('message')}"}
 
 
-def _inject_banner(html: str, banner_html: str) -> str:
+def _inject_banner(html: str, banner_html: Optional[str]) -> str:
     """Inject a one-shot banner into the digest HTML immediately after <body>.
     Used by operator resends that need to explain a correction (date-window
     fix, corrected numbers, etc). Preserves the built HTML otherwise — the
@@ -2052,12 +2052,11 @@ def _inject_banner(html: str, banner_html: str) -> str:
     """
     if not banner_html:
         return html
-    marker = "<body>"
-    idx = html.find(marker)
-    if idx == -1:
+    body_tag = re.search(r"<body\b[^>]*>", html, flags=re.IGNORECASE)
+    if body_tag is None:
         # No <body> — prepend, better than losing the banner.
         return banner_html + html
-    insert_at = idx + len(marker)
+    insert_at = body_tag.end()
     return html[:insert_at] + banner_html + html[insert_at:]
 
 
