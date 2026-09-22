@@ -38,8 +38,8 @@ export function useDashboardTopics(gameId: number | null, period: Period) {
     },
     // The LLM work is the whole point of this endpoint being separate;
     // give it a generous stale time so users don't retrigger synthesis
-    // on every focus change. 5 minutes matches the ~15-min server-side
-    // TTL cache in dashboard_feedback_synthesizer.py.
+    // on every focus change. Server-side synthesizer TTL is 18 hours
+    // (post-ingest warmup should still be warm for a morning visit).
     staleTime: 5 * 60 * 1000,
   })
 }

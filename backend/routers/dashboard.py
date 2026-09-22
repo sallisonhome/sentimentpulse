@@ -1226,6 +1226,115 @@ def warmup_dashboard_cache(logger_override=None) -> dict:
     return summary
 
 
+# 2026-09-22: Top Topics lives in a separate in-memory cache
+# (dashboard_feedback_synthesizer._CACHE). warmup_dashboard_cache() only fills
+# the KPI/volume payload and intentionally returns empty topic arrays, so the
+# widget never populated after ingest. Warm today + weekly (the default chip
+# and the next most-used chip) sequentially in one background thread.
+_TOPICS_WARMUP_THREAD_LOCK = threading.Lock()
+_TOPICS_WARMUP_THREAD: Optional[threading.Thread] = None
+
+
+def warmup_topics_cache(logger_override=None) -> dict:
+    """Fill the Top Topics synthesizer cache for every active game.
+
+    Sequential on purpose — each (game, period) fires three LLM calls.
+    Skip buckets that are already warm or already in flight so a dashboard
+    visit during warmup does not duplicate Sonar work.
+    """
+    import time
+    from database import SessionLocal
+    from services.dashboard_feedback_synthesizer import _cache_get as _synth_cache_get
+
+    log = logger_override or logger
+    started = time.monotonic()
+    warmed = 0
+    skipped = 0
+    errors: list[dict] = []
+    periods_to_warm = [PeriodEnum.today, PeriodEnum.weekly]
+
+    db = SessionLocal()
+    try:
+        active_games = (
+            db.query(Game)
+            .filter(Game.is_active.is_(True))
+            .all()
+        )
+        log.info(
+            "topics warmup starting: %d active games × %d periods",
+            len(active_games), len(periods_to_warm),
+        )
+        for game in active_games:
+            for period in periods_to_warm:
+                key = (game.id, period.value)
+                with _TOPICS_INFLIGHT_LOCK:
+                    already = key in _TOPICS_INFLIGHT
+                    if not already:
+                        cached = [
+                            _synth_cache_get((game.id, period.value, s.value))
+                            for s in (
+                                SentimentEnum.positive,
+                                SentimentEnum.negative,
+                                SentimentEnum.neutral,
+                            )
+                        ]
+                        if all(c is not None for c in cached):
+                            skipped += 1
+                            continue
+                        _TOPICS_INFLIGHT.add(key)
+                if already:
+                    skipped += 1
+                    continue
+                try:
+                    _synthesize_topics_background(
+                        game.id, game.name, period.value, _period_start(period),
+                    )
+                    warmed += 1
+                except Exception as exc:  # noqa: BLE001
+                    errors.append({
+                        "game_id": game.id,
+                        "period": period.value,
+                        "error": repr(exc),
+                    })
+                    log.warning(
+                        "topics warmup FAILED game=%d period=%s: %s",
+                        game.id, period.value, exc,
+                    )
+                    with _TOPICS_INFLIGHT_LOCK:
+                        _TOPICS_INFLIGHT.discard(key)
+    finally:
+        db.close()
+
+    elapsed = round(time.monotonic() - started, 2)
+    summary = {
+        "entries_warmed": warmed,
+        "entries_skipped": skipped,
+        "errors": errors,
+        "elapsed_s": elapsed,
+    }
+    log.info(
+        "topics warmup complete: warmed=%d skipped=%d errors=%d elapsed=%.2fs",
+        warmed, skipped, len(errors), elapsed,
+    )
+    return summary
+
+
+def start_topics_warmup_background(logger_override=None) -> dict:
+    """Fire-and-forget wrapper so ingest is not blocked on LLM synthesis."""
+    global _TOPICS_WARMUP_THREAD
+    with _TOPICS_WARMUP_THREAD_LOCK:
+        if _TOPICS_WARMUP_THREAD is not None and _TOPICS_WARMUP_THREAD.is_alive():
+            return {"status": "already_running"}
+        _TOPICS_WARMUP_THREAD = threading.Thread(
+            target=warmup_topics_cache,
+            kwargs={"logger_override": logger_override},
+            name="topics-warmup",
+            daemon=True,
+        )
+        _TOPICS_WARMUP_THREAD.start()
+    return {"status": "started"}
+
+
 # Background-warmup state: single-flight guard + last-run summary. A full
 # 43-game × 5-period warmup takes several minutes on the current dataset
 # (~20s per entry for heavy titles on wide periods), which is well past
