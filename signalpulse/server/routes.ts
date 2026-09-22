@@ -39,6 +39,7 @@ import { registerPromoSupportRoutes } from "./promo-support-routes";
 import { registerAmazonRoutes } from "./amazon-routes";
 import { registerConsoleLeaderboardRoutes } from "./routes-console-leaderboards";
 import { registerDemosLeaderboardRoutes } from "./routes-demos-leaderboard";
+import { loadDashboardDemoDownloads } from "./signals/demos/dashboard";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -213,6 +214,7 @@ export async function registerRoutes(
   app.get("/api/products", (_req, res) => {
     try {
       const products = storage.getAllProducts();
+      const demoDownloadsByProduct = loadDashboardDemoDownloads(products);
       // Enrich with latest counts and forecast totals
       const enriched = products.map(p => {
         const latestSteamWl = storage.getLatestSteamWishlist(p.id);
@@ -386,6 +388,7 @@ export async function registerRoutes(
 
         return {
           ...p,
+          demoDownloads: demoDownloadsByProduct.get(p.id) ?? [],
           platforms,
           perPlatformPricing: p.perPlatformPricing ? JSON.parse(p.perPlatformPricing) : null,
           latestSteamWishlistCount: wishlistSummary.lifetimeNet ?? latestSteamWl?.cumulativeCount ?? null,
@@ -2016,6 +2019,15 @@ export async function registerRoutes(
   // -- otherwise only runs via the daily ingestion cron. No license counts.
   // Same ops-token gating as the other automation-only routes above; see
   // server/signals/demos/pipeline.ts and portal-actuals.ts.
+  app.post("/api/ops/demos-download-actuals-refresh", async (_req, res) => {
+    try {
+      const { refreshDashboardDemoActuals } = await import("./signals/demos/download-actuals");
+      const result = await refreshDashboardDemoActuals();
+      res.json({ ok: result.failed === 0, result });
+    } catch {
+      res.status(500).json({ error: "Demo actuals refresh failed" });
+    }
+  });
   app.post("/api/ops/demos-pipeline-run", async (_req, res) => {
     try {
       const { runDemosDailyPipeline } = await import("./signals/demos/pipeline");

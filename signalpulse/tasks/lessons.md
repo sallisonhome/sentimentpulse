@@ -1,5 +1,22 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-22: own-demo downloads must use the actual demo report
+
+The user requires Saber actuals on both leaderboard and dashboard cards;
+only non-Saber demos use review-delta estimates (130x trial). Use each
+approved demo App ID, never a paid parent game's downloads or preloads.
+The verified Steamworks nav_regions.php?downloads=1 report labels its
+metric Total Downloads. Free licenses explicitly do not imply downloads;
+app/details lifetime unique users measures launches, not this report.
+Read the actual date-scoped total for every leaderboard window; use all
+history for cards. Verify title, scope, dates and metric before accepting
+data. Missing Saber reports stay unavailable; failed refreshes preserve and
+flag cached actuals, never fall back to reviews, CCU or license categories.
+Retired demos retain lifetime card totals. Toxic Commando is Saber-developed
+but Focus-published: approved demo mapping, not base publisher flag, controls
+its card. The existing 03:00 America/New_York ingestion updates both sources;
+do not create a second competing schedule.
+
 ## 2026-09-22: demo review scores must be demo-owned and non-overlapping
 
 Use the demo App ID, never the parent game's reviews. A lifetime histogram

@@ -1209,6 +1209,22 @@ function initializeDatabase() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS demo_portal_daily_unique
       ON demo_portal_daily (demo_title_id, date);
+
+    -- Dedicated authenticated Downloads by Region -> all-history totals.
+    -- Never reuse demo_portal_daily license categories or model estimates.
+    CREATE TABLE IF NOT EXISTS demo_download_actuals (
+      steam_app_id TEXT NOT NULL,
+      window TEXT NOT NULL CHECK(window IN ('d7','d30','d90','m12','ltd')),
+      downloads INTEGER CHECK(downloads IS NULL OR downloads >= 0),
+      report_start_date TEXT,
+      report_end_date TEXT,
+      fetched_at TEXT,
+      source_url TEXT,
+      source TEXT,
+      last_attempt_at TEXT NOT NULL,
+      last_error TEXT,
+      PRIMARY KEY (steam_app_id, window)
+    );
   `);
 }
 

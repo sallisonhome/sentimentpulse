@@ -86,6 +86,8 @@ test("daily and manual pipeline ingest only released game demos, never license c
     assert.equal(daily.ccu.succeeded, 2);
     assert.equal(daily.portalActualsFetch.status, "skipped");
     assert.equal(daily.actuals.rowsWritten, 0);
+    assert.equal(daily.dashboardActuals.attempted, 6, "daily schedule refreshes all approved Saber demos");
+    assert.equal(daily.dashboardActuals.failed, 6, "missing session is visible, never fabricated zero actuals");
     // Exercise the real orchestrator through HTTP without booting the
     // application, starting schedulers or touching developer data.
     const app = express();

@@ -30,14 +30,18 @@ export interface SaberDemoSeed {
   name: string;
   genre: string;
   isActive: boolean;
+  /** Verified Steam parent App ID, not a fuzzy title match. */
+  parentSteamAppId?: string;
 }
 
 export const SABER_DEMO_ROSTER: SaberDemoSeed[] = [
-  { steamAppId: "5184670", name: "Clive Barker's Hellraiser: Revival Demo", genre: "Action, Adventure", isActive: true },
-  { steamAppId: "4010800", name: "Docked Demo", genre: "Simulation", isActive: true },
-  { steamAppId: "4354730", name: "John Carpenter's Toxic Commando Demo", genre: "Action", isActive: false },
+  { steamAppId: "5184670", parentSteamAppId: "1551980", name: "Clive Barker's Hellraiser: Revival Demo", genre: "Action, Adventure", isActive: true },
+  { steamAppId: "4010800", parentSteamAppId: "2487300", name: "Docked Demo", genre: "Simulation", isActive: true },
+  // Retired-demo parent verified: https://steamdb.info/app/4354730/info/
+  { steamAppId: "4354730", parentSteamAppId: "2157830", name: "John Carpenter's Toxic Commando Demo", genre: "Action", isActive: false },
   { steamAppId: "3462370", name: "The Knightling Demo", genre: "Adventure", isActive: false },
-  { steamAppId: "4010830", name: "Bus Bound Demo", genre: "Simulation", isActive: false },
+  // Retired-demo parent verified: https://steamdb.info/app/4010830/
+  { steamAppId: "4010830", parentSteamAppId: "2095420", name: "Bus Bound Demo", genre: "Simulation", isActive: false },
   { steamAppId: "4047990", name: "Painkiller Demo", genre: "Action", isActive: false },
 ];
 

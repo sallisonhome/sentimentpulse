@@ -98,12 +98,12 @@ test("real API reconciles before sort and limit, preserves raw estimates and sou
       assert.equal(data.calibration.reportingCutoff, null);
     }
     const short = await (await fetch(`${url}?window=d7&sort=downloads&direction=asc&genre=Casual`)).json();
-    assert.deepEqual(short.demos.map((d: any) => d.id), [3, 2, 1]);
+    assert.deepEqual(short.demos.map((d: any) => d.id), [3, 1, 2]);
     assert.equal(short.demos[0].unitsMid, 130);
     assert.equal(short.demos[0].lifetimeModelBelowPeak, true);
-    assert.equal(short.demos[1].unitsMid, 19650);
-    assert.equal(short.demos[1].downloadMultiplier, 65.5);
-    assert.equal(short.demos[1].calibrationMode, "saber_baseline");
+    assert.equal(short.demos[2].unitsMid, null, "Saber never falls back to a review estimate");
+    assert.equal(short.demos[2].downloadMultiplier, null);
+    assert.equal(short.demos[2].calibrationMode, "actual");
     const ltd = await (await fetch(`${url}?window=ltd&sort=top`)).json();
     assert.deepEqual(ltd.demos.map((d: any) => d.id), [3, 2, 1]);
     assert.equal(ltd.demos[0].unitsMid, 387);

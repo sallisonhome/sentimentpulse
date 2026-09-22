@@ -3,11 +3,11 @@
  *
  * Route: /demos-leaderboard
  *
- * Default on open and period selection: estimated downloads, descending.
+ * Default on open and period selection: downloads, descending.
  * Top Demos remains available in Steam's recent daily-active-user order.
  * New Releases preserves Steam's release order, even without reviews.
  * Estimated downloads and sampled CCU remain separate ranking modes.
- * Windows affect estimates only; source timestamps and failures are
+ * Windows affect actual/estimated downloads only; source timestamps and failures are
  * visible rather than silently re-ranking a stale/truncated universe.
  */
 
@@ -33,7 +33,7 @@ const WINDOWS: Array<{ id: WindowKey; label: string }> = [
 const SORTS: Array<{ id: SortKey; label: string }> = [
   { id: "top", label: "Top Demos" },
   { id: "new", label: "New Releases" },
-  { id: "downloads", label: "Estimated Downloads" },
+  { id: "downloads", label: "Downloads" },
   { id: "ccu",       label: "Sampled CCU" },
 ];
 
@@ -58,7 +58,12 @@ interface DemoRow {
   isObservedMinimum: boolean;
   lifetimeModelBelowPeak: boolean;
   downloadMultiplier: number | null;
-  calibrationMode: "saber_baseline" | "non_saber_trial" | "actual";
+  calibrationMode: "non_saber_trial" | "actual";
+  actualsAsOf: string | null;
+  actualsStartDate: string | null;
+  actualsEndDate: string | null;
+  actualsStale: boolean;
+  actualsRefreshFailed: boolean;
   steamReviews: { positive: number; negative: number; total: number; positivePercent: number | null } | null;
 }
 
@@ -147,13 +152,13 @@ export default function DemosLeaderboard() {
           </p>
           {data?.asOfDate && (
             <p className="text-xs text-muted-foreground mt-1" data-testid="text-demos-refresh-note">
-              Latest estimate as of: {data.asOfDate}
+              Latest review estimate as of: {data.asOfDate}
             </p>
           )}
         </div>
         <div className="flex flex-col items-start md:items-end gap-2 w-full">
-          <div className="flex gap-1 flex-wrap" role="tablist" aria-label="Estimate window">
-            <span className="text-xs text-muted-foreground self-center mr-1">Estimate window</span>
+          <div className="flex gap-1 flex-wrap" role="tablist" aria-label="Download window">
+            <span className="text-xs text-muted-foreground self-center mr-1">Download window</span>
             {WINDOWS.map(w => (
               <Button
                 key={w.id}
@@ -212,7 +217,7 @@ export default function DemosLeaderboard() {
           ? `Tracked demos ordered by the demo's own positive Steam review percentage (${sortDirection === "desc" ? "highest first" : "lowest first"}).`
           : sortSel === "peak"
           ? `Tracked demos ordered by peak observed CCU (${sortDirection === "desc" ? "highest first" : "lowest first"}).`
-          : `Tracked demos ordered by estimated downloads for the selected window (${sortDirection === "desc" ? "highest first" : "lowest first"}).`}</p>
+          : `Downloads for the selected window: Saber actuals and non-Saber estimates (${sortDirection === "desc" ? "highest first" : "lowest first"}).`}</p>
         {!sourceView && data && <p className="text-xs text-muted-foreground">Showing {data.count} of {data.availableCount} matching demos. Missing values sort last.</p>}
         {sourceView && feed?.lastSuccessAt && (
           <p className="text-xs text-muted-foreground" data-testid="text-demos-source-time">
@@ -245,22 +250,22 @@ export default function DemosLeaderboard() {
         </p>
         <p className="mt-2" data-testid="text-demos-sampling-note">
           CCU is the latest collected sample, not a live feed. Peak observed CCU is the highest sample recorded
-          since tracking began, not a historical all-time peak. Date filters apply to download estimates only,
+          since tracking began, not a historical all-time peak. Date filters apply to downloads only,
           not Steam's rankings or CCU columns. Release dates belong to the demo, not its parent game.
         </p>
       </details>
 
       {data?.multiplier && (
         <details className="text-xs text-muted-foreground bg-muted/40 rounded-md px-3 py-2" data-testid="details-demos-method">
-          <summary className="cursor-pointer">Downloads: Saber {data.multiplier.mid}× · Other demos {data.multiplier.nonSaberTrial}× trial</summary>
+          <summary className="cursor-pointer">Downloads: Saber actuals · Other demos {data.multiplier.nonSaberTrial}× trial</summary>
           <p className="mt-2">
-          Estimated downloads = reviews added in the selected window × a downloads-per-review
-          multiplier. Saber titles retain {data.multiplier.mid}×, provisionally based on a single
-          anchor (Hellraiser Revival demo: 100,000 downloads / 1,527 reviews).
-          Non-Saber titles use a user-selected {data.multiplier.nonSaberTrial}× trial for live review,
-          not a newly verified calibration. Each row's tooltip states the applicable multiplier.
-          These are estimates, not confirmed Steamworks downloads. The benchmark's reporting cutoff
-          is unverified; no newly calibrated multiplier is claimed.
+          Saber demos use Steamworks “Total Downloads” for their own demo App IDs and selected
+          date window. Valve defines this metric as users who recorded playtime or preloaded the demo;
+          it excludes parent-game purchase preloads and is not free-license activations.
+          Reports refresh daily and may lag; hover an actual for its exact reporting dates.
+          Missing Saber actuals never fall back to estimates.
+          Non-Saber estimated downloads = reviews added in the selected window × {data.multiplier.nonSaberTrial}.
+          This is the user-selected trial, not a newly verified calibration.
           Values marked “≥” are minimums supported by observed concurrent players, not point estimates.
           This safeguard applies only to lifetime or windows covering the demo's entire released lifespan.
           It never treats returning players as new downloads in a shorter window.
@@ -298,7 +303,7 @@ export default function DemosLeaderboard() {
                 <th className="px-3 py-2 font-medium whitespace-nowrap" aria-sort={sortSel === "release" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("release", "Demo Released")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "reviews" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("reviews", "Reviews (LTD)")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "rating" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("rating", "Steam Reviews")}</th>
-                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "downloads" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("downloads", "Est. Downloads (window)")}</th>
+                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "downloads" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("downloads", "Downloads (window)")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "ccu" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("ccu", "Latest Sampled CCU")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak Observed CCU")}</th>
               </tr>
@@ -339,11 +344,12 @@ export default function DemosLeaderboard() {
                   <td className="px-3 py-2 text-right tabular-nums">
                     {d.unitsMid != null ? (
                       d.method === "steamworks_actual" ? (
-                        <span title="Confirmed via Saber's own Steamworks Sales & Activations report -- not an estimate">
+                        <span title={`Steamworks demo Total Downloads: ${d.unitsMid.toLocaleString()}. Report ${d.actualsStartDate} through ${d.actualsEndDate}; retrieved ${d.actualsAsOf}. Not licenses or parent-game preloads.`}>
                           {formatNumberCompact(d.unitsMid)}
-                          <Badge className="ml-1.5 text-[9px] align-middle" variant="outline" data-testid={`badge-confirmed-${d.steamAppId}`}>
-                            Confirmed
-                          </Badge>
+                          <span className="block text-xs text-muted-foreground" data-testid={`badge-confirmed-${d.steamAppId}`}>Steamworks actual</span>
+                          {(d.actualsRefreshFailed || d.actualsStale) && <span className="block text-xs text-amber-600 dark:text-amber-400">
+                            {d.actualsRefreshFailed ? "Refresh failed" : "Stale snapshot"}
+                          </span>}
                         </span>
                       ) : d.isObservedMinimum ? (
                         <span title={`Observed minimum: ${d.unitsMid.toLocaleString()} concurrent players. Review-only estimate: ${d.reviewEstimate == null ? "unavailable" : d.reviewEstimate.toLocaleString()}. Actual downloads may be substantially higher; this is not a calibrated point estimate.`}>
@@ -356,7 +362,7 @@ export default function DemosLeaderboard() {
                           {d.calibrationMode === "non_saber_trial" && <span className="block text-[11px] text-muted-foreground">130× trial</span>}
                         </span>
                       )
-                    ) : "—"}
+                    ) : d.isSaberPublished ? <span className="text-xs text-muted-foreground">Actuals unavailable</span> : "—"}
                     {d.lifetimeModelBelowPeak && !d.isObservedMinimum && (
                       <span className="block text-[11px] text-amber-600 dark:text-amber-400"
                         title="This title's lifetime review estimate is below observed concurrency. This shorter-window estimate remains review-based; lifetime players cannot be counted as new period downloads.">

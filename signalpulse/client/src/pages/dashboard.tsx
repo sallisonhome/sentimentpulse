@@ -10,6 +10,7 @@ import { formatNumber, formatCurrency, formatDate, getPlatformClass, getPlayerFo
 import { useForecastScenario, type ForecastScenario } from "@/hooks/use-forecast-scenario";
 import { ForecastScenarioToggle } from "@/components/forecast-scenario-toggle";
 import { OnPromoNowCard } from "@/components/OnPromoNowCard";
+import { DashboardDemoDownloadSummary } from "@/components/dashboard-demo-downloads";
 import { queryClient } from "@/lib/queryClient";
 import { SHARED_WISHLIST_FIELDS, PRODUCT_QUERY_STALE_TIME_MS } from "@/lib/shared-product-fields";
 
@@ -281,6 +282,8 @@ export default function Dashboard() {
                       ))}
                     </div>
                   </div>
+
+                  <DashboardDemoDownloadSummary demos={product.demoDownloads} />
 
                   {/* Wishlist row — Pre-Release WL (primary, drives forecasts)
                       + Current WL (with day-over-day delta) + PS5 WL. */}
