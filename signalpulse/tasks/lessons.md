@@ -1,5 +1,28 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-22: demo leaderboard coverage must match its named views
+
+Parsing only the first embedded New & Trending block does not discover the
+latest releases or most-played demos. Verify the actual browser feed for
+each named view and its pagination. Persist independent source ranks and
+timestamps; review/CCU sorts are not substitutes for Steam's Top Demos
+(recent daily active users) or New Releases order. Test known missing
+examples and no-review new releases, not just arithmetic on the old pool.
+
+Per-title appdetails checks hit HTTP 429 when expanding the universe and
+misclassify some software parents as games. Use batched Store Browse
+metadata, verify demo + parent types, and share a cache only within one
+pipeline run. Missing/failed metadata is not permission to include an app.
+Retain the last complete feed snapshot on upstream/verification failure
+and expose that failure rather than quietly relabeling old data as fresh.
+Do not deactivate a freshly metadata-verified demo just because its review
+histogram is absent. Software demos and license-category counts remain
+outside the playable-game-demo pipeline.
+
+Release dates must be the demo's, never the parent's. Label broad
+Steam genre tags honestly, and apply genre filters and numeric/date sorts
+before limiting API rows. Null values stay last in either sort direction.
+
 ## 2026-09-21: revenue authority and automatic application are separate contracts
 
 Final anchored/model revenue must be resolved before displayed units. Recompute estimated units from that revenue and unrounded family ASP; preserve verified revenue/unit pairs through their realized ASP. Never pair raw pre-overlay units with final revenue or silently change stored training observations. Reuse one resolver across every Buying surface and sort after reconciliation.

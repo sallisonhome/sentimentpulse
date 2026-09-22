@@ -87,7 +87,9 @@ export async function runDemosReviewHistoryCollector(delayMs = 250, eligibleAppI
       result.ingested += 1;
     } catch (e) {
       const reason = e instanceof Error ? e.message : String(e);
-      if (reason.includes("not-successful")) {
+      // A freshly verified playable demo may not have a histogram yet.
+      // Missing reviews must not remove new releases from source rankings.
+      if (reason.includes("not-successful") && !eligibleAppIds?.has(demo.steam_app_id)) {
         markDeactivatedStmt().run(nowIso, nowIso, nowIso, demo.id);
         result.deactivated += 1;
       } else {

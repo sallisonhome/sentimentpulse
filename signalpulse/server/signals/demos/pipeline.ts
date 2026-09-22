@@ -11,10 +11,12 @@
  */
 import { log } from "../../log";
 import { seedSaberDemos } from "./saber-seed";
-import { runDemosHubDiscovery, verifyDemoAppId } from "./discovery";
+import { runDemosHubDiscovery } from "./discovery";
+import { createDemoVerifier } from "./metadata";
 import { loadActiveDemoTitles, runDemosReviewHistoryCollector } from "./runner";
 import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
+import { rawSqlite } from "../../storage";
 
 export interface DemosPipelineRunResult {
   seeded: number;
@@ -30,21 +32,31 @@ export interface DemosPipelineRunResult {
 export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelineRunResult> {
   log("Demos pipeline: released game demos only; license-category ingestion disabled", "demos-pipeline");
   const seed = seedSaberDemos();
-  const discovery = await runDemosHubDiscovery(delayMs);
+  const verifier = createDemoVerifier(delayMs);
+  const discovery = await runDemosHubDiscovery(delayMs, verifier);
 
   // Includes seeded/manual/previously discovered entries, not just today's
   // hub. Fail closed for this run on missing metadata or network errors,
-  // without permanently deactivating a demo due to a transient failure.
+  // without deactivating a demo due to a transient failure. Confirmed
+  // non-game/unreleased/unavailable entries must also leave metric views.
   const eligibleAppIds = new Set<string>();
   const eligibility = { eligible: 0, excluded: 0, failed: 0 };
-  for (const demo of loadActiveDemoTitles()) {
-    try {
-      if (await verifyDemoAppId(demo.steam_app_id)) eligibleAppIds.add(demo.steam_app_id);
-      else eligibility.excluded += 1;
-    } catch {
-      eligibility.failed += 1;
+  const active = loadActiveDemoTitles();
+  const verified = await verifier.verify(active.map(demo => demo.steam_app_id));
+  for (const demo of active) {
+    const result = verified.get(demo.steam_app_id)!;
+    if (result.error) eligibility.failed += 1;
+    else if (result.demo) {
+      eligibleAppIds.add(demo.steam_app_id);
+      rawSqlite.prepare("UPDATE demo_titles SET genre=?,release_date=? WHERE id=?")
+        .run(result.demo.genre, result.demo.releaseDate, demo.id);
     }
-    if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+    else {
+      eligibility.excluded += 1;
+      const now = new Date().toISOString();
+      rawSqlite.prepare(`UPDATE demo_titles SET is_active=0,deactivated_at=?,last_checked_at=?,updated_at=?
+        WHERE id=?`).run(now, now, now, demo.id);
+    }
   }
   eligibility.eligible = eligibleAppIds.size;
 
