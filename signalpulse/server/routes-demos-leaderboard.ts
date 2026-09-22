@@ -29,7 +29,7 @@ import type { Express } from "express";
 import { rawSqlite } from "./storage";
 import { WINDOWS, type WindowKey } from "./signals/demos/estimator";
 import { DEMO_FEED_LIMIT } from "./signals/demos/feeds";
-import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, reconcileDemoDownloads } from "./signals/demos/download-consistency";
+import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, NON_SABER_DOWNLOAD_TRIAL, demoDownloadMultiplier, demoReviewEstimate, reconcileDemoDownloads } from "./signals/demos/download-consistency";
 
 type DemoSort = "top" | "new" | "reviews" | "downloads" | "ccu" | "peak" | "release";
 
@@ -53,6 +53,8 @@ interface DemoLeaderboardRow {
   reviewEstimate: number | null;
   isObservedMinimum: boolean;
   lifetimeModelBelowPeak: boolean;
+  downloadMultiplier: number | null;
+  calibrationMode: "saber_baseline" | "non_saber_trial" | "actual";
 }
 
 function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number) {
@@ -79,13 +81,13 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     }>;
   const estimateByDemoId = new Map(estimateRows.map((r) => [r.demo_title_id, r]));
   const lifetimeEstimates = rawSqlite.prepare(`
-    SELECT e.demo_title_id,e.units_mid FROM demo_window_estimates_daily e
+    SELECT e.demo_title_id,e.units_mid,e.review_delta FROM demo_window_estimates_daily e
     JOIN (SELECT demo_title_id,MAX(as_of_date) date FROM demo_window_estimates_daily
           WHERE window='ltd' GROUP BY demo_title_id) latest
       ON latest.demo_title_id=e.demo_title_id AND latest.date=e.as_of_date
     WHERE e.window='ltd' AND e.method='review_delta_multiplier'
-  `).all() as Array<{ demo_title_id: number; units_mid: number | null }>;
-  const lifetimeById = new Map(lifetimeEstimates.map(row => [row.demo_title_id, row.units_mid]));
+  `).all() as Array<{ demo_title_id: number; units_mid: number | null; review_delta: number | null }>;
+  const lifetimeById = new Map(lifetimeEstimates.map(row => [row.demo_title_id, row]));
 
   const ccuRows = rawSqlite
     .prepare(
@@ -122,10 +124,13 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     .map((d) => {
     const est = estimateByDemoId.get(d.id);
     const snap = ccuCurrentByDemoId.get(d.id);
+    const saber = d.is_saber_published === 1;
+    const lifetime = lifetimeById.get(d.id);
+    const reviewEstimate = demoReviewEstimate(est?.review_delta ?? null, est?.units_mid ?? null, est?.method ?? null, saber);
     const observedPeak = Math.max(ccuPeakByDemoId.get(d.id) ?? 0, snap?.ccu ?? 0) || null;
     const resolved = reconcileDemoDownloads({
-      window, releaseDate: d.release_date, reviewEstimate: est?.units_mid ?? null,
-      lifetimeReviewEstimate: lifetimeById.get(d.id) ?? null,
+      window, releaseDate: d.release_date, reviewEstimate,
+      lifetimeReviewEstimate: lifetime ? demoReviewEstimate(lifetime.review_delta, lifetime.units_mid, "review_delta_multiplier", saber) : null,
       method: est?.method ?? null, observedPeak,
     });
     if (est?.as_of_date && (!asOfDate || est.as_of_date > asOfDate)) asOfDate = est.as_of_date;
@@ -138,9 +143,11 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       isSaberPublished: d.is_saber_published === 1,
       reviewCountTotal: est?.review_count_total ?? null,
       reviewDelta: est?.review_delta ?? null,
-      unitsLow: resolved.isObservedMinimum ? null : est?.units_low ?? null,
-      unitsHigh: resolved.isObservedMinimum ? null : est?.units_high ?? null,
+      unitsLow: resolved.isObservedMinimum || !saber ? null : est?.units_low ?? null,
+      unitsHigh: resolved.isObservedMinimum || !saber ? null : est?.units_high ?? null,
       ...resolved,
+      downloadMultiplier: est?.method === "steamworks_actual" ? null : demoDownloadMultiplier(saber),
+      calibrationMode: est?.method === "steamworks_actual" ? "actual" : saber ? "saber_baseline" : "non_saber_trial",
       ccuCurrent: snap?.ccu ?? null,
       ccuAllTimePeak: observedPeak,
       ccuAsOf: snap?.captured_at ?? null,
@@ -198,7 +205,8 @@ export function registerDemosLeaderboardRoutes(app: Express) {
         asOfDate,
         availableCount,
         coverage: { candidateLimitPerFeed: DEMO_FEED_LIMIT, feeds },
-        multiplier: { ...DEMO_DOWNLOAD_MULTIPLIER, note: "Provisional single-anchor model; observed minima are not fitted download estimates" },
+        multiplier: { ...DEMO_DOWNLOAD_MULTIPLIER, nonSaberTrial: NON_SABER_DOWNLOAD_TRIAL,
+          note: "Saber: provisional Hellraiser baseline; non-Saber: user-selected trial. Observed minima are not fitted download estimates." },
         calibration: DEMO_CALIBRATION,
         count: rows.length,
         demos: rows,

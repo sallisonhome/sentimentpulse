@@ -57,6 +57,8 @@ interface DemoRow {
   reviewEstimate: number | null;
   isObservedMinimum: boolean;
   lifetimeModelBelowPeak: boolean;
+  downloadMultiplier: number | null;
+  calibrationMode: "saber_baseline" | "non_saber_trial" | "actual";
 }
 
 interface LeaderboardResponse {
@@ -66,7 +68,7 @@ interface LeaderboardResponse {
   genre: string | null;
   genres: string[];
   asOfDate: string | null;
-  multiplier: { low: number; mid: number; high: number; note: string };
+  multiplier: { low: number; mid: number; high: number; nonSaberTrial: number; note: string };
   count: number;
   availableCount: number;
   coverage: {
@@ -244,12 +246,13 @@ export default function DemosLeaderboard() {
 
       {data?.multiplier && (
         <details className="text-xs text-muted-foreground bg-muted/40 rounded-md px-3 py-2" data-testid="details-demos-method">
-          <summary className="cursor-pointer">Download estimates: reviews × {data.multiplier.mid}x</summary>
+          <summary className="cursor-pointer">Downloads: Saber {data.multiplier.mid}× · Other demos {data.multiplier.nonSaberTrial}× trial</summary>
           <p className="mt-2">
           Estimated downloads = reviews added in the selected window × a downloads-per-review
-          multiplier ({data.multiplier.mid}x). Provisional: calibrated on a single
-          anchor (Hellraiser Revival demo: 100,000 downloads / 1,527 reviews). Hover a figure for its
-          low ({data.multiplier.low}x) / high ({data.multiplier.high}x) sensitivity range.
+          multiplier. Saber titles retain {data.multiplier.mid}×, provisionally based on a single
+          anchor (Hellraiser Revival demo: 100,000 downloads / 1,527 reviews).
+          Non-Saber titles use a user-selected {data.multiplier.nonSaberTrial}× trial for live review,
+          not a newly verified calibration. Each row's tooltip states the applicable multiplier.
           These are estimates, not confirmed Steamworks downloads. The benchmark's reporting cutoff
           is unverified; no newly calibrated multiplier is claimed.
           Values marked “≥” are minimums supported by observed concurrent players, not point estimates.
@@ -319,8 +322,9 @@ export default function DemosLeaderboard() {
                           <span className="block text-[11px] text-muted-foreground">Observed minimum</span>
                         </span>
                       ) : (
-                        <span title={`Estimate range: ${formatNumberCompact(d.unitsLow)} – ${formatNumberCompact(d.unitsHigh)} (low/high multiplier sensitivity)`}>
+                        <span title={`${d.downloadMultiplier} downloads per review added in this window. ${d.calibrationMode === "non_saber_trial" ? "User-selected non-Saber trial; not a verified calibration." : "Provisional Saber benchmark; not confirmed downloads."}`}>
                           {formatNumberCompact(d.unitsMid)}
+                          {d.calibrationMode === "non_saber_trial" && <span className="block text-[11px] text-muted-foreground">130× trial</span>}
                         </span>
                       )
                     ) : "—"}
