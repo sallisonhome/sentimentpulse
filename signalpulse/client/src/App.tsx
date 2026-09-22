@@ -16,6 +16,7 @@ import SalesByCountry from "@/pages/sales-by-country";
 import AmazonIndex from "@/pages/amazon";
 import AmazonProductDetail from "@/pages/amazon/product-detail";
 import ConsoleLeaderboards, { ConsoleLeaderboardsPlatform } from "@/pages/console-leaderboards";
+import DemosLeaderboard from "@/pages/demos-leaderboard";
 import ConsoleTitleDetail from "@/pages/console-title-detail";
 import ConsoleMultiplatformDetail from "@/pages/console-multiplatform-detail";
 import NotFound from "@/pages/not-found";
@@ -40,6 +41,7 @@ function AppRouter() {
             picks the other sub-tabs; /amazon/product/:asin drills in. */}
         <Route path="/amazon/product/:asin" component={AmazonProductDetail} />
         <Route path="/console-leaderboards" component={ConsoleLeaderboards} />
+        <Route path="/demos-leaderboard" component={DemosLeaderboard} />
         {/* Multiplatform PDP MUST precede the generic /:platform matcher
             below so wouter doesn't treat "multiplatform" as a platform.
             No standalone listing page — the front-page section is the

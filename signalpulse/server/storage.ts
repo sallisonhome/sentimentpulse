@@ -1058,6 +1058,135 @@ function initializeDatabase() {
     -- Per-title history lookups: "where has title_id ranked recently?".
     CREATE INDEX IF NOT EXISTS console_storefront_rank_daily_by_title
       ON console_storefront_rank_daily (platform, title_id, snapshot_date DESC);
+
+    -- Steam Demos leaderboard (2026-09-22). Deliberately NOT a row in
+    -- products -- demos are free, so they must never be reachable by the
+    -- store_rating_signal_daily F2P/business_model gate in
+    -- signals/console/runner.ts, and must never leak into paid-title
+    -- revenue reporting. This is a standalone registry.
+    --
+    -- discovered_via: 'steam_demos_hub' | 'compset' | 'saber_own' | 'manual'.
+    -- steam_demos_hub = Steam's own store.steampowered.com/demos/ content-hub
+    -- tabs (undocumented internal endpoint, same risk tier as the
+    -- appreviewhistogram endpoint signals/console/steam.ts already depends
+    -- on -- confirmed live 2026-09-22, returns real type=demo/is_free=true
+    -- appids, not a guess).
+    --
+    -- is_active tracks whether the demo still resolves on
+    -- api/appdetails (it returns success:false once a developer
+    -- deactivates a demo post-launch -- confirmed empirically on Toxic
+    -- Commando's demo, appid 4354730). Once false, only the lifetime
+    -- steam_review_history total remains queryable; the daily histogram
+    -- resets to all-zero, so date-windowed estimates stop updating.
+    CREATE TABLE IF NOT EXISTS demo_titles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      steam_app_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      base_game_product_id INTEGER,
+      is_saber_published INTEGER NOT NULL DEFAULT 0,
+      genre TEXT,
+      discovered_via TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      first_seen_at TEXT NOT NULL,
+      deactivated_at TEXT,
+      last_checked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (base_game_product_id) REFERENCES products(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS demo_titles_active_idx ON demo_titles (is_active);
+
+    -- Windowed download estimates for demos, deliberately separate from
+    -- window_estimates_daily (which is read by paid-title revenue/units
+    -- reporting -- mixing free-demo estimates into those rows would
+    -- corrupt that reporting). Same window vocabulary as other
+    -- leaderboards: '7d' | '30d' | '90d' | '12mo' | 'ltd'.
+    --
+    -- For is_saber_published demos, units_mid should be the real
+    -- Steamworks Sales & Activations figure (method='steamworks_actual'),
+    -- not an estimate -- ground truth takes priority whenever available.
+    -- For everything else, units_mid is derived from the steam_review_history
+    -- delta over the window times a calibrated multiplier
+    -- (method='review_delta_multiplier'), multiplier_id nullable until
+    -- calibration work lands.
+    -- window values: 'd7'|'d30'|'d90'|'m12'|'ltd' -- aligned with the
+    -- established console-leaderboard / hmap wishlist-leaderboard window
+    -- convention (see server/routes-console-leaderboards.ts), not the
+    -- '7d'/'12mo' style used in this table's original draft.
+    CREATE TABLE IF NOT EXISTS demo_window_estimates_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      window TEXT NOT NULL,
+      as_of_date TEXT NOT NULL,
+      review_count_total INTEGER,
+      review_delta INTEGER,
+      units_low REAL,
+      units_mid REAL,
+      units_high REAL,
+      multiplier_id TEXT,
+      method TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS demo_window_estimates_daily_unique
+      ON demo_window_estimates_daily (demo_title_id, window, as_of_date);
+
+    -- Demo CCU tracking (2026-09-22). Mirrors ccu_snapshots_steam /
+    -- daily_peaks_steam_ccu exactly, just FK'd to demo_titles instead of
+    -- products, for the same decoupling reason as the other demo tables.
+    -- Added specifically to match the SteamDB "Most played game demos"
+    -- reference leaderboard (steamdb.info/charts/?category=10), which
+    -- ranks by Current / 24h Peak / All-Time Peak CCU -- real prior art
+    -- for CCU as a secondary ranking dimension alongside the estimated-
+    -- downloads default.
+    CREATE TABLE IF NOT EXISTS demo_ccu_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      captured_at TEXT NOT NULL,
+      ccu INTEGER NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS demo_ccu_snapshots_title_captured_idx
+      ON demo_ccu_snapshots (demo_title_id, captured_at);
+
+    CREATE TABLE IF NOT EXISTS demo_ccu_daily_peaks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      peak_date TEXT NOT NULL,
+      peak_ccu INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS demo_ccu_daily_peaks_unique
+      ON demo_ccu_daily_peaks (demo_title_id, peak_date);
+
+    -- Saber Steamworks Sales & Activations ground truth for OWN demos
+    -- (2026-09-22). Daily per-app snapshot pulled via the SAME shared
+    -- Steamworks partner-portal session cookie already used by
+    -- ingestSteamSales() for paid titles (steamworks-portal.ts
+    -- fetchPortalPage). Demos are free, so the relevant Steamworks
+    -- fields are "Complimentary units" (period) and "Lifetime free
+    -- licenses" (lifetime-to-date) rather than paid Steam units/revenue.
+    -- Only Saber's own demos are pulled here (is_saber_published=1) --
+    -- we have no login/view-permission on any third-party demo's
+    -- Steamworks account. See server/signals/demos/portal-actuals.ts.
+    CREATE TABLE IF NOT EXISTS demo_portal_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      complimentary_units_period INTEGER,
+      lifetime_free_licenses INTEGER,
+      lifetime_unique_users INTEGER,
+      current_players INTEGER,
+      period_label TEXT,
+      source TEXT NOT NULL DEFAULT 'portal_fetch',
+      batch_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS demo_portal_daily_unique
+      ON demo_portal_daily (demo_title_id, date);
   `);
 }
 

@@ -1,0 +1,88 @@
+/**
+ * Steam Demos leaderboard — CCU collector.
+ *
+ * Uses ISteamUserStats/GetNumberOfCurrentPlayers/v1 — free, keyless,
+ * confirmed working against demo appids this session (e.g. Hellraiser
+ * Revival demo 5184670 returned live player_count with response.result=1).
+ * Mirrors SteamDB's own "Most played game demos" chart
+ * (steamdb.info/charts/?category=10), which ranks by Current / 24h Peak /
+ * All-Time Peak CCU — this collector feeds the Current + All-Time Peak
+ * columns. A true rolling 24h peak needs continuous (5-10 min) polling,
+ * which is NOT wired into a production schedule yet — this collector is
+ * currently invoked manually / from this branch's tests only. Follow-up:
+ * a GitHub Actions cron hitting an ops-authenticated endpoint, the same
+ * pattern the other daily signal collectors use (workspace sandbox has no
+ * SSH to the droplet; all droplet-side scheduling goes through GH
+ * Actions per project convention).
+ */
+
+import { rawSqlite } from "../../storage";
+import { log } from "../../log";
+
+const CCU_ENDPOINT = "https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/";
+
+interface DemoForCcu {
+  id: number;
+  steam_app_id: string;
+}
+
+function loadActiveDemosForCcu(): DemoForCcu[] {
+  return rawSqlite
+    .prepare(`SELECT id, steam_app_id FROM demo_titles WHERE is_active = 1`)
+    .all() as DemoForCcu[];
+}
+
+const insertSnapshotStmt = () => rawSqlite.prepare(
+  `INSERT INTO demo_ccu_snapshots (demo_title_id, captured_at, ccu) VALUES (?, ?, ?)`
+);
+
+const upsertDailyPeakStmt = () => rawSqlite.prepare(
+  `INSERT INTO demo_ccu_daily_peaks (demo_title_id, peak_date, peak_ccu, created_at)
+   VALUES (?, ?, ?, ?)
+   ON CONFLICT(demo_title_id, peak_date) DO UPDATE SET
+     peak_ccu = MAX(peak_ccu, excluded.peak_ccu)`
+);
+
+export interface CcuRunResult {
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  failureSample: Array<{ appId: string; reason: string }>;
+}
+
+export async function fetchCurrentPlayers(appId: string): Promise<number | null> {
+  const res = await fetch(`${CCU_ENDPOINT}?appid=${encodeURIComponent(appId)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json() as { response?: { result?: number; player_count?: number } };
+  if (json.response?.result !== 1) return null;
+  return json.response.player_count ?? null;
+}
+
+export async function runDemosCcuCollector(delayMs = 250, eligibleAppIds?: ReadonlySet<string>): Promise<CcuRunResult> {
+  const demos = loadActiveDemosForCcu().filter(d => !eligibleAppIds || eligibleAppIds.has(d.steam_app_id));
+  const result: CcuRunResult = { attempted: demos.length, succeeded: 0, failed: 0, failureSample: [] };
+  const nowIso = new Date().toISOString();
+  const today = nowIso.slice(0, 10);
+
+  for (const demo of demos) {
+    try {
+      const ccu = await fetchCurrentPlayers(demo.steam_app_id);
+      if (ccu !== null) {
+        insertSnapshotStmt().run(demo.id, nowIso, ccu);
+        upsertDailyPeakStmt().run(demo.id, today, ccu, nowIso);
+        result.succeeded += 1;
+      } else {
+        result.failed += 1;
+        if (result.failureSample.length < 5) result.failureSample.push({ appId: demo.steam_app_id, reason: "result != 1" });
+      }
+    } catch (e) {
+      result.failed += 1;
+      const reason = e instanceof Error ? e.message : String(e);
+      if (result.failureSample.length < 5) result.failureSample.push({ appId: demo.steam_app_id, reason });
+    }
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+  }
+
+  log(`demos CCU run: attempted=${result.attempted} succeeded=${result.succeeded} failed=${result.failed}`, "demos-ccu");
+  return result;
+}
