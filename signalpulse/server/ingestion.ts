@@ -1619,6 +1619,26 @@ export async function runIngestion(): Promise<IngestionRunResult> {
   results.push(steamSalesResult);
   log(`Steam sales (portal): ${steamSalesResult.message}`, "ingestion");
 
+  // 2c. Steam Demos leaderboard — full pipeline (2026-09-22). Every piece
+  // of this (Saber roster seed, public-hub discovery, review-history,
+  // CCU, the estimator, and the new Steamworks-ground-truth collector for
+  // Saber's own demos) was previously built but never scheduled --
+  // demo_titles was empty in production before this. Sequenced right
+  // after ingestSteamSales() so the Steamworks-actuals step inside it
+  // benefits from a freshly-checked shared session-cookie status, without
+  // re-triggering ingestSteamSales()'s own alert/cooldown logic -- see
+  // server/signals/demos/portal-actuals.ts header comment.
+  const { runDemosDailyPipeline } = await import("./signals/demos/pipeline");
+  const demosPipelineResult = await runDemosDailyPipeline();
+  results.push({
+    source: "demos_pipeline",
+    status: demosPipelineResult.reviewHistory.failed > 0 || demosPipelineResult.discovery.failed > 0 ? "error" : "success",
+    message: `seeded=${demosPipelineResult.seeded} discoveryNew=${demosPipelineResult.discovery.newlyDiscovered} reviewIngested=${demosPipelineResult.reviewHistory.ingested} estimateRows=${demosPipelineResult.estimates.rowsWritten} actualsRows=${demosPipelineResult.actuals.rowsWritten} portalFetch=${demosPipelineResult.portalActualsFetch.message}`,
+    productsProcessed: demosPipelineResult.reviewHistory.attempted,
+    dataPointsAdded: demosPipelineResult.estimates.rowsWritten + demosPipelineResult.actuals.rowsWritten,
+  });
+  log(`Demos pipeline complete.`, "ingestion");
+
   // 3. Sony ingestion
   if (sonyApiKey && sonyApiKey.trim().length > 0) {
     log("Sony API key found — ingesting PS5 data...", "ingestion");

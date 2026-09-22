@@ -261,6 +261,9 @@ const OPS_TOKEN_PATHS = new Set([
   // portal-fetch endpoint, but doesn't require a JWT session. See
   // routes.ts /api/ops/portal-fetch.
   "/api/ops/portal-fetch",
+  // Steam Demos leaderboard pipeline + Steamworks-ground-truth probe --
+  // see server/signals/demos/pipeline.ts and portal-actuals.ts.
+  "/api/ops/demos-pipeline-run",
   // Amazon manual-pin workflow (amazon-manual-pin.yml) writes verified
   // franchise-IP ASINs into the Saber map and the competitor map from a
   // GitHub Actions runner over SSH → loopback. No browser session
@@ -290,6 +293,7 @@ const OPS_TOKEN_PATHS = new Set([
 // endpoints can drive them without a human JWT.
 const OPS_TOKEN_PREFIXES = [
   "/api/amazon/ingest/", // covers /run/:job POST and /runs GET summary
+  "/api/ops/demos-portal-probe/", // covers /:appId GET, see server/signals/demos/portal-actuals.ts
 ];
 
 function hasValidOpsToken(req: Request): boolean {

@@ -2009,6 +2009,47 @@ export async function registerRoutes(
     }
   });
 
+  // ─── Ops routes: Steam Demos leaderboard (2026-09-22) ──────────────────
+  //
+  // Manual/one-off triggers for the demos pipeline (Saber roster seed,
+  // hub discovery, review-history, CCU, estimator, Steamworks-ground-
+  // truth actuals) -- otherwise only runs via the daily ingestion cron.
+  // Same ops-token gating as the other automation-only routes above; see
+  // server/signals/demos/pipeline.ts and portal-actuals.ts.
+  app.post("/api/ops/demos-pipeline-run", async (_req, res) => {
+    try {
+      const { runDemosDailyPipeline } = await import("./signals/demos/pipeline");
+      const result = await runDemosDailyPipeline();
+      res.json({ ok: true, result });
+    } catch (err: any) {
+      console.error(`[routes] /api/ops/demos-pipeline-run error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Pure read-only, no DB writes: fetches ONE demo appid's Steamworks
+  // portal page live and returns every candidate field the parser tried,
+  // plus a raw-HTML excerpt around any "Complimentary"/"free license"
+  // text found. Exists specifically to confirm, against the REAL
+  // production Steamworks cookie and a REAL Saber demo, which label Valve
+  // actually renders -- the parser's regexes were written from
+  // third-party community reports, not a verified live page. See
+  // server/signals/demos/portal-actuals.ts probeDemoPortal() doc comment.
+  app.get("/api/ops/demos-portal-probe/:appId", async (req, res) => {
+    try {
+      const appId = Number(req.params.appId);
+      if (!Number.isFinite(appId)) return res.status(400).json({ error: "appId must be a number" });
+      const dateStart = String(req.query.dateStart ?? "").trim() || new Date(Date.now() - 7 * 86400_000).toISOString().slice(0, 10);
+      const dateEnd = String(req.query.dateEnd ?? "").trim() || new Date().toISOString().slice(0, 10);
+      const { probeDemoPortal } = await import("./signals/demos/portal-actuals");
+      const result = await probeDemoPortal(appId, dateStart, dateEnd);
+      res.json(result);
+    } catch (err: any) {
+      console.error(`[routes] /api/ops/demos-portal-probe error: ${err.message}`);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ─── Sales by Country API (v3.30, 2026-09-05) ──────────────────────────
   //
   // Aggregate per-country revenue/units for a product across an arbitrary

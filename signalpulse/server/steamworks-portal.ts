@@ -30,6 +30,14 @@ export interface PortalFetchOptions {
   dateStart: string; // YYYY-MM-DD
   dateEnd: string;   // YYYY-MM-DD
   cookieHeader: string; // raw Cookie: header value
+  // Opt-in only (2026-09-22) -- when true, the full fetched HTML is
+  // attached to the result as `rawHtml`. Off by default so the daily
+  // paid-title cron (ingestSteamSales, many titles/day) doesn't hold
+  // full page bodies in memory unnecessarily. Used by the demos
+  // Steamworks-ground-truth probe endpoint, which needs to search the
+  // full page for a label the regex parser didn't recognize -- see
+  // server/signals/demos/portal-actuals.ts probeDemoPortal().
+  includeRawHtml?: boolean;
 }
 
 export interface PortalFetchResult {
@@ -38,6 +46,7 @@ export interface PortalFetchResult {
   htmlBytes?: number;
   error?: string;
   parsed?: ParsedPortalPage;
+  rawHtml?: string;
 }
 
 export interface ParsedPortalPage {
@@ -62,6 +71,22 @@ export interface ParsedPortalPage {
   periodRetailActivations: number | null;
   periodDlcUnits: number | null;
   periodDlcRevenueUsd: number | null;
+  // Added 2026-09-22 for free/demo titles (Saber Steamworks ground truth,
+  // see server/signals/demos/portal-actuals.ts). Paid titles have no
+  // reason to populate these -- Steamworks renders a "Complimentary
+  // units" period row and a "Lifetime free licenses" lifetime row ONLY
+  // for apps with free/comp distribution (demos, F2P, giveaways). Label
+  // wording is UNCONFIRMED against a real Saber demo page (no login
+  // available from this sandbox) -- sourced from Steamworks community
+  // reports ("Complimentary units" / "Lifetime free licenses" threads),
+  // not official Valve docs. `matchedLabel` records which regex actually
+  // hit so the probe endpoint can surface it for manual confirmation;
+  // treat these two fields as unverified until a live probe confirms
+  // non-null values against a known Saber demo appid.
+  periodComplimentaryUnits: number | null;
+  periodComplimentaryUnitsLabel: string | null;
+  lifetimeFreeLicenses: number | null;
+  lifetimeFreeLicensesLabel: string | null;
   // Per-SKU breakdown from the same box
   perSkuRows: PerSkuRow[];
   // Per-country breakdown from the four `salesregion_panelN` /
@@ -175,6 +200,7 @@ export async function fetchPortalPage(opts: PortalFetchOptions): Promise<PortalF
       httpStatus: resp.status,
       htmlBytes: html.length,
       parsed,
+      ...(opts.includeRawHtml ? { rawHtml: html } : {}),
     };
   } catch (err: any) {
     return { ok: false, error: `fetch error: ${err.message}` };
@@ -216,6 +242,10 @@ export function parsePortalHtml(html: string, appId: number): ParsedPortalPage {
     periodRetailActivations: null,
     periodDlcUnits: null,
     periodDlcRevenueUsd: null,
+    periodComplimentaryUnits: null,
+    periodComplimentaryUnitsLabel: null,
+    lifetimeFreeLicenses: null,
+    lifetimeFreeLicensesLabel: null,
     perSkuRows: [],
     countryBreakdown: [],
     rawExcerpt: html.slice(0, 1000),
@@ -277,6 +307,35 @@ export function parsePortalHtml(html: string, appId: number): ParsedPortalPage {
   result.periodDlcUnits = parseNum(findValueAfterLabel(/(?:^|>)\s*Steam\s+DLC\s+units\s*(?:<|$)/im));
   result.periodSteamRevenueUsd = parseNum(findValueAfterLabel(/(?:^|>)\s*Steam\s+revenue\s*(?:<|$)/im));
   result.periodDlcRevenueUsd = parseNum(findValueAfterLabel(/(?:^|>)\s*Steam\s+DLC\s+revenue\s*(?:<|$)/im));
+
+  // Free/demo-specific fields (2026-09-22). Try several label candidates
+  // in priority order since the exact current Valve wording is
+  // unconfirmed -- see the field doc comment above. The first candidate
+  // that matches wins; `*Label` records which one, so a probe caller can
+  // see what actually fired instead of a silent guess.
+  const tryLabels = (labels: RegExp[]): { value: number | null; label: string | null } => {
+    for (const rx of labels) {
+      const raw = findValueAfterLabel(rx);
+      if (raw != null) return { value: parseNum(raw), label: rx.source };
+    }
+    return { value: null, label: null };
+  };
+
+  const compUnits = tryLabels([
+    /(?:^|>)\s*Complimentary\s+units\s*(?:<|$)/im,
+    /(?:^|>)\s*Free\s+licenses\s*(?:<|$)/im,
+    /(?:^|>)\s*Demo\s+activations\s*(?:<|$)/im,
+  ]);
+  result.periodComplimentaryUnits = compUnits.value;
+  result.periodComplimentaryUnitsLabel = compUnits.label;
+
+  const lifetimeFree = tryLabels([
+    /Lifetime\s+free\s+licenses/i,
+    /Lifetime\s+complimentary\s+units/i,
+    /Lifetime\s+demo\s+activations/i,
+  ]);
+  result.lifetimeFreeLicenses = lifetimeFree.value;
+  result.lifetimeFreeLicensesLabel = lifetimeFree.label;
 
   // Try to detect the period label (e.g. "today", "1 month", "5/1 - 8/11")
   const periodLabelMatch = html.match(/units\s+sold,\s*([^(<]+?)\s*(?:\(|<)/i);

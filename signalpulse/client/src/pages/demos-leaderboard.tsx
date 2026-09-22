@@ -153,9 +153,11 @@ export default function DemosLeaderboard() {
       {sortSel === "downloads" && data?.multiplier && (
         <p className="text-xs text-muted-foreground bg-muted/40 rounded-md px-3 py-2">
           Estimated downloads = reviews added in the selected window × a downloads-per-review
-          multiplier (low {data.multiplier.low}x / mid {data.multiplier.mid}x / high {data.multiplier.high}x).
-          {" "}Provisional — calibrated on a single verified anchor (Hellraiser Revival demo: 100,000
-          downloads / 1,527 reviews). Treat the range, not the midpoint, as the estimate.
+          multiplier (mid {data.multiplier.mid}x). Provisional — calibrated on a single verified
+          anchor (Hellraiser Revival demo: 100,000 downloads / 1,527 reviews). Hover a figure for its
+          low ({data.multiplier.low}x) / high ({data.multiplier.high}x) sensitivity range. Saber's own
+          demos show a <span className="font-medium">Confirmed</span> exact figure once pulled from
+          Saber's own Steamworks Sales &amp; Activations report.
         </p>
       )}
 
@@ -204,9 +206,18 @@ export default function DemosLeaderboard() {
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.reviewCountTotal)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {d.unitsMid != null ? (
-                      <span title={`Low ${formatNumberCompact(d.unitsLow)} · High ${formatNumberCompact(d.unitsHigh)}`}>
-                        {formatNumberCompact(d.unitsLow)}–{formatNumberCompact(d.unitsHigh)}
-                      </span>
+                      d.method === "steamworks_actual" ? (
+                        <span title="Confirmed via Saber's own Steamworks Sales & Activations report -- not an estimate">
+                          {formatNumberCompact(d.unitsMid)}
+                          <Badge className="ml-1.5 text-[9px] align-middle" variant="outline" data-testid={`badge-confirmed-${d.steamAppId}`}>
+                            Confirmed
+                          </Badge>
+                        </span>
+                      ) : (
+                        <span title={`Estimate range: ${formatNumberCompact(d.unitsLow)} – ${formatNumberCompact(d.unitsHigh)} (low/high multiplier sensitivity)`}>
+                          {formatNumberCompact(d.unitsMid)}
+                        </span>
+                      )
                     ) : "—"}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.ccuCurrent)}</td>

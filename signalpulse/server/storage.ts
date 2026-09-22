@@ -1159,6 +1159,34 @@ function initializeDatabase() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS demo_ccu_daily_peaks_unique
       ON demo_ccu_daily_peaks (demo_title_id, peak_date);
+
+    -- Saber Steamworks Sales & Activations ground truth for OWN demos
+    -- (2026-09-22). Daily per-app snapshot pulled via the SAME shared
+    -- Steamworks partner-portal session cookie already used by
+    -- ingestSteamSales() for paid titles (steamworks-portal.ts
+    -- fetchPortalPage). Demos are free, so the relevant Steamworks
+    -- fields are "Complimentary units" (period) and "Lifetime free
+    -- licenses" (lifetime-to-date) rather than paid Steam units/revenue.
+    -- Only Saber's own demos are pulled here (is_saber_published=1) --
+    -- we have no login/view-permission on any third-party demo's
+    -- Steamworks account. See server/signals/demos/portal-actuals.ts.
+    CREATE TABLE IF NOT EXISTS demo_portal_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      date TEXT NOT NULL,
+      complimentary_units_period INTEGER,
+      lifetime_free_licenses INTEGER,
+      lifetime_unique_users INTEGER,
+      current_players INTEGER,
+      period_label TEXT,
+      source TEXT NOT NULL DEFAULT 'portal_fetch',
+      batch_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS demo_portal_daily_unique
+      ON demo_portal_daily (demo_title_id, date);
   `);
 }
 
