@@ -108,6 +108,15 @@ test("real API reconciles before sort and limit, preserves raw estimates and sou
     assert.deepEqual(ltd.demos.map((d: any) => d.id), [3, 2, 1]);
     assert.equal(ltd.demos[0].unitsMid, 387);
     assert.equal(db.prepare("SELECT units_mid FROM demo_window_estimates_daily WHERE demo_title_id=1 LIMIT 1").get().units_mid, 13493);
+    db.prepare("UPDATE demo_ccu_snapshots SET ccu=0 WHERE demo_title_id=3").run();
+    const zero = await (await fetch(`${url}?window=ltd`)).json();
+    const zeroRow = zero.demos.find((d: any) => d.id === 3);
+    assert.equal(zeroRow.ccuCurrent, 0);
+    assert.equal(zeroRow.ccuAllTimePeak, 0, "an observed zero is data, not a missing peak");
+    assert.equal(zeroRow.isObservedMinimum, false);
+    db.prepare("DELETE FROM demo_ccu_snapshots WHERE demo_title_id=3").run();
+    const absent = await (await fetch(`${url}?window=ltd`)).json();
+    assert.equal(absent.demos.find((d: any) => d.id === 3).ccuAllTimePeak, null);
     // Future scheduled runs write the same selected rates, not the old global
     // rate. No ingestion calls: seed review history in the isolated DB only.
     const stamp = new Date().toISOString();
