@@ -21,21 +21,19 @@
  * (Iron Nest: Heavy Turret Simulator) where the store-page review count
  * matched the ENGLISH-ONLY histogram total rather than the all-language
  * total for reasons that were never confirmed. Given that spread, this
- * estimator reports a low/mid/high RANGE (not a single number) per
- * PRINCIPLES: "prefer a transparent range over no estimate, never a
- * precise-looking guess." mid = the single verified anchor; low/high
- * bound a wide envelope around it until more Saber-side Steamworks
- * ground truth (units_actual, once that pull is built) can calibrate
- * per-genre or per-launch-type multipliers.
+ * estimator stores a provisional central estimate plus sensitivity
+ * values (not confidence bounds). The UI shows the central estimate,
+ * except when the shared concurrency consistency resolver identifies
+ * a contradiction and substitutes an explicitly labeled observed minimum.
+ * No new global or genre multiplier is fitted without matched ground truth.
  *
- * Once Saber's own Steamworks Sales & Activations pull is wired up for
- * Hellraiser/Docked, THOSE demos should get method='steamworks_actual'
- * rows instead of this multiplier — this module intentionally never
- * overwrites a steamworks_actual row (see upsert below).
+ * License activations and complimentary units are not download actuals;
+ * that collector remains disabled. Legacy actual rows remain protected.
  */
 
 import { rawSqlite } from "../../storage";
 import { log } from "../../log";
+import { DEMO_DOWNLOAD_MULTIPLIER } from "./download-consistency";
 
 export type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
 
@@ -50,7 +48,7 @@ export const WINDOW_DAYS: Record<WindowKey, number | null> = {
 export const WINDOWS: WindowKey[] = ["d7", "d30", "d90", "m12", "ltd"];
 
 // downloads-per-review multiplier. See module doc comment for provenance.
-export const DOWNLOAD_MULTIPLIER = { low: 30, mid: 65.5, high: 100 } as const;
+export const DOWNLOAD_MULTIPLIER = DEMO_DOWNLOAD_MULTIPLIER;
 
 interface DemoTitleForEstimate {
   id: number;

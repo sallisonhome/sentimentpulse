@@ -15,6 +15,7 @@ import urllib.request
 import urllib.parse
 import uuid
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 
 def signed_token(secret):
@@ -93,8 +94,16 @@ def main():
                 assert feed["lastSuccessAt"] and not feed["error"]
                 assert feed["candidateCount"] > 50, "Pagination coverage missing"
             for row in rows:
-                assert row["method"] in (None, "review_delta_multiplier")
-                if row["unitsMid"] is not None:
+                assert row["method"] in (None, "review_delta_multiplier", "observed_ccu_lower_bound")
+                if row["method"] == "observed_ccu_lower_bound":
+                    assert row["isObservedMinimum"]
+                    assert row["unitsMid"] == row["ccuAllTimePeak"]
+                    assert row["reviewEstimate"] is None or row["unitsMid"] > row["reviewEstimate"]
+                    assert row["unitsLow"] is None and row["unitsHigh"] is None
+                    if window != "ltd":
+                        cutoff = datetime.now(timezone.utc) - timedelta(days={"d7": 7, "d30": 30, "d90": 90, "m12": 365}[window])
+                        assert datetime.fromisoformat(row["releaseDate"]).replace(tzinfo=timezone.utc) >= cutoff
+                elif row["unitsMid"] is not None:
                     expected = int(row["reviewDelta"] * data["multiplier"]["mid"] + 0.5)
                     assert row["unitsMid"] == expected
                 if row["ccuCurrent"] is not None:
