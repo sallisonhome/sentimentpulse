@@ -34,30 +34,39 @@ test("daily and manual pipeline ingest only released game demos, never license c
       const url = String(input);
       calls.push(url);
       if (url === "https://store.steampowered.com/demos/") {
-        return new Response(`data-browser_contenthub_newandtrending_0="{&quot;appids&quot;:[5184670,101,102,103,104,105,106,107,108,109]}`);
+        return new Response(`data-event="{&quot;ANNOUNCEMENT_GID&quot;:&quot;123456&quot;}"
+          data-groupvanityinfo="[{&quot;clanAccountID&quot;:123,&quot;vanity_url&quot;:&quot;store_contenthubs&quot;}]"
+          data-browser_contenthub_newandtrending_0_50_123_6_="{}"`);
       }
-      if (url.includes("/api/appdetails?")) {
-        const id = new URL(url).searchParams.get("appids")!;
-        if (id === "109") throw new Error("fixture network failure");
-        if (id === "108") return Response.json({ [id]: { success: false } });
-        let data: any = { type: "demo", name: `fixture ${id}`, is_free: true,
-          fullgame: { appid: "50001" }, release_date: { coming_soon: false } };
-        if (id === "50001") data = { type: "game" };
-        if (id === "50002") data = { type: "application" };
-        if (id === "101") data.type = "game"; // F2P, not a demo
-        if (id === "102") data.type = "dlc";
-        if (id === "103") data.type = "video";
-        if (id === "104") data.fullgame = { appid: "50002" }; // software demo
-        if (id === "105") data.release_date.coming_soon = true;
-        if (id === "106") delete data.fullgame;
-        if (id === "107") data.is_free = false;
-        return Response.json({ [id]: { success: true, data } });
+      if (url.includes("/ajaxgetsaledynamicappquery?")) {
+        return Response.json({ success: 1, appids: [5184670,101,102,103,104,105,106,107,108,109],
+          match_count: 10, possible_has_more: false });
+      }
+      if (url.includes("/IStoreBrowseService/GetItems/")) {
+        const ids = JSON.parse(new URL(url).searchParams.get("input_json")!).ids;
+        return Response.json({ response: { store_items: ids.filter((i: any) => i.appid !== 109).map((i: any) => {
+          const id = String(i.appid);
+          let data: any = { id: i.appid, appid: i.appid, success: 1, visible: true,
+            type: 1, name: `fixture ${id}`, is_free: true,
+            related_items: { parent_appid: 50001 }, release: { steam_release_date: 1 } };
+          if (id === "50001") data.type = 0;
+          if (id === "50002") data.type = 6;
+          if (id === "101") data.type = 0; // F2P, not a demo
+          if (id === "102") data.type = 4; // DLC
+          if (id === "103") data.type = 5; // video
+          if (id === "104") data.related_items = { parent_appid: 50002 }; // software
+          if (id === "105") data.release.is_coming_soon = true;
+          if (id === "106") delete data.related_items;
+          if (id === "107") data.is_free = false;
+          if (id === "108") data.success = 15;
+          return data;
+        }) } });
       }
       if (url.includes("/appreviewhistogram/")) {
         const id = new URL(url).pathname.split("/").pop()!;
         assert.ok(["5184670","4010800"].includes(id), `ineligible histogram: ${id}`);
         return Response.json({ success: 1, results: {
-          rollup_type: "day", recent: [{ date: Math.floor(Date.now()/1000)-60,
+          rollup_type: "day", recent: [{ date: Math.floor(Date.parse(stamp)/1000)-60,
             recommendations_up: 10, recommendations_down: 0 }], rollups: [],
         } });
       }

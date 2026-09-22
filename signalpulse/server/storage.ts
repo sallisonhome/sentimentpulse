@@ -1085,6 +1085,7 @@ function initializeDatabase() {
       base_game_product_id INTEGER,
       is_saber_published INTEGER NOT NULL DEFAULT 0,
       genre TEXT,
+      release_date TEXT,
       discovered_via TEXT NOT NULL,
       is_active INTEGER NOT NULL DEFAULT 1,
       first_seen_at TEXT NOT NULL,
@@ -1095,6 +1096,27 @@ function initializeDatabase() {
       FOREIGN KEY (base_game_product_id) REFERENCES products(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS demo_titles_active_idx ON demo_titles (is_active);
+
+    -- Latest complete, verified snapshot per Steam demo feed. Failed
+    -- refreshes retain the last good ranking and expose a separate error.
+    CREATE TABLE IF NOT EXISTS demo_discovery_feeds (
+      feed TEXT PRIMARY KEY,
+      last_attempt_at TEXT NOT NULL,
+      last_success_at TEXT,
+      error TEXT,
+      candidate_count INTEGER NOT NULL DEFAULT 0,
+      eligible_count INTEGER NOT NULL DEFAULT 0,
+      total_matches INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS demo_discovery_ranks (
+      feed TEXT NOT NULL,
+      demo_title_id INTEGER NOT NULL,
+      source_rank INTEGER NOT NULL,
+      PRIMARY KEY (feed, demo_title_id),
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS demo_discovery_ranks_order
+      ON demo_discovery_ranks (feed, source_rank);
 
     -- Windowed download estimates for demos, deliberately separate from
     -- window_estimates_daily (which is read by paid-title revenue/units
@@ -1202,6 +1224,7 @@ function migrateAddColumnIfMissing(table: string, column: string, ddl: string) {
 }
 
 function runMigrations() {
+  migrateAddColumnIfMissing("demo_titles", "release_date", "release_date TEXT");
   migrateAddColumnIfMissing("products", "steam_header_image_url", "steam_header_image_url TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "alert_sent_at", "alert_sent_at TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_source", "refresh_source TEXT");
