@@ -80,20 +80,29 @@ def main():
     headers = {"Authorization": "Bearer " + signed_token(env["SABER_AUTH_JWT_SECRET"])}
 
     for window in ["d7", "d30", "d90", "m12", "ltd"]:
-        for sort in ["top", "new", "downloads", "ccu", "reviews", "peak", "release"]:
+        for sort in ["top", "new", "downloads", "ccu", "reviews", "peak", "release", "rating"]:
             data = request(f"/api/demos/leaderboard?window={window}&sort={sort}&limit=50", headers)
             rows = data["demos"]
             assert rows and len(rows) <= 50
             assert data["window"] == window and data["sort"] == sort
             key = {"top": "sourceRank", "new": "sourceRank", "downloads": "unitsMid",
                    "ccu": "ccuCurrent", "reviews": "reviewCountTotal",
-                   "peak": "ccuAllTimePeak", "release": "releaseDate"}[sort]
-            values = [row[key] for row in rows if row[key] is not None]
+                   "peak": "ccuAllTimePeak", "release": "releaseDate", "rating": "positivePercent"}[sort]
+            values = [(row.get("steamReviews") or {}).get(key) if sort == "rating" else row[key] for row in rows]
+            values = [value for value in values if value is not None]
             assert values == sorted(values, reverse=sort not in ("top", "new")), f"Sort failure: {window}/{sort}"
             for feed in data["coverage"]["feeds"]:
                 assert feed["lastSuccessAt"] and not feed["error"]
                 assert feed["candidateCount"] > 50, "Pagination coverage missing"
             for row in rows:
+                reviews = row.get("steamReviews")
+                if reviews is not None:
+                    assert reviews["total"] == reviews["positive"] + reviews["negative"]
+                    assert row["reviewCountTotal"] == reviews["total"]
+                    if reviews["total"]:
+                        assert abs(reviews["positivePercent"] - 100 * reviews["positive"] / reviews["total"]) < 1e-9
+                    else:
+                        assert reviews["positivePercent"] is None
                 assert row["downloadMultiplier"] == (65.5 if row["isSaberPublished"] else 130)
                 assert row["calibrationMode"] == ("saber_baseline" if row["isSaberPublished"] else "non_saber_trial")
                 assert row["method"] in (None, "review_delta_multiplier", "observed_ccu_lower_bound")
@@ -124,7 +133,7 @@ def main():
     if run:
         for phase in ["discovery", "eligibility", "reviewHistory", "ccu"]:
             assert run[phase]["failed"] == 0, f"{phase} has failures; inspect DEMO_PIPELINE"
-    print("VERIFIED: three feeds, five windows, seven sorts, both directions, genre filters, multiplier arithmetic", flush=True)
+    print("VERIFIED: three feeds, five windows, eight sorts, genre filters, multiplier arithmetic, demo review scores", flush=True)
 
 
 if __name__ == "__main__":

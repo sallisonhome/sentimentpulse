@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
-type SortKey = "top" | "new" | "reviews" | "downloads" | "ccu" | "peak" | "release";
+type SortKey = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release";
 type SortDirection = "asc" | "desc";
 
 const WINDOWS: Array<{ id: WindowKey; label: string }> = [
@@ -59,6 +59,7 @@ interface DemoRow {
   lifetimeModelBelowPeak: boolean;
   downloadMultiplier: number | null;
   calibrationMode: "saber_baseline" | "non_saber_trial" | "actual";
+  steamReviews: { positive: number; negative: number; total: number; positivePercent: number | null } | null;
 }
 
 interface LeaderboardResponse {
@@ -133,7 +134,7 @@ export default function DemosLeaderboard() {
   );
 
   return (
-    <div className="p-4 md:p-6 max-w-6xl mx-auto space-y-4">
+    <div className="w-full min-w-0 p-4 md:p-6 max-w-[1760px] mx-auto space-y-4">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -207,6 +208,8 @@ export default function DemosLeaderboard() {
           ? `Tracked demos ordered by the demo's own release date (${sortDirection === "desc" ? "newest first" : "oldest first"}).`
           : sortSel === "reviews"
           ? `Tracked demos ordered by lifetime reviews (${sortDirection === "desc" ? "highest first" : "lowest first"}).`
+          : sortSel === "rating"
+          ? `Tracked demos ordered by the demo's own positive Steam review percentage (${sortDirection === "desc" ? "highest first" : "lowest first"}).`
           : sortSel === "peak"
           ? `Tracked demos ordered by peak observed CCU (${sortDirection === "desc" ? "highest first" : "lowest first"}).`
           : `Tracked demos ordered by estimated downloads for the selected window (${sortDirection === "desc" ? "highest first" : "lowest first"}).`}</p>
@@ -236,6 +239,9 @@ export default function DemosLeaderboard() {
           Genre uses broad Steam tags, falling back to parent-game tags when needed.
           Click a KPI or release-date header to sort all matching tracked demos; click again to reverse.
           Top Demos and New Releases restore Steam's source order.
+          Steam review scores use the demo's own all-language lifetime histogram,
+          never its parent game's reviews. Counts and scores update with the daily collection,
+          remain independent of the download window, and may lag the live store.
         </p>
         <p className="mt-2" data-testid="text-demos-sampling-note">
           CCU is the latest collected sample, not a live feed. Peak observed CCU is the highest sample recorded
@@ -262,7 +268,7 @@ export default function DemosLeaderboard() {
         </details>
       )}
 
-      <Card className="overflow-x-auto">
+      <Card className="overflow-x-auto" role="region" aria-label="Demo leaderboard, scroll horizontally on smaller screens" tabIndex={0}>
         {isLoading && (
           <div className="p-4 space-y-2">
             {Array.from({ length: 10 }).map((_, i) => <Skeleton key={i} className="h-10 w-full" />)}
@@ -272,14 +278,26 @@ export default function DemosLeaderboard() {
           <div className="p-4 text-sm text-destructive">Failed to load leaderboard: {(error as Error)?.message}</div>
         )}
         {!isLoading && !isError && data && (
-          <table className="w-full min-w-[960px] text-sm">
+          <table className="w-full min-w-[1280px] table-fixed text-sm">
+            <colgroup>
+              <col style={{ width: "4%" }} />
+              <col style={{ width: "23%" }} />
+              <col style={{ width: "14%" }} />
+              <col style={{ width: "11%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "12%" }} />
+              <col style={{ width: "8%" }} />
+              <col style={{ width: "8%" }} />
+            </colgroup>
             <thead>
               <tr className="border-b border-border text-left text-muted-foreground">
                 <th className="px-3 py-2 font-medium w-10">{sourceView ? "Steam rank" : "#"}</th>
                 <th className="px-3 py-2 font-medium">Demo</th>
                 <th className="px-3 py-2 font-medium">Genre</th>
-                <th className="px-3 py-2 font-medium whitespace-nowrap" aria-sort={sortSel === "release" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("release", "Demo Release Date")}</th>
+                <th className="px-3 py-2 font-medium whitespace-nowrap" aria-sort={sortSel === "release" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("release", "Demo Released")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "reviews" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("reviews", "Reviews (LTD)")}</th>
+                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "rating" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("rating", "Steam Reviews")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "downloads" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("downloads", "Est. Downloads (window)")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "ccu" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("ccu", "Latest Sampled CCU")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak Observed CCU")}</th>
@@ -294,7 +312,7 @@ export default function DemosLeaderboard() {
                       href={`https://store.steampowered.com/app/${d.steamAppId}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="font-medium hover:underline"
+                      className="font-medium hover:underline break-words"
                     >
                       {d.name}
                     </a>
@@ -304,9 +322,20 @@ export default function DemosLeaderboard() {
                       </Badge>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-muted-foreground">{d.genre ?? "—"}</td>
+                  <td className="px-3 py-2 text-xs leading-5 text-muted-foreground">{d.genre ?? "—"}</td>
                   <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{formatDate(d.releaseDate)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.reviewCountTotal)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums" data-testid={`reviews-demo-${d.steamAppId}`}>
+                    {d.steamReviews?.positivePercent != null ? (
+                      <a href={`https://store.steampowered.com/app/${d.steamAppId}/#app_reviews_hash`}
+                        target="_blank" rel="noreferrer" className="inline-block hover:underline"
+                        aria-label={`${d.name}: ${d.steamReviews.positivePercent.toFixed(1)} percent positive Steam reviews`}
+                        title={`${d.steamReviews.positive.toLocaleString()} positive / ${d.steamReviews.negative.toLocaleString()} negative (${d.steamReviews.total.toLocaleString()} total). Demo reviews only; all languages, lifetime; daily snapshot.`}>
+                        <span className="font-medium">{d.steamReviews.positivePercent.toFixed(1)}% positive</span>
+                        <span className="block text-xs text-muted-foreground">View demo reviews</span>
+                      </a>
+                    ) : <span className="text-xs text-muted-foreground">{d.steamReviews?.total === 0 ? "No reviews yet" : "Not available"}</span>}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {d.unitsMid != null ? (
                       d.method === "steamworks_actual" ? (
@@ -342,7 +371,7 @@ export default function DemosLeaderboard() {
                 </tr>
               ))}
               {data.demos.length === 0 && (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-muted-foreground">
+                <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">
                   {sourceView ? "No verified game demos in the latest successful feed snapshot." : "No demo data yet."}
                 </td></tr>
               )}

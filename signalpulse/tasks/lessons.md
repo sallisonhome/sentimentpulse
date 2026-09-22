@@ -1,5 +1,14 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-22: demo review scores must be demo-owned and non-overlapping
+
+Use the demo App ID, never the parent game's reviews. A lifetime histogram
+rollup and its recent daily buckets overlap; do not sum both for the score.
+When weekly/monthly representations coexist, use one, not both. Recent-only
+daily history cannot establish an old demo's lifetime score. Preserve genuine
+0% positive separately from no reviews/unavailable and sort by the numeric
+percentage before limiting rows. Label daily-cached scores as such.
+
 ## 2026-09-22: trial demo multipliers must preserve cohort boundaries
 
 The user selected a 130x non-Saber live trial while preserving Saber's

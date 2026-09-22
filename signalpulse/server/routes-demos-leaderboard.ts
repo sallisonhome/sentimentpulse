@@ -4,7 +4,7 @@
  * Route: GET /api/demos/leaderboard
  * Query: window=d7|d30|d90|m12|ltd (default d7, matches the established
  *          console-leaderboard / hmap wishlist-leaderboard convention)
- *        sort=top|new|reviews|downloads|ccu|peak|release
+ *        sort=top|new|reviews|rating|downloads|ccu|peak|release
  *        direction=asc|desc (metric/date sorts; default desc)
  *        genre=<exact broad Steam genre>
  *        limit=1..100 (default 50)
@@ -29,9 +29,10 @@ import type { Express } from "express";
 import { rawSqlite } from "./storage";
 import { WINDOWS, type WindowKey } from "./signals/demos/estimator";
 import { DEMO_FEED_LIMIT } from "./signals/demos/feeds";
+import { loadDemoReviewSummaries, type DemoReviewSummary } from "./signals/demos/review-summary";
 import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, NON_SABER_DOWNLOAD_TRIAL, demoDownloadMultiplier, demoReviewEstimate, reconcileDemoDownloads } from "./signals/demos/download-consistency";
 
-type DemoSort = "top" | "new" | "reviews" | "downloads" | "ccu" | "peak" | "release";
+type DemoSort = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release";
 
 interface DemoLeaderboardRow {
   id: number;
@@ -55,9 +56,11 @@ interface DemoLeaderboardRow {
   lifetimeModelBelowPeak: boolean;
   downloadMultiplier: number | null;
   calibrationMode: "saber_baseline" | "non_saber_trial" | "actual";
+  steamReviews: DemoReviewSummary | null;
 }
 
 function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number) {
+  const reviewSummaries = loadDemoReviewSummaries();
   // Latest estimate row per demo for the requested window (there is at
   // most one per demo_title_id+window+as_of_date; take the newest
   // as_of_date if the estimator has run more than once historically).
@@ -142,7 +145,8 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       genre: d.genre,
       releaseDate: d.release_date,
       isSaberPublished: d.is_saber_published === 1,
-      reviewCountTotal: est?.review_count_total ?? null,
+      reviewCountTotal: reviewSummaries.get(d.steam_app_id)?.total ?? est?.review_count_total ?? null,
+      steamReviews: reviewSummaries.get(d.steam_app_id) ?? null,
       reviewDelta: est?.review_delta ?? null,
       unitsLow: resolved.isObservedMinimum || !saber ? null : est?.units_low ?? null,
       unitsHigh: resolved.isObservedMinimum || !saber ? null : est?.units_high ?? null,
@@ -160,6 +164,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     rows.sort((a, b) => a.sourceRank! - b.sourceRank!);
   } else {
     const value = (row: DemoLeaderboardRow): number | string | null => sort === "reviews" ? row.reviewCountTotal
+      : sort === "rating" ? row.steamReviews?.positivePercent ?? null
       : sort === "downloads" ? row.unitsMid : sort === "ccu" ? row.ccuCurrent
       : sort === "peak" ? row.ccuAllTimePeak : row.releaseDate;
     rows.sort((a, b) => {
@@ -186,7 +191,7 @@ export function registerDemosLeaderboardRoutes(app: Express) {
       const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 100) : 50;
 
       if (!WINDOWS.includes(window)) return res.status(400).json({ error: "invalid window" });
-      if (!["top","new","reviews","downloads","ccu","peak","release"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
+      if (!["top","new","reviews","rating","downloads","ccu","peak","release"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
       if (direction !== "asc" && direction !== "desc") return res.status(400).json({ error: "invalid direction" });
 
       const genres = Array.from(new Set((rawSqlite.prepare(
