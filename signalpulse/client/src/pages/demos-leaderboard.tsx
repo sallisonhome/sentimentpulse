@@ -13,9 +13,8 @@
  *   - Estimated Downloads (default) — review_delta × multiplier for the
  *     selected window. PROVISIONAL: calibrated against a single verified
  *     anchor (Hellraiser Revival demo, 100k downloads / 1,527 reviews ≈
- *     65.5x), shown as a low–high range, never a single precise number.
- *   - CCU (current concurrent players) — same live-player-count signal
- *     SteamDB's chart uses.
+ *     65.5x), displayed as a single estimate with sensitivity on hover.
+ *   - CCU — latest daily sample, not continuous live tracking.
  *
  * Window filter follows the same d7/d30/d90/m12/ltd convention as
  * /console-leaderboards and howmanyareplaying's /buying (wishlist)
@@ -42,7 +41,7 @@ const WINDOWS: Array<{ id: WindowKey; label: string }> = [
 
 const SORTS: Array<{ id: SortKey; label: string }> = [
   { id: "downloads", label: "Estimated Downloads" },
-  { id: "ccu",       label: "Concurrent Players (CCU)" },
+  { id: "ccu",       label: "Latest Sampled CCU" },
 ];
 
 interface DemoRow {
@@ -103,12 +102,12 @@ export default function DemosLeaderboard() {
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-semibold">Steam Demos Leaderboard</h1>
-            <Badge variant="outline" className="text-[10px] uppercase tracking-wide">experimental</Badge>
+            <Badge variant="outline" className="text-xs uppercase tracking-wide" style={{ color: "hsl(var(--foreground))" }}>experimental</Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Top free Steam demos ranked by estimated downloads or live concurrent players.
-            Sourced from Steam's official Demos hub plus Saber Interactive's own roster.
-            Free titles carry no revenue estimate — reviews and CCU are the tracked signals.
+            Tracked playable Steam game demos ranked by estimated downloads or latest sampled CCU.
+            Discovery covers Steam's New &amp; Trending demos list plus Saber's own roster,
+            not every demo on Steam. No revenue estimates or license-category counts.
           </p>
           {data?.asOfDate && (
             <p className="text-xs text-muted-foreground mt-1" data-testid="text-demos-refresh-note">
@@ -150,14 +149,19 @@ export default function DemosLeaderboard() {
         </div>
       </div>
 
+      <p className="text-xs text-muted-foreground" data-testid="text-demos-sampling-note">
+        Refreshed daily. CCU is the latest collected sample, not a live feed.
+        Peak observed CCU is the highest sample recorded since tracking began, not a historical all-time peak.
+        Date filters apply to download estimates only; CCU columns use the latest sample and tracking-to-date peak.
+      </p>
+
       {sortSel === "downloads" && data?.multiplier && (
         <p className="text-xs text-muted-foreground bg-muted/40 rounded-md px-3 py-2">
           Estimated downloads = reviews added in the selected window × a downloads-per-review
-          multiplier (mid {data.multiplier.mid}x). Provisional — calibrated on a single verified
+          multiplier ({data.multiplier.mid}x). Provisional: calibrated on a single
           anchor (Hellraiser Revival demo: 100,000 downloads / 1,527 reviews). Hover a figure for its
-          low ({data.multiplier.low}x) / high ({data.multiplier.high}x) sensitivity range. Saber's own
-          demos show a <span className="font-medium">Confirmed</span> exact figure once pulled from
-          Saber's own Steamworks Sales &amp; Activations report.
+          low ({data.multiplier.low}x) / high ({data.multiplier.high}x) sensitivity range.
+          These are estimates, not confirmed Steamworks downloads.
         </p>
       )}
 
@@ -171,7 +175,7 @@ export default function DemosLeaderboard() {
           <div className="p-4 text-sm text-destructive">Failed to load leaderboard: {(error as Error)?.message}</div>
         )}
         {!isLoading && !isError && data && (
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[760px] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-muted-foreground">
                 <th className="px-3 py-2 font-medium w-10">#</th>
@@ -179,8 +183,8 @@ export default function DemosLeaderboard() {
                 <th className="px-3 py-2 font-medium">Genre</th>
                 <th className="px-3 py-2 font-medium text-right">Reviews (LTD)</th>
                 <th className="px-3 py-2 font-medium text-right">Est. Downloads (window)</th>
-                <th className="px-3 py-2 font-medium text-right">CCU Current</th>
-                <th className="px-3 py-2 font-medium text-right">CCU All-Time Peak</th>
+                <th className="px-3 py-2 font-medium text-right">Latest Sampled CCU</th>
+                <th className="px-3 py-2 font-medium text-right">Peak Observed CCU</th>
               </tr>
             </thead>
             <tbody>
@@ -220,7 +224,9 @@ export default function DemosLeaderboard() {
                       )
                     ) : "—"}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.ccuCurrent)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums" title={d.ccuAsOf ? `Sample collected: ${d.ccuAsOf}` : "No CCU sample collected"}>
+                    {formatNumberCompact(d.ccuCurrent)}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.ccuAllTimePeak)}</td>
                 </tr>
               ))}
