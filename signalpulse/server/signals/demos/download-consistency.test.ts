@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { reconcileDemoDownloads } from "./download-consistency";
+import { demoDownloadMultiplier, demoReviewEstimate, reconcileDemoDownloads } from "./download-consistency";
 
 const base = {
   window: "ltd" as const, releaseDate: "2026-09-16",
@@ -11,6 +11,17 @@ const base = {
   method: "review_delta_multiplier", observedPeak: 26222,
   nowMs: Date.parse("2026-09-22T16:30:00Z"),
 };
+
+test("130x trial is non-Saber only, uses review deltas, and never compounds stored estimates", () => {
+  assert.equal(demoDownloadMultiplier(true), 65.5);
+  assert.equal(demoDownloadMultiplier(false), 130);
+  assert.equal(demoReviewEstimate(206, 13493, "review_delta_multiplier", false), 26780);
+  assert.equal(demoReviewEstimate(206, 26780, "review_delta_multiplier", false), 26780);
+  assert.equal(demoReviewEstimate(1556, 101918, "review_delta_multiplier", true), 101918);
+  assert.equal(demoReviewEstimate(0, 999, "review_delta_multiplier", false), 0);
+  assert.equal(demoReviewEstimate(206, 50000, "steamworks_actual", false), 50000);
+  assert.equal(demoReviewEstimate(null, null, null, false), null);
+});
 
 test("observed concurrency is a labeled minimum, never a new multiplier", () => {
   for (const window of ["d7", "d30", "d90", "m12", "ltd"] as const) {
@@ -66,9 +77,10 @@ test("real API reconciles before sort and limit, preserves raw estimates and sou
     for (const [id, units, peak] of [[1, 13493, 26222], [2, 20000, 500], [3, 197, 387]]) {
       db.prepare(`INSERT INTO demo_titles(id,steam_app_id,name,genre,release_date,discovered_via,is_active,first_seen_at,created_at,updated_at)
         VALUES(?,?,?,'Casual',?,'test',1,?,?,?)`).run(id, String(id), `Demo ${id}`, id === 3 ? "2021-09-17" : today, today, today, today);
+      if (id === 2) db.prepare("UPDATE demo_titles SET is_saber_published=1 WHERE id=2").run();
       for (const window of ["d7", "d30", "d90", "m12", "ltd"]) {
-        db.prepare(`INSERT INTO demo_window_estimates_daily(demo_title_id,window,as_of_date,units_mid,units_low,units_high,method,created_at)
-          VALUES(?,?,?,?,30,100,'review_delta_multiplier',?)`).run(id, window, today, units, today);
+        db.prepare(`INSERT INTO demo_window_estimates_daily(demo_title_id,window,as_of_date,units_mid,review_delta,units_low,units_high,method,created_at)
+          VALUES(?,?,?,?,?,30,100,'review_delta_multiplier',?)`).run(id, window, today, units, id === 1 ? 206 : id === 3 ? 1 : 300, today);
       }
       // Latest sample alone must suffice; a delayed daily-peak writer is safe.
       db.prepare("INSERT INTO demo_ccu_snapshots(demo_title_id,captured_at,ccu) VALUES(?,?,?)").run(id, today, peak);
@@ -77,20 +89,39 @@ test("real API reconciles before sort and limit, preserves raw estimates and sou
     for (const window of ["d7", "d30", "d90", "m12", "ltd"]) {
       const data = await (await fetch(`${url}?window=${window}&limit=1`)).json();
       assert.equal(data.demos[0].id, 1);
-      assert.equal(data.demos[0].unitsMid, 26222);
-      assert.equal(data.demos[0].reviewEstimate, 13493);
+      assert.equal(data.demos[0].unitsMid, 26780);
+      assert.equal(data.demos[0].reviewEstimate, 26780);
       assert.equal(data.demos[0].unitsHigh, null);
-      assert.equal(data.demos[0].method, "observed_ccu_lower_bound");
+      assert.equal(data.demos[0].method, "review_delta_multiplier");
+      assert.equal(data.demos[0].downloadMultiplier, 130);
+      assert.equal(data.demos[0].calibrationMode, "non_saber_trial");
       assert.equal(data.calibration.reportingCutoff, null);
     }
     const short = await (await fetch(`${url}?window=d7&sort=downloads&direction=asc&genre=Casual`)).json();
     assert.deepEqual(short.demos.map((d: any) => d.id), [3, 2, 1]);
-    assert.equal(short.demos[0].unitsMid, 197);
+    assert.equal(short.demos[0].unitsMid, 130);
     assert.equal(short.demos[0].lifetimeModelBelowPeak, true);
+    assert.equal(short.demos[1].unitsMid, 19650);
+    assert.equal(short.demos[1].downloadMultiplier, 65.5);
+    assert.equal(short.demos[1].calibrationMode, "saber_baseline");
     const ltd = await (await fetch(`${url}?window=ltd&sort=top`)).json();
     assert.deepEqual(ltd.demos.map((d: any) => d.id), [3, 2, 1]);
     assert.equal(ltd.demos[0].unitsMid, 387);
     assert.equal(db.prepare("SELECT units_mid FROM demo_window_estimates_daily WHERE demo_title_id=1 LIMIT 1").get().units_mid, 13493);
+    // Future scheduled runs write the same selected rates, not the old global
+    // rate. No ingestion calls: seed review history in the isolated DB only.
+    const stamp = new Date().toISOString();
+    for (const id of [1, 2]) db.prepare(`INSERT INTO steam_review_history
+      (app_id,bucket_start,bucket_granularity,recommendations_up,recommendations_down,source_endpoint,created_at)
+      VALUES(?,?,'day',10,0,'test',?)`).run(String(id), Math.floor(Date.now()/1000)-60, stamp);
+    const { computeDemoWindowEstimates } = await import("./estimator");
+    computeDemoWindowEstimates(today);
+    for (const window of ["d7","d30","d90","m12","ltd"]) {
+      const nonSaber = db.prepare("SELECT units_mid,multiplier_id FROM demo_window_estimates_daily WHERE demo_title_id=1 AND window=?").get(window);
+      assert.equal(nonSaber.units_mid, 1300);
+      assert.equal(nonSaber.multiplier_id, "non_saber_trial_130_v1");
+      assert.equal(db.prepare("SELECT units_mid FROM demo_window_estimates_daily WHERE demo_title_id=2 AND window=?").get(window).units_mid, 655);
+    }
   } finally {
     if (server) await new Promise<void>(resolve => server.close(resolve));
     db?.close();

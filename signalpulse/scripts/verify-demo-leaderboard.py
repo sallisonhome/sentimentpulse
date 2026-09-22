@@ -94,6 +94,8 @@ def main():
                 assert feed["lastSuccessAt"] and not feed["error"]
                 assert feed["candidateCount"] > 50, "Pagination coverage missing"
             for row in rows:
+                assert row["downloadMultiplier"] == (65.5 if row["isSaberPublished"] else 130)
+                assert row["calibrationMode"] == ("saber_baseline" if row["isSaberPublished"] else "non_saber_trial")
                 assert row["method"] in (None, "review_delta_multiplier", "observed_ccu_lower_bound")
                 if row["method"] == "observed_ccu_lower_bound":
                     assert row["isObservedMinimum"]
@@ -104,7 +106,7 @@ def main():
                         cutoff = datetime.now(timezone.utc) - timedelta(days={"d7": 7, "d30": 30, "d90": 90, "m12": 365}[window])
                         assert datetime.fromisoformat(row["releaseDate"]).replace(tzinfo=timezone.utc) >= cutoff
                 elif row["unitsMid"] is not None:
-                    expected = int(row["reviewDelta"] * data["multiplier"]["mid"] + 0.5)
+                    expected = int(row["reviewDelta"] * row["downloadMultiplier"] + 0.5)
                     assert row["unitsMid"] == expected
                 if row["ccuCurrent"] is not None:
                     assert row["ccuAsOf"] is not None

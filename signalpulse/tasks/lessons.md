@@ -1,5 +1,13 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-22: trial demo multipliers must preserve cohort boundaries
+
+The user selected a 130x non-Saber live trial while preserving Saber's
+65.5x baseline. Label a user-selected trial as such, never as an empirical
+refit. Share rate selection between API and scheduled writer, recompute
+from review deltas rather than scaling already-derived units, retain actual
+protection, and apply the resolved values before sorting and limiting.
+
 ## 2026-09-22: demo review ratios need concurrency consistency checks
 
 A single title's downloads/review anchor is provisional, not a universal

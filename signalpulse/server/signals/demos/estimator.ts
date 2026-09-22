@@ -33,7 +33,7 @@
 
 import { rawSqlite } from "../../storage";
 import { log } from "../../log";
-import { DEMO_DOWNLOAD_MULTIPLIER } from "./download-consistency";
+import { DEMO_DOWNLOAD_MULTIPLIER, demoDownloadMultiplier } from "./download-consistency";
 
 export type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
 
@@ -54,11 +54,12 @@ interface DemoTitleForEstimate {
   id: number;
   steam_app_id: string;
   first_seen_at: string;
+  is_saber_published: number;
 }
 
 function loadEstimableDemos(): DemoTitleForEstimate[] {
   return rawSqlite
-    .prepare(`SELECT id, steam_app_id, first_seen_at FROM demo_titles WHERE is_active = 1 OR deactivated_at IS NOT NULL`)
+    .prepare(`SELECT id, steam_app_id, first_seen_at, is_saber_published FROM demo_titles WHERE is_active = 1 OR deactivated_at IS NOT NULL`)
     .all() as DemoTitleForEstimate[];
 }
 
@@ -142,13 +143,14 @@ export function computeDemoWindowEstimates(asOfDate = new Date().toISOString().s
       const windowStartUnix = days === null ? null : nowUnix - days * 86400;
       const reviewDelta = sumReviewDelta(demo.steam_app_id, windowStartUnix);
 
-      const unitsLow = Math.round(reviewDelta * DOWNLOAD_MULTIPLIER.low);
-      const unitsMid = Math.round(reviewDelta * DOWNLOAD_MULTIPLIER.mid);
-      const unitsHigh = Math.round(reviewDelta * DOWNLOAD_MULTIPLIER.high);
+      const saber = demo.is_saber_published === 1;
+      const unitsLow = saber ? Math.round(reviewDelta * DOWNLOAD_MULTIPLIER.low) : null;
+      const unitsMid = Math.round(reviewDelta * demoDownloadMultiplier(saber));
+      const unitsHigh = saber ? Math.round(reviewDelta * DOWNLOAD_MULTIPLIER.high) : null;
 
       upsertEstimateStmt().run(
         demo.id, windowKey, asOfDate, reviewCountTotal, reviewDelta,
-        unitsLow, unitsMid, unitsHigh, "hellraiser_anchor_v1", "review_delta_multiplier", nowIso,
+        unitsLow, unitsMid, unitsHigh, saber ? "hellraiser_anchor_v1" : "non_saber_trial_130_v1", "review_delta_multiplier", nowIso,
       );
       rowsWritten += 1;
     }
