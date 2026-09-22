@@ -26,9 +26,10 @@
 import type { Express } from "express";
 import { rawSqlite } from "./storage";
 import { WINDOWS, type WindowKey } from "./signals/demos/estimator";
-import { DEMO_FEED_LIMIT } from "./signals/demos/feeds";
+import { DEMO_FEED_LIMIT, DEMO_NEW_FEED_MAX } from "./signals/demos/feeds";
 import { loadDemoReviewSummaries, type DemoReviewSummary } from "./signals/demos/review-summary";
 import { loadDemoCatalog } from "./signals/demos/catalog";
+import { HYBRID_PASS_IDS, type SkuKind } from "./signals/demos/friends-pass-identity";
 import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, NON_SABER_DOWNLOAD_TRIAL, demoDownloadMultiplier, demoReviewEstimate, reconcileDemoDownloads } from "./signals/demos/download-consistency";
 
 type DemoSort = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release";
@@ -41,6 +42,9 @@ interface DemoLeaderboardRow {
   releaseDate: string | null;
   isSaberPublished: boolean;
   isArchived: boolean;
+  skuKind: SkuKind;
+  isHybridPass: boolean;
+  releaseDateUnverified: boolean;
   reviewCountTotal: number | null;
   reviewDelta: number | null;
   unitsLow: number | null;
@@ -64,7 +68,7 @@ interface DemoLeaderboardRow {
   steamReviews: DemoReviewSummary | null;
 }
 
-function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number) {
+function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number, offset: number, search: string, kind: SkuKind) {
   const reviewSummaries = loadDemoReviewSummaries();
   const actualRows = rawSqlite.prepare("SELECT * FROM demo_download_actuals WHERE window=? AND source='steamworks_downloads_report'").all(window) as any[];
   const actualByAppId = new Map(actualRows.map(row => [row.steam_app_id, row]));
@@ -119,7 +123,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     .all() as Array<{ demo_title_id: number; ccu: number; captured_at: string }>;
   const ccuCurrentByDemoId = new Map(latestSnapshotRows.map((r) => [r.demo_title_id, r]));
 
-  const demos = loadDemoCatalog();
+  const demos = loadDemoCatalog(kind);
   const sourceRanks = new Map((rawSqlite.prepare(
     "SELECT demo_title_id,source_rank FROM demo_discovery_ranks WHERE feed=?"
   ).all(sort) as Array<{ demo_title_id: number; source_rank: number }>)
@@ -131,6 +135,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     .filter(d => !["top","new","ccu"].includes(sort) || d.is_active === 1)
     .filter(d => (sort !== "top" && sort !== "new") || sourceRanks.has(d.id))
     .filter(d => !genre || (d.genre ?? "").split(", ").includes(genre))
+    .filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.steam_app_id === search)
     .map((d) => {
     const est = d.is_active === 1 ? estimateByDemoId.get(d.id) : undefined;
     const snap = ccuCurrentByDemoId.get(d.id);
@@ -161,6 +166,9 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       releaseDate: d.release_date,
       isSaberPublished: d.is_saber_published === 1,
       isArchived: d.is_active !== 1,
+      skuKind: kind,
+      isHybridPass: kind === "friends_pass" && HYBRID_PASS_IDS.has(d.steam_app_id),
+      releaseDateUnverified: d.availability_source === "store_download" && !d.release_date,
       reviewCountTotal: reviewSummaries.get(d.steam_app_id)?.total ?? est?.review_count_total ?? null,
       steamReviews: reviewSummaries.get(d.steam_app_id) ?? null,
       reviewDelta: est?.review_delta ?? null,
@@ -190,15 +198,17 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       : sort === "peak" ? row.ccuAllTimePeak : row.releaseDate;
     rows.sort((a, b) => {
       const av = value(a); const bv = value(b);
-      if (av == null && bv == null) return a.name.localeCompare(b.name);
+      if (av == null && bv == null) return a.name.localeCompare(b.name) || a.id - b.id;
       if (av == null) return 1;
       if (bv == null) return -1;
       const comparison = typeof av === "string" ? av.localeCompare(String(bv)) : av - Number(bv);
-      return direction === "asc" ? comparison : -comparison;
+      return (direction === "asc" ? comparison : -comparison) || a.name.localeCompare(b.name) || a.id - b.id;
     });
   }
 
-  return { rows: rows.slice(0, limit), asOfDate, availableCount: rows.length };
+  const resolvedOffset = rows.length ? Math.min(offset, Math.floor((rows.length-1)/limit)*limit) : 0;
+  return { rows: rows.slice(resolvedOffset, resolvedOffset + limit), asOfDate, availableCount: rows.length,
+    offset: resolvedOffset, hasMore: resolvedOffset + limit < rows.length };
 }
 
 export function registerDemosLeaderboardRoutes(app: Express) {
@@ -210,27 +220,40 @@ export function registerDemosLeaderboardRoutes(app: Express) {
       const genre = ((req.query.genre as string) || "").trim();
       const limitRaw = parseInt((req.query.limit as string) || "50", 10);
       const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 250) : 50;
+      const offset = Number(req.query.offset ?? 0);
+      const search = String(req.query.search ?? "").trim();
+      const kind = String(req.query.kind ?? "demo") as SkuKind;
+      if (!["demo","friends_pass"].includes(kind)) return res.status(400).json({error:"invalid kind"});
+      if (kind === "friends_pass" && ["top","new"].includes(sort)) return res.status(400).json({error:"Steam demo feed order is not a Friends Pass ranking"});
+      if (!Number.isSafeInteger(offset) || offset < 0) return res.status(400).json({ error: "invalid offset" });
+      if (search.length > 120) return res.status(400).json({ error: "search too long" });
 
       if (!WINDOWS.includes(window)) return res.status(400).json({ error: "invalid window" });
       if (!["top","new","reviews","rating","downloads","ccu","peak","release"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
       if (direction !== "asc" && direction !== "desc") return res.status(400).json({ error: "invalid direction" });
 
-      const catalog = loadDemoCatalog();
+      const catalog = loadDemoCatalog(kind);
       const genres = Array.from(new Set(catalog.flatMap(row => row.genre?.split(", ") ?? []))).sort();
       if (genre && !genres.includes(genre)) return res.status(400).json({ error: "invalid genre" });
-      const { rows, asOfDate, availableCount } = loadLeaderboardRows(window, sort as DemoSort, direction, genre, limit);
+      const { rows, asOfDate, availableCount, offset: resolvedOffset, hasMore } =
+        loadLeaderboardRows(window, sort as DemoSort, direction, genre, limit, offset, search, kind);
       const feeds = rawSqlite.prepare(`SELECT feed,last_attempt_at AS lastAttemptAt,
         last_success_at AS lastSuccessAt,error,candidate_count AS candidateCount,
-        eligible_count AS eligibleCount,total_matches AS totalMatches FROM demo_discovery_feeds`).all();
+        eligible_count AS eligibleCount,total_matches AS totalMatches,
+        scanned_slots AS scannedSlots,stop_reason AS stopReason FROM demo_discovery_feeds
+        WHERE ${kind === "friends_pass" ? "feed='friends_pass'" : "feed!='friends_pass'"}`).all();
       res.json({
         window,
+        kind,
         sort,
         direction,
         genre: genre || null,
         genres,
         asOfDate,
         availableCount,
+        offset: resolvedOffset, limit, hasMore, search,
         coverage: { candidateLimitPerFeed: DEMO_FEED_LIMIT, feeds, completeSteamCatalog: false,
+          newReleaseCatchUpLimit: DEMO_NEW_FEED_MAX,
           trackedCount: catalog.length, availableCount: catalog.filter(d=>d.is_active===1).length,
           archivedCount: catalog.filter(d=>d.is_active!==1).length },
         multiplier: { ...DEMO_DOWNLOAD_MULTIPLIER, nonSaberTrial: NON_SABER_DOWNLOAD_TRIAL,

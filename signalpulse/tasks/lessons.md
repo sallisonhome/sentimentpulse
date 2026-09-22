@@ -1,5 +1,44 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-22: Friend's Pass identity and runtime are separate from demo identity
+
+Pass clients may be type=demo or type=game, may omit `is_free`, and may be
+named FriendsPass, Friends' Pass, or Buddy Pass. Verify an exact currently
+offered free install/run or a free-license offer for an appdetails-owned
+package. Package availability is not a license-count download metric.
+Never substitute the paid game's reviews or CCU when a pass storefront
+SKU shares its runtime. HTTP 404 on that SKU's player API means unavailable,
+not zero. Hybrid demo/pass activity cannot be separated.
+
+Keep pass clients in their own `sku_kind`, revalidate daily, retain last
+status on transport errors, and do not retain deactivated pass estimates.
+Named searches must paginate to exhaustion or expose an incomplete run.
+An evidence-backed alias seeds discovery but never bypasses daily checks.
+Keep discovery/backfill within the existing 03:00 Eastern schedule.
+
+Recent daily review buckets overlap lifetime weekly/monthly rollups.
+Select one current rollup representation and add only nonoverlapping days.
+Lifetime review totals and 130× trial estimates must reconcile exactly;
+older window edges remain bucket-based, never fabricated daily precision.
+
+## 2026-09-22: discovery depth, current availability and release dates are separate
+
+The first 100 source slots omitted hundreds of verified demos. Top/Trending
+now sample 500; New Releases reads at least 500 and catches up to the prior
+successful source-head watermark, with a full-page overlap and 2,000-slot
+safety cap. A capped/failed catch-up must retain the old ranking, success
+time and anchors, and report an error. This remains daily at 03:00 Eastern;
+do not add a competing schedule.
+
+A future/missing demo release date does not prove the demo is unavailable.
+Allow the fallback only after demo identity and game-parent checks AND a
+current Steam parent-page download action referencing the exact demo App ID.
+Store the verification source/time; leave the release date null rather than
+copying a parent date or inventing one. Network failures are not permanent
+deactivations. Software parents and Friend's Pass clients pending review stay
+excluded. Expanded catalogs require server-side search and pagination after
+all window/source/genre filters and numeric sorting, with stable tie-breaking.
+
 ## 2026-09-22: deactivated demos retain only Saber lifetime actuals
 
 Publisher-deactivated demos are not tracked in rolling-period leaderboards,

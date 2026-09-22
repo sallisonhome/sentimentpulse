@@ -1241,6 +1241,13 @@ function migrateAddColumnIfMissing(table: string, column: string, ddl: string) {
 
 function runMigrations() {
   migrateAddColumnIfMissing("demo_titles", "release_date", "release_date TEXT");
+  migrateAddColumnIfMissing("demo_titles", "availability_source", "availability_source TEXT");
+  migrateAddColumnIfMissing("demo_titles", "sku_kind", "sku_kind TEXT NOT NULL DEFAULT 'demo'");
+  migrateAddColumnIfMissing("demo_titles", "availability_source_url", "availability_source_url TEXT");
+  migrateAddColumnIfMissing("demo_titles", "availability_checked_at", "availability_checked_at TEXT");
+  migrateAddColumnIfMissing("demo_discovery_feeds", "scanned_slots", "scanned_slots INTEGER NOT NULL DEFAULT 0");
+  migrateAddColumnIfMissing("demo_discovery_feeds", "stop_reason", "stop_reason TEXT");
+  migrateAddColumnIfMissing("demo_discovery_feeds", "anchor_app_ids", "anchor_app_ids TEXT");
   migrateAddColumnIfMissing("products", "steam_header_image_url", "steam_header_image_url TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "alert_sent_at", "alert_sent_at TEXT");
   migrateAddColumnIfMissing("steamworks_sessions", "refresh_source", "refresh_source TEXT");

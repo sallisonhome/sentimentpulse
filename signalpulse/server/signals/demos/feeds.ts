@@ -10,7 +10,8 @@ export const DEMO_FEEDS = {
   trending: "contenthub_newandtrending",
 } as const;
 export type DemoFeed = keyof typeof DEMO_FEEDS;
-export const DEMO_FEED_LIMIT = 100;
+export const DEMO_FEED_LIMIT = 500;
+export const DEMO_NEW_FEED_MAX = 2000;
 const PAGE_SIZE = 50;
 export const DEMOS_HUB_URL = "https://store.steampowered.com/demos/";
 
@@ -56,17 +57,26 @@ export function demoFeedUrl(context: ReturnType<typeof parseDemoFeedContext>, fe
 export interface DemoFeedPage {
   entries: Array<{ appId: string; rank: number }>;
   totalMatches: number;
+  scannedSlots: number;
+  stopReason: "end" | "bounded" | "bootstrap" | "watermark" | "safety_cap";
 }
 
 export async function fetchDemoFeed(
   context: ReturnType<typeof parseDemoFeedContext>,
   feed: DemoFeed,
   read = fetchSteamText,
+  previousHead: ReadonlySet<string> = new Set(),
 ): Promise<DemoFeedPage> {
   const entries: DemoFeedPage["entries"] = [];
   const seen = new Set<string>();
   let totalMatches = 0;
-  for (let start = 0; start < DEMO_FEED_LIMIT; start += PAGE_SIZE) {
+  let scannedSlots = 0;
+  let stopReason: DemoFeedPage["stopReason"] = feed === "new" ? "bootstrap" : "bounded";
+  const catchUp = feed === "new" && previousHead.size > 0;
+  const maxSlots = catchUp ? DEMO_NEW_FEED_MAX : DEMO_FEED_LIMIT;
+  const matchedHead = new Set<string>();
+  let overlapAt: number | null = null;
+  for (let start = 0; start < maxSlots; start += PAGE_SIZE) {
     const data = JSON.parse(await read(demoFeedUrl(context, feed, start)));
     if (data.success !== 1 || !Array.isArray(data.appids) ||
         !Number.isSafeInteger(data.match_count) || data.match_count < 0 ||
@@ -74,12 +84,14 @@ export async function fetchDemoFeed(
       throw new Error(`Invalid Steam ${feed} feed response`);
     }
     totalMatches = data.match_count;
+    scannedSlots = start + data.appids.length;
     if (data.appids.length === 0 && start < totalMatches) {
       throw new Error(`Steam ${feed} feed unexpectedly empty at offset ${start}`);
     }
     let added = 0;
     for (const [offset, id] of data.appids.slice(0, PAGE_SIZE).entries()) {
       const appId = String(id);
+      if (previousHead.has(appId)) matchedHead.add(appId);
       if (!seen.has(appId)) {
         entries.push({ appId, rank: start + offset + 1 });
         seen.add(appId);
@@ -87,8 +99,17 @@ export async function fetchDemoFeed(
       }
     }
     if (data.appids.length && !added) throw new Error(`Steam ${feed} pagination repeated a page`);
-    if (data.possible_has_more === false || start + data.appids.length >= totalMatches) break;
+    if (data.possible_has_more === false || start + data.appids.length >= totalMatches) {
+      stopReason = "end"; break;
+    }
     if (data.appids.length < PAGE_SIZE) throw new Error(`Steam ${feed} feed returned a short page`);
+    // Match at least 25 of the previous head IDs, then read one full extra
+    // page. Persistent future-date entries alone cannot satisfy this watermark.
+    if (overlapAt === null && matchedHead.size >= Math.min(25, previousHead.size)) overlapAt = scannedSlots;
+    if (catchUp && scannedSlots >= DEMO_FEED_LIMIT && overlapAt !== null && scannedSlots >= overlapAt + PAGE_SIZE) {
+      stopReason = "watermark"; break;
+    }
+    if (catchUp && scannedSlots >= maxSlots) stopReason = "safety_cap";
   }
-  return { entries, totalMatches };
+  return { entries, totalMatches, scannedSlots, stopReason };
 }

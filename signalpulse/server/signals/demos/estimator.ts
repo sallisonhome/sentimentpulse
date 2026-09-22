@@ -73,31 +73,28 @@ function loadEstimableDemos(): DemoTitleForEstimate[] {
  * begins (bucket_start < minDayBucketStart).
  */
 function sumReviewDelta(appId: string, windowStartUnix: number | null): number {
-  const minDayRow = rawSqlite
-    .prepare(`SELECT MIN(bucket_start) as m FROM steam_review_history WHERE app_id = ? AND bucket_granularity = 'day'`)
-    .get(appId) as { m: number | null };
-  const minDayBucketStart = minDayRow?.m ?? null;
+  const buckets = rawSqlite.prepare(`SELECT bucket_start AS start,bucket_granularity AS grain,
+    recommendations_up+recommendations_down AS count,created_at AS seen
+    FROM steam_review_history WHERE app_id=?`).all(appId) as ReviewBucket[];
+  return sumNonOverlappingReviews(buckets, windowStartUnix);
+}
 
-  const daySumRow = rawSqlite
-    .prepare(
-      `SELECT COALESCE(SUM(recommendations_up + recommendations_down), 0) as s
-       FROM steam_review_history
-       WHERE app_id = ? AND bucket_granularity = 'day'
-         AND (? IS NULL OR bucket_start >= ?)`
-    )
-    .get(appId, windowStartUnix, windowStartUnix) as { s: number };
-
-  const rollupSumRow = rawSqlite
-    .prepare(
-      `SELECT COALESCE(SUM(recommendations_up + recommendations_down), 0) as s
-       FROM steam_review_history
-       WHERE app_id = ? AND bucket_granularity IN ('week','month')
-         AND (? IS NULL OR bucket_start < ?)
-         AND (? IS NULL OR bucket_start >= ?)`
-    )
-    .get(appId, minDayBucketStart, minDayBucketStart, windowStartUnix, windowStartUnix) as { s: number };
-
-  return (daySumRow?.s ?? 0) + (rollupSumRow?.s ?? 0);
+interface ReviewBucket {start:number;grain:string;count:number;seen:string}
+/** Use one lifetime representation and never add recent days that overlap it.
+ * Window boundaries are bucket-based (no invented daily prorating for older
+ * weekly/monthly data). Daily buckets fill only periods not covered by a
+ * selected rollup. Lifetime sums therefore agree with the review summary.
+ */
+export function sumNonOverlappingReviews(buckets: ReviewBucket[], start: number | null): number {
+  const rollups = buckets.filter(b=>["week","month"].includes(b.grain));
+  const newest = (grain:string)=>rollups.filter(b=>b.grain===grain).reduce((v,b)=>b.seen>v?b.seen:v,"");
+  const grain = newest("month") >= newest("week") ? "month" : "week";
+  const selected = rollups.filter(b=>b.grain===grain && (start===null || b.start>=start));
+  const end = (b:ReviewBucket) => b.grain==="week" ? b.start+7*86400
+    : Date.UTC(new Date(b.start*1000).getUTCFullYear(),new Date(b.start*1000).getUTCMonth()+1,1)/1000;
+  const daily = buckets.filter(b=>b.grain==="day" && (start===null || b.start>=start) &&
+    !selected.some(r=>b.start>=r.start && b.start<end(r)));
+  return selected.concat(daily).reduce((total,b)=>total+b.count,0);
 }
 
 const upsertEstimateStmt = () => rawSqlite.prepare(
