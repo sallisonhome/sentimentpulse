@@ -44,6 +44,7 @@ interface DemoRow {
   genre: string | null;
   releaseDate: string | null;
   isSaberPublished: boolean;
+  isArchived: boolean;
   reviewCountTotal: number | null;
   reviewDelta: number | null;
   unitsLow: number | null;
@@ -79,6 +80,10 @@ interface LeaderboardResponse {
   availableCount: number;
   coverage: {
     candidateLimitPerFeed: number;
+    trackedCount: number;
+    availableCount: number;
+    archivedCount: number;
+    completeSteamCatalog: false;
     feeds: Array<{ feed: string; lastAttemptAt: string; lastSuccessAt: string | null;
       error: string | null; candidateCount: number; eligibleCount: number; totalMatches: number }>;
   };
@@ -116,7 +121,8 @@ export default function DemosLeaderboard() {
   const [sortSel, setSortSel] = useState<SortKey>("downloads");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [genre, setGenre] = useState("");
-  const { data, isLoading, isError, error } = useDemosLeaderboard(windowSel, sortSel, sortDirection, genre);
+  const [limit, setLimit] = useState(50);
+  const { data, isLoading, isError, error } = useDemosLeaderboard(windowSel, sortSel, sortDirection, genre, limit);
   const sourceView = sortSel === "top" || sortSel === "new";
   const feed = data?.coverage?.feeds.find(item => item.feed === sortSel);
   const staleFeed = !!feed?.lastSuccessAt && Date.now() - Date.parse(feed.lastSuccessAt) > 36 * 60 * 60_000;
@@ -192,6 +198,7 @@ export default function DemosLeaderboard() {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-4">
       <label className="flex items-center gap-2 text-sm">
         Genre
         <select value={genre} onChange={event => setGenre(event.target.value)}
@@ -201,6 +208,21 @@ export default function DemosLeaderboard() {
           {Array.from(new Set([...(data?.genres ?? []), ...(genre ? [genre] : [])])).map(value => <option key={value} value={value}>{value}</option>)}
         </select>
       </label>
+      <label className="flex items-center gap-2 text-sm">Show
+        <select value={limit} onChange={event=>setLimit(Number(event.target.value))}
+          className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
+          data-testid="select-demos-limit">
+          {[50,100,250].map(n=><option key={n} value={n}>{n} rows</option>)}
+        </select>
+      </label>
+      </div>
+
+      {data?.coverage && <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+        data-testid="text-demos-catalog-scope">
+        Tracked catalog: {data.coverage.availableCount} available demos. Lifetime totals retained for {data.coverage.archivedCount} deactivated Saber demos.
+        {" "}Discovery samples up to {data.coverage.candidateLimitPerFeed} candidates per Steam feed; this is not a complete historical Steam catalog.
+        {" "}Demos deactivated by publishers are not tracked. The only exception is Saber lifetime download actuals, shown in Lifetime and on dashboard cards.
+      </div>}
 
       <div className="text-sm space-y-1" data-testid="text-demos-ranking-note">
         <p>{sortSel === "top"
@@ -326,6 +348,8 @@ export default function DemosLeaderboard() {
                         Saber
                       </Badge>
                     )}
+                    {d.isArchived && <Badge className="ml-2 text-xs" variant="outline"
+                      data-testid={`badge-archived-${d.steamAppId}`}>Deactivated · lifetime only</Badge>}
                   </td>
                   <td className="px-3 py-2 text-xs leading-5 text-muted-foreground">{d.genre ?? "—"}</td>
                   <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{formatDate(d.releaseDate)}</td>

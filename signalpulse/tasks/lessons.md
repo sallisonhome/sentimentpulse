@@ -1,5 +1,15 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-22: deactivated demos retain only Saber lifetime actuals
+
+Publisher-deactivated demos are not tracked in rolling-period leaderboards,
+review estimation, public review polling, or CCU polling. The sole exception is
+the explicitly approved Saber roster's lifetime Steamworks download actuals:
+retain and refresh those totals on dashboard cards and the Lifetime leaderboard.
+Do not restore retired competitors or refresh retired Saber rolling windows.
+Label retired Saber rows "Deactivated · lifetime only" and suppress old public
+metrics. Show sampled discovery limits; never imply complete Steam coverage.
+
 ## 2026-09-22: own-demo downloads must use the actual demo report
 
 The user requires Saber actuals on both leaderboard and dashboard cards;

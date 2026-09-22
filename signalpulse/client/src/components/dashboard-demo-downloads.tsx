@@ -14,7 +14,7 @@ export function DashboardDemoDownloadSummary({ demos }: { demos?: DashboardDemoD
               <div className="text-xs break-words">{demo.demoName}</div>
               <div className="text-xs text-muted-foreground mt-0.5">
                 {demo.valueKind === "steamworks_actual" ? "Steamworks actual" : "Actuals unavailable"}
-                {demo.isArchived ? " · Archived demo" : ""}
+                {demo.isArchived ? " · Deactivated; lifetime only" : ""}
                 {demo.refreshFailed ? " · Refresh failed" : demo.isStale && demo.lifetimeDownloads != null ? " · Stale snapshot" : ""}
               </div>
             </div>

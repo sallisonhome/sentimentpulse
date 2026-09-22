@@ -65,7 +65,8 @@ export function parseDownloadReport(html: string, expectedName: string, startDat
   return total;
 }
 
-export async function fetchDemoDownloadReports(appId: string, expectedName: string, cookieHeader: string) {
+export async function fetchDemoDownloadReports(appId: string, expectedName: string, cookieHeader: string,
+  windows: readonly ActualWindow[] = DEMO_ACTUAL_WINDOWS) {
   if (!/^\d+$/.test(appId)) throw Error("Invalid demo identity");
   async function get(url: string) {
     const response = await fetch(url, {
@@ -80,7 +81,7 @@ export async function fetchDemoDownloadReports(appId: string, expectedName: stri
   const reportEndDate = new URL(sourceUrl).searchParams.get("dateEnd")!;
   const reports = [];
   const failures: ActualWindow[] = [];
-  for (const window of DEMO_ACTUAL_WINDOWS) {
+  for (const window of windows) {
     const reportStartDate = downloadWindowStart(window, reportEndDate);
     const url = new URL(sourceUrl);
     url.searchParams.set("dateStart", reportStartDate);

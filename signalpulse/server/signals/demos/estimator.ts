@@ -59,7 +59,8 @@ interface DemoTitleForEstimate {
 
 function loadEstimableDemos(): DemoTitleForEstimate[] {
   return rawSqlite
-    .prepare(`SELECT id, steam_app_id, first_seen_at, is_saber_published FROM demo_titles WHERE is_active = 1 OR deactivated_at IS NOT NULL`)
+    .prepare(`SELECT id, steam_app_id, first_seen_at, is_saber_published
+      FROM demo_titles WHERE is_active = 1`)
     .all() as DemoTitleForEstimate[];
 }
 
