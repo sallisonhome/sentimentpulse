@@ -127,7 +127,8 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     const saber = d.is_saber_published === 1;
     const lifetime = lifetimeById.get(d.id);
     const reviewEstimate = demoReviewEstimate(est?.review_delta ?? null, est?.units_mid ?? null, est?.method ?? null, saber);
-    const observedPeak = Math.max(ccuPeakByDemoId.get(d.id) ?? 0, snap?.ccu ?? 0) || null;
+    const dailyPeak = ccuPeakByDemoId.get(d.id);
+    const observedPeak = dailyPeak == null && snap == null ? null : Math.max(dailyPeak ?? 0, snap?.ccu ?? 0);
     const resolved = reconcileDemoDownloads({
       window, releaseDate: d.release_date, reviewEstimate,
       lifetimeReviewEstimate: lifetime ? demoReviewEstimate(lifetime.review_delta, lifetime.units_mid, "review_delta_multiplier", saber) : null,
