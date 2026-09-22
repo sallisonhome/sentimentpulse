@@ -1058,6 +1058,72 @@ function initializeDatabase() {
     -- Per-title history lookups: "where has title_id ranked recently?".
     CREATE INDEX IF NOT EXISTS console_storefront_rank_daily_by_title
       ON console_storefront_rank_daily (platform, title_id, snapshot_date DESC);
+
+    -- Steam Demos leaderboard (2026-09-22). Deliberately NOT a row in
+    -- products -- demos are free, so they must never be reachable by the
+    -- store_rating_signal_daily F2P/business_model gate in
+    -- signals/console/runner.ts, and must never leak into paid-title
+    -- revenue reporting. This is a standalone registry.
+    --
+    -- discovered_via: 'steam_demos_hub' | 'compset' | 'saber_own' | 'manual'.
+    -- steam_demos_hub = Steam's own store.steampowered.com/demos/ content-hub
+    -- tabs (undocumented internal endpoint, same risk tier as the
+    -- appreviewhistogram endpoint signals/console/steam.ts already depends
+    -- on -- confirmed live 2026-09-22, returns real type=demo/is_free=true
+    -- appids, not a guess).
+    --
+    -- is_active tracks whether the demo still resolves on
+    -- api/appdetails (it returns success:false once a developer
+    -- deactivates a demo post-launch -- confirmed empirically on Toxic
+    -- Commando's demo, appid 4354730). Once false, only the lifetime
+    -- steam_review_history total remains queryable; the daily histogram
+    -- resets to all-zero, so date-windowed estimates stop updating.
+    CREATE TABLE IF NOT EXISTS demo_titles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      steam_app_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      base_game_product_id INTEGER,
+      is_saber_published INTEGER NOT NULL DEFAULT 0,
+      genre TEXT,
+      discovered_via TEXT NOT NULL,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      first_seen_at TEXT NOT NULL,
+      deactivated_at TEXT,
+      last_checked_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (base_game_product_id) REFERENCES products(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS demo_titles_active_idx ON demo_titles (is_active);
+
+    -- Windowed download estimates for demos, deliberately separate from
+    -- window_estimates_daily (which is read by paid-title revenue/units
+    -- reporting -- mixing free-demo estimates into those rows would
+    -- corrupt that reporting). Same window vocabulary as other
+    -- leaderboards: '7d' | '30d' | '90d' | '12mo' | 'ltd'.
+    --
+    -- For is_saber_published demos, units_mid should be the real
+    -- Steamworks Sales & Activations figure (method='steamworks_actual'),
+    -- not an estimate -- ground truth takes priority whenever available.
+    -- For everything else, units_mid is derived from the steam_review_history
+    -- delta over the window times a calibrated multiplier
+    -- (method='review_delta_multiplier'), multiplier_id nullable until
+    -- calibration work lands.
+    CREATE TABLE IF NOT EXISTS demo_window_estimates_daily (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      window TEXT NOT NULL,
+      as_of_date TEXT NOT NULL,
+      review_count_total INTEGER,
+      review_delta INTEGER,
+      units_mid REAL,
+      multiplier_id INTEGER,
+      method TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS demo_window_estimates_daily_unique
+      ON demo_window_estimates_daily (demo_title_id, window, as_of_date);
   `);
 }
 
