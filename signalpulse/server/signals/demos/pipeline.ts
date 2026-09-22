@@ -2,7 +2,8 @@
  * Daily playable-game-demo pipeline.
  *
  * Seed roster -> discover released game demos -> revalidate active roster
- * -> review history -> CCU -> single multiplier estimate.
+ * -> review history -> CCU -> non-Saber multiplier presentation,
+ * plus dedicated Steamworks demo-download reports for Saber actuals.
  *
  * Complimentary units, free licenses and other activation categories are
  * NOT demo downloads. Neither the scheduled nor manual pipeline calls the
@@ -17,6 +18,7 @@ import { loadActiveDemoTitles, runDemosReviewHistoryCollector } from "./runner";
 import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
 import { rawSqlite } from "../../storage";
+import { refreshDashboardDemoActuals } from "./download-actuals";
 
 export interface DemosPipelineRunResult {
   seeded: number;
@@ -27,11 +29,14 @@ export interface DemosPipelineRunResult {
   estimates: ReturnType<typeof computeDemoWindowEstimates>;
   portalActualsFetch: { source: string; status: "skipped"; message: string };
   actuals: { demosWithActuals: number; rowsWritten: number };
+  dashboardActuals: Awaited<ReturnType<typeof refreshDashboardDemoActuals>>;
 }
 
 export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelineRunResult> {
   log("Demos pipeline: released game demos only; license-category ingestion disabled", "demos-pipeline");
   const seed = seedSaberDemos();
+  // Independent of public availability: archived demos still have actuals.
+  const dashboardActuals = await refreshDashboardDemoActuals();
   const verifier = createDemoVerifier(delayMs);
   const discovery = await runDemosHubDiscovery(delayMs, verifier);
 
@@ -70,5 +75,5 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
   };
   const actuals = { demosWithActuals: 0, rowsWritten: 0 };
   log(`Demos pipeline: eligible=${eligibility.eligible} excluded=${eligibility.excluded} failed=${eligibility.failed}`, "demos-pipeline");
-  return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals };
+  return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals, dashboardActuals };
 }

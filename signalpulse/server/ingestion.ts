@@ -1620,16 +1620,17 @@ export async function runIngestion(): Promise<IngestionRunResult> {
   log(`Steam sales (portal): ${steamSalesResult.message}`, "ingestion");
 
   // 2c. Released game demos only: discovery, reviews, CCU and multiplier
-  // estimates. No complimentary/free-license ingestion or promotion to
-  // actual downloads; the paid-title sales collector above is unchanged.
+  // estimates, plus Saber demo-only Steamworks download reports for the
+  // leaderboard and cards. No complimentary/free-license ingestion;
+  // the paid-title sales collector above is unchanged.
   const { runDemosDailyPipeline } = await import("./signals/demos/pipeline");
   const demosPipelineResult = await runDemosDailyPipeline();
   results.push({
     source: "demos_pipeline",
-    status: demosPipelineResult.reviewHistory.failed > 0 || demosPipelineResult.discovery.failed > 0 || demosPipelineResult.eligibility.failed > 0 || demosPipelineResult.ccu.failed > 0 ? "error" : "success",
-    message: `seeded=${demosPipelineResult.seeded} discoveryNew=${demosPipelineResult.discovery.newlyDiscovered} reviewIngested=${demosPipelineResult.reviewHistory.ingested} estimateRows=${demosPipelineResult.estimates.rowsWritten} actualsRows=${demosPipelineResult.actuals.rowsWritten} portalFetch=${demosPipelineResult.portalActualsFetch.message}`,
+    status: demosPipelineResult.reviewHistory.failed > 0 || demosPipelineResult.discovery.failed > 0 || demosPipelineResult.eligibility.failed > 0 || demosPipelineResult.ccu.failed > 0 || demosPipelineResult.dashboardActuals.failed > 0 ? "error" : "success",
+    message: `seeded=${demosPipelineResult.seeded} discoveryNew=${demosPipelineResult.discovery.newlyDiscovered} reviewIngested=${demosPipelineResult.reviewHistory.ingested} estimateRows=${demosPipelineResult.estimates.rowsWritten} demoActualsSucceeded=${demosPipelineResult.dashboardActuals.succeeded} demoActualsFailed=${demosPipelineResult.dashboardActuals.failed} portalFetch=${demosPipelineResult.portalActualsFetch.message}`,
     productsProcessed: demosPipelineResult.reviewHistory.attempted,
-    dataPointsAdded: demosPipelineResult.estimates.rowsWritten + demosPipelineResult.actuals.rowsWritten,
+    dataPointsAdded: demosPipelineResult.estimates.rowsWritten + demosPipelineResult.dashboardActuals.rowsWritten,
   });
   log(`Demos pipeline complete.`, "ingestion");
 

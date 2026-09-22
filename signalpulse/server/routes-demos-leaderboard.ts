@@ -55,12 +55,19 @@ interface DemoLeaderboardRow {
   isObservedMinimum: boolean;
   lifetimeModelBelowPeak: boolean;
   downloadMultiplier: number | null;
-  calibrationMode: "saber_baseline" | "non_saber_trial" | "actual";
+  calibrationMode: "non_saber_trial" | "actual";
+  actualsAsOf: string | null;
+  actualsStartDate: string | null;
+  actualsEndDate: string | null;
+  actualsStale: boolean;
+  actualsRefreshFailed: boolean;
   steamReviews: DemoReviewSummary | null;
 }
 
 function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number) {
   const reviewSummaries = loadDemoReviewSummaries();
+  const actualRows = rawSqlite.prepare("SELECT * FROM demo_download_actuals WHERE window=? AND source='steamworks_downloads_report'").all(window) as any[];
+  const actualByAppId = new Map(actualRows.map(row => [row.steam_app_id, row]));
   // Latest estimate row per demo for the requested window (there is at
   // most one per demo_title_id+window+as_of_date; take the newest
   // as_of_date if the estimator has run more than once historically).
@@ -129,13 +136,20 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     const snap = ccuCurrentByDemoId.get(d.id);
     const saber = d.is_saber_published === 1;
     const lifetime = lifetimeById.get(d.id);
-    const reviewEstimate = demoReviewEstimate(est?.review_delta ?? null, est?.units_mid ?? null, est?.method ?? null, saber);
+    // Never use legacy license-category "actuals" from the estimate table.
+    const reviewEstimate = saber ? null : demoReviewEstimate(est?.review_delta ?? null,
+      est?.method === "review_delta_multiplier" ? est.units_mid : null, "review_delta_multiplier", false);
+    const actual = actualByAppId.get(d.steam_app_id);
+    const actualValue = Number.isSafeInteger(actual?.downloads) && actual.downloads >= 0 ? actual.downloads : null;
     const dailyPeak = ccuPeakByDemoId.get(d.id);
     const observedPeak = dailyPeak == null && snap == null ? null : Math.max(dailyPeak ?? 0, snap?.ccu ?? 0);
-    const resolved = reconcileDemoDownloads({
+    const resolved = saber ? {
+      unitsMid: actualValue, reviewEstimate: null, isObservedMinimum: false,
+      lifetimeModelBelowPeak: false, method: actualValue === null ? null : "steamworks_actual",
+    } : reconcileDemoDownloads({
       window, releaseDate: d.release_date, reviewEstimate,
       lifetimeReviewEstimate: lifetime ? demoReviewEstimate(lifetime.review_delta, lifetime.units_mid, "review_delta_multiplier", saber) : null,
-      method: est?.method ?? null, observedPeak,
+      method: reviewEstimate == null ? null : "review_delta_multiplier", observedPeak,
     });
     if (est?.as_of_date && (!asOfDate || est.as_of_date > asOfDate)) asOfDate = est.as_of_date;
     return {
@@ -148,11 +162,16 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       reviewCountTotal: reviewSummaries.get(d.steam_app_id)?.total ?? est?.review_count_total ?? null,
       steamReviews: reviewSummaries.get(d.steam_app_id) ?? null,
       reviewDelta: est?.review_delta ?? null,
-      unitsLow: resolved.isObservedMinimum || !saber ? null : est?.units_low ?? null,
-      unitsHigh: resolved.isObservedMinimum || !saber ? null : est?.units_high ?? null,
+      unitsLow: null,
+      unitsHigh: null,
       ...resolved,
-      downloadMultiplier: est?.method === "steamworks_actual" ? null : demoDownloadMultiplier(saber),
-      calibrationMode: est?.method === "steamworks_actual" ? "actual" : saber ? "saber_baseline" : "non_saber_trial",
+      downloadMultiplier: saber ? null : demoDownloadMultiplier(false),
+      calibrationMode: saber ? "actual" : "non_saber_trial",
+      actualsAsOf: saber ? actual?.fetched_at ?? null : null,
+      actualsStartDate: saber ? actual?.report_start_date ?? null : null,
+      actualsEndDate: saber ? actual?.report_end_date ?? null : null,
+      actualsStale: saber && (!actual?.fetched_at || Date.now() - Date.parse(actual.fetched_at) > 3 * 86400_000),
+      actualsRefreshFailed: saber && !!actual?.last_error,
       ccuCurrent: snap?.ccu ?? null,
       ccuAllTimePeak: observedPeak,
       ccuAsOf: snap?.captured_at ?? null,
@@ -212,7 +231,7 @@ export function registerDemosLeaderboardRoutes(app: Express) {
         availableCount,
         coverage: { candidateLimitPerFeed: DEMO_FEED_LIMIT, feeds },
         multiplier: { ...DEMO_DOWNLOAD_MULTIPLIER, nonSaberTrial: NON_SABER_DOWNLOAD_TRIAL,
-          note: "Saber: provisional Hellraiser baseline; non-Saber: user-selected trial. Observed minima are not fitted download estimates." },
+          note: "Saber: Steamworks demo Downloads by Region report. Non-Saber: user-selected review-delta trial; observed minima are not fitted estimates." },
         calibration: DEMO_CALIBRATION,
         count: rows.length,
         demos: rows,

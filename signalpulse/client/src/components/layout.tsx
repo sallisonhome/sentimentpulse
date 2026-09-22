@@ -44,8 +44,9 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
   const [location] = useLocation();
   const isMobile = useIsMobile();
   const isDemosPage = location.startsWith("/demos-leaderboard");
+  const isCompactDataPage = isDemosPage || location === "/dashboard";
   const [sidebarOverride, setSidebarCollapsed] = useState<boolean | null>(null);
-  const sidebarCollapsed = sidebarOverride ?? (isDemosPage && isMobile);
+  const sidebarCollapsed = sidebarOverride ?? (isCompactDataPage && isMobile);
 
   const { data: products } = useQuery<any[]>({
     queryKey: ["/api/products"],
@@ -75,8 +76,8 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
   return (
     <div className="h-full grid" style={{
       gridTemplateColumns: sidebarCollapsed
-        ? (isDemosPage ? "60px minmax(0, 1fr)" : "60px 1fr")
-        : (isDemosPage ? "260px minmax(0, 1fr)" : "260px 1fr"),
+        ? (isCompactDataPage ? "60px minmax(0, 1fr)" : "60px 1fr")
+        : (isCompactDataPage ? "260px minmax(0, 1fr)" : "260px 1fr"),
       gridTemplateRows: "56px 1fr",
       transition: "grid-template-columns 200ms ease",
     }}>
