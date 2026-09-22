@@ -3,7 +3,8 @@
  *
  * Route: /demos-leaderboard
  *
- * Default: Steam's Top Demos source order (recent daily active users).
+ * Default on open and period selection: estimated downloads, descending.
+ * Top Demos remains available in Steam's recent daily-active-user order.
  * New Releases preserves Steam's release order, even without reviews.
  * Estimated downloads and sampled CCU remain separate ranking modes.
  * Windows affect estimates only; source timestamps and failures are
@@ -53,6 +54,9 @@ interface DemoRow {
   ccuAllTimePeak: number | null;
   ccuAsOf: string | null;
   sourceRank: number | null;
+  reviewEstimate: number | null;
+  isObservedMinimum: boolean;
+  lifetimeModelBelowPeak: boolean;
 }
 
 interface LeaderboardResponse {
@@ -101,7 +105,7 @@ function formatDate(value: string | null): string {
 
 export default function DemosLeaderboard() {
   const [windowSel, setWindowSel] = useState<WindowKey>("d7");
-  const [sortSel, setSortSel] = useState<SortKey>("top");
+  const [sortSel, setSortSel] = useState<SortKey>("downloads");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [genre, setGenre] = useState("");
   const { data, isLoading, isError, error } = useDemosLeaderboard(windowSel, sortSel, sortDirection, genre);
@@ -109,6 +113,11 @@ export default function DemosLeaderboard() {
   const feed = data?.coverage?.feeds.find(item => item.feed === sortSel);
   const staleFeed = !!feed?.lastSuccessAt && Date.now() - Date.parse(feed.lastSuccessAt) > 36 * 60 * 60_000;
   const setSourceView = (sort: SortKey) => { setSortSel(sort); setSortDirection("desc"); };
+  const selectWindow = (window: WindowKey) => {
+    setWindowSel(window);
+    setSortSel("downloads");
+    setSortDirection("desc");
+  };
   const setColumnSort = (sort: SortKey) => {
     setSortDirection(sortSel === sort ? (sortDirection === "desc" ? "asc" : "desc") : "desc");
     setSortSel(sort);
@@ -147,7 +156,7 @@ export default function DemosLeaderboard() {
                 key={w.id}
                 variant={windowSel === w.id ? "default" : "outline"}
                 size="sm"
-                onClick={() => setWindowSel(w.id)}
+                onClick={() => selectWindow(w.id)}
                 data-testid={`btn-demos-window-${w.id}`}
                 role="tab"
                 aria-selected={windowSel === w.id}
@@ -241,7 +250,11 @@ export default function DemosLeaderboard() {
           multiplier ({data.multiplier.mid}x). Provisional: calibrated on a single
           anchor (Hellraiser Revival demo: 100,000 downloads / 1,527 reviews). Hover a figure for its
           low ({data.multiplier.low}x) / high ({data.multiplier.high}x) sensitivity range.
-          These are estimates, not confirmed Steamworks downloads.
+          These are estimates, not confirmed Steamworks downloads. The benchmark's reporting cutoff
+          is unverified; no newly calibrated multiplier is claimed.
+          Values marked “≥” are minimums supported by observed concurrent players, not point estimates.
+          This safeguard applies only to lifetime or windows covering the demo's entire released lifespan.
+          It never treats returning players as new downloads in a shorter window.
           </p>
         </details>
       )}
@@ -300,12 +313,23 @@ export default function DemosLeaderboard() {
                             Confirmed
                           </Badge>
                         </span>
+                      ) : d.isObservedMinimum ? (
+                        <span title={`Observed minimum: ${d.unitsMid.toLocaleString()} concurrent players. Review-only estimate: ${d.reviewEstimate == null ? "unavailable" : d.reviewEstimate.toLocaleString()}. Actual downloads may be substantially higher; this is not a calibrated point estimate.`}>
+                          ≥{d.unitsMid.toLocaleString()}
+                          <span className="block text-[11px] text-muted-foreground">Observed minimum</span>
+                        </span>
                       ) : (
                         <span title={`Estimate range: ${formatNumberCompact(d.unitsLow)} – ${formatNumberCompact(d.unitsHigh)} (low/high multiplier sensitivity)`}>
                           {formatNumberCompact(d.unitsMid)}
                         </span>
                       )
                     ) : "—"}
+                    {d.lifetimeModelBelowPeak && !d.isObservedMinimum && (
+                      <span className="block text-[11px] text-amber-600 dark:text-amber-400"
+                        title="This title's lifetime review estimate is below observed concurrency. This shorter-window estimate remains review-based; lifetime players cannot be counted as new period downloads.">
+                        Calibration warning
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums" title={d.ccuAsOf ? `Sample collected: ${d.ccuAsOf}` : "No CCU sample collected"}>
                     {formatNumberCompact(d.ccuCurrent)}

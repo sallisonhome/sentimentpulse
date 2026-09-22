@@ -1,5 +1,15 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-22: demo review ratios need concurrency consistency checks
+
+A single title's downloads/review anchor is provisional, not a universal
+validated fit. Match downloads and all-language reviews to the same cutoff
+before refitting. Never invent a higher global ratio from a CCU outlier.
+Check the lifetime model against observed concurrency before ranking/display.
+Where it fails, label the observed minimum explicitly, retain the raw review
+estimate, and do not reuse that lifetime floor for a partial-lifespan window.
+Keep activation categories out of demo-download calibration and ingestion.
+
 ## 2026-09-22: demo leaderboard coverage must match its named views
 
 Parsing only the first embedded New & Trending block does not discover the

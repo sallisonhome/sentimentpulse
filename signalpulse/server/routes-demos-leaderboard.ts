@@ -10,12 +10,9 @@
  *        limit=1..100 (default 50)
  *
  * Ranking:
- *   sort=downloads (default) -- units_mid desc, from
- *     demo_window_estimates_daily for the requested window. This is a
- *     PROVISIONAL estimate (method='review_delta_multiplier' for
- *     everything currently, pending Saber's own Steamworks ground truth)
- *     -- units_low/units_high are always returned alongside units_mid so
- *     the low-confidence range is never hidden behind a single number.
+ *   sort=downloads (default) -- resolved unitsMid for the requested window.
+ *     Raw review estimates stay persisted unchanged. Observed concurrency
+ *     minima are labeled separately, never presented as calibrated estimates.
  *   sort=ccu -- latest sampled concurrent-player count, not a live feed.
  *   sort=top|new -- the latest successful verified source snapshot,
  *     preserving Steam's order independently of estimates or CCU.
@@ -32,6 +29,7 @@ import type { Express } from "express";
 import { rawSqlite } from "./storage";
 import { WINDOWS, type WindowKey } from "./signals/demos/estimator";
 import { DEMO_FEED_LIMIT } from "./signals/demos/feeds";
+import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, reconcileDemoDownloads } from "./signals/demos/download-consistency";
 
 type DemoSort = "top" | "new" | "reviews" | "downloads" | "ccu" | "peak" | "release";
 
@@ -52,6 +50,9 @@ interface DemoLeaderboardRow {
   ccuAllTimePeak: number | null;
   ccuAsOf: string | null;
   sourceRank: number | null;
+  reviewEstimate: number | null;
+  isObservedMinimum: boolean;
+  lifetimeModelBelowPeak: boolean;
 }
 
 function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number) {
@@ -77,6 +78,14 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       units_high: number | null; method: string;
     }>;
   const estimateByDemoId = new Map(estimateRows.map((r) => [r.demo_title_id, r]));
+  const lifetimeEstimates = rawSqlite.prepare(`
+    SELECT e.demo_title_id,e.units_mid FROM demo_window_estimates_daily e
+    JOIN (SELECT demo_title_id,MAX(as_of_date) date FROM demo_window_estimates_daily
+          WHERE window='ltd' GROUP BY demo_title_id) latest
+      ON latest.demo_title_id=e.demo_title_id AND latest.date=e.as_of_date
+    WHERE e.window='ltd' AND e.method='review_delta_multiplier'
+  `).all() as Array<{ demo_title_id: number; units_mid: number | null }>;
+  const lifetimeById = new Map(lifetimeEstimates.map(row => [row.demo_title_id, row.units_mid]));
 
   const ccuRows = rawSqlite
     .prepare(
@@ -113,6 +122,12 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     .map((d) => {
     const est = estimateByDemoId.get(d.id);
     const snap = ccuCurrentByDemoId.get(d.id);
+    const observedPeak = Math.max(ccuPeakByDemoId.get(d.id) ?? 0, snap?.ccu ?? 0) || null;
+    const resolved = reconcileDemoDownloads({
+      window, releaseDate: d.release_date, reviewEstimate: est?.units_mid ?? null,
+      lifetimeReviewEstimate: lifetimeById.get(d.id) ?? null,
+      method: est?.method ?? null, observedPeak,
+    });
     if (est?.as_of_date && (!asOfDate || est.as_of_date > asOfDate)) asOfDate = est.as_of_date;
     return {
       id: d.id,
@@ -123,12 +138,11 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       isSaberPublished: d.is_saber_published === 1,
       reviewCountTotal: est?.review_count_total ?? null,
       reviewDelta: est?.review_delta ?? null,
-      unitsLow: est?.units_low ?? null,
-      unitsMid: est?.units_mid ?? null,
-      unitsHigh: est?.units_high ?? null,
-      method: est?.method ?? null,
+      unitsLow: resolved.isObservedMinimum ? null : est?.units_low ?? null,
+      unitsHigh: resolved.isObservedMinimum ? null : est?.units_high ?? null,
+      ...resolved,
       ccuCurrent: snap?.ccu ?? null,
-      ccuAllTimePeak: ccuPeakByDemoId.get(d.id) ?? null,
+      ccuAllTimePeak: observedPeak,
       ccuAsOf: snap?.captured_at ?? null,
       sourceRank: sourceRanks.get(d.id) ?? null,
     };
@@ -184,7 +198,8 @@ export function registerDemosLeaderboardRoutes(app: Express) {
         asOfDate,
         availableCount,
         coverage: { candidateLimitPerFeed: DEMO_FEED_LIMIT, feeds },
-        multiplier: { low: 30, mid: 65.5, high: 100, note: "Provisional -- single-anchor calibration, see estimator.ts" },
+        multiplier: { ...DEMO_DOWNLOAD_MULTIPLIER, note: "Provisional single-anchor model; observed minima are not fitted download estimates" },
+        calibration: DEMO_CALIBRATION,
         count: rows.length,
         demos: rows,
       });
