@@ -58,8 +58,8 @@ export async function fetchCurrentPlayers(appId: string): Promise<number | null>
   return json.response.player_count ?? null;
 }
 
-export async function runDemosCcuCollector(delayMs = 250): Promise<CcuRunResult> {
-  const demos = loadActiveDemosForCcu();
+export async function runDemosCcuCollector(delayMs = 250, eligibleAppIds?: ReadonlySet<string>): Promise<CcuRunResult> {
+  const demos = loadActiveDemosForCcu().filter(d => !eligibleAppIds || eligibleAppIds.has(d.steam_app_id));
   const result: CcuRunResult = { attempted: demos.length, succeeded: 0, failed: 0, failureSample: [] };
   const nowIso = new Date().toISOString();
   const today = nowIso.slice(0, 10);

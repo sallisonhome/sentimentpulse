@@ -2012,8 +2012,8 @@ export async function registerRoutes(
   // ─── Ops routes: Steam Demos leaderboard (2026-09-22) ──────────────────
   //
   // Manual/one-off triggers for the demos pipeline (Saber roster seed,
-  // hub discovery, review-history, CCU, estimator, Steamworks-ground-
-  // truth actuals) -- otherwise only runs via the daily ingestion cron.
+  // hub discovery, game-demo eligibility, review-history, CCU, estimator)
+  // -- otherwise only runs via the daily ingestion cron. No license counts.
   // Same ops-token gating as the other automation-only routes above; see
   // server/signals/demos/pipeline.ts and portal-actuals.ts.
   app.post("/api/ops/demos-pipeline-run", async (_req, res) => {

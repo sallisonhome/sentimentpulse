@@ -128,8 +128,8 @@ export interface DemoEstimateRunResult {
  * re-run any time (idempotent per demo_title_id+window+as_of_date; see
  * unique index). Call daily from a scheduled job.
  */
-export function computeDemoWindowEstimates(asOfDate = new Date().toISOString().slice(0, 10)): DemoEstimateRunResult {
-  const demos = loadEstimableDemos();
+export function computeDemoWindowEstimates(asOfDate = new Date().toISOString().slice(0, 10), eligibleAppIds?: ReadonlySet<string>): DemoEstimateRunResult {
+  const demos = loadEstimableDemos().filter(d => !eligibleAppIds || eligibleAppIds.has(d.steam_app_id));
   const nowUnix = Math.floor(Date.now() / 1000);
   const nowIso = new Date().toISOString();
   let rowsWritten = 0;

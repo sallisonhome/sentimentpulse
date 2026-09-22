@@ -1,72 +1,62 @@
 /**
- * Steam Demos leaderboard — daily pipeline orchestrator (2026-09-22).
+ * Daily playable-game-demo pipeline.
  *
- * IMPORTANT CONTEXT: every piece of the demos leaderboard backend (Saber
- * roster seed, public-hub discovery, review-history collector, CCU
- * collector, the review_delta_multiplier estimator, and now the
- * Steamworks ground-truth collector below) was built across this PR but
- * NEVER wired into a production schedule -- demo_titles is empty on the
- * live droplet today. Wiring only the new Steamworks-ground-truth piece
- * in isolation would be a no-op in production (nothing in demo_titles
- * for it to act on), so this orchestrator activates the full chain in
- * one place. See PR #109 for the pre-existing dormant modules.
+ * Seed roster -> discover released game demos -> revalidate active roster
+ * -> review history -> CCU -> single multiplier estimate.
  *
- * Order matters for the first few steps (each depends on the last) but
- * NOT between the estimator and the actuals collector -- see
- * computeDemoWindowActuals()'s doc comment for why either order
- * converges to the same correct final state.
- *
- *   1. seedSaberDemos()            -- idempotent upsert of Saber's own roster
- *   2. runDemosHubDiscovery()      -- finds new third-party demos from the public hub
- *   3. runDemosReviewHistoryCollector() -- review deltas for every active demo
- *   4. runDemosCcuCollector()      -- live concurrent-player snapshots
- *   5. computeDemoWindowEstimates() -- review_delta_multiplier estimate rows
- *   6. runDemosPortalCollector()   -- Saber-only Steamworks portal actuals
- *   7. computeDemoWindowActuals()  -- upgrades Saber demos' rows to steamworks_actual
+ * Complimentary units, free licenses and other activation categories are
+ * NOT demo downloads. Neither the scheduled nor manual pipeline calls the
+ * experimental portal collector or promotes those values to actuals.
+ * The separate read-only portal probe remains an operator diagnostic.
  */
-
 import { log } from "../../log";
-import type { IngestionResult } from "../../ingestion";
 import { seedSaberDemos } from "./saber-seed";
-import { runDemosHubDiscovery } from "./discovery";
-import { runDemosReviewHistoryCollector } from "./runner";
+import { runDemosHubDiscovery, verifyDemoAppId } from "./discovery";
+import { loadActiveDemoTitles, runDemosReviewHistoryCollector } from "./runner";
 import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
-import { runDemosPortalCollector, computeDemoWindowActuals } from "./portal-actuals";
 
 export interface DemosPipelineRunResult {
   seeded: number;
   discovery: Awaited<ReturnType<typeof runDemosHubDiscovery>>;
+  eligibility: { eligible: number; excluded: number; failed: number };
   reviewHistory: Awaited<ReturnType<typeof runDemosReviewHistoryCollector>>;
   ccu: Awaited<ReturnType<typeof runDemosCcuCollector>>;
   estimates: ReturnType<typeof computeDemoWindowEstimates>;
-  portalActualsFetch: IngestionResult;
-  actuals: ReturnType<typeof computeDemoWindowActuals>;
+  portalActualsFetch: { source: string; status: "skipped"; message: string };
+  actuals: { demosWithActuals: number; rowsWritten: number };
 }
 
-export async function runDemosDailyPipeline(): Promise<DemosPipelineRunResult> {
-  log("Demos pipeline: starting full daily run...", "demos-pipeline");
-
+export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelineRunResult> {
+  log("Demos pipeline: released game demos only; license-category ingestion disabled", "demos-pipeline");
   const seed = seedSaberDemos();
-  log(`Demos pipeline: seeded=${seed.seeded}`, "demos-pipeline");
+  const discovery = await runDemosHubDiscovery(delayMs);
 
-  const discovery = await runDemosHubDiscovery();
-  log(`Demos pipeline: discovery new=${discovery.newlyDiscovered} known=${discovery.alreadyKnown} rejected=${discovery.rejectedNotDemo} failed=${discovery.failed}`, "demos-pipeline");
+  // Includes seeded/manual/previously discovered entries, not just today's
+  // hub. Fail closed for this run on missing metadata or network errors,
+  // without permanently deactivating a demo due to a transient failure.
+  const eligibleAppIds = new Set<string>();
+  const eligibility = { eligible: 0, excluded: 0, failed: 0 };
+  for (const demo of loadActiveDemoTitles()) {
+    try {
+      if (await verifyDemoAppId(demo.steam_app_id)) eligibleAppIds.add(demo.steam_app_id);
+      else eligibility.excluded += 1;
+    } catch {
+      eligibility.failed += 1;
+    }
+    if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
+  }
+  eligibility.eligible = eligibleAppIds.size;
 
-  const reviewHistory = await runDemosReviewHistoryCollector();
-  log(`Demos pipeline: reviewHistory ingested=${reviewHistory.ingested} deactivated=${reviewHistory.deactivated} failed=${reviewHistory.failed}`, "demos-pipeline");
-
-  const ccu = await runDemosCcuCollector();
-  log(`Demos pipeline: ccu done`, "demos-pipeline");
-
-  const estimates = computeDemoWindowEstimates();
-  log(`Demos pipeline: estimates demosProcessed=${estimates.demosProcessed} rowsWritten=${estimates.rowsWritten}`, "demos-pipeline");
-
-  const portalActualsFetch = await runDemosPortalCollector();
-  log(`Demos pipeline: portal actuals fetch — ${portalActualsFetch.message}`, "demos-pipeline");
-
-  const actuals = computeDemoWindowActuals();
-  log(`Demos pipeline: actuals demosWithActuals=${actuals.demosWithActuals} rowsWritten=${actuals.rowsWritten}`, "demos-pipeline");
-
-  return { seeded: seed.seeded, discovery, reviewHistory, ccu, estimates, portalActualsFetch, actuals };
+  const reviewHistory = await runDemosReviewHistoryCollector(delayMs, eligibleAppIds);
+  const ccu = await runDemosCcuCollector(delayMs, eligibleAppIds);
+  const estimates = computeDemoWindowEstimates(undefined, eligibleAppIds);
+  const portalActualsFetch = {
+    source: "demos_portal",
+    status: "skipped" as const,
+    message: "Disabled: complimentary units and free-license categories are not demo-download actuals",
+  };
+  const actuals = { demosWithActuals: 0, rowsWritten: 0 };
+  log(`Demos pipeline: eligible=${eligibility.eligible} excluded=${eligibility.excluded} failed=${eligibility.failed}`, "demos-pipeline");
+  return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals };
 }

@@ -68,8 +68,8 @@ export interface DemosRunResult {
  * success:false behavior for a deactivated demo) rather than a transient
  * failure, so it stops being polled daily once dead.
  */
-export async function runDemosReviewHistoryCollector(delayMs = 250): Promise<DemosRunResult> {
-  const demos = loadActiveDemoTitles();
+export async function runDemosReviewHistoryCollector(delayMs = 250, eligibleAppIds?: ReadonlySet<string>): Promise<DemosRunResult> {
+  const demos = loadActiveDemoTitles().filter(d => !eligibleAppIds || eligibleAppIds.has(d.steam_app_id));
   const result: DemosRunResult = { attempted: demos.length, ingested: 0, deactivated: 0, failed: 0, failureSample: [] };
   const nowIso = new Date().toISOString();
 

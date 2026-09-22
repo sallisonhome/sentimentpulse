@@ -1,4 +1,10 @@
 /**
+ * EXPERIMENTAL / UNSCHEDULED: excluded from both daily and manual demo
+ * pipelines by user requirement. Complimentary units and free licenses
+ * are not approved demo-download metrics. Only the read-only probe is
+ * routed; do not wire these writers back in without verified metric
+ * semantics and explicit approval.
+ *
  * Saber Steamworks Sales & Activations ground truth for Saber's OWN demos
  * (2026-09-22).
  *

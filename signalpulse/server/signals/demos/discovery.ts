@@ -44,6 +44,8 @@ interface AppDetailsData {
     type?: string;
     name?: string;
     is_free?: boolean;
+    fullgame?: { appid?: string };
+    release_date?: { coming_soon?: boolean };
     genres?: Array<{ id: string; description: string }>;
   };
 }
@@ -91,6 +93,13 @@ export async function verifyDemoAppId(appId: string): Promise<{ name: string; ge
   const entry = parsed[appId];
   if (!entry?.success || !entry.data) return null;
   if (entry.data.type !== "demo") return null;
+  // A free license is not a demo, and a software demo is not a game demo.
+  // Require released, free demo metadata plus a verifiable parent game.
+  if (entry.data.is_free !== true || entry.data.release_date?.coming_soon !== false) return null;
+  const parentId = String(entry.data.fullgame?.appid ?? "");
+  if (!/^[1-9]\d*$/.test(parentId) || parentId === appId) return null;
+  const parentRaw = JSON.parse(await fetchText(APPDETAILS_URL(parentId))) as Record<string, AppDetailsData>;
+  if (!parentRaw[parentId]?.success || parentRaw[parentId]?.data?.type !== "game") return null;
   const genre = entry.data.genres && entry.data.genres.length > 0
     ? entry.data.genres.map((g) => g.description).join(", ")
     : null;
