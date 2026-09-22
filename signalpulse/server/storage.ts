@@ -1124,6 +1124,35 @@ function initializeDatabase() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS demo_window_estimates_daily_unique
       ON demo_window_estimates_daily (demo_title_id, window, as_of_date);
+
+    -- Demo CCU tracking (2026-09-22). Mirrors ccu_snapshots_steam /
+    -- daily_peaks_steam_ccu exactly, just FK'd to demo_titles instead of
+    -- products, for the same decoupling reason as the other demo tables.
+    -- Added specifically to match the SteamDB "Most played game demos"
+    -- reference leaderboard (steamdb.info/charts/?category=10), which
+    -- ranks by Current / 24h Peak / All-Time Peak CCU -- real prior art
+    -- for CCU as a secondary ranking dimension alongside the estimated-
+    -- downloads default.
+    CREATE TABLE IF NOT EXISTS demo_ccu_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      captured_at TEXT NOT NULL,
+      ccu INTEGER NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS demo_ccu_snapshots_title_captured_idx
+      ON demo_ccu_snapshots (demo_title_id, captured_at);
+
+    CREATE TABLE IF NOT EXISTS demo_ccu_daily_peaks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      peak_date TEXT NOT NULL,
+      peak_ccu INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS demo_ccu_daily_peaks_unique
+      ON demo_ccu_daily_peaks (demo_title_id, peak_date);
   `);
 }
 
