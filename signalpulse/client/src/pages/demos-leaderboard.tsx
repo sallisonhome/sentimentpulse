@@ -102,7 +102,7 @@ export default function DemosLeaderboard() {
         <div>
           <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-semibold">Steam Demos Leaderboard</h1>
-            <Badge variant="outline" className="text-xs text-foreground uppercase tracking-wide">experimental</Badge>
+            <Badge variant="outline" className="text-xs uppercase tracking-wide" style={{ color: "hsl(var(--foreground))" }}>experimental</Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
             Tracked playable Steam game demos ranked by estimated downloads or latest sampled CCU.

@@ -20,12 +20,6 @@ name: SignalPulse — Manual daily-refresh run
 on:
   workflow_dispatch:
     inputs:
-      pipeline:
-        description: 'Pipeline to run (console is the existing default)'
-        required: false
-        default: 'console'
-        type: choice
-        options: [console, demos]
       journal_lines:
         description: 'Max journal lines to return (default 500, cap 5000)'
         required: false
@@ -40,9 +34,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-        if: inputs.pipeline == 'demos'
-
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
@@ -51,7 +42,6 @@ jobs:
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Invoke signalpulse-daily.service and capture journal
-        if: inputs.pipeline != 'demos'
         env:
           JOURNAL_LINES: ${{ inputs.journal_lines }}
         run: |
@@ -115,12 +105,3 @@ jobs:
             exit "$RESULT"
           fi
           echo "OK: signalpulse-daily.service completed successfully"
-
-      - name: Run demo-only ingestion and verify all leaderboard windows
-        if: inputs.pipeline == 'demos'
-        run: |
-          set -euo pipefail
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-            -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
-            root@104.236.239.46 python3 - \
-            < signalpulse/scripts/verify-demo-leaderboard.py
