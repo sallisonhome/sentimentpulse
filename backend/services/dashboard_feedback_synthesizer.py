@@ -22,7 +22,7 @@ Anti-fabrication contract (per lessons.md \u00a720 / \u00a725):
 
 Caching:
   * (game_id, period, sentiment) -> (sentences, expires_at) in-memory
-    LRU. TTL = 15 min. Refreshes hit LLM once per bucket per 15 min.
+    LRU. TTL = 18 h so a post-ingest warmup still serves the morning dashboard.
   * Empty results cached same as populated so we don't retry hopelessly.
 
 Cost envelope:
@@ -488,7 +488,10 @@ class _CacheEntry:
 
 
 _CACHE: dict[tuple[int, str, str], _CacheEntry] = {}
-_CACHE_TTL_SEC = 15 * 60
+# 2026-09-22: 15 minutes meant post-ingest warmup (or a dashboard visit)
+# expired before morning. Daily ingest is the natural refresh; keep the
+# widget populated until the next run plus a morning-viewing buffer.
+_CACHE_TTL_SEC = 18 * 60 * 60
 
 
 # ── Corpus read shape (v0028, 2026-09-10) ───────────────────────────────

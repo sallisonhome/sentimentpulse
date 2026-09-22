@@ -4,6 +4,20 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-22 — Top Topics card stayed empty after ingest because KPI warmup does not fill the LLM cache
+
+**What happened.** Steve reported the dashboard Top Topics card almost never populated on its own after ingestion. Live `GET /api/games/21/dashboard/topics?period=weekly` returned `{status: pending, positive/negative/neutral: []}` while the main dashboard KPIs were fine.
+
+**Root cause.** v0031 split Top Topics onto its own endpoint and in-memory synthesizer cache. `warmup_dashboard_cache()` (the ingest post-hook) only computes the KPI/volume payload and returns empty topic arrays on purpose so it cannot 504. Nothing started `generate_feedback_summary` after ingest. The cache TTL was 15 minutes, so even a dashboard visit that finished synthesis was gone before morning.
+
+**Hard rules.**
+
+1. After ingest, start `start_topics_warmup_background()` as well as KPI warmup. KPI warmup is not a topics warmup.
+2. Top Topics TTL must outlive overnight ingest → morning view (≥12 hours). Do not put a 15-minute TTL on an LLM widget the operator expects to already be filled.
+3. Do not run lifetime/quarterly topic synthesis inside ingest. Default chip is `today`; warm `today` + `weekly` only.
+
+**Self-check.** Ingest log contains `topics warmup starting`. After warmup, `GET /api/games/{id}/dashboard/topics?period=today` returns `status=ready` with non-empty arrays on a title that has signal (or the documented empty-state copy, not `pending`).
+
 ## 2026-09-20 — Multiplatform title PDP was auth-gated; Buying hub rows cannot link until the prefix is public-read
 
 **What happened.** SignalPulse already had `GET /api/console/multiplatform-title/:key` and a logged-in SPA page, but `PUBLIC_READ_PREFIXES` only listed `/api/console/leaderboards/` and `/api/console/titles/`. Live unauthenticated GET against `/signal/api/console/multiplatform-title/the%20blood%20of%20dawnwalker` returned HTTP 401. howmanyareplaying's hub therefore left Cross-Platform Leaders rows unlinked.

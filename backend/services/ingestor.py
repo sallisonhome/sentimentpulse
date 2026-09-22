@@ -1023,6 +1023,16 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         except Exception as exc:  # noqa: BLE001
             logger.warning("dashboard warmup failed (non-fatal): %s", exc)
 
+        # 2026-09-22: KPI warmup does not fill Top Topics (v0031 split that
+        # onto its own LLM cache). Kick a background pass for today+weekly
+        # so the widget is populated when the operator opens the dashboard
+        # after ingest, without blocking the rest of this run.
+        try:
+            from routers.dashboard import start_topics_warmup_background
+            start_topics_warmup_background(logger_override=logger)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("topics warmup failed to start (non-fatal): %s", exc)
+
         db.close()
         _status["is_running"] = False
         _status["last_run_status"] = final_status

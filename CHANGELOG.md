@@ -2,6 +2,16 @@
 
 A running log of what changed in SentimentPulse — the community sentiment intelligence surface for Saber's game portfolio.
 
+## September 22, 2026
+
+- Fixed
+
+  ### Top Topics card now warms after ingest instead of staying empty
+
+  The dashboard Top Topics widget almost never filled in on its own after daily ingestion. v0031 moved synthesis off the main `/dashboard` payload onto `GET /dashboard/topics` with an in-memory LLM cache. The ingest post-hook still only called `warmup_dashboard_cache()`, which returns empty topic arrays by design, and the synthesizer TTL was 15 minutes — so even a successful visit expired before morning.
+
+  Fix: ingest now fire-and-forget `start_topics_warmup_background()` for every active game on the `today` and `weekly` chips (the default view and the next most-used chip). Synthesizer TTL is 18 hours so a 02:00 warmup is still warm for a morning dashboard open. Wider periods still synthesize on demand.
+
 ## September 10, 2026 (afternoon follow-up)
 
 - Fixed
