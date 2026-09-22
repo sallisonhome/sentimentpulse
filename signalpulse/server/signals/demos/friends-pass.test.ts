@@ -6,6 +6,41 @@ import { join } from "node:path";
 import express from "express";
 import { isFriendsPassName, isFriendsPassSku } from "./friends-pass-identity";
 import { createDemoVerifier, hasFreePassPackage, hasExactDemoDownload } from "./metadata";
+import { SHARED_RUNTIME_PASS_REFERENCES } from "../../../shared/friends-pass-reference";
+
+test("shared-runtime reference records contain evidence, not leaderboard metrics or roster seeds",()=>{
+  assert.equal(SHARED_RUNTIME_PASS_REFERENCES.length,5);
+  assert.equal(new Set(SHARED_RUNTIME_PASS_REFERENCES.map(r=>r.packageId)).size,5);
+  assert.equal(SHARED_RUNTIME_PASS_REFERENCES.filter(r=>r.listingKind==="base_game_offer").length,2);
+  assert.equal(SHARED_RUNTIME_PASS_REFERENCES.filter(r=>r.listingKind==="pass_storefront").length,3);
+  for(const row of SHARED_RUNTIME_PASS_REFERENCES){
+    assert.deepEqual(Object.keys(row).sort(),["name","storeAppId","runtimeAppId","packageId","listingKind",
+      "storeUrl","offerEvidenceUrl","runtimeEvidenceUrl","verifiedOn"].sort());
+    for(const id of [row.storeAppId,row.runtimeAppId,row.packageId])assert.match(id,/^[1-9]\d*$/);
+    assert.equal(new URL(row.offerEvidenceUrl).searchParams.get("appids"),row.storeAppId);
+    assert.equal(new URL(row.runtimeEvidenceUrl).searchParams.get("packageids"),row.packageId);
+    assert.equal(new URL(row.storeUrl).hostname,"store.steampowered.com");
+    assert.ok(row.storeUrl.includes(`/app/${row.storeAppId}/`));
+    assert.match(row.verifiedOn,/^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(row.storeAppId===row.runtimeAppId,row.listingKind==="base_game_offer");
+    if(row.listingKind==="base_game_offer")assert.equal(isFriendsPassSku(row.storeAppId,row.name),false);
+  }
+});
+
+test("reference component renders five sourced entries and explicit non-measurement scope",async()=>{
+  const React=await import("react");
+  const {renderToStaticMarkup}=await import("react-dom/server");
+  const {FriendsPassReference}=await import("../../../client/src/components/friends-pass-reference");
+  const html=renderToStaticMarkup(React.createElement(FriendsPassReference));
+  for(const row of SHARED_RUNTIME_PASS_REFERENCES)assert.ok(html.includes(`reference-pass-${row.storeAppId}`));
+  assert.equal((html.match(/Package-to-runtime evidence/g)??[]).length,5);
+  assert.equal((html.match(/Steam offer evidence/g)??[]).length,5);
+  assert.ok(html.includes("not separately measurable"));
+  assert.ok(html.includes("adds no leaderboard rows, ranks or totals"));
+  assert.ok(html.includes("not a complete or automatically refreshed"));
+  assert.ok(!html.includes("<table"),"not a second metrics leaderboard");
+  assert.ok(!html.includes("130×")&&!html.includes("130× trial"),"no download multiplier on reference entries");
+});
 
 test("Friends Pass names, free offers and hybrid identity stay distinct from paid games", async () => {
   for (const name of ["Friend's Pass","Friends' Pass","Friend’s Pass","FriendsPass","Friend Pass","Friends&#039; Pass"]) assert.ok(isFriendsPassName(name),name);
