@@ -6,7 +6,7 @@ interface RefreshResult { attempted: number; succeeded: number; failed: number; 
 let inFlight: Promise<RefreshResult> | null = null;
 
 /** Only verified Saber game-demo App IDs, never parent-game App IDs.
- * Includes retired demos, but never broadens public discovery eligibility.
+ * Retired demos refresh lifetime only, never rolling periods or public signals.
  * Dedicated cache; no writes to paid sales or demo leaderboard estimates.
  */
 export function refreshDashboardDemoActuals(): Promise<RefreshResult> {
@@ -19,6 +19,10 @@ async function refresh(): Promise<RefreshResult> {
   const result = { attempted: 0, succeeded: 0, failed: 0, rowsWritten: 0 };
   const session = storage.getSteamworksSession("default");
   for (const demo of SABER_DEMO_ROSTER) {
+    const tracked = rawSqlite.prepare("SELECT is_active FROM demo_titles WHERE steam_app_id=?")
+      .get(demo.steamAppId) as { is_active: number } | undefined;
+    const active = tracked ? tracked.is_active === 1 : demo.isActive;
+    const windows: readonly ActualWindow[] = active ? DEMO_ACTUAL_WINDOWS : ["ltd"];
     result.attempted++;
     const attemptedAt = new Date().toISOString();
     const recordFailure = (window: ActualWindow) => {
@@ -29,7 +33,7 @@ async function refresh(): Promise<RefreshResult> {
     };
     try {
       if (!session?.cookieValue) throw Error("Steamworks session unavailable");
-      const { reports, failures } = await fetchDemoDownloadReports(demo.steamAppId, demo.name, session.cookieValue);
+      const { reports, failures } = await fetchDemoDownloadReports(demo.steamAppId, demo.name, session.cookieValue, windows);
       for (const report of reports) {
         rawSqlite.prepare(`INSERT INTO demo_download_actuals
           (steam_app_id,window,downloads,report_start_date,report_end_date,fetched_at,source_url,source,last_attempt_at,last_error)
@@ -47,7 +51,7 @@ async function refresh(): Promise<RefreshResult> {
     } catch {
       // No raw upstream content, cookie, redirect URLs or tokens in logs/DB.
       // Keep last good actual (including 0); signal failed refresh separately.
-      DEMO_ACTUAL_WINDOWS.forEach(recordFailure);
+      windows.forEach(recordFailure);
       result.failed++;
     }
   }
