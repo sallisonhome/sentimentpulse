@@ -1109,6 +1109,10 @@ function initializeDatabase() {
     -- delta over the window times a calibrated multiplier
     -- (method='review_delta_multiplier'), multiplier_id nullable until
     -- calibration work lands.
+    -- window values: 'd7'|'d30'|'d90'|'m12'|'ltd' -- aligned with the
+    -- established console-leaderboard / hmap wishlist-leaderboard window
+    -- convention (see server/routes-console-leaderboards.ts), not the
+    -- '7d'/'12mo' style used in this table's original draft.
     CREATE TABLE IF NOT EXISTS demo_window_estimates_daily (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       demo_title_id INTEGER NOT NULL,
@@ -1116,8 +1120,10 @@ function initializeDatabase() {
       as_of_date TEXT NOT NULL,
       review_count_total INTEGER,
       review_delta INTEGER,
+      units_low REAL,
       units_mid REAL,
-      multiplier_id INTEGER,
+      units_high REAL,
+      multiplier_id TEXT,
       method TEXT NOT NULL,
       created_at TEXT NOT NULL,
       FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE

@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { useTheme } from "./theme-provider";
 import { useQuery } from "@tanstack/react-query";
-import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon, Handshake, Calendar, Globe2 } from "lucide-react";
+import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon, Handshake, Calendar, Globe2, Download } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -176,6 +176,19 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
               >
                 <Gamepad2 className="h-3.5 w-3.5 shrink-0" />
                 {!sidebarCollapsed && <span>Steam &amp; Console Sales <span className="opacity-60">(experimental)</span></span>}
+              </div>
+            </Link>
+            <Link href="/demos-leaderboard">
+              <div
+                className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors ${
+                  location.startsWith("/demos-leaderboard")
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                }`}
+                data-testid="link-demos-leaderboard"
+              >
+                <Download className="h-3.5 w-3.5 shrink-0" />
+                {!sidebarCollapsed && <span>Steam Demos <span className="opacity-60">(experimental)</span></span>}
               </div>
             </Link>
             <Link href="/dashboard">

@@ -38,6 +38,7 @@ import { registerOnPromoRoutes } from "./on-promo-routes";
 import { registerPromoSupportRoutes } from "./promo-support-routes";
 import { registerAmazonRoutes } from "./amazon-routes";
 import { registerConsoleLeaderboardRoutes } from "./routes-console-leaderboards";
+import { registerDemosLeaderboardRoutes } from "./routes-demos-leaderboard";
 
 /**
  * Returns the wishlist count that should feed dynamic forecasts.
@@ -153,6 +154,7 @@ export async function registerRoutes(
   // server/amazon-routes.ts for the full endpoint list.
   registerAmazonRoutes(app);
   registerConsoleLeaderboardRoutes(app);
+  registerDemosLeaderboardRoutes(app);
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
 
