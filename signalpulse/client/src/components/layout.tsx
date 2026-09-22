@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useState } from "react";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -41,7 +42,10 @@ function AmazonSmileIcon({ className }: { className?: string }) {
 export function Layout({ children, onAddProduct }: LayoutProps) {
   const { theme, toggleTheme } = useTheme();
   const [location] = useLocation();
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const isMobile = useIsMobile();
+  const isDemosPage = location.startsWith("/demos-leaderboard");
+  const [sidebarOverride, setSidebarCollapsed] = useState<boolean | null>(null);
+  const sidebarCollapsed = sidebarOverride ?? (isDemosPage && isMobile);
 
   const { data: products } = useQuery<any[]>({
     queryKey: ["/api/products"],
@@ -70,7 +74,9 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
 
   return (
     <div className="h-full grid" style={{
-      gridTemplateColumns: sidebarCollapsed ? "60px 1fr" : "260px 1fr",
+      gridTemplateColumns: sidebarCollapsed
+        ? (isDemosPage ? "60px minmax(0, 1fr)" : "60px 1fr")
+        : (isDemosPage ? "260px minmax(0, 1fr)" : "260px 1fr"),
       gridTemplateRows: "56px 1fr",
       transition: "grid-template-columns 200ms ease",
     }}>
@@ -113,6 +119,7 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
             variant="ghost"
             size="icon"
             onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
             className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent shrink-0"
           >
             {sidebarCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronLeft className="h-3.5 w-3.5" />}
