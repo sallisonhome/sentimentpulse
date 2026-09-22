@@ -2028,6 +2028,14 @@ export async function registerRoutes(
       res.status(500).json({ error: "Demo actuals refresh failed" });
     }
   });
+  app.post("/api/ops/friends-pass-backfill", async (_req, res) => {
+    try {
+      const { runFriendsPassPipeline } = await import("./signals/demos/friends-pass");
+      res.json(await runFriendsPassPipeline());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
   app.post("/api/ops/demos-pipeline-run", async (_req, res) => {
     try {
       const { runDemosDailyPipeline } = await import("./signals/demos/pipeline");

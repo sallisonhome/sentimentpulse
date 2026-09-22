@@ -1627,12 +1627,13 @@ export async function runIngestion(): Promise<IngestionRunResult> {
   const demosPipelineResult = await runDemosDailyPipeline();
   results.push({
     source: "demos_pipeline",
-    status: demosPipelineResult.reviewHistory.failed > 0 || demosPipelineResult.discovery.failed > 0 || demosPipelineResult.eligibility.failed > 0 || demosPipelineResult.ccu.failed > 0 || demosPipelineResult.dashboardActuals.failed > 0 ? "error" : "success",
-    message: `seeded=${demosPipelineResult.seeded} discoveryNew=${demosPipelineResult.discovery.newlyDiscovered} reviewIngested=${demosPipelineResult.reviewHistory.ingested} estimateRows=${demosPipelineResult.estimates.rowsWritten} demoActualsSucceeded=${demosPipelineResult.dashboardActuals.succeeded} demoActualsFailed=${demosPipelineResult.dashboardActuals.failed} portalFetch=${demosPipelineResult.portalActualsFetch.message}`,
-    productsProcessed: demosPipelineResult.reviewHistory.attempted,
-    dataPointsAdded: demosPipelineResult.estimates.rowsWritten + demosPipelineResult.dashboardActuals.rowsWritten,
+    status: !demosPipelineResult.friendsPass.ok || demosPipelineResult.reviewHistory.failed > 0 || demosPipelineResult.discovery.failed > 0 || demosPipelineResult.discovery.feeds.some(f=>f.status==="error") || demosPipelineResult.eligibility.failed > 0 || demosPipelineResult.ccu.failed > 0 || demosPipelineResult.dashboardActuals.failed > 0 ? "error" : "success",
+    message: `seeded=${demosPipelineResult.seeded} discoveryNew=${demosPipelineResult.discovery.newlyDiscovered} discoveryFeedErrors=${demosPipelineResult.discovery.feeds.filter(f=>f.status==="error").length} reviewIngested=${demosPipelineResult.reviewHistory.ingested} estimateRows=${demosPipelineResult.estimates.rowsWritten} demoActualsSucceeded=${demosPipelineResult.dashboardActuals.succeeded} demoActualsFailed=${demosPipelineResult.dashboardActuals.failed} portalFetch=${demosPipelineResult.portalActualsFetch.message}`,
+    productsProcessed: demosPipelineResult.reviewHistory.attempted + demosPipelineResult.friendsPass.reviewHistory.attempted,
+    dataPointsAdded: demosPipelineResult.estimates.rowsWritten + demosPipelineResult.dashboardActuals.rowsWritten + demosPipelineResult.friendsPass.estimates.rowsWritten,
   });
   log(`Demos pipeline complete.`, "ingestion");
+  log(`Friends Pass daily refresh: ${JSON.stringify(demosPipelineResult.friendsPass)}`, "ingestion");
 
   // 3. Sony ingestion
   if (sonyApiKey && sonyApiKey.trim().length > 0) {

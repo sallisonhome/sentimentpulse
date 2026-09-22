@@ -30,7 +30,8 @@ const insertSteamBucketStmt = () => rawSqlite.prepare(
    ON CONFLICT(app_id, bucket_start, bucket_granularity) DO UPDATE SET
      recommendations_up = excluded.recommendations_up,
      recommendations_down = excluded.recommendations_down,
-     source_endpoint = excluded.source_endpoint`
+     source_endpoint = excluded.source_endpoint,
+     created_at = excluded.created_at`
 );
 
 const markCheckedStmt = () => rawSqlite.prepare(
@@ -47,9 +48,9 @@ export interface DemoTitleRow {
   name: string;
 }
 
-export function loadActiveDemoTitles(): DemoTitleRow[] {
+export function loadActiveDemoTitles(includePasses = false): DemoTitleRow[] {
   return rawSqlite
-    .prepare(`SELECT id, steam_app_id, name FROM demo_titles WHERE is_active = 1`)
+    .prepare(`SELECT id, steam_app_id, name FROM demo_titles WHERE is_active = 1 ${includePasses ? "" : "AND sku_kind='demo'"}`)
     .all() as DemoTitleRow[];
 }
 
@@ -69,7 +70,7 @@ export interface DemosRunResult {
  * failure, so it stops being polled daily once dead.
  */
 export async function runDemosReviewHistoryCollector(delayMs = 250, eligibleAppIds?: ReadonlySet<string>): Promise<DemosRunResult> {
-  const demos = loadActiveDemoTitles().filter(d => !eligibleAppIds || eligibleAppIds.has(d.steam_app_id));
+  const demos = loadActiveDemoTitles(!!eligibleAppIds).filter(d => !eligibleAppIds || eligibleAppIds.has(d.steam_app_id));
   const result: DemosRunResult = { attempted: demos.length, ingested: 0, deactivated: 0, failed: 0, failureSample: [] };
   const nowIso = new Date().toISOString();
 

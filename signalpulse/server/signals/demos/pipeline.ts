@@ -19,6 +19,7 @@ import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
 import { rawSqlite } from "../../storage";
 import { refreshDashboardDemoActuals } from "./download-actuals";
+import { runFriendsPassPipeline } from "./friends-pass";
 
 export interface DemosPipelineRunResult {
   seeded: number;
@@ -30,11 +31,13 @@ export interface DemosPipelineRunResult {
   portalActualsFetch: { source: string; status: "skipped"; message: string };
   actuals: { demosWithActuals: number; rowsWritten: number };
   dashboardActuals: Awaited<ReturnType<typeof refreshDashboardDemoActuals>>;
+  friendsPass: Awaited<ReturnType<typeof runFriendsPassPipeline>>;
 }
 
 export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelineRunResult> {
   log("Demos pipeline: released game demos only; license-category ingestion disabled", "demos-pipeline");
   const seed = seedSaberDemos();
+  const friendsPass = await runFriendsPassPipeline(delayMs);
   // Independent of public availability: archived demos still have actuals.
   const dashboardActuals = await refreshDashboardDemoActuals();
   const verifier = createDemoVerifier(delayMs);
@@ -53,8 +56,10 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
     if (result.error) eligibility.failed += 1;
     else if (result.demo) {
       eligibleAppIds.add(demo.steam_app_id);
-      rawSqlite.prepare("UPDATE demo_titles SET genre=?,release_date=? WHERE id=?")
-        .run(result.demo.genre, result.demo.releaseDate, demo.id);
+      rawSqlite.prepare(`UPDATE demo_titles SET genre=?,release_date=?,availability_source=?,
+        availability_source_url=?,availability_checked_at=? WHERE id=?`)
+        .run(result.demo.genre, result.demo.releaseDate, result.demo.availabilitySource,
+          result.demo.availabilitySourceUrl, result.demo.availabilityCheckedAt, demo.id);
     }
     else {
       eligibility.excluded += 1;
@@ -75,5 +80,5 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
   };
   const actuals = { demosWithActuals: 0, rowsWritten: 0 };
   log(`Demos pipeline: eligible=${eligibility.eligible} excluded=${eligibility.excluded} failed=${eligibility.failed}`, "demos-pipeline");
-  return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals, dashboardActuals };
+  return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals, dashboardActuals, friendsPass };
 }

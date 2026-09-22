@@ -264,6 +264,7 @@ const OPS_TOKEN_PATHS = new Set([
   // Steam Demos leaderboard pipeline + Steamworks-ground-truth probe --
   // see server/signals/demos/pipeline.ts and portal-actuals.ts.
   "/api/ops/demos-pipeline-run",
+  "/api/ops/friends-pass-backfill",
   "/api/ops/demos-download-actuals-refresh",
   // Amazon manual-pin workflow (amazon-manual-pin.yml) writes verified
   // franchise-IP ASINs into the Saber map and the competitor map from a

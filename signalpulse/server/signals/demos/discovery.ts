@@ -4,7 +4,7 @@
  * Discovery now reads paginated Top Demos, New Releases and New &
  * Trending feeds. See feeds.ts for the verified dynamic endpoint.
  * Known limitations:
- *   - Bounded to 100 candidate slots per feed, not every demo on Steam.
+ *   - Top/Trending: 500 slots. New: 500 bootstrap, then catch-up to 2,000.
  *   - Every app and its parent are verified with batched Store Browse
  *     metadata (metadata.ts); hub-list membership alone is insufficient.
  *
@@ -16,36 +16,47 @@
 import { rawSqlite } from "../../storage";
 import { log } from "../../log";
 import { DEMO_FEEDS, DEMOS_HUB_URL, fetchDemoFeed, fetchSteamText, parseDemoFeedContext, type DemoFeed, type DemoFeedPage } from "./feeds";
-import { createDemoVerifier, type DemoVerifier } from "./metadata";
+import { createDemoVerifier, type DemoVerifier, type VerifiedDemo } from "./metadata";
+import type { SkuKind } from "./friends-pass-identity";
 
-export type DiscoverySource = "steam_demos_hub" | "compset" | "saber_own" | "manual";
+export type DiscoverySource = "steam_demos_hub" | "steam_friends_pass_search" | "compset" | "saber_own" | "manual";
 
 const upsertDemoTitleStmt = () => rawSqlite.prepare(
   `INSERT INTO demo_titles
      (steam_app_id, name, base_game_product_id, is_saber_published, genre, release_date,
-      discovered_via, is_active, first_seen_at, last_checked_at, created_at, updated_at)
-   VALUES (?, ?, NULL, 0, ?, ?, ?, 1, ?, ?, ?, ?)
+      discovered_via, is_active, first_seen_at, last_checked_at, created_at, updated_at,
+      availability_source, availability_source_url, availability_checked_at, sku_kind)
+   VALUES (?, ?, NULL, 0, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(steam_app_id) DO UPDATE SET
      name = excluded.name,
+     sku_kind = excluded.sku_kind,
      genre = excluded.genre,
      release_date = excluded.release_date,
      is_active = 1,
      deactivated_at = NULL,
+     availability_source = excluded.availability_source,
+     availability_source_url = excluded.availability_source_url,
+     availability_checked_at = excluded.availability_checked_at,
      last_checked_at = excluded.last_checked_at,
      updated_at = excluded.updated_at`
 );
 
 export function upsertDiscoveredDemo(params: {
   steamAppId: string;
+  skuKind?: SkuKind;
   name: string;
   genre: string | null;
-  releaseDate: string;
+  releaseDate: string | null;
+  availabilitySource?: VerifiedDemo["availabilitySource"];
+  availabilitySourceUrl?: string | null;
+  availabilityCheckedAt?: string;
   discoveredVia: DiscoverySource;
 }): void {
   const nowIso = new Date().toISOString();
   upsertDemoTitleStmt().run(
     params.steamAppId, params.name, params.genre, params.releaseDate, params.discoveredVia,
     nowIso, nowIso, nowIso, nowIso,
+    params.availabilitySource ?? null, params.availabilitySourceUrl ?? null, params.availabilityCheckedAt ?? null, params.skuKind ?? "demo",
   );
 }
 
@@ -72,7 +83,19 @@ export async function runDemosHubDiscovery(delayMs = 250, verifier: DemoVerifier
   try {
     const context = parseDemoFeedContext(await fetchSteamText(DEMOS_HUB_URL));
     for (const feed of feeds) {
-      try { pages.set(feed, await fetchDemoFeed(context, feed)); }
+      try {
+        const prior = rawSqlite.prepare("SELECT anchor_app_ids FROM demo_discovery_feeds WHERE feed=?").get(feed) as { anchor_app_ids: string | null } | undefined;
+        // Upgrade path uses the previous verified source head when raw anchors
+        // have not yet been persisted. Never derive a watermark from title dates.
+        const ids: string[] = prior?.anchor_app_ids ? JSON.parse(prior.anchor_app_ids) :
+          (rawSqlite.prepare(`SELECT t.steam_app_id FROM demo_discovery_ranks r JOIN demo_titles t ON t.id=r.demo_title_id
+            WHERE r.feed=? AND r.source_rank<=100 ORDER BY r.source_rank`).all(feed) as Array<{steam_app_id:string}>).map(r=>r.steam_app_id);
+        pages.set(feed, await fetchDemoFeed(context, feed, async url=>{
+          const body=await fetchSteamText(url);
+          if(delayMs>0)await new Promise(resolve=>setTimeout(resolve,delayMs));
+          return body;
+        }, new Set(ids)));
+      }
       catch (error) { errors.set(feed, error instanceof Error ? error.message : String(error)); }
       if (delayMs > 0) await new Promise(resolve => setTimeout(resolve, delayMs));
     }
@@ -110,6 +133,9 @@ export async function runDemosHubDiscovery(delayMs = 250, verifier: DemoVerifier
         name: verified.name,
         genre: verified.genre,
         releaseDate: verified.releaseDate,
+        availabilitySource: verified.availabilitySource,
+        availabilitySourceUrl: verified.availabilitySourceUrl,
+        availabilityCheckedAt: verified.availabilityCheckedAt,
         discoveredVia: "steam_demos_hub",
       });
       verifiedIds.add(appId);
@@ -126,6 +152,9 @@ export async function runDemosHubDiscovery(delayMs = 250, verifier: DemoVerifier
 
   for (const feed of feeds) {
     const page = pages.get(feed);
+    if (page?.stopReason === "safety_cap") {
+      errors.set(feed, `New Releases catch-up incomplete at ${page.scannedSlots} slots; prior watermark and ranking retained`);
+    }
     if (page?.entries.some(entry => failedIds.has(entry.appId))) {
       errors.set(feed, "Demo metadata verification failed; retaining previous complete ranking");
     }
@@ -144,11 +173,13 @@ export async function runDemosHubDiscovery(delayMs = 250, verifier: DemoVerifier
         SELECT ?,id,? FROM demo_titles WHERE steam_app_id=?`);
       for (const entry of eligible) insert.run(feed, entry.rank, entry.appId);
       rawSqlite.prepare(`INSERT INTO demo_discovery_feeds
-        (feed,last_attempt_at,last_success_at,error,candidate_count,eligible_count,total_matches)
-        VALUES (?,?,?,NULL,?,?,?) ON CONFLICT(feed) DO UPDATE SET
+        (feed,last_attempt_at,last_success_at,error,candidate_count,eligible_count,total_matches,scanned_slots,stop_reason,anchor_app_ids)
+        VALUES (?,?,?,NULL,?,?,?,?,?,?) ON CONFLICT(feed) DO UPDATE SET
         last_attempt_at=excluded.last_attempt_at,last_success_at=excluded.last_success_at,error=NULL,
-        candidate_count=excluded.candidate_count,eligible_count=excluded.eligible_count,total_matches=excluded.total_matches`)
-        .run(feed, attemptedAt, new Date().toISOString(), page.entries.length, eligible.length, page.totalMatches);
+        candidate_count=excluded.candidate_count,eligible_count=excluded.eligible_count,total_matches=excluded.total_matches,
+        scanned_slots=excluded.scanned_slots,stop_reason=excluded.stop_reason,anchor_app_ids=excluded.anchor_app_ids`)
+        .run(feed, attemptedAt, new Date().toISOString(), page.entries.length, eligible.length, page.totalMatches,
+          page.scannedSlots,page.stopReason,JSON.stringify(page.entries.slice(0,100).map(e=>e.appId)));
     })();
     result.feeds.push({ feed, status: "success", candidates: page.entries.length, eligible: eligible.length });
   }

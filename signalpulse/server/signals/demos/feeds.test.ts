@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import express from "express";
-import { DEMO_FEEDS, demoFeedUrl, fetchDemoFeed, parseDemoFeedContext } from "./feeds";
-import { createDemoVerifier } from "./metadata";
+import { DEMO_FEEDS, demoFeedUrl, fetchDemoFeed, parseDemoFeedContext, DEMO_FEED_LIMIT, DEMO_NEW_FEED_MAX } from "./feeds";
+import { createDemoVerifier, hasExactDemoDownload } from "./metadata";
 
 const hub = `data-event="{&quot;ANNOUNCEMENT_GID&quot;:&quot;987654321&quot;}"
   data-groupvanityinfo="[{&quot;clanAccountID&quot;:999,&quot;vanity_url&quot;:&quot;store_contenthubs&quot;}]"
@@ -27,12 +27,86 @@ test("Steam context comes from hub; all feeds are paginated, bounded and keep so
       return JSON.stringify({ success: 1, appids: Array.from({ length: 50 }, (_, i) => start + i + 1),
         match_count: 5000, possible_has_more: true });
     });
-    assert.deepEqual(calls, [0, 50]);
-    assert.equal(result.entries.length, 100);
+    assert.deepEqual(calls, Array.from({length:10},(_,i)=>i*50));
+    assert.equal(result.entries.length, 500);
+    assert.equal(result.scannedSlots,500);
+    assert.equal(result.stopReason,feed==="new"?"bootstrap":"bounded");
     assert.deepEqual(result.entries[99], { appId: "100", rank: 100 });
   }
   assert.throws(() => parseDemoFeedContext("<html>contract changed</html>"), /missing/);
   assert.equal(new URL(demoFeedUrl(context, "top", 50)).searchParams.get("start"), "50");
+});
+
+test("New Releases catches up beyond 500 to prior head plus overlap, and detects safety truncation", async () => {
+  const context=parseDemoFeedContext(hub);
+  const previous=new Set(Array.from({length:100},(_,i)=>String(10000+i)));
+  const read=async(url:string)=>{
+    const start=Number(new URL(url).searchParams.get("start"));
+    return JSON.stringify({success:1,match_count:10000,possible_has_more:true,
+      appids:Array.from({length:50},(_,i)=>start>=550?10000+start-550+i:start+i+1)});
+  };
+  const caught=await fetchDemoFeed(context,"new",read,previous);
+  assert.equal(caught.scannedSlots,650);
+  assert.equal(caught.stopReason,"watermark");
+  const capped=await fetchDemoFeed(context,"new",async(url)=>{
+    const start=Number(new URL(url).searchParams.get("start"));
+    // Four persistent future-date candidates at the front are not a watermark.
+    return JSON.stringify({success:1,match_count:10000,possible_has_more:true,
+      appids:Array.from({length:50},(_,i)=>i<4?10000+i:start+i+1)});
+  },previous);
+  assert.equal(capped.scannedSlots,DEMO_NEW_FEED_MAX);
+  assert.equal(capped.stopReason,"safety_cap");
+  assert.equal(DEMO_FEED_LIMIT,500);
+});
+
+test("exact demo download parser ignores parent/wrong IDs, comments, scripts and hidden actions",()=>{
+  const offer=(id:string)=>`<a href="javascript:ShowGotSteamModal( 'steam://install/${id}', &quot;Demo&quot;, &quot;Download&quot; )"><span>Download</span></a>`;
+  assert.equal(hasExactDemoDownload(offer("4889650"),"4889650"),true);
+  assert.equal(hasExactDemoDownload(`<a href="steam://install/4889650">Install Demo</a>`,"4889650"),true);
+  for(const html of [offer("4838130"),offer("48896500"),`<script>${offer("4889650")}</script>`,
+    `<!--${offer("4889650")}-->`,offer("4889650").replace("<a ","<a aria-hidden=\"true\" "),
+    offer("4889650").replace("<span>Download</span>","Wishlist"),
+    "<p>Download steam://install/4889650</p>"])assert.equal(hasExactDemoDownload(html,"4889650"),false);
+});
+
+test("future or missing dates need an exact offered demo, game parent, and are never invented",async()=>{
+  const realFetch=globalThis.fetch;
+  const pages:string[]=[];
+  try {
+    globalThis.fetch=async input=>{
+      const url=new URL(String(input));
+      if(url.hostname==="store.steampowered.com"){
+        pages.push(url.href);
+        return new Response(`<a href="javascript:ShowGotSteamModal( 'steam://install/1', &quot;Demo&quot;, &quot;Download&quot; )">Download</a>`);
+      }
+      const ids=JSON.parse(url.searchParams.get("input_json")!).ids;
+      return Response.json({response:{store_items:ids.map(({appid:id}:any)=>({
+        id,appid:id,success:1,type:id===500?0:id===600?6:1,visible:id!==3,is_free:id!==4,
+        name:id===7?"Fixture Friend's Pass":`Demo ${id}`,
+        release:{steam_release_date:Math.floor(Date.now()/1000)+86400},
+        related_items:id===5?{}:{parent_appid:id===6?600:500}
+      }))}});
+    };
+    const verifier=createDemoVerifier(0), result=await verifier.verify(["1","2","3","4","5","6","7"]);
+    assert.equal(result.get("1")?.demo?.releaseDate,null);
+    assert.equal(result.get("1")?.demo?.availabilitySource,"store_download");
+    assert.match(result.get("1")?.demo?.availabilitySourceUrl??"",/\/app\/500\//);
+    for(const id of ["2","3","4","5","6","7"])assert.equal(result.get(id)?.demo,null);
+    assert.equal(result.get("7")?.reason,"friend_pass_review_required");
+    await verifier.verify(["1","2"]);
+    assert.equal(pages.length,1,"same parent's availability page is cached within run");
+    globalThis.fetch=async input=>String(input).includes("store.steampowered.com")
+      ?new Response("rate limit",{status:429}):await realMetadata(input);
+    async function realMetadata(input:any) {
+      const ids=JSON.parse(new URL(String(input)).searchParams.get("input_json")!).ids;
+      return Response.json({response:{store_items:ids.map(({appid:id}:any)=>({
+        id,appid:id,success:1,type:id===500?0:1,visible:true,is_free:true,
+        release:{steam_release_date:Math.floor(Date.now()/1000)+86400},related_items:{parent_appid:500}
+      }))}});
+    }
+    const failed=await createDemoVerifier(0).verify(["1"]);
+    assert.match(failed.get("1")?.error??"",/429/,"transport failure is not a confirmed deactivation");
+  } finally {globalThis.fetch=realFetch;}
 });
 
 test("malformed, repeated and silently empty feeds fail instead of claiming fresh coverage", async () => {
@@ -94,12 +168,19 @@ test("discovery, migration and HTTP views preserve source order, null estimates 
     db.exec(`INSERT INTO app_settings(key,value,label,category,created_at,updated_at)
       VALUES('demo_migration_sentinel','preserve','Test','test','2026-09-22','2026-09-22');
       DROP TABLE demo_discovery_ranks; DROP TABLE demo_discovery_feeds;
-      ALTER TABLE demo_titles DROP COLUMN release_date;`);
+      ALTER TABLE demo_titles DROP COLUMN release_date;
+      ALTER TABLE demo_titles DROP COLUMN availability_source;
+      ALTER TABLE demo_titles DROP COLUMN availability_source_url;
+      ALTER TABLE demo_titles DROP COLUMN availability_checked_at;`);
+    db.exec("ALTER TABLE demo_titles DROP COLUMN sku_kind;");
     execFileSync(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e",
       `const {rawSqlite}=await import(${JSON.stringify(storageUrl)});rawSqlite.close();`], { cwd: dir, env: childEnv });
     assert.equal(db.prepare("SELECT value FROM app_settings WHERE key='demo_migration_sentinel'").get().value, "preserve");
     assert.equal(db.prepare("SELECT COUNT(*) n FROM pragma_table_info('demo_discovery_ranks')").get().n, 3);
     assert.ok(db.prepare("SELECT name FROM pragma_table_info('demo_titles') WHERE name='release_date'").get());
+    assert.ok(db.prepare("SELECT name FROM pragma_table_info('demo_titles') WHERE name='availability_source'").get());
+    assert.ok(db.prepare("SELECT name FROM pragma_table_info('demo_titles') WHERE name='sku_kind'").get());
+    assert.ok(db.prepare("SELECT name FROM pragma_table_info('demo_discovery_feeds') WHERE name='anchor_app_ids'").get());
     execFileSync(process.execPath, ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e",
       `const {rawSqlite}=await import(${JSON.stringify(storageUrl)});rawSqlite.close();`], { cwd: dir, env: childEnv });
     let failTop = false;
@@ -162,6 +243,17 @@ test("discovery, migration and HTTP views preserve source order, null estimates 
     assert.equal((await realFetch(`${base}?direction=wrong`)).status, 400);
     assert.equal((await realFetch(`${base}?genre=madeup`)).status, 400);
     assert.equal(((await (await realFetch(`${base}?sort=top&limit=1`)).json()) as any).count, 1);
+    const page1=await(await realFetch(`${base}?sort=top&limit=1`)).json() as any;
+    const page2=await(await realFetch(`${base}?sort=top&limit=1&offset=1`)).json() as any;
+    assert.equal(page1.hasMore,true);assert.equal(page2.hasMore,false);
+    assert.equal(page2.demos[0].steamAppId,"1");assert.equal(page2.demos[0].sourceRank,3);
+    assert.equal((await realFetch(`${base}?offset=-1`)).status,400);
+    assert.equal((await realFetch(`${base}?offset=1.5`)).status,400);
+    const searched=await(await realFetch(`${base}?search=demo%204`)).json() as any;
+    assert.deepEqual(searched.demos.map((r:any)=>r.steamAppId),["4"]);
+    const byId=await(await realFetch(`${base}?search=2&offset=999`)).json() as any;
+    assert.equal(byId.offset,0);assert.equal(byId.demos[0].steamAppId,"2");
+    assert.equal(((await(await realFetch(`${base}?search=NO-MATCH`)).json()) as any).count,0);
     assert.equal(((await (await realFetch(`${base}?sort=top&genre=Adventure`)).json()) as any).demos[0].steamAppId, "2");
     assert.equal(((await (await realFetch(`${base}?sort=top&genre=Strategy`)).json()) as any).count, 0);
     // Exercise every numeric/date sort in both directions before limiting.
@@ -202,6 +294,31 @@ test("discovery, migration and HTTP views preserve source order, null estimates 
     const recovered = await (await realFetch(`${base}?sort=top`)).json() as any;
     assert.deepEqual(recovered.demos.map((row: any) => row.steamAppId), ["1", "2"]);
     assert.equal(recovered.coverage.feeds.find((feed: any) => feed.feed === "top").error, null);
+    const beforeCap=db.prepare("SELECT * FROM demo_discovery_feeds WHERE feed='new'").get();
+    const oldNewRanks=db.prepare("SELECT * FROM demo_discovery_ranks WHERE feed='new'").all();
+    const normalFetch=globalThis.fetch;
+    globalThis.fetch=async(input,init)=>{
+      const url=new URL(String(input));
+      if(url.searchParams.get("flavor")===DEMO_FEEDS.new){
+        const start=Number(url.searchParams.get("start"));
+        return Response.json({success:1,appids:Array.from({length:50},(_,i)=>7000+start+i),
+          match_count:5000,possible_has_more:true});
+      }
+      return normalFetch(input,init);
+    };
+    const truncated=await runDemosHubDiscovery(0);
+    assert.match(truncated.feeds.find(f=>f.feed==="new")?.error??"",/catch-up incomplete/);
+    const afterCap=db.prepare("SELECT * FROM demo_discovery_feeds WHERE feed='new'").get();
+    assert.equal(afterCap.last_success_at,beforeCap.last_success_at);
+    assert.equal(afterCap.anchor_app_ids,beforeCap.anchor_app_ids);
+    assert.deepEqual(db.prepare("SELECT * FROM demo_discovery_ranks WHERE feed='new'").all(),oldNewRanks);
+    // Candidates can enter tracking from a partial attempt, but no false
+    // complete source ranking or advanced watermark is published.
+    const large=await(await realFetch(`${base}?search=Demo%207&limit=100`)).json() as any;
+    const largeNext=await(await realFetch(`${base}?search=Demo%207&limit=100&offset=100`)).json() as any;
+    assert.equal(large.count,100);assert.equal(largeNext.count,100);
+    assert.ok(large.hasMore);assert.ok(largeNext.availableCount>250);
+    assert.ok(large.demos.every((a:any)=>!largeNext.demos.some((b:any)=>b.id===a.id)),"no duplicate rows across pages");
     assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
     assert.deepEqual(db.pragma("foreign_key_check"), []);
   } finally {

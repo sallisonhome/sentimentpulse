@@ -21,6 +21,7 @@ import { useState } from "react";
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
 type SortKey = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release";
 type SortDirection = "asc" | "desc";
+type SkuKind = "demo" | "friends_pass";
 
 const WINDOWS: Array<{ id: WindowKey; label: string }> = [
   { id: "d7",  label: "7 days"    },
@@ -45,6 +46,8 @@ interface DemoRow {
   releaseDate: string | null;
   isSaberPublished: boolean;
   isArchived: boolean;
+  isHybridPass: boolean;
+  releaseDateUnverified: boolean;
   reviewCountTotal: number | null;
   reviewDelta: number | null;
   unitsLow: number | null;
@@ -78,14 +81,19 @@ interface LeaderboardResponse {
   multiplier: { low: number; mid: number; high: number; nonSaberTrial: number; note: string };
   count: number;
   availableCount: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
   coverage: {
     candidateLimitPerFeed: number;
+    newReleaseCatchUpLimit: number;
     trackedCount: number;
     availableCount: number;
     archivedCount: number;
     completeSteamCatalog: false;
     feeds: Array<{ feed: string; lastAttemptAt: string; lastSuccessAt: string | null;
-      error: string | null; candidateCount: number; eligibleCount: number; totalMatches: number }>;
+      error: string | null; candidateCount: number; eligibleCount: number; totalMatches: number;
+      scannedSlots: number; stopReason: string | null }>;
   };
   demos: DemoRow[];
 }
@@ -97,12 +105,12 @@ function formatNumberCompact(n: number | null | undefined): string {
   return n.toString();
 }
 
-function useDemosLeaderboard(window: WindowKey, sort: SortKey, direction: SortDirection, genre: string, limit = 50) {
+function useDemosLeaderboard(window: WindowKey, sort: SortKey, direction: SortDirection, genre: string, limit: number, offset: number, search: string, kind: SkuKind) {
   return useQuery<LeaderboardResponse>({
-    queryKey: [`/signal/api/demos/leaderboard`, { window, sort, direction, genre, limit }],
-    queryFn: async () => {
-      const url = `/signal/api/demos/leaderboard?window=${window}&sort=${sort}&direction=${direction}&genre=${encodeURIComponent(genre)}&limit=${limit}`;
-      const r = await fetch(url, { credentials: "include" });
+    queryKey: [`/signal/api/demos/leaderboard`, { window, sort, direction, genre, limit, offset, search, kind }],
+    queryFn: async ({ signal }) => {
+      const url = `/signal/api/demos/leaderboard?kind=${kind}&window=${window}&sort=${sort}&direction=${direction}&genre=${encodeURIComponent(genre)}&limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}`;
+      const r = await fetch(url, { credentials: "include", signal });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     },
@@ -117,24 +125,31 @@ function formatDate(value: string | null): string {
 }
 
 export default function DemosLeaderboard() {
+  const [kind, setKind] = useState<SkuKind>("demo");
+  const pass = kind === "friends_pass";
+  const noun = pass ? "Friend’s Pass SKUs" : "demos";
   const [windowSel, setWindowSel] = useState<WindowKey>("d7");
   const [sortSel, setSortSel] = useState<SortKey>("downloads");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [genre, setGenre] = useState("");
   const [limit, setLimit] = useState(50);
-  const { data, isLoading, isError, error } = useDemosLeaderboard(windowSel, sortSel, sortDirection, genre, limit);
+  const [offset, setOffset] = useState(0);
+  const [search, setSearch] = useState("");
+  const { data, isLoading, isError, error } = useDemosLeaderboard(windowSel, sortSel, sortDirection, genre, limit, offset, search, kind);
   const sourceView = sortSel === "top" || sortSel === "new";
   const feed = data?.coverage?.feeds.find(item => item.feed === sortSel);
   const staleFeed = !!feed?.lastSuccessAt && Date.now() - Date.parse(feed.lastSuccessAt) > 36 * 60 * 60_000;
-  const setSourceView = (sort: SortKey) => { setSortSel(sort); setSortDirection("desc"); };
+  const setSourceView = (sort: SortKey) => { setSortSel(sort); setSortDirection("desc"); setOffset(0); };
   const selectWindow = (window: WindowKey) => {
     setWindowSel(window);
     setSortSel("downloads");
     setSortDirection("desc");
+    setOffset(0);
   };
   const setColumnSort = (sort: SortKey) => {
     setSortDirection(sortSel === sort ? (sortDirection === "desc" ? "asc" : "desc") : "desc");
     setSortSel(sort);
+    setOffset(0);
   };
   const sortLabel = (sort: SortKey, label: string) => (
     <button type="button" onClick={() => setColumnSort(sort)}
@@ -150,11 +165,12 @@ export default function DemosLeaderboard() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-2xl font-semibold">Steam Demos Leaderboard</h1>
+            <h1 className="text-2xl font-semibold">Steam Demos & Friends Pass</h1>
             <Badge variant="outline" className="text-xs uppercase tracking-wide" style={{ color: "hsl(var(--foreground))" }}>experimental</Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1">
-            Playable game demos from Steam's Top Demos, New Releases, and Trending feeds. Updated daily.
+            {pass ? "Active Friend’s Pass clients, including hybrid demo/pass SKUs. Updated daily, separately from demos."
+              : "Playable game demos from Steam's Top Demos, New Releases, and Trending feeds. Updated daily."}
           </p>
           {data?.asOfDate && (
             <p className="text-xs text-muted-foreground mt-1" data-testid="text-demos-refresh-note">
@@ -163,6 +179,14 @@ export default function DemosLeaderboard() {
           )}
         </div>
         <div className="flex flex-col items-start md:items-end gap-2 w-full">
+          <div className="flex gap-2 w-full" role="tablist" aria-label="SKU category">
+            {(["demo","friends_pass"] as const).map(value=><Button key={value}
+              role="tab" aria-selected={kind===value} variant={kind===value?"default":"outline"}
+              data-testid={`btn-demos-kind-${value}`}
+              onClick={()=>{setKind(value);setSortSel("downloads");setSortDirection("desc");setGenre("");setSearch("");setOffset(0);}}>
+              {value==="demo"?"Demos":"Friends Pass"}
+            </Button>)}
+          </div>
           <div className="flex gap-1 flex-wrap" role="tablist" aria-label="Download window">
             <span className="text-xs text-muted-foreground self-center mr-1">Download window</span>
             {WINDOWS.map(w => (
@@ -179,8 +203,8 @@ export default function DemosLeaderboard() {
               </Button>
             ))}
           </div>
-          <div className="grid grid-cols-2 md:flex gap-1 order-first w-full md:w-auto" role="tablist" aria-label="Leaderboard view">
-            {SORTS.map(s => (
+          <div className="grid grid-cols-2 md:flex gap-1 w-full md:w-auto" role="tablist" aria-label="Leaderboard view">
+            {SORTS.filter(s=>!pass || !["top","new"].includes(s.id)).map(s => (
               <Button
                 key={s.id}
                 variant={sortSel === s.id ? "secondary" : "ghost"}
@@ -200,8 +224,15 @@ export default function DemosLeaderboard() {
 
       <div className="flex flex-wrap items-center gap-4">
       <label className="flex items-center gap-2 text-sm">
+        Search
+        <input type="search" value={search} maxLength={120} placeholder="SKU name or App ID"
+          onChange={event=>{setSearch(event.target.value);setOffset(0);}}
+          className="h-9 w-48 max-w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+          data-testid="input-demos-search" />
+      </label>
+      <label className="flex items-center gap-2 text-sm">
         Genre
-        <select value={genre} onChange={event => setGenre(event.target.value)}
+        <select value={genre} onChange={event => {setGenre(event.target.value);setOffset(0);}}
           className="h-9 max-w-[240px] rounded-md border border-input bg-background px-2 text-sm text-foreground"
           data-testid="select-demos-genre">
           <option value="">All genres</option>
@@ -209,7 +240,7 @@ export default function DemosLeaderboard() {
         </select>
       </label>
       <label className="flex items-center gap-2 text-sm">Show
-        <select value={limit} onChange={event=>setLimit(Number(event.target.value))}
+        <select value={limit} onChange={event=>{setLimit(Number(event.target.value));setOffset(0);}}
           className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground"
           data-testid="select-demos-limit">
           {[50,100,250].map(n=><option key={n} value={n}>{n} rows</option>)}
@@ -219,13 +250,35 @@ export default function DemosLeaderboard() {
 
       {data?.coverage && <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
         data-testid="text-demos-catalog-scope">
+        {pass ? <>Tracked catalog: {data.coverage.availableCount} available Friend’s Pass SKUs. Discovery pages through Steam’s US/English name searches and verifies each free download offer.
+          {" "}Unavailable and unreleased passes, paid games, software and DLC are excluded. Search coverage is not a guarantee of every Steam SKU worldwide.
+          {" "}Hybrid clients remain here only; their activity cannot be split into demo play versus owner-hosted co-op.</> : <>
         Tracked catalog: {data.coverage.availableCount} available demos. Lifetime totals retained for {data.coverage.archivedCount} deactivated Saber demos.
-        {" "}Discovery samples up to {data.coverage.candidateLimitPerFeed} candidates per Steam feed; this is not a complete historical Steam catalog.
+        {" "}Top/Trending discovery checks up to {data.coverage.candidateLimitPerFeed} slots each. New Releases starts at that depth and catches up to the prior snapshot, with a {data.coverage.newReleaseCatchUpLimit}-slot safety cap. This is not a complete Steam catalog.
         {" "}Demos deactivated by publishers are not tracked. The only exception is Saber lifetime download actuals, shown in Lifetime and on dashboard cards.
+        </>}
       </div>}
 
+      {data?.coverage.feeds.some(f=>f.error) && <p role="status" className="text-xs text-amber-700 dark:text-amber-400"
+        data-testid="text-demos-discovery-warning">
+        {data.coverage.feeds.filter(f=>f.error).map(f=>`${f.feed}: ${f.error}`).join(" · ")}
+      </p>}
+
+      {data && <nav className="flex flex-wrap items-center justify-between gap-2 text-sm" aria-label="Demo pages">
+        <span className="text-xs text-muted-foreground" data-testid="text-demos-page">
+          {data.count ? `${data.offset+1}–${data.offset+data.count}` : "0"} of {data.availableCount} matching {noun}
+        </span>
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" disabled={data.offset===0 || isLoading}
+            onClick={()=>setOffset(Math.max(0,data.offset-limit))} data-testid="btn-demos-previous">Previous</Button>
+          <Button size="sm" variant="outline" disabled={!data.hasMore || isLoading}
+            onClick={()=>setOffset(data.offset+limit)} data-testid="btn-demos-next">Next</Button>
+        </div>
+      </nav>}
+
       <div className="text-sm space-y-1" data-testid="text-demos-ranking-note">
-        <p>{sortSel === "top"
+        <p>{pass ? `Friend’s Pass SKUs ranked by ${sortSel === "downloads" ? "provisional estimated downloads in the selected window" : sortSel === "release" ? "their own release date" : sortSel === "reviews" ? "lifetime reviews" : sortSel === "rating" ? "positive review percentage" : sortSel === "peak" ? "peak observed CCU" : "latest sampled CCU"} (${sortDirection === "desc" ? "highest/newest first" : "lowest/oldest first"}).`
+          : sortSel === "top"
           ? "Steam's Top Demos order: recent daily active users, not downloads or CCU."
           : sortSel === "new"
           ? "Steam's New Releases order, including demos with no reviews yet."
@@ -240,7 +293,7 @@ export default function DemosLeaderboard() {
           : sortSel === "peak"
           ? `Tracked demos ordered by peak observed CCU (${sortDirection === "desc" ? "highest first" : "lowest first"}).`
           : `Downloads for the selected window: Saber actuals and non-Saber estimates (${sortDirection === "desc" ? "highest first" : "lowest first"}).`}</p>
-        {!sourceView && data && <p className="text-xs text-muted-foreground">Showing {data.count} of {data.availableCount} matching demos. Missing values sort last.</p>}
+        {!sourceView && data && <p className="text-xs text-muted-foreground">Showing {data.count} of {data.availableCount} matching {noun}. Missing values sort last.</p>}
         {sourceView && feed?.lastSuccessAt && (
           <p className="text-xs text-muted-foreground" data-testid="text-demos-source-time">
             Source refreshed: {new Date(feed.lastSuccessAt).toLocaleString()}.
@@ -260,27 +313,38 @@ export default function DemosLeaderboard() {
       <details className="text-xs text-muted-foreground" data-testid="details-demos-coverage">
         <summary className="cursor-pointer py-1">Coverage, genre and sorting notes</summary>
         <p className="mt-2">
-          Discovery checks Steam's US/English storefront, up to {data?.coverage?.candidateLimitPerFeed ?? 100} candidate slots per feed,
-          plus Saber's roster, not every demo on Steam. Software demos and license-category counts are excluded.
+          Discovery checks Steam's US/English storefront, with bounded Top/Trending coverage and New Releases catch-up,
+          plus Saber's roster, not every demo on Steam. Friends Pass clients have their own separate tab. Software demos and license-category counts are excluded.
           Steam rank gaps reflect filtered or duplicate entries.
           Genre uses broad Steam tags, falling back to parent-game tags when needed.
-          Click a KPI or release-date header to sort all matching tracked demos; click again to reverse.
+          Click a KPI or release-date header to sort all matching tracked SKUs; click again to reverse.
           Top Demos and New Releases restore Steam's source order.
-          Steam review scores use the demo's own all-language lifetime histogram,
+          Steam review scores use the SKU's own all-language lifetime histogram,
           never its parent game's reviews. Counts and scores update with the daily collection,
           remain independent of the download window, and may lag the live store.
         </p>
+        <ul className="mt-2 space-y-1">
+          {data?.coverage.feeds.map(f=><li key={f.feed}>
+            {f.feed}: {f.candidateCount} candidates, {f.eligibleCount} eligible; {f.scannedSlots || f.candidateCount} slots scanned.
+            {" "}Stop: {f.stopReason ?? "previous-version snapshot"}. Last successful collection: {f.lastSuccessAt ? new Date(f.lastSuccessAt).toLocaleString() : "not yet collected"}.
+          </li>)}
+        </ul>
         <p className="mt-2" data-testid="text-demos-sampling-note">
           CCU is the latest collected sample, not a live feed. Peak observed CCU is the highest sample recorded
           since tracking began, not a historical all-time peak. Date filters apply to downloads only,
-          not Steam's rankings or CCU columns. Release dates belong to the demo, not its parent game.
+          not Steam's rankings or CCU columns. Release dates belong to the SKU, not its parent game.
         </p>
       </details>
 
       {data?.multiplier && (
         <details className="text-xs text-muted-foreground bg-muted/40 rounded-md px-3 py-2" data-testid="details-demos-method">
-          <summary className="cursor-pointer">Downloads: Saber actuals · Other demos {data.multiplier.nonSaberTrial}× trial</summary>
-          <p className="mt-2">
+          <summary className="cursor-pointer">{pass ? `Friend’s Pass downloads: provisional ${data.multiplier.nonSaberTrial}× review trial` : `Downloads: Saber actuals · Other demos ${data.multiplier.nonSaberTrial}× trial`}</summary>
+          {pass ? <p className="mt-2">Estimates use this pass SKU’s own review additions in the selected window × {data.multiplier.nonSaberTrial}.
+            This reuses the demo trial multiplier; it is not calibrated or validated for Friend’s Pass clients.
+            Some passes share the paid game’s runtime and have no separate reviews or player-count feed. Missing values stay unavailable, never inherit the paid game’s metrics.
+            Hybrid clients combine demo and co-op use. Historical reviews can be backfilled; CCU peaks begin with observed samples, not invented history.
+            Passes offered only as licenses on the paid base-game App ID cannot be isolated and are excluded, rather than misrepresenting base-game activity as pass activity.
+            Older window boundaries use Steam’s available weekly/monthly review buckets, not invented daily precision.</p> : <p className="mt-2">
           Saber demos use Steamworks “Total Downloads” for their own demo App IDs and selected
           date window. Valve defines this metric as users who recorded playtime or preloaded the demo;
           it excludes parent-game purchase preloads and is not free-license activations.
@@ -291,7 +355,7 @@ export default function DemosLeaderboard() {
           Values marked “≥” are minimums supported by observed concurrent players, not point estimates.
           This safeguard applies only to lifetime or windows covering the demo's entire released lifespan.
           It never treats returning players as new downloads in a shorter window.
-          </p>
+          </p>}
         </details>
       )}
 
@@ -320,9 +384,9 @@ export default function DemosLeaderboard() {
             <thead>
               <tr className="border-b border-border text-left text-muted-foreground">
                 <th className="px-3 py-2 font-medium w-10">{sourceView ? "Steam rank" : "#"}</th>
-                <th className="px-3 py-2 font-medium">Demo</th>
+                <th className="px-3 py-2 font-medium">{pass ? "Friend’s Pass SKU" : "Demo"}</th>
                 <th className="px-3 py-2 font-medium">Genre</th>
-                <th className="px-3 py-2 font-medium whitespace-nowrap" aria-sort={sortSel === "release" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("release", "Demo Released")}</th>
+                <th className="px-3 py-2 font-medium whitespace-nowrap" aria-sort={sortSel === "release" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("release", pass ? "SKU Released" : "Demo Released")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "reviews" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("reviews", "Reviews (LTD)")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "rating" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("rating", "Steam Reviews")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "downloads" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("downloads", "Downloads (window)")}</th>
@@ -333,7 +397,7 @@ export default function DemosLeaderboard() {
             <tbody>
               {data.demos.map((d, i) => (
                 <tr key={d.id} className="border-b border-border/50 hover:bg-muted/30" data-testid={`row-demo-${d.steamAppId}`}>
-                  <td className="px-3 py-2 text-muted-foreground">{sourceView ? d.sourceRank : i + 1}</td>
+                  <td className="px-3 py-2 text-muted-foreground">{sourceView ? d.sourceRank : data.offset + i + 1}</td>
                   <td className="px-3 py-2">
                     <a
                       href={`https://store.steampowered.com/app/${d.steamAppId}`}
@@ -350,18 +414,22 @@ export default function DemosLeaderboard() {
                     )}
                     {d.isArchived && <Badge className="ml-2 text-xs" variant="outline"
                       data-testid={`badge-archived-${d.steamAppId}`}>Deactivated · lifetime only</Badge>}
+                    {d.isHybridPass && <Badge className="ml-2 text-xs" variant="outline">Demo + Friend’s Pass</Badge>}
                   </td>
                   <td className="px-3 py-2 text-xs leading-5 text-muted-foreground">{d.genre ?? "—"}</td>
-                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{formatDate(d.releaseDate)}</td>
+                  <td className="px-3 py-2 text-muted-foreground whitespace-nowrap"
+                    title={d.releaseDateUnverified ? "Demo download verified on Steam; conflicting release date not shown." : undefined}>
+                    {d.releaseDateUnverified ? <span className="text-xs">Date unverified</span> : formatDate(d.releaseDate)}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.reviewCountTotal)}</td>
                   <td className="px-3 py-2 text-right tabular-nums" data-testid={`reviews-demo-${d.steamAppId}`}>
                     {d.steamReviews?.positivePercent != null ? (
                       <a href={`https://store.steampowered.com/app/${d.steamAppId}/#app_reviews_hash`}
                         target="_blank" rel="noreferrer" className="inline-block hover:underline"
                         aria-label={`${d.name}: ${d.steamReviews.positivePercent.toFixed(1)} percent positive Steam reviews`}
-                        title={`${d.steamReviews.positive.toLocaleString()} positive / ${d.steamReviews.negative.toLocaleString()} negative (${d.steamReviews.total.toLocaleString()} total). Demo reviews only; all languages, lifetime; daily snapshot.`}>
+                        title={`${d.steamReviews.positive.toLocaleString()} positive / ${d.steamReviews.negative.toLocaleString()} negative (${d.steamReviews.total.toLocaleString()} total). Own-SKU reviews only; all languages, lifetime; daily snapshot.`}>
                         <span className="font-medium">{d.steamReviews.positivePercent.toFixed(1)}% positive</span>
-                        <span className="block text-xs text-muted-foreground">View demo reviews</span>
+                        <span className="block text-xs text-muted-foreground">View {pass ? "pass" : "demo"} reviews</span>
                       </a>
                     ) : <span className="text-xs text-muted-foreground">{d.steamReviews?.total === 0 ? "No reviews yet" : "Not available"}</span>}
                   </td>
@@ -402,7 +470,7 @@ export default function DemosLeaderboard() {
               ))}
               {data.demos.length === 0 && (
                 <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">
-                  {sourceView ? "No verified game demos in the latest successful feed snapshot." : "No demo data yet."}
+                  {search || genre ? `No ${noun} match these filters.` : sourceView ? "No verified game demos in the latest successful feed snapshot." : `No ${noun} collected yet.`}
                 </td></tr>
               )}
             </tbody>
