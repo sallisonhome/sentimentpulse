@@ -18,9 +18,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { FriendsPassReference } from "@/components/friends-pass-reference";
+import { PASS_PLAYER_GATES, PASS_PLAYER_STATUS_LABELS, type PassPlayerEstimate } from "@shared/pass-player-estimates";
 
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
-type SortKey = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release";
+type SortKey = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release" | "players";
 type SortDirection = "asc" | "desc";
 type SkuKind = "demo" | "friends_pass";
 
@@ -70,6 +71,7 @@ interface DemoRow {
   actualsStale: boolean;
   actualsRefreshFailed: boolean;
   steamReviews: { positive: number; negative: number; total: number; positivePercent: number | null } | null;
+  playerEstimate: PassPlayerEstimate | null;
 }
 
 interface LeaderboardResponse {
@@ -161,7 +163,7 @@ export default function DemosLeaderboard() {
   );
 
   return (
-    <div className="w-full min-w-0 p-4 md:p-6 max-w-[1760px] mx-auto space-y-4">
+    <div className={`w-full min-w-0 p-4 md:p-6 ${pass ? "max-w-[1920px]" : "max-w-[1760px]"} mx-auto space-y-4`}>
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -188,8 +190,8 @@ export default function DemosLeaderboard() {
               {value==="demo"?"Demos":"Friends Pass"}
             </Button>)}
           </div>
-          <div className="flex gap-1 flex-wrap" role="tablist" aria-label="Download window">
-            <span className="text-xs text-muted-foreground self-center mr-1">Download window</span>
+          <div className="flex gap-1 flex-wrap" role="tablist" aria-label={pass ? "Metric window" : "Download window"}>
+            <span className="text-xs text-muted-foreground self-center mr-1">{pass ? "Metric window" : "Download window"}</span>
             {WINDOWS.map(w => (
               <Button
                 key={w.id}
@@ -261,6 +263,19 @@ export default function DemosLeaderboard() {
       </div>}
 
       {pass && <FriendsPassReference />}
+      {pass && <details className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+        data-testid="details-pass-player-method">
+        <summary className="cursor-pointer">Player estimates: own pass runtime only</summary>
+        <p className="mt-2 leading-5">Estimated active players, not downloads or new users: own-pass player-hours divided by
+          reviewed, pass-specific mean playtime for the same window. Main-game metrics and review multipliers never enter this calculation.
+          Hybrid clients include both demo play and invited co-op. Shared runtimes cannot be separated.</p>
+        <p className="mt-2 leading-5">Requires at least {PASS_PLAYER_GATES.minCompleteDays} complete UTC days,
+          {" "}{PASS_PLAYER_GATES.minCoveragePercent}% time coverage overall and {PASS_PLAYER_GATES.minDailyCoveragePercent}% every day.
+          Gaps longer than {PASS_PLAYER_GATES.maxIntervalMinutes} minutes are not bridged; missing time is not counted as zero activity.
+          The selected window ends at 00:00 UTC today, excluding the current partial day.
+          Lifetime also requires coverage from the verified release date. Sampling thresholds are safeguards, not proof of model accuracy.
+          Missing runtime verification or playtime calibration keeps the estimate unavailable even with sufficient history.</p>
+      </details>}
 
       {data?.coverage.feeds.some(f=>f.error) && <p role="status" className="text-xs text-amber-700 dark:text-amber-400"
         data-testid="text-demos-discovery-warning">
@@ -280,7 +295,7 @@ export default function DemosLeaderboard() {
       </nav>}
 
       <div className="text-sm space-y-1" data-testid="text-demos-ranking-note">
-        <p>{pass ? `Friend’s Pass SKUs ranked by ${sortSel === "downloads" ? "provisional estimated downloads in the selected window" : sortSel === "release" ? "their own release date" : sortSel === "reviews" ? "lifetime reviews" : sortSel === "rating" ? "positive review percentage" : sortSel === "peak" ? "peak observed CCU" : "latest sampled CCU"} (${sortDirection === "desc" ? "highest/newest first" : "lowest/oldest first"}).`
+        <p>{pass ? `Friend’s Pass SKUs ranked by ${sortSel === "downloads" ? "provisional estimated downloads in the selected window" : sortSel === "players" ? "estimated active players from qualified own-App-ID history" : sortSel === "release" ? "their own release date" : sortSel === "reviews" ? "lifetime reviews" : sortSel === "rating" ? "positive review percentage" : sortSel === "peak" ? "peak observed CCU" : "latest sampled CCU"} (${sortDirection === "desc" ? "highest/newest first" : "lowest/oldest first"}).`
           : sortSel === "top"
           ? "Steam's Top Demos order: recent daily active users, not downloads or CCU."
           : sortSel === "new"
@@ -334,7 +349,7 @@ export default function DemosLeaderboard() {
         </ul>
         <p className="mt-2" data-testid="text-demos-sampling-note">
           CCU is the latest collected sample, not a live feed. Peak observed CCU is the highest sample recorded
-          since tracking began, not a historical all-time peak. Date filters apply to downloads only,
+          since tracking began, not a historical all-time peak. Date filters apply to downloads{pass ? " and estimated active players" : ""},
           not Steam's rankings or CCU columns. Release dates belong to the SKU, not its parent game.
         </p>
       </details>
@@ -372,15 +387,16 @@ export default function DemosLeaderboard() {
           <div className="p-4 text-sm text-destructive">Failed to load leaderboard: {(error as Error)?.message}</div>
         )}
         {!isLoading && !isError && data && (
-          <table className="w-full min-w-[1280px] table-fixed text-sm">
+          <table className={`w-full ${pass ? "min-w-[1480px]" : "min-w-[1280px]"} table-fixed text-sm`}>
             <colgroup>
               <col style={{ width: "4%" }} />
-              <col style={{ width: "23%" }} />
-              <col style={{ width: "14%" }} />
-              <col style={{ width: "11%" }} />
+              <col style={{ width: pass ? "20%" : "23%" }} />
+              <col style={{ width: pass ? "12%" : "14%" }} />
+              <col style={{ width: pass ? "9%" : "11%" }} />
               <col style={{ width: "8%" }} />
-              <col style={{ width: "12%" }} />
-              <col style={{ width: "12%" }} />
+              <col style={{ width: pass ? "10%" : "12%" }} />
+              <col style={{ width: pass ? "10%" : "12%" }} />
+              {pass && <col style={{ width: "11%" }} />}
               <col style={{ width: "8%" }} />
               <col style={{ width: "8%" }} />
             </colgroup>
@@ -393,6 +409,9 @@ export default function DemosLeaderboard() {
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "reviews" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("reviews", "Reviews (LTD)")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "rating" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("rating", "Steam Reviews")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "downloads" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("downloads", "Downloads (window)")}</th>
+                {pass && <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "players" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>
+                  {sortLabel("players", "Est. Players (window)")}
+                </th>}
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "ccu" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("ccu", "Latest Sampled CCU")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak Observed CCU")}</th>
               </tr>
@@ -465,6 +484,21 @@ export default function DemosLeaderboard() {
                       </span>
                     )}
                   </td>
+                  {pass && <td className="px-3 py-2 text-right tabular-nums" data-testid={`players-pass-${d.steamAppId}`}>
+                    {d.playerEstimate?.players != null ? <span
+                      title={`Estimated active players from this pass App ID only, not downloads. ${d.playerEstimate.playerHours?.toLocaleString()} observed player-hours ÷ ${d.playerEstimate.meanHoursPerPlayer} mean hours/player. ${d.playerEstimate.sampleCount.toLocaleString()} samples; ${d.playerEstimate.coveragePercent}% coverage. Period ${d.playerEstimate.periodStart} to ${d.playerEstimate.periodEnd} (exclusive).`}>
+                      {formatNumberCompact(d.playerEstimate.players)}
+                      <span className="block text-xs text-muted-foreground">Active players · estimated</span>
+                    </span> : <span className="text-xs text-muted-foreground"
+                      title="Missing evidence is not treated as zero players.">
+                      {d.playerEstimate ? PASS_PLAYER_STATUS_LABELS[d.playerEstimate.status] : "Not available"}
+                    </span>}
+                    {d.playerEstimate && d.playerEstimate.status !== "shared_runtime" &&
+                      <span className="block text-xs text-muted-foreground"
+                        title={`${d.playerEstimate.sampleCount.toLocaleString()} own-pass observations within the requested complete-day period.`}>
+                        {d.playerEstimate.coveragePercent}% coverage
+                      </span>}
+                  </td>}
                   <td className="px-3 py-2 text-right tabular-nums" title={d.ccuAsOf ? `Sample collected: ${d.ccuAsOf}` : "No CCU sample collected"}>
                     {formatNumberCompact(d.ccuCurrent)}
                   </td>
@@ -472,7 +506,7 @@ export default function DemosLeaderboard() {
                 </tr>
               ))}
               {data.demos.length === 0 && (
-                <tr><td colSpan={9} className="px-3 py-6 text-center text-muted-foreground">
+                <tr><td colSpan={pass ? 10 : 9} className="px-3 py-6 text-center text-muted-foreground">
                   {search || genre ? `No ${noun} match these filters.` : sourceView ? "No verified game demos in the latest successful feed snapshot." : `No ${noun} collected yet.`}
                 </td></tr>
               )}
