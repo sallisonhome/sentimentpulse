@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
+import { FriendsPassReference } from "@/components/friends-pass-reference";
 
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
 type SortKey = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release";
@@ -258,6 +259,8 @@ export default function DemosLeaderboard() {
         {" "}Demos deactivated by publishers are not tracked. The only exception is Saber lifetime download actuals, shown in Lifetime and on dashboard cards.
         </>}
       </div>}
+
+      {pass && <FriendsPassReference />}
 
       {data?.coverage.feeds.some(f=>f.error) && <p role="status" className="text-xs text-amber-700 dark:text-amber-400"
         data-testid="text-demos-discovery-warning">
