@@ -1396,6 +1396,13 @@ def dashboard_warmup_endpoint():
     }
 
 
+@router.post("/dashboard/topics-warmup", tags=["dashboard-admin"])
+def dashboard_topics_warmup_endpoint():
+    """Start a background Top Topics warmup (today + weekly, all active
+    games). Returns {status: 'started'|'already_running'} immediately."""
+    return start_topics_warmup_background()
+
+
 @router.get("/dashboard/warmup-status", tags=["dashboard-admin"])
 def dashboard_warmup_status_endpoint():
     """Report whether a background warmup is currently running plus the

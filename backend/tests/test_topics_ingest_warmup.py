@@ -62,3 +62,17 @@ class TestTopicsWarmupScope:
     def test_warmup_topics_cache_is_a_function(self):
         assert callable(dashboard_router.warmup_topics_cache)
         assert callable(dashboard_router.start_topics_warmup_background)
+
+
+class TestStartupAndManualTopicsWarmup:
+    def test_startup_schedules_topics_warmup(self):
+        source = (Path(__file__).parent.parent / "main.py").read_text()
+        assert "start_topics_warmup_background" in source, (
+            "App startup does not warm Top Topics. Every deploy/restart "
+            "wipes the in-memory cache and the card stays empty until the "
+            "next ingest."
+        )
+
+    def test_manual_topics_warmup_endpoint_registered(self):
+        paths = {getattr(r, "path", "") for r in dashboard_router.router.routes}
+        assert any(p.endswith("/dashboard/topics-warmup") for p in paths)

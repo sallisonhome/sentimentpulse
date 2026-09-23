@@ -2,6 +2,14 @@
 
 A running log of what changed in SentimentPulse — the community sentiment intelligence surface for Saber's game portfolio.
 
+## September 23, 2026
+
+- Fixed
+
+  ### Top Topics shows real game aspects on every high-volume title
+
+  After the September 22 warmup fix, the card was marked ready on all 43 titles but was empty on nearly all of them. When it did show something, the label was a filler word such as "About" or "Far". The old clusterer grouped posts by their most frequent word, not by game aspect, and the model rejected those clusters. Top Topics now runs one grounded pass per sentiment that names concrete aspects, such as PC Performance, Stealth Mechanics, or Myers-Civilian Balance. Each one must cite at least three real posts, and the code checks those citations before it renders. A transient model failure is no longer cached as an empty card, and the card warms itself after a deploy or restart.
+
 ## September 22, 2026
 
 - Fixed
