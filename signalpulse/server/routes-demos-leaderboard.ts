@@ -33,9 +33,11 @@ import { HYBRID_PASS_IDS, type SkuKind } from "./signals/demos/friends-pass-iden
 import { loadPassPlayerEstimates } from "./signals/demos/pass-player-estimates";
 import { PASS_PLAYER_EVIDENCE, type PassPlayerEvidence } from "./signals/demos/pass-player-evidence";
 import type { PassPlayerEstimate } from "../shared/pass-player-estimates";
+import { loadPassParentActivity } from "./signals/demos/pass-parent-activity";
+import type { ActivityWindow, PassParentActivity } from "../shared/pass-parent-activity";
 import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, NON_SABER_DOWNLOAD_TRIAL, demoDownloadMultiplier, demoReviewEstimate, reconcileDemoDownloads } from "./signals/demos/download-consistency";
 
-type DemoSort = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release" | "players";
+type DemoSort = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release" | "players" | "activity";
 
 interface DemoLeaderboardRow {
   id: number;
@@ -70,9 +72,10 @@ interface DemoLeaderboardRow {
   actualsRefreshFailed: boolean;
   steamReviews: DemoReviewSummary | null;
   playerEstimate: PassPlayerEstimate | null;
+  passParentActivity: PassParentActivity | null;
 }
 
-function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number, offset: number, search: string, kind: SkuKind, playerEvidence: readonly PassPlayerEvidence[]) {
+function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number, offset: number, search: string, kind: SkuKind, playerEvidence: readonly PassPlayerEvidence[], activityWindow: ActivityWindow) {
   const reviewSummaries = loadDemoReviewSummaries();
   const actualRows = rawSqlite.prepare("SELECT * FROM demo_download_actuals WHERE window=? AND source='steamworks_downloads_report'").all(window) as any[];
   const actualByAppId = new Map(actualRows.map(row => [row.steam_app_id, row]));
@@ -128,6 +131,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
   const ccuCurrentByDemoId = new Map(latestSnapshotRows.map((r) => [r.demo_title_id, r]));
 
   const demos = loadDemoCatalog(kind);
+  const activity = kind === "friends_pass" ? loadPassParentActivity(demos, activityWindow) : new Map<number, PassParentActivity>();
   const playerEstimates = kind === "friends_pass"
     ? loadPassPlayerEstimates(demos, window, playerEvidence) : new Map<number, PassPlayerEstimate>();
   const sourceRanks = new Map((rawSqlite.prepare(
@@ -178,6 +182,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       reviewCountTotal: reviewSummaries.get(d.steam_app_id)?.total ?? est?.review_count_total ?? null,
       steamReviews: reviewSummaries.get(d.steam_app_id) ?? null,
       playerEstimate: playerEstimates.get(d.id) ?? null,
+      passParentActivity: activity.get(d.id) ?? null,
       reviewDelta: est?.review_delta ?? null,
       unitsLow: null,
       unitsHigh: null,
@@ -203,6 +208,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       : sort === "rating" ? row.steamReviews?.positivePercent ?? null
       : sort === "downloads" ? row.unitsMid : sort === "ccu" ? row.ccuCurrent
       : sort === "players" ? row.playerEstimate?.players ?? null
+      : sort === "activity" ? row.passParentActivity?.ratio ?? null
       : sort === "peak" ? row.ccuAllTimePeak : row.releaseDate;
     rows.sort((a, b) => {
       const av = value(a); const bv = value(b);
@@ -231,6 +237,9 @@ export function registerDemosLeaderboardRoutes(app: Express, playerEvidence: rea
       const offset = Number(req.query.offset ?? 0);
       const search = String(req.query.search ?? "").trim();
       const kind = String(req.query.kind ?? "demo") as SkuKind;
+      const activityWindow = String(req.query.activityWindow ?? "latest") as ActivityWindow;
+      if (!["latest","d7","d30"].includes(activityWindow)) return res.status(400).json({error:"invalid activityWindow"});
+      if (kind !== "friends_pass" && sort === "activity") return res.status(400).json({error:"Pass / Parent Activity is Friends Pass only"});
       if (!["demo","friends_pass"].includes(kind)) return res.status(400).json({error:"invalid kind"});
       if (kind === "friends_pass" && ["top","new"].includes(sort)) return res.status(400).json({error:"Steam demo feed order is not a Friends Pass ranking"});
       if (kind !== "friends_pass" && sort === "players") return res.status(400).json({error:"Player estimates are standalone Friends Pass only"});
@@ -238,14 +247,14 @@ export function registerDemosLeaderboardRoutes(app: Express, playerEvidence: rea
       if (search.length > 120) return res.status(400).json({ error: "search too long" });
 
       if (!WINDOWS.includes(window)) return res.status(400).json({ error: "invalid window" });
-      if (!["top","new","reviews","rating","downloads","ccu","peak","release","players"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
+      if (!["top","new","reviews","rating","downloads","ccu","peak","release","players","activity"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
       if (direction !== "asc" && direction !== "desc") return res.status(400).json({ error: "invalid direction" });
 
       const catalog = loadDemoCatalog(kind);
       const genres = Array.from(new Set(catalog.flatMap(row => row.genre?.split(", ") ?? []))).sort();
       if (genre && !genres.includes(genre)) return res.status(400).json({ error: "invalid genre" });
       const { rows, asOfDate, availableCount, offset: resolvedOffset, hasMore } =
-        loadLeaderboardRows(window, sort as DemoSort, direction, genre, limit, offset, search, kind, playerEvidence);
+        loadLeaderboardRows(window, sort as DemoSort, direction, genre, limit, offset, search, kind, playerEvidence, activityWindow);
       const feeds = rawSqlite.prepare(`SELECT feed,last_attempt_at AS lastAttemptAt,
         last_success_at AS lastSuccessAt,error,candidate_count AS candidateCount,
         eligible_count AS eligibleCount,total_matches AS totalMatches,
@@ -254,6 +263,7 @@ export function registerDemosLeaderboardRoutes(app: Express, playerEvidence: rea
       res.json({
         window,
         kind,
+        activityWindow,
         sort,
         direction,
         genre: genre || null,

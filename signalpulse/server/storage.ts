@@ -1182,6 +1182,33 @@ function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS demo_ccu_daily_peaks_unique
       ON demo_ccu_daily_peaks (demo_title_id, peak_date);
 
+    -- Isolated engagement comparison. Never a source of pass downloads,
+    -- player estimates, paid units, or publisher conversion.
+    CREATE TABLE IF NOT EXISTS pass_parent_mappings (
+      demo_title_id INTEGER PRIMARY KEY REFERENCES demo_titles(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK(status IN ('verified','unverified','shared_runtime','failed')),
+      parent_app_id TEXT,
+      parent_name TEXT,
+      evidence_url TEXT,
+      verified_at TEXT,
+      last_attempt_at TEXT NOT NULL,
+      last_error TEXT
+    );
+    CREATE TABLE IF NOT EXISTS pass_parent_ccu_pairs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL REFERENCES demo_titles(id) ON DELETE CASCADE,
+      parent_app_id TEXT NOT NULL,
+      captured_at TEXT NOT NULL,
+      pass_requested_at TEXT NOT NULL,
+      pass_received_at TEXT NOT NULL,
+      parent_requested_at TEXT NOT NULL,
+      parent_received_at TEXT NOT NULL,
+      pass_ccu INTEGER NOT NULL CHECK(pass_ccu >= 0),
+      parent_ccu INTEGER NOT NULL CHECK(parent_ccu >= 0)
+    );
+    CREATE INDEX IF NOT EXISTS pass_parent_pairs_title_time
+      ON pass_parent_ccu_pairs(demo_title_id,captured_at);
+
     -- Saber Steamworks Sales & Activations ground truth for OWN demos
     -- (2026-09-22). Daily per-app snapshot pulled via the SAME shared
     -- Steamworks partner-portal session cookie already used by

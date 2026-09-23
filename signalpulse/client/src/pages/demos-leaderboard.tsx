@@ -19,9 +19,11 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { FriendsPassReference } from "@/components/friends-pass-reference";
 import { PASS_PLAYER_GATES, PASS_PLAYER_STATUS_LABELS, type PassPlayerEstimate } from "@shared/pass-player-estimates";
+import type { ActivityWindow, PassParentActivity } from "@shared/pass-parent-activity";
+import { PassParentActivityCell } from "@/components/pass-parent-activity";
 
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
-type SortKey = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release" | "players";
+type SortKey = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release" | "players" | "activity";
 type SortDirection = "asc" | "desc";
 type SkuKind = "demo" | "friends_pass";
 
@@ -72,6 +74,7 @@ interface DemoRow {
   actualsRefreshFailed: boolean;
   steamReviews: { positive: number; negative: number; total: number; positivePercent: number | null } | null;
   playerEstimate: PassPlayerEstimate | null;
+  passParentActivity: PassParentActivity | null;
 }
 
 interface LeaderboardResponse {
@@ -108,11 +111,11 @@ function formatNumberCompact(n: number | null | undefined): string {
   return n.toString();
 }
 
-function useDemosLeaderboard(window: WindowKey, sort: SortKey, direction: SortDirection, genre: string, limit: number, offset: number, search: string, kind: SkuKind) {
+function useDemosLeaderboard(window: WindowKey, sort: SortKey, direction: SortDirection, genre: string, limit: number, offset: number, search: string, kind: SkuKind, activityWindow: ActivityWindow) {
   return useQuery<LeaderboardResponse>({
-    queryKey: [`/signal/api/demos/leaderboard`, { window, sort, direction, genre, limit, offset, search, kind }],
+    queryKey: [`/signal/api/demos/leaderboard`, { window, sort, direction, genre, limit, offset, search, kind, activityWindow }],
     queryFn: async ({ signal }) => {
-      const url = `/signal/api/demos/leaderboard?kind=${kind}&window=${window}&sort=${sort}&direction=${direction}&genre=${encodeURIComponent(genre)}&limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}`;
+      const url = `/signal/api/demos/leaderboard?kind=${kind}&window=${window}&sort=${sort}&direction=${direction}&genre=${encodeURIComponent(genre)}&limit=${limit}&offset=${offset}&search=${encodeURIComponent(search)}&activityWindow=${activityWindow}`;
       const r = await fetch(url, { credentials: "include", signal });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
@@ -138,7 +141,8 @@ export default function DemosLeaderboard() {
   const [limit, setLimit] = useState(50);
   const [offset, setOffset] = useState(0);
   const [search, setSearch] = useState("");
-  const { data, isLoading, isError, error } = useDemosLeaderboard(windowSel, sortSel, sortDirection, genre, limit, offset, search, kind);
+  const [activityWindow, setActivityWindow] = useState<ActivityWindow>("latest");
+  const { data, isLoading, isError, error } = useDemosLeaderboard(windowSel, sortSel, sortDirection, genre, limit, offset, search, kind, activityWindow);
   const sourceView = sortSel === "top" || sortSel === "new";
   const feed = data?.coverage?.feeds.find(item => item.feed === sortSel);
   const staleFeed = !!feed?.lastSuccessAt && Date.now() - Date.parse(feed.lastSuccessAt) > 36 * 60 * 60_000;
@@ -163,7 +167,7 @@ export default function DemosLeaderboard() {
   );
 
   return (
-    <div className={`w-full min-w-0 p-4 md:p-6 ${pass ? "max-w-[1920px]" : "max-w-[1760px]"} mx-auto space-y-4`}>
+    <div className={`w-full min-w-0 p-4 md:p-6 ${pass ? "max-w-[2160px]" : "max-w-[1760px]"} mx-auto space-y-4`}>
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
@@ -263,6 +267,34 @@ export default function DemosLeaderboard() {
       </div>}
 
       {pass && <FriendsPassReference />}
+      {pass && <section className="rounded-md border border-border bg-muted/30 px-3 py-3 text-xs text-muted-foreground"
+        aria-label="Pass / Parent Activity controls">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="font-medium text-foreground">Pass / Parent Activity</span>
+          <label className="flex items-center gap-2">Comparison
+            <select value={activityWindow} onChange={event => { setActivityWindow(event.target.value as ActivityWindow); setOffset(0); }}
+              data-testid="select-pass-activity-window" className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground">
+              <option value="latest">Latest paired sample</option>
+              <option value="d7">7-day daily samples</option>
+              <option value="d30">30-day daily samples</option>
+            </select>
+          </label>
+          <span>Daily refresh · separate from the download window · not conversion</span>
+        </div>
+        <details className="mt-2" data-testid="details-pass-activity-method">
+          <summary className="cursor-pointer">How this comparison works</summary>
+          <p className="mt-2 leading-5">Pass CCU ÷ parent CCU, using requests launched together with no more than 10 seconds of request/receipt skew.
+            Steam can cache responses, so this is a paired observation, not guaranteed simultaneous underlying measurement.
+            Parent activity includes all users of that runtime, not verified paying customers. Cross-platform activity is excluded.
+            Shared runtimes and unverified parent/runtime mappings are unavailable; hybrids include both demo and pass play.</p>
+          <p className="mt-2 leading-5">The latest pair must be within 36 hours; parent CCU must be at least 10.
+            Period views use one paired sample per complete UTC day from the 03:00–05:00 Eastern collection slot:
+            at least 6 of 7 days or 24 of 30 days. We divide summed pass CCU by summed parent CCU, not average daily ratios.
+            These are daily-sampled comparisons, not all-day activity or player-hours. Missing days are not zero.
+            Combined activity share = pass ÷ (pass + parent); trend is percentage-point change in the pass/parent ratio
+            versus the preceding equal period when both qualify. Safeguards are not a validation of representativeness.</p>
+        </details>
+      </section>}
       {pass && <details className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
         data-testid="details-pass-player-method">
         <summary className="cursor-pointer">Player estimates: own pass runtime only</summary>
@@ -295,7 +327,7 @@ export default function DemosLeaderboard() {
       </nav>}
 
       <div className="text-sm space-y-1" data-testid="text-demos-ranking-note">
-        <p>{pass ? `Friend’s Pass SKUs ranked by ${sortSel === "downloads" ? "provisional estimated downloads in the selected window" : sortSel === "players" ? "estimated active players from qualified own-App-ID history" : sortSel === "release" ? "their own release date" : sortSel === "reviews" ? "lifetime reviews" : sortSel === "rating" ? "positive review percentage" : sortSel === "peak" ? "peak observed CCU" : "latest sampled CCU"} (${sortDirection === "desc" ? "highest/newest first" : "lowest/oldest first"}).`
+        <p>{pass ? `Friend’s Pass SKUs ranked by ${sortSel === "activity" ? "Pass / Parent Activity in the separate comparison selector" : sortSel === "downloads" ? "provisional estimated downloads in the selected window" : sortSel === "players" ? "estimated active players from qualified own-App-ID history" : sortSel === "release" ? "their own release date" : sortSel === "reviews" ? "lifetime reviews" : sortSel === "rating" ? "positive review percentage" : sortSel === "peak" ? "peak observed CCU" : "latest sampled CCU"} (${sortDirection === "desc" ? "highest/newest first" : "lowest/oldest first"}).`
           : sortSel === "top"
           ? "Steam's Top Demos order: recent daily active users, not downloads or CCU."
           : sortSel === "new"
@@ -387,18 +419,19 @@ export default function DemosLeaderboard() {
           <div className="p-4 text-sm text-destructive">Failed to load leaderboard: {(error as Error)?.message}</div>
         )}
         {!isLoading && !isError && data && (
-          <table className={`w-full ${pass ? "min-w-[1480px]" : "min-w-[1280px]"} table-fixed text-sm`}>
+          <table className={`w-full ${pass ? "min-w-[1740px]" : "min-w-[1280px]"} table-fixed text-sm`}>
             <colgroup>
-              <col style={{ width: "4%" }} />
-              <col style={{ width: pass ? "20%" : "23%" }} />
-              <col style={{ width: pass ? "12%" : "14%" }} />
-              <col style={{ width: pass ? "9%" : "11%" }} />
-              <col style={{ width: "8%" }} />
-              <col style={{ width: pass ? "10%" : "12%" }} />
-              <col style={{ width: pass ? "10%" : "12%" }} />
-              {pass && <col style={{ width: "11%" }} />}
-              <col style={{ width: "8%" }} />
-              <col style={{ width: "8%" }} />
+              <col style={{ width: pass ? "3%" : "4%" }} />
+              <col style={{ width: pass ? "17%" : "23%" }} />
+              <col style={{ width: pass ? "10%" : "14%" }} />
+              <col style={{ width: pass ? "8%" : "11%" }} />
+              <col style={{ width: pass ? "7%" : "8%" }} />
+              <col style={{ width: pass ? "8%" : "12%" }} />
+              <col style={{ width: pass ? "9%" : "12%" }} />
+              {pass && <col style={{ width: "10%" }} />}
+              {pass && <col style={{ width: "14%" }} />}
+              <col style={{ width: pass ? "7%" : "8%" }} />
+              <col style={{ width: pass ? "7%" : "8%" }} />
             </colgroup>
             <thead>
               <tr className="border-b border-border text-left text-muted-foreground">
@@ -411,6 +444,10 @@ export default function DemosLeaderboard() {
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "downloads" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("downloads", "Downloads (window)")}</th>
                 {pass && <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "players" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>
                   {sortLabel("players", "Est. Players (window)")}
+                </th>}
+                {pass && <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "activity" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>
+                  {sortLabel("activity", "Pass / Parent Activity")}
+                  <span className="block text-xs font-normal">{activityWindow === "latest" ? "Latest paired sample" : activityWindow === "d7" ? "7-day daily samples" : "30-day daily samples"}</span>
                 </th>}
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "ccu" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("ccu", "Latest Sampled CCU")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak Observed CCU")}</th>
@@ -499,6 +536,9 @@ export default function DemosLeaderboard() {
                         {d.playerEstimate.coveragePercent}% coverage
                       </span>}
                   </td>}
+                  {pass && <td className="px-3 py-2 align-top" data-testid={`activity-pass-${d.steamAppId}`}>
+                    <PassParentActivityCell activity={d.passParentActivity} hybrid={d.isHybridPass} />
+                  </td>}
                   <td className="px-3 py-2 text-right tabular-nums" title={d.ccuAsOf ? `Sample collected: ${d.ccuAsOf}` : "No CCU sample collected"}>
                     {formatNumberCompact(d.ccuCurrent)}
                   </td>
@@ -506,7 +546,7 @@ export default function DemosLeaderboard() {
                 </tr>
               ))}
               {data.demos.length === 0 && (
-                <tr><td colSpan={pass ? 10 : 9} className="px-3 py-6 text-center text-muted-foreground">
+                <tr><td colSpan={pass ? 11 : 9} className="px-3 py-6 text-center text-muted-foreground">
                   {search || genre ? `No ${noun} match these filters.` : sourceView ? "No verified game demos in the latest successful feed snapshot." : `No ${noun} collected yet.`}
                 </td></tr>
               )}
