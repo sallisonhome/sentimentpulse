@@ -112,6 +112,22 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("APScheduler started — daily ingestion at 02:00 local time.")
 
+    # 2026-09-23: Top Topics lives in an in-memory cache, so every deploy or
+    # restart blanked the card until the next ingest. Warm today+weekly in
+    # the background 90s after boot (after the app is serving) so the card
+    # repopulates on its own. Single-flight: an ingest-triggered warmup that
+    # is already running makes this a no-op.
+    try:
+        import threading as _threading
+        from routers.dashboard import start_topics_warmup_background
+
+        _t = _threading.Timer(90.0, start_topics_warmup_background)
+        _t.daemon = True
+        _t.start()
+        logger.info("Top Topics startup warmup scheduled in 90s.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Top Topics startup warmup not scheduled: %s", exc)
+
     # v0023 (2026-08-20): startup catch-up.  If the last successful ingest
     # completed more than 20 hours ago, fire an immediate run.  Protects
     # against the 2026-08-19 scenario where a burst of deploys spanning

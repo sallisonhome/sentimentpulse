@@ -4,6 +4,22 @@ A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.
 
+## 2026-09-23 — Top Topics was "ready" but empty on 42 of 43 titles: the clusterer, not the cache, was the bottleneck
+
+**What happened.** The 2026-09-22 warmup fix shipped and ingest finished, but Steve reported the card still showed nothing except on Hellraiser. A live sweep confirmed all 43 titles returned `status=ready`, so warmup worked, yet almost every bucket was empty. Space Marine 2 had 691 posts "today" and zero topics. The few labels that did render were junk single words: "About", "Far", "New", "Myers", "Other".
+
+**Root cause.** `_cluster_posts_by_shared_phrase` groups posts by their most frequent content word, which is almost never a game aspect. Only the top one or two of those incoherent clusters went to the LLM, it correctly answered `NO_COHERENT_SIGNAL`, and the empty result was cached for the full TTL. Hellraiser only rendered because "demo" happens to be both frequent and a real topic. A second bottleneck: the opinion+specificity regex kept just 16 of SM2's 284 positive posts and 2 of Aliens' 223. The 09-22 fix was verified on Hellraiser alone, so it confirmed the one title that could never show the bug.
+
+**Fix.** `generate_feedback_summary` now makes one grounded LLM pass per bucket (`_extract_aspect_topics`). Filter survivors lead the corpus, which is then topped up with other posts of 8+ words (max 80 shown). Every topic must cite 3 or more real sampled posts. Labels are 1-4 words and reject generic or outcome-only buckets. A transient LLM or parse failure returns `None` and is not cached. App startup also schedules a topics warmup, so a restart doesn't blank the card until the next ingest.
+
+**Hard rules.**
+
+1. Verify a widget fix across the whole portfolio, not one title. `status=ready` is not "populated": count non-empty buckets per title.
+2. Never cache a failure-shaped empty result for a long TTL. Only a genuine "no signal" answer may be cached.
+3. Frequency-of-word clustering is not topic detection. Topic labels must name a concrete game aspect with cited evidence.
+
+**Self-check.** A live sweep of all active titles × today/weekly counts non-empty positive and negative buckets. High-volume titles (SM2, Townfall, Halloween) show concrete aspect labels, and low-volume titles can honestly be empty.
+
 ## 2026-09-22 — Top Topics card stayed empty after ingest because KPI warmup does not fill the LLM cache
 
 **What happened.** Steve reported the dashboard Top Topics card almost never populated on its own after ingestion. Live `GET /api/games/21/dashboard/topics?period=weekly` returned `{status: pending, positive/negative/neutral: []}` while the main dashboard KPIs were fine.

@@ -479,6 +479,212 @@ def _synthesize_cluster_sentence(
     return text
 
 
+# ── 2026-09-23: aspect extraction (primary path) ────────────────────────
+#
+# The phrase clusterer above groups posts by their most frequent content
+# word. On real corpora that word is almost never a game aspect ("about",
+# "far", "new", "myers"), so the cluster handed to the LLM is incoherent,
+# the LLM correctly answers NO_COHERENT_SIGNAL, and the widget renders
+# empty. Live 2026-09-23: 42 of 43 titles showed no topics in at least one
+# bucket after a successful warmup; Space Marine 2 had 691 posts "today"
+# and zero topics. One grounded LLM pass per bucket now names concrete
+# aspects directly and must cite the posts that support each one. The
+# citations are validated in code, so an ungrounded topic cannot render.
+
+_EXTRACT_SAMPLE_MAX = 80        # posts shown to the LLM per bucket
+_EXTRACT_POST_CHARS = 320       # per-post excerpt length
+_EXTRACT_MAX_TOPICS = 2         # widget shows at most two per tab
+_EXTRACT_MIN_EVIDENCE = 3       # distinct cited posts required per topic
+_EXTRACT_LABEL_MAX_WORDS = 4
+
+# Labels that name an outcome or a generic bucket rather than a game aspect.
+_NON_ASPECT_LABELS = {
+    "game", "gameplay", "general", "general discussion", "overall",
+    "overall experience", "experience", "other", "misc", "miscellaneous",
+    "purchase", "purchase intent", "buying", "hype", "excitement",
+    "recommendation", "fun", "enjoyment", "disappointment", "opinion",
+    "opinions", "feedback", "discussion", "community",
+}
+
+
+def _sample_evenly(items: list[str], n: int) -> list[tuple[int, str]]:
+    """Return up to n (original_index, text) pairs spread across the list.
+
+    The corpus is newest-first; an even stride keeps the whole period
+    represented instead of only the last few hours.
+    """
+    if len(items) <= n:
+        return list(enumerate(items))
+    step = len(items) / n
+    idxs = sorted({int(i * step) for i in range(n)})
+    return [(i, items[i]) for i in idxs]
+
+
+def _build_aspect_prompt(
+    game_name: str,
+    sentiment: SentimentEnum,
+    sample: list[tuple[int, str]],
+) -> str:
+    verb = _SENTIMENT_VERBS[sentiment]
+    lines = []
+    for k, (_orig, text) in enumerate(sample):
+        clean = re.sub(r"\s+", " ", _strip_forum_boilerplate(text)).strip()
+        lines.append(f"[P{k + 1}] {clean[:_EXTRACT_POST_CHARS]}")
+    corpus = "\n".join(lines)
+    return (
+        f"Game: {game_name}\n"
+        f"Sentiment bucket: {sentiment.value}\n\n"
+        f"Community posts (verbatim excerpts):\n{corpus}\n\n"
+        f"Task: Identify up to {_EXTRACT_MAX_TOPICS} specific aspects of "
+        f"the game that players are {verb} most often in these posts.\n"
+        "Rules:\n"
+        "- An aspect must be a concrete game element, system, creative "
+        "choice, or technical behavior (e.g. 'Melee combat', 'PC "
+        "performance', 'Co-op matchmaking', 'Story pacing').\n"
+        "- Do NOT use purchase or release intent, hype, generic praise or "
+        "disappointment, price, or 'general discussion' as an aspect.\n"
+        "- Only include an aspect if at least "
+        f"{_EXTRACT_MIN_EVIDENCE} different posts explicitly discuss it.\n"
+        "- label: 1-4 words, Title Case, no game title.\n"
+        "- detail: ONE declarative sentence, max 20 words, grounded only "
+        "in the cited posts. Do not repeat the label word-for-word and do "
+        "not start with 'Players'.\n"
+        "- posts: every P-number that explicitly discusses that aspect.\n"
+        "- Order by how many posts discuss it, most first.\n\n"
+        "Return ONLY JSON, no prose, in this exact shape:\n"
+        '{"topics": [{"label": "...", "detail": "...", "posts": [1, 4, 9]}]}\n'
+        'If no aspect meets the bar, return {"topics": []}.'
+    )
+
+
+def _parse_aspect_response(text: str, n_sample: int) -> list[dict]:
+    """Parse and validate the LLM JSON. Invalid topics are dropped.
+
+    Raises ValueError when the response contains no parseable JSON object,
+    so the caller can treat it as a transient failure rather than a real
+    "no signal" answer.
+    """
+    import json
+
+    if not text:
+        raise ValueError("empty LLM response")
+    m = re.search(r"\{.*\}", text, flags=re.S)
+    if not m:
+        raise ValueError("no JSON object in LLM response")
+    data = json.loads(m.group(0))
+    raw_topics = data.get("topics") if isinstance(data, dict) else None
+    if not isinstance(raw_topics, list):
+        raise ValueError("LLM JSON missing 'topics' list")
+
+    out: list[dict] = []
+    seen_labels: set[str] = set()
+    for item in raw_topics:
+        if not isinstance(item, dict):
+            continue
+        label = re.sub(r"\s+", " ", str(item.get("label") or "")).strip(" .\"'")
+        detail = re.sub(r"\s+", " ", str(item.get("detail") or "")).strip().strip("\"'")
+        posts = item.get("posts") or []
+        if not label or not detail:
+            continue
+        if len(label.split()) > _EXTRACT_LABEL_MAX_WORDS:
+            continue
+        if label.lower() in _NON_ASPECT_LABELS or label.lower() in seen_labels:
+            continue
+        if detail.upper().startswith("NO_COHERENT_SIGNAL"):
+            continue
+        cited: set[int] = set()
+        for pnum in posts if isinstance(posts, list) else []:
+            try:
+                k = int(str(pnum).lstrip("Pp"))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= k <= n_sample:
+                cited.add(k)
+        if len(cited) < _EXTRACT_MIN_EVIDENCE:
+            continue
+        detail = re.sub(r"\s*\[P-?\d+(?:,\s*P-?\d+)*\]", "", detail)
+        if len(detail) > 240:
+            detail = detail[:240].rsplit(" ", 1)[0] + "\u2026"
+        seen_labels.add(label.lower())
+        out.append({"label": label, "detail": detail, "cited": sorted(cited)})
+    out.sort(key=lambda d: -len(d["cited"]))
+    return out[:_EXTRACT_MAX_TOPICS]
+
+
+_EXTRACT_MIN_WORDS = 8  # non-filter posts need this much content to be shown
+
+
+def _select_extraction_corpus(
+    texts: list[str],
+) -> tuple[list[tuple[int, str]], int]:
+    """Pick the posts the LLM sees and return (sample, pool_size).
+
+    Opinion+specificity survivors go first; they are the densest signal.
+    The regex keeps only ~5% of real Steam/Reddit text on some titles
+    (Space Marine 2 2026-09-23: 16 of 284 positive posts), so remaining
+    room is filled with an even spread of other posts that have at least
+    _EXTRACT_MIN_WORDS words. The prompt rejects vague posts itself and every
+    topic must cite >= _EXTRACT_MIN_EVIDENCE posts, so the broader pool
+    cannot promote an ungrounded topic.
+    """
+    filtered: list[str] = []
+    extra: list[str] = []
+    for x in texts:
+        if _has_opinion_and_specificity(x):
+            filtered.append(x)
+        elif len(_TOKEN.findall(x)) >= _EXTRACT_MIN_WORDS:
+            extra.append(x)
+    head = _sample_evenly(filtered, _EXTRACT_SAMPLE_MAX)
+    room = _EXTRACT_SAMPLE_MAX - len(head)
+    tail = _sample_evenly(extra, room) if room > 0 else []
+    return head + tail, len(filtered) + len(extra)
+
+
+def _extract_aspect_topics(
+    game_name: str,
+    sentiment: SentimentEnum,
+    texts: list[str],
+) -> Optional[list["TopicSummaryOut"]]:
+    """One grounded LLM pass per bucket.
+
+    Returns a list (possibly empty = genuine "no signal") or None when the
+    LLM call or response parsing failed. None must NOT be cached.
+    """
+    from services.llm_client import call_llm
+
+    sample, pool_size = _select_extraction_corpus(texts)
+    if len(sample) < _EXTRACT_MIN_EVIDENCE:
+        return []
+    prompt = _build_aspect_prompt(game_name, sentiment, sample)
+    try:
+        resp = call_llm(
+            prompt,
+            block_kind="topics",
+            max_tokens=700,
+            temperature=0.1,
+            disable_search=True,
+        )
+        topics = _parse_aspect_response((resp.text or "").strip(), len(sample))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "aspect extraction failed game=%s sentiment=%s: %s",
+            game_name, sentiment.value, exc,
+        )
+        return None
+
+    # volume = cited posts in the sample, scaled to the survivor pool so the
+    # runner-up ordering reflects the whole bucket, not just the sample.
+    scale = pool_size / max(len(sample), 1)
+    return [
+        TopicSummaryOut(
+            label=t["label"],
+            detail=t["detail"],
+            volume=max(len(t["cited"]), int(round(len(t["cited"]) * scale))),
+        )
+        for t in topics
+    ]
+
+
 # ── Cache: per-(game, period, sentiment) → (sentences, expires_at) ──────
 
 @dataclass
@@ -685,48 +891,16 @@ def generate_feedback_summary(
         _cache_set(cache_key, [])
         return []
 
-    # 2. Filter: opinion + specificity.
-    survivors: list[str] = []
-    for _pid, title, body, _src in rows:
-        combined = f"{title or ''} {body or ''}".strip()
-        if _has_opinion_and_specificity(combined):
-            survivors.append(combined)
+    # 2. Corpus text. Opinion+specificity ranking and the minimum-content
+    #    gate now live in _select_extraction_corpus (2026-09-23).
+    texts = [f"{title or ''} {body or ''}".strip() for _pid, title, body, _src in rows]
 
-    if len(survivors) < 3:  # need at least one cluster of 3
-        _cache_set(cache_key, [])
+    # 3. Grounded aspect extraction (2026-09-23). See _extract_aspect_topics.
+    out = _extract_aspect_topics(game_name, sentiment, texts)
+    if out is None:
+        # Transient LLM/parse failure: do not pin an empty card for the
+        # whole TTL. The next dashboard visit or warmup retries.
         return []
-
-    # 3. Cluster (game_name passed so title tokens don't dominate labels).
-    clusters = _cluster_posts_by_shared_phrase(
-        survivors, min_posts_per_cluster=3, game_name=game_name,
-    )
-    if not clusters:
-        _cache_set(cache_key, [])
-        return []
-
-    # 4. Synthesize top 1-2 by volume (runner-up rule: >= 70% of leader).
-    top = clusters[:1]
-    if len(clusters) >= 2 and len(clusters[1][1]) / len(clusters[0][1]) >= 0.70:
-        top.append(clusters[1])
-
-    out: list[TopicSummaryOut] = []
-    for cluster_phrase, post_ids in top:
-        cluster_texts = [survivors[i] for i in post_ids]
-        sentence = _synthesize_cluster_sentence(
-            game_name=game_name,
-            sentiment=sentiment,
-            cluster_phrase=cluster_phrase,
-            cluster_posts=cluster_texts,
-        )
-        if not sentence:
-            continue
-        # Human-cased label from cluster phrase. Just title-case the words.
-        label = " ".join(w.capitalize() for w in cluster_phrase.split())
-        out.append(TopicSummaryOut(
-            label=label,
-            detail=sentence,
-            volume=len(post_ids),
-        ))
 
     _cache_set(cache_key, [dict(label=t.label, detail=t.detail, volume=t.volume) for t in out])
     return out

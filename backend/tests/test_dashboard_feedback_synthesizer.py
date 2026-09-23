@@ -28,6 +28,27 @@ from services.dashboard_feedback_synthesizer import (
 
 # ── Filter: opinion + specificity ──────────────────────────────────────────
 
+
+# 2026-09-23: generate_feedback_summary now makes ONE grounded LLM pass per
+# bucket via _extract_aspect_topics(game_name, sentiment, texts). Tests that
+# only care about the corpus reaching the LLM stub that seam.
+def _aspect_fake(captured=None, called=None, label="Prestige Grind",
+                 detail="Fake.", empty=False, counter=None):
+    from services.dashboard_feedback_synthesizer import TopicSummaryOut
+
+    def fake(game_name, sentiment, texts):
+        if captured is not None:
+            captured.append(list(texts))
+        if called is not None:
+            called.append(True)
+        if counter is not None:
+            counter["n"] += 1
+        if empty:
+            return []
+        return [TopicSummaryOut(label=label, detail=detail, volume=len(texts))]
+    return fake
+
+
 class TestOpinionSpecificityFilter:
     def test_opinion_plus_specificity_passes(self):
         text = "I love the class balance in this patch, feels much better"
@@ -179,8 +200,8 @@ class TestGenerateFeedbackSummary:
         from services.dashboard_feedback_synthesizer import generate_feedback_summary
         from models import SentimentEnum
 
-        with patch("services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
-                   return_value="Players want the prestige grind shortened."):
+        with patch("services.dashboard_feedback_synthesizer._extract_aspect_topics",
+                   side_effect=_aspect_fake(detail="Players want the prestige grind shortened.")):
             out = generate_feedback_summary(
                 db=db, game_id=gid, game_name=gname,
                 sentiment=SentimentEnum.negative,
@@ -221,8 +242,8 @@ class TestGenerateFeedbackSummary:
         from services import dashboard_feedback_synthesizer as m
         m._CACHE.clear()
 
-        with patch("services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
-                   return_value=None):
+        with patch("services.dashboard_feedback_synthesizer._extract_aspect_topics",
+                   side_effect=_aspect_fake(empty=True)):
             out = generate_feedback_summary(
                 db=db, game_id=gid, game_name=gname,
                 sentiment=SentimentEnum.negative,
@@ -268,8 +289,8 @@ class TestCacheTTL:
             call_count["n"] += 1
             return "Prestige grind is too long."
 
-        with patch("services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
-                   side_effect=lambda **kw: _stub(**kw)):
+        with patch("services.dashboard_feedback_synthesizer._extract_aspect_topics",
+                   side_effect=_aspect_fake(counter=call_count)):
             generate_feedback_summary(
                 db=db, game_id=g.id, game_name=g.name,
                 sentiment=SentimentEnum.negative,
@@ -684,12 +705,10 @@ class TestNoiseTierExcludedFromCorpus:
         # Sonar is stubbed — we only care about what corpus reaches it.
         captured_posts: list[list[str]] = []
 
-        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
-            captured_posts.append(list(cluster_posts))
-            return f"Fake synthesis about {cluster_phrase}."
+        _fake_synth = _aspect_fake(captured=captured_posts)
 
         with _patch(
-            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            "services.dashboard_feedback_synthesizer._extract_aspect_topics",
             side_effect=_fake_synth,
         ):
             out = generate_feedback_summary(
@@ -780,12 +799,10 @@ class TestNoiseTierExcludedFromCorpus:
 
         captured: list[list[str]] = []
 
-        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
-            captured.append(list(cluster_posts))
-            return "Fake."
+        _fake_synth = _aspect_fake(captured=captured)
 
         with _patch(
-            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            "services.dashboard_feedback_synthesizer._extract_aspect_topics",
             side_effect=_fake_synth,
         ):
             out = generate_feedback_summary(
@@ -911,12 +928,10 @@ class TestRedditCommentFloodDoesNotStarveSteamNative:
 
         captured: list[list[str]] = []
 
-        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
-            captured.append(list(cluster_posts))
-            return f"Fake synthesis about {cluster_phrase}."
+        _fake_synth = _aspect_fake(captured=captured)
 
         with _patch(
-            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            "services.dashboard_feedback_synthesizer._extract_aspect_topics",
             side_effect=_fake_synth,
         ):
             out = generate_feedback_summary(
@@ -1018,14 +1033,13 @@ class TestRedditCommentFloodDoesNotStarveSteamNative:
             seen_rows.append(1)
             return True
 
-        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
-            return "Fake."
+        # 2026-09-23: count the texts that reach the extractor directly.
+        def _fake_synth(game_name, sentiment, texts):
+            seen_rows.extend([1] * len(texts))
+            return []
 
         with _patch(
-            "services.dashboard_feedback_synthesizer._has_opinion_and_specificity",
-            side_effect=_accept_all,
-        ), _patch(
-            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            "services.dashboard_feedback_synthesizer._extract_aspect_topics",
             side_effect=_fake_synth,
         ):
             generate_feedback_summary(
@@ -1090,12 +1104,10 @@ class TestRedditCommentFloodDoesNotStarveSteamNative:
 
         called: list[bool] = []
 
-        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
-            called.append(True)
-            return "Fake."
+        _fake_synth = _aspect_fake(called=called)
 
         with _patch(
-            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            "services.dashboard_feedback_synthesizer._extract_aspect_topics",
             side_effect=_fake_synth,
         ):
             out = generate_feedback_summary(
@@ -1287,12 +1299,14 @@ class TestRedditTopLevelJoinsLowDensityTier:
         def _accept_all(text):
             seen.append(1); return True
 
+        # 2026-09-23: count the texts that reach the extractor directly.
+        def _count_texts(game_name, sentiment, texts):
+            seen.extend([1] * len(texts))
+            return []
+
         with _patch(
-            "services.dashboard_feedback_synthesizer._has_opinion_and_specificity",
-            side_effect=_accept_all,
-        ), _patch(
-            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
-            return_value="Fake.",
+            "services.dashboard_feedback_synthesizer._extract_aspect_topics",
+            side_effect=_count_texts,
         ):
             generate_feedback_summary(
                 db=db, game_id=g.id, game_name="v0029 Game",
@@ -1360,11 +1374,10 @@ class TestRedditTopLevelJoinsLowDensityTier:
 
         called: list[bool] = []
 
-        def _fake_synth(*, game_name, sentiment, cluster_phrase, cluster_posts):
-            called.append(True); return "Fake."
+        _fake_synth = _aspect_fake(called=called)
 
         with _patch(
-            "services.dashboard_feedback_synthesizer._synthesize_cluster_sentence",
+            "services.dashboard_feedback_synthesizer._extract_aspect_topics",
             side_effect=_fake_synth,
         ):
             out = generate_feedback_summary(
