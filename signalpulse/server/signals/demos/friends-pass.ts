@@ -6,6 +6,7 @@ import { upsertDiscoveredDemo } from "./discovery";
 import { runDemosReviewHistoryCollector } from "./runner";
 import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
+import { runPassParentActivityCollector } from "./pass-parent-activity";
 
 export const PASS_SEARCH_TERMS = ["friend's pass", "friends pass", "friend pass", "friendspass"];
 export const PASS_SEARCH_CAP = 5000;
@@ -122,7 +123,9 @@ export async function runFriendsPassPipeline(delayMs = 250) {
     const { result: discovery, eligible } = await runFriendsPassDiscovery(delayMs);
     const reviewHistory = await runDemosReviewHistoryCollector(delayMs, eligible);
     const ccu = await runDemosCcuCollector(delayMs, eligible);
+    const activity = await runPassParentActivityCollector(delayMs, eligible);
     const estimates = computeDemoWindowEstimates(undefined, eligible);
-    return { ok: !discovery.error && !reviewHistory.failed && !ccu.failed, discovery, reviewHistory, ccu, estimates };
+    return { ok: !discovery.error && !reviewHistory.failed && !ccu.failed && !activity.failed,
+      discovery, reviewHistory, ccu, activity, estimates };
   } finally { running = false; }
 }
