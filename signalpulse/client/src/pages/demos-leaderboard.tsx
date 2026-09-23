@@ -281,6 +281,11 @@ export default function DemosLeaderboard() {
           </label>
           <span>Daily refresh · separate from the download window · not conversion</span>
         </div>
+        <p className="mt-2 leading-5" data-testid="text-pass-activity-early-caveat">
+          <span className="font-medium text-foreground">Early-data caveat:</span>{" "}
+          Treat the first ratios as directional until 7-day paired history accumulates.
+          Even then, these are sampled activity comparisons, not conversion rates.
+        </p>
         <details className="mt-2" data-testid="details-pass-activity-method">
           <summary className="cursor-pointer">How this comparison works</summary>
           <p className="mt-2 leading-5">Pass CCU ÷ parent CCU, using requests launched together with no more than 10 seconds of request/receipt skew.
