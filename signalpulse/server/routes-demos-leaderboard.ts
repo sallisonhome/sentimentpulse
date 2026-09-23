@@ -30,9 +30,12 @@ import { DEMO_FEED_LIMIT, DEMO_NEW_FEED_MAX } from "./signals/demos/feeds";
 import { loadDemoReviewSummaries, type DemoReviewSummary } from "./signals/demos/review-summary";
 import { loadDemoCatalog } from "./signals/demos/catalog";
 import { HYBRID_PASS_IDS, type SkuKind } from "./signals/demos/friends-pass-identity";
+import { loadPassPlayerEstimates } from "./signals/demos/pass-player-estimates";
+import { PASS_PLAYER_EVIDENCE, type PassPlayerEvidence } from "./signals/demos/pass-player-evidence";
+import type { PassPlayerEstimate } from "../shared/pass-player-estimates";
 import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, NON_SABER_DOWNLOAD_TRIAL, demoDownloadMultiplier, demoReviewEstimate, reconcileDemoDownloads } from "./signals/demos/download-consistency";
 
-type DemoSort = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release";
+type DemoSort = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release" | "players";
 
 interface DemoLeaderboardRow {
   id: number;
@@ -66,9 +69,10 @@ interface DemoLeaderboardRow {
   actualsStale: boolean;
   actualsRefreshFailed: boolean;
   steamReviews: DemoReviewSummary | null;
+  playerEstimate: PassPlayerEstimate | null;
 }
 
-function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number, offset: number, search: string, kind: SkuKind) {
+function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number, offset: number, search: string, kind: SkuKind, playerEvidence: readonly PassPlayerEvidence[]) {
   const reviewSummaries = loadDemoReviewSummaries();
   const actualRows = rawSqlite.prepare("SELECT * FROM demo_download_actuals WHERE window=? AND source='steamworks_downloads_report'").all(window) as any[];
   const actualByAppId = new Map(actualRows.map(row => [row.steam_app_id, row]));
@@ -124,6 +128,8 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
   const ccuCurrentByDemoId = new Map(latestSnapshotRows.map((r) => [r.demo_title_id, r]));
 
   const demos = loadDemoCatalog(kind);
+  const playerEstimates = kind === "friends_pass"
+    ? loadPassPlayerEstimates(demos, window, playerEvidence) : new Map<number, PassPlayerEstimate>();
   const sourceRanks = new Map((rawSqlite.prepare(
     "SELECT demo_title_id,source_rank FROM demo_discovery_ranks WHERE feed=?"
   ).all(sort) as Array<{ demo_title_id: number; source_rank: number }>)
@@ -171,6 +177,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       releaseDateUnverified: d.availability_source === "store_download" && !d.release_date,
       reviewCountTotal: reviewSummaries.get(d.steam_app_id)?.total ?? est?.review_count_total ?? null,
       steamReviews: reviewSummaries.get(d.steam_app_id) ?? null,
+      playerEstimate: playerEstimates.get(d.id) ?? null,
       reviewDelta: est?.review_delta ?? null,
       unitsLow: null,
       unitsHigh: null,
@@ -195,6 +202,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     const value = (row: DemoLeaderboardRow): number | string | null => sort === "reviews" ? row.reviewCountTotal
       : sort === "rating" ? row.steamReviews?.positivePercent ?? null
       : sort === "downloads" ? row.unitsMid : sort === "ccu" ? row.ccuCurrent
+      : sort === "players" ? row.playerEstimate?.players ?? null
       : sort === "peak" ? row.ccuAllTimePeak : row.releaseDate;
     rows.sort((a, b) => {
       const av = value(a); const bv = value(b);
@@ -211,7 +219,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     offset: resolvedOffset, hasMore: resolvedOffset + limit < rows.length };
 }
 
-export function registerDemosLeaderboardRoutes(app: Express) {
+export function registerDemosLeaderboardRoutes(app: Express, playerEvidence: readonly PassPlayerEvidence[] = PASS_PLAYER_EVIDENCE) {
   app.get("/api/demos/leaderboard", (req, res) => {
     try {
       const window = ((req.query.window as string) || "d7") as WindowKey;
@@ -225,18 +233,19 @@ export function registerDemosLeaderboardRoutes(app: Express) {
       const kind = String(req.query.kind ?? "demo") as SkuKind;
       if (!["demo","friends_pass"].includes(kind)) return res.status(400).json({error:"invalid kind"});
       if (kind === "friends_pass" && ["top","new"].includes(sort)) return res.status(400).json({error:"Steam demo feed order is not a Friends Pass ranking"});
+      if (kind !== "friends_pass" && sort === "players") return res.status(400).json({error:"Player estimates are standalone Friends Pass only"});
       if (!Number.isSafeInteger(offset) || offset < 0) return res.status(400).json({ error: "invalid offset" });
       if (search.length > 120) return res.status(400).json({ error: "search too long" });
 
       if (!WINDOWS.includes(window)) return res.status(400).json({ error: "invalid window" });
-      if (!["top","new","reviews","rating","downloads","ccu","peak","release"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
+      if (!["top","new","reviews","rating","downloads","ccu","peak","release","players"].includes(sort)) return res.status(400).json({ error: "invalid sort" });
       if (direction !== "asc" && direction !== "desc") return res.status(400).json({ error: "invalid direction" });
 
       const catalog = loadDemoCatalog(kind);
       const genres = Array.from(new Set(catalog.flatMap(row => row.genre?.split(", ") ?? []))).sort();
       if (genre && !genres.includes(genre)) return res.status(400).json({ error: "invalid genre" });
       const { rows, asOfDate, availableCount, offset: resolvedOffset, hasMore } =
-        loadLeaderboardRows(window, sort as DemoSort, direction, genre, limit, offset, search, kind);
+        loadLeaderboardRows(window, sort as DemoSort, direction, genre, limit, offset, search, kind, playerEvidence);
       const feeds = rawSqlite.prepare(`SELECT feed,last_attempt_at AS lastAttemptAt,
         last_success_at AS lastSuccessAt,error,candidate_count AS candidateCount,
         eligible_count AS eligibleCount,total_matches AS totalMatches,
