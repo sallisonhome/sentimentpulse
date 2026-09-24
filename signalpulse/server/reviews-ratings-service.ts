@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { CriticRating, PlayerRating, RatingStatus, ReviewsRatings } from "../shared/reviews-ratings";
-import { count, exactCandidate, normalizeCritics, ratingIdentity, score, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
+import { count, exactCandidate, normalizeCritics, ratingIdentity, score, steamAppDetails, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
 
 export const OPENCRITIC_HOST = "best-opencritic-scraper-free-1000-calls.p.rapidapi.com";
 const DAY = 86400_000;
@@ -119,12 +119,12 @@ export class ReviewsRatingsService {
   }
 
   steamIdentity(appId: string) {
-    return this.cached<RatingIdentity>(`steam_identity:${appId}`, async () => {
+    // Versioned identity cache bypasses old envelope-key errors without
+    // deleting successful review/critic caches or spending extra critic quota.
+    return this.cached<RatingIdentity>(`steam_identity:v2:${appId}`, async () => {
       const raw = await this.json(`https://store.steampowered.com/api/appdetails?appids=${appId}&l=english`);
-      if (!raw || !raw[appId]) throw new Error("invalid_steam_metadata");
-      if (!raw[appId].success) return null as any;
-      const data = raw[appId].data;
-      if (String(data?.steam_appid) !== appId || typeof data?.name !== "string") throw new Error("invalid_steam_identity");
+      const data = steamAppDetails(raw, appId);
+      if (!data) return null as any;
       const release = Date.parse(data.release_date?.date ?? "");
       return {
         name: data.name,

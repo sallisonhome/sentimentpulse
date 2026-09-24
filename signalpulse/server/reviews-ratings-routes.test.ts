@@ -27,14 +27,22 @@ test("real routes and migrations: all PDP identities, public boundary, family ra
       db.prepare(`INSERT INTO store_rating_signal_daily(title_id,platform,capture_date,source_endpoint,rating_count,avg_rating,window_label,created_at)
         VALUES(?,?,?,'fixture',100,4.5,'ltd',?)`).run(id, platform, stamp, stamp);
     }
+    // Console storefront spelling can match Buying's roman-numeral label
+    // while Steam uses Arabic numerals. Both must reuse the same observations.
+    db.prepare("UPDATE console_title_igdb SET store_name=name WHERE title_id IN (101,102)").run();
     db.prepare(`INSERT INTO products(id,title,platforms,player_format,genre,release_date,steam_app_id,created_at,updated_at)
       VALUES(1,'Space Marine 2','["Steam","PS5","Xbox"]','single','Action','2024-09-09','2183900',?,?)`).run(stamp, stamp);
     db.prepare(`INSERT INTO amazon_asin_map(product_id,platform,asin,updated_at) VALUES(1,'ps5','B123456789',?)`).run(stamp);
     globalThis.fetch = (async (input: any, opts: any) => {
-      if (String(input).includes("store.steampowered.com/appreviews/2183900")) {
+      if (/store\.steampowered\.com\/appreviews\/(?:2183900|2104890)/.test(String(input))) {
         return new Response(JSON.stringify({ success: 1, query_summary: {
           total_reviews: 100, total_positive: 85, total_negative: 15, review_score_desc: "Very Positive",
         } }));
+      }
+      if (String(input).includes("api/appdetails?appids=2104890")) {
+        return new Response(JSON.stringify({ "5075720": { success: true, data: {
+          steam_appid: 2104890, name: "RoadCraft", type: "game", release_date: { date: "20 May, 2025" },
+        } } }));
       }
       if (String(input).startsWith("http://127.0.0.1:")) return realFetch(input, opts);
       throw new Error("Unexpected external fetch in isolated route test");
@@ -50,7 +58,9 @@ test("real routes and migrations: all PDP identities, public boundary, family ra
     const base = `http://127.0.0.1:${server.address().port}/api/reviews-ratings`;
     const token = jwt.sign({ sub: "qa", email: "qa@example.test", scopes: ["signalpulse"], jti: "qa" }, process.env.SABER_AUTH_JWT_SECRET!);
     const auth = { headers: { Authorization: `Bearer ${token}` } };
-    for (const suffix of ["title/100", "title/101", "steam/2183900", "family/warhammer%2040%2C000%3A%20space%20marine%202"]) {
+    for (const suffix of ["title/100", "title/101", "steam/2183900",
+      "family/warhammer%2040%2C000%3A%20space%20marine%202",
+      "family/warhammer%2040%2C000%3A%20space%20marine%20ii"]) {
       const response = await realFetch(`${base}/${suffix}`);
       assert.equal(response.status, 200, suffix);
     }
@@ -62,6 +72,8 @@ test("real routes and migrations: all PDP identities, public boundary, family ra
     assert.equal(combined.players[1].value, 4.5);
     assert.equal(combined.openCritic.status, "unconfigured");
     assert.ok(!JSON.stringify(combined).includes("api_key"));
+    const buyingFamily = await (await realFetch(`${base}/family/warhammer%2040%2C000%3A%20space%20marine%20ii`)).json();
+    assert.deepEqual(buyingFamily, combined, "Buying and individual PDPs reuse the same ratings envelope");
     for (const suffix of ["product/1", "amazon/B123456789"]) {
       assert.equal((await realFetch(`${base}/${suffix}`)).status, 401);
       const privateResponse = await realFetch(`${base}/${suffix}`, auth);
@@ -81,9 +93,23 @@ test("real routes and migrations: all PDP identities, public boundary, family ra
     assert.equal(unknownAmazon.openCritic.status, "unavailable");
     assert.equal(db.prepare("SELECT COUNT(*) n FROM window_estimates_daily").get().n, 0);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM store_rating_signal_daily").get().n, 3);
+    // Real public HTTP flow used by HMAP: cold identity, then score, then cache.
+    const cold = await (await realFetch(`${base}/steam/2104890`)).json();
+    assert.equal(cold.refreshing, true);
+    await service.settle();
+    await realFetch(`${base}/steam/2104890`);
+    await service.settle();
+    const fallback = await (await realFetch(`${base}/steam/2104890`)).json();
+    assert.equal(fallback.title, "RoadCraft");
+    assert.equal(fallback.players[0].value, 85);
+    assert.equal(fallback.players[0].url, "https://store.steampowered.com/app/2104890/#app_reviews_hash");
+    assert.equal(fallback.refreshing, false);
+    // Unrelated/low-confidence IGDB enrichment must never create family aliases.
+    db.prepare("UPDATE console_title_igdb SET name='Unrelated Game',match_confidence='low'").run();
+    assert.equal((await realFetch(`${base}/family/unrelated%20game`)).status, 404);
     // Idempotent additive schema on the same migrated database.
     registerReviewsRatingsRoutes(express());
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM review_rating_cache").get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM review_rating_cache").get().n, 3);
   } finally {
     await service?.settle();
     globalThis.fetch = realFetch;

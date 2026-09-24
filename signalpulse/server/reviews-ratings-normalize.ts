@@ -71,3 +71,20 @@ export function steamSummary(raw: any) {
     description: typeof q.review_score_desc === "string" ? q.review_score_desc : null,
   };
 }
+
+/** Verify the embedded App ID, not the response envelope's presentation key. */
+export function steamAppDetails(raw: any, appId: string) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid_steam_metadata");
+  const matches = Object.values(raw).filter((entry: any) =>
+    (entry?.success === true || entry?.success === 1) && String(entry?.data?.steam_appid) === appId) as any[];
+  const direct = raw[appId];
+  if (direct?.success === false || direct?.success === 0) {
+    if (matches.length) throw new Error("invalid_steam_identity");
+    return null;
+  }
+  if (direct && String(direct?.data?.steam_appid) !== appId) throw new Error("invalid_steam_identity");
+  if (matches.length !== 1 || typeof matches[0].data.name !== "string" || !matches[0].data.name.trim()) {
+    throw new Error("invalid_steam_identity");
+  }
+  return matches[0].data;
+}

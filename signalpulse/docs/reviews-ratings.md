@@ -25,6 +25,10 @@ SignalPulse: portfolio product, standalone CCU, individual Steam/console sales, 
 
 OpenCritic matches require a unique exact normalized title, plus a matching Steam ID when available or corroborating release dates within 370 days. Words, numbers, editions, remasters and subtitles remain meaningful. Unverified matches fail closed. Demo/pass/playtest products never inherit the parent game's critic score.
 
+Buying reuse is publisher-independent: mapped Saber and non-Saber titles read the same `platform_sku_map` identities and `store_rating_signal_daily` console observations. Family routes recognize both storefront and identity-checked IGDB spellings so existing Buying URLs resolve without changing critic search names. No additional PlayStation/Xbox fetches or sales calculations occur. Missing catalog SKUs still mean missing console coverage, not zero ratings.
+
+Steam's Buying collector stores lifetime histogram up/down totals and a five-star conversion for estimation. Those histogram totals are not substituted for the separately filtered Steam-purchase review summary displayed here. All PDPs instead share the cached summary for the exact App ID. Metadata fallback requires exactly one successful record whose embedded App ID matches; conflicting/duplicate identities are rejected even if the outer response key differs.
+
 Amazon uses the exact mapped product or the competitor's own Steam identity. A competitor pin's `parent_product_id` belongs to the tracked Saber parent and is deliberately not used as the competitor identity. Unmapped physical bundles/accessories show unavailable rather than guessing.
 
 ## Public API and cache behavior
