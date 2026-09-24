@@ -215,6 +215,7 @@ class VolumePoint(BaseModel):
     # ingestion. Default 0 so old rows and JSON payloads from before this
     # field existed deserialize cleanly.
     reddit_comment: int = 0
+    youtube_comment: int = 0
     bluesky: int = 0
     # DTF.ru (Russian-language gaming forum) — added 2026-07-27 after the
     # source itself was wired into the ingestor a day earlier. Default 0
@@ -340,6 +341,8 @@ class IngestStatusResponse(BaseModel):
     steam_review_fetched_total: int = 0
     steam_forum_health: str = "unknown"
     steam_forum_fetched_total: int = 0
+    youtube_health: str = "unknown"
+    youtube_fetched_total: int = 0
 
 
 class IngestRunResponse(BaseModel):

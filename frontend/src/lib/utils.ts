@@ -41,6 +41,7 @@ export function sourceLabel(source: string): string {
     // in Volume by Source as 'Reddit Comments' so it's obvious this is
     // comment-level engagement inheriting a parent-thread's topic match.
     reddit_comment: 'Reddit Comments',
+    youtube_comment: 'YouTube Comments',
     bluesky:       'Bluesky',
     // DTF.ru — Russian-language gaming forum. Added 2026-07-27.
     dtf:           'DTF',

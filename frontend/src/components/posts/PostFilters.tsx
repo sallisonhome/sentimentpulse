@@ -59,6 +59,7 @@ export default function PostFilters({
           <SelectItem value="reddit">Reddit</SelectItem>
           <SelectItem value="bluesky">Bluesky</SelectItem>
           <SelectItem value="dtf">DTF</SelectItem>
+          <SelectItem value="youtube_comment">YouTube Comments</SelectItem>
         </SelectContent>
       </Select>
 

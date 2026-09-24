@@ -18,6 +18,7 @@
 import type { YtDb } from "./db";
 import { YouTubeClient, quotaRemaining } from "./api";
 import { matchVideo, normalize, parseIsoDuration, isShortForm, type TitleMatchConfig } from "./relevance";
+import { matchConfigOf } from "./titles";
 
 export const LOOKUP_MAX_PAGES = 3;
 export const LOOKUP_CACHE_HOURS = 6;
@@ -88,7 +89,7 @@ export async function runLookup(db: YtDb, yt: YouTubeClient | null, rawQuery: st
   if (!yt) throw new Error("youtube_api_key is not set");
   if (quotaRemaining(db, "search", now) < 1) throw new LookupQuotaError("today's YouTube search quota is used up; it resets at midnight Pacific (03:00 ET)");
 
-  const tracked = (db.prepare("SELECT title_id, title, phrases FROM yt_titles WHERE enabled=1").all() as any[])
+  const tracked = (db.prepare("SELECT * FROM yt_titles WHERE enabled=1").all() as any[])
     .find((t) => (JSON.parse(t.phrases) as string[]).some((p) => normalize(p) === qn) || normalize(t.title) === qn);
 
   const searchQuery = `"${query}"`;
@@ -103,7 +104,8 @@ export async function runLookup(db: YtDb, yt: YouTubeClient | null, rawQuery: st
     token = r.nextPageToken;
   } while (token && pages < LOOKUP_MAX_PAGES);
 
-  const cfg = lookupConfig(query, strict);
+  const cfg = tracked ? matchConfigOf(tracked) : lookupConfig(query, strict);
+  if (strict) cfg.requireCompanion = true;
   const unique = Array.from(new Set(ids));
   const admitted: LookupVideo[] = [];
   const rejected: LookupResult["rejectedSamples"] = [];

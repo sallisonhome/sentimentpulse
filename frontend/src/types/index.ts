@@ -2,7 +2,7 @@
 
 export type Period = 'today' | 'weekly' | 'monthly' | 'quarterly' | 'lifetime'
 export type Sentiment = 'positive' | 'negative' | 'neutral'
-export type Source = 'steam_review' | 'steam_forum' | 'reddit' | 'bluesky' | 'dtf'
+export type Source = 'steam_review' | 'steam_forum' | 'reddit' | 'bluesky' | 'dtf' | 'youtube_comment'
 export type TrendDirection = 'rising' | 'falling' | 'stable'
 export type VelocityDirection = 'improving' | 'stable' | 'declining'
 
@@ -140,6 +140,7 @@ export interface VolumePoint {
   /** v0016.2 (2026-08-12): Reddit comments ingested via Arctic Shift.
    *  Older responses may omit this field, so treat as optional client-side. */
   reddit_comment?: number
+  youtube_comment?: number
   bluesky: number
   /** DTF.ru — Russian-language gaming forum. Added 2026-07-27; older
    *  responses may omit this field, so treat as optional client-side. */
@@ -319,6 +320,8 @@ export interface IngestStatus {
   steam_review_fetched_total?: number
   steam_forum_health?: SourceHealth | string
   steam_forum_fetched_total?: number
+  youtube_health?: SourceHealth | string
+  youtube_fetched_total?: number
 }
 
 export interface IngestRunResult {

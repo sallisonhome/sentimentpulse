@@ -2,12 +2,9 @@
  * YouTube Pulse — daily pipeline.
  *
  * Order (each step is budgeted so a later step can never starve retention):
- *   1. retention   — mode "unlimited" (default, owner decision 2026-09-24:
- *                    private internal tool): API data is kept indefinitely;
- *                    only the rejected-candidate cache and old tombstones are
- *                    trimmed. Mode "policy30" restores YouTube Developer
- *                    Policies III.E.4: refresh-or-delete comment text before
- *                    30 days, purge stale videos and snapshots.
+ *   1. retention   — refresh edits and exclusions; permanently retain tracked
+ *                    video records, snapshots and comment text. Only the
+ *                    rejected-search-candidate cache expires.
  *   2. discovery   — incremental search per title (newest videos), then
  *                    backwards backfill slices toward each title's floor.
  *   3. stats       — videos.list for every tracked video (50 per unit);
@@ -21,13 +18,12 @@
  */
 import type { YtDb } from "./db";
 import { YouTubeClient, QuotaExhaustedError, YouTubeApiError, quotaRemaining } from "./api";
-import { matchVideo, parseIsoDuration, isShortForm } from "./relevance";
+import { matchVideo, parseIsoDuration, isShortForm, RELEVANCE_VERSION } from "./relevance";
 import { matchConfigOf, type TitleRow } from "./titles";
 
 const DAY = 86_400_000;
 export const COMMENT_REFRESH_AFTER_DAYS = 27;
-export const API_DATA_MAX_DAYS = 30;
-export const EXTENDED_STATS_MAX_DAYS = 365 * 3; // 36 months, only after YouTube approval
+export const REJECTED_CACHE_MAX_DAYS = 30;
 const SEARCH_RESERVE = 9;           // search calls left for one-off lookups (3 × 3 pages) and dry-runs
 const RETENTION_UNIT_SHARE = 0.35;  // max share of units for comment-text refresh
 const STATS_RESERVE_UNITS = 1500;   // held back for stats before comments may spend
@@ -39,17 +35,18 @@ const REPLY_MAX_PAGES = 2;
 
 export interface RunCounters {
   searchCalls: number; units: number;
+  // Legacy field names: Removed/Deleted count EXCLUSIONS, not physical erasure.
   videosDiscovered: number; videosRefreshed: number; videosRemoved: number;
   commentsSaved: number; commentsRefreshed: number; commentsDeleted: number;
   notes: string[];
 }
 
-export type RetentionMode = "unlimited" | "policy30";
+export type RetentionMode = "unlimited";
 
 export interface PipelineOptions {
-  /** Default "unlimited". "policy30" enforces the 30-day API-data rule. */
+  /** Permanent retention: no age-based deletion of tracked data. */
   retentionMode?: RetentionMode;
-  /** policy30 only: keep daily stats 36 months (derived-metrics approval). */
+  /** Legacy caller compatibility; retention no longer depends on this flag. */
   extendedStorageApproved: boolean;
   steps?: Array<"retention" | "discovery" | "stats" | "comments">;
   now?: () => Date;
@@ -62,17 +59,17 @@ function tombstone(db: YtDb, commentIds: string[], reason: string, now: Date) {
   const ins = db.prepare(`INSERT INTO yt_comment_tombstones (comment_id, title_id, reason, deleted_at)
     SELECT comment_id, title_id, ?, ? FROM yt_comments WHERE comment_id=?
     ON CONFLICT(comment_id) DO UPDATE SET reason=excluded.reason, deleted_at=excluded.deleted_at`);
-  const del = db.prepare("DELETE FROM yt_comments WHERE comment_id=?");
+  const del = db.prepare("UPDATE yt_comments SET excluded_at=? WHERE comment_id=? AND excluded_at IS NULL");
   let n = 0;
-  db.transaction(() => { for (const id of commentIds) { ins.run(reason, iso(now), id); n += del.run(id).changes; } })();
+  db.transaction(() => { for (const id of commentIds) { ins.run(reason, iso(now), id); n += del.run(iso(now), id).changes; } })();
   return n;
 }
 
 export function removeVideo(db: YtDb, videoId: string, reason: string, now: Date): number {
-  const ids = (db.prepare("SELECT comment_id FROM yt_comments WHERE video_id=?").all(videoId) as any[]).map((r) => r.comment_id);
+  const ids = (db.prepare("SELECT comment_id FROM yt_comments WHERE video_id=? AND excluded_at IS NULL").all(videoId) as any[]).map((r) => r.comment_id);
   const n = tombstone(db, ids, reason, now);
-  db.prepare("DELETE FROM yt_video_stats_daily WHERE video_id=?").run(videoId);
-  db.prepare("DELETE FROM yt_videos WHERE video_id=?").run(videoId);
+  // Historical rows and snapshots are permanent. Exclusion is not erasure.
+  db.prepare("UPDATE yt_videos SET excluded_at=?, exclusion_reason=? WHERE video_id=?").run(iso(now), reason, videoId);
   return n;
 }
 
@@ -81,19 +78,18 @@ export function removeVideo(db: YtDb, videoId: string, reason: string, now: Date
 export async function runRetention(db: YtDb, yt: YouTubeClient | null, c: RunCounters, opts: PipelineOptions) {
   const now = (opts.now ?? (() => new Date()))();
   const refreshBefore = iso(new Date(now.getTime() - COMMENT_REFRESH_AFTER_DAYS * DAY));
-  const hardBefore = iso(new Date(now.getTime() - API_DATA_MAX_DAYS * DAY));
+  const hardBefore = iso(new Date(now.getTime() - REJECTED_CACHE_MAX_DAYS * DAY));
 
   // Caches that are not "data" in the user-facing sense are trimmed in every mode.
   const trimCaches = () => {
     db.prepare("DELETE FROM yt_rejected_videos WHERE seen_at < ?").run(hardBefore); // re-judge rejects monthly
-    db.prepare("DELETE FROM yt_comment_tombstones WHERE deleted_at < ?").run(iso(new Date(now.getTime() - 45 * DAY)));
+    // Keep deletion events until consumers have acknowledged them. Age-only
+    // deletion could resurrect stale comments after a long consumer outage.
   };
-  if ((opts.retentionMode ?? "unlimited") === "unlimited") { trimCaches(); return; }
-
-  // a) refresh comment text that is approaching 30 days old
+  // Refresh older comment text on a rolling basis, without an expiry deadline.
   if (yt) {
     const budget = Math.floor(quotaRemaining(db, "units") * RETENTION_UNIT_SHARE);
-    const due = (db.prepare("SELECT comment_id FROM yt_comments WHERE fetched_at < ? ORDER BY fetched_at LIMIT ?")
+    const due = (db.prepare("SELECT comment_id FROM yt_comments WHERE excluded_at IS NULL AND fetched_at < ? ORDER BY fetched_at LIMIT ?")
       .all(refreshBefore, budget * 50) as any[]).map((r) => r.comment_id as string);
     const upd = db.prepare("UPDATE yt_comments SET text=?, like_count=?, updated_at=?, author_channel_id=?, fetched_at=? WHERE comment_id=?");
     for (let i = 0; i < due.length; i += 50) {
@@ -116,15 +112,7 @@ export async function runRetention(db: YtDb, yt: YouTubeClient | null, c: RunCou
     }
   }
 
-  // b) hard guarantees — nothing older than 30 days survives, whatever happened above
-  const stale = (db.prepare("SELECT comment_id FROM yt_comments WHERE fetched_at < ?").all(hardBefore) as any[]).map((r) => r.comment_id);
-  c.commentsDeleted += tombstone(db, stale, "retention_30d", now);
-  for (const v of db.prepare("SELECT video_id FROM yt_videos WHERE last_refreshed_at < ?").all(hardBefore) as any[]) {
-    c.commentsDeleted += removeVideo(db, v.video_id, "video_not_refreshed_30d", now);
-    c.videosRemoved++;
-  }
-  const statsDays = opts.extendedStorageApproved ? EXTENDED_STATS_MAX_DAYS : API_DATA_MAX_DAYS;
-  db.prepare("DELETE FROM yt_video_stats_daily WHERE date < ?").run(iso(new Date(now.getTime() - statsDays * DAY)).slice(0, 10));
+  // No automatic age-based erasure of videos, snapshots or comment text.
   trimCaches();
 }
 
@@ -187,6 +175,7 @@ function upsertVideoFromItem(db: YtDb, titleId: number, it: any, now: Date, extr
       thumbnail_url=excluded.thumbnail_url, view_count=excluded.view_count, like_count=excluded.like_count,
       comment_count=excluded.comment_count, comments_disabled=excluded.comments_disabled,
       last_refreshed_at=excluded.last_refreshed_at`).run(row);
+  db.prepare("UPDATE yt_videos SET relevance_version=?, excluded_at=NULL, exclusion_reason=NULL WHERE video_id=?").run(RELEVANCE_VERSION, it.id);
   db.prepare(`INSERT INTO yt_video_stats_daily (video_id, date, view_count, like_count, comment_count) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(video_id, date) DO UPDATE SET view_count=excluded.view_count, like_count=excluded.like_count, comment_count=excluded.comment_count`)
     .run(it.id, iso(now).slice(0, 10), row.view_count, row.like_count, row.comment_count);
@@ -194,7 +183,7 @@ function upsertVideoFromItem(db: YtDb, titleId: number, it: any, now: Date, extr
 
 async function admitCandidates(db: YtDb, yt: YouTubeClient, t: TitleRow, ids: string[], via: string, c: RunCounters, now: Date) {
   const known = new Set<string>();
-  const knownStmt = db.prepare("SELECT 1 FROM yt_videos WHERE video_id=? UNION ALL SELECT 1 FROM yt_rejected_videos WHERE video_id=? AND title_id=?");
+  const knownStmt = db.prepare("SELECT 1 FROM yt_videos WHERE video_id=? AND excluded_at IS NULL UNION ALL SELECT 1 FROM yt_rejected_videos WHERE video_id=? AND title_id=?");
   for (const id of ids) if (knownStmt.get(id, id, t.title_id)) known.add(id);
   const fresh = Array.from(new Set(ids.filter((id) => !known.has(id))));
   if (!fresh.length) return;
@@ -211,7 +200,7 @@ async function admitCandidates(db: YtDb, yt: YouTubeClient, t: TitleRow, ids: st
 
 export async function runDiscovery(db: YtDb, yt: YouTubeClient, c: RunCounters, opts: PipelineOptions) {
   const now = (opts.now ?? (() => new Date()))();
-  const titles = db.prepare("SELECT * FROM yt_titles WHERE enabled=1 ORDER BY title_id").all() as TitleRow[];
+  const titles = db.prepare("SELECT * FROM yt_titles WHERE enabled=1 ORDER BY COALESCE(last_incremental_at,''), title_id").all() as TitleRow[];
   const hasSearch = () => quotaRemaining(db, "search") > SEARCH_RESERVE;
 
   // a) incremental: everything published since the last successful search (2-day overlap)
@@ -267,8 +256,8 @@ export async function runStatsRefresh(db: YtDb, yt: YouTubeClient, c: RunCounter
   const today = iso(now).slice(0, 10);
   const titles = new Map((db.prepare("SELECT * FROM yt_titles").all() as TitleRow[]).map((t) => [t.title_id, t]));
   // Oldest-refreshed first, skipping videos already refreshed today (discovery wrote them).
-  const rows = db.prepare("SELECT video_id, title_id FROM yt_videos WHERE substr(last_refreshed_at,1,10) < ? ORDER BY last_refreshed_at")
-    .all(today) as Array<{ video_id: string; title_id: number }>;
+  const rows = db.prepare("SELECT video_id, title_id FROM yt_videos WHERE excluded_at IS NULL AND (substr(last_refreshed_at,1,10) < ? OR relevance_version < ?) ORDER BY relevance_version, last_refreshed_at")
+    .all(today, RELEVANCE_VERSION) as Array<{ video_id: string; title_id: number }>;
   for (let i = 0; i < rows.length; i += 50) {
     const batch = rows.slice(i, i + 50);
     let res: any;
@@ -301,7 +290,8 @@ function saveComment(db: YtDb, videoId: string, titleId: number, parentId: strin
   const r = db.prepare(`INSERT INTO yt_comments (comment_id, video_id, title_id, parent_id, author_channel_id, text,
       like_count, published_at, updated_at, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(comment_id) DO UPDATE SET text=excluded.text, like_count=excluded.like_count,
-      updated_at=excluded.updated_at, fetched_at=excluded.fetched_at`)
+      updated_at=excluded.updated_at, author_channel_id=excluded.author_channel_id,
+      fetched_at=excluded.fetched_at, excluded_at=NULL`)
     .run(cm.id, videoId, titleId, parentId, s.authorChannelId?.value ?? null, s.textOriginal ?? s.textDisplay ?? "",
       s.likeCount ?? null, s.publishedAt ?? iso(now), s.updatedAt ?? null, iso(now));
   return r.changes > 0;
@@ -314,20 +304,24 @@ async function saveThreadPage(db: YtDb, yt: YouTubeClient, v: any, res: any, c: 
     const top = th.snippet?.topLevelComment;
     if (!top) continue;
     const pub = top.snippet?.publishedAt ?? "";
-    if (stopAt && pub <= stopAt) { reachedKnown = true; continue; }
+    if (stopAt && pub <= stopAt) reachedKnown = true;
     if (!newest || pub > newest) newest = pub;
     if (saveComment(db, v.video_id, v.title_id, null, top, now)) c.commentsSaved++;
     const inline = th.replies?.comments ?? [];
     for (const r of inline) if (saveComment(db, v.video_id, v.title_id, top.id, r, now)) c.commentsSaved++;
     const total = th.snippet?.totalReplyCount ?? 0;
     if (total > inline.length && quotaRemaining(db, "units") > STATS_RESERVE_UNITS) {
-      let token: string | undefined; let pages = 0;
+      let token: string | undefined = (db.prepare("SELECT page_token FROM yt_reply_cursors WHERE parent_id=?").get(top.id) as any)?.page_token ?? undefined;
+      let pages = 0;
       do {
         const rr = await yt.commentsByParent({ parentId: top.id, pageToken: token });
         pages++;
         for (const r of rr.items ?? []) if (saveComment(db, v.video_id, v.title_id, top.id, r, now)) c.commentsSaved++;
         token = rr.nextPageToken;
       } while (token && pages < REPLY_MAX_PAGES);
+      db.prepare("INSERT INTO yt_reply_cursors(parent_id,page_token) VALUES(?,?) ON CONFLICT(parent_id) DO UPDATE SET page_token=excluded.page_token")
+        .run(top.id, token ?? null);
+      if (token) c.notes.push(`reply backlog for ${top.id}: continuation saved`);
     }
   }
   return { newest, reachedKnown };
@@ -336,14 +330,16 @@ async function saveThreadPage(db: YtDb, yt: YouTubeClient, v: any, res: any, c: 
 export async function runComments(db: YtDb, yt: YouTubeClient, c: RunCounters, opts: PipelineOptions) {
   const now = (opts.now ?? (() => new Date()))();
   const spendable = () => quotaRemaining(db, "units") > STATS_RESERVE_UNITS;
-  // New comments first: largest growth since last poll, never-polled videos by comment count.
-  const vids = db.prepare(`SELECT * FROM yt_videos WHERE comments_disabled=0 AND COALESCE(comment_count,0) > 0
-      AND (comments_count_at_poll IS NULL OR comment_count > comments_count_at_poll)
-    ORDER BY (comment_count - COALESCE(comments_count_at_poll,0)) DESC`).all() as any[];
+  // Poll daily even when the total is unchanged: one deletion plus one new
+  // comment leaves the same total. Oldest-polled first prevents starvation.
+  const vids = db.prepare(`SELECT * FROM yt_videos WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND comments_disabled=0 AND COALESCE(comment_count,0) > 0
+      AND (comments_polled_at IS NULL OR substr(comments_polled_at,1,10) < ? OR comments_incremental_token IS NOT NULL)
+    ORDER BY COALESCE(comments_polled_at,''), title_id, video_id`).all(iso(now).slice(0, 10)) as any[];
   for (const v of vids) {
     if (!spendable()) { c.notes.push("units reserve reached during comment collection"); return; }
     try {
-      let token: string | undefined; let pages = 0; let newestSeen: string | null = null; let stop = false;
+      let token: string | undefined = v.comments_incremental_token ?? undefined;
+      let pages = 0; let newestSeen: string | null = v.comments_incremental_newest; let stop = false;
       do {
         const res = await yt.commentThreads({ videoId: v.video_id, pageToken: token });
         pages++;
@@ -353,25 +349,33 @@ export async function runComments(db: YtDb, yt: YouTubeClient, c: RunCounters, o
         stop = r.reachedKnown;
       } while (token && !stop && pages < COMMENT_NEW_MAX_PAGES && spendable());
       const firstPoll = !v.comments_newest_at;
-      if (!firstPoll && token && !stop) c.notes.push(`${v.video_id}: >${COMMENT_NEW_MAX_PAGES} pages of new comments; older part of the gap not collected`);
+      const gapPending = !firstPoll && !!token && !stop;
+      if (gapPending) c.notes.push(`${v.video_id}: new-comment continuation saved`);
       db.prepare(`UPDATE yt_videos SET comments_newest_at=COALESCE(?, comments_newest_at), comments_polled_at=?,
           comments_count_at_poll=comment_count,
+          comments_incremental_token=?, comments_incremental_newest=?,
           comments_backfill_token=CASE WHEN ? THEN ? ELSE comments_backfill_token END,
           comments_backfill_done=CASE WHEN ? THEN ? ELSE comments_backfill_done END WHERE video_id=?`)
-        .run(newestSeen, iso(now), firstPoll ? 1 : 0, token ?? null, firstPoll ? 1 : 0, token ? 0 : 1, v.video_id);
+        .run(gapPending ? null : newestSeen, iso(now), gapPending ? token : null, gapPending ? newestSeen : null,
+          firstPoll ? 1 : 0, token ?? null, firstPoll ? 1 : 0, token ? 0 : 1, v.video_id);
     } catch (e) {
       if (e instanceof QuotaExhaustedError) return;
-      if (e instanceof YouTubeApiError && (e.reason === "commentsDisabled" || e.status === 403)) {
+      if (e instanceof YouTubeApiError && e.reason === "commentsDisabled") {
         db.prepare("UPDATE yt_videos SET comments_disabled=1, comments_polled_at=? WHERE video_id=?").run(iso(now), v.video_id);
         continue;
       }
-      if (e instanceof YouTubeApiError && e.status === 404) continue; // removed; stats refresh will purge
+      if (e instanceof YouTubeApiError && e.status === 404) continue; // stats pass will archive
+      if (e instanceof YouTubeApiError && e.status === 400 && v.comments_incremental_token) {
+        db.prepare("UPDATE yt_videos SET comments_incremental_token=NULL, comments_incremental_newest=NULL WHERE video_id=?").run(v.video_id);
+      }
       c.notes.push(`comments ${v.video_id}: ${(e as Error).message}`);
     }
   }
-  // Then older comments on videos whose first poll did not reach the end.
-  const back = db.prepare(`SELECT * FROM yt_videos WHERE comments_disabled=0 AND comments_backfill_done=0
-      AND comments_backfill_token IS NOT NULL ORDER BY view_count DESC`).all() as any[];
+  // Rotate through older threads too: new replies can land under old comments.
+  // Reset a completed sweep, otherwise continue its durable page token.
+  const back = db.prepare(`SELECT * FROM yt_videos WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION}
+      AND comments_disabled=0 AND COALESCE(comment_count,0)>0
+      ORDER BY COALESCE(comments_backfill_polled_at,''),title_id,video_id`).all() as any[];
   for (const v of back) {
     if (!spendable()) return;
     try {
@@ -386,9 +390,13 @@ export async function runComments(db: YtDb, yt: YouTubeClient, c: RunCounters, o
         .run(token ?? null, token ? 0 : 1, v.video_id);
     } catch (e) {
       if (e instanceof QuotaExhaustedError) return;
-      // Expired/invalid page tokens: stop backfilling this video rather than retrying forever.
-      db.prepare("UPDATE yt_videos SET comments_backfill_token=NULL, comments_backfill_done=1 WHERE video_id=?").run(v.video_id);
+      // A transient failure must not skip the remaining history.
+      if (e instanceof YouTubeApiError && e.status === 400) {
+        db.prepare("UPDATE yt_videos SET comments_backfill_token=NULL, comments_backfill_done=0 WHERE video_id=?").run(v.video_id);
+      }
       c.notes.push(`comment backfill ${v.video_id}: ${(e as Error).message}`);
+    } finally {
+      db.prepare("UPDATE yt_videos SET comments_backfill_polled_at=? WHERE video_id=?").run(iso(now), v.video_id);
     }
   }
 }
@@ -408,7 +416,7 @@ export async function runYoutubePipeline(db: YtDb, apiKey: string | null, trigge
   let status = "success";
   const yt = apiKey ? new YouTubeClient(db, apiKey) : null;
   try {
-    if (steps.includes("retention")) await runRetention(db, yt, c, opts); // hard purges run even without a key
+    if (steps.includes("retention")) await runRetention(db, yt, c, opts);
     if (!yt) { status = "skipped"; c.notes.push("youtube_api_key is not set; only retention ran"); }
     else {
       if (steps.includes("discovery")) await runDiscovery(db, yt, c, opts);

@@ -17,9 +17,8 @@
  *   GET  /api/youtube/ops/comments-feed?since=ISO&cursor=…&limit=…&steamAppId=…
  *        Comment feed for SentimentPulse: comments whose text was fetched or
  *        refreshed after `since`, plus tombstones for comments deleted since.
- *        Consumers must apply tombstones (comments removed on YouTube). In
- *        retention mode "policy30" they must also drop comment text 30 days
- *        after `fetchedAt`; the default mode "unlimited" has no age limit.
+ *        Consumers apply tombstones as exclusions, retaining raw text for
+ *        audit. No age-based expiry applies to tracked data.
  */
 import type { Express, Request, Response } from "express";
 import { storage } from "./storage";
@@ -31,15 +30,18 @@ import { syncTitles, buildTitleSources, type TitleRow, type SentimentPulseGameLi
 import { listSentimentPulseGames, listCompetitorsForParent } from "./sentimentpulse-client";
 import { log } from "./log";
 import { runLookup, LookupQuotaError } from "./youtube/lookup";
+import { readCommentFeed } from "./youtube/feed";
+import { readYoutubeSeries, SeriesInputError, SeriesNotFoundError } from "./youtube/series";
+import { youtubeSeriesCsv } from "../shared/youtube-series";
 
 export function youtubeApiKey(): string | null {
   const v = storage.getSetting("youtube_api_key")?.value?.trim();
   return v || process.env.YOUTUBE_API_KEY?.trim() || null;
 }
 
-/** "unlimited" (default) keeps API data indefinitely; "policy30" enforces the 30-day rule. */
+/** Owner-requested permanent retention; legacy policy30 settings cannot purge data. */
 export function youtubeRetentionMode(): RetentionMode {
-  return storage.getSetting("youtube_retention_mode")?.value === "policy30" ? "policy30" : "unlimited";
+  return "unlimited";
 }
 
 export function extendedStorageApproved(): boolean {
@@ -89,6 +91,25 @@ function pick<T extends string>(v: unknown, allowed: readonly T[], dflt: T): T {
 }
 
 export function registerYoutubeRoutes(app: Express) {
+  for (const suffix of ["timeseries", "timeseries.csv"]) {
+    app.get(`/api/youtube/titles/:titleId/${suffix}`, (req: Request, res: Response) => {
+      try {
+        const str = (key: string) => typeof req.query[key] === "string" ? req.query[key] as string : undefined;
+        const data = readYoutubeSeries(ytDb(), Number(req.params.titleId), {
+          start: str("start"), end: str("end"), bucket: str("bucket"),
+          includeArchived: req.query.includeArchived === "1",
+        });
+        if (suffix.endsWith(".csv")) {
+          res.setHeader("Content-Disposition", `attachment; filename="youtube-${data.titleId}-${data.start}-${data.end}-${data.bucket}.csv"`);
+          return res.type("text/csv; charset=utf-8").send(youtubeSeriesCsv(data));
+        }
+        res.json(data);
+      } catch (e) {
+        res.status(e instanceof SeriesInputError ? 400 : e instanceof SeriesNotFoundError ? 404 : 500)
+          .json({ error: (e as Error).message });
+      }
+    });
+  }
   app.get("/api/youtube/leaderboard", async (req: Request, res: Response) => {
     try {
       await syncYoutubeTitles().catch(() => undefined);
@@ -199,40 +220,18 @@ export function registerYoutubeRoutes(app: Express) {
   });
 
   app.get("/api/youtube/ops/comments-feed", (req: Request, res: Response) => {
-    const db = ytDb();
-    const since = typeof req.query.since === "string" && !Number.isNaN(Date.parse(req.query.since)) ? new Date(req.query.since).toISOString() : "1970-01-01T00:00:00.000Z";
-    const cursor = typeof req.query.cursor === "string" ? req.query.cursor : "";
-    const limit = Math.min(2000, Math.max(1, Number(req.query.limit) || 500));
-    const steamAppId = typeof req.query.steamAppId === "string" ? req.query.steamAppId : null;
-    // Keyset pagination on (fetched_at, comment_id); cursor = "<fetched_at>|<comment_id>".
-    const [cFetched, cId] = cursor.includes("|") ? cursor.split("|") : [since, ""];
-    const rows = db.prepare(`SELECT c.comment_id, c.video_id, c.parent_id, c.author_channel_id, c.text, c.like_count,
-        c.published_at, c.updated_at, c.fetched_at, v.title AS video_title, v.channel_title, v.published_at AS video_published_at,
-        t.title_id, t.title AS product_title, t.steam_app_id
-      FROM yt_comments c JOIN yt_videos v ON v.video_id=c.video_id JOIN yt_titles t ON t.title_id=c.title_id
-      WHERE (c.fetched_at > ? OR (c.fetched_at = ? AND c.comment_id > ?))
-        AND (? IS NULL OR t.steam_app_id = ?)
-      ORDER BY c.fetched_at, c.comment_id LIMIT ?`).all(cFetched, cFetched, cId, steamAppId, steamAppId, limit) as any[];
-    const tombstones = cursor ? [] : db.prepare(`SELECT tb.comment_id, tb.reason, tb.deleted_at, t.steam_app_id FROM yt_comment_tombstones tb
-        LEFT JOIN yt_titles t ON t.title_id=tb.title_id
-      WHERE tb.deleted_at > ? AND (? IS NULL OR t.steam_app_id = ?) ORDER BY tb.deleted_at`).all(since, steamAppId, steamAppId);
-    const last = rows[rows.length - 1];
-    res.json({
-      source: "youtube_comment",
-      since,
-      retention: youtubeRetentionMode() === "policy30"
-        ? { mode: "policy30", maxTextAgeDays: 30, basis: "fetchedAt", policy: "https://developers.google.com/youtube/terms/developer-policies" }
-        : { mode: "unlimited", maxTextAgeDays: null },
-      comments: rows.map((r) => ({
-        commentId: r.comment_id,
-        url: `https://www.youtube.com/watch?v=${r.video_id}&lc=${r.comment_id}`,
-        videoId: r.video_id, videoTitle: r.video_title, channelTitle: r.channel_title, videoPublishedAt: r.video_published_at,
-        parentId: r.parent_id, authorChannelId: r.author_channel_id, text: r.text, likeCount: r.like_count,
-        publishedAt: r.published_at, updatedAt: r.updated_at, fetchedAt: r.fetched_at,
-        titleId: r.title_id, productTitle: r.product_title, steamAppId: r.steam_app_id,
-      })),
-      tombstones,
-      nextCursor: rows.length === limit && last ? `${last.fetched_at}|${last.comment_id}` : null,
-    });
+    if (isYoutubeRunActive()) return res.status(409).json({ error: "YouTube collection is running; retry after it finishes" });
+    const str = (key: string) => typeof req.query[key] === "string" ? req.query[key] as string : undefined;
+    try {
+      res.json({
+        ...readCommentFeed(ytDb(), {
+          since: str("since"), until: str("until"), cursor: str("cursor"),
+          deletedSince: str("deletedSince"), steamAppId: str("steamAppId"), limit: Number(req.query.limit),
+        }),
+        retention: { mode: "unlimited", maxTextAgeDays: null },
+      });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
   });
 }

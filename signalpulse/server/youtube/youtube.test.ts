@@ -1,18 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { openYoutubeDb, type YtDb } from "./db";
-import { matchVideo, parseIsoDuration, isShortForm } from "./relevance";
+import { matchVideo, parseIsoDuration, isShortForm, RELEVANCE_VERSION } from "./relevance";
+import { readCommentFeed } from "./feed";
 import { computeCohortLeaderboard, windowStart, listTitleVideos } from "./cohort";
-import { runRetention, type RunCounters } from "./pipeline";
+import { runRetention, removeVideo, runComments, type RunCounters } from "./pipeline";
 import { scheduledRunDue } from "./cron";
 import { syncTitles, backfillFloor, TITLE_SEEDS, seedFor, buildTitleSources, specificityExcludes, cleanTitleName, matchConfigOf, type ProductLite, type SentimentPulseGameLite } from "./titles";
 import { aggregateLookup, runLookup, lookupConfig } from "./lookup";
+import { readYoutubeSeries, SeriesInputError } from "./series";
+import { youtubeSeriesCsv } from "../../shared/youtube-series";
 
 const src = (products: ProductLite[], games: SentimentPulseGameLite[] | null = [], comp = new Map<number, number>()) => buildTitleSources(products, games, comp);
 
 const cfg = (steam: string) => {
   const s = TITLE_SEEDS[steam];
-  return { phrases: s.phrases, excludeTerms: s.excludeTerms ?? [], requireCompanion: !!s.requireCompanion };
+  return { phrases: s.phrases, excludeTerms: s.excludeTerms ?? [], requiredTerms: s.requiredTerms, requireCompanion: !!s.requireCompanion };
 };
 const counters = (): RunCounters => ({ searchCalls: 0, units: 0, videosDiscovered: 0, videosRefreshed: 0, videosRemoved: 0, commentsSaved: 0, commentsRefreshed: 0, commentsDeleted: 0, notes: [] });
 const DAY = 86_400_000;
@@ -31,7 +34,58 @@ function addVideo(db: YtDb, v: Partial<Record<string, any>> & { video_id: string
     comment_count, is_short_form, comments_disabled, match_reason, discovered_via, first_seen_at, last_refreshed_at)
     VALUES (@video_id, @title_id, @title, @channel_title, @published_at, @view_count, @like_count, @comment_count,
     @is_short_form, @comments_disabled, @match_reason, @discovered_via, @first_seen_at, @last_refreshed_at)`).run(row);
+  db.prepare("UPDATE yt_videos SET relevance_version=? WHERE video_id=?").run(RELEVANCE_VERSION, v.video_id);
 }
+
+test("title time series separates publications, stored comments, snapshots and same-video velocity", () => {
+  const db = freshDb();
+  syncTitles(db, src([{ id: 1, title: "=Formula Game", steamAppId: "123", releaseDate: null }]));
+  addVideo(db, { video_id: "old", title_id: 123, published_at: "2026-09-20T12:00:00Z" });
+  addVideo(db, { video_id: "new", title_id: 123, published_at: "2026-09-22T12:00:00Z", is_short_form: 1 });
+  db.prepare("INSERT INTO yt_comments(comment_id,video_id,title_id,text,published_at,fetched_at) VALUES('c','old',123,'kept','2026-09-22T15:00:00Z','2026-09-24T00:00:00Z')").run();
+  const snap = db.prepare("INSERT INTO yt_video_stats_daily(video_id,date,view_count,like_count,comment_count) VALUES(?,?,?,?,?)");
+  snap.run("old", "2026-09-21", 100, 10, 5);
+  snap.run("old", "2026-09-22", 130, 12, 4); // correction can be negative
+  snap.run("new", "2026-09-22", 1000, 100, 20); // no prior, never counted as velocity
+  const s = readYoutubeSeries(db, 123, { start: "2026-09-21", end: "2026-09-23", bucket: "day" }, new Date("2026-09-24T00:00:00Z"));
+  assert.equal(s.rows[1].publishedVideos, 1);
+  assert.equal(s.rows[1].shortFormVideos, 1);
+  assert.equal(s.rows[1].collectedComments, 1);
+  assert.equal(s.rows[1].snapshotViews, 1130);
+  assert.equal(s.rows[1].netViews, 30);
+  assert.equal(s.rows[1].netComments, -1);
+  assert.equal(s.rows[2].snapshotViews, null);
+  assert.equal(s.rows[2].netViews, null);
+  const csv = youtubeSeriesCsv(s);
+  assert.match(csv, /^\uFEFFtitle_id,/);
+  assert.match(csv, /'=Formula Game/); // formula injection neutralized
+  assert.match(csv, /,"-1"\r\n/); // numeric correction remains signed, not formula escaped
+});
+
+test("title time series validates dates and aggregated velocity refuses partial buckets", () => {
+  const db = freshDb();
+  syncTitles(db, src([{ id: 1, title: "Game", steamAppId: "123", releaseDate: null }]));
+  addVideo(db, { video_id: "v", title_id: 123, published_at: "2026-09-01T00:00:00Z" });
+  const snap = db.prepare("INSERT INTO yt_video_stats_daily(video_id,date,view_count,like_count,comment_count) VALUES(?,?,?,?,?)");
+  snap.run("v", "2026-09-21", 1, 1, 1); snap.run("v", "2026-09-22", 2, 2, 2);
+  const weekly = readYoutubeSeries(db, 123, { start: "2026-09-21", end: "2026-09-23", bucket: "week" }, new Date("2026-09-24T00:00:00Z"));
+  assert.equal(weekly.rows[0].netViews, null);
+  assert.throws(() => readYoutubeSeries(db, 123, { start: "2026-09-24", end: "2026-09-21" }), SeriesInputError);
+  assert.throws(() => readYoutubeSeries(db, 123, { start: "2026-09-21", end: "2026-09-25" }, new Date("2026-09-24T00:00:00Z")), /future/);
+  assert.throws(() => readYoutubeSeries(db, 123, { start: "2026-02-30", end: "2026-09-24" }), /valid/);
+  assert.throws(() => readYoutubeSeries(db, 123, { bucket: "year" }), /Bucket/);
+  assert.throws(() => readYoutubeSeries(db, 999, {}), /not found/);
+  const complete = readYoutubeSeries(db, 123, { start: "2026-09-22", end: "2026-09-22", bucket: "month" });
+  assert.equal(complete.rows[0].netViews, 1);
+  assert.equal(complete.rows[0].snapshotViews, 2);
+  removeVideo(db, "v", "no_longer_matches", new Date("2026-09-24T00:00:00Z"));
+  const hidden = readYoutubeSeries(db, 123, { start: "2026-09-01", end: "2026-09-24" });
+  assert.equal(hidden.rows.reduce((n, r) => n + r.publishedVideos, 0), 0);
+  assert.equal(hidden.archivedVideos, 1);
+  const archived = readYoutubeSeries(db, 123, { start: "2026-09-01", end: "2026-09-24", includeArchived: true });
+  assert.equal(archived.rows.reduce((n, r) => n + r.publishedVideos, 0), 1);
+  assert.equal(archived.rows.find(r => r.date === "2026-09-22")!.snapshotViews, 2);
+});
 
 // ─── relevance ───────────────────────────────────────────────────────────────
 
@@ -44,7 +98,7 @@ test("relevance: phrase must be in the video title, hashtags count for long phra
 
 test("relevance: ambiguous titles need Gaming category AND a game term; excludes reject", () => {
   const jw = cfg("2947860");
-  assert.equal(matchVideo(jw, { title: "John Wick game reveal trailer", categoryId: "20" }).admit, true);
+  assert.equal(matchVideo(jw, { title: "John Wick game reveal trailer", description: "Saber Interactive official game", categoryId: "20" }).admit, true);
   assert.equal(matchVideo(jw, { title: "John Wick game reveal trailer", categoryId: "24" }).admit, false);
   assert.equal(matchVideo(jw, { title: "John Wick Chapter 4 ending explained", categoryId: "20" }).admit, false);
   assert.equal(matchVideo(jw, { title: "John Wick movie trailer breakdown game", categoryId: "20" }).admit, false);
@@ -82,6 +136,87 @@ test("durations: ISO parsing and short-form (<=180s, never live)", () => {
 });
 
 // ─── titles ──────────────────────────────────────────────────────────────────
+
+test("relevance regressions: other-game comparisons, docked hardware and substring matches", () => {
+  const jw = cfg("2947860"), docked = cfg("2487300"), rk = cfg("2141130");
+  for (const title of [
+    "BLACKWOOD - Part 1 - The Beginning (John Wick Simulator)",
+    "This Is Basically John Wick in a Cyberpunk World! | SPINE",
+    "I am the John Wick of BF6 #battlefield6",
+    "John Wick game reveal trailer", // without Saber identity, uncertain
+  ]) assert.equal(matchVideo(jw, { title, categoryId: "20" }).admit, false, title);
+  assert.equal(matchVideo(jw, { title: "Saber's John Wick game reveal trailer", categoryId: "20" }).admit, true);
+  for (const title of [
+    "This game lets you play chess docked to a corner of your screen",
+    "Call of Duty Beta #NintendoSwitch2 Gameplay (Docked)",
+    "Yaka Gaming docked",
+  ]) assert.equal(matchVideo(docked, { title, categoryId: "20" }).admit, false, title);
+  assert.equal(matchVideo(docked, { title: "Docked port management gameplay", categoryId: "20" }).admit, true);
+  assert.equal(matchVideo(rk, { title: 'Day 006: "The Off-road Kings" DayZ gameplay', categoryId: "20" }).admit, false);
+  assert.equal(matchVideo(cfg("2183900"), { title: "#notspacemarine2 gameplay", categoryId: "20" }).admit, false);
+  assert.equal(matchVideo(cfg("2183900"), { title: "#spacemarine2 gameplay", categoryId: "20" }).admit, true);
+});
+
+test("feed: verified-only, stable snapshots, tied timestamps, deletion-only resumes", () => {
+  const db = freshDb();
+  const at = "2026-09-24T12:00:00.000Z", snapshot = "2026-09-24T13:00:00.000Z";
+  syncTitles(db, src([{ id: 1, title: "Game", steamAppId: "123", releaseDate: null }]));
+  addVideo(db, { video_id: "v", title_id: 123, published_at: at });
+  addVideo(db, { video_id: "unverified", title_id: 123, published_at: at });
+  db.prepare("UPDATE yt_videos SET relevance_version=0 WHERE video_id='unverified'").run();
+  for (const [id, video, fetched] of [["a", "v", at], ["b", "v", at], ["c", "unverified", at], ["d", "v", "2026-09-24T14:00:00.000Z"]]) {
+    db.prepare("INSERT INTO yt_comments(comment_id,video_id,title_id,text,published_at,fetched_at) VALUES (?,?,123,'text',?,?)").run(id, video, at, fetched);
+  }
+  db.prepare("INSERT INTO yt_comment_tombstones(comment_id,title_id,reason,deleted_at) VALUES('deleted',123,'no_longer_matches',?)").run(at);
+  const first = readCommentFeed(db, { until: snapshot, limit: 1, steamAppId: "123" }, new Date("2026-09-24T15:00:00Z"));
+  assert.equal(first.comments[0].commentId, "a");
+  assert.equal(first.feedVersion, 2);
+  const second = readCommentFeed(db, { until: snapshot, limit: 1, steamAppId: "123", cursor: first.nextCursor! }, new Date("2026-09-24T15:00:00Z"));
+  assert.equal(second.comments[0].commentId, "b");
+  assert.equal(second.tombstones.length, 1);
+  const last = readCommentFeed(db, { until: snapshot, limit: 1, steamAppId: "123", cursor: second.nextCursor! }, new Date("2026-09-24T15:00:00Z"));
+  assert.equal(last.comments.length, 0);
+  assert.equal(last.nextCursor, null);
+  assert.equal(last.tombstones.length, 1);
+  assert.equal(computeCohortLeaderboard(db, "ltd")[0].videos, 1);
+  assert.throws(() => readCommentFeed(db, { cursor: "broken" }), /cursor/);
+});
+
+test("daily collection polls unchanged totals and updates replies on known threads", async () => {
+  const db = freshDb(), now = new Date("2026-09-24T12:00:00Z");
+  addVideo(db, { video_id: "v", title_id: 3, published_at: "2026-09-01T00:00:00Z", comment_count: 2 });
+  db.prepare(`UPDATE yt_videos SET comments_count_at_poll=2,comments_polled_at='2026-09-23T12:00:00Z',
+    comments_newest_at='2026-09-22T12:00:00Z',comments_backfill_done=1`).run();
+  const old = "2026-09-20T12:00:00Z";
+  let calls = 0;
+  const fake: any = {
+    commentThreads: async () => {
+      calls++;
+      return { items: [{
+        snippet: { topLevelComment: { id: "parent", snippet: { textOriginal: "edited", publishedAt: old } }, totalReplyCount: 1 },
+        replies: { comments: [{ id: "reply", snippet: { textOriginal: "new reply", publishedAt: now.toISOString() } }] },
+      }] };
+    },
+  };
+  const c = counters();
+  await runComments(db, fake, c, { extendedStorageApproved: false, now: () => now });
+  assert.ok(calls >= 1);
+  assert.equal((db.prepare("SELECT text FROM yt_comments WHERE comment_id='parent'").get() as any).text, "edited");
+  assert.equal((db.prepare("SELECT parent_id FROM yt_comments WHERE comment_id='reply'").get() as any).parent_id, "parent");
+  assert.equal((db.prepare("SELECT comments_polled_at FROM yt_videos").get() as any).comments_polled_at, now.toISOString());
+  assert.equal((db.prepare("SELECT comments_backfill_polled_at FROM yt_videos").get() as any).comments_backfill_polled_at, now.toISOString());
+});
+
+test("older thread sweeps rotate independently from new-comment polling", async () => {
+  const db = freshDb(), now = new Date("2026-09-24T12:00:00Z");
+  for (const id of ["a", "b"]) addVideo(db, { video_id: id, title_id: 3, published_at: now.toISOString(), comment_count: 1 });
+  db.prepare("UPDATE yt_videos SET comments_polled_at=?").run(now.toISOString());
+  db.prepare("UPDATE yt_videos SET comments_backfill_polled_at=? WHERE video_id='a'").run(now.toISOString());
+  const order: string[] = [];
+  const fake: any = { commentThreads: async ({ videoId }: any) => { order.push(videoId); return { items: [] }; } };
+  await runComments(db, fake, counters(), { extendedStorageApproved: false, now: () => now });
+  assert.deepEqual(order, ["b", "a"]);
+});
 
 test("titles: floor, seed fallback, manual config preserved, removed titles disabled", () => {
   assert.equal(backfillFloor("2028-11-09"), "2024-11-09");
@@ -197,7 +332,7 @@ test("cohort: window membership by publish date, sums of current stats, likes% e
 
 // ─── retention ───────────────────────────────────────────────────────────────
 
-test("retention policy30: 30-day hard purge with tombstones; stats 30d unless extended storage approved", async () => {
+test("retention: comments, videos and snapshots survive age boundaries permanently", async () => {
   const now = new Date("2026-09-24T12:00:00Z");
   const ago = (d: number) => new Date(now.getTime() - d * DAY).toISOString();
   for (const approved of [false, true]) {
@@ -215,24 +350,27 @@ test("retention policy30: 30-day hard purge with tombstones; stats 30d unless ex
     db.prepare("INSERT INTO yt_comment_tombstones (comment_id, title_id, reason, deleted_at) VALUES ('old-t', 3, 'x', ?)").run(ago(50));
 
     const c = counters();
-    await runRetention(db, null, c, { retentionMode: "policy30", extendedStorageApproved: approved, now: () => now });
+    await runRetention(db, null, c, { retentionMode: "unlimited", extendedStorageApproved: approved, now: () => now });
 
     const comments = (db.prepare("SELECT comment_id FROM yt_comments ORDER BY comment_id").all() as any[]).map((r) => r.comment_id);
-    assert.deepEqual(comments, ["c-28", "c-new"]); // 28d survives without a client (refresh needs the API); 31d purged
+    assert.deepEqual(comments, ["c-28", "c-31", "c-new", "c-stalevid"]);
     const videos = (db.prepare("SELECT video_id FROM yt_videos").all() as any[]).map((r) => r.video_id);
-    assert.deepEqual(videos, ["fresh"]);
+    assert.deepEqual(videos.sort(), ["fresh", "stale"]);
     const tomb = (db.prepare("SELECT comment_id, reason FROM yt_comment_tombstones ORDER BY comment_id").all() as any[]);
     assert.deepEqual(tomb, [
-      { comment_id: "c-31", reason: "retention_30d" },
-      { comment_id: "c-stalevid", reason: "video_not_refreshed_30d" },
+      { comment_id: "old-t", reason: "x" },
     ]);
     const statDays = (db.prepare("SELECT COUNT(*) AS n FROM yt_video_stats_daily").get() as any).n;
-    assert.equal(statDays, approved ? 3 : 1);
-    assert.equal(c.videosRemoved, 1);
+    assert.equal(statDays, 3);
+    assert.equal(c.videosRemoved, 0);
+    removeVideo(db, "fresh", "no_longer_matches", now);
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM yt_video_stats_daily").get() as any).n, 3);
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM yt_comments").get() as any).n, 4);
+    assert.equal((db.prepare("SELECT COUNT(*) n FROM yt_videos").get() as any).n, 2);
   }
 });
 
-test("retention policy30: comments older than 27 days are refreshed via the API; missing ones tombstoned", async () => {
+test("retention: edit refresh and removal exclusions never erase the stored text", async () => {
   const now = new Date("2026-09-24T12:00:00Z");
   const ago = (d: number) => new Date(now.getTime() - d * DAY).toISOString();
   const db = freshDb();
@@ -241,10 +379,11 @@ test("retention policy30: comments older than 27 days are refreshed via the API;
     VALUES (?, 'v', 3, 'old', ?, ?)`).run(id, ago(28), ago(28));
   const fake: any = { commentsById: async (ids: string[]) => ({ items: ids.filter((i) => i === "keep").map((id) => ({ id, snippet: { textOriginal: "edited", likeCount: 4 } })) }) };
   const c = counters();
-  await runRetention(db, fake, c, { retentionMode: "policy30", extendedStorageApproved: false, now: () => now });
-  const rows = db.prepare("SELECT comment_id, text, fetched_at FROM yt_comments").all() as any[];
+  await runRetention(db, fake, c, { retentionMode: "unlimited", extendedStorageApproved: false, now: () => now });
+  const rows = db.prepare("SELECT comment_id, text, fetched_at FROM yt_comments WHERE excluded_at IS NULL").all() as any[];
   assert.deepEqual(rows, [{ comment_id: "keep", text: "edited", fetched_at: now.toISOString() }]);
   assert.equal(c.commentsRefreshed, 1);
+  assert.equal((db.prepare("SELECT text FROM yt_comments WHERE comment_id='gone'").get() as any).text, "old");
   assert.equal((db.prepare("SELECT reason FROM yt_comment_tombstones WHERE comment_id='gone'").get() as any).reason, "removed_on_youtube");
 });
 
@@ -260,14 +399,14 @@ test("retention unlimited (default): nothing is purged by age, only caches are t
   let calls = 0;
   const fake: any = { commentsById: async () => { calls++; return { items: [] }; } };
   const c = counters();
-  await runRetention(db, fake, c, { extendedStorageApproved: false, now: () => now }); // mode omitted → unlimited
+  await runRetention(db, null, c, { extendedStorageApproved: false, now: () => now }); // mode omitted → unlimited
   const n = (t: string) => (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as any).n;
   assert.equal(n("yt_videos"), 1);
   assert.equal(n("yt_comments"), 1);
   assert.equal(n("yt_video_stats_daily"), 1);
   assert.equal(n("yt_rejected_videos"), 0);
-  assert.equal(n("yt_comment_tombstones"), 0);
-  assert.equal(calls, 0); // no quota spent on age-driven refresh
+  assert.equal(n("yt_comment_tombstones"), 1); // durable deletion delivery
+  assert.equal(calls, 0); // unavailable API does not cause age-only erasure
   assert.equal(c.commentsDeleted, 0);
 });
 

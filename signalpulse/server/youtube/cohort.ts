@@ -14,6 +14,7 @@
  * numerator and denominator of that ratio and counted in likesHiddenVideos.
  */
 import type { YtDb } from "./db";
+import { RELEVANCE_VERSION } from "./relevance";
 
 export const COHORT_WINDOWS = ["d1", "d7", "d30", "d90", "m12", "ltd"] as const;
 export type CohortWindow = typeof COHORT_WINDOWS[number];
@@ -70,12 +71,12 @@ export function computeCohortLeaderboard(db: YtDb, w: CohortWindow, sort: Cohort
       SUM(comments_disabled) AS comments_disabled,
       MIN(last_refreshed_at) AS stats_as_of
     FROM yt_videos
-    WHERE (? IS NULL OR published_at >= ?)
+    WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND (? IS NULL OR published_at >= ?)
     GROUP BY title_id`).all(start, start) as any[];
   const byId = new Map(agg.map((a) => [a.title_id, a]));
   const firstSeen = new Map((db.prepare("SELECT title_id, MIN(first_seen_at) AS s FROM yt_videos GROUP BY title_id").all() as any[]).map((r) => [r.title_id, r.s]));
   const topStmt = db.prepare(`SELECT video_id, title, channel_title, view_count, published_at, is_short_form FROM yt_videos
-    WHERE title_id=? AND (? IS NULL OR published_at >= ?) ORDER BY view_count DESC, published_at DESC LIMIT 1`);
+    WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND title_id=? AND (? IS NULL OR published_at >= ?) ORDER BY view_count DESC, published_at DESC LIMIT 1`);
 
   const rows: CohortRow[] = titles.map((t) => {
     const a = byId.get(t.title_id);
@@ -122,7 +123,7 @@ export function listTitleVideos(db: YtDb, titleId: number, w: CohortWindow, limi
   const start = windowStart(w, now);
   return (db.prepare(`SELECT video_id, title, channel_title, published_at, duration_s, is_short_form,
       view_count, like_count, comment_count, comments_disabled, last_refreshed_at, match_reason
-    FROM yt_videos WHERE title_id=? AND (? IS NULL OR published_at >= ?)
+    FROM yt_videos WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND title_id=? AND (? IS NULL OR published_at >= ?)
     ORDER BY view_count DESC, published_at DESC LIMIT ?`).all(titleId, start, start, limit) as any[]).map((v) => ({
     videoId: v.video_id,
     url: `https://www.youtube.com/watch?v=${v.video_id}`,

@@ -30,6 +30,7 @@ export interface TitleSeed {
   phrases: string[];
   excludeTerms?: string[];
   requireCompanion?: boolean;
+  requiredTerms?: string[];
 }
 
 // Keyed by Steam App ID (stable across product renames).
@@ -49,21 +50,26 @@ export const TITLE_SEEDS: Record<string, TitleSeed> = {
   "2947860": {
     searchQuery: '"john wick" game',
     phrases: ["john wick"],
-    excludeTerms: ["chapter 4", "chapter 5", "ballerina", "movie", "film", "box office", "hex", "the continental", "fortnite", "payday", "hitman"],
+    excludeTerms: ["chapter 4", "chapter 5", "ballerina", "movie", "film", "box office", "hex", "fortnite", "payday", "hitman",
+      "blackwood", "gunman contracts", "roblox", "gta", "gta 5", "battlefield", "bf6", "spine", "bodycam",
+      "max payne", "resident evil", "resident evil requiem", "leon kennedy", "r6", "r6siege", "vr", "simulator"],
+    requiredTerms: ["saber", "saber interactive"],
     requireCompanion: true,
   },
   "581320": { searchQuery: '"insurgency sandstorm"', phrases: ["insurgency sandstorm", "insurgency: sandstorm"] },
   "2487300": {
     searchQuery: '"docked" game',
     phrases: ["docked"],
-    excludeTerms: ["switch 2", "nintendo switch", "handheld", "steam deck", "docked mode", "docked vs", "vs docked", "dock"],
+    excludeTerms: ["switch 2", "nintendo switch", "nintendo switch 2", "handheld", "steam deck", "docked mode", "docked vs", "vs docked", "chess", "call of duty"],
+    requiredTerms: ["saber", "port", "ports", "port wake", "crane", "cranes", "cargo", "container", "containers",
+      "logistics", "contraband", "deep waters", "docks", "dockworker", "terminal"],
     requireCompanion: true,
   },
   "1465360": { searchQuery: "snowrunner", phrases: ["snowrunner", "snow runner"] },
   "1575990": { searchQuery: '"twisted tower"', phrases: ["twisted tower"], requireCompanion: true },
   "4716160": { searchQuery: '"hitman classic trilogy"', phrases: ["hitman classic trilogy"] },
   "2104890": { searchQuery: "roadcraft", phrases: ["roadcraft", "road craft"] },
-  "2141130": { searchQuery: '"road kings" game', phrases: ["road kings"], excludeTerms: ["motorcycle club", "mc", "harley"], requireCompanion: true },
+  "2141130": { searchQuery: '"road kings" game', phrases: ["road kings"], excludeTerms: ["motorcycle club", "mc", "harley", "off road kings", "dayz"], requireCompanion: true },
   "2477340": {
     searchQuery: '"expeditions" mudrunner',
     phrases: ["expeditions a mudrunner game", "expeditions: a mudrunner game", "mudrunner expeditions", "expeditions mudrunner", "expeditions a mudrunner"],
@@ -230,10 +236,10 @@ export function syncTitles(db: YtDb, sources: TitleSource[], now = new Date(), a
   const upsert = db.prepare(`
     INSERT INTO yt_titles (title_id, title, steam_app_id, is_saber, parent_title_id, sentimentpulse_game_id,
       signalpulse_product_id, title_source, search_query, phrases, exclude_terms, title_excludes,
-      require_companion, enabled, backfill_floor, config_source, updated_at)
+      required_terms, require_companion, enabled, backfill_floor, config_source, updated_at)
     VALUES (@title_id, @title, @steam_app_id, @is_saber, @parent_title_id, @sentimentpulse_game_id,
       @signalpulse_product_id, @title_source, @search_query, @phrases, @exclude_terms, @title_excludes,
-      @require_companion, 1, @backfill_floor, 'seed', @updated_at)
+      @required_terms, @require_companion, 1, @backfill_floor, 'seed', @updated_at)
     ON CONFLICT(title_id) DO UPDATE SET
       title=excluded.title, steam_app_id=excluded.steam_app_id, is_saber=excluded.is_saber,
       parent_title_id=excluded.parent_title_id, sentimentpulse_game_id=excluded.sentimentpulse_game_id,
@@ -242,6 +248,7 @@ export function syncTitles(db: YtDb, sources: TitleSource[], now = new Date(), a
       search_query=CASE WHEN yt_titles.config_source='seed' THEN excluded.search_query ELSE yt_titles.search_query END,
       phrases=CASE WHEN yt_titles.config_source='seed' THEN excluded.phrases ELSE yt_titles.phrases END,
       exclude_terms=CASE WHEN yt_titles.config_source='seed' THEN excluded.exclude_terms ELSE yt_titles.exclude_terms END,
+      required_terms=CASE WHEN yt_titles.config_source='seed' THEN excluded.required_terms ELSE yt_titles.required_terms END,
       require_companion=CASE WHEN yt_titles.config_source='seed' THEN excluded.require_companion ELSE yt_titles.require_companion END,
       backfill_floor=CASE WHEN yt_titles.config_source='seed' THEN excluded.backfill_floor ELSE yt_titles.backfill_floor END`);
   // phrases of every enabled title (incl. manual ones) drive the specificity excludes
@@ -265,6 +272,7 @@ export function syncTitles(db: YtDb, sources: TitleSource[], now = new Date(), a
         sentimentpulse_game_id: t.sentimentpulseGameId, signalpulse_product_id: t.signalpulseProductId, title_source: t.source,
         search_query: s.searchQuery, phrases: JSON.stringify(s.phrases), exclude_terms: JSON.stringify(s.excludeTerms ?? []),
         title_excludes: JSON.stringify(specificityExcludes(own, others)),
+        required_terms: JSON.stringify(s.requiredTerms ?? []),
         require_companion: s.requireCompanion ? 1 : 0, backfill_floor: backfillFloor(t.releaseDate), updated_at: now.toISOString(),
       });
       n++;
@@ -292,6 +300,7 @@ export interface TitleRow {
   last_incremental_at: string | null;
   config_source: string;
   title_excludes: string;
+  required_terms: string;
   is_saber: number;
   parent_title_id: number | null;
 }
@@ -301,6 +310,7 @@ export function matchConfigOf(t: TitleRow) {
     phrases: JSON.parse(t.phrases) as string[],
     excludeTerms: JSON.parse(t.exclude_terms) as string[],
     titleExcludes: JSON.parse(t.title_excludes || "[]") as string[],
+    requiredTerms: JSON.parse(t.required_terms || "[]") as string[],
     requireCompanion: !!t.require_companion,
   };
 }

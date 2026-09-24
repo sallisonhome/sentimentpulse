@@ -18,6 +18,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
+import { Link } from "wouter";
 
 type WindowKey = "d1" | "d7" | "d30" | "d90" | "m12" | "ltd";
 type SortKey = "views" | "videos" | "shortForm" | "comments" | "likes" | "likesPct" | "title";
@@ -283,8 +284,8 @@ export default function YoutubeLeaderboard() {
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">View:</span>
         <Badge variant="secondary" data-testid="badge-yt-definition">Cohort: videos published in window</Badge>
-        <Badge variant="outline" className="text-muted-foreground" title="Views gained in the window across all videos. Needs daily snapshots, which accumulate from the first run.">
-          Velocity: coming soon
+        <Badge variant="outline" className="text-muted-foreground" title="Click a title for time series, daily snapshots, velocity and CSV export.">
+          Title charts, velocity &amp; CSV: click a title
         </Badge>
         <label className="ml-auto flex items-center gap-2 text-muted-foreground" title="Competitor titles set up under a Saber title in SentimentPulse. Their videos and comments are collected either way.">
           <Switch checked={scope === "all"} onCheckedChange={(v) => { setScope(v ? "all" : "saber"); setOpen(null); }} data-testid="switch-yt-scope" />
@@ -329,14 +330,18 @@ export default function YoutubeLeaderboard() {
                   <tr className="border-b border-border/50 hover:bg-muted/30" data-testid={`row-yt-${r.titleId}`}>
                     <td className="px-3 py-2 text-muted-foreground">{i + 1}</td>
                     <td className="px-3 py-2">
-                      <button type="button" className="flex items-center gap-2 text-left font-medium hover:underline"
+                      <div className="flex items-center gap-2">
+                      <button type="button" className="shrink-0 p-1 rounded hover:bg-muted"
                         onClick={() => setOpen(open === r.titleId ? null : r.titleId)} aria-expanded={open === r.titleId}
-                        data-testid={`btn-yt-expand-${r.titleId}`}>
+                        aria-label={`Show videos for ${r.title}`} data-testid={`btn-yt-expand-${r.titleId}`}>
                         {open === r.titleId ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                      </button>
+                      <Link href={`/youtube/titles/${r.titleId}`} className="flex items-center gap-2 text-left font-medium hover:underline" data-testid={`link-yt-title-${r.titleId}`}>
                         {r.headerImageUrl && <img src={r.headerImageUrl} alt="" className="h-6 w-[52px] rounded object-cover shrink-0" loading="lazy"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />}
                         <span className="break-words">{r.title}</span>
-                      </button>
+                      </Link>
+                      </div>
                       {!r.isSaber && (
                         <span className="ml-6 block text-[11px] text-muted-foreground" data-testid={`text-yt-competitor-${r.titleId}`}>
                           Competitor{r.parentTitle ? ` · vs ${r.parentTitle}` : ""}

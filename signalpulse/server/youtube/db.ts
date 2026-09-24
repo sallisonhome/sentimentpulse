@@ -1,19 +1,11 @@
 /**
  * YouTube Pulse — dedicated SQLite database (v1.0, 2026-09-24).
  *
- * Deliberately separate from SignalPulse's `data.db`: YouTube API Data has
- * its own retention rules (YouTube API Services Developer Policies III.E.4)
- * and must never be blended with Steam/console data. Keeping it in its own
- * file makes the 30-day refresh/delete obligations auditable and lets the
- * whole surface be dropped without touching SignalPulse tables.
- *
- * Retention (enforced by retention.ts, not by the schema):
- *   - yt_videos metadata + current statistics: refreshed daily; any row not
- *     refreshed for 30 days is deleted.
- *   - yt_video_stats_daily snapshots: kept 30 days, or 36 months once the
- *     `youtube_extended_storage_approved` app setting is "true" (only after
- *     YouTube accepts the derived-metrics / storage amendment).
- *   - yt_comments text: refreshed or deleted before 30 days, in every case.
+ * Separate from SignalPulse's `data.db` for source provenance and backups.
+ * Owner-requested permanent retention: video records, daily snapshots and
+ * comment text have no age-based erasure. Relevance failures and upstream
+ * removals are exclusions, not deletes. Only rejected-search caches expire.
+ * This application setting is not a determination about API policy rights.
  *
  * Path: YOUTUBE_DB_PATH env or `youtube.db` next to data.db (process cwd).
  */
@@ -35,6 +27,7 @@ export const YOUTUBE_SCHEMA_SQL = `
     phrases TEXT NOT NULL,            -- JSON string[]; one must appear in the video title
     exclude_terms TEXT NOT NULL,      -- JSON string[]; any hit in title/description rejects
     title_excludes TEXT NOT NULL DEFAULT '[]', -- JSON string[]; longer phrases of other titles (title-only check)
+    required_terms TEXT NOT NULL DEFAULT '[]',
     require_companion INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     backfill_floor TEXT NOT NULL,     -- ISO date; discovery never searches before this
@@ -61,6 +54,9 @@ export const YOUTUBE_SCHEMA_SQL = `
     like_count INTEGER,               -- NULL when the uploader hides likes
     comment_count INTEGER,            -- NULL when comments are disabled
     match_reason TEXT NOT NULL,
+    relevance_version INTEGER NOT NULL DEFAULT 0,
+    excluded_at TEXT,
+    exclusion_reason TEXT,
     discovered_via TEXT NOT NULL,     -- incremental | backfill | manual
     first_seen_at TEXT NOT NULL,
     last_refreshed_at TEXT NOT NULL,
@@ -69,7 +65,10 @@ export const YOUTUBE_SCHEMA_SQL = `
     comments_backfill_token TEXT,     -- pageToken to continue an older-comment backfill
     comments_backfill_done INTEGER NOT NULL DEFAULT 0,
     comments_polled_at TEXT,
-    comments_count_at_poll INTEGER
+    comments_count_at_poll INTEGER,
+    comments_incremental_token TEXT,
+    comments_incremental_newest TEXT,
+    comments_backfill_polled_at TEXT
   );
   CREATE INDEX IF NOT EXISTS yt_videos_product_pub ON yt_videos(title_id, published_at);
 
@@ -93,13 +92,18 @@ export const YOUTUBE_SCHEMA_SQL = `
     like_count INTEGER,
     published_at TEXT NOT NULL,
     updated_at TEXT,
-    fetched_at TEXT NOT NULL          -- last time the text was fetched/refreshed from the API
+    fetched_at TEXT NOT NULL,         -- last time the text was fetched/refreshed from the API
+    excluded_at TEXT
   );
   CREATE INDEX IF NOT EXISTS yt_comments_fetched ON yt_comments(fetched_at, comment_id);
   CREATE INDEX IF NOT EXISTS yt_comments_video ON yt_comments(video_id);
+  CREATE TABLE IF NOT EXISTS yt_reply_cursors (
+    parent_id TEXT PRIMARY KEY,
+    page_token TEXT
+  );
 
   -- Search candidates that failed relevance, so they are not re-fetched daily.
-  -- API data: purged after 30 days like everything else.
+  -- Rejected-candidate cache only: expire after 30 days to permit re-evaluation.
   CREATE TABLE IF NOT EXISTS yt_rejected_videos (
     video_id TEXT NOT NULL,
     title_id INTEGER NOT NULL,
@@ -156,6 +160,19 @@ export function openYoutubeDb(path = process.env.YOUTUBE_DB_PATH || "youtube.db"
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
   db.exec(YOUTUBE_SCHEMA_SQL);
+  // Additive upgrade of the draft v1 database; rows remain quarantined until
+  // the stats pass re-fetches metadata and validates against the new rules.
+  const titleCols = new Set((db.prepare("PRAGMA table_info(yt_titles)").all() as any[]).map(c => c.name));
+  if (!titleCols.has("required_terms")) db.exec("ALTER TABLE yt_titles ADD COLUMN required_terms TEXT NOT NULL DEFAULT '[]'");
+  const videoCols = new Set((db.prepare("PRAGMA table_info(yt_videos)").all() as any[]).map(c => c.name));
+  if (!videoCols.has("relevance_version")) db.exec("ALTER TABLE yt_videos ADD COLUMN relevance_version INTEGER NOT NULL DEFAULT 0");
+  if (!videoCols.has("excluded_at")) db.exec("ALTER TABLE yt_videos ADD COLUMN excluded_at TEXT");
+  if (!videoCols.has("exclusion_reason")) db.exec("ALTER TABLE yt_videos ADD COLUMN exclusion_reason TEXT");
+  if (!videoCols.has("comments_incremental_token")) db.exec("ALTER TABLE yt_videos ADD COLUMN comments_incremental_token TEXT");
+  if (!videoCols.has("comments_incremental_newest")) db.exec("ALTER TABLE yt_videos ADD COLUMN comments_incremental_newest TEXT");
+  if (!videoCols.has("comments_backfill_polled_at")) db.exec("ALTER TABLE yt_videos ADD COLUMN comments_backfill_polled_at TEXT");
+  const commentCols = new Set((db.prepare("PRAGMA table_info(yt_comments)").all() as any[]).map(c => c.name));
+  if (!commentCols.has("excluded_at")) db.exec("ALTER TABLE yt_comments ADD COLUMN excluded_at TEXT");
   return db;
 }
 

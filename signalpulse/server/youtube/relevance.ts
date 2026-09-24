@@ -21,6 +21,7 @@ export interface TitleMatchConfig {
   excludeTerms: string[];
   /** Checked against the video title only: phrases of more specific tracked titles. */
   titleExcludes?: string[];
+  requiredTerms?: string[];
   requireCompanion: boolean;
 }
 
@@ -63,13 +64,20 @@ function containsPhrase(normText: string, compactText: string, phrase: string): 
   if (!p) return false;
   if (` ${normText} `.includes(` ${p} `)) return true;
   const cp = compact(phrase);
-  return cp.length >= 8 && compactText.includes(cp);
+  // A hashtag/no-space form must be a complete token, not a substring of
+  // another word or of an arbitrary concatenation of the whole title.
+  return cp.length >= 8 && normText.split(" ").includes(cp);
 }
 
 function containsTerm(normText: string, term: string): boolean {
   const t = normalize(term);
-  return !!t && ` ${normText} `.includes(` ${t} `);
+  const c = compact(term);
+  return !!t && (` ${normText} `.includes(` ${t} `) ||
+    ` ${normText} `.includes(` ${t}'s `) ||
+    (c.length >= 5 && normText.split(" ").includes(c)));
 }
+
+export const RELEVANCE_VERSION = 2;
 
 export function matchVideo(cfg: TitleMatchConfig, v: VideoTextInput): MatchResult {
   const title = normalize(v.title);
@@ -83,6 +91,9 @@ export function matchVideo(cfg: TitleMatchConfig, v: VideoTextInput): MatchResul
 
   const excluded = cfg.excludeTerms.find((t) => containsTerm(title, t) || containsTerm(desc, t));
   if (excluded) return { admit: false, reason: `exclude term "${excluded}"` };
+  if (cfg.requiredTerms?.length && !cfg.requiredTerms.some((t) => containsTerm(title, t) || containsTerm(desc, t))) {
+    return { admit: false, reason: "missing title-specific identity context" };
+  }
 
   const isGaming = v.categoryId === "20";
   const companion = GAME_CONTEXT_TERMS.find((t) => containsTerm(title, t) || containsTerm(desc, t));
