@@ -1,12 +1,13 @@
 import { Link, useLocation } from "wouter";
 import { useTheme } from "./theme-provider";
 import { useQuery } from "@tanstack/react-query";
-import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon, Handshake, Calendar, Globe2, Download, Youtube } from "lucide-react";
+import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, ChevronDown, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon, Handshake, Calendar, Globe2, Download, Youtube } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -48,6 +49,13 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
   const isCompactDataPage = isDemosPage || location.startsWith("/youtube") || location === "/dashboard" || isRatingsDetailPage;
   const [sidebarOverride, setSidebarCollapsed] = useState<boolean | null>(null);
   const sidebarCollapsed = sidebarOverride ?? (isCompactDataPage && isMobile);
+  const isProductPage = location.startsWith("/products/");
+  const [productsOpen, setProductsOpen] = useState(isProductPage);
+  // Reveal the current title on direct links and product-to-product navigation.
+  // A manual collapse stays closed until navigation changes.
+  useEffect(() => {
+    if (location.startsWith("/products/")) setProductsOpen(true);
+  }, [location]);
 
   const { data: products } = useQuery<any[]>({
     queryKey: ["/api/products"],
@@ -112,10 +120,10 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
       </header>
 
       {/* Sidebar */}
-      <aside className="row-start-2 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col overflow-hidden">
+      <aside className="row-start-2 min-h-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border flex flex-col overflow-hidden">
         <div className="flex items-center justify-between p-3 border-b border-sidebar-border">
           {!sidebarCollapsed && (
-            <span className="text-xs font-semibold uppercase tracking-wider text-sidebar-foreground/60">Products</span>
+            <span className="text-xs font-semibold uppercase tracking-wider text-sidebar-foreground/60">Navigation</span>
           )}
           <Button
             variant="ghost"
@@ -159,7 +167,7 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
           </div>
         )}
 
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0 [&_[data-radix-scroll-area-viewport]>div]:!block">
           <nav className="p-2 space-y-0.5">
             <Link href="/">
               <div
@@ -252,26 +260,54 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
                 {!sidebarCollapsed && <span>Amazon Retail</span>}
               </div>
             </Link>
-            {products?.map((p: any) => {
-              const isActive = location === `/products/${p.id}`;
-              return (
-                <Link key={p.id} href={`/products/${p.id}`}>
-                  <div
-                    className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors ${
-                      isActive
-                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                        : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
-                    }`}
+            <Collapsible open={!sidebarCollapsed && productsOpen} onOpenChange={(open) => {
+              if (sidebarCollapsed) {
+                setSidebarCollapsed(false);
+                setProductsOpen(true);
+              } else setProductsOpen(open);
+            }}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <CollapsibleTrigger asChild>
+                    <button type="button" aria-label="Saber Products"
+                      data-testid="button-saber-products"
+                      className={`flex w-full items-center gap-2.5 px-2.5 py-2 rounded-md text-xs text-left transition-colors
+                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring ${
+                        isProductPage
+                          ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                          : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                      }`}>
+                      <Gamepad2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                      {!sidebarCollapsed && <>
+                        <span className="flex-1">Saber Products</span>
+                        {productsOpen ? <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
+                          : <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />}
+                      </>}
+                    </button>
+                  </CollapsibleTrigger>
+                </TooltipTrigger>
+                {sidebarCollapsed && <TooltipContent side="right">Saber Products</TooltipContent>}
+              </Tooltip>
+              <CollapsibleContent className="ml-4 border-l border-sidebar-border pl-2 mt-1 space-y-0.5"
+                data-testid="nav-saber-products">
+                {products?.map((p: any) => {
+                  const isActive = location === `/products/${p.id}` || location.startsWith(`/products/${p.id}/`);
+                  return <Link key={p.id} href={`/products/${p.id}`}
+                    aria-current={isActive ? "page" : undefined} title={p.title}
+                    onClick={() => { if (isMobile) setSidebarCollapsed(true); }}
                     data-testid={`link-product-${p.id}`}
-                  >
-                    <Gamepad2 className="h-3.5 w-3.5 shrink-0" />
-                    {!sidebarCollapsed && (
-                      <span className="truncate">{p.title}</span>
-                    )}
-                  </div>
-                </Link>
-              );
-            })}
+                    className={`flex min-w-0 items-center gap-2.5 px-2.5 py-2 rounded-md text-xs transition-colors
+                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring ${
+                      isActive ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                        : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                    }`}>
+                    <Gamepad2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span className="truncate">{p.title}</span>
+                  </Link>;
+                })}
+                {products?.length === 0 && <p className="px-2.5 py-2 text-xs text-sidebar-foreground/60">No products yet</p>}
+              </CollapsibleContent>
+            </Collapsible>
           </nav>
         </ScrollArea>
 
