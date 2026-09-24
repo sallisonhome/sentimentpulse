@@ -168,7 +168,9 @@ export class ReviewsRatingsService {
       const value = row?.rating_count > 0 ? score(row.avg_rating, 5) : null;
       players.push({
         source: platform, label: platform === "ps5" ? "PS Store Player Rating" : "Xbox Store Player Rating",
-        value, scale: 5, description: null, count: count(row?.rating_count),
+        value, scale: 5,
+        description: platform === "ps5" && /-CUSA\d+_/.test(sku.externalSku) ? "PS4 listing on PlayStation Store" : null,
+        count: count(row?.rating_count),
         url: platform === "ps5" ? `https://store.playstation.com/${region}/product/${encodeURIComponent(sku.externalSku)}`
           : `https://www.xbox.com/en-US/games/store/-/${encodeURIComponent(sku.externalSku)}`,
         capturedAt, status: value == null ? "unavailable"

@@ -8,6 +8,7 @@ export function identityName(name: string): string {
     .toLowerCase().replace(/[™®℗℠]/g, "").replace(/[‘’]/g, "'")
     .replace(/δ/g, "delta").replace(/[–—]/g, "-")
     .replace(/\s+/g, " ").trim();
+  value = value.replace(/\s*\[(ps4\s*(?:&|and)\s*ps5|ps[45])\]\s*$/, " ($1)");
   const suffix = /(?:\s*[:(\-]\s*|\s+)(?:(?:the )?(?:digital |premium |super )?(?:deluxe|ultimate|standard|complete|gold|premium|definitive)(?: edition)?|edition|ps4\s*(?:&|and)\s*ps5|ps[45](?: version)?|xbox one\s*(?:&|and)\s*xbox series x[|/]s|xbox series x[|/]s|xbox one|pc|windows|steam)\)?$/i;
   for (let i = 0; i < 8; i++) {
     const next = value.replace(suffix, "").trim();

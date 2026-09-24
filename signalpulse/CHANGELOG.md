@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 24, 2026
 
+- Added: verified ratings-only catalog support for the eight portfolio console gaps, using existing Buying collectors and observations while remaining excluded from base-SKU sales estimates. World War Z's original PlayStation rating is explicitly labelled as a PS4 listing, not Aftermath.
+- Fixed: Sony's square-bracket PS4/PS5 platform suffixes now group with the same verified base title.
+
 - Fixed: Reviews and Ratings recognizes verified Buying family aliases (including “II” versus “2”), reusing existing PlayStation/Xbox rating observations across SignalPulse and HMAP instead of requiring another collection pipeline.
 - Fixed: standalone Steam lookup accepts a unique, exact embedded App ID when the metadata response uses a different envelope key; ambiguous or conflicting identities still fail closed.
 
