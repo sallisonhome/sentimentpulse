@@ -21,6 +21,8 @@ export function criticSearchTitle(name: string): string {
   }
   // EA brands these entries on OpenCritic; console storefronts omit the brand.
   if (/^UFC\s+\d+$/i.test(value)) value = `EA Sports ${value}`;
+  // OpenCritic spells this verified sequel with Roman numerals.
+  if (/^Helldivers 2$/i.test(value)) value = "Helldivers II";
   return value;
 }
 

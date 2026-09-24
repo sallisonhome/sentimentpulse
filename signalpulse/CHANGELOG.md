@@ -4,6 +4,10 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 24, 2026
 
+- Fixed: Steam CCU critic matching incorporates release evidence after adding verified console links. Reviewed exact App-ID aliases resolve renamed titles and GTA V PC variants to explicitly named title-level aggregates; the renamed Overwatch app uses Overwatch 2, never the original 2016 record.
+- Improved: verified console-version links cover 13 additional native listings across 10 CCU titles. Distinct console editions are labeled by native listing name; Steam review counts remain tied to the requested exact App ID. The complete reviewed CCU addition is 105 links across 63 titles, with 102 new ratings-only SKUs and no sales-estimate changes.
+- Improved: critic cards name the actual review aggregate. Evidence-aware cache keys retry identity gaps while preserving existing successful ordinary matches and the provider allowance guard.
+
 - Fixed: console OpenCritic lookup removes trademark glyphs before Unicode decomposition and strips only known storefront/platform packaging. Storefront dates outrank conflicting enrichment; verified original dates can corroborate later ports. Provider year-qualified remakes are verified against release years, and duplicate names require exactly one verified detail record.
 - Added: reviewed cross-platform ratings links for Steam CCU titles, including F2P console listings. The offline CCU backfill generator preserves existing catalog/sales data; new console rows are ratings-only and use the existing daily collectors.
 - Improved: revised critic caches retry legacy misses without deleting valid scores. HMAP consumes the shared correction without a second ratings pipeline or frontend deployment.

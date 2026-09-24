@@ -130,3 +130,18 @@ Run SignalPulse `npm run check`, `npm run build`, and the `tsx --test` ratings, 
 After explicit approval: deploy SignalPulse first through its existing GitHub workflow, configure the masked Settings key, verify a real cold fetch and a cache hit, then deploy HMAP through its workflow and compare response values verbatim. Verify app health and existing sales pages after both deploys.
 
 Rollback through reviewed Git reverts and the existing deployment workflows. The additive cache tables can remain; do not drop user data. Clearing the OpenCritic key stops provider calls while Steam and console ratings remain independent.
+# CCU identity follow-up (September 24, 2026)
+
+Steam CCU context does not restrict Reviews and Ratings to Steam. Reviewed exact console links are appended before deriving critic release evidence, while Steam ratings always use the requested App ID. The original 92 links/53 titles were applied and live-checked; the reviewed follow-up adds 13 console-version links/10 titles, for 105 links/63 titles and 102 newly created ratings-only SKUs. Existing native rows are reused and sales estimates are untouched.
+
+`reviews-ratings-aliases.ts` contains explicit App-ID-scoped critic aliases, not a global "strip Enhanced/Legacy" rule. The rendered card names the actual title-level aggregate; console-specific player ratings retain their native listing labels. Key evidence:
+
+- GTA V PC variants: https://store.steampowered.com/app/3240220/ and https://store.steampowered.com/app/271590/; title aggregate https://opencritic.com/game/163/grand-theft-auto-v
+- Crimson Desert: https://store.steampowered.com/app/3321460/; https://opencritic.com/game/19373/crimson-desert
+- PUBG rename: https://www.gamespot.com/articles/playerunknowns-battlegrounds-just-got-a-new-name/1100-6494880/; https://store.steampowered.com/app/578080/
+- Black Desert's own Steam description identifies Black Desert Online: https://store.steampowered.com/app/582660/
+- FFXIV Steam identifies A Realm Reborn as the base game: https://store.steampowered.com/app/39210/
+- Overwatch 2 was renamed, not reverted to the separate 2016 game's critic record: https://www.gematsu.com/2026/02/overwatch-2-drops-2-as-year-long-narrative-arc-begins-with-10-new-heroes-coming-to-switch-2-this-spring and https://store.steampowered.com/app/2357570/
+- The Sims 4's original release is listed on Steam: https://store.steampowered.com/app/1222670/
+
+Do not substitute expansion reviews for Path of Exile's missing base record, Switch-only Witcher Complete Edition reviews for the PC listing, the older 7 Days to Die console reviews for the current console version, or reviews with no verified release identity/score. Missing or unsafe matches stay unavailable. World of Warships: Legends and The Orange Box are not interchangeable rating sources for World of Warships and Team Fortress 2.

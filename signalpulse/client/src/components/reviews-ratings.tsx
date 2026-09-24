@@ -80,6 +80,7 @@ export function ReviewsRatingsView({ data, loading = false, error = false, retry
               <div className="text-xl font-semibold tabular-nums">{text}</div>
             </div>)}
           </div>
+          {oc?.name && <p className="text-xs text-muted-foreground" data-testid="critic-aggregate-title">Review aggregate: {oc.name}</p>}
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
             {oc?.reviewCount != null && <span>{oc.reviewCount.toLocaleString()} critic reviews</span>}
             {oc && date(oc.capturedAt) && <span>Captured {date(oc.capturedAt)}</span>}

@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { CriticRating, PlayerRating, RatingStatus, ReviewsRatings } from "../shared/reviews-ratings";
 import { count, criticSearchTitle, exactCandidates, normalizeCritics, ratingIdentity, score, steamAppDetails, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
+import { reviewedCriticAlias } from "./reviews-ratings-aliases";
 
 export const OPENCRITIC_HOST = "best-opencritic-scraper-free-1000-calls.p.rapidapi.com";
 const DAY = 86400_000;
@@ -9,7 +10,7 @@ const TTL = DAY;
 const RETRY = 30 * 60_000;
 type CacheRow = { value_json: string | null; fetched_at: number | null; checked_at: number; retry_at: number; status: RatingStatus };
 export type RatingIdentity = { name: string; releaseDate: string | null; steamAppId: string | null; criticEligible?: boolean; releaseDates?: string[] };
-export type RatingSku = { titleId: number; platform: string; externalSku: string; conceptId: string | null };
+export type RatingSku = { titleId: number; platform: string; externalSku: string; conceptId: string | null; name?: string | null };
 
 export function emptyCritics(status: RatingStatus): CriticRating {
   return { status, provider: "omkarcloud", id: null, name: null, url: null,
@@ -176,7 +177,9 @@ export class ReviewsRatingsService {
       players.push({
         source: platform, label: platform === "ps5" ? "PS Store Player Rating" : "Xbox Store Player Rating",
         value, scale: 5,
-        description: platform === "ps5" && /-CUSA\d+_/.test(sku.externalSku) ? "PS4 listing on PlayStation Store" : null,
+        description: [platform === "ps5" && /-CUSA\d+_/.test(sku.externalSku) ? "PS4 listing on PlayStation Store" : null,
+          sku.name && ratingIdentity(criticSearchTitle(sku.name)) !== ratingIdentity(criticSearchTitle(identity.name))
+            ? `Console listing: ${sku.name}` : null].filter(Boolean).join(" · ") || null,
         count: count(row?.rating_count),
         url: platform === "ps5" ? `https://store.playstation.com/${region}/product/${encodeURIComponent(sku.externalSku)}`
           : `https://www.xbox.com/en-US/games/store/-/${encodeURIComponent(sku.externalSku)}`,
@@ -193,18 +196,25 @@ export class ReviewsRatingsService {
     } else if (!key) {
       openCritic = emptyCritics("unconfigured");
     } else {
-      const searchName = criticSearchTitle(identity.name);
+      const alias = reviewedCriticAlias(identity.steamAppId, identity.name);
+      const searchName = alias?.name ?? criticSearchTitle(identity.name);
       const matchKey = `${ratingIdentity(searchName)}:${identity.releaseDate ?? "unknown"}`;
-      const cacheKey = `opencritic:v2:${matchKey}`;
+      const dates = Array.from(new Set([identity.releaseDate, alias?.releaseDate, ...(identity.releaseDates ?? [])].filter(Boolean))).sort();
+      const evidenceTag = dates.length > 1 ? `:dates:${createHash("sha256").update(dates.join("|")).digest("hex").slice(0, 12)}` : "";
+      const baseCacheKey = `opencritic:v2:${matchKey}`;
+      const cacheKey = `${baseCacheKey}${evidenceTag}${alias ? `:alias:${alias.id}` : ""}`;
       // Keep valid existing scores; only old negative/ambiguous caches are
       // retried by the revised matcher. No broad production cache deletion.
-      this.db.prepare(`INSERT OR IGNORE INTO review_rating_cache
+      if (!alias) this.db.prepare(`INSERT OR IGNORE INTO review_rating_cache
         SELECT ?,value_json,fetched_at,checked_at,retry_at,status FROM review_rating_cache
         WHERE cache_key=? AND status='ready' AND value_json IS NOT NULL`)
         .run(cacheKey, `opencritic:${matchKey}`);
+      if (!alias && cacheKey !== baseCacheKey) this.db.prepare(`INSERT OR IGNORE INTO review_rating_cache
+        SELECT ?,value_json,fetched_at,checked_at,retry_at,status FROM review_rating_cache
+        WHERE cache_key=? AND status='ready' AND value_json IS NOT NULL`).run(cacheKey, baseCacheKey);
       const cached = this.cached(cacheKey, async () => {
         let match = this.db.prepare("SELECT opencritic_id FROM opencritic_title_matches WHERE identity_key=?").get(matchKey) as any;
-        const candidates = match ? [{ id: match.opencritic_id }]
+        const candidates = alias ? [{ id: alias.id }] : match ? [{ id: match.opencritic_id }]
           : exactCandidates(await this.criticRequest(`/games/search?query=${encodeURIComponent(searchName)}`, key), searchName,
             [identity.releaseDate, ...(identity.releaseDates ?? [])].filter((d): d is string => !!d));
         if (!candidates.length) return null as any;
@@ -214,7 +224,12 @@ export class ReviewsRatingsService {
         const verified: any[] = [];
         for (const candidate of candidates) {
           const raw = await this.criticRequest(`/games/details?game=${candidate.id}`, key);
-          if (raw?.id === candidate.id && verifyCriticIdentity(raw, searchName, identity.releaseDate, identity.steamAppId, identity.releaseDates)) {
+          const reviewedTitleWide = alias?.titleWide && raw?.id === alias.id
+            && ratingIdentity(raw?.name ?? "") === ratingIdentity(alias.name)
+            && (raw?.steam_id == null || String(raw.steam_id) === identity.steamAppId);
+          if (raw?.id === candidate.id && (reviewedTitleWide
+            || verifyCriticIdentity(raw, searchName, identity.releaseDate, identity.steamAppId,
+              [...(identity.releaseDates ?? []), ...(alias?.releaseDate ? [alias.releaseDate] : [])]))) {
             verified.push(raw);
           }
         }

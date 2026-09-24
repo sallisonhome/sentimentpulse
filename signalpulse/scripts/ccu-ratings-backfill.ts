@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { identityName } from "../server/console-title-identity";
 import { criticSearchTitle } from "../server/reviews-ratings-normalize";
 import { CCU_RATINGS_SOURCE } from "../server/ratings-only-sku";
+import { reviewedConsoleVersion } from "../server/reviews-ratings-aliases";
 
 export function storefrontRatingIdentity(name: string) {
   return identityName(criticSearchTitle(name
@@ -29,7 +30,8 @@ export function makeCcuRatingsSql(evidence: any[], stamp = new Date().toISOStrin
       const nativeName = a.platform === "ps5" ? a.data.productName : a.data.productTitle;
       const nativeSku = a.platform === "ps5" ? a.data.input.productId : a.data.input.bigId;
       if (nativeSku !== a.sku || nativeName !== a.name ||
-        storefrontRatingIdentity(nativeName) !== storefrontRatingIdentity(e.steam.name)) throw Error("Native identity mismatch");
+        (storefrontRatingIdentity(nativeName) !== storefrontRatingIdentity(e.steam.name)
+          && !reviewedConsoleVersion(e.appid, e.steam.name, nativeName))) throw Error("Native identity mismatch");
       const url = new URL(a.url);
       if (!(a.platform === "ps5" ? url.hostname === "store.playstation.com" && /^https:$/.test(url.protocol)
         && url.pathname.toUpperCase().includes(`/PRODUCT/${a.sku}`)

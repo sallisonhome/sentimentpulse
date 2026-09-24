@@ -12,6 +12,26 @@ A running suite-wide log of what shipped across every app. Each entry is tagged 
 
 ---
 
+## September 24, 2026
+
+- New
+
+  ### SignalPulse: Reviews and Ratings across game detail pages
+
+  Product, CCU, Amazon and individual/combined Buying detail pages now include Reviews and Ratings beneath their existing media and product information. Applicable Steam, PlayStation and Xbox player ratings appear alongside verified OpenCritic Critics Recommend, Top Critic Score and rating tier, with source links, capture dates and clear unavailable or stale states. Coverage applies to Saber and non-Saber titles, and the same SignalPulse scores are rebroadcast on HMAP's Steam and Buying detail pages.
+
+- Fixed
+
+  ### SignalPulse: More reliable console critic matching
+
+  Console matches now handle trademark symbols, storefront platform and edition labels, UFC naming and year-qualified remake records. Steam CCU pages also use release evidence from verified console listings and reviewed identities for renamed games, including Crimson Desert Enhanced, GTA V's PC versions, PUBG and the renamed Overwatch 2. Cards name the actual critic aggregate and label differently named console editions. Matching preserves meaningful remake, sequel and edition distinctions rather than choosing a loose search result or silently substituting the original Overwatch's reviews.
+
+- Improved
+
+  ### SignalPulse / HMAP: Shared player ratings and expanded console coverage
+
+  Detail pages reuse player ratings already collected for Buying leaderboards. Added 105 verified console links across 63 Steam CCU leaderboard titles, with 102 new ratings-only console records and current native observations; existing matching records are reused. Approved ratings-only entries, including free-to-play games and explicitly reviewed console editions, join the existing daily console refresh without changing sales estimates, prices or protected SKU roles. This is verified coverage, not a claim that every game has every platform or critic review; unverified console-specific editions and unavailable provider scores remain explicitly unavailable.
+
 ## September 1, 2026
 
 - New
