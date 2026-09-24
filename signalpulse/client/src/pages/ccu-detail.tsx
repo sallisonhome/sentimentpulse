@@ -25,6 +25,7 @@
  */
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { ReviewsRatingsSection } from "@/components/reviews-ratings";
 import { useParams, useSearch } from "wouter";
 import { ArrowLeft, Gamepad2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
@@ -209,6 +210,8 @@ export default function CcuDetail() {
         <div className="text-sm font-medium">Screenshots &amp; Trailers</div>
         <GameMediaCarousel media={media} />
       </Card>
+
+      <ReviewsRatingsSection kind="product" id={productId} />
 
       <Card className="p-5 space-y-2">
         <div className="text-sm font-medium">Concurrent Players Over Time</div>

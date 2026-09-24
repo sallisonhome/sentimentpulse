@@ -1,0 +1,149 @@
+import type { Express } from "express";
+import rateLimit from "express-rate-limit";
+import { rawSqlite, storage } from "./storage";
+import { editionGroupKey } from "./routes-console-leaderboards";
+import { metadataMatchesStorefront } from "./console-title-identity";
+import { emptyCritics, ReviewsRatingsService, type RatingIdentity, type RatingSku } from "./reviews-ratings-service";
+
+type CatalogRow = RatingSku & { name: string | null; storeName: string | null; igdbName: string | null;
+  igdbId: number | null; matchConfidence: string | null; releaseDate: string | null; storeReleaseDate: string | null };
+
+function catalog(): CatalogRow[] {
+  return rawSqlite.prepare(`SELECT p.title_id AS titleId,p.platform,p.external_sku AS externalSku,p.concept_id AS conceptId,
+    COALESCE(NULLIF(c.store_name,''),CASE WHEN x.source <> 'seeded_from_cti' THEN x.name END,
+      CASE WHEN c.match_confidence IS NOT 'low' THEN c.name END) AS name,
+    c.store_name AS storeName,c.name AS igdbName,c.igdb_id AS igdbId,c.match_confidence AS matchConfidence,
+    c.release_date AS releaseDate,c.store_release_date AS storeReleaseDate
+    FROM platform_sku_map p LEFT JOIN console_title_igdb c ON c.title_id=p.title_id
+    LEFT JOIN xbox_title_cache x ON p.platform='xbox' AND x.big_id=p.external_sku
+    WHERE p.platform IN ('steam','ps5','xbox') AND p.sku_role='base'`).all() as CatalogRow[];
+}
+
+function safeIgdbId(row: CatalogRow) {
+  return row.matchConfidence !== "low" && metadataMatchesStorefront(row.storeName, row.igdbName) ? row.igdbId : null;
+}
+
+function family(rows: CatalogRow[], lead: CatalogRow): CatalogRow[] {
+  const key = editionGroupKey(lead.name);
+  const id = safeIgdbId(lead);
+  return rows.filter(r => r.titleId === lead.titleId || (key && editionGroupKey(r.name) === key
+    && !(id && safeIgdbId(r) && id !== safeIgdbId(r))));
+}
+
+function identity(rows: CatalogRow[]): RatingIdentity | null {
+  const lead = rows.find(r => r.platform === "steam") ?? rows[0];
+  if (!lead?.name) return null;
+  const safe = lead.matchConfidence !== "low" && metadataMatchesStorefront(lead.storeName, lead.igdbName);
+  // Prefer exact trusted IGDB title over store packaging ("PS4 & PS5").
+  // A failed/low-confidence match must never provide the critic identity.
+  const name = safe && lead.igdbName ? lead.igdbName : lead.name;
+  const steam = rows.find(r => r.platform === "steam" && /^[1-9]\d*$/.test(r.externalSku));
+  return { name, releaseDate: (safe ? lead.releaseDate : null) ?? lead.storeReleaseDate,
+    steamAppId: steam?.externalSku ?? null };
+}
+
+function corroboratedTitle(rows: CatalogRow[], name: string, releaseDate: string | null | undefined) {
+  const date = releaseDate ? Date.parse(releaseDate) : NaN;
+  if (!Number.isFinite(date)) return undefined;
+  const candidates = rows.filter(r => {
+    const candidateDate = Date.parse(r.storeReleaseDate ?? r.releaseDate ?? "");
+    return editionGroupKey(r.name) === editionGroupKey(name)
+      && Number.isFinite(candidateDate) && Math.abs(candidateDate - date) <= 370 * 86400_000;
+  });
+  const ids = new Set(candidates.map(safeIgdbId).filter(Boolean));
+  return ids.size > 1 ? undefined : candidates[0];
+}
+
+export function registerReviewsRatingsRoutes(app: Express) {
+  const service = new ReviewsRatingsService(rawSqlite, key => storage.getSetting(key)?.value);
+  const limiter = rateLimit({ windowMs: 60_000, max: 120, standardHeaders: true, legacyHeaders: false });
+  app.get("/api/reviews-ratings/:kind/:id", limiter, (req, res) => {
+    const kind = String(req.params.kind);
+    const id = String(req.params.id);
+    if (!["steam", "title", "family", "product", "amazon"].includes(kind)
+      || id.length > 200
+      || (["steam", "title", "product"].includes(kind) && !/^[1-9]\d{0,9}$/.test(id))
+      || (kind === "amazon" && !/^[A-Z0-9]{10}$/.test(id))) {
+      return res.status(400).json({ error: "invalid_rating_identity" });
+    }
+    // Public only for known catalog titles/families or a Valve-verified app ID.
+    // No user-supplied name/URL can cause arbitrary provider searches or SSRF.
+    try {
+      const rows = catalog();
+      let members: CatalogRow[] = [];
+      let game: RatingIdentity | null = null;
+      if (kind === "title" || kind === "family") {
+        const lead = kind === "title" ? rows.find(r => r.titleId === Number(id))
+          : rows.find(r => r.name && editionGroupKey(r.name) === id);
+        if (!lead) return res.status(404).json({ error: "title_not_found" });
+        members = family(rows, lead);
+        game = identity(members);
+      } else if (kind === "product") {
+        const product = storage.getProduct(Number(id));
+        if (!product) return res.status(404).json({ error: "product_not_found" });
+        const lead = rows.find(r => r.platform === "steam" && r.externalSku === product.steamAppId)
+          ?? corroboratedTitle(rows, product.title, product.releaseDate);
+        members = lead ? family(rows, lead) : [];
+        game = { name: product.title, releaseDate: product.releaseDate,
+          steamAppId: product.steamAppId && /^[1-9]\d*$/.test(product.steamAppId) ? product.steamAppId : null };
+      } else if (kind === "amazon") {
+        // A competitor pin's parent_product_id is the SABER parent, not the
+        // competitor. Never transfer that parent's ratings onto a competitor.
+        const pin = rawSqlite.prepare("SELECT product_id FROM amazon_asin_map WHERE asin=?").get(id) as any;
+        const product = pin ? storage.getProduct(pin.product_id) : null;
+        if (product) {
+          const lead = rows.find(r => r.platform === "steam" && r.externalSku === product.steamAppId)
+            ?? corroboratedTitle(rows, product.title, product.releaseDate);
+          members = lead ? family(rows, lead) : [];
+          game = { name: product.title, releaseDate: product.releaseDate, steamAppId: product.steamAppId };
+        } else {
+          const competitor = rawSqlite.prepare("SELECT name,steam_app_id FROM amazon_competitor_asin_map WHERE asin=? AND is_active=1")
+            .get(id) as { name: string; steam_app_id: number | null } | undefined;
+          if (competitor?.steam_app_id) {
+            const appId = String(competitor.steam_app_id);
+            const lead = rows.find(r => r.platform === "steam" && r.externalSku === appId);
+            if (lead) { members = family(rows, lead); game = identity(members); }
+            if (!game) {
+              const resolved = service.steamIdentity(appId);
+              if (!resolved.value && resolved.refreshing) {
+                res.set("Cache-Control", "no-store");
+                return res.json({ title: competitor.name, players: [], openCritic: emptyCritics("loading"), refreshing: true });
+              }
+              game = resolved.value;
+            }
+          }
+        }
+        // Unmapped physical listings may be bundles/accessories. No fuzzy
+        // Amazon-title searches: expose unavailable, not the wrong game's data.
+      } else {
+        const lead = rows.find(r => r.platform === "steam" && r.externalSku === id);
+        if (lead) {
+          members = family(rows, lead);
+          game = identity(members);
+        }
+        if (!game) {
+          const resolved = service.steamIdentity(id);
+          if (!resolved.value) {
+            res.set("Cache-Control", "no-store");
+            return res.json({ title: null, players: [], openCritic: emptyCritics(resolved.status),
+              refreshing: resolved.refreshing });
+          }
+          game = resolved.value;
+          const same = corroboratedTitle(rows, game.name, game.releaseDate);
+          members = same ? family(rows, same) : [];
+        }
+        // Always keep Steam player scores tied to the requested exact App ID.
+        game.steamAppId = id;
+      }
+      const result = game ? service.get(game, members)
+        : { title: null, players: [], openCritic: emptyCritics("unavailable"), refreshing: false };
+      res.set("Cache-Control", result.refreshing ? "no-store"
+        : kind === "product" || kind === "amazon" ? "private, max-age=30" : "public, max-age=30");
+      return res.json(result);
+    } catch {
+      // Avoid leaking raw SQL, provider error bodies, or secrets to public HMAP.
+      return res.status(503).json({ error: "ratings_temporarily_unavailable" });
+    }
+  });
+  return service;
+}
