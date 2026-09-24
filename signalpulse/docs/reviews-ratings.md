@@ -46,7 +46,56 @@ All routes validate identities, rate-limit requests and return safe errors. The 
 - At most eight background refreshes run concurrently. Duplicate requests for the same identity share the in-flight refresh. Browser polling is bounded.
 - HMAP uses the existing SignalPulse proxy with a 30-second ratings cache and does not cache refreshing responses.
 
-Four additive, idempotently created tables: `review_rating_cache`, `opencritic_title_matches`, `opencritic_request_usage`, `review_rating_provider_state`. No existing tables are rewritten.
+Five additive, idempotently created tables: `review_rating_cache`, `opencritic_title_matches`, `opencritic_request_usage`, `review_rating_provider_state`, `verified_rating_links`. No existing tables are rewritten.
+
+### Console critic matching
+
+Remove trademark glyphs before Unicode decomposition, so `™` does not become
+literal `tm`. Normalize the Delta glyph and explicit trailing storefront
+platform/standard/deluxe/ultimate/gold packaging, but retain remaster, definitive,
+complete-edition and semantic subtitle distinctions. Console `UFC N` searches
+use OpenCritic's `EA Sports UFC N` branding.
+
+Native storefront name/date takes precedence over enrichment. Additional
+verified family storefront dates and name-consistent IGDB dates can corroborate
+later ports. A provider `(YYYY)` suffix is eligible only when the year occurs
+in this verified date set. At most three exact/year-qualified candidates are
+fetched; require exactly one detail record passing name plus Steam-ID/date
+verification. Do not resolve ambiguity by search rank.
+
+The `opencritic:v2:` cache namespace retries old misses. Existing successful
+same-identity caches are copied forward without spending another provider call;
+the 900-attempt guard and failure/stale behavior remain unchanged.
+
+### CCU ratings-only backfill
+
+`scripts/ccu-ratings-backfill.ts <evidence-json> <output-directory>` produces five
+single-statement files: maps, metadata, Xbox names, verified links, observations.
+It never opens a database. Evidence must contain an exact embedded Steam App ID,
+native console name/SKU, current nonempty native rating, official storefront
+URL, full-game PlayStation classification and actual Xbox console compatibility.
+Microsoft PC-only listings, unrelated games, DLC and unverified console editions
+are excluded. Empty search results are not proof that a port does not exist.
+
+After explicit release/write approval, deploy first to create the additive
+links table, then apply those five files sequentially through DB Admin. Existing
+SKU roles, business models, IDs and nonempty metadata are preserved. New rows
+use `sku_role='ratings_only'`, `business_model='unknown'`, a manual-override flag
+and the exact `verified_ratings_only:ccu_2026-09-24` marker. Do not classify a
+PlayStation product as paid merely because its Steam version is paid.
+
+The existing PS/Xbox daily collectors admit only explicitly verified/manual
+ratings-only rows regardless of paid/F2P status. Ordinary F2P/unknown rows retain
+their original gates. Sales estimates and Buying membership still require base
+SKUs. An explicit link makes console observations available to the exact Steam
+PDP and shares that Steam App ID with the verified console PDP. This does not
+alter Buying edition groups, estimate inputs, or platform sales.
+
+The initial reviewed set has 53 CCU titles and 92 console links (90 new SKUs
+against the 2026-09-24 catalog export). This is not a claim of exhaustive console
+coverage. Console-specific editions, unresolved listings and missing native
+ratings remain unfilled pending verification. HMAP's existing ratings proxy
+receives the same response; no HMAP code change is required.
 
 ## QA and rollout
 

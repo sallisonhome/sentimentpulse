@@ -4,6 +4,10 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 24, 2026
 
+- Fixed: console OpenCritic lookup removes trademark glyphs before Unicode decomposition and strips only known storefront/platform packaging. Storefront dates outrank conflicting enrichment; verified original dates can corroborate later ports. Provider year-qualified remakes are verified against release years, and duplicate names require exactly one verified detail record.
+- Added: reviewed cross-platform ratings links for Steam CCU titles, including F2P console listings. The offline CCU backfill generator preserves existing catalog/sales data; new console rows are ratings-only and use the existing daily collectors.
+- Improved: revised critic caches retry legacy misses without deleting valid scores. HMAP consumes the shared correction without a second ratings pipeline or frontend deployment.
+
 - Added: verified ratings-only catalog support for the eight portfolio console gaps, using existing Buying collectors and observations while remaining excluded from base-SKU sales estimates. World War Z's original PlayStation rating is explicitly labelled as a PS4 listing, not Aftermath.
 - Fixed: Sony's square-bracket PS4/PS5 platform suffixes now group with the same verified base title.
 

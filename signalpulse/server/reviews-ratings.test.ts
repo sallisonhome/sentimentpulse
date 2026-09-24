@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { ReviewsRatingsService, type RatingIdentity } from "./reviews-ratings-service";
-import { exactCandidate, normalizeCritics, ratingIdentity, score, steamAppDetails, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
+import { criticSearchTitle, exactCandidate, exactCandidates, normalizeCritics, ratingIdentity, score, steamAppDetails, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
 
 const DAY = 86400_000;
 const game: RatingIdentity = { name: "Elden Ring", releaseDate: "2022-02-25", steamAppId: "1245620" };
@@ -54,6 +54,85 @@ test("strict identity rejects sequels, demos, passes, editions, ambiguous matche
   assert.equal(verifyCriticIdentity(detail, game.name, "2026-02-25", game.steamAppId), false);
   assert.equal(verifyCriticIdentity(detail, game.name, null, game.steamAppId), false);
   assert.equal(verifyCriticIdentity({ ...detail, steam_id: "42" }, game.name, game.releaseDate, game.steamAppId), false);
+});
+
+test("critic search strips only storefront packaging and trademark glyphs", () => {
+  assert.equal(criticSearchTitle("EA SPORTS FC™ 26 Standard Edition PS4 & PS5"), "EA SPORTS FC 26");
+  assert.equal(criticSearchTitle("NHL® 27 Deluxe Edition XBOX Series X|S"), "NHL 27");
+  assert.equal(criticSearchTitle("Red Dead Redemption II: Ultimate Edition"), "Red Dead Redemption II");
+  assert.equal(criticSearchTitle("METAL GEAR SOLID Δ: SNAKE EATER Digital Deluxe Edition"),
+    "METAL GEAR SOLID Delta: SNAKE EATER");
+  assert.equal(criticSearchTitle("The Witcher 3: Wild Hunt - Complete Edition"),
+    "The Witcher 3: Wild Hunt - Complete Edition");
+  assert.equal(criticSearchTitle("Resident Evil 4 Remake"), "Resident Evil 4 Remake");
+  assert.equal(ratingIdentity("EA SPORTS FC™ 26"), ratingIdentity("EA SPORTS FC 26"));
+  assert.equal(ratingIdentity("METAL GEAR SOLID Δ: SNAKE EATER"), ratingIdentity("Metal Gear Solid Delta: Snake Eater"));
+  assert.equal(criticSearchTitle("UFC® 6"), "EA Sports UFC 6");
+});
+
+test("provider year disambiguators require the verified release year, never a sequel or arbitrary subtitle", () => {
+  const search={results:[
+    {type:"game",id:1,name:"Resident Evil 4"},
+    {type:"game",id:2,name:"Resident Evil 4 (2023)"},
+    {type:"game",id:3,name:"Resident Evil 4 VR"},
+    {type:"game",id:4,name:"Resident Evil 5"},
+  ]};
+  assert.deepEqual(exactCandidates(search,"Resident Evil 4",["2023-03-24"]).map(x=>x.id),[1,2]);
+  assert.deepEqual(exactCandidates(search,"Resident Evil 4",["2016-08-30"]).map(x=>x.id),[1]);
+  assert.equal(verifyCriticIdentity({name:"Resident Evil 4 (2023)",release_date:"2023-03-24"},
+    "Resident Evil 4","2023-03-23",null),true);
+  assert.equal(verifyCriticIdentity({name:"Resident Evil 4 (2023)",release_date:"2023-03-24"},
+    "Resident Evil 4","2016-08-30",null),false);
+  assert.equal(verifyCriticIdentity({name:"Far Cry 6",release_date:"2021-10-07"},
+    "Far Cry 6","2023-05-11",null,["2021-10-07"]),true);
+  assert.equal(verifyCriticIdentity({name:"Far Cry 5",release_date:"2021-10-07"},
+    "Far Cry 6","2023-05-11",null,["2021-10-07"]),false);
+});
+
+test("duplicate search names are resolved only by verified detail identity", async () => {
+  const db = database(), calls: string[] = [];
+  const old = { ...detail, id: 1, release_date: "2011-01-01" };
+  const current = { ...detail, id: 2 };
+  const request = (async (input: any) => {
+    const url = String(input); calls.push(url);
+    if (url.includes("/search")) return new Response(JSON.stringify({ results: [
+      { type: "game", id: 1, name: "Elden Ring" }, { type: "game", id: 2, name: "Elden Ring" },
+    ] }));
+    return new Response(JSON.stringify(url.includes("game=1") ? old : current));
+  }) as typeof fetch;
+  const service = new ReviewsRatingsService(db, () => "test", request);
+  service.get(game, []); await service.settle();
+  assert.equal(service.get(game, []).openCritic.id, 2);
+  assert.equal(calls.filter(url => url.includes("/details")).length, 2);
+  db.close();
+});
+
+test("multiple detail matches remain ambiguous and old negative cache does not suppress the repair", async () => {
+  const db = database(), now = Date.now();
+  const request = (async (input: any) => {
+    const url = String(input);
+    return new Response(JSON.stringify(url.includes("/search") ? { results: [
+      { type: "game", id: 1, name: "Elden Ring" }, { type: "game", id: 2, name: "Elden Ring" },
+    ] } : { ...detail, id: url.includes("game=1") ? 1 : 2 }));
+  }) as typeof fetch;
+  const service = new ReviewsRatingsService(db, () => "test", request);
+  db.prepare("INSERT INTO review_rating_cache VALUES(?,?,?,?,?,?)")
+    .run("opencritic:eldenring:2022-02-25", null, null, now, now + 7 * DAY, "not_found");
+  service.get({ ...game, steamAppId: null }, []); await service.settle();
+  assert.equal(service.get({ ...game, steamAppId: null }, []).openCritic.status, "ambiguous");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM opencritic_title_matches").get().n, 0);
+  db.close();
+});
+
+test("successful legacy critic cache is reused without spending provider quota", async () => {
+  const db = database(), calls: string[] = [], now = Date.now();
+  const service = new ReviewsRatingsService(db, () => "test", fixtureFetch(calls), () => now);
+  db.prepare("INSERT INTO review_rating_cache VALUES(?,?,?,?,?,?)")
+    .run("opencritic:eldenring:2022-02-25", JSON.stringify(normalizeCritics(detail)), now, now, now + DAY, "ready");
+  assert.equal(service.get({ ...game, steamAppId: null }, []).openCritic.status, "ready");
+  await service.settle();
+  assert.equal(calls.length, 0);
+  db.close();
 });
 
 test("cache, in-flight dedup, persistence, mapped ID reuse and stale failure retain verified data", async () => {

@@ -1,14 +1,14 @@
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import type { CriticRating, PlayerRating, RatingStatus, ReviewsRatings } from "../shared/reviews-ratings";
-import { count, exactCandidate, normalizeCritics, ratingIdentity, score, steamAppDetails, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
+import { count, criticSearchTitle, exactCandidates, normalizeCritics, ratingIdentity, score, steamAppDetails, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
 
 export const OPENCRITIC_HOST = "best-opencritic-scraper-free-1000-calls.p.rapidapi.com";
 const DAY = 86400_000;
 const TTL = DAY;
 const RETRY = 30 * 60_000;
 type CacheRow = { value_json: string | null; fetched_at: number | null; checked_at: number; retry_at: number; status: RatingStatus };
-export type RatingIdentity = { name: string; releaseDate: string | null; steamAppId: string | null; criticEligible?: boolean };
+export type RatingIdentity = { name: string; releaseDate: string | null; steamAppId: string | null; criticEligible?: boolean; releaseDates?: string[] };
 export type RatingSku = { titleId: number; platform: string; externalSku: string; conceptId: string | null };
 
 export function emptyCritics(status: RatingStatus): CriticRating {
@@ -42,6 +42,13 @@ export class ReviewsRatingsService {
       CREATE INDEX IF NOT EXISTS opencritic_request_usage_time ON opencritic_request_usage(requested_at);
       CREATE TABLE IF NOT EXISTS review_rating_provider_state (
         provider TEXT PRIMARY KEY, retry_at INTEGER NOT NULL, status TEXT NOT NULL, credential_tag TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS verified_rating_links (
+        platform TEXT NOT NULL, external_sku TEXT NOT NULL,
+        steam_app_id TEXT NOT NULL, store_name TEXT NOT NULL,
+        source_url TEXT NOT NULL, verified_at TEXT NOT NULL,
+        verification_source TEXT NOT NULL,
+        PRIMARY KEY(platform,external_sku)
       );
     `);
   }
@@ -186,19 +193,33 @@ export class ReviewsRatingsService {
     } else if (!key) {
       openCritic = emptyCritics("unconfigured");
     } else {
-      const matchKey = `${ratingIdentity(identity.name)}:${identity.releaseDate ?? "unknown"}`;
-      const cached = this.cached(`opencritic:${matchKey}`, async () => {
+      const searchName = criticSearchTitle(identity.name);
+      const matchKey = `${ratingIdentity(searchName)}:${identity.releaseDate ?? "unknown"}`;
+      const cacheKey = `opencritic:v2:${matchKey}`;
+      // Keep valid existing scores; only old negative/ambiguous caches are
+      // retried by the revised matcher. No broad production cache deletion.
+      this.db.prepare(`INSERT OR IGNORE INTO review_rating_cache
+        SELECT ?,value_json,fetched_at,checked_at,retry_at,status FROM review_rating_cache
+        WHERE cache_key=? AND status='ready' AND value_json IS NOT NULL`)
+        .run(cacheKey, `opencritic:${matchKey}`);
+      const cached = this.cached(cacheKey, async () => {
         let match = this.db.prepare("SELECT opencritic_id FROM opencritic_title_matches WHERE identity_key=?").get(matchKey) as any;
-        if (!match) {
-          const found = exactCandidate(await this.criticRequest(`/games/search?query=${encodeURIComponent(identity.name)}`, key), identity.name);
-          if (!found) return null as any;
-          match = { opencritic_id: found.id };
+        const candidates = match ? [{ id: match.opencritic_id }]
+          : exactCandidates(await this.criticRequest(`/games/search?query=${encodeURIComponent(searchName)}`, key), searchName,
+            [identity.releaseDate, ...(identity.releaseDates ?? [])].filter((d): d is string => !!d));
+        if (!candidates.length) return null as any;
+        // Reused names (e.g. original/remake) are not resolved by result order.
+        // Bound the spend, verify every candidate and require exactly one.
+        if (candidates.length > 3) throw new Error("ambiguous");
+        const verified: any[] = [];
+        for (const candidate of candidates) {
+          const raw = await this.criticRequest(`/games/details?game=${candidate.id}`, key);
+          if (raw?.id === candidate.id && verifyCriticIdentity(raw, searchName, identity.releaseDate, identity.steamAppId, identity.releaseDates)) {
+            verified.push(raw);
+          }
         }
-        const raw = await this.criticRequest(`/games/details?game=${match.opencritic_id}`, key);
-        if (raw?.id !== match.opencritic_id || !verifyCriticIdentity(raw, identity.name, identity.releaseDate, identity.steamAppId)) {
-          throw new Error("ambiguous");
-        }
-        const normalized = normalizeCritics(raw);
+        if (verified.length !== 1) throw new Error("ambiguous");
+        const normalized = normalizeCritics(verified[0]);
         this.db.prepare(`INSERT INTO opencritic_title_matches VALUES(?,?,?,?)
           ON CONFLICT(identity_key) DO UPDATE SET opencritic_id=excluded.opencritic_id,matched_name=excluded.matched_name,matched_at=excluded.matched_at`)
           .run(matchKey, normalized.id, normalized.name, this.now());

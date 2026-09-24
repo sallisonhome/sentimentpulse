@@ -6,7 +6,9 @@
  * they port to howmanyareplaying by swapping this one file.
  *
  * F2P enforcement (Steve, 2026-09-10 scope note): every write to
- * store_rating_signal_daily is gated on platform_sku_map.business_model === 'paid'.
+ * Sales-oriented collection is gated on business_model === 'paid'. Explicitly
+ * verified/manual ratings_only console rows may also refresh player-rating
+ * cards; their non-base role keeps them out of sales estimation.
  * Rows for free_to_play / subscription_only / unknown titles are log-and-skipped.
  * The gate lives here, not in the collectors, so we can enforce it uniformly.
  */
@@ -198,7 +200,7 @@ export async function runXboxCollector(inputs: XboxCollectorInput[]): Promise<Pl
   for (const inp of inputs) {
     const g = gate.get(inp.bigId);
     if (!g) { gatedUnknown++; log(`xbox gate: skipping bigId=${inp.bigId} — not in platform_sku_map`); continue; }
-    if (g.business_model === "paid") { eligible.push({ ...inp, titleId: g.title_id }); continue; }
+    if (g.business_model === "paid" || isVerifiedRatingsOnly(g)) { eligible.push({ ...inp, titleId: g.title_id }); continue; }
     if (g.business_model === "free_to_play") { gatedF2P++; log(`xbox gate: skipping bigId=${inp.bigId} — free_to_play`); continue; }
     gatedUnknown++;
   }
@@ -253,14 +255,14 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
     // inflate the ratings-derived unit signal by N×. Poll only sku_role='base'
     // — the collector's per-title snapshot already covers every edition's
     // ratings via the concept-level roll-up.
-    // Explicit paid ratings-only mappings use this same collector/storage,
+    // Explicit verified ratings-only mappings use this same collector/storage,
     // but remain excluded from the estimator's sku_role='base' universe.
     if (g.sku_role !== "base" && !isVerifiedRatingsOnly(g)) {
       gatedNonBase++;
       log(`ps gate: skipping productId=${inp.productId} — sku_role='${g.sku_role}' (base-only invariant; concept ratings shared across editions)`);
       continue;
     }
-    if (g.business_model === "paid") { eligible.push({ ...inp, titleId: g.title_id }); continue; }
+    if (g.business_model === "paid" || isVerifiedRatingsOnly(g)) { eligible.push({ ...inp, titleId: g.title_id }); continue; }
     if (g.business_model === "free_to_play") { gatedF2P++; log(`ps gate: skipping productId=${inp.productId} — free_to_play`); continue; }
     gatedUnknown++;
   }
