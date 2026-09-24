@@ -3,8 +3,9 @@ import rateLimit from "express-rate-limit";
 import { rawSqlite, storage } from "./storage";
 import { editionGroupKey } from "./routes-console-leaderboards";
 import { metadataMatchesStorefront } from "./console-title-identity";
-import { RATINGS_ONLY_SOURCE } from "./ratings-only-sku";
+import { CCU_RATINGS_SOURCE, RATINGS_ONLY_SOURCES } from "./ratings-only-sku";
 import { emptyCritics, ReviewsRatingsService, type RatingIdentity, type RatingSku } from "./reviews-ratings-service";
+import { criticSearchTitle, ratingIdentity } from "./reviews-ratings-normalize";
 
 type CatalogRow = RatingSku & { name: string | null; storeName: string | null; igdbName: string | null;
   igdbId: number | null; matchConfidence: string | null; releaseDate: string | null; storeReleaseDate: string | null };
@@ -18,8 +19,9 @@ function catalog(): CatalogRow[] {
     FROM platform_sku_map p LEFT JOIN console_title_igdb c ON c.title_id=p.title_id
     LEFT JOIN xbox_title_cache x ON p.platform='xbox' AND x.big_id=p.external_sku
     WHERE p.platform IN ('steam','ps5','xbox') AND (p.sku_role='base'
-      OR (p.sku_role='ratings_only' AND p.is_manual_override=1 AND p.business_model_source=?))`)
-    .all(RATINGS_ONLY_SOURCE) as CatalogRow[];
+      OR (p.sku_role='ratings_only' AND p.is_manual_override=1
+        AND p.business_model_source IN (${RATINGS_ONLY_SOURCES.map(() => "?").join(",")})))`)
+    .all(...RATINGS_ONLY_SOURCES) as CatalogRow[];
 }
 
 function safeIgdbId(row: CatalogRow) {
@@ -47,14 +49,20 @@ function identity(rows: CatalogRow[]): RatingIdentity | null {
   const lead = rows.find(r => r.platform === "steam") ?? rows[0];
   if (!lead?.name) return null;
   const safe = lead.matchConfidence !== "low" && metadataMatchesStorefront(lead.storeName, lead.igdbName);
-  // Steam's verified store name preserves provider naming (e.g. Space Marine
-  // "2" versus IGDB's "II"). For console-only families prefer trusted IGDB
-  // over packaging such as "PS4 & PS5". Never broaden the match fuzzily.
-  const name = lead.platform === "steam" && lead.storeName ? lead.storeName
+  // Native storefront spelling/date outrank enrichment for every platform.
+  // IGDB can describe a later Ultimate Edition even when this is the base SKU.
+  // The critic matcher removes only known packaging after identity resolution.
+  const name = lead.storeName ? lead.storeName
     : safe && lead.igdbName ? lead.igdbName : lead.name;
   const steam = rows.find(r => r.platform === "steam" && /^[1-9]\d*$/.test(r.externalSku));
-  return { name, releaseDate: (safe ? lead.releaseDate : null) ?? lead.storeReleaseDate,
-    steamAppId: steam?.externalSku ?? null };
+  const releaseDates = Array.from(new Set(rows.flatMap(row => [
+    row.storeReleaseDate,
+    row.matchConfidence !== "low" && row.storeName && row.igdbName
+      && ratingIdentity(criticSearchTitle(row.storeName)) === ratingIdentity(criticSearchTitle(row.igdbName))
+      ? row.releaseDate : null,
+  ]).filter((d): d is string => !!d)));
+  return { name, releaseDate: lead.storeReleaseDate ?? (safe ? lead.releaseDate : null),
+    steamAppId: steam?.externalSku ?? null, releaseDates };
 }
 
 function corroboratedTitle(rows: CatalogRow[], name: string, releaseDate: string | null | undefined) {
@@ -149,6 +157,24 @@ export function registerReviewsRatingsRoutes(app: Express) {
         }
         // Always keep Steam player scores tied to the requested exact App ID.
         game.steamAppId = id;
+      }
+      if (game) {
+        // Explicit, reviewed exact-SKU links also cover later console ports,
+        // F2P games and Steam apps outside the paid Buying universe.
+        // No fuzzy title search or sales-family mutation is performed.
+        const links = rawSqlite.prepare(`SELECT platform,external_sku,steam_app_id
+          FROM verified_rating_links WHERE verification_source=?`).all(CCU_RATINGS_SOURCE) as
+          Array<{platform:string;external_sku:string;steam_app_id:string}>;
+        const appIds = new Set(links.filter(link => members.some(row =>
+          row.platform === link.platform && row.externalSku === link.external_sku)).map(link => link.steam_app_id));
+        const appId = game.steamAppId ?? (appIds.size === 1 ? Array.from(appIds)[0] : null);
+        if (appId) {
+          game.steamAppId = appId;
+          const linked = rows.filter(row => links.some(link => link.steam_app_id === appId
+            && link.platform === row.platform && link.external_sku === row.externalSku));
+          members = [...members, ...linked.filter(row => !members.some(member =>
+            member.platform === row.platform && member.externalSku === row.externalSku))];
+        }
       }
       const result = game ? service.get(game, members)
         : { title: null, players: [], openCritic: emptyCritics("unavailable"), refreshing: false };
