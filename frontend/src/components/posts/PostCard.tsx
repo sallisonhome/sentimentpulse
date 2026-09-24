@@ -8,6 +8,7 @@ import { cn } from '../../lib/utils'
 import type { RawPost, Source } from '../../types'
 
 const SOURCE_COLORS: Record<Source, string> = {
+  youtube_comment: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
   steam_review: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
   steam_forum:  'bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200',
   reddit:       'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200',

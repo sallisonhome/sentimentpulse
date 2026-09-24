@@ -5,6 +5,8 @@ import { createServer } from "http";
 import { startWeeklyDigestCron } from "./leaderboard-digest";
 import { startIngestionCron } from "./ingestion";
 import { startAmazonIngestionCron } from "./amazon-cron";
+import { startYoutubeCron } from "./youtube/cron";
+import { triggerYoutubeRun } from "./routes-youtube";
 import { startCcuPollScheduler } from "./ccu-poll";
 import { startIgdbMediaRefreshScheduler } from "./igdb";
 import { startRelatedGamesScheduler } from "./ccu-related";
@@ -121,6 +123,11 @@ app.get("/api/config", (_req, res) => {
   // competitor pins too, not just Saber SKUs. Silently no-ops until
   // rainforest_api_key is set in Settings (see server/amazon-cron.ts).
   startAmazonIngestionCron();
+
+  // YouTube Pulse (2026-09-24): daily discovery / stats / comments / 30-day
+  // retention, 04:30 America/New_York with same-day catch-up after restarts.
+  // Separate youtube.db; runs retention only until youtube_api_key is set.
+  startYoutubeCron((trigger) => triggerYoutubeRun(trigger));
 
   // Saber Steam CCU Leaderboard (2026-09-08): live CCU + Steam-global rank
   // poll for Saber's released Steam titles, top of every UTC hour (mirrors

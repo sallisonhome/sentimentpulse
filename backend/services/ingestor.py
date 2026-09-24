@@ -67,6 +67,7 @@ from services.topic_service import (
     upsert_topic_trends,
 )
 from services.post_relevance import is_post_relevant_to_game
+from services.youtube_service import import_enabled as youtube_import_enabled, import_game_comments, comment_is_focused as youtube_comment_is_focused
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,8 @@ _status: dict = {
     "steam_review_fetched_total": 0,
     "steam_forum_health": "unknown",
     "steam_forum_fetched_total": 0,
+    "youtube_health": "unknown",
+    "youtube_fetched_total": 0,
 }
 
 
@@ -137,7 +140,8 @@ def get_status() -> dict:
                              "reddit_health", "reddit_fetched_total", "reddit_retries",
                              "bluesky_health", "bluesky_fetched_total", "bluesky_retries",
                              "steam_review_health", "steam_review_fetched_total",
-                             "steam_forum_health", "steam_forum_fetched_total"):
+                             "steam_forum_health", "steam_forum_fetched_total",
+                             "youtube_health", "youtube_fetched_total"):
                         if k in persisted:
                             snapshot[k] = persisted[k]
             finally:
@@ -365,7 +369,7 @@ def _reclaim_stuck_lock_if_needed() -> None:
 
 # Canonical names for the per-source skip switch. Keep as a frozenset
 # so callers can validate input against a known-good set.
-_VALID_SKIP_SOURCES = frozenset({"reddit", "bluesky", "steam_review", "steam_forum", "dtf"})
+_VALID_SKIP_SOURCES = frozenset({"reddit", "bluesky", "steam_review", "steam_forum", "dtf", "youtube_comment"})
 
 
 def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
@@ -414,6 +418,8 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
     # stale numbers from the prior finally-block write.
     _status["games_processed"] = 0
     _status["posts_collected"] = 0
+    _status["youtube_health"] = "skipped"
+    _status["youtube_fetched_total"] = 0
     _run_started_at = time.monotonic()
 
     log_lines: list[str] = []
@@ -891,6 +897,31 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                     f"[Step 4b auto-recovery] raised — {exc}"
                 )
 
+        # YouTube feed is already collected by SignalPulse. Import for EVERY
+        # active game, including competitor children, before classification.
+        # Separate from resumable Phase A so its game-completion cursor cannot
+        # accidentally suppress this source. Per-page cursor commits make
+        # replay safe. Disabled until configured and deployment-approved.
+        if "youtube_comment" not in skip_sources and youtube_import_enabled(db):
+            _status["youtube_health"] = "ok"
+            for game in active_games:
+                try:
+                    yt_result = import_game_comments(db, game)
+                    per_game_posts[game.id] = per_game_posts.get(game.id, 0) + yt_result["inserted"]
+                    log_lines.append(f"[YouTube] game_id={game.id}: {yt_result}")
+                    _status["youtube_fetched_total"] += yt_result["fetched"]
+                    if not yt_result["complete"]:
+                        if _status["youtube_health"] != "failed":
+                            _status["youtube_health"] = "degraded"
+                        errors.append(f"[YouTube] game_id={game.id}: page budget reached; will resume")
+                except Exception as exc:
+                    db.rollback()
+                    _status["youtube_health"] = "failed"
+                    # The transport never includes credentials in these messages.
+                    msg = f"[YouTube] game_id={game.id}: {type(exc).__name__}: {exc}"
+                    errors.append(msg)
+                    log_lines.append(msg)
+
         # Phase C: per-game analysis (Steps 5 -> 7)
         # Runs AFTER any retries so today's summary includes all data that
         # landed today — not just the first-pass results.
@@ -1078,6 +1109,8 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 "steam_review_fetched_total": _status.get("steam_review_fetched_total"),
                 "steam_forum_health": _status.get("steam_forum_health"),
                 "steam_forum_fetched_total": _status.get("steam_forum_fetched_total"),
+                "youtube_health": _status.get("youtube_health"),
+                "youtube_fetched_total": _status.get("youtube_fetched_total"),
             })
             db_snap = SessionLocal()
             try:
@@ -1997,7 +2030,8 @@ def _step5_classify_sentiment(
         log_lines.append(f"[Step 5] '{game.name}': all posts filtered; nothing to classify.")
         return
 
-    items = [{'title': p.title or '', 'body': p.body or ''} for p in relevant_posts]
+    items = [{'title': '' if p.source == SourceEnum.youtube_comment else (p.title or ''),
+              'body': p.body or ''} for p in relevant_posts]
     try:
         results = classify_batch_with_gate_v2(items)
     except Exception as exc:
@@ -2056,10 +2090,13 @@ def _step5_classify_sentiment(
         #
         # See services/post_relevance.py::is_comment_focused_on_game
         # for the decision tree (keyword match / short reply / game-aspect
-        # + opinion). Only runs for source=reddit_comment.
-        if post.source == SourceEnum.reddit_comment:
+        # + opinion). Applies to Reddit and verified-video YouTube comments.
+        if post.source in (SourceEnum.reddit_comment, SourceEnum.youtube_comment):
             from services.post_relevance import is_comment_focused_on_game  # noqa: PLC0415
-            if not is_comment_focused_on_game(post.body or "", game):
+            focused = (youtube_comment_is_focused(post.body or "", game)
+                       if post.source == SourceEnum.youtube_comment
+                       else is_comment_focused_on_game(post.body or "", game))
+            if not focused:
                 # Preserve the model's verdict for audit before overriding.
                 if original_label is None:
                     original_label = label

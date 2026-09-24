@@ -26,6 +26,17 @@ function point(overrides: Partial<VolumePoint> = {}): VolumePoint {
 }
 
 describe('aggregateVolumeBySource', () => {
+  it('counts YouTube comments once and computes a prior-period delta', () => {
+    const current = aggregateVolumeBySource([
+      point({ youtube_comment: 12, reddit: 3, total: 15 }),
+      point({ youtube_comment: 8, total: 8 }),
+    ])
+    const prior = aggregateVolumeBySource([point({ youtube_comment: 10, total: 10 })])
+    expect(current.bySource.youtube_comment).toBe(20)
+    expect(current.total).toBe(23)
+    expect(pctChange(current.bySource.youtube_comment, prior.bySource.youtube_comment)).toBe(100)
+    expect(aggregateVolumeBySource([point()]).bySource.youtube_comment).toBe(0)
+  })
   it('sums per-day rows across every post-level source', () => {
     const out = aggregateVolumeBySource([
       point({ steam_forum: 100, reddit: 50, bluesky: 10, total: 160 }),

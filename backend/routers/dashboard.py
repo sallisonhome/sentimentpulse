@@ -770,6 +770,7 @@ def _compute_dashboard(
                         steam_forum=counts.get("steam_forum", 0),
                         reddit=counts.get("reddit", 0),
                         reddit_comment=counts.get("reddit_comment", 0),
+                        youtube_comment=counts.get("youtube_comment", 0),
                         bluesky=counts.get("bluesky", 0),
                         dtf=counts.get("dtf", 0),
                         total=(
@@ -778,6 +779,7 @@ def _compute_dashboard(
                             + counts.get("reddit", 0)
                             + counts.get("bluesky", 0)
                             + counts.get("dtf", 0)
+                            + counts.get("youtube_comment", 0)
                         ),
                     )
                     for d2, counts in sorted(prior_map.items())
@@ -793,6 +795,7 @@ def _compute_dashboard(
             # Kept separately for callers that want to distinguish
             # submissions from comments; never re-added to the total.
             reddit_comment=counts.get("reddit_comment", 0),
+            youtube_comment=counts.get("youtube_comment", 0),
             bluesky=counts.get("bluesky", 0),
             dtf=counts.get("dtf", 0),
             # Total sums the display axes only — reddit_comment is already
@@ -803,6 +806,7 @@ def _compute_dashboard(
                 + counts.get("reddit", 0)
                 + counts.get("bluesky", 0)
                 + counts.get("dtf", 0)
+                + counts.get("youtube_comment", 0)
             ),
         )
         for d, counts in sorted(vol_map.items())
