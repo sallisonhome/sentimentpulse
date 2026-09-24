@@ -83,6 +83,7 @@ _NOT_DRIFT = RawPost.is_off_topic_drift.is_(False)
 # post-cron dashboard visitor never eats the cold-compute wall.
 _DASHBOARD_CACHE: TTLCache = TTLCache(maxsize=512, ttl=900)
 _DASHBOARD_CACHE_LOCK = threading.Lock()
+_DASHBOARD_CACHE_GENERATION = 0
 
 
 def _latest_post_date_for_game(db: Session, game_id: int) -> Optional[date]:
@@ -102,7 +103,7 @@ def _latest_post_date_for_game(db: Session, game_id: int) -> Optional[date]:
 
 
 def _cache_key(game_id: int, period: PeriodEnum, stamp: Optional[date]) -> Tuple:
-    return (game_id, period.value, stamp.isoformat() if stamp else None)
+    return (game_id, period.value, stamp.isoformat() if stamp else None, _DASHBOARD_CACHE_GENERATION)
 
 
 def _dashboard_cache_stats() -> dict:
@@ -1153,6 +1154,7 @@ def warmup_dashboard_cache(logger_override=None) -> dict:
     Returns a dict summary: {games_warmed, entries_written, errors, elapsed_s}.
     Safe to call from the ingest post-hook or from a diagnostic endpoint.
     """
+    global _DASHBOARD_CACHE_GENERATION
     import time
     from database import SessionLocal  # local import — avoids circular import at module load
 
@@ -1161,6 +1163,14 @@ def warmup_dashboard_cache(logger_override=None) -> dict:
     entries_written = 0
     games_warmed = 0
     errors: list[dict] = []
+
+    # Imported history, edits, exclusions and newly classified comments can
+    # change every period without moving MAX(post_date). Always invalidate
+    # after ingestion. A generation also prevents an older in-flight response
+    # from repopulating a key that new foreground requests will use.
+    with _DASHBOARD_CACHE_LOCK:
+        _DASHBOARD_CACHE_GENERATION += 1
+        _DASHBOARD_CACHE.clear()
 
     # Warm every period that the front-end period filter can select.
     periods_to_warm = [
@@ -1197,8 +1207,8 @@ def warmup_dashboard_cache(logger_override=None) -> dict:
                 try:
                     stamp = _latest_post_date_for_game(db, game.id)
                     key = _cache_key(game.id, period, stamp)
-                    # Skip if already warm (unlikely on a first post-cron call
-                    # but useful when this is invoked repeatedly).
+                    # A foreground request may already have filled this new
+                    # generation while the warmup processed another title.
                     with _DASHBOARD_CACHE_LOCK:
                         if key in _DASHBOARD_CACHE:
                             continue

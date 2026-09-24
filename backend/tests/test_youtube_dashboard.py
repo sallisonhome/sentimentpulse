@@ -54,3 +54,30 @@ def test_prior_period_youtube_counts_and_total(db, game):
     assert result.prior_period_volume_by_source is not None
     assert sum(p.youtube_comment for p in result.prior_period_volume_by_source) == 4
     assert sum(p.total for p in result.prior_period_volume_by_source) == 4
+
+
+def test_warmup_invalidates_older_imports_and_inflight_stale_keys(db, game, monkeypatch):
+    from sqlalchemy.orm import sessionmaker
+    import database
+    from routers import dashboard as router
+
+    router._DASHBOARD_CACHE.clear()
+    add(db, game, 0)
+    db.commit()
+    before = router.get_dashboard(game.id, PeriodEnum.monthly, db)
+    stamp = router._latest_post_date_for_game(db, game.id)
+    old_key = router._cache_key(game.id, PeriodEnum.monthly, stamp)
+    assert sum(p.youtube_comment for p in before.volume_by_source) == 1
+    add(db, game, 4)  # Older imported comment cannot move MAX(post_date).
+    db.commit()
+    assert router._latest_post_date_for_game(db, game.id) == stamp
+    monkeypatch.setattr(database, "SessionLocal", sessionmaker(bind=db.get_bind()))
+    result = router.warmup_dashboard_cache()
+    assert result["errors"] == []
+    assert result["entries_written"] == 5
+    assert router._cache_key(game.id, PeriodEnum.monthly, stamp) != old_key
+    router._DASHBOARD_CACHE[old_key] = before  # Simulate a late stale response.
+    after = router.get_dashboard(game.id, PeriodEnum.monthly, db)
+    assert sum(p.youtube_comment for p in after.volume_by_source) == 2
+    assert after.sentiment_today.total == 2
+    router._DASHBOARD_CACHE.clear()

@@ -1,5 +1,16 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-24 — Post-import warmup must invalidate same-day dashboard caches
+
+The YouTube activation stored and classified all comments, but Today and 30d
+still served pre-import zero counts while weekly and lifetime were correct.
+The cache stamp used MAX(post_date), reduced to a calendar date, and warmup
+skipped existing keys. Older imported comments cannot advance that stamp.
+Every warmup now starts a fresh cache generation and clears the old entries;
+the generation prevents in-flight stale computations from overwriting usable
+new keys. Verify all five periods with nonzero expected counts, not merely
+source-total/KPI equality (zero equals zero is not proof of source coverage).
+
 ## 2026-09-24 — Test SQLite NULL pagination through the real HTTP client
 
 The first production YouTube collector retained 19,852 comments, but older-thread
