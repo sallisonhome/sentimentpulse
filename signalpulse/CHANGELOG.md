@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 24, 2026
 
+- Fixed: Reviews and Ratings recognizes verified Buying family aliases (including “II” versus “2”), reusing existing PlayStation/Xbox rating observations across SignalPulse and HMAP instead of requiring another collection pipeline.
+- Fixed: standalone Steam lookup accepts a unique, exact embedded App ID when the metadata response uses a different envelope key; ambiguous or conflicting identities still fail closed.
+
 - Fixed: critic lookup prefers verified Steam storefront names over alternate IGDB spellings, and mapped portfolio/Amazon titles use the same canonical identity rather than shortened display labels.
 - New: Reviews and Ratings on portfolio, CCU, Steam/console sales, combined-family and Amazon detail pages, with applicable Steam, PlayStation and Xbox player ratings plus verified OpenCritic critic scores via OmkarCloud.
 - Added: shared source links, capture dates, native rating scales, unavailable/stale states, server-side caching and a conservative provider request guard. HMAP can rebroadcast the public catalog response without score recalculation.

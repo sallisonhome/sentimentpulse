@@ -23,10 +23,20 @@ function safeIgdbId(row: CatalogRow) {
   return row.matchConfidence !== "low" && metadataMatchesStorefront(row.storeName, row.igdbName) ? row.igdbId : null;
 }
 
+function familyKeys(row: CatalogRow): string[] {
+  // Buying links use trusted IGDB spelling on Steam/PS (e.g. "II"),
+  // while critic search needs the storefront spelling ("2"). Both are
+  // verified aliases of this SKU, not permission to fuzzy-match other games.
+  const names = [row.name];
+  if (row.matchConfidence !== "low" && metadataMatchesStorefront(row.name, row.igdbName)
+    && metadataMatchesStorefront(row.storeName, row.igdbName)) names.push(row.igdbName);
+  return Array.from(new Set(names.map(editionGroupKey).filter(Boolean)));
+}
+
 function family(rows: CatalogRow[], lead: CatalogRow): CatalogRow[] {
-  const key = editionGroupKey(lead.name);
+  const keys = familyKeys(lead);
   const id = safeIgdbId(lead);
-  return rows.filter(r => r.titleId === lead.titleId || (key && editionGroupKey(r.name) === key
+  return rows.filter(r => r.titleId === lead.titleId || (familyKeys(r).some(key => keys.includes(key))
     && !(id && safeIgdbId(r) && id !== safeIgdbId(r))));
 }
 
@@ -49,7 +59,7 @@ function corroboratedTitle(rows: CatalogRow[], name: string, releaseDate: string
   if (!Number.isFinite(date)) return undefined;
   const candidates = rows.filter(r => {
     const candidateDate = Date.parse(r.storeReleaseDate ?? r.releaseDate ?? "");
-    return editionGroupKey(r.name) === editionGroupKey(name)
+    return familyKeys(r).includes(editionGroupKey(name))
       && Number.isFinite(candidateDate) && Math.abs(candidateDate - date) <= 370 * 86400_000;
   });
   const ids = new Set(candidates.map(safeIgdbId).filter(Boolean));
@@ -76,7 +86,7 @@ export function registerReviewsRatingsRoutes(app: Express) {
       let game: RatingIdentity | null = null;
       if (kind === "title" || kind === "family") {
         const lead = kind === "title" ? rows.find(r => r.titleId === Number(id))
-          : rows.find(r => r.name && editionGroupKey(r.name) === id);
+          : rows.find(r => familyKeys(r).includes(id));
         if (!lead) return res.status(404).json({ error: "title_not_found" });
         members = family(rows, lead);
         game = identity(members);

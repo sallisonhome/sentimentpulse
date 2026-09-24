@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { ReviewsRatingsService, type RatingIdentity } from "./reviews-ratings-service";
-import { exactCandidate, normalizeCritics, ratingIdentity, score, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
+import { exactCandidate, normalizeCritics, ratingIdentity, score, steamAppDetails, steamSummary, verifyCriticIdentity } from "./reviews-ratings-normalize";
 
 const DAY = 86400_000;
 const game: RatingIdentity = { name: "Elden Ring", releaseDate: "2022-02-25", steamAppId: "1245620" };
@@ -144,5 +144,64 @@ test("console rating snapshots preserve stars, dates and zero; never sum duplica
   assert.equal(r.players[1].value, 0);
   assert.equal(r.players[1].status, "stale");
   assert.equal(r.players[1].capturedAt, "2026-09-01");
+  db.close();
+});
+
+test("Steam identity accepts only a unique exact embedded App ID, even with a different envelope key", () => {
+  const data = { steam_appid: 2104890, name: "RoadCraft", type: "game", release_date: { date: "20 May, 2025" } };
+  const entry = { success: true, data };
+  assert.deepEqual(steamAppDetails({ "2104890": entry }, "2104890"), data);
+  assert.deepEqual(steamAppDetails({ "5075720": entry }, "2104890"), data);
+  assert.equal(steamAppDetails({ "2104890": { success: false } }, "2104890"), null);
+  for (const raw of [
+    null, [], {}, { other: { success: false } },
+    { wrong: { success: true, data: { ...data, steam_appid: 123 } } },
+    { a: entry, b: entry },
+    { "2104890": { success: false }, other: entry },
+    { "2104890": { success: true, data: { ...data, steam_appid: 123 } }, other: entry },
+    { other: { success: true, data: { ...data, name: "" } } },
+  ]) assert.throws(() => steamAppDetails(raw, "2104890"));
+});
+
+test("Steam metadata repair bypasses old error backoff, preserves score caches and spends no critic calls", async () => {
+  const db = database(), calls: string[] = [], now = Date.parse("2026-09-24T14:00:00Z");
+  const request = (async (url: any) => {
+    calls.push(String(url));
+    return new Response(JSON.stringify({ "5075720": { success: true, data: {
+      steam_appid: 2104890, name: "RoadCraft", type: "game", release_date: { date: "20 May, 2025" },
+    } } }));
+  }) as typeof fetch;
+  const service = new ReviewsRatingsService(db, () => "test", request, () => now);
+  db.prepare("INSERT INTO review_rating_cache VALUES(?,?,?,?,?,?)")
+    .run("steam_identity:2104890", null, null, now, now + DAY, "error");
+  assert.equal(service.steamIdentity("2104890").refreshing, true);
+  await service.settle();
+  assert.equal(service.steamIdentity("2104890").value?.name, "RoadCraft");
+  assert.equal(service.steamIdentity("2104890").value?.steamAppId, "2104890");
+  assert.equal(calls.length, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM opencritic_request_usage").get().n, 0);
+  assert.equal(db.prepare("SELECT status FROM review_rating_cache WHERE cache_key='steam_identity:2104890'").get().status, "error");
+  db.close();
+});
+
+test("non-Saber Buying console observations are reused without external calls or signal writes", async () => {
+  const db = database(), calls: string[] = [], now = Date.parse("2026-09-24T14:00:00Z");
+  db.exec(`INSERT INTO store_rating_signal_daily VALUES
+    (1,10,'ps5',4.71,183283,'2026-09-23','2026-09-23T05:00:00Z','ltd'),
+    (2,10,'ps5',1.5,8,'2026-09-24','2026-09-24T05:00:00Z','d7'),
+    (3,20,'xbox',4.8,20000,'2026-09-24','2026-09-24T05:00:00Z','ltd'),
+    (4,30,'xbox',1.1,500,'2026-09-24','2026-09-24T06:00:00Z','ltd')`);
+  const before = db.prepare("SELECT * FROM store_rating_signal_daily").all();
+  const service = new ReviewsRatingsService(db, () => "", fixtureFetch(calls), () => now);
+  const result = service.get({ ...game, steamAppId: null }, [
+    { titleId: 10, platform: "ps5", externalSku: "UP0700-ELDEN", conceptId: null },
+    { titleId: 20, platform: "xbox", externalSku: "ELDENXBOXSKU", conceptId: null },
+  ]);
+  await service.settle();
+  assert.deepEqual(result.players.map(p => [p.source, p.value, p.count, p.capturedAt]), [
+    ["ps5", 4.71, 183283, "2026-09-23"], ["xbox", 4.8, 20000, "2026-09-24"],
+  ]);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(db.prepare("SELECT * FROM store_rating_signal_daily").all(), before);
   db.close();
 });
