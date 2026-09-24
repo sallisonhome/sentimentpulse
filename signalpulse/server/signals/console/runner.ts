@@ -17,6 +17,7 @@ import { collectSteamSignals, type SteamCollectorInput } from "./steam";
 import { collectXboxSignals, type XboxCollectorInput } from "./xbox";
 import { collectPsSignals, type PsCollectorInput } from "./ps";
 import { bootstrapConsoleTitleNames } from "./discovery";
+import { isVerifiedRatingsOnly } from "../../ratings-only-sku";
 import type { BusinessModel, ConsolePlatform, StoreRatingSnapshot, SteamReviewBucket } from "./types";
 
 interface RunResult {
@@ -50,6 +51,8 @@ interface SkuGateRow {
   external_sku: string;
   business_model: BusinessModel;
   sku_role: string;               // 'base' | 'edition' | 'dlc' | 'bundle' — free-text on the schema side
+  is_manual_override: number;
+  business_model_source: string;
 }
 
 /**
@@ -66,7 +69,7 @@ function loadSkuGate(platform: ConsolePlatform, skus: string[]): Map<string, Sku
   if (skus.length === 0) return new Map();
   const placeholders = skus.map(() => "?").join(",");
   const stmt = rawSqlite.prepare(
-    `SELECT title_id, external_sku, business_model, sku_role
+    `SELECT title_id, external_sku, business_model, sku_role,is_manual_override,business_model_source
        FROM platform_sku_map
       WHERE platform = ?
         AND external_sku IN (${placeholders})`
@@ -250,7 +253,9 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
     // inflate the ratings-derived unit signal by N×. Poll only sku_role='base'
     // — the collector's per-title snapshot already covers every edition's
     // ratings via the concept-level roll-up.
-    if (g.sku_role !== "base") {
+    // Explicit paid ratings-only mappings use this same collector/storage,
+    // but remain excluded from the estimator's sku_role='base' universe.
+    if (g.sku_role !== "base" && !isVerifiedRatingsOnly(g)) {
       gatedNonBase++;
       log(`ps gate: skipping productId=${inp.productId} — sku_role='${g.sku_role}' (base-only invariant; concept ratings shared across editions)`);
       continue;

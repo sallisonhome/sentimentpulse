@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import { rawSqlite, storage } from "./storage";
 import { editionGroupKey } from "./routes-console-leaderboards";
 import { metadataMatchesStorefront } from "./console-title-identity";
+import { RATINGS_ONLY_SOURCE } from "./ratings-only-sku";
 import { emptyCritics, ReviewsRatingsService, type RatingIdentity, type RatingSku } from "./reviews-ratings-service";
 
 type CatalogRow = RatingSku & { name: string | null; storeName: string | null; igdbName: string | null;
@@ -16,7 +17,9 @@ function catalog(): CatalogRow[] {
     c.release_date AS releaseDate,c.store_release_date AS storeReleaseDate
     FROM platform_sku_map p LEFT JOIN console_title_igdb c ON c.title_id=p.title_id
     LEFT JOIN xbox_title_cache x ON p.platform='xbox' AND x.big_id=p.external_sku
-    WHERE p.platform IN ('steam','ps5','xbox') AND p.sku_role='base'`).all() as CatalogRow[];
+    WHERE p.platform IN ('steam','ps5','xbox') AND (p.sku_role='base'
+      OR (p.sku_role='ratings_only' AND p.is_manual_override=1 AND p.business_model_source=?))`)
+    .all(RATINGS_ONLY_SOURCE) as CatalogRow[];
 }
 
 function safeIgdbId(row: CatalogRow) {

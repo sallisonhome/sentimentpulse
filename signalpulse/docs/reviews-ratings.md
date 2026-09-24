@@ -50,6 +50,32 @@ Four additive, idempotently created tables: `review_rating_cache`, `opencritic_t
 
 ## QA and rollout
 
+### Eight-title console coverage backfill
+
+`scripts/portfolio-ratings-backfill.ts <output-directory>` reads live Steam,
+PlayStation and Xbox collectors and writes an evidence file plus four
+single-statement SQL files. It does not connect to a database. The fixed
+allowlist covers Bus Bound, World War Z, Toxic Commando, Insurgency: Sandstorm,
+Docked, SnowRunner, RoadCraft and Expeditions. It verifies exact candidate IDs,
+store names, current nonempty observations and paid Xbox identity. Bus Bound
+uses Xbox `9PGTSPHXQ1DQ`, not its separate preorder/package listing.
+
+After review and explicit production-write approval, apply maps, metadata,
+Xbox identity cache and snapshots in that order using the existing DB Admin
+workflow. Re-running is idempotent: existing SKU IDs, pricing, overrides,
+metadata and same-day ratings are preserved. Each workflow run takes its
+normal pre-write database backup. Do not run the broad daily estimation job
+just to populate these cards.
+
+All new mappings are manually protected `ratings_only` SKUs. Existing base
+Steam mappings are untouched. The existing daily collectors refresh their
+observations in `store_rating_signal_daily`; the estimator and sales
+leaderboards remain restricted to `sku_role='base'`. PlayStation only admits
+the exact verified/manual ratings-only source marker, not generic editions.
+The original World War Z PS4 store listing is permitted for the PS Store
+rating card with an explicit PS4 label, but never counted as a PS5 sales SKU.
+No Aftermath rating is copied onto base World War Z.
+
 Run SignalPulse `npm run check`, `npm run build`, and the `tsx --test` ratings, title-metadata, sales-presentation and family-route tests. Run HMAP's build and ratings/Buying presentation tests. Browser-check all eight page types at desktop and phone widths, loading/error/retry, null/zero/stale values, outbound source links and section placement. UI QA fixtures are local test inputs, not production data.
 
 After explicit approval: deploy SignalPulse first through its existing GitHub workflow, configure the masked Settings key, verify a real cold fetch and a cache hit, then deploy HMAP through its workflow and compare response values verbatim. Verify app health and existing sales pages after both deploys.

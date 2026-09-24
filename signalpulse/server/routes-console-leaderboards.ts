@@ -105,6 +105,9 @@ export function editionGroupKey(name: string | null | undefined): string {
   s = s.replace(/[“”„‟«»]/g, '"');
   // Collapse whitespace early so " - " / ": " separators normalize.
   s = s.replace(/\s+/g, " ").trim();
+  // Sony also uses square-bracket platform tags (Insurgency: Sandstorm).
+  // Normalize only explicit platform packaging, never arbitrary subtitles.
+  s = s.replace(/\s*\[(ps4\s*(?:&|and)\s*ps5|ps[45])\]\s*$/, " ($1)");
 
   // Strip trailing parenthesized platform tags — e.g.
   //   "Cyberpunk 2077: Ultimate Edition (Xbox Series X|S)"
