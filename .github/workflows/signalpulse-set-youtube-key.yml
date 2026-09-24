@@ -1,0 +1,48 @@
+name: SignalPulse Set YouTube API Key
+
+# Writes the YouTube Data API v3 key from the repo secret YOUTUBE_API_KEY
+# into SignalPulse's app_settings.youtube_api_key on the droplet (the same
+# field as Settings → API keys). The key travels over SSH stdin only; it is
+# never echoed, passed as an argument, or written to a file. Prints only the
+# stored length and the key's last 4 characters for verification.
+#
+# No restart is needed: routes-youtube.ts reads the setting on every run.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+
+jobs:
+  set-key:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Write key
+        env:
+          YT_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$YT_KEY" | grep -Eq '^AIza[0-9A-Za-z_-]{35}$'; then
+            echo "ERROR: secret YOUTUBE_API_KEY is missing or not a Google API key"; exit 1
+          fi
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          printf '%s\n' "$YT_KEY" | $SSH 'set -euo pipefail
+            read -r K
+            printf "%s" "$K" | grep -Eq "^AIza[0-9A-Za-z_-]{35}$" || { echo "bad key on droplet side"; exit 1; }
+            wd=$(systemctl show -p WorkingDirectory --value signalpulse)
+            DB="$wd/data.db"
+            NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+            sqlite3 "$DB" "INSERT INTO app_settings (key, value, label, category, is_secret, created_at, updated_at)
+              VALUES ('"'"'youtube_api_key'"'"', '"'"'$K'"'"', '"'"'YouTube Data API Key'"'"', '"'"'api_keys'"'"', 1, '"'"'$NOW'"'"', '"'"'$NOW'"'"')
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;"
+            sqlite3 "$DB" "SELECT '"'"'stored length='"'"' || length(value) || '"'"' last4='"'"' || substr(value, -4) FROM app_settings WHERE key='"'"'youtube_api_key'"'"';"'
