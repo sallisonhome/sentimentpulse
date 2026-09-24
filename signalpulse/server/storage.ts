@@ -3417,6 +3417,7 @@ export class DatabaseStorage implements IStorage {
       { key: "perplexity_api_key", label: "Perplexity API Key", category: "api_keys", isSecret: true },
       { key: "twitch_client_id", label: "Twitch Client ID (IGDB)", category: "api_keys", isSecret: false },
       { key: "twitch_client_secret", label: "Twitch Client Secret (IGDB)", category: "api_keys", isSecret: true },
+      { key: "opencritic_rapidapi_key", label: "OpenCritic via OmkarCloud: RapidAPI Key", category: "api_keys", isSecret: true },
       // Amazon Retail app (2026-09-06) — Rainforest API key powers the Saber
       // Amazon Leaderboard tab plus the full Amazon Retail sub-app suite
       // (Charts, Buy Box Monitor, Reviews Pulse, Movers & Shakers, Search

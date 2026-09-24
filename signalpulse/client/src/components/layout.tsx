@@ -44,7 +44,8 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
   const [location] = useLocation();
   const isMobile = useIsMobile();
   const isDemosPage = location.startsWith("/demos-leaderboard");
-  const isCompactDataPage = isDemosPage || location === "/dashboard";
+  const isRatingsDetailPage = /^\/(?:products\/\d+|ccu\/\d+|amazon\/product\/[^/]+|console-leaderboards\/(?:multiplatform\/[^/]+|(?:steam|ps5|xbox)\/\d+))\/?$/.test(location);
+  const isCompactDataPage = isDemosPage || location === "/dashboard" || isRatingsDetailPage;
   const [sidebarOverride, setSidebarCollapsed] = useState<boolean | null>(null);
   const sidebarCollapsed = sidebarOverride ?? (isCompactDataPage && isMobile);
 

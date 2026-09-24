@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { ExternalLink, ArrowLeft, RefreshCw, ShieldCheck, ThumbsUp } from "lucide-react";
 import { useState } from "react";
 import { apiRequest } from "@/lib/queryClient";
+import { ReviewsRatingsSection } from "@/components/reviews-ratings";
 
 interface ProductDetail {
   asin: string;
@@ -244,6 +245,8 @@ export default function AmazonProductDetail({ params }: ProductDetailProps) {
           </div>
         </Card>
       )}
+
+      <ReviewsRatingsSection kind="amazon" id={asin} />
 
       <Tabs defaultValue="overview">
         <TabsList>

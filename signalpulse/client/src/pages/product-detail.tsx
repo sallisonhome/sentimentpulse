@@ -9,6 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useState, useEffect } from "react";
+import { ReviewsRatingsSection } from "@/components/reviews-ratings";
 import {
   ArrowLeft, Edit2, ChevronDown, ChevronRight, Info, AlertTriangle, BarChart3, Plus, Clock,
   Upload, DollarSign, Trash2, Lock
@@ -217,6 +218,8 @@ export default function ProductDetail() {
       </div>
 
       <div className="space-y-3">
+        <ReviewsRatingsSection kind="product" id={productId} />
+
         {/* ─── Steam Wishlist Count ───────────────────────────────────── */}
         {hasSteam && (() => {
           // v2.1 (2026-08-11): show current count, day-over-day delta,

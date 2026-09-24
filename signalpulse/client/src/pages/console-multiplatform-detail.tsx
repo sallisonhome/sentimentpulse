@@ -23,6 +23,7 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft } from "lucide-react";
 import { useState } from "react";
 import { RevenueShare, type RevenueSummary } from "@/components/console-revenue-share";
+import { ReviewsRatingsSection } from "@/components/reviews-ratings";
 
 type Platform = "steam" | "xbox" | "ps5";
 type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
@@ -209,6 +210,8 @@ export default function ConsoleMultiplatformDetail() {
           )}
 
           {/* Combined KPIs — summed across every base SKU in the family */}
+          <ReviewsRatingsSection kind="family" id={data.editionGroupKey} />
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-testid="combined-kpi-row">
             <Card className="p-4 border-violet-500/40">
               <div className="text-[10px] uppercase text-muted-foreground tracking-wide">Combined est. revenue</div>

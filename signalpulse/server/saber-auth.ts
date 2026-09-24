@@ -204,6 +204,10 @@ function isPublicRead(req: Request): boolean {
   const method = (req.method || "").toUpperCase();
   if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") return false;
   const path = req.path;
+  // Exact read-only ratings routes expose public store/critic data only.
+  // Portfolio product IDs and Amazon pins remain authenticated.
+  if (/^\/api\/reviews-ratings\/(?:steam|title)\/[1-9]\d{0,9}$/.test(path)
+    || /^\/api\/reviews-ratings\/family\/[^/]{1,200}$/.test(path)) return true;
   if (PUBLIC_READ_PATH_DENYLIST.has(path)) return false;
   // Suffix-based denials for parameterized paths.
   if (path.startsWith("/api/console/leaderboards/") && path.endsWith("/calibration")) return false;

@@ -11,6 +11,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { PortraitCover } from "@/components/portrait-cover";
+import { ReviewsRatingsSection } from "@/components/reviews-ratings";
 import { useParams, Link } from "wouter";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -221,6 +222,8 @@ export default function ConsoleTitleDetail() {
       )}
 
       {/* KPI window switcher */}
+      <ReviewsRatingsSection kind="title" id={titleId} />
+
       <div className="flex items-center gap-2 flex-wrap">
         <div className="text-xs text-muted-foreground uppercase tracking-wide">Window</div>
         {KPI_WINDOWS.map(w => (

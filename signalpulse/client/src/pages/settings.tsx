@@ -65,6 +65,13 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     settingKeys: ["twitch_client_id", "twitch_client_secret"],
   },
   {
+    key: "opencritic",
+    label: "OpenCritic Reviews and Ratings",
+    description: "RapidAPI key subscribed to OmkarCloud's OpenCritic API. The provider offers a free 1,000-request/month plan; a key and plan activation are still required. SignalPulse shares its cache with HMAP, refreshes viewed titles after 24 hours, and limits this integration to 900 attempted calls per rolling 31 days. Other uses of the same account are not included in that local limit. Unset credentials leave critic scores unavailable.",
+    icon: <KeyRound className="h-5 w-5" />,
+    settingKeys: ["opencritic_rapidapi_key"],
+  },
+  {
     key: "rainforest",
     label: "Amazon Retail (Rainforest API)",
     description: "Rainforest API key powers the Amazon Retail app + Saber Amazon Leaderboard tab \u2014 nightly chart ingestion for PS5/Xbox/Switch, per-SKU Buy Box & Reviews Pulse, weekly Also-Bought recommendations, keyword Search SOV, and Movers/New-Releases feeds. Leave unset to disable all Amazon ingestion (the cron silently no-ops and the leaderboard shows an empty state).",

@@ -2,6 +2,13 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 24, 2026
+
+- New: Reviews and Ratings on portfolio, CCU, Steam/console sales, combined-family and Amazon detail pages, with applicable Steam, PlayStation and Xbox player ratings plus verified OpenCritic critic scores via OmkarCloud.
+- Added: shared source links, capture dates, native rating scales, unavailable/stale states, server-side caching and a conservative provider request guard. HMAP can rebroadcast the public catalog response without score recalculation.
+- Improved: these detail pages use the existing compact sidebar on phones.
+- Configuration: set the masked OpenCritic RapidAPI key in Settings; see `docs/reviews-ratings.md` for limitations and rollout checks.
+
 ## September 20, 2026
 
 - Fixed: shared fail-closed metadata protection now covers both individual and combined-family PDPs. Low-confidence or family-mismatched IGDB data cannot override storefront identity or leak unrelated artwork, credits, descriptions, screenshots, or release dates. Adds the Halloween/Solitaire regression test; corrects the earlier incomplete per-platform-only fix.
