@@ -23,12 +23,12 @@ test("real routes and migrations: all PDP identities, public boundary, family ra
       db.prepare(`INSERT INTO platform_sku_map(title_id,platform,external_sku,sku_role,business_model,refreshed_at,created_at)
         VALUES(?,?,?,'base','paid',?,?)`).run(id, platform, sku, stamp, stamp);
       db.prepare(`INSERT INTO console_title_igdb(title_id,name,store_name,igdb_id,release_date,store_release_date,refreshed_at,created_at)
-        VALUES(?, 'Warhammer 40,000: Space Marine 2','Warhammer 40,000: Space Marine 2',1,'2024-09-09','2024-09-09',?,?)`).run(id, stamp, stamp);
+        VALUES(?, 'Warhammer 40,000: Space Marine II','Warhammer 40,000: Space Marine 2',1,'2024-09-09','2024-09-09',?,?)`).run(id, stamp, stamp);
       db.prepare(`INSERT INTO store_rating_signal_daily(title_id,platform,capture_date,source_endpoint,rating_count,avg_rating,window_label,created_at)
         VALUES(?,?,?,'fixture',100,4.5,'ltd',?)`).run(id, platform, stamp, stamp);
     }
     db.prepare(`INSERT INTO products(id,title,platforms,player_format,genre,release_date,steam_app_id,created_at,updated_at)
-      VALUES(1,'Warhammer 40,000: Space Marine 2','["Steam","PS5","Xbox"]','single','Action','2024-09-09','2183900',?,?)`).run(stamp, stamp);
+      VALUES(1,'Space Marine 2','["Steam","PS5","Xbox"]','single','Action','2024-09-09','2183900',?,?)`).run(stamp, stamp);
     db.prepare(`INSERT INTO amazon_asin_map(product_id,platform,asin,updated_at) VALUES(1,'ps5','B123456789',?)`).run(stamp);
     globalThis.fetch = (async (input: any, opts: any) => {
       if (String(input).includes("store.steampowered.com/appreviews/2183900")) {
@@ -67,6 +67,10 @@ test("real routes and migrations: all PDP identities, public boundary, family ra
       const privateResponse = await realFetch(`${base}/${suffix}`, auth);
       assert.equal(privateResponse.status, 200);
       assert.equal(privateResponse.headers.get("cache-control"), "private, max-age=30");
+      const privateBody = await privateResponse.json();
+      assert.equal(privateBody.title, "Warhammer 40,000: Space Marine 2",
+        "portfolio aliases must resolve through the exact verified catalog identity");
+      assert.deepEqual(privateBody.players, combined.players);
     }
     assert.equal((await realFetch(`${base}/title/100`, { method: "POST" })).status, 401);
     assert.equal((await realFetch(`${base}/title/100/admin`)).status, 401);

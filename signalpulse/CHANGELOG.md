@@ -4,6 +4,7 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 24, 2026
 
+- Fixed: critic lookup prefers verified Steam storefront names over alternate IGDB spellings, and mapped portfolio/Amazon titles use the same canonical identity rather than shortened display labels.
 - New: Reviews and Ratings on portfolio, CCU, Steam/console sales, combined-family and Amazon detail pages, with applicable Steam, PlayStation and Xbox player ratings plus verified OpenCritic critic scores via OmkarCloud.
 - Added: shared source links, capture dates, native rating scales, unavailable/stale states, server-side caching and a conservative provider request guard. HMAP can rebroadcast the public catalog response without score recalculation.
 - Improved: these detail pages use the existing compact sidebar on phones.

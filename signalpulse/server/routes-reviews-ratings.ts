@@ -34,9 +34,11 @@ function identity(rows: CatalogRow[]): RatingIdentity | null {
   const lead = rows.find(r => r.platform === "steam") ?? rows[0];
   if (!lead?.name) return null;
   const safe = lead.matchConfidence !== "low" && metadataMatchesStorefront(lead.storeName, lead.igdbName);
-  // Prefer exact trusted IGDB title over store packaging ("PS4 & PS5").
-  // A failed/low-confidence match must never provide the critic identity.
-  const name = safe && lead.igdbName ? lead.igdbName : lead.name;
+  // Steam's verified store name preserves provider naming (e.g. Space Marine
+  // "2" versus IGDB's "II"). For console-only families prefer trusted IGDB
+  // over packaging such as "PS4 & PS5". Never broaden the match fuzzily.
+  const name = lead.platform === "steam" && lead.storeName ? lead.storeName
+    : safe && lead.igdbName ? lead.igdbName : lead.name;
   const steam = rows.find(r => r.platform === "steam" && /^[1-9]\d*$/.test(r.externalSku));
   return { name, releaseDate: (safe ? lead.releaseDate : null) ?? lead.storeReleaseDate,
     steamAppId: steam?.externalSku ?? null };
@@ -84,7 +86,7 @@ export function registerReviewsRatingsRoutes(app: Express) {
         const lead = rows.find(r => r.platform === "steam" && r.externalSku === product.steamAppId)
           ?? corroboratedTitle(rows, product.title, product.releaseDate);
         members = lead ? family(rows, lead) : [];
-        game = { name: product.title, releaseDate: product.releaseDate,
+        game = identity(members) ?? { name: product.title, releaseDate: product.releaseDate,
           steamAppId: product.steamAppId && /^[1-9]\d*$/.test(product.steamAppId) ? product.steamAppId : null };
       } else if (kind === "amazon") {
         // A competitor pin's parent_product_id is the SABER parent, not the
@@ -95,7 +97,7 @@ export function registerReviewsRatingsRoutes(app: Express) {
           const lead = rows.find(r => r.platform === "steam" && r.externalSku === product.steamAppId)
             ?? corroboratedTitle(rows, product.title, product.releaseDate);
           members = lead ? family(rows, lead) : [];
-          game = { name: product.title, releaseDate: product.releaseDate, steamAppId: product.steamAppId };
+          game = identity(members) ?? { name: product.title, releaseDate: product.releaseDate, steamAppId: product.steamAppId };
         } else {
           const competitor = rawSqlite.prepare("SELECT name,steam_app_id FROM amazon_competitor_asin_map WHERE asin=? AND is_active=1")
             .get(id) as { name: string; steam_app_id: number | null } | undefined;
