@@ -300,6 +300,10 @@ const OPS_TOKEN_PATHS = new Set([
 const OPS_TOKEN_PREFIXES = [
   "/api/amazon/ingest/", // covers /run/:job POST and /runs GET summary
   "/api/ops/demos-portal-probe/", // covers /:appId GET, see server/signals/demos/portal-actuals.ts
+  // YouTube Pulse (2026-09-24): manual run trigger, relevance dry-run and the
+  // SentimentPulse comment feed. The feed carries YouTube comment text, so it
+  // is ops-token or JWT only — never public-read. See server/routes-youtube.ts.
+  "/api/youtube/ops/",
 ];
 
 function hasValidOpsToken(req: Request): boolean {

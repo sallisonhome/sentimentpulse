@@ -51,6 +51,7 @@ const PERIOD_LABELS: Record<Period, string> = {
 
 // ── Source display + palette ──────────────────────────────────────────────
 export type SourceKey =
+  | 'youtube_comment'
   | 'steam_forum'
   | 'reddit'
   | 'bluesky'
@@ -64,6 +65,7 @@ interface SourceMeta {
 }
 
 const SOURCES: readonly SourceMeta[] = [
+  { key: 'youtube_comment', label: 'YouTube Comments', color: '#C63838' },
   { key: 'steam_forum',    label: 'Steam Forum',     color: '#20808D' }, // teal
   { key: 'reddit',         label: 'Reddit',          color: '#A84B2F' }, // terra/rust
   { key: 'bluesky',        label: 'Bluesky',         color: '#944454' }, // mauve
@@ -108,6 +110,7 @@ export interface VolumeAggregate {
 }
 export function aggregateVolumeBySource(points: VolumePoint[]): VolumeAggregate {
   const bySource: Record<SourceKey, number> = {
+    youtube_comment: 0,
     steam_forum:  0,
     reddit:       0,
     bluesky:      0,
@@ -117,6 +120,7 @@ export function aggregateVolumeBySource(points: VolumePoint[]): VolumeAggregate 
   let total          = 0
   let redditComments = 0
   for (const p of points) {
+    bySource.youtube_comment += p.youtube_comment ?? 0
     bySource.steam_forum  += p.steam_forum ?? 0
     bySource.reddit       += p.reddit ?? 0
     bySource.bluesky      += p.bluesky ?? 0

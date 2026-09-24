@@ -183,6 +183,11 @@ export default function SettingsPage() {
                   health={ingestStatus.steam_forum_health}
                   fetched={ingestStatus.steam_forum_fetched_total}
                 />
+                <SourceHealthRow
+                  label="YouTube comments"
+                  health={ingestStatus.youtube_health}
+                  fetched={ingestStatus.youtube_fetched_total}
+                />
               </div>
               <Button
                 size="sm"

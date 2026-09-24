@@ -30,7 +30,7 @@ def get_posts(
         None, description="positive | negative | neutral"
     ),
     source: Optional[str] = Query(
-        None, description="steam_review | steam_forum | reddit | bluesky"
+        None, description="steam_review | steam_forum | reddit | reddit_comment | youtube_comment | bluesky | dtf"
     ),
     relevance: Optional[str] = Query(
         None,
@@ -103,7 +103,7 @@ def get_posts(
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid source '{source}'. "
-                       f"Valid values: steam_review, steam_forum, reddit, bluesky",
+                       f"Valid values: {', '.join(s.value for s in SourceEnum)}",
             )
         q = q.filter(RawPost.source == src)
 
