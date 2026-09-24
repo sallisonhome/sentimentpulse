@@ -18,6 +18,34 @@ from datetime import datetime, timedelta, timezone
 from services import ingestor
 
 
+def test_targeted_import_excludes_skipped_sources_from_retry_eligibility():
+    """Evaluate the actual production eligibility expressions, not copies.
+
+    Transport, retry and auto-recovery all share these eligibility variables.
+    A YouTube-only import must not spend minutes retrying disabled sources.
+    """
+    import ast
+    import inspect
+    from types import SimpleNamespace
+
+    tree = ast.parse(inspect.getsource(ingestor.run_ingestion))
+    expressions = {
+        node.targets[0].id: node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in {"bluesky_eligible", "eligible_reddit_games"}
+    }
+    assert set(expressions) == {"bluesky_eligible", "eligible_reddit_games"}
+    game = SimpleNamespace(subreddits=["game"])
+    for skipped, expected in [(set(), True), ({"reddit", "bluesky"}, False)]:
+        scope = {"skip_sources": skipped, "active_games": [game],
+                 "bsky_handle": "test", "bsky_pw": "test", "bsky_kill_switch": False}
+        for expr in expressions.values():
+            result = eval(compile(ast.Expression(expr), "<production eligibility>", "eval"), scope)
+            assert bool(result) is expected
+
+
 def _set_status(**kwargs):
     """Reset the module-level _status dict for isolation between tests."""
     ingestor._status["is_running"] = False

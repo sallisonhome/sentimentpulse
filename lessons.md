@@ -1,5 +1,28 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-24 — Test SQLite NULL pagination through the real HTTP client
+
+The first production YouTube collector retained 19,852 comments, but older-thread
+sweeps sent `pageToken=null` after a completed sweep. The pipeline mock accepted
+the nullable value, hiding a serialization defect in the actual YouTube client.
+Normalize SQLite NULL to undefined at the cursor boundary and omit nullish
+query parameters in the client. The regression must exercise `runComments`
+through `YouTubeClient` with an HTTP transport double and inspect the URL.
+Never treat mocked pipeline tests alone as live upstream verification.
+
+The one-time activation SSH session also dropped during a quiet collection
+interval. Long operations need SSH keepalives and a resumable consumer-only
+activation path; do not repeat a completed producer collection after transport
+failure. Verify database rows, importer completion and live source cards before
+calling activation complete.
+
+The existing ingestor's Phase B retries did not honor manual `skip_sources`:
+a YouTube-only activation still entered Reddit/Bluesky retries. Derive retry
+eligibility from both source configuration and the explicit skip set, and mark
+skipped Steam sources skipped rather than failed. Keep the scheduled default
+`skip_sources=None` unchanged. Test the actual eligibility expressions for both
+targeted and all-source runs.
+
 A running list of mistakes the agent has made on this project and corrective
 rules to prevent them from happening again. Every entry references the
 session date so future agents can reconstruct context.

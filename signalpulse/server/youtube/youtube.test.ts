@@ -10,6 +10,7 @@ import { syncTitles, backfillFloor, TITLE_SEEDS, seedFor, buildTitleSources, spe
 import { aggregateLookup, runLookup, lookupConfig } from "./lookup";
 import { readYoutubeSeries, SeriesInputError } from "./series";
 import { youtubeSeriesCsv } from "../../shared/youtube-series";
+import { YouTubeClient } from "./api";
 
 const src = (products: ProductLite[], games: SentimentPulseGameLite[] | null = [], comp = new Map<number, number>()) => buildTitleSources(products, games, comp);
 
@@ -23,6 +24,29 @@ const DAY = 86_400_000;
 function freshDb(): YtDb {
   return openYoutubeDb(":memory:");
 }
+
+test("completed comment backfill restarts without a literal null page token", async () => {
+  const db = freshDb();
+  const now = new Date();
+  syncTitles(db, src([{ id: 1, title: "Game", steamAppId: "123", releaseDate: null }]));
+  addVideo(db, { video_id: "v", title_id: 123, published_at: now.toISOString(), comment_count: 1 });
+  db.prepare("UPDATE yt_videos SET comments_polled_at=?, comments_backfill_done=1, comments_backfill_token=NULL").run(now.toISOString());
+  const urls: URL[] = [];
+  const client = new YouTubeClient(db, "test-only", (async (input: any) => {
+    const url = new URL(String(input));
+    urls.push(url);
+    assert.equal(url.searchParams.has("pageToken"), false);
+    return new Response(JSON.stringify({ items: [] }), { status: 200 });
+  }) as typeof fetch);
+  const c = counters();
+  await runComments(db, client, c, { extendedStorageApproved: true, now: () => now });
+  assert.equal(urls.length, 1);
+  assert.deepEqual(c.notes, []);
+  // Defense in depth for nullable DB values reaching any API caller.
+  await client.commentThreads({ videoId: "v", pageToken: null as any });
+  assert.equal(urls.length, 2);
+  db.close();
+});
 
 function addVideo(db: YtDb, v: Partial<Record<string, any>> & { video_id: string; title_id: number; published_at: string }) {
   const row = {

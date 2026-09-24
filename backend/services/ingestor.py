@@ -499,7 +499,10 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         bsky_kill_switch = os.environ.get("BLUESKY_ENABLED", "").lower() == "false"
         bsky_handle = os.environ.get("BLUESKY_HANDLE", "").strip()
         bsky_pw = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
-        bluesky_eligible = bool(bsky_handle and bsky_pw and not bsky_kill_switch)
+        bluesky_eligible = bool(
+            "bluesky" not in skip_sources
+            and bsky_handle and bsky_pw and not bsky_kill_switch
+        )
 
         def _safe_run_steps_2_to_4b(game: Game) -> tuple[int, int, int, int, int]:
             """Run the fetching steps (2, 3, 4, 4b) for one game.
@@ -692,7 +695,9 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         # If EVERY active game returned 0 Reddit posts fetched despite having
         # subreddits configured, Arctic Shift was down, rate-limiting, or
         # transiently misbehaving.  Try again with exponential backoff.
-        eligible_reddit_games = [g for g in active_games if g.subreddits]
+        eligible_reddit_games = [
+            g for g in active_games if g.subreddits and "reddit" not in skip_sources
+        ]
         reddit_backoffs = [60, 300]  # 1 min, then 5 min
 
         while (
@@ -815,10 +820,10 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         # short and the next-day cron recovers).  We still compute health so
         # partial_failure surfaces if Steam goes 0 across every active game.
         steam_review_health = _verdict(
-            bool(active_games), steam_review_fetched_total, 0
+            bool(active_games) and "steam_review" not in skip_sources, steam_review_fetched_total, 0
         )
         steam_forum_health = _verdict(
-            bool(active_games), steam_forum_fetched_total, 0
+            bool(active_games) and "steam_forum" not in skip_sources, steam_forum_fetched_total, 0
         )
 
         # ── Silent-source detection (Gap 3) ──────────────────────────────────
