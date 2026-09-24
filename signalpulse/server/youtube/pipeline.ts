@@ -379,7 +379,7 @@ export async function runComments(db: YtDb, yt: YouTubeClient, c: RunCounters, o
   for (const v of back) {
     if (!spendable()) return;
     try {
-      let token: string | undefined = v.comments_backfill_token; let pages = 0;
+      let token: string | undefined = v.comments_backfill_token ?? undefined; let pages = 0;
       do {
         const res = await yt.commentThreads({ videoId: v.video_id, pageToken: token });
         pages++;

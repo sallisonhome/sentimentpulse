@@ -52,12 +52,14 @@ export class YouTubeClient {
   counters: ApiCounters = { searchCalls: 0, units: 0 };
   constructor(private db: YtDb, private apiKey: string, private fetchImpl: typeof fetch = fetch) {}
 
-  private async get(path: string, params: Record<string, string | number | undefined>, bucket: Bucket): Promise<any> {
+  private async get(path: string, params: Record<string, string | number | null | undefined>, bucket: Bucket): Promise<any> {
     if (quotaRemaining(this.db, bucket) < 1) throw new QuotaExhaustedError(bucket);
     charge(this.db, bucket, 1);
     if (bucket === "search") this.counters.searchCalls++; else this.counters.units++;
     const qs = new URLSearchParams();
-    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    // SQLite continuation columns are NULL after a completed sweep.
+    // Never send the literal pageToken=null to YouTube.
+    for (const [k, v] of Object.entries(params)) if (v != null && v !== "") qs.set(k, String(v));
     qs.set("key", this.apiKey);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
