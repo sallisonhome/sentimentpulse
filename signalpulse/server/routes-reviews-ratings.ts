@@ -6,6 +6,7 @@ import { metadataMatchesStorefront } from "./console-title-identity";
 import { CCU_RATINGS_SOURCE, RATINGS_ONLY_SOURCES } from "./ratings-only-sku";
 import { emptyCritics, ReviewsRatingsService, type RatingIdentity, type RatingSku } from "./reviews-ratings-service";
 import { criticSearchTitle, ratingIdentity } from "./reviews-ratings-normalize";
+import { reviewedConsoleSibling } from "./reviews-ratings-aliases";
 
 type CatalogRow = RatingSku & { name: string | null; storeName: string | null; igdbName: string | null;
   igdbId: number | null; matchConfidence: string | null; releaseDate: string | null; storeReleaseDate: string | null };
@@ -159,6 +160,11 @@ export function registerReviewsRatingsRoutes(app: Express) {
         game.steamAppId = id;
       }
       if (game) {
+        const siblingId = reviewedConsoleSibling(game.steamAppId, game.name);
+        const sibling = siblingId ? rows.find(row => row.platform === "steam" && row.externalSku === siblingId
+          && ratingIdentity(row.name ?? "") === ratingIdentity("Grand Theft Auto V Enhanced")) : undefined;
+        if (sibling) members = [...members, ...family(rows, sibling).filter(row => row.platform !== "steam"
+          && !members.some(member => member.platform === row.platform && member.externalSku === row.externalSku))];
         // Explicit, reviewed exact-SKU links also cover later console ports,
         // F2P games and Steam apps outside the paid Buying universe.
         // No fuzzy title search or sales-family mutation is performed.
@@ -175,6 +181,12 @@ export function registerReviewsRatingsRoutes(app: Express) {
           members = [...members, ...linked.filter(row => !members.some(member =>
             member.platform === row.platform && member.externalSku === row.externalSku))];
         }
+        // Linked console releases can precede a later Steam port by years.
+        // Collect the verified dates AFTER appending those exact-SKU members.
+        // Never replace the Steam title or its App ID with a console edition.
+        game.releaseDates = Array.from(new Set([
+          ...(game.releaseDates ?? []), ...(identity(members)?.releaseDates ?? []),
+        ]));
       }
       const result = game ? service.get(game, members)
         : { title: null, players: [], openCritic: emptyCritics("unavailable"), refreshing: false };
