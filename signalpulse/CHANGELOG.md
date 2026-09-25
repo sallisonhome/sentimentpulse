@@ -4,6 +4,8 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 24, 2026
 
+- Hardened: missing Steam classification responses preserve known paid-game eligibility and provenance; verified non-game responses still exclude DLC. The daily timer no longer starts discovery merely because the timer itself is started.
+
 - Fixed: paid Steam sales windows use a non-overlapping daily/weekly/monthly review history instead of adding duplicate representations. UTC date boundaries are explicit; missing or inconsistent signals do not become fabricated zero sales. Revenue, units and console overlays continue to use the existing calibrated coefficients, ASPs and platform policies.
 - Added: dry-run-first, manifest-approved lifetime-state repair for provable Steam review-overlap inflation, with retained database backups, transactional per-title audit records and conflict-checked rollback. Verified anchors, manual overrides, mature accumulators and unexplained state are excluded. The repair is an explicit operator action, not an automatic startup migration.
 

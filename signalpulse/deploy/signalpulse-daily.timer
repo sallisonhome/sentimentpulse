@@ -1,6 +1,7 @@
 [Unit]
 Description=SignalPulse daily refresh timer
-Requires=signalpulse-daily.service
+# Unit= below activates the service on schedule. Requires= would also start it
+# immediately whenever an operator starts/restarts the timer itself.
 
 [Timer]
 # 09:15 UTC daily — same clock time as the old GitHub Actions cron.
