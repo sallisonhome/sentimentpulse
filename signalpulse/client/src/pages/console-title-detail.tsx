@@ -287,6 +287,9 @@ export default function ConsoleTitleDetail() {
                   {formatCompact(latest?.ratingCount ?? k.ratingCountEnd)} ratings · avg {avgRatingText}
                 </div>
               )}
+              {k.method?.includes("steam_review_shock_guard_v1") && (
+                <div className="text-xs text-muted-foreground mt-2" data-testid="review-shock-note">Review-burst adjusted estimate. Raw review activity is preserved, not counted directly as purchases.</div>
+              )}
               {gated && (
                 <div className="text-[10px] text-amber-500 mt-1">
                   gated: {gated.replace(/_/g, " ")}

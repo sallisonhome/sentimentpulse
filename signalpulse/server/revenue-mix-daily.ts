@@ -2,6 +2,8 @@ import type Database from "better-sqlite3";
 import { metadataMatchesStorefront, uniquePlatformTitles } from "./console-title-identity";
 import { DAILY_HISTORY_DAYS, DAILY_MIX_VERSION, median, proposeDailyMix, type DailyEvidence } from "./revenue-mix-daily-model";
 import { MIX_PLATFORMS, type Mix } from "./revenue-mix-model";
+import {reviewShockEvidence} from "./steam-review-shocks";
+import type {ReviewBucket} from "./steam-review-windows";
 
 type DB = Database.Database;
 type Policy = { familyKey: (name: string) => string; protectedTitle: (name: string) => boolean; baseline: Mix; asp: Mix };
@@ -89,6 +91,16 @@ export function runDailyMix(db: DB, policy: Policy, now = new Date()) {
   const evidence: DailyEvidence[]=all.map(f=>{
     const e:DailyEvidence={key:f.key,cohort:f.cohort,baseline:policy.baseline,today:[0,0,0],
       history:Array.from({length:DAILY_HISTORY_DAYS},()=>[0,0,0] as Mix),blocked:f.blocked};
+    const steam=f.members.find(m=>m.platform==="steam");
+    if(!e.blocked && steam){
+      const buckets=db.prepare(`SELECT h.* FROM steam_review_history h
+        JOIN platform_sku_map p ON p.external_sku=h.app_id AND p.platform='steam'
+        WHERE p.title_id=? AND p.sku_role='base'`).all(steam.titleId) as ReviewBucket[];
+      const shocks=reviewShockEvidence(buckets,date,steam.released);
+      if(shocks.events.some(event=>event.date>=shift(date,-DAILY_HISTORY_DAYS-1))){
+        e.blocked="review_activity_shock";
+      }
+    }
     for(const [pi,p] of Array.from(MIX_PLATFORMS.entries())){
       const m=f.members.find(m=>m.platform===p);if(!m) continue;
       const h=histories.get(`${m.titleId}|${p}`)??new Map();
