@@ -4,6 +4,10 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 25, 2026
 
+- Fixed: lifetime initialization no longer replays superseded initial review snapshots. Existing states are insert-only on reseed, and daily mature accumulators retain a cumulative-signal high-water mark so review-count dips and rebounds cannot count twice.
+- Added: dry-run-first repair for exactly proven legacy Steam seed contamination. The repair removes only the demonstrated seed excess from the affected lifetime state and its saved lifetime estimates, preserving subsequent increments, raw reviews, calibrated coefficients, verified anchors, overrides, and all non-lifetime windows. It requires a reviewed manifest, backup, transactional audit and conflict-checked rollback under the existing maintenance lock.
+- Fixed: extrapolated console review activity cannot exceed the platform's entire lifetime review count. The catalog repair also covers proven residual Steam overlap maxima and exactly replayable lifetime floors inherited from impossible windows, retaining independent rank floors and refusing unexplained trajectories.
+
 - Fixed: weekly sales boards and individual/family detail pages no longer substitute 30-day quantities when seven-day evidence is unavailable. Protected lifetime anchors calibrate available weekly evidence only; missing values remain unavailable instead of becoming zero. Incomplete combined results are labeled as subtotals and do not display misleading platform percentages or pies. Monthly, quarterly, yearly and lifetime policies, stored estimates, multipliers and anchors are unchanged.
 
 - Hardened: missing-platform Steam verification now paces requests and retries bounded transient errors, honoring short provider cooldowns and explicitly deferring long ones. A rate-limit response never supplies paid-game eligibility or changes review counts.

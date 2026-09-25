@@ -15,14 +15,12 @@
  *                             max(units[d7], units[d30], units[d90],
  *                                 units[m12], units[ltd]).
  *   3. accumulator          — age >= 366d, no override. ltd_units =
- *                             OPTION B REPLAY: sum of
- *                               max(0, rating_count[day_n] - rating_count[day_n-1])
- *                                 * multiplier / digital_share
- *                             across all days in store_rating_signal_daily,
- *                             then max()'d with today's derived LTD.
- *                             (Monotonic guarantee at transition.)
+ *                             Current canonical estimator signal × coefficient,
+ *                             floored by today's qualified window estimates.
+ *                             Never replay raw historical snapshots.
  *
- * Idempotent: uses INSERT ... ON CONFLICT DO UPDATE. Safe to re-run.
+ * Insert-only: existing states, including audited repairs, are never reseeded.
+ * New mature states use the current estimator signal, not historical snapshots.
  *
  * Dry-run mode: DRY_RUN=1 prints the proposed LTD for each of ~20 sample
  * titles across regime and platform, but does NOT write.
@@ -51,7 +49,7 @@ type Row = {
   last_signal_value: number | null;
   age_days: number | null;
   ltd_before: number | null; // today's window_estimates_daily.ltd units_mid
-  replay_total: number | null; // accumulator-only: raw Option B sum before max()
+  replay_total: number | null; // accumulator-only: current canonical signal seed
   windows: Record<string, number | null>; // d7..m12 units for audit
 };
 
@@ -173,48 +171,24 @@ function multFor(titleId: number, platform: string): Mult | null {
   return titleMult.get(`${titleId}|${platform}`) ?? platformMult.get(platform) ?? null;
 }
 
-// Option B replay: sum positive daily deltas × multiplier / digital_share
-// across the entire history in store_rating_signal_daily. Uses today's applied
-// multiplier for every day (i.e. we don't try to reconstruct historical
-// multipliers — the accumulator represents "if today's calibration had been
-// used all along, this is what LTD would be"). Cheaper, and any future
-// re-calibration is handled by a fresh seed pass.
-function replayOptionB(titleId: number, platform: string): { total: number; days: number; last_signal: number | null } | null {
-  const rows = db
-    .prepare(
-      `SELECT capture_date, rating_count
-         FROM store_rating_signal_daily
-        WHERE title_id = ? AND platform = ? AND rating_count IS NOT NULL
-        ORDER BY capture_date ASC`,
-    )
-    .all(titleId, platform) as Array<{ capture_date: string; rating_count: number }>;
-  if (rows.length === 0) return null;
+// Historical positive-only replay is unsafe: a corrected initial snapshot is
+// retained forever, and a dip/rebound counts the same ratings again. Initialize
+// from today's canonical estimator signal instead. Existing state is insert-only.
+function currentSignalSeed(titleId: number, platform: string): { total: number; days: number; last_signal: number | null } | null {
+  const signal = estByKey.get(`${titleId}|${platform}`)?.get("ltd")?.signal;
+  if (signal == null || !Number.isFinite(signal) || signal < 0) return null;
   const m = multFor(titleId, platform);
   if (!m) return null;
-  let sum = 0;
-  let prev: number | null = null;
-  for (const r of rows) {
-    if (prev == null) {
-      // First observed day — treat the entire snapshot as the starting delta.
-      // This over-counts by whatever happened before we started collecting,
-      // but for tenured titles the snapshot is a running total anyway so
-      // "before-collection ratings" are already in there. The max() at the
-      // end handles the case where this seed value is larger than the
-      // current derived LTD.
-      sum += r.rating_count;
-    } else {
-      const delta = r.rating_count - prev;
-      if (delta > 0) sum += delta;
-    }
-    prev = r.rating_count;
-  }
-  const units = (sum * m.multiplier) / m.digital_share;
-  return { total: Math.round(units), days: rows.length, last_signal: prev };
+  const units = (signal * m.multiplier) / m.digital_share;
+  return { total: Math.round(units), days: 1, last_signal: signal };
 }
 
 const rows: Row[] = [];
+const alreadySeeded = new Set((db.prepare("SELECT title_id,platform FROM title_ltd_state").all() as
+  Array<{title_id:number;platform:string}>).map(r => `${r.title_id}|${r.platform}`));
 for (const { title_id, platform } of universe) {
   const key = `${title_id}|${platform}`;
+  if (alreadySeeded.has(key)) continue;
   const rel = releaseByTitle.get(title_id) ?? null;
   const age = rel ? daysBetween(rel, AS_OF) : null;
 
@@ -247,7 +221,7 @@ for (const { title_id, platform } of universe) {
     ltd_units = Math.max(...vals);
   } else {
     regime = "accumulator";
-    const replay = replayOptionB(title_id, platform);
+    const replay = currentSignalSeed(title_id, platform);
     replay_total = replay?.total ?? null;
     const vals = Object.values(wins).filter((v): v is number => v != null && v > 0);
     const max_windows = vals.length > 0 ? Math.max(...vals) : 0;
@@ -313,17 +287,12 @@ if (DRY_RUN) {
 
 // ─── Commit ──────────────────────────────────────────────────────────────
 const nowIso = new Date().toISOString();
-const seededFrom = `option_b_replay_${AS_OF.replaceAll("-", "_")}`;
+const seededFrom = `current_signal_seed_v2_${AS_OF.replaceAll("-", "_")}`;
 const upsert = db.prepare(
   `INSERT INTO title_ltd_state
      (title_id, platform, ltd_units, ltd_source, last_signal_value, last_updated_iso, seeded_from)
    VALUES (?, ?, ?, ?, ?, ?, ?)
-   ON CONFLICT(title_id, platform) DO UPDATE SET
-     ltd_units          = MAX(excluded.ltd_units, title_ltd_state.ltd_units),
-     ltd_source         = excluded.ltd_source,
-     last_signal_value  = excluded.last_signal_value,
-     last_updated_iso   = excluded.last_updated_iso,
-     seeded_from        = excluded.seeded_from`,
+   ON CONFLICT(title_id, platform) DO NOTHING`,
 );
 const tx = db.transaction((rs: Row[]) => {
   for (const r of rs) {

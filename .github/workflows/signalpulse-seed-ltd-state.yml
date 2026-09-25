@@ -52,9 +52,12 @@ jobs:
         env:
           DRY_RUN_INPUT: ${{ inputs.dry_run }}
         run: |
+          case "$DRY_RUN_INPUT" in 0|1) ;; *) echo "dry_run must be 0 or 1"; exit 1;; esac
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
               root@104.236.239.46 "DRY_RUN=$DRY_RUN_INPUT bash -s" <<'REMOTE'
           set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 300 9 || { echo "Maintenance busy; no seed performed"; exit 75; }
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
           cd "$WD"
           echo "── Running seed-title-ltd-state.ts (DRY_RUN=${DRY_RUN:-1}) ──"
