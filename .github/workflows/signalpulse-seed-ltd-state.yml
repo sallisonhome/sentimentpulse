@@ -4,7 +4,7 @@ name: SignalPulse — Audited Steam overlap repair
     inputs:
       mode:
         type: choice
-        options: [dry, apply]
+        options: [dry, apply, inspect]
         default: dry
         required: true
       expected_sha:
@@ -31,7 +31,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          [[ "$MODE" == dry || "$MODE" == apply ]]
+          [[ "$MODE" == dry || "$MODE" == apply || "$MODE" == inspect ]]
           [[ "$EXPECTED_SHA" == none || "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
           mkdir -p evidence
           ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=15 -o ServerAliveCountMax=12 \
@@ -43,6 +43,26 @@ jobs:
           [ -f data.db ] && [ -x node_modules/.bin/tsx ]
           [ -f scripts/repair-steam-review-overlap.ts ]
           systemctl is-active --quiet signalpulse
+          if [ "$MODE" = inspect ]; then
+            systemctl show -p ActiveState,ExecMainStartTimestamp,ExecMainExitTimestamp,Result signalpulse-daily.service
+            systemctl list-timers signalpulse-daily.timer --no-pager
+            journalctl -u signalpulse-daily.service -n 60 --no-pager
+            node <<'NODE'
+          const D=require('better-sqlite3');
+          const live=new D('data.db',{readonly:true});
+          const before=new D('repair-backups/steam-overlap-2026-09-25T02-57-15-534Z.db',{readonly:true});
+          const rows=before.prepare("SELECT * FROM platform_sku_map WHERE platform='steam' AND business_model='paid'").all();
+          const changes=[];
+          for(const old of rows){
+            const current=live.prepare("SELECT * FROM platform_sku_map WHERE platform=? AND external_sku=?").get(old.platform,old.external_sku);
+            if(current?.business_model!==old.business_model)changes.push({before:old,current});
+          }
+          console.log('CLASSIFICATION_CHANGES_JSON='+JSON.stringify(changes));
+          console.log('ZERO_STATE_JSON='+JSON.stringify(live.prepare("SELECT * FROM title_ltd_state WHERE title_id=10014").all()));
+          live.close();before.close();
+          NODE
+            exit 0
+          fi
           daily_state=$(systemctl show -p ActiveState --value signalpulse-daily.service)
           [[ "$daily_state" == inactive || "$daily_state" == failed ]]
           # Refuse concurrent collectors/estimators; do not kill someone else's work.
