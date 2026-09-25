@@ -111,6 +111,40 @@ test("title time series validates dates and aggregated velocity refuses partial 
   assert.equal(archived.rows.find(r => r.date === "2026-09-22")!.snapshotViews, 2);
 });
 
+test("total view charts use title-specific observed snapshots, never sum buckets or fill missing days", () => {
+  const db = freshDb();
+  try {
+    syncTitles(db, src([
+      { id: 1, title: "Saber example", steamAppId: "123", releaseDate: null },
+      { id: 2, title: "Other example", steamAppId: "456", releaseDate: null },
+    ]));
+    addVideo(db, { video_id: "a", title_id: 123, published_at: "2020-01-01T00:00:00Z", view_count: 999999 });
+    addVideo(db, { video_id: "b", title_id: 456, published_at: "2020-01-01T00:00:00Z" });
+    const snap = db.prepare("INSERT INTO yt_video_stats_daily(video_id,date,view_count) VALUES(?,?,?)");
+    snap.run("a", "2026-09-21", 0);
+    snap.run("a", "2026-09-22", 120);
+    snap.run("a", "2026-09-24", 150);
+    snap.run("b", "2026-09-22", 700);
+    const now = new Date("2026-09-25T12:00:00Z");
+    const daily = readYoutubeSeries(db, 123, { start: "2026-09-20", end: "2026-09-25" }, now);
+    assert.deepEqual(daily.rows.map(r => r.snapshotViews), [null, 0, 120, null, 150, null]);
+    assert.equal(daily.rows.reduce((n, r) => n + r.publishedVideos, 0), 0);
+    for (const bucket of ["week", "month"]) {
+      const complete = readYoutubeSeries(db, 123, { start: "2026-09-21", end: "2026-09-24", bucket }, now);
+      assert.equal(complete.rows[0].snapshotViews, 150); // not 0 + 120 + 150
+      assert.equal(complete.rows[0].endDate, "2026-09-24");
+      const missingEnd = readYoutubeSeries(db, 123, { start: "2026-09-21", end: "2026-09-25", bucket }, now);
+      assert.equal(missingEnd.rows[0].snapshotViews, null); // no carry-forward
+    }
+    const other = readYoutubeSeries(db, 456, { start: "2026-09-22", end: "2026-09-22" }, now);
+    assert.equal(other.rows[0].snapshotViews, 700);
+    const csv = youtubeSeriesCsv(daily);
+    assert.ok(csv.includes("snapshotViews"));
+  } finally {
+    db.close();
+  }
+});
+
 // ─── relevance ───────────────────────────────────────────────────────────────
 
 test("relevance: phrase must be in the video title, hashtags count for long phrases", () => {
