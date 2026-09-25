@@ -13,7 +13,7 @@ SignalPulse owns rating identity, fetching, normalization and caching. HMAP rebr
 
 ## Score definitions
 
-- Steam: current all-language, Steam-purchase review summary, positive reviews divided by total reviews. Native percentage and Valve description, not a converted star rating. Exact requested App ID.
+- Steam: current all-language, all-purchase-types review summary (`purchase_type=all`), including free acquisitions and key activations. Positive reviews divided by total reviews from the SAME summary. Native percentage and Valve description, not a converted star rating. Exact requested App ID. The API supplies `reviewScope: "all"` and both clients label this cohort explicitly.
 - PlayStation and Xbox: latest existing lifetime store-rating observation for one verified family SKU, on the native five-star scale. Regional counts and averages are never summed or averaged. The source link identifies the selected storefront listing.
 - OpenCritic: `percent_recommended`, `top_critic_score`, `tier`, `review_count`; never use percentile rank as a review score. These are title-level critic aggregates, not separate platform ratings.
 - Captured dates describe when SignalPulse fetched the response, or the console observation date. They are not a guarantee that a scraper refreshed its underlying record that day. Scores are the latest available response, not a promised real-time feed.
@@ -27,7 +27,7 @@ OpenCritic matches require a unique exact normalized title, plus a matching Stea
 
 Buying reuse is publisher-independent: mapped Saber and non-Saber titles read the same `platform_sku_map` identities and `store_rating_signal_daily` console observations. Family routes recognize both storefront and identity-checked IGDB spellings so existing Buying URLs resolve without changing critic search names. No additional PlayStation/Xbox fetches or sales calculations occur. Missing catalog SKUs still mean missing console coverage, not zero ratings.
 
-Steam's Buying collector stores lifetime histogram up/down totals and a five-star conversion for estimation. Those histogram totals are not substituted for the separately filtered Steam-purchase review summary displayed here. All PDPs instead share the cached summary for the exact App ID. Metadata fallback requires exactly one successful record whose embedded App ID matches; conflicting/duplicate identities are rejected even if the outer response key differs.
+Steam's Buying collector stores lifetime histogram up/down totals and a five-star conversion for estimation. Those histogram totals are not substituted for the Steam review summary displayed here. All PDPs instead share the cached all-purchase-types summary for the exact App ID. Metadata fallback requires exactly one successful record whose embedded App ID matches; conflicting/duplicate identities are rejected even if the outer response key differs.
 
 Amazon uses the exact mapped product or the competitor's own Steam identity. A competitor pin's `parent_product_id` belongs to the tracked Saber parent and is deliberately not used as the competitor identity. Unmapped physical bundles/accessories show unavailable rather than guessing.
 
@@ -38,6 +38,7 @@ Amazon uses the exact mapped product or the competitor's own Steam identity. A c
 All routes validate identities, rate-limit requests and return safe errors. The API key stays server-side. Public responses have a 30-second cache lifetime; private identities use private caching. Responses still refreshing use `no-store`.
 
 - Steam and OpenCritic scores: 24-hour on-demand stale-while-revalidate cache.
+- Steam summaries use `steam_reviews:all:v2:` so both zero and misleadingly small legacy purchase-only summaries are refreshed on first access. Legacy cache rows remain intact for rollback; critic caches and provider-usage accounting are unchanged.
 - Negative matches and Steam identity: seven days.
 - Failures: 30-minute backoff; retain last successful values with a stale label.
 - Provider 401/403/429: shared 30-minute circuit breaker.

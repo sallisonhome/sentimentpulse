@@ -8,6 +8,8 @@ export interface PlayerRating {
   scale: 100 | 5;
   description: string | null;
   count: number | null;
+  /** Steam summary cohort; optional for compatibility with older cached responses. */
+  reviewScope?: "steam_purchases" | "all";
   url: string | null;
   capturedAt: string | null;
   status: RatingStatus;

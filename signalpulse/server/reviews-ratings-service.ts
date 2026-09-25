@@ -143,19 +143,32 @@ export class ReviewsRatingsService {
     }, 7 * DAY);
   }
 
+  steamReviews(appId: string) {
+    // Separate cohort, separate cache. Even NONZERO purchase-only summaries
+    // can exclude nearly every review of a free game. Never copy the old
+    // purchase-only count or percentage into this all-types summary.
+    const key = `steam_reviews:all:v2:${appId}`;
+    return this.cached(key, async () => {
+      const url = `https://store.steampowered.com/appreviews/${appId}?json=1&language=all&purchase_type=all&filter=all&num_per_page=0`;
+      // Count, positive percentage and description share one validated source
+      // cohort. This display-only cache is not a sales-estimation input.
+      const all = steamSummary(await this.json(url));
+      return { ...all, reviewScope: "all" as const };
+    });
+  }
+
   get(identity: RatingIdentity, skus: RatingSku[]): ReviewsRatings {
     const players: PlayerRating[] = [];
     let refreshing = false;
     if (identity.steamAppId) {
       const appId = identity.steamAppId;
-      const cached = this.cached(`steam_reviews:${appId}`, async () => steamSummary(await this.json(
-        `https://store.steampowered.com/appreviews/${appId}?json=1&language=all&purchase_type=steam&filter=all&num_per_page=0`,
-      )));
+      const cached = this.steamReviews(appId);
       refreshing ||= cached.refreshing;
-      const value = cached.value as ReturnType<typeof steamSummary> | null;
+      const value = cached.value;
       players.push({
         source: "steam", label: "Steam Rating", value: value?.value ?? null, scale: 100,
         description: value?.description ?? null, count: value?.count ?? null,
+        reviewScope: "all",
         url: `https://store.steampowered.com/app/${appId}/#app_reviews_hash`,
         capturedAt: cached.capturedAt, status: value?.count === 0 ? "unavailable" : cached.status,
       });
