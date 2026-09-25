@@ -65,9 +65,12 @@ class Settings(BaseSettings):
     # Format: https://gist.githubusercontent.com/<user>/<gist_id>/raw/reddit_data.json
     reddit_gist_url: str = ""
 
-    # Daily ingestion schedule (local server time). Default: 02:00.
+    # Legacy server-clock values retained for compatibility, no longer used
+    # by the daily trigger. Explicit ET fields avoid deployed UTC overrides.
     ingest_hour: int = 2
     ingest_minute: int = 0
+    ingest_hour_et: int = 5
+    ingest_minute_et: int = 45
 
     # v2 relevance gate (2026-07-24): Layer 2 fuzzy fallback kill-switch.
     # When True (default), is_post_relevant_to_game() attempts a proportional

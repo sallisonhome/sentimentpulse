@@ -323,6 +323,8 @@ class PostsPageResponse(BaseModel):
 class IngestStatusResponse(BaseModel):
     is_running: bool
     last_run_at: Optional[str] = None
+    last_run_finished_at: Optional[str] = None
+    last_run_duration_s: Optional[float] = None
     # "never" | "success" | "partial" | "partial_failure" | "error"
     last_run_status: str
     last_run_errors: List[str] = Field(default_factory=list)

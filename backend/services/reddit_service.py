@@ -17,6 +17,7 @@ from email.utils import parsedate_to_datetime
 from typing import Optional
 
 import httpx
+from services.reddit_transport import FetchRows, fetch_json, run_active
 
 from config import settings
 
@@ -242,20 +243,25 @@ def _fetch_pullpush(
         params["q"] = _game_search_query(game_name)
 
     try:
-        resp = httpx.get(
-            f"{_PULLPUSH_BASE}/reddit/search/submission/",
-            params=params,
-            headers={"User-Agent": "SentimentPulse/1.0"},
-            timeout=_TIMEOUT,
-        )
-        time.sleep(_REQUEST_DELAY)
-        if resp.status_code != 200:
-            logger.warning("PullPush API returned HTTP %d for r/%s", resp.status_code, subreddit_name)
-            return []
-        data = resp.json()
+        if run_active():
+            data = fetch_json(
+                f"{_PULLPUSH_BASE}/reddit/search/submission/", params,
+                headers={"User-Agent": "SentimentPulse/1.0"},
+                timeout=_TIMEOUT, provider="pullpush", interval=2.0,
+            )
+        else:
+            resp = httpx.get(
+                f"{_PULLPUSH_BASE}/reddit/search/submission/", params=params,
+                headers={"User-Agent": "SentimentPulse/1.0"}, timeout=_TIMEOUT,
+            )
+            time.sleep(_REQUEST_DELAY)
+            if resp.status_code != 200:
+                logger.warning("PullPush API returned HTTP %d for r/%s", resp.status_code, subreddit_name)
+                return FetchRows(complete=False)
+            data = resp.json()
     except Exception as exc:
         logger.error("PullPush API request failed for r/%s: %s", subreddit_name, exc)
-        return []
+        return FetchRows(complete=False)
 
     posts = []
     for item in data.get("data", []):
@@ -386,6 +392,8 @@ def fetch_subreddit_posts(
     The existing Gist and PullPush paths are kept intact and remain dormant
     unless Arctic Shift returns no results, ensuring backward compatibility.
     """
+    # A successful empty read is authoritative. Only failures earn fallback.
+    primary = FetchRows(complete=False)
     # ── 1. Try Arctic Shift first ─────────────────────────────────────────────
     try:
         from services.arctic_shift_service import (
@@ -403,7 +411,10 @@ def fetch_subreddit_posts(
             game=game,
             after=after,
         )
-        if posts:
+        primary = posts
+        if getattr(posts, "complete", False) or (
+            posts and not hasattr(posts, "complete")
+        ):
             logger.info(
                 "arctic_shift: r/%s → %d posts (game='%s')",
                 subreddit_name, len(posts), game_name,
@@ -439,11 +450,16 @@ def fetch_subreddit_posts(
                     except Exception:
                         p["post_date"] = None
             logger.info("Loaded %d post(s) for '%s' from Reddit Gist", len(posts), game_name)
-            return posts
+            merged = {p["external_id"]: p for p in list(primary) + posts}
+            # Cached/manual fallback does not prove both live search channels
+            # completed; leave the primary cursor untouched and report partial.
+            return FetchRows(merged.values(), complete=False)
 
     # ── 3. PullPush fallback — last-resort Reddit archive ─────────────────────
     logger.info("No Gist data for '%s' / r/%s — trying PullPush", game_name, subreddit_name)
-    return _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
+    fallback = _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
+    merged = {p["external_id"]: p for p in list(primary) + list(fallback)}
+    return FetchRows(merged.values(), complete=False)
 
 
 # ── Comment fetching ──────────────────────────────────────────────────────────

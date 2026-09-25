@@ -1,5 +1,24 @@
 # SentimentPulse Changelog
 
+## September 25, 2026
+
+- Daily ingestion now targets 05:45 America/New_York, explicitly DST-aware.
+  It waits up to one hour for the storefront refresh to stop and, when
+  YouTube import is enabled, for today's YouTube producer to finish.
+  Failed/unknown dependencies block and alert; partial YouTube runs are
+  explicitly logged and their available feed is still imported.
+- Reddit collection reuses HTTP connections and successful identical reads
+  within a run (bounded to 256 entries / 8 MB serialized data). Successful
+  empty results no longer trigger archive fallback. Transient failures get
+  bounded retries and provider-wide pacing/cooldowns; incomplete primary
+  reads retain available data without advancing their source cursor.
+- Source and analysis steps now log per-title elapsed time. No active games,
+  subreddit lists, parent windows, comment limits or relevance gates were
+  removed. Full-run speed improvement requires the next production benchmark.
+- Monthly SignalPulse discovery waits while SentimentPulse is ingesting.
+  Sunday cross-platform SKU linking moves to 15:15 UTC and checks ingestion
+  is idle before taking the maintenance lock.
+
 A running log of what changed in SentimentPulse — the community sentiment intelligence surface for Saber's game portfolio.
 
 ## September 23, 2026
