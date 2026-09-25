@@ -44,6 +44,7 @@ import { evaluateRevenueMixShadow } from "../server/routes-console-leaderboards"
 import { getPeerRankNeighbors, type SortKey } from "../server/signals/console/rankSnapshot";
 import { reviewWindow, STEAM_HISTOGRAM_VERSION, type ReviewBucket } from "../server/steam-review-windows";
 import {reviewShockEvidence,STEAM_REVIEW_SHOCK_VERSION,type ShockEvidence} from "../server/steam-review-shocks";
+import { advanceLifetimeSignal } from "../server/lifetime-signal";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -724,7 +725,9 @@ async function main() {
         if (historyDays >= 3 && historyDays < winDays) {
           const delta = ltdNow - first.rating_count;
           if (delta > 0) {
-            const paced = Math.round((delta / historyDays) * winDays);
+            // This estimates past-window ratings, not future demand. A subset
+            // of the title's ratings cannot exceed its entire lifetime count.
+            const paced = Math.min(ltdNow, Math.round((delta / historyDays) * winDays));
             return { signal: paced, methodTag: "backfill-observed-pace" };
           }
         }
@@ -1110,21 +1113,18 @@ async function main() {
           // Regime 3: accumulator (age >= 366d)
           if (!state || state.ltd_source !== "accumulator") {
             // Not yet transitioned. Seed at transition: max of naive LTD and
-            // existing state (if any). The dedicated seed script does the
-            // Option B replay; here we take a conservative seed if it hasn't
-            // been run yet.
+            // existing state (if any). Neither this transition nor the
+            // insert-only seed script replays superseded raw snapshots.
             newLtdUnits = Math.max(ltdRow.unitsMid ?? 0, state?.ltd_units ?? 0);
           } else {
             // Steady-state accumulator: add positive delta of raw signal
-            const currentSignal = ltdRow.signalValue;
-            const lastSignal = state.last_signal_value;
-            if (currentSignal != null && lastSignal != null && currentSignal > lastSignal) {
+            const { delta } = advanceLifetimeSignal(ltdRow.signalValue, state.last_signal_value);
+            if (delta > 0) {
               const mult = multipliers.get(platform);
               const override = overrideByKey.get(key);
               const m = override?.multiplier ?? mult?.multiplier ?? null;
               const ds = override?.digital_unit_share ?? mult?.digital_unit_share ?? null;
               if (m != null && ds != null && ds > 0) {
-                const delta = currentSignal - lastSignal;
                 const addedUnits = (delta * m) / ds;
                 newLtdUnits = state.ltd_units + addedUnits;
               } else {
@@ -1164,7 +1164,9 @@ async function main() {
         platform,
         ltd_units: newLtdUnits,
         ltd_source: newSource,
-        last_signal_value: ltdRow.signalValue,
+        last_signal_value: newSource === "accumulator" && state?.ltd_source === "accumulator"
+          ? advanceLifetimeSignal(ltdRow.signalValue, state.last_signal_value).highWater
+          : ltdRow.signalValue,
       });
     }
 

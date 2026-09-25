@@ -1,0 +1,67 @@
+name: SignalPulse lifetime catalog audit and repair
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [audit, apply, refresh, rollback]
+        default: audit
+        required: true
+      expected_sha:
+        description: Reviewed audit SHA (apply only)
+        default: ''
+      run_id:
+        description: Prior repair run ID (rollback only)
+        default: ''
+      confirm:
+        description: CONFIRM required for apply, bounded refresh or rollback
+        default: ''
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Locked audit or approved repair
+        env:
+          ACTION: ${{ inputs.action }}
+          EXPECTED: ${{ inputs.expected_sha }}
+          RUN_ID: ${{ inputs.run_id }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in audit|apply|refresh|rollback) ;; *) exit 1;; esac
+          if [ "$ACTION" != audit ]; then [ "$CONFIRM" = CONFIRM ]; fi
+          if [ "$ACTION" = apply ]; then [[ "$EXPECTED" =~ ^[a-f0-9]{64}$ ]]; fi
+          if [ "$ACTION" = rollback ]; then [[ "$RUN_ID" =~ ^[0-9TZ-]+$ ]]; fi
+          # All interpolated arguments have been constrained before remote use.
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 root@104.236.239.46 \
+            "bash -s -- '$ACTION' '$EXPECTED' '$RUN_ID'" <<'REMOTE'
+          set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 600 9 || { echo "Maintenance busy; nothing changed"; exit 75; }
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+          export DB_PATH="$WD/data.db"
+          case "$1" in
+            audit) node_modules/.bin/tsx scripts/repair-lifetime-seed.ts ;;
+            apply) node_modules/.bin/tsx scripts/repair-lifetime-seed.ts --apply --expected-sha "$2" --confirm CONFIRM ;;
+            refresh)
+              export LTD_ACCUMULATOR_ENABLED=1
+              node_modules/.bin/tsx scripts/estimate-console-units.ts
+              node_modules/.bin/tsx scripts/write-revenue-anchors.ts
+              node_modules/.bin/tsx scripts/evaluate-daily-revenue-mix.ts
+              ;;
+            rollback) node_modules/.bin/tsx scripts/repair-lifetime-seed.ts --rollback --run-id "$3" --confirm CONFIRM ;;
+          esac
+          REMOTE

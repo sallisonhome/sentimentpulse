@@ -1,5 +1,26 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-25: monotonic state can preserve an invalid initial snapshot forever
+
+Sniper Elite: Resistance inherited a first snapshot of 880,801 reviews followed
+by a correction to 4,824. Option-B positive-only replay retained the wrong
+initial count and seeded 35.4M units despite a current signal near 5,000.
+Do not treat every old snapshot as compatible with today's canonical identity.
+Seed only missing states from current estimator evidence; never rewrite an
+existing repaired state during reseeding. Carry a cumulative high-water mark
+across daily count declines, so rebounds do not add the same reviews again.
+Repair only mathematically proven seed excess, not arbitrary implausible revenue:
+audit the entire saved LTD trajectory, protect anchors/overrides, preserve raw
+evidence, correct contaminated LTD history with state, and test rollback plus
+repeated real estimator/anchor/mix writers. Do not add a competing schedule.
+
+Full-catalog follow-up found residual Steam overlap maxima and console
+observed-pace windows extrapolated above all lifetime ratings. A past-window
+rating signal is a subset, not an unconstrained forward forecast. Bound that
+specific extrapolation before it reaches monotonic state. Prove both original
+and corrected trajectories before removing a retained floor; preserve separate
+rank floors, raw evidence, prior legitimate peaks and protected actuals.
+
 ## 2026-09-25: a period fallback is not that period's sales
 
 Dispatch's gated seven-day signal silently substituted its 30-day estimate.
