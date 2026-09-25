@@ -28,10 +28,11 @@
 #   1   — WorkingDirectory could not be resolved
 #   2   — tsx binary missing (deploy incomplete)
 #   10  — PHASE 1 (verify-discovery) failed
-#   20  — PHASE 2 (verify-console-collectors) failed
+#   20  — PHASE 2 (collect-console-signals) failed
 #   30  — PHASE 3 (estimate-console-units) failed
 #   40  — PHASE 4 (write-revenue-anchors) failed
 #   50  — PHASE 5 (evaluate-daily-revenue-mix) failed
+#   75  — another maintenance operation outlasted the bounded lock wait
 #
 # The DIFFERENT exit codes per phase are deliberate — journalctl greps for
 # "exited with status=X" and the operator can tell which script broke without
@@ -50,6 +51,16 @@ if [[ -z "$WD" ]]; then
   exit 1
 fi
 cd "$WD"
+
+# Shared with every repo-reset deployment and scheduled console writer.
+# Wait; never stop an existing run or report a busy skip as a fresh success.
+# FD stays inherited by children so a killed wrapper cannot release it early.
+exec 9>/run/lock/signalpulse-maintenance.lock
+log "Waiting for SignalPulse maintenance lock (up to 600s)"
+if ! flock -w 600 9; then
+  log "FATAL: maintenance lock busy; no pipeline started"
+  exit 75
+fi
 
 TSX="$WD/node_modules/.bin/tsx"
 if [[ ! -x "$TSX" ]]; then
@@ -80,35 +91,35 @@ log "LTD_ACCUMULATOR_ENABLED='${LTD_ACCUMULATOR_ENABLED}'"
 # PS5 categoryGrid, all rate-limited); the old 120s cap was too tight, and
 # a 2026-09-15 16:41 UTC systemd fire timed out mid-classification even though
 # earlier discovery fetches all completed in <10s. Ceilings are generous by
-# design — the systemd unit's TimeoutStartSec=1200 is the real ceiling; these
+# design — the systemd unit's TimeoutStartSec=3600 is the real ceiling; these
 # per-phase caps only prevent ONE stuck phase from starving the others.
 
 log "── PHASE 1: verify-discovery ──"
-if ! timeout 360 "$TSX" scripts/verify-discovery.ts; then
+if ! timeout --kill-after=15 360 "$TSX" scripts/verify-discovery.ts --production; then
   log "PHASE 1 failed (timeout=360s)"
   exit 10
 fi
 
-log "── PHASE 2: verify-console-collectors ──"
-if ! timeout 360 "$TSX" scripts/verify-console-collectors.ts; then
-  log "PHASE 2 failed (timeout=360s)"
+log "── PHASE 2: collect-console-signals ──"
+if ! timeout --kill-after=15 1800 "$TSX" scripts/collect-console-signals.ts; then
+  log "PHASE 2 failed (timeout=1800s)"
   exit 20
 fi
 
 log "── PHASE 3: estimate-console-units ──"
-if ! timeout 300 "$TSX" scripts/estimate-console-units.ts; then
+if ! timeout --kill-after=15 300 "$TSX" scripts/estimate-console-units.ts; then
   log "PHASE 3 failed (timeout=300s)"
   exit 30
 fi
 
 log "── PHASE 4: write-revenue-anchors ──"
-if ! timeout 120 "$TSX" scripts/write-revenue-anchors.ts; then
+if ! timeout --kill-after=15 120 "$TSX" scripts/write-revenue-anchors.ts; then
   log "PHASE 4 failed (timeout=120s)"
   exit 40
 fi
 
 log "── PHASE 5: evaluate-daily-revenue-mix ──"
-if ! timeout 60 "$TSX" scripts/evaluate-daily-revenue-mix.ts; then
+if ! timeout --kill-after=15 60 "$TSX" scripts/evaluate-daily-revenue-mix.ts; then
   log "PHASE 5 failed (timeout=60s)"
   exit 50
 fi

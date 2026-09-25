@@ -46,11 +46,12 @@ on:
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 80
     steps:
       - name: Checkout for pre-deploy static analysis
         uses: actions/checkout@v4
@@ -114,6 +115,9 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             root@104.236.239.46 bash -s << 'EOF'
             set -euo pipefail
+
+            exec 9>/run/lock/signalpulse-maintenance.lock
+            flock -w 3600 9 || { echo "Refresh still busy; no deployment performed"; exit 75; }
 
             # Load Bluesky + Resend credentials uploaded by the previous step.
             # File is 0600 by scp; remove after sourcing so it does not linger.

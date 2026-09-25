@@ -18,6 +18,7 @@
 
 import { rawSqlite } from "../server/storage";
 import { runFullDiscovery, upsertSkuMap } from "../server/signals/console/discovery";
+import { discoveryHealth } from "../server/daily-refresh-health";
 
 // title_id allocation MUST be atomic per (platform, external_sku).
 //
@@ -133,6 +134,21 @@ async function main() {
   `).all();
   console.log(sample);
 
+  const health = discoveryHealth(res);
+  for (const warning of health.warnings) console.warn(`DISCOVERY WARNING: ${warning}`);
+  // The production runner must never insert synthetic test IDs into live data.
+  // Invariant probes below remain available for isolated verification databases.
+  if (process.argv.includes("--production")) {
+    const knownF2P = ["578080", "570", "440", "230410", "1085660"];
+    const leaks = rawSqlite.prepare(`SELECT external_sku FROM platform_sku_map
+      WHERE platform='steam' AND business_model='paid'
+      AND external_sku IN (${knownF2P.map(() => "?").join(",")})`).all(...knownF2P);
+    if (leaks.length) health.errors.push(`F2P paid-classification leak: ${JSON.stringify(leaks)}`);
+    if (health.errors.length) throw new Error(health.errors.join("; "));
+    console.log("PRODUCTION DISCOVERY PASSED (classification evidence checked; collection freshness is a separate gate)");
+    process.exit(0);
+  }
+
   console.log("\n─── Manual-override preservation test ───");
   // Insert a manual override, then run a discovery pass that would try to change it.
   const overrideSku = "TEST_OVERRIDE_ABC";
@@ -179,10 +195,7 @@ async function main() {
   rawSqlite.prepare(`DELETE FROM platform_sku_map WHERE external_sku = ?`).run(pinSku);
 
   // Assertions
-  const errors: string[] = [];
-  if (res.steam.paid < 80) errors.push(`expected >=80 Steam paid titles, got ${res.steam.paid}`);
-  if (res.xbox.paid < 80) errors.push(`expected >=80 Xbox paid titles, got ${res.xbox.paid}`);
-  if (res.ps.paid < 90) errors.push(`expected >=90 PS5 paid titles (auto+manual), got ${res.ps.paid}`);
+  const errors: string[] = [...health.errors];
   if (!overridePreserved) errors.push(`manual-override preservation FAILED`);
   if (!titleIdPinned) errors.push(`title_id pinning FAILED — row title_id changed after re-upsert (was 88888, now ${pinRow?.title_id})`);
   if (!msrpUpdated) errors.push(`title_id pinning test: msrp did NOT update as expected — non-title_id columns should still refresh (expected 6499, got ${pinRow?.msrp_usd_cents})`);

@@ -45,6 +45,7 @@ on:
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   write:
@@ -88,6 +89,8 @@ jobs:
             ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
                 root@104.236.239.46 bash -s 2>&1 <<REMOTE | tee -a "$LOG"
           set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 600 9 || { echo "Refresh busy; retry without cancelling it"; exit 75; }
           DRY_RUN="${DRY_RUN:-true}"
           AS_OF_DATE="${AS_OF_DATE:-}"
           WD=\$(systemctl show -p WorkingDirectory --value signalpulse)
