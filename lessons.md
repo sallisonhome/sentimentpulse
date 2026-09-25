@@ -1,5 +1,27 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-25 evening — Partial topics were hidden behind all-buckets readiness
+
+Live checks across Space Marine 2, Townfall, Halloween and SnowRunner showed
+real buckets alongside `pending`. Production logs showed Agent API HTTP 200
+responses with zero characters or non-JSON text; validation happened AFTER
+the common client's fallback decision. Therefore transport success prevented
+fallback while the card waited for missing buckets. The frontend also hid all
+available results whenever any bucket remained pending. Monthly was never
+prewarmed, and all results disappeared on process restart.
+
+- Structured-response validation must happen inside the model fallback path.
+  An empty or malformed answer is not successful synthesis.
+- Durable per-bucket state distinguishes valid empties, errors, stale same-
+  window results, and fresh results. Never let an error overwrite a good
+  same-window snapshot or let an old-generation worker replace current data.
+- Warm all supported periods for every active title. Explicitly refuse
+  unsupported periods in both API and UI instead of silently starting work.
+- Show available sentiment buckets immediately, and cap background concurrency.
+- Verify title × period coverage, restart persistence, partial failures and
+  period-control rendering. A successful Hellraiser check cannot prove the
+  portfolio/window matrix works.
+
 ## 2026-09-25 — Ratings coverage and sales eligibility are different contracts
 
 A verified ratings mapping is not proof of a released paid base game. Conversely,

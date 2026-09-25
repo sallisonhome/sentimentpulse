@@ -203,6 +203,9 @@ class TopTopicsSummary(BaseModel):
     negative: List[TopicSummary]
     neutral: List[TopicSummary]
     status: str = "ready"
+    bucket_status: dict[str, str] = Field(default_factory=dict)
+    updated_at: Optional[str] = None
+    message: Optional[str] = None
 
 
 class VolumePoint(BaseModel):

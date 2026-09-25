@@ -397,6 +397,7 @@ def call_llm(
     sonar_model: str = "sonar-pro",
     anthropic_model: str = _ANTHROPIC_DEFAULT_MODEL,
     agent_preset: Optional[str] = None,
+    validate_response=None,
 ) -> LlmResponse:
     """Route ONE prompt through the configured primary backend, falling back
     to the secondary if the primary fails or is unavailable.
@@ -444,6 +445,8 @@ def call_llm(
                 disable_search=disable_search,
                 block_kind=block_kind,
             )
+            if validate_response is not None:
+                validate_response(resp.text)
             logger.info(
                 "LLM[%s] via %s (resp_chars=%d, elapsed=%.2fs)",
                 block_kind or "?", resp.source, len(resp.text), resp.elapsed_s,
@@ -474,6 +477,8 @@ def call_llm(
                     disable_search=disable_search,
                     block_kind=block_kind,
                 )
+                if validate_response is not None:
+                    validate_response(resp.text)
                 resp.fell_back_from = primary_id
                 logger.info(
                     "LLM[%s] via %s (FALLBACK from %s, resp_chars=%d, elapsed=%.2fs)",

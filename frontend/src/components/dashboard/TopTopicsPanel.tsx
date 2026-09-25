@@ -21,6 +21,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs'
 import type { Period } from '../../types'
 import { useDashboardTopics } from '../../hooks/useDashboardTopics'
+import { supportsTopics, TOPIC_PERIOD_MESSAGE } from '../../lib/topic-periods'
 
 // Local alias so the rest of the file reads naturally. `Period` is the
 // canonical name in types/index.ts.
@@ -40,7 +41,10 @@ export interface TopTopicsSummary {
   // v0031b (2026-09-21): 'pending' means the server kicked off
   // background LLM synthesis and returned immediately — the hook
   // will keep polling until this flips to 'ready'.
-  status?:  'ready' | 'pending'
+  status?:  'ready' | 'pending' | 'refreshing' | 'error' | 'unsupported'
+  bucket_status?: Record<string, string>
+  updated_at?: string | null
+  message?: string | null
 }
 
 interface TopTopicsPanelProps {
@@ -71,11 +75,12 @@ function periodAnchor(period: PeriodValue): string {
 export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) {
   const { data, isLoading, error } = useDashboardTopics(gameId, period)
 
-  // Show the loading state both when the request is still in-flight AND
-  // when the endpoint has already returned but the server-side LLM
-  // synthesis is still running (status='pending'). The hook polls every
-  // 4s and will flip status to 'ready' when the data lands.
-  const showLoading = isLoading || (data?.status === 'pending')
+  // Sentiment buckets render independently. Never hide valid results because
+  // another bucket is still pending or failed validation.
+  const bucketLoading = (sentiment: string) => isLoading ||
+    ['pending', 'refreshing'].includes(data?.bucket_status?.[sentiment] ?? data?.status ?? '')
+  const bucketError = (sentiment: string) => !!error ||
+    (data?.bucket_status?.[sentiment] ?? data?.status) === 'error'
 
   return (
     <Card>
@@ -89,6 +94,16 @@ export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) 
         </div>
       </CardHeader>
       <CardContent>
+        {!supportsTopics(period) ? (
+          <p className="py-4 text-sm text-muted-foreground">{TOPIC_PERIOD_MESSAGE}</p>
+        ) : (
+        <>
+        {data?.status === 'refreshing' && (
+          <p className="mb-3 text-xs text-muted-foreground">Updating topics. Available results remain visible.</p>
+        )}
+        {data?.status === 'error' && (
+          <p className="mb-3 text-xs text-muted-foreground">Some topics could not refresh. Retrying automatically.</p>
+        )}
         <Tabs defaultValue="negative">
           <TabsList className="mb-3">
             <TabsTrigger value="positive">Positive</TabsTrigger>
@@ -98,28 +113,30 @@ export default function TopTopicsPanel({ gameId, period }: TopTopicsPanelProps) 
           <TabsContent value="positive">
             <TopicSummaryList
               items={data?.positive ?? []}
-              isLoading={showLoading}
-              hasError={!!error}
+              isLoading={bucketLoading('positive')}
+              hasError={bucketError('positive')}
               period={period}
             />
           </TabsContent>
           <TabsContent value="negative">
             <TopicSummaryList
               items={data?.negative ?? []}
-              isLoading={showLoading}
-              hasError={!!error}
+              isLoading={bucketLoading('negative')}
+              hasError={bucketError('negative')}
               period={period}
             />
           </TabsContent>
           <TabsContent value="neutral">
             <TopicSummaryList
               items={data?.neutral ?? []}
-              isLoading={showLoading}
-              hasError={!!error}
+              isLoading={bucketLoading('neutral')}
+              hasError={bucketError('neutral')}
               period={period}
             />
           </TabsContent>
         </Tabs>
+        </>
+        )}
       </CardContent>
     </Card>
   )
@@ -140,7 +157,7 @@ function TopicSummaryList({
   // for a heavy title this can take 30-60s; the fast dashboard has
   // already rendered by this point so the user sees a normal page with
   // just this widget waiting on data.
-  if (isLoading) {
+  if (isLoading && !items.length) {
     return (
       <p className="py-4 text-sm text-muted-foreground">
         Analyzing top topics…
@@ -148,7 +165,7 @@ function TopicSummaryList({
     )
   }
 
-  if (hasError) {
+  if (hasError && !items.length) {
     return (
       <p className="py-4 text-sm text-muted-foreground">
         Couldn’t load top topics. Try switching periods or refreshing.

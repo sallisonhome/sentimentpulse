@@ -660,9 +660,13 @@ def _extract_aspect_topics(
         resp = call_llm(
             prompt,
             block_kind="topics",
-            max_tokens=700,
+            max_tokens=1600,
             temperature=0.1,
             disable_search=True,
+            # Empty / non-JSON HTTP-200 answers must use the configured
+            # fallback, just like a transport failure. Other call sites
+            # retain their own response contracts.
+            validate_response=lambda text: _parse_aspect_response(text, len(sample)),
         )
         topics = _parse_aspect_response((resp.text or "").strip(), len(sample))
     except Exception as exc:  # noqa: BLE001
