@@ -26,3 +26,13 @@ test("single platform family is 100 percent; absent platforms are zero", () => {
   const summary = revenueSummary([{ revenueSteam: 123.45, revenuePs5: 0, revenueXbox: 0 }], "ltd");
   assert.deepEqual(summary.platforms.map(p => p.sharePct), [100, 0, 0]);
 });
+test("missing platform revenue is not zero sales or a complete share pie", () => {
+  const summary = revenueSummary([
+    { revenueSteam: 100, revenuePs5: 0, revenueXbox: null },
+    { revenueSteam: 50, revenuePs5: 0, revenueXbox: 25 },
+  ], "d7");
+  assert.equal(summary.combinedRevenueUsd, 175);
+  assert.equal(summary.incomplete, true);
+  assert.deepEqual(summary.platforms.map(p => p.missingTitleCount), [0, 0, 1]);
+  assert.ok(summary.platforms.every(p => p.sharePct === null));
+});

@@ -63,7 +63,9 @@ import { ensureDailyMixSchema, runDailyMix, dailyMixStatus, publishedDailyAdjust
 type Platform = "steam" | "xbox" | "ps5";
 const PLATFORMS: Platform[] = ["steam", "xbox", "ps5"];
 const SALES_CASCADE: Record<string, string[]> = {
-  d7: ["d7", "d30"], d30: ["d30", "d90"], d90: ["d90"], m12: ["m12"], ltd: ["ltd"],
+  // Weekly totals must never borrow a monthly quantity. Keep the other
+  // periods' existing policy unchanged; this is a read-path-only correction.
+  d7: ["d7"], d30: ["d30", "d90"], d90: ["d90"], m12: ["m12"], ltd: ["ltd"],
 };
 
 function parseDate(v: string | undefined, fallback: string): string {
@@ -281,7 +283,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       });
       const dirSql = dir === "asc" ? "ASC" : "DESC";
 
-      // Row-level window cascade. Business rule:
+      // Row-level window selection. Weekly requests are exact-period only.
+      // The legacy cascade below remains for d30; never extend d7 to it.
+      // Legacy business rule:
       //   Bias toward the requested window (default 7d), but if that window has
       //   no estimate yet for a given (title, platform), fall back to the next
       //   wider window so the row still ranks. Order: d7 → d30 → d90 → m12 → ltd.
@@ -922,6 +926,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // adjust proportionally" behavior the user requested.
           const ltdAnchor = ltdAnchorMap.get(g.titleId);
           if (isShorterWindow && ltdAnchor) {
+            // A lifetime anchor calibrates an available window; it cannot
+            // supply missing weekly evidence. In JS null * ratio is zero,
+            // which would incorrectly publish "no sales" and a complete pie.
+            if (window === "d7" && g.revenueMidUsd == null) {
+              g.dataSource = "unavailable";
+              continue;
+            }
             // Compute the scaling ratio. Prefer units-based when the anchor
             // carries actual_units — that ratio is independent of the LTD
             // realized ASP, so an operator can inflate LTD revenue to reflect
@@ -1381,8 +1392,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         name: string; coverUrl: string | null; releaseDate: string | null;
         steamTitleId?: number; ps5TitleId?: number; xboxTitleId?: number;
         platforms: Platform[];
-        revenueSteam: number; revenuePs5: number; revenueXbox: number;
+        revenueSteam: number | null; revenuePs5: number | null; revenueXbox: number | null;
         revenueCombined: number;
+        revenueIncomplete: boolean;
         revenueSource: "overlay-ratio" | "overlay-ip-override" | "ps5-exclusive-fallback" | "mixed";
       };
       const multiRows: MultiRow[] = [];
@@ -1408,15 +1420,16 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
         // Steam revenue: anchor wins over estimator. Zero when there is no
         // Steam SKU (dual-anchored branch b).
-        const steamRevenue = steam ? (resolvedSales.get("steam")?.get(key)?.revenueMidUsd ?? 0) : 0;
+        const steamRevenue = steam ? (resolvedSales.get("steam")?.get(key)?.revenueMidUsd ?? null) : 0;
         // Reuse the canonical final revenue, including protected LTD scaling.
         const ps5Sales = resolvedSales.get("ps5")?.get(key);
         const xboxSales = resolvedSales.get("xbox")?.get(key);
-        const revenuePs5 = ps5 ? (ps5Sales?.revenueMidUsd ?? 0) : 0;
-        const revenueXbox = xbox ? (xboxSales?.revenueMidUsd ?? 0) : 0;
+        const revenuePs5 = ps5 ? (ps5Sales?.revenueMidUsd ?? null) : 0;
+        const revenueXbox = xbox ? (xboxSales?.revenueMidUsd ?? null) : 0;
         const usedIpOverride = [ps5Sales, xboxSales].some(r => r?.dataSource === "derived_from_steam_ip_override");
         const usedFallback = [ps5Sales, xboxSales].some(r => r?.dataSource === "estimated_console_exclusive");
-        const revenueCombined = steamRevenue + revenuePs5 + revenueXbox;
+        const revenueCombined = (steamRevenue ?? 0) + (revenuePs5 ?? 0) + (revenueXbox ?? 0);
+        const revenueIncomplete = [steamRevenue, revenuePs5, revenueXbox].some(r => r == null);
         if (revenueCombined <= 0) continue; // no signal on any platform
 
         // Track source category for observability.
@@ -1452,6 +1465,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           revenuePs5:   revenuePs5,
           revenueXbox:  revenueXbox,
           revenueCombined,
+          revenueIncomplete,
           revenueSource,
         });
       }
@@ -1706,9 +1720,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const ownerParts = [out.steam?.ownersMid, out.ps5?.ownersMid, out.xbox?.ownersMid].filter((n): n is number => n != null);
       const combinedOwners = ownerParts.length > 0 ? ownerParts.reduce((a, b) => a + b, 0) : null;
       const familyRevenueSummary = revenueSummary([{
-        revenueSteam: out.steam?.revenueUsd ?? 0,
-        revenuePs5: out.ps5?.revenueUsd ?? 0,
-        revenueXbox: out.xbox?.revenueUsd ?? 0,
+        revenueSteam: out.steam ? out.steam.revenueUsd : 0,
+        revenuePs5: out.ps5 ? out.ps5.revenueUsd : 0,
+        revenueXbox: out.xbox ? out.xbox.revenueUsd : 0,
       }], window);
 
       // Pull IGDB detail from the Steam SKU when we have one; otherwise
@@ -1832,9 +1846,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       `).all(titleId, titleId) as Array<Record<string, any>>;
 
       // ── Window-scoped KPIs per platform ────────────────────────────────
-      // Reuses the same cascade rule as the leaderboard: bias toward the
-      // requested window, widen to the next tier only when the requested
-      // window has no estimate. Never narrows.
+      // Reuses the leaderboard policy: d7 is exact-period only. The legacy
+      // d30-to-d90 fallback is unchanged. Never substitute a month for a week.
       // Same rule as the leaderboard cascade: LTD is excluded from all windowed
       // rungs so a legacy title's lifetime total never masquerades as a 12-month
       // value on the standalone PDP. See CASCADE_BY_WINDOW comment above.

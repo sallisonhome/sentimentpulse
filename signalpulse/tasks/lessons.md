@@ -1,5 +1,14 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-25: a period fallback is not that period's sales
+
+Dispatch's gated seven-day signal silently substituted its 30-day estimate.
+Weekly totals must select only d7 rows or existing explicitly same-period
+models/anchors. Test through all four actual HTTP surfaces, not only SQL.
+Never multiply null by an anchor ratio: JavaScript coerces it to false zero.
+Missing-platform revenue is not an absent platform or zero sales; preserve null,
+label available totals as partial and withhold complete-share charts.
+
 ## 2026-09-25: timer success requires fresh evidence and cross-scheduler locking
 
 Discovery's freshly-classified count is not the eligible paid catalog: unavailable

@@ -180,10 +180,11 @@ interface MultiplatformRow {
   ps5TitleId?: number;
   xboxTitleId?: number;
   platforms: Platform[];
-  revenueSteam: number;
-  revenuePs5: number;
-  revenueXbox: number;
+  revenueSteam: number | null;
+  revenuePs5: number | null;
+  revenueXbox: number | null;
   revenueCombined: number;
+  revenueIncomplete?: boolean;
   revenueSource: "overlay-ratio" | "overlay-ip-override" | "ps5-exclusive-fallback" | "mixed";
 }
 interface MultiplatformResponse {
@@ -483,6 +484,7 @@ function MultiplatformSection({
                         title={`Combined revenue (${windowKey}) = Steam + PS5 + Xbox overlay-final`}
                       >
                         {formatUsdCompact(t.revenueCombined)}
+                        {t.revenueIncomplete && <div className="text-xs text-muted-foreground">Partial subtotal</div>}
                       </span>
                       <span className="text-[9px] uppercase tracking-wide text-muted-foreground">
                         combined

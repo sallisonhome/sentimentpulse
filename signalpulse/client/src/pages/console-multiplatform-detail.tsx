@@ -215,7 +215,7 @@ export default function ConsoleMultiplatformDetail() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3" data-testid="combined-kpi-row">
             <Card className="p-4 border-violet-500/40">
-              <div className="text-[10px] uppercase text-muted-foreground tracking-wide">Combined est. revenue</div>
+              <div className="text-[10px] uppercase text-muted-foreground tracking-wide">{data.revenueSummary?.incomplete ? "Available est. revenue subtotal" : "Combined est. revenue"}</div>
               <div className="font-mono text-2xl font-semibold tabular-nums mt-1">{formatUsdCompact(data.combinedRevenueUsd)}</div>
               <div className="text-xs text-muted-foreground mt-1">{window} · overlay-final · {data.platforms.length} platform{data.platforms.length === 1 ? "" : "s"}</div>
             </Card>
@@ -238,6 +238,7 @@ export default function ConsoleMultiplatformDetail() {
                   <Card className="p-4 h-full hover:bg-muted/40 transition-colors cursor-pointer">
                     <div className="text-[10px] uppercase tracking-wide" style={{ color: PLATFORM_META[p].accent }}>{PLATFORM_META[p].label}</div>
                     <div className="font-mono text-xl font-semibold tabular-nums mt-1">{formatUsdCompact(k.revenueUsd)}</div>
+                    {k.revenueUsd == null && <div className="text-xs text-muted-foreground mt-1">Estimate unavailable for this period</div>}
                     <div className="text-xs text-muted-foreground mt-1">est. revenue · {k.dataSource === "derived_from_steam_daily_mix" ? "daily adjusted" : k.source}</div>
                     {k.estimateMethod?.includes("steam_review_shock_guard_v1") && <div className="text-xs text-muted-foreground mt-2" data-testid="review-shock-note">Review-burst adjusted estimate. Raw review activity is preserved, not counted directly as purchases.</div>}
                     <div className="text-xs text-muted-foreground mt-2">

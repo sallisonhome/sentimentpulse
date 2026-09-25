@@ -4,6 +4,8 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 25, 2026
 
+- Fixed: weekly sales boards and individual/family detail pages no longer substitute 30-day quantities when seven-day evidence is unavailable. Protected lifetime anchors calibrate available weekly evidence only; missing values remain unavailable instead of becoming zero. Incomplete combined results are labeled as subtotals and do not display misleading platform percentages or pies. Monthly, quarterly, yearly and lifetime policies, stored estimates, multipliers and anchors are unchanged.
+
 - Hardened: missing-platform Steam verification now paces requests and retries bounded transient errors, honoring short provider cooldowns and explicitly deferring long ones. A rate-limit response never supplies paid-game eligibility or changes review counts.
 - Improved: the existing daily refresh now verifies missing paid Steam, PS5 and Xbox coverage across the known catalog, independently of Top 20/40 rank. Verified ratings-only mappings and recoverable unknown classifications can enter sales estimates; exact reviewed Steam links can enroll a missing Steam counterpart. Native product identity, platform, release and USD purchase evidence are required.
 - Hardened: same-family, shared-title, regional and PlayStation-concept guards prevent duplicate additions. Ambiguous listings, non-base editions, free games and unsupported platforms remain held. Reviewed console-version aliases join their parent sales family without copying ratings or histories; Townfall remains Steam/PS5 only.
