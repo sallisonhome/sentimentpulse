@@ -1,5 +1,20 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-24: review resolutions are alternatives, not additive sales evidence
+
+The paid-sales estimator summed both daily and weekly histograms. Zero Company's
+September 23 d30 signal became 41,416 against 20,708 lifetime reviews, and
+`derived_max_windows` preserved the inflation. Check grain, coverage and temporal
+boundaries before multiplying. Test real stored inputs, every window, lifetime
+state, console overlays, and repeat runs; a plausible revenue total is not QA.
+
+A query fix cannot lower an already contaminated monotonic accumulator. Repair
+only provable unanchored derived states, with reviewed manifest, backup and audit.
+Preserve the highest observed review signal across resets using the unchanged
+active coefficient; obsolete modeled unit predictions are not verified actuals.
+Never rebase verified anchors, manual overrides or mature accumulators by inference.
+Do not tune to a competitor's estimate to hide a measurement defect.
+
 ## 2026-09-22: Friend's Pass identity and runtime are separate from demo identity
 
 Pass clients may be type=demo or type=game, may omit `is_free`, and may be

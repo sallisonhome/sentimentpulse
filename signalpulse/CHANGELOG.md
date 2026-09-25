@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 24, 2026
 
+- Fixed: paid Steam sales windows use a non-overlapping daily/weekly/monthly review history instead of adding duplicate representations. UTC date boundaries are explicit; missing or inconsistent signals do not become fabricated zero sales. Revenue, units and console overlays continue to use the existing calibrated coefficients, ASPs and platform policies.
+- Added: dry-run-first, manifest-approved lifetime-state repair for provable Steam review-overlap inflation, with retained database backups, transactional per-title audit records and conflict-checked rollback. Verified anchors, manual overrides, mature accumulators and unexplained state are excluded. The repair is an explicit operator action, not an automatic startup migration.
+
 - Fixed: Steam ratings cards now include all purchase types, including free acquisitions, instead of showing zero or severely incomplete review counts for games such as Marvel Rivals. Counts, percentages and descriptions come from the same Steam summary and both apps label the review scope explicitly. Old purchase-only display caches refresh on access; sales-estimation signals and critic data are unchanged.
 
 - Fixed: Steam CCU critic matching incorporates release evidence after adding verified console links. Reviewed exact App-ID aliases resolve renamed titles and GTA V PC variants to explicitly named title-level aggregates; the renamed Overwatch app uses Overwatch 2, never the original 2016 record.

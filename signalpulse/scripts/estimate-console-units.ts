@@ -42,6 +42,7 @@
 import { rawSqlite } from "../server/storage";
 import { evaluateRevenueMixShadow } from "../server/routes-console-leaderboards";
 import { getPeerRankNeighbors, type SortKey } from "../server/signals/console/rankSnapshot";
+import { reviewWindow, STEAM_HISTOGRAM_VERSION, type ReviewBucket } from "../server/steam-review-windows";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -112,10 +113,6 @@ interface EstimateRow {
 
 function isoDate(d: Date = new Date()): string {
   return d.toISOString().slice(0, 10);
-}
-
-function daysAgoEpochSec(days: number): number {
-  return Math.floor((Date.now() - days * 86_400_000) / 1000);
 }
 
 async function main() {
@@ -437,20 +434,29 @@ async function main() {
     return crossPlatformSteamTitleId.get(titleId) ?? null;
   }
 
-  const steamHistoryAgg = db.prepare(
-    `SELECT COALESCE(SUM(recommendations_up + recommendations_down), 0) AS s
-       FROM steam_review_history
-      WHERE app_id = ? AND bucket_start >= ?`
+  const steamHistory = db.prepare(
+    `SELECT bucket_start,bucket_granularity,recommendations_up,recommendations_down,created_at
+       FROM steam_review_history WHERE app_id = ?`
   );
+  const steamBuckets = new Map<string, ReviewBucket[]>();
+  const steamWindows = new Map<string, number | null>();
 
   function steamWindowSignal(steamTitleId: number, days: number): number | null {
     const appid = steamAppidByTitleId.get(steamTitleId);
     if (!appid) return null;
-    const cutoff = daysAgoEpochSec(days);
-    const r = steamHistoryAgg.get(appid, cutoff) as { s: number };
-    // Zero is a valid answer meaning "no reviews in that window" — return 0, not null.
-    // The noise gate handles the too-small case.
-    return r.s;
+    const key = `${appid}|${days}`;
+    if (steamWindows.has(key)) return steamWindows.get(key)!;
+    if (!steamBuckets.has(appid)) steamBuckets.set(appid, steamHistory.all(appid) as ReviewBucket[]);
+    const snapshot = latestSignalByKey.get(`${steamTitleId}|steam`);
+    let grain: string | undefined;
+    try { grain = JSON.parse(snapshot?.raw_json ?? "{}").rollup_type; } catch { /* auto-select */ }
+    const result = reviewWindow(steamBuckets.get(appid)!, asOfDate, days, grain);
+    // A window larger than its latest lifetime snapshot is inconsistent input.
+    // Never let it contaminate the lifetime maximum again.
+    const signal = result.signal != null && snapshot?.rating_count != null &&
+      result.signal > snapshot.rating_count ? null : result.signal;
+    steamWindows.set(key, signal);
+    return signal;
   }
 
   // Steam latest LTD signal for a Steam title_id. Denominator for backfill-steam-pace.
@@ -616,7 +622,7 @@ async function main() {
       return s == null ? null : { signal: s, methodTag: null };
     }
     const s = steamWindowSignal(titleId, WINDOW_DAYS[window]!);
-    return s == null ? null : { signal: s, methodTag: null };
+    return s == null ? null : { signal: s, methodTag: STEAM_HISTOGRAM_VERSION };
   }
 
   function resolveConsoleSignal(
@@ -784,7 +790,8 @@ async function main() {
       let signal: number | null = null;
       if (resolved) {
         signal = resolved.signal;
-        if (resolved.methodTag) row.method = resolved.methodTag;
+        if (resolved.methodTag) row.method = platform === "steam"
+          ? `${row.method}+${resolved.methodTag}` : resolved.methodTag;
       } else if (window !== "ltd" && (platform === "xbox" || platform === "ps5")) {
         row.gatedReason = "insufficient_history";
         rows.push(row);
@@ -830,7 +837,7 @@ async function main() {
       const appliedCiPct        = override?.ci_pct             ?? mult.ci_pct;
       const appliedDigitalShare = override?.digital_unit_share ?? mult.digital_unit_share;
       if (override) {
-        row.method = `override:${override.method}`;
+        row.method = `override:${override.method}${platform === "steam" && window !== "ltd" ? `+${STEAM_HISTOGRAM_VERSION}` : ""}`;
       }
       const ownersMid = effectiveSignal * appliedMultiplier;
       const ownersLow = ownersMid * (1 - appliedCiPct);
