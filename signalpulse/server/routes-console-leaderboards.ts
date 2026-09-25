@@ -1823,7 +1823,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const steamSku = skuList.find(s => s.platform === "steam") ?? skuList[0];
       const displayName = steamSku?.name ?? key;
 
-      type PerPlatOut = { titleId: number; revenueUsd: number | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw"; aspUsdCents?: number | null; unitsMidEstimated?: number | null; unitSource?: string; dataSource?: string };
+      type PerPlatOut = { titleId: number; revenueUsd: number | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw"; aspUsdCents?: number | null; unitsMidEstimated?: number | null; unitSource?: string; dataSource?: string; estimateMethod?: string };
       const out: Partial<Record<Platform, PerPlatOut>> = {};
       for (const platform of PLATFORMS) {
         const members = matching.filter(r => r.platform === platform);
@@ -1835,6 +1835,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           ownersMid: members.some(r => r.ownersMid != null)
             ? members.reduce((n,r) => n + (r.ownersMid ?? 0),0) : null,
           revenueUsd: canonical?.revenueMidUsd ?? null,
+          estimateMethod: canonical?.estimateMethod ?? undefined,
           unitsMid: canonical?.unitsMid ?? null,
           unitsMidEstimated: canonical?.unitsMidEstimated ?? null,
           aspUsdCents: canonical?.aspUsdCents ?? null,

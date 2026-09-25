@@ -2,6 +2,12 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 25, 2026
+
+- Fixed: extreme negative Steam review bursts on established games are screened from the sales proxy using each title's own prior review activity, with no publisher-specific exceptions. Raw review history and sentiment remain unchanged. Daily platform-share learning excludes families with detected bursts in its evidence window.
+- Improved: affected individual and combined PDP estimates carry an explicit review-burst adjustment note. Worldwide review counts, existing labels and the calibrated multiplier remain unchanged.
+- Added: explicit, dry-run-first repair of provable mature-accumulator review-burst increments, preserving pre-event lifetime baselines, anchors, overrides, and unexplained states. Manifest approval, backup, per-title audit and conflict-checked rollback are required; no automatic startup repair.
+
 ## September 24, 2026
 
 - Hardened: missing Steam classification responses preserve known paid-game eligibility and provenance; verified non-game responses still exclude DLC. The daily timer no longer starts discovery merely because the timer itself is started.

@@ -43,6 +43,7 @@ import { rawSqlite } from "../server/storage";
 import { evaluateRevenueMixShadow } from "../server/routes-console-leaderboards";
 import { getPeerRankNeighbors, type SortKey } from "../server/signals/console/rankSnapshot";
 import { reviewWindow, STEAM_HISTOGRAM_VERSION, type ReviewBucket } from "../server/steam-review-windows";
+import {reviewShockEvidence,STEAM_REVIEW_SHOCK_VERSION,type ShockEvidence} from "../server/steam-review-shocks";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -440,6 +441,17 @@ async function main() {
   );
   const steamBuckets = new Map<string, ReviewBucket[]>();
   const steamWindows = new Map<string, number | null>();
+  const steamShocks = new Map<number,ShockEvidence>();
+  function steamSalesEvidence(titleId:number) {
+    if(steamShocks.has(titleId))return steamShocks.get(titleId)!;
+    const appid=steamAppidByTitleId.get(titleId);
+    if(appid&&!steamBuckets.has(appid))steamBuckets.set(appid,steamHistory.all(appid) as ReviewBucket[]);
+    const snapshot=latestSignalByKey.get(`${titleId}|steam`);
+    const evidence=reviewShockEvidence(appid?steamBuckets.get(appid)!:[],
+      snapshot?.capture_date??asOfDate,releaseByTitle.get(titleId)??null);
+    steamShocks.set(titleId,evidence);
+    return evidence;
+  }
 
   function steamWindowSignal(steamTitleId: number, days: number): number | null {
     const appid = steamAppidByTitleId.get(steamTitleId);
@@ -450,18 +462,22 @@ async function main() {
     const snapshot = latestSignalByKey.get(`${steamTitleId}|steam`);
     let grain: string | undefined;
     try { grain = JSON.parse(snapshot?.raw_json ?? "{}").rollup_type; } catch { /* auto-select */ }
-    const result = reviewWindow(steamBuckets.get(appid)!, asOfDate, days, grain);
+    const evidence=steamSalesEvidence(steamTitleId);
+    const result = reviewWindow(evidence.adjustedBuckets, asOfDate, days, grain);
     // A window larger than its latest lifetime snapshot is inconsistent input.
     // Never let it contaminate the lifetime maximum again.
-    const signal = result.signal != null && snapshot?.rating_count != null &&
-      result.signal > snapshot.rating_count ? null : result.signal;
+    const lifetimeSalesSignal=snapshot?.rating_count==null?null:snapshot.rating_count-evidence.excludedActivity;
+    const signal = evidence.invalid ? null : result.signal != null && lifetimeSalesSignal != null &&
+      result.signal > lifetimeSalesSignal ? null : result.signal;
     steamWindows.set(key, signal);
     return signal;
   }
 
   // Steam latest LTD signal for a Steam title_id. Denominator for backfill-steam-pace.
   function steamLtdSignal(steamTitleId: number): number | null {
-    return latestSignalByKey.get(`${steamTitleId}|steam`)?.rating_count ?? null;
+    const raw=latestSignalByKey.get(`${steamTitleId}|steam`)?.rating_count??null;
+    const evidence=steamSalesEvidence(steamTitleId);
+    return raw==null||evidence.invalid||evidence.excludedActivity>raw?null:raw-evidence.excludedActivity;
   }
 
   // Steam window/LTD ratio used by backfill-steam-pace to slice the console
@@ -838,6 +854,9 @@ async function main() {
       const appliedDigitalShare = override?.digital_unit_share ?? mult.digital_unit_share;
       if (override) {
         row.method = `override:${override.method}${platform === "steam" && window !== "ltd" ? `+${STEAM_HISTOGRAM_VERSION}` : ""}`;
+      }
+      if(platform==="steam"&&steamSalesEvidence(titleId).events.length){
+        row.method+=`+${STEAM_REVIEW_SHOCK_VERSION}`;
       }
       const ownersMid = effectiveSignal * appliedMultiplier;
       const ownersLow = ownersMid * (1 - appliedCiPct);

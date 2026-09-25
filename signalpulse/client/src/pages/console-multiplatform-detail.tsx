@@ -50,6 +50,7 @@ interface PerPlatformKpi {
   msrpUsdCents: number | null;
   source: "anchor" | "overlay" | "raw";
   dataSource?: string;
+  estimateMethod?: string;
 }
 
 interface IgdbBlob {
@@ -238,6 +239,7 @@ export default function ConsoleMultiplatformDetail() {
                     <div className="text-[10px] uppercase tracking-wide" style={{ color: PLATFORM_META[p].accent }}>{PLATFORM_META[p].label}</div>
                     <div className="font-mono text-xl font-semibold tabular-nums mt-1">{formatUsdCompact(k.revenueUsd)}</div>
                     <div className="text-xs text-muted-foreground mt-1">est. revenue · {k.dataSource === "derived_from_steam_daily_mix" ? "daily adjusted" : k.source}</div>
+                    {k.estimateMethod?.includes("steam_review_shock_guard_v1") && <div className="text-xs text-muted-foreground mt-2" data-testid="review-shock-note">Review-burst adjusted estimate. Raw review activity is preserved, not counted directly as purchases.</div>}
                     <div className="text-xs text-muted-foreground mt-2">
                       {formatNumberCompact(k.unitsMid)} units
                     </div>

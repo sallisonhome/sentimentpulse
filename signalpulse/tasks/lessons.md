@@ -1,5 +1,16 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-25: real reviews are not necessarily new sales
+
+The deduplicated histogram still treated an extreme negative review campaign as
+purchases and accumulated that error into lifetime sales. Distinguish histogram
+activity from filtered storefront summaries and compare identical language,
+purchase and off-topic scopes before alleging duplicate counts. Preserve raw
+sentiment; screen only the sales proxy with title-independent, historical gates.
+Exclude the same campaign from platform-share learning. Repair only a proven
+increment above a recent pre-event mature baseline, with unchanged coefficients,
+reviewed manifest, backup, audit, rollback and repeat-estimator QA.
+
 ## 2026-09-24: timer restoration and unknown metadata are not harmless
 
 Restoring `signalpulse-daily.timer` after a bounded repair launched discovery

@@ -8,7 +8,7 @@
     "build": "tsx script/build.ts",
     "start": "cross-env NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "pretest": "tsx --test server/steam-classification-preservation.test.ts && npm run test:steam-overlap && npm run test:pass-players && npm run test:pass-activity && npm run test:ratings",
+    "pretest": "tsx --test server/steam-classification-preservation.test.ts server/steam-review-shocks.test.ts server/steam-review-shock-repair.test.ts && npm run test:steam-overlap && npm run test:pass-players && npm run test:pass-activity && npm run test:ratings",
     "test:steam-overlap": "tsx --test server/steam-review-windows.test.ts server/steam-ltd-overlap-repair.test.ts server/steam-overlap-integration.test.ts",
     "test:ratings": "tsx --test server/reviews-ratings*.test.ts server/ccu-ratings-backfill.test.ts server/portfolio-ratings-backfill.test.ts",
     "test:pass-players": "tsx --test server/signals/demos/pass-player-model.test.ts server/signals/demos/pass-player-routes.test.ts",

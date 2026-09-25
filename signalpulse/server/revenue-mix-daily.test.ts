@@ -58,7 +58,8 @@ function database(){
     CREATE TABLE title_multiplier_overrides(title_id,effective_from);
     CREATE TABLE revenue_calibration_anchors(title_id);
     CREATE TABLE store_rating_signal_daily(title_id,platform,capture_date,rating_count,window_label);
-    CREATE TABLE window_estimates_daily(title_id,platform,window,as_of_date,units_mid,method);`);
+    CREATE TABLE window_estimates_daily(title_id,platform,window,as_of_date,units_mid,method);
+    CREATE TABLE steam_review_history(app_id,bucket_start,bucket_granularity,recommendations_up,recommendations_down);`);
   for(let f=0;f<12;f++){
     for(const [pi,p] of ["steam","ps5","xbox"].entries()){
       const id=f*3+pi,name=`Family ${f}`;
@@ -104,6 +105,19 @@ test("daily ledger is idempotent, evidence-only writes, and supports immediate r
   db.prepare("UPDATE app_settings SET value='unknown'").run();assert.equal(dailyMixMode(db),"off");
   db.prepare("UPDATE app_settings SET value='active'").run();
   db.prepare("INSERT INTO app_settings VALUES('revenue_mix_mode','off')").run();assert.equal(dailyMixMode(db),"off");
+  db.close();
+});
+test("a detected Steam review burst cannot train a daily platform-share shift",()=>{
+  const db=database(),now=new Date("2026-09-21T12:00:00Z");
+  const insert=db.prepare("INSERT INTO steam_review_history VALUES('0',?,'day',?,?)");
+  const start=Date.parse("2026-08-24")/1000;
+  for(let i=0;i<28;i++)insert.run(start+i*86400,50,10);
+  insert.run(Date.parse("2026-09-21")/1000,100,17000);
+  assert.equal(runDailyMix(db,policy,now).adjusted,0);
+  const row=db.prepare("SELECT * FROM revenue_mix_daily WHERE family_key='family 0'").get() as any;
+  assert.equal(JSON.parse(row.evidence_json).blocked,"review_activity_shock");
+  assert.equal(row.applied,0);
+  assert.deepEqual(JSON.parse(row.delta_json),[0,0,0]);
   db.close();
 });
 test("corrupt or out-of-bounds ledger rows are ignored rather than breaking reads",()=>{
