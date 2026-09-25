@@ -58,7 +58,9 @@ export function ReviewsRatingsView({ data, loading = false, error = false, retry
                     : <div className="text-sm font-medium">{p.label}</div>}
                   <div className="text-xl font-semibold tabular-nums">{value(p.value, p.scale === 100 ? "% positive" : " / 5")}</div>
                   {p.description && <p className="text-xs text-muted-foreground">{p.description}</p>}
-                  {p.count != null && <p className="text-xs text-muted-foreground">{p.count.toLocaleString()} {p.source === "steam" ? "Steam-purchase reviews · all languages" : "player ratings"}</p>}
+                  {p.count != null && <p className="text-xs text-muted-foreground">{p.count.toLocaleString()} {p.source === "steam"
+                    ? p.reviewScope === "all" ? "Steam reviews · all purchase types · all languages" : "Steam-purchase reviews · all languages"
+                    : "player ratings"}</p>}
                   {date(p.capturedAt) && <p className="text-xs text-muted-foreground">Captured {date(p.capturedAt)}</p>}
                   {p.status !== "ready" && <p className="text-xs text-muted-foreground" role="status">{STATUS[p.status]}</p>}
                 </div>
