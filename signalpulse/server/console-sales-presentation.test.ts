@@ -23,3 +23,11 @@ test("combined totals use two responsive columns; both rating controls remain", 
   assert.match(individual, /id: "rating_count"/);
   assert.match(individual, /id: "avg_rating"/);
 });
+
+test("incomplete totals are explicitly subtotals and do not render a share pie", () => {
+  const share = readFileSync(new URL("../client/src/components/console-revenue-share.tsx", import.meta.url), "utf8");
+  assert.match(share, /pie && !summary\.incomplete/);
+  assert.match(share, /Missing estimates are excluded, not zero sales/);
+  assert.match(readPage("console-multiplatform-detail"), /Available est\. revenue subtotal/);
+  assert.match(readPage("console-leaderboards"), /Partial subtotal/);
+});
