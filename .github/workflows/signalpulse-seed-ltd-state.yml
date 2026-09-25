@@ -51,7 +51,8 @@ jobs:
           fi
           curl -fsS --max-time 15 http://127.0.0.1:8000/api/ingest/status |
             python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["is_running"] is False; print("Sentiment ingestion idle")'
-          export DB_PATH="$WD/data.db" AS_OF=2026-09-25
+          # Repair the approved September 24 snapshot, not newly eligible titles.
+          export DB_PATH="$WD/data.db" AS_OF=2026-09-24
           OUT="$WD/repair-backups/overlap-ops-2026-09-25"
           if [ "$MODE" = dry ]; then
             node_modules/.bin/tsx scripts/repair-steam-review-overlap.ts
@@ -101,6 +102,7 @@ jobs:
           LTD_FLAG=$(systemctl show -p Environment --value signalpulse | tr ' ' '\n' | sed -n 's/^LTD_ACCUMULATOR_ENABLED=//p' | head -n1)
           [ "$LTD_FLAG" = 1 ]
           export LTD_ACCUMULATOR_ENABLED="$LTD_FLAG"
+          export AS_OF="$(date -u +%F)"
           timeout 180 node_modules/.bin/tsx scripts/estimate-console-units.ts > "$OUT/estimator-first.log" 2>&1
           sqlite3 -json data.db "SELECT title_id,platform,window,signal_value,units_mid,method,gated_reason FROM window_estimates_daily WHERE as_of_date='$AS_OF' ORDER BY title_id,platform,window" > "$OUT/first-numeric.json"
           timeout 180 node_modules/.bin/tsx scripts/estimate-console-units.ts > "$OUT/estimator-second.log" 2>&1
