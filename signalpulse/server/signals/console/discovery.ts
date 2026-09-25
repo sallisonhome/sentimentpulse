@@ -838,6 +838,7 @@ interface UpsertRow {
   msrpUsdCents: number | null;
   businessModelSource: string;               // e.g. "steam_appdetails.is_free"
   isManualOverride?: boolean;
+  classificationUnavailable?: boolean;       // transport/missing response, not verified DLC
 }
 
 /**
@@ -853,7 +854,7 @@ interface UpsertRow {
  * SKU. The DB row's title_id is the source of truth from the moment it
  * first lands; the caller's `titleIdFor` value is only consulted on INSERT.
  */
-export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: number; preservedOverride: number } {
+export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: number; preservedOverride: number; preservedUnavailable: number } {
   const nowIso = new Date().toISOString();
   const insertStmt = rawSqlite.prepare(
     `INSERT INTO platform_sku_map
@@ -892,7 +893,7 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
        WHERE platform_sku_map.is_manual_override = 0 OR excluded.is_manual_override = 1`
   );
   const preOverrideStmt = rawSqlite.prepare(
-    `SELECT is_manual_override FROM platform_sku_map WHERE platform = ? AND external_sku = ?`
+    `SELECT is_manual_override,business_model FROM platform_sku_map WHERE platform = ? AND external_sku = ?`
   );
   const existsStmt = rawSqlite.prepare(
     `SELECT 1 FROM platform_sku_map WHERE platform = ? AND external_sku = ?`
@@ -909,13 +910,21 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
     throw new Error(`upsertSkuMap: refusing to write ${f2pRejected.length} free_to_play row(s) (paid-only leaderboard invariant). Sample: ${sample}`);
   }
 
-  let inserted = 0, updated = 0, preservedOverride = 0;
+  let inserted = 0, updated = 0, preservedOverride = 0, preservedUnavailable = 0;
   const runTx = rawSqlite.transaction((batch: UpsertRow[]) => {
     for (const r of batch) {
-      const pre = preOverrideStmt.get(r.platform, r.externalSku) as { is_manual_override: number } | undefined;
+      const pre = preOverrideStmt.get(r.platform, r.externalSku) as { is_manual_override: number; business_model: string } | undefined;
       const existed = !!existsStmt.get(r.platform, r.externalSku);
       if (pre?.is_manual_override === 1 && !r.isManualOverride) {
         preservedOverride++;
+        continue;
+      }
+      // Missing Steam evidence is not evidence that a paid game stopped being
+      // a game. Preserve the whole last-known-good row, including provenance.
+      // Explicit non-game responses still demote; new unknown SKUs stay unknown.
+      if (r.platform === "steam" && r.classificationUnavailable &&
+          r.businessModel === "unknown" && pre?.business_model === "paid" && !r.isManualOverride) {
+        preservedUnavailable++;
         continue;
       }
       insertStmt.run(
@@ -927,7 +936,7 @@ export function upsertSkuMap(rows: UpsertRow[]): { inserted: number; updated: nu
     }
   });
   runTx(rows);
-  return { inserted, updated, preservedOverride };
+  return { inserted, updated, preservedOverride, preservedUnavailable };
 }
 
 // ─── Console title name bootstrap ────────────────────────────────────────────
@@ -1076,6 +1085,7 @@ export async function runFullDiscovery(opts: {
     conceptId: null, skuRole: "base",
     businessModel: c.businessModel, msrpUsdCents: c.msrpUsdCents,
     businessModelSource: `steam_appdetails.is_free=${c.businessModel === "free_to_play"};type=${c.type ?? "?"}`,
+    classificationUnavailable: c.businessModel === "unknown" && c.type == null,
   }));
   const xboxRows: UpsertRow[] = xboxPaid.map(c => ({
     platform: "xbox", externalSku: c.bigId, titleId: opts.titleIdFor("xbox", c.bigId, c.name),

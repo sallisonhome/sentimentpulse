@@ -1,5 +1,19 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-24: timer restoration and unknown metadata are not harmless
+
+Restoring `signalpulse-daily.timer` after a bounded repair launched discovery
+because the timer declared `Requires=signalpulse-daily.service`. Discovery then
+replaced 144 known paid Steam classifications with unknown after empty metadata
+responses. Remove that activation dependency; `Unit=` already names the scheduled
+service. Before pausing any timer, inspect its dependencies and persistent behavior.
+Verify the service stayed idle after restoring scheduling, not just timer status.
+
+Missing upstream evidence must preserve known paid classification and provenance,
+but a verified DLC/non-game response must still remove paid-game eligibility.
+Test both paths and new unknown SKUs. Recovery must restore only audited fields
+from the retained snapshot, never the entire database or fresh review observations.
+
 ## 2026-09-24: review resolutions are alternatives, not additive sales evidence
 
 The paid-sales estimator summed both daily and weekly histograms. Zero Company's
