@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import requests
+from services.reddit_transport import FetchRows, fetch_json, UpstreamFailure, run_active
 
 logger = logging.getLogger(__name__)
 
@@ -146,44 +147,35 @@ def _fetch_one(params: dict) -> list[dict]:
     Sleeps _REQUEST_DELAY seconds after the request regardless of outcome.
     """
     try:
-        resp = requests.get(
+        data = fetch_json(
             ARCTIC_SHIFT_BASE,
             params=params,
             headers=_HEADERS,
             timeout=_TIMEOUT,
+            provider="arctic_shift", interval=1.8,
         )
     except Exception as exc:
         logger.warning("arctic_shift: request failed — %s", exc)
-        time.sleep(_REQUEST_DELAY)
-        return []
+        if not run_active():
+            time.sleep(_REQUEST_DELAY)
+        return FetchRows(complete=False)
     finally:
         pass  # sleep happens below so it also fires on the happy path
 
-    time.sleep(_REQUEST_DELAY)
-
-    if resp.status_code != 200:
-        logger.warning(
-            "arctic_shift: HTTP %d for params=%s", resp.status_code, params
-        )
-        return []
-
-    try:
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("arctic_shift: failed to parse JSON — %s", exc)
-        return []
+    if not run_active():
+        time.sleep(_REQUEST_DELAY)
 
     if not isinstance(data, dict):
         logger.warning("arctic_shift: unexpected response type %s", type(data))
-        return []
+        return FetchRows(complete=False)
 
     if "error" in data:
         logger.warning("arctic_shift: API returned error field — %s", data["error"])
-        return []
+        return FetchRows(complete=False)
 
     raw_posts = data.get("data")
     if not raw_posts:
-        return []
+        return FetchRows()
 
     results: list[dict] = []
     for raw in raw_posts:
@@ -191,7 +183,7 @@ def _fetch_one(params: dict) -> list[dict]:
         if converted is not None:
             results.append(converted)
 
-    return results
+    return FetchRows(results)
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -238,6 +230,7 @@ def fetch_arctic_shift_subreddit_posts(
             # word (which would match unrelated ride-share industry posts).
             query = _game_search_query(game_name, game=game)
             seen: dict[str, dict] = {}
+            complete = True
 
             for field in ("title", "selftext"):
                 params = {
@@ -252,7 +245,9 @@ def fetch_arctic_shift_subreddit_posts(
                 # full fresh fetch (used by backfill).
                 if after > 0:
                     params["after"] = after
-                for post in _fetch_one(params):
+                rows = _fetch_one(params)
+                complete = complete and getattr(rows, "complete", True)
+                for post in rows:
                     pid = post["external_id"]
                     if pid not in seen:
                         seen[pid] = post
@@ -281,7 +276,8 @@ def fetch_arctic_shift_subreddit_posts(
                 )
             ]
             posts_returned = len(merged)
-            return merged
+            status = "ok" if complete else "partial_failure"
+            return FetchRows(merged, complete=complete)
 
         else:
             # Single-request path: all recent posts from the subreddit
@@ -295,6 +291,7 @@ def fetch_arctic_shift_subreddit_posts(
                 params["after"] = after
             results = _fetch_one(params)
             posts_returned = len(results)
+            status = "ok" if getattr(results, "complete", True) else "failed"
             return results
 
     except Exception as exc:
@@ -303,7 +300,7 @@ def fetch_arctic_shift_subreddit_posts(
             "arctic_shift: unexpected error for r/%s game='%s': %s",
             subreddit_name, game_name, exc,
         )
-        return []
+        return FetchRows(complete=False)
 
     finally:
         # Structured metric line — grep for this in logs to track daily yields
@@ -408,38 +405,23 @@ def fetch_arctic_shift_comments(
         "sort": "desc",
     }
     try:
-        resp = requests.get(
+        data = fetch_json(
             ARCTIC_SHIFT_COMMENTS_BASE,
             params=params,
             timeout=_TIMEOUT,
             headers=_HEADERS,
+            provider="arctic_shift", interval=1.8,
         )
-    except requests.RequestException as exc:
+    except (requests.RequestException, UpstreamFailure) as exc:
         logger.warning(
             "arctic_shift comments: request failed parent=%s — %s",
             parent_external_id, exc,
         )
-        return []
-
-    if resp.status_code != 200:
-        logger.warning(
-            "arctic_shift comments: HTTP %d parent=%s",
-            resp.status_code, parent_external_id,
-        )
-        return []
-
-    try:
-        data = resp.json()
-    except Exception as exc:
-        logger.warning(
-            "arctic_shift comments: bad JSON parent=%s — %s",
-            parent_external_id, exc,
-        )
-        return []
+        return FetchRows(complete=False)
 
     items = data.get("data") if isinstance(data, dict) else data
     if not isinstance(items, list):
-        return []
+        return FetchRows(complete=False)
 
     converted: list[dict] = []
     for raw in items:
@@ -447,5 +429,6 @@ def fetch_arctic_shift_comments(
         if c is not None:
             converted.append(c)
 
-    time.sleep(_REQUEST_DELAY)
-    return converted
+    if not run_active():
+        time.sleep(_REQUEST_DELAY)
+    return FetchRows(converted)

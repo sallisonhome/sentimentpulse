@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from config import settings
 from database import SessionLocal
+from services.ingest_timing import timed_step
 from models import (
     DailySummary,
     Game,
@@ -77,6 +78,8 @@ _LOG_DIR = Path(__file__).parent.parent / "logs"
 _status: dict = {
     "is_running": False,
     "last_run_at": None,          # ISO-8601 string
+    "last_run_finished_at": None,
+    "last_run_duration_s": None,
     # last_run_status values:
     #   "never"            — first boot, no run yet
     #   "success"          — all sources fetched data
@@ -136,6 +139,7 @@ def get_status() -> dict:
                     # Only overlay durable fields; live-run fields (is_running,
                     # next_run_at) stay from in-memory.
                     for k in ("last_run_at", "last_run_status", "last_run_errors",
+                             "last_run_finished_at", "last_run_duration_s",
                              "games_processed", "posts_collected",
                              "reddit_health", "reddit_fetched_total", "reddit_retries",
                              "bluesky_health", "bluesky_fetched_total", "bluesky_retries",
@@ -421,6 +425,10 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
     _status["youtube_health"] = "skipped"
     _status["youtube_fetched_total"] = 0
     _run_started_at = time.monotonic()
+    _status["last_run_finished_at"] = None
+    _status["last_run_duration_s"] = None
+    from services.reddit_transport import begin_run as begin_reddit_run
+    begin_reddit_run()
 
     log_lines: list[str] = []
     errors: list[str] = []
@@ -1024,6 +1032,8 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
 
     finally:
         # ── Step 8: write log ─────────────────────────────────────────────────
+        from services.reddit_transport import end_run as end_reddit_run
+        end_reddit_run()
         _step8_write_log(log_lines, errors)
 
         # v0028 (2026-08-28): health-drop check after every run. Compares
@@ -1071,6 +1081,8 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
 
         db.close()
         _status["is_running"] = False
+        _status["last_run_finished_at"] = datetime.now(timezone.utc).isoformat()
+        _status["last_run_duration_s"] = round(time.monotonic() - _run_started_at, 3)
         _status["last_run_status"] = final_status
         _status["last_run_errors"] = errors
         _status["games_processed"] = games_processed
@@ -1100,6 +1112,8 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
             import json as _json
             snapshot_json = _json.dumps({
                 "last_run_at": _status.get("last_run_at"),
+                "last_run_finished_at": _status.get("last_run_finished_at"),
+                "last_run_duration_s": _status.get("last_run_duration_s"),
                 "last_run_status": _status.get("last_run_status"),
                 "last_run_errors": _status.get("last_run_errors") or [],
                 "games_processed": _status.get("games_processed"),
@@ -1328,6 +1342,7 @@ def _resolve_steam_appids(game: Game) -> list[int]:
     return appids
 
 
+@timed_step
 def _step2_steam_reviews(
     db: Session,
     game: Game,
@@ -1405,6 +1420,7 @@ def _step2_steam_reviews(
 
 # ── Step 3: Steam Forums ──────────────────────────────────────────────────────
 
+@timed_step
 def _step3_steam_forums(
     db: Session,
     game: Game,
@@ -1493,6 +1509,7 @@ def _step3_steam_forums(
 
 # ── Step 4: Reddit ────────────────────────────────────────────────────────────
 
+@timed_step
 def _step4_reddit(
     db: Session,
     game: Game,
@@ -1555,8 +1572,14 @@ def _step4_reddit(
             # out already-seen posts server-side.  Duplicate risk is still
             # covered by _bulk_save_posts's external_id dedup.
             submissions = fetch_subreddit_posts(
-                sub_name, limit=100, game_name=game.name, after=after_epoch
+                sub_name, limit=100, game_name=game.name, game=game, after=after_epoch
             )
+            source_complete = getattr(submissions, "complete", True)
+            if not source_complete:
+                errors.append(
+                    f"[Step 4] '{game.name}' r/{sub_name}: upstream incomplete; "
+                    "available rows retained, cursor not advanced"
+                )
             total_fetched += len(submissions)
             saved = _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
@@ -1568,7 +1591,7 @@ def _step4_reddit(
             # thread-local flag.  Cursor uses MAX() so a spurious old post
             # can't rewind.
             newest = newest_epoch_from_posts(submissions)
-            if newest:
+            if newest and source_complete:
                 write_cursor(db, game.id, "reddit", sub_name, newest)
 
             # NOTE: Comment fetching is disabled because Reddit blocks all
@@ -1617,6 +1640,7 @@ def _step4_reddit(
 #     have stable comment counts; we optimize for recency and compounding.
 #   * Cap comments per parent at 100 (Arctic Shift's limit ceiling).
 
+@timed_step
 def _step4a_reddit_comments(
     db: Session,
     game: Game,
@@ -1723,6 +1747,11 @@ def _step4a_reddit_comments(
                 parent_permalink=permalink,
                 limit=100,
             )
+            if not getattr(comments, "complete", True):
+                errors.append(
+                    f"[Step 4a] '{game.name}' parent={parent.external_id}: "
+                    "upstream incomplete; retry on next run"
+                )
         except Exception as exc:
             msg = f"[Step 4a] fetch failed for parent={parent.external_id}: {exc}"
             errors.append(msg)
@@ -1752,6 +1781,7 @@ def _step4a_reddit_comments(
 
 # ── Step 4b: Bluesky ────────────────────────────────────────────────────────
 
+@timed_step
 def _step4b_bluesky(
     db: Session,
     game: Game,
@@ -1917,6 +1947,7 @@ def _step4c_dtf(
 
 # ── Step 5: Sentiment Classification ─────────────────────────────────────────
 
+@timed_step
 def _step5_classify_sentiment(
     db: Session,
     game: Game,
@@ -2180,6 +2211,7 @@ _CM_MIN_AUTHORS = 3
 _CM_MIN_DAYS = 1
 
 
+@timed_step
 def _step6_extract_topics(
     db: Session,
     game: Game,
@@ -2326,6 +2358,7 @@ def _step6_extract_topics(
 
 # ── Step 7: Daily Summary ─────────────────────────────────────────────────────
 
+@timed_step
 def _step7_daily_summary(
     db: Session,
     game: Game,

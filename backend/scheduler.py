@@ -61,12 +61,13 @@ def create_scheduler() -> BackgroundScheduler:
     )
 
     from config import settings  # noqa: PLC0415
-    ingest_hour = int(getattr(settings, 'ingest_hour', 2))
-    ingest_minute = int(getattr(settings, 'ingest_minute', 0))
+    ingest_hour = settings.ingest_hour_et
+    ingest_minute = settings.ingest_minute_et
 
     _scheduler.add_job(
         _ingest_job,
-        trigger=CronTrigger(hour=ingest_hour, minute=ingest_minute),
+        trigger=CronTrigger(hour=ingest_hour, minute=ingest_minute,
+                            timezone="America/New_York"),
         id=_JOB_ID,
         name="Daily sentiment ingestion",
         replace_existing=True,
@@ -155,7 +156,7 @@ def create_scheduler() -> BackgroundScheduler:
     )
 
     logger.info(
-        f"Scheduler created — daily ingestion at {ingest_hour:02d}:{ingest_minute:02d}, "
+        f"Scheduler created — daily ingestion at {ingest_hour:02d}:{ingest_minute:02d} America/New_York, "
         f"weekly smoke test Sun 03:00 local, weekly prewarm Mon 00:30 ET, "
         f"weekly digest Mon 07:00 ET, monthly digest 1st 12:00 ET (after "
         f"Step 9 monthly-summary generation)."
@@ -197,6 +198,26 @@ def _ingest_job() -> None:
     from services.cron_alerts import run_with_retry  # noqa: PLC0415
 
     logger.info("Scheduled daily ingestion starting.")
+
+    # Earlier start must not race the 04:30 ET YouTube producer or an
+    # over-running 09:15 UTC storefront refresh. A failure is an explicit
+    # alert, never an unsafe restart or silently successful skipped run.
+    from services.ingest_dependencies import wait_for_dependencies
+    from services.youtube_service import youtube_import_enabled
+    from database import SessionLocal
+    from services.cron_alerts import send_failure_alert
+    db = SessionLocal()
+    try:
+        check_youtube = youtube_import_enabled(db)
+    finally:
+        db.close()
+    try:
+        wait_for_dependencies(check_youtube=check_youtube)
+    except Exception as exc:
+        logger.exception("Scheduled ingestion dependency deadline exceeded")
+        send_failure_alert("daily_ingestion_dependencies", attempts=1,
+                           last_error=str(exc))
+        return
 
     def _do(attempt: int) -> None:
         logger.info("daily_ingestion attempt %d", attempt)

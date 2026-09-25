@@ -733,12 +733,16 @@ class TestLayer2FuzzyMatch:
         result = is_post_relevant_to_game(title, body, game)
         assert result is False, "'H2 MCC' is below the 8-char fuzzy floor, so 'H3 MCC' must not match it."
 
-    def test_cross_game_exact_match_takes_precedence_over_fuzzy(self):
+    def test_cross_game_exact_match_takes_precedence_over_fuzzy(self, monkeypatch):
         """
         If the post text contains an EXACT Layer-1 hit for a different game,
         Layer 2 must not fire a fuzzy match for the focal game, even if a
         fuzzy candidate is technically within edit distance.
         """
+        # This case explicitly exercises the documented static fallback.
+        # Do not let an incidental empty local database change its branch.
+        from unittest.mock import Mock
+        monkeypatch.setattr("database.SessionLocal", Mock(side_effect=RuntimeError("fixture offline")))
         game = _make_game("Bus Bound", keywords=["Bus Bound"])
         # "Bus Bund" is a 1-edit typo of "Bus Bound", but the text also
         # contains an exact, unrelated keyword phrase for a different game

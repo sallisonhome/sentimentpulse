@@ -1,5 +1,27 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-25 — Profile source collection before optimizing summaries
+
+Three scheduled runs took 140, 151 and 160 minutes. The September 25
+collection markers spanned 149 minutes; dashboard warming was 32 seconds.
+Arctic Shift recorded 399 HTTP 422 and 280 HTTP 429 responses; 125/149
+PullPush fallbacks were also throttled. A replayed 422 was an upstream
+timeout, not proof of malformed parameters.
+
+- Successful empty data and upstream errors must be represented separately.
+  Never advance the source cursor after incomplete primary reads.
+- Preserve all active titles and source windows. Reuse identical successful
+  transport results, but copy them before per-game relevance annotations.
+- Bound caches on the 2GB shared host. Do not parallelize a throttled provider
+  as a substitute for pacing or reducing redundant reads.
+- The host is UTC: legacy INGEST_HOUR=10 / MINUTE=45 was 06:45 EDT, not 02:00.
+  Use INGEST_HOUR_ET / INGEST_MINUTE_ET and explicit America/New_York.
+- The earlier run must check the YouTube producer and storefront job. Monthly
+  discovery defers during ingestion; Sunday SKU linking is moved out of the
+  morning window and checks idle state.
+- Measure full-run elapsed time and source completeness after rollout; a fast
+  cache-hit smoke test is not evidence of a faster complete production run.
+
 ## 2026-09-24 — Post-import warmup must invalidate same-day dashboard caches
 
 The YouTube activation stored and classified all comments, but Today and 30d

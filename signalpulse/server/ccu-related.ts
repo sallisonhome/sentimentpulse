@@ -375,6 +375,8 @@ export async function pollRelatedGamesSteamHunters(): Promise<{ processed: numbe
 // `0 10 1 * *` UTC (1st of month, 10:00 UTC = 6am ET during EDT) — checked
 // once per hour via the same wall-clock-tick idiom as ccu-poll.ts, since
 // SignalPulse has no cron-expression library dependency.
+import { sentimentIngestionIdle } from "./sentiment-ingest-guard";
+
 let relatedPollInterval: ReturnType<typeof setInterval> | null = null;
 let lastFiredMonthKey: string | null = null;
 
@@ -382,14 +384,16 @@ export function startRelatedGamesScheduler(): void {
   if (relatedPollInterval) return;
   log("Saber Steam CCU related-games scheduler started (1st of month, 10:00 UTC)", "ccu-related");
 
-  relatedPollInterval = setInterval(() => {
+  relatedPollInterval = setInterval(async () => {
     const now = new Date();
-    if (now.getUTCDate() !== 1 || now.getUTCHours() !== 10) return;
+    if (now.getUTCDate() !== 1 || now.getUTCHours() < 10) return;
     const monthKey = now.toISOString().slice(0, 7); // yyyy-mm
     if (monthKey === lastFiredMonthKey) return;
+    // Retain the slot; retry later on the 1st rather than overlapping ingest.
+    if (!(await sentimentIngestionIdle())) return;
     lastFiredMonthKey = monthKey;
     pollRelatedGamesSteamHunters().catch((err) => log(`[ccu-related] unhandled error: ${(err as Error).message}`, "ccu-related"));
-  }, 60 * 60 * 1000);
+  }, 60 * 1000);
 }
 
 export function stopRelatedGamesScheduler(): void {

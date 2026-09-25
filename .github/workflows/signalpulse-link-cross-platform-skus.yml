@@ -37,7 +37,9 @@ name: SignalPulse — Weekly Cross-Platform SKU Link
 
 on:
   schedule:
-    - cron: "15 10 * * 0"
+    # 11:15 EDT / 10:15 EST: after the earlier sentiment run, including its
+    # dependency-delay buffer. Avoid competing Steam discovery in the morning.
+    - cron: "15 15 * * 0"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -130,6 +132,10 @@ jobs:
               MAX_STEAM_ADDS="$MAX_STEAM_ADDS" \
               bash -s <<'REMOTE'
           set -euo pipefail
+          # Fail closed if a delayed/manual sentiment run is still active.
+          # Do not hold the maintenance lock while waiting for another app.
+          curl --fail --silent --show-error --max-time 10 http://127.0.0.1:8000/api/ingest/status \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("is_running") is False else "Sentiment ingestion busy: no SKU linking performed")'
           exec 9>/run/lock/signalpulse-maintenance.lock
           flock -w 600 9 || { echo "Refresh busy; no linking performed"; exit 75; }
 

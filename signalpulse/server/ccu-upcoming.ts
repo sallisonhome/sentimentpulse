@@ -240,6 +240,8 @@ export async function pollPopularUpcoming(): Promise<{ processed: number; skippe
 }
 
 // ─── Scheduler ─────────────────────────────────────────────────────────────
+import { sentimentIngestionIdle } from "./sentiment-ingest-guard";
+
 let upcomingPollInterval: ReturnType<typeof setInterval> | null = null;
 let lastFiredMonthKey: string | null = null;
 
@@ -247,14 +249,15 @@ export function startPopularUpcomingScheduler(): void {
   if (upcomingPollInterval) return;
   log("Saber Steam CCU popular-upcoming scheduler started (1st of month, 10:00 UTC)", "ccu-upcoming");
 
-  upcomingPollInterval = setInterval(() => {
+  upcomingPollInterval = setInterval(async () => {
     const now = new Date();
-    if (now.getUTCDate() !== 1 || now.getUTCHours() !== 10) return;
+    if (now.getUTCDate() !== 1 || now.getUTCHours() < 10) return;
     const monthKey = now.toISOString().slice(0, 7); // yyyy-mm
     if (monthKey === lastFiredMonthKey) return;
+    if (!(await sentimentIngestionIdle())) return;
     lastFiredMonthKey = monthKey;
     pollPopularUpcoming().catch((err) => log(`[ccu-upcoming] unhandled error: ${(err as Error).message}`, "ccu-upcoming"));
-  }, 60 * 60 * 1000);
+  }, 60 * 1000);
 }
 
 export function stopPopularUpcomingScheduler(): void {
