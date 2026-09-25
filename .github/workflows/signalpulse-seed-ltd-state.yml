@@ -4,7 +4,7 @@ name: SignalPulse — Audited Steam overlap repair
     inputs:
       mode:
         type: choice
-        options: [dry, apply, inspect]
+        options: [dry, apply, inspect, recover]
         default: dry
         required: true
       expected_sha:
@@ -31,7 +31,7 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          [[ "$MODE" == dry || "$MODE" == apply || "$MODE" == inspect ]]
+          [[ "$MODE" == dry || "$MODE" == apply || "$MODE" == inspect || "$MODE" == recover ]]
           [[ "$EXPECTED_SHA" == none || "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
           mkdir -p evidence
           ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=15 -o ServerAliveCountMax=12 \
@@ -43,6 +43,59 @@ jobs:
           [ -f data.db ] && [ -x node_modules/.bin/tsx ]
           [ -f scripts/repair-steam-review-overlap.ts ]
           systemctl is-active --quiet signalpulse
+          if [ "$MODE" = recover ]; then
+            daily_state=$(systemctl show -p ActiveState --value signalpulse-daily.service)
+            [[ "$daily_state" == inactive || "$daily_state" == failed ]]
+            export EXPECTED_SHA
+            node <<'NODE'
+          const D=require('better-sqlite3'),fs=require('fs'),assert=require('assert/strict'),crypto=require('crypto');
+          (async()=>{
+            const live=new D('data.db'),before=new D('repair-backups/steam-overlap-2026-09-25T02-57-15-534Z.db',{readonly:true});
+            const hash=x=>crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex');
+            const plan=()=>{
+              const changes=[];
+              for(const old of before.prepare("SELECT * FROM platform_sku_map WHERE platform='steam' AND business_model='paid'").all()){
+                const current=live.prepare("SELECT * FROM platform_sku_map WHERE platform=? AND external_sku=?").get(old.platform,old.external_sku);
+                if(current?.business_model!==old.business_model)changes.push({before:old,current});
+              }
+              assert.equal(changes.length,144);
+              for(const r of changes){
+                assert.equal(r.current.business_model,'unknown');
+                assert.equal(r.current.business_model_source,'steam_appdetails.is_free=false;type=?');
+                assert.equal(r.current.refreshed_at,'2026-09-25T02:58:33.762Z');
+                assert.equal(r.current.title_id,r.before.title_id);
+                assert.equal(r.current.is_manual_override,0);
+              }
+              assert.equal(hash(changes),process.env.EXPECTED_SHA);
+              return changes;
+            };
+            const changes=plan();
+            const backup='repair-backups/classification-recovery-'+new Date().toISOString().replace(/[:.]/g,'-')+'.db';
+            await live.backup(backup);
+            const tables=['title_ltd_state','window_estimates_daily','steam_review_history','store_rating_signal_daily','ownership_multipliers','title_multiplier_overrides','revenue_calibration_anchors'];
+            const tableHash=t=>hash(live.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
+            const original=Object.fromEntries(tables.map(t=>[t,tableHash(t)]));
+            const skuRows=live.prepare('SELECT * FROM platform_sku_map ORDER BY id').all();
+            live.transaction(()=>{
+              plan();
+              const write=live.prepare("UPDATE platform_sku_map SET business_model=?,business_model_source=? WHERE id=?");
+              for(const r of changes)assert.equal(write.run(r.before.business_model,r.before.business_model_source,r.current.id).changes,1);
+              for(const old of skuRows){
+                const c=changes.find(r=>r.current.id===old.id);
+                assert.deepEqual(live.prepare('SELECT * FROM platform_sku_map WHERE id=?').get(old.id),
+                  c?{...old,business_model:c.before.business_model,business_model_source:c.before.business_model_source}:old);
+              }
+            }).immediate();
+            for(const [t,h] of Object.entries(original))assert.equal(tableHash(t),h);
+            fs.writeFileSync(backup+'.audit.json',JSON.stringify({changes,protectedTableHashes:original},null,2),{mode:0o600});
+            console.log(JSON.stringify({restoredClassifications:changes.length,allOtherSkuFieldsUnchanged:true,estimatesAndInputsUnchanged:true,backup,audit:backup+'.audit.json'}));
+            live.close();before.close();
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
+            systemctl is-active signalpulse-daily.timer
+            systemctl list-timers signalpulse-daily.timer --no-pager
+            exit 0
+          fi
           if [ "$MODE" = inspect ]; then
             systemctl show -p ActiveState,ExecMainStartTimestamp,ExecMainExitTimestamp,Result signalpulse-daily.service
             systemctl list-timers signalpulse-daily.timer --no-pager
