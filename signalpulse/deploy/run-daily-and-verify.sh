@@ -22,8 +22,8 @@ echo "before=$before after=$after start_exit=$rc Result=$result ExecMainStatus=$
 journal=$(journalctl "_SYSTEMD_INVOCATION_ID=$after" --no-pager -o cat)
 printf '%s\n' "$journal"
 [[ "$rc" = 0 && "$result" = success && "$status" = 0 ]] || exit 1
-for phase in 1 2 3 4 5; do
+for phase in 1 1b 2 3 4 5; do
   grep -q "PHASE $phase:" <<<"$journal" || { echo "FAIL: missing phase $phase"; exit 1; }
 done
 grep -q 'signalpulse-daily done' <<<"$journal" || { echo "FAIL: missing completion marker"; exit 1; }
-echo "VERIFIED: new invocation completed all five phases"
+echo "VERIFIED: new invocation completed all phases including catalog coverage"

@@ -4,6 +4,10 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 25, 2026
 
+- Improved: the existing daily refresh now verifies missing paid Steam, PS5 and Xbox coverage across the known catalog, independently of Top 20/40 rank. Verified ratings-only mappings and recoverable unknown classifications can enter sales estimates; exact reviewed Steam links can enroll a missing Steam counterpart. Native product identity, platform, release and USD purchase evidence are required.
+- Hardened: same-family, shared-title, regional and PlayStation-concept guards prevent duplicate additions. Ambiguous listings, non-base editions, free games and unsupported platforms remain held. Reviewed console-version aliases join their parent sales family without copying ratings or histories; Townfall remains Steam/PS5 only.
+- Added: auditable before/after receipts, retained backups, Settings controls for active/plan/off, and conflict-checked catalog rollback. The check runs before collection under the existing maintenance lock, not a second scheduled writer. HMAP receives the same upstream results across all five periods.
+
 - Fixed: extreme negative Steam review bursts on established games are screened from the sales proxy using each title's own prior review activity, with no publisher-specific exceptions. Raw review history and sentiment remain unchanged. Daily platform-share learning excludes families with detected bursts in its evidence window.
 - Improved: affected individual and combined PDP estimates carry an explicit review-burst adjustment note. Worldwide review counts, existing labels and the calibrated multiplier remain unchanged.
 - Added: explicit, dry-run-first repair of provable mature-accumulator review-burst increments, preserving pre-event lifetime baselines, anchors, overrides, and unexplained states. Manifest approval, backup, per-title audit and conflict-checked rollback are required; no automatic startup repair.

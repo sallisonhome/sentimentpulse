@@ -3409,6 +3409,7 @@ export class DatabaseStorage implements IStorage {
     const defaults: { key: string; label: string; category: string; isSecret: boolean; value?: string }[] = [
       { key: "revenue_mix_mode", label: "Revenue mix calibration (shadow or off)", category: "general", isSecret: false, value: "shadow" },
       { key: "revenue_mix_daily_mode", label: "Daily revenue mix (active, shadow, or off)", category: "general", isSecret: false, value: "active" },
+      { key: "sales_catalog_reconcile_mode", label: "Daily sales platform coverage (active, plan, or off)", category: "general", isSecret: false, value: "active" },
       { key: "steam_api_key", label: "Steam Web API Key", category: "api_keys", isSecret: true },
       { key: "steam_partner_id", label: "Steam Partner ID", category: "api_keys", isSecret: false },
       { key: "sony_api_key", label: "Sony Partner Portal API Key", category: "api_keys", isSecret: true },
