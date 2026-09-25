@@ -94,7 +94,7 @@ class TestTopicsSplit:
 
         found = False
         for node in ast.walk(target):
-            if isinstance(node, ast.Name) and node.id == "generate_feedback_summary":
+            if isinstance(node, ast.Name) and node.id in ("generate_feedback_summary", "_queue_topics"):
                 found = True
                 break
             if isinstance(node, ast.alias) and node.name == "generate_feedback_summary":

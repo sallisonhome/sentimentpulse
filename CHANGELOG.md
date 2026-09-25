@@ -1,5 +1,18 @@
 # SentimentPulse Changelog
 
+## September 25, 2026: Top Topics window reliability
+
+- Top Topics supports Today, 7 Day and 30 Day for every active title.
+  Startup and post-ingestion warmup cover all three windows.
+- Successful sentiment buckets are saved durably in AppSetting and remain
+  visible independently. Restarts do not erase them; new ingestion triggers
+  refresh. Results from a different date window are never relabeled current.
+- Empty or malformed model responses now trigger the configured fallback
+  for this structured extraction call. Two workers bound concurrent topic
+  jobs; failed buckets have explicit retry states and a five-minute cooldown.
+- 90 Day and Lifetime do not request or generate topics. The card displays:
+  "Top Topics are only available for Today, 7 Day and 30 Day time periods."
+
 ## September 25, 2026
 
 - Daily ingestion now targets 05:45 America/New_York, explicitly DST-aware.

@@ -10,6 +10,7 @@ Returns all KPI data for a single game over the requested time period:
 """
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional, Tuple
 
@@ -185,22 +186,30 @@ def get_dashboard(
 # so overlapping requests don't spawn duplicate LLM work.
 _TOPICS_INFLIGHT_LOCK = threading.Lock()
 _TOPICS_INFLIGHT: set[tuple[int, str]] = set()
+_TOPICS_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="topics")
+_TOPICS_FUTURES = {}
 
 
 def _synthesize_topics_background(game_id: int, game_name: str, period_key: str, period_start):
-    """Run generate_feedback_summary for all three sentiments in a background
-    thread. Uses a short-lived DB session (background threads must not reuse
-    request-scoped sessions). Result is written into the synthesizer's own
-    TTL cache; a later foreground request will find it and return status='ready'.
+    """Validate and persist missing/stale buckets using a worker-owned session.
+    Successful empty lists are saved; failures retain same-window prior data.
     """
     from database import SessionLocal
     from services.dashboard_feedback_synthesizer import generate_feedback_summary
+    from services import dashboard_feedback_synthesizer as synth
+    from services import topic_snapshots as snapshots
 
     key = (game_id, period_key)
     session = SessionLocal()
     try:
+        gen = snapshots.generation(session)
         for sentiment in (SentimentEnum.positive, SentimentEnum.negative, SentimentEnum.neutral):
+            prior = snapshots.read(session, game_id, period_key, sentiment.value, period_start)
+            if not snapshots.retry_due(prior, gen):
+                continue
             try:
+                # Never reuse a cache entry from a prior day/ingest generation.
+                synth._CACHE.pop((game_id, period_key, sentiment.value), None)
                 generate_feedback_summary(
                     db=session,
                     game_id=game_id,
@@ -209,19 +218,45 @@ def _synthesize_topics_background(game_id: int, game_name: str, period_key: str,
                     period_key=period_key,
                     period_start=period_start,
                 )
+                payload = synth._cache_get((game_id, period_key, sentiment.value))
+                if payload is None:
+                    raise RuntimeError("No validated topic response")
+                snapshots.write(session, game_id, period_key, sentiment.value,
+                                period_start, gen, payload)
             except Exception:  # noqa: BLE001 — background thread; log and continue
+                session.rollback()
                 logger.exception(
                     "topics background synth failed game=%d period=%s sentiment=%s",
                     game_id, period_key, sentiment.value,
                 )
+                snapshots.write(session, game_id, period_key, sentiment.value,
+                                period_start, gen, None, error="Topic synthesis failed")
     finally:
         session.close()
-        with _TOPICS_INFLIGHT_LOCK:
-            _TOPICS_INFLIGHT.discard(key)
         logger.info(
             "topics background synth complete game=%d period=%s",
             game_id, period_key,
         )
+
+
+def _queue_topics(game_id, game_name, period_key, period_start):
+    """One job per window; at most two model workers for the entire process."""
+    key = (game_id, period_key)
+    with _TOPICS_INFLIGHT_LOCK:
+        existing = _TOPICS_FUTURES.get(key)
+        if existing is not None and not existing.done():
+            return existing
+        _TOPICS_INFLIGHT.add(key)
+        future = _TOPICS_EXECUTOR.submit(
+            _synthesize_topics_background, game_id, game_name, period_key, period_start)
+        _TOPICS_FUTURES[key] = future
+    def finished(done):
+        with _TOPICS_INFLIGHT_LOCK:
+            if _TOPICS_FUTURES.get(key) is done:
+                _TOPICS_INFLIGHT.discard(key)
+                _TOPICS_FUTURES.pop(key, None)
+    future.add_done_callback(finished)
+    return future
 
 
 @router.get("/{game_id}/dashboard/topics", response_model=TopTopicsSummary)
@@ -254,66 +289,35 @@ def get_dashboard_topics(
     if not game:
         raise HTTPException(status_code=404, detail="Game not found.")
 
+    from services import topic_snapshots as snapshots
+    if period.value not in snapshots.PERIODS:
+        return TopTopicsSummary(positive=[], negative=[], neutral=[],
+                                status="unsupported", message=snapshots.UNSUPPORTED_MESSAGE)
     p_start = _period_start(period)
-
-    from services.dashboard_feedback_synthesizer import (
-        _cache_get as _synth_cache_get,
-        generate_feedback_summary,
-    )
-
-    def _cached_for(sentiment: SentimentEnum):
-        cached = _synth_cache_get((game_id, period.value, sentiment.value))
-        if cached is None:
-            return None
-        return [
-            TopicSummary(label=c["label"], detail=c["detail"], volume=c["volume"])
-            for c in cached
-        ]
-
-    positive = _cached_for(SentimentEnum.positive)
-    negative = _cached_for(SentimentEnum.negative)
-    neutral = _cached_for(SentimentEnum.neutral)
-
-    if positive is not None and negative is not None and neutral is not None:
-        # All warm — return the real data.
-        return TopTopicsSummary(
-            positive=positive,
-            negative=negative,
-            neutral=neutral,
-            status="ready",
-        )
-
-    # Cold or partial: kick off background synthesis (if not already running
-    # for this (game, period) tuple) and return pending immediately.
-    key = (game_id, period.value)
-    with _TOPICS_INFLIGHT_LOCK:
-        already_running = key in _TOPICS_INFLIGHT
-        if not already_running:
-            _TOPICS_INFLIGHT.add(key)
-
-    if not already_running:
-        thread = threading.Thread(
-            target=_synthesize_topics_background,
-            args=(game_id, game.name, period.value, p_start),
-            name=f"topics-synth-{game_id}-{period.value}",
-            daemon=True,
-        )
-        thread.start()
-        logger.info(
-            "topics background synth started game=%d period=%s",
-            game_id, period.value,
-        )
+    gen = snapshots.generation(db)
+    records = {s: snapshots.read(db, game_id, period.value, s, p_start)
+               for s in snapshots.SENTIMENTS}
+    payload = {s: (r or {}).get("payload") or [] for s, r in records.items()}
+    states = {
+        s: ("ready" if snapshots.fresh(r, gen) else
+            "error" if r and r.get("error") else
+            "refreshing" if r and r.get("payload") is not None else "pending")
+        for s, r in records.items()
+    }
+    if all(snapshots.fresh(r, gen) for r in records.values()):
+        status = "ready"
     else:
-        logger.info(
-            "topics background synth already running game=%d period=%s",
-            game_id, period.value,
-        )
-
+        queued = False
+        if any(snapshots.retry_due(r, gen) for r in records.values()):
+            _queue_topics(game_id, game.name, period.value, p_start)
+            queued = True
+        with _TOPICS_INFLIGHT_LOCK:
+            running = queued or (game_id, period.value) in _TOPICS_INFLIGHT
+        status = ("refreshing" if any(payload.values()) else "pending") if running else "error"
     return TopTopicsSummary(
-        positive=positive or [],
-        negative=negative or [],
-        neutral=neutral or [],
-        status="pending",
+        **payload, status=status, bucket_status=states,
+        updated_at=min((r["updated_at"] for r in records.values()
+                        if r and r.get("updated_at")), default=None),
     )
 
 
@@ -1247,25 +1251,24 @@ def warmup_dashboard_cache(logger_override=None) -> dict:
 # and the next most-used chip) sequentially in one background thread.
 _TOPICS_WARMUP_THREAD_LOCK = threading.Lock()
 _TOPICS_WARMUP_THREAD: Optional[threading.Thread] = None
+_TOPICS_WARMUP_AGAIN = threading.Event()
 
 
 def warmup_topics_cache(logger_override=None) -> dict:
-    """Fill the Top Topics synthesizer cache for every active game.
-
-    Sequential on purpose — each (game, period) fires three LLM calls.
-    Skip buckets that are already warm or already in flight so a dashboard
-    visit during warmup does not duplicate Sonar work.
+    """Persist Today, 7 Day and 30 Day topics for every active game.
+    One warmup window at a time leaves the second executor slot for visitors.
+    Model failures are reported as errors rather than counted as warmed.
     """
     import time
     from database import SessionLocal
-    from services.dashboard_feedback_synthesizer import _cache_get as _synth_cache_get
+    from services import topic_snapshots as snapshots
 
     log = logger_override or logger
     started = time.monotonic()
     warmed = 0
     skipped = 0
     errors: list[dict] = []
-    periods_to_warm = [PeriodEnum.today, PeriodEnum.weekly]
+    periods_to_warm = [PeriodEnum.today, PeriodEnum.weekly, PeriodEnum.monthly]
 
     db = SessionLocal()
     try:
@@ -1280,30 +1283,22 @@ def warmup_topics_cache(logger_override=None) -> dict:
         )
         for game in active_games:
             for period in periods_to_warm:
-                key = (game.id, period.value)
-                with _TOPICS_INFLIGHT_LOCK:
-                    already = key in _TOPICS_INFLIGHT
-                    if not already:
-                        cached = [
-                            _synth_cache_get((game.id, period.value, s.value))
-                            for s in (
-                                SentimentEnum.positive,
-                                SentimentEnum.negative,
-                                SentimentEnum.neutral,
-                            )
-                        ]
-                        if all(c is not None for c in cached):
-                            skipped += 1
-                            continue
-                        _TOPICS_INFLIGHT.add(key)
-                if already:
+                gen = snapshots.generation(db)
+                p_start = _period_start(period)
+                records = [snapshots.read(db, game.id, period.value, s, p_start)
+                           for s in snapshots.SENTIMENTS]
+                if all(snapshots.fresh(r, gen) for r in records):
                     skipped += 1
                     continue
                 try:
-                    _synthesize_topics_background(
-                        game.id, game.name, period.value, _period_start(period),
-                    )
-                    warmed += 1
+                    _queue_topics(game.id, game.name, period.value, p_start).result()
+                    records = [snapshots.read(db, game.id, period.value, s, p_start)
+                               for s in snapshots.SENTIMENTS]
+                    if all(snapshots.fresh(r, gen) for r in records):
+                        warmed += 1
+                    else:
+                        errors.append({"game_id": game.id, "period": period.value,
+                                       "error": "Incomplete validated synthesis; retry is available"})
                 except Exception as exc:  # noqa: BLE001
                     errors.append({
                         "game_id": game.id,
@@ -1314,8 +1309,6 @@ def warmup_topics_cache(logger_override=None) -> dict:
                         "topics warmup FAILED game=%d period=%s: %s",
                         game.id, period.value, exc,
                     )
-                    with _TOPICS_INFLIGHT_LOCK:
-                        _TOPICS_INFLIGHT.discard(key)
     finally:
         db.close()
 
@@ -1333,15 +1326,29 @@ def warmup_topics_cache(logger_override=None) -> dict:
     return summary
 
 
-def start_topics_warmup_background(logger_override=None) -> dict:
+def start_topics_warmup_background(logger_override=None, force=False) -> dict:
     """Fire-and-forget wrapper so ingest is not blocked on LLM synthesis."""
     global _TOPICS_WARMUP_THREAD
+    if force:
+        from database import SessionLocal
+        from services.topic_snapshots import invalidate
+        session = SessionLocal()
+        try:
+            invalidate(session)
+        finally:
+            session.close()
     with _TOPICS_WARMUP_THREAD_LOCK:
         if _TOPICS_WARMUP_THREAD is not None and _TOPICS_WARMUP_THREAD.is_alive():
+            if force:
+                _TOPICS_WARMUP_AGAIN.set()
             return {"status": "already_running"}
+        _TOPICS_WARMUP_AGAIN.set()
+        def run():
+            while _TOPICS_WARMUP_AGAIN.is_set():
+                _TOPICS_WARMUP_AGAIN.clear()
+                warmup_topics_cache(logger_override=logger_override)
         _TOPICS_WARMUP_THREAD = threading.Thread(
-            target=warmup_topics_cache,
-            kwargs={"logger_override": logger_override},
+            target=run,
             name="topics-warmup",
             daemon=True,
         )
@@ -1412,9 +1419,9 @@ def dashboard_warmup_endpoint():
 
 @router.post("/dashboard/topics-warmup", tags=["dashboard-admin"])
 def dashboard_topics_warmup_endpoint():
-    """Start a background Top Topics warmup (today + weekly, all active
+    """Start a background Top Topics warmup (today + weekly + monthly, all active
     games). Returns {status: 'started'|'already_running'} immediately."""
-    return start_topics_warmup_background()
+    return start_topics_warmup_background(force=True)
 
 
 @router.get("/dashboard/warmup-status", tags=["dashboard-admin"])

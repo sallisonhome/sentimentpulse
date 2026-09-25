@@ -1075,7 +1075,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         # after ingest, without blocking the rest of this run.
         try:
             from routers.dashboard import start_topics_warmup_background
-            start_topics_warmup_background(logger_override=logger)
+            start_topics_warmup_background(logger_override=logger, force=True)
         except Exception as exc:  # noqa: BLE001
             logger.warning("topics warmup failed to start (non-fatal): %s", exc)
 

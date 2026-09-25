@@ -19,6 +19,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import type { Period } from '../types'
 import type { TopTopicsSummary } from '../components/dashboard/TopTopicsPanel'
+import { supportsTopics } from '../lib/topic-periods'
 
 export function useDashboardTopics(gameId: number | null, period: Period) {
   return useQuery<TopTopicsSummary>({
@@ -27,13 +28,15 @@ export function useDashboardTopics(gameId: number | null, period: Period) {
       api
         .get<TopTopicsSummary>(`/games/${gameId}/dashboard/topics`, { params: { period } })
         .then(r => r.data),
-    enabled: gameId != null,
+    enabled: gameId != null && supportsTopics(period),
     // While synthesis is running on the server, poll every 4s until the
     // endpoint reports status='ready'. Once ready, stop polling and let
     // the 5-minute staleTime keep the answer around across focus changes.
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data && data.status === 'pending') return 4000
+      if (!supportsTopics(period)) return false
+      if (data && (data.status === 'pending' || data.status === 'refreshing')) return 4000
+      if (data?.status === 'error') return 30000
       return false
     },
     // The LLM work is the whole point of this endpoint being separate;
