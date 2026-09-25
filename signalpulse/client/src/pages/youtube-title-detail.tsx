@@ -32,14 +32,16 @@ function HistoryChart({ rows, metric, title, note, color, bars = false, featured
     <div className="flex flex-wrap items-start justify-between gap-3">
       <h2 className={featured ? "text-base font-semibold" : "text-sm font-semibold"}>{title}</h2>
       {featured && <div className="sm:text-right">
-        <p className="text-2xl font-semibold tabular-nums" data-testid="youtube-total-views">{format(latest?.[metric] as number | undefined)}</p>
-        <p className="text-xs text-muted-foreground">{latest ? `Latest observed in range · ${latest.endDate} (UTC)` : "No view totals observed in this range"}</p>
+        <p className="text-2xl font-semibold tabular-nums" data-testid="youtube-daily-views">{format(latest?.[metric] as number | undefined)}</p>
+        <p className="text-xs text-muted-foreground">{latest
+          ? `Latest measured period · ${latest.date === latest.endDate ? latest.date : `${latest.date} to ${latest.endDate}`} (UTC)`
+          : "No daily view changes measured in this range"}</p>
       </div>}
     </div>
     <p className="text-xs text-muted-foreground mt-1 min-h-8">{note}</p>
     {featured && observations.length === 1 && <p className="text-xs text-muted-foreground mt-2" role="status">One observed point in this range. A trend will appear as more daily snapshots accumulate.</p>}
     {!observations.length ? <div className="h-60 flex items-center justify-center text-sm text-muted-foreground text-center px-4">
-      No comparable observations in this range. Missing history is not zero.
+      {featured ? "Daily views need snapshots of the same videos on consecutive UTC dates. First observations and missing days are not zero." : "No comparable observations in this range. Missing history is not zero."}
     </div> : <div className={`${featured ? "h-72 sm:h-80" : "h-60"} mt-3`} data-testid={`chart-${metric}`}>
       <ResponsiveContainer width="100%" height="100%">
         <Chart data={rows} margin={{ top: 8, right: 12, bottom: 6, left: 0 }}>
@@ -48,7 +50,9 @@ function HistoryChart({ rows, metric, title, note, color, bars = false, featured
           <YAxis width={54} tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }} tickFormatter={n => Intl.NumberFormat("en", { notation: "compact" }).format(n)} allowDecimals={false} />
           <Tooltip labelFormatter={(d, payload) => snapshot
             ? `Observed ${payload?.[0]?.payload?.endDate ?? d} (UTC)`
-            : `${d} (UTC)`} formatter={(v: number) => [format(v), title]}
+            : payload?.[0]?.payload?.endDate && payload[0].payload.endDate !== d
+              ? `${d} to ${payload[0].payload.endDate} (UTC)`
+              : `${d} (UTC)`} formatter={(v: number) => [format(v), title]}
             contentStyle={{ background: "hsl(var(--card))", borderColor: "hsl(var(--border))", borderRadius: 8, fontSize: 12 }} />
           {bars ? <Bar dataKey={metric} fill={color} maxBarSize={28} isAnimationActive={false} />
             : <Line type="linear" dataKey={metric} stroke={color} strokeWidth={2} connectNulls={false}
@@ -97,6 +101,7 @@ export default function YoutubeTitleDetail() {
   const dirty = JSON.stringify(draft) !== JSON.stringify(range);
   const sum = (key: "publishedVideos" | "collectedComments") => data?.rows.reduce((n, r) => n + r[key], 0);
   const last = data?.rows[data.rows.length - 1];
+  const viewsLabel = data?.bucket === "week" ? "Weekly views" : data?.bucket === "month" ? "Monthly views" : "Daily views";
   return <div className="p-4 md:p-6 space-y-4 min-w-0 max-w-[1600px] mx-auto" data-testid="page-youtube-title">
     <Link href="/youtube" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
       <ArrowLeft className="h-3.5 w-3.5" />YouTube Pulse
@@ -107,7 +112,7 @@ export default function YoutubeTitleDetail() {
           <h1 className="text-xl font-semibold">{data?.title ?? "YouTube title history"}</h1>
           {data && <Badge variant="outline" className="text-foreground">{data.isSaber ? "Saber title" : "Competitor"}</Badge>}
         </div>
-        <p className="text-sm text-muted-foreground mt-1">Total views, video coverage and comment volume over time{data?.parentTitle ? ` · compared with ${data.parentTitle}` : ""}.</p>
+        <p className="text-sm text-muted-foreground mt-1">Daily views, video coverage and comment volume over time{data?.parentTitle ? ` · compared with ${data.parentTitle}` : ""}.</p>
       </div>
       <div className="flex gap-2">
         <Button size="sm" variant="outline" disabled={isFetching} onClick={() => refetch()} aria-label="Refresh history"><RefreshCw className="h-4 w-4" /></Button>
@@ -140,9 +145,9 @@ export default function YoutubeTitleDetail() {
         <span data-testid="youtube-applied-range">{data.start} through {data.end} · {data.bucket} buckets · UTC · {data.includeArchived ? "Includes archived records" : "Currently relevant videos only"}</span>
         <span>{data.firstSnapshot ? `Snapshots observed ${data.firstSnapshot} to ${data.lastSnapshot}` : "Daily snapshots have not started"}</span>
       </div>
-      <HistoryChart rows={data.rows} metric="snapshotViews" title="Total views over time"
-        note="Sum of lifetime YouTube views across tracked videos observed on each day, not views gained during the selected range. Week/month points use the bucket's final selected date. Discovery and relevance changes can change the total; missing snapshots remain gaps."
-        color="#38a8c9" featured />
+      <HistoryChart rows={data.rows} metric="netViews" title={`${viewsLabel} over time`}
+        note="Net views gained between consecutive UTC daily snapshots of the same videos, not lifetime totals. Newly discovered videos count only after a comparable prior snapshot exists. Weekly/monthly bars sum daily changes; a missing daily comparison leaves the period blank. Negative corrections are preserved."
+        color="#38a8c9" featured bars />
       <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
         {[
           ["Videos published in range", sum("publishedVideos")],
@@ -172,16 +177,17 @@ export default function YoutubeTitleDetail() {
       <p className="text-xs text-muted-foreground">
         Coverage is limited to discovered videos. Publication/comment counts are known records, not proof of complete coverage.
         Snapshot gaps are not filled or interpolated. Weekly buckets start Monday; edge buckets include only selected dates.
-        Historical views use current relevance unless archived records are included. CSV exports all three measures for this exact applied range.
+        Daily views cover only videos with comparable snapshots, not all YouTube viewing. Historical views use current relevance unless archived records are included.
+        CSV netViews matches the views chart for this exact applied range; snapshotViews is a separate lifetime-total diagnostic.
         Records have no automatic age-based purge: {format(data.retainedVideos)} videos ({format(data.archivedVideos)} archived) and {format(data.retainedComments)} comments retained.
       </p>
       <details className="text-xs">
         <summary className="cursor-pointer text-muted-foreground py-2">View exact data ({data.rows.length} rows)</summary>
         <div className="overflow-x-auto max-h-96 border rounded-md">
           <table className="w-full min-w-[780px] text-xs" data-testid="youtube-series-table"><thead className="bg-muted"><tr>
-            {["Period start", "Period end", "Published videos", "Collected comments", "Observed videos", "Total views", "API comments", "Net views", "Net comments"].map(h => <th key={h} className="p-2 text-left whitespace-nowrap">{h}</th>)}
+            {["Period start", "Period end", viewsLabel, "Published videos", "Collected comments", "Observed videos", "Lifetime views (snapshot)", "API comments", "Net comments"].map(h => <th key={h} className="p-2 text-left whitespace-nowrap">{h}</th>)}
           </tr></thead><tbody>{data.rows.map(r => <tr key={r.date} className="border-t border-border/50">
-            {[r.date, r.endDate, r.publishedVideos, r.collectedComments, r.snapshotVideos, r.snapshotViews, r.snapshotComments, r.netViews, r.netComments].map((v, i) => <td key={i} className="p-2 tabular-nums whitespace-nowrap">{typeof v === "string" ? v : format(v)}</td>)}
+            {[r.date, r.endDate, r.netViews, r.publishedVideos, r.collectedComments, r.snapshotVideos, r.snapshotViews, r.snapshotComments, r.netComments].map((v, i) => <td key={i} className="p-2 tabular-nums whitespace-nowrap">{typeof v === "string" ? v : format(v)}</td>)}
           </tr>)}</tbody></table>
         </div>
       </details>
