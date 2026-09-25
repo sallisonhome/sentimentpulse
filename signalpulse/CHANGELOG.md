@@ -4,6 +4,7 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 25, 2026
 
+- Hardened: missing-platform Steam verification now paces requests and retries bounded transient errors, honoring short provider cooldowns and explicitly deferring long ones. A rate-limit response never supplies paid-game eligibility or changes review counts.
 - Improved: the existing daily refresh now verifies missing paid Steam, PS5 and Xbox coverage across the known catalog, independently of Top 20/40 rank. Verified ratings-only mappings and recoverable unknown classifications can enter sales estimates; exact reviewed Steam links can enroll a missing Steam counterpart. Native product identity, platform, release and USD purchase evidence are required.
 - Hardened: same-family, shared-title, regional and PlayStation-concept guards prevent duplicate additions. Ambiguous listings, non-base editions, free games and unsupported platforms remain held. Reviewed console-version aliases join their parent sales family without copying ratings or histories; Townfall remains Steam/PS5 only.
 - Added: auditable before/after receipts, retained backups, Settings controls for active/plan/off, and conflict-checked catalog rollback. The check runs before collection under the existing maintenance lock, not a second scheduled writer. HMAP receives the same upstream results across all five periods.

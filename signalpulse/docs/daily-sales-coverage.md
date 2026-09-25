@@ -46,6 +46,9 @@ Settings key `sales_catalog_reconcile_mode`: `active` (default), `plan`, or `off
 The script also accepts `--plan`; an environment override exists for operations.
 Invalid modes fail loudly. Source failures hold the affected records and are
 printed separately from eligibility holds; inspect the receipt's error count.
+Steam requests are paced at 750 ms before each new lookup, with at most three
+attempts for 429/502/503/504. Short Retry-After values are honored; long cooldowns
+defer the record. Persistent failures never become paid classifications.
 Verification has a three-minute soft budget with bounded native requests and a
 four-minute phase ceiling. Exhaustion leaves the remaining candidates unchanged
 and marks coverage partial, while established collectors can continue. Verification

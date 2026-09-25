@@ -1,5 +1,6 @@
 import { identityName } from "./console-title-identity";
 import { steamAppDetails } from "./reviews-ratings-normalize";
+import { fetchSteamCatalogJson } from "./sales-catalog-steam-http";
 
 export type SalesPlatform = "steam" | "ps5" | "xbox";
 export type SaleEvidence = {
@@ -130,7 +131,8 @@ export async function fetchSaleEvidence(platform:SalesPlatform,sku:string,name:s
   const url=platform==="xbox"
     ?`https://displaycatalog.mp.microsoft.com/v7.0/products/${sku}?market=US&languages=en-us`
     :`https://store.steampowered.com/api/appdetails?appids=${sku}&cc=us&l=english`;
+  if(platform==="steam")return steamSaleEvidence(await fetchSteamCatalogJson(url),sku,name);
   const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
   if(!r.ok)throw Error(`${platform} storefront HTTP ${r.status}`);
-  return platform==="xbox"?xboxSaleEvidence(await r.json(),sku,name):steamSaleEvidence(await r.json(),sku,name);
+  return xboxSaleEvidence(await r.json(),sku,name);
 }

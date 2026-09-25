@@ -5,7 +5,32 @@ import { applySalesCoverage,rollbackSalesCoverage,coveredBy,loadSalesCatalog,pla
 import { xboxSaleEvidence,psSaleEvidence,psUsdSibling,steamSaleEvidence,type SaleEvidence } from "./sales-catalog-eligibility";
 import { CCU_RATINGS_SOURCE } from "./ratings-only-sku";
 import { editionGroupKey } from "./console-sales-family";
+import { fetchSteamCatalogJson } from "./sales-catalog-steam-http";
 const now=new Date("2026-09-25T12:00:00Z");
+test("Steam transport paces new calls, retries transient failures, honors cooldowns and remains bounded",async()=>{
+  for(const statuses of [[200],[429,200],[503,429,200],[429,429,429],[404]]){
+    const pauses:number[]=[],calls:string[]=[];
+    const fake=(async(url:string)=>{
+      calls.push(url);const status=statuses[calls.length-1];
+      return new Response(status===200?'{"verified":true}':"unavailable",{status});
+    }) as typeof fetch;
+    const action=fetchSteamCatalogJson("https://store.steampowered.com/api/appdetails?appids=1",fake,async ms=>{pauses.push(ms);});
+    if(statuses.at(-1)===200)assert.deepEqual(await action,{verified:true});
+    else await assert.rejects(action,/steam storefront HTTP/);
+    assert.equal(calls.length,statuses.length);assert.equal(pauses[0],750);
+    assert.ok(pauses.every(ms=>ms>=750&&ms<=15000));
+  }
+  let count=0;
+  await assert.rejects(fetchSteamCatalogJson("x",(async()=>{
+    count++;return new Response("",{status:429,headers:{"Retry-After":"120"}});
+  }) as typeof fetch,async()=>{}),/retry_after_deferred/);
+  assert.equal(count,1);
+  const delays:number[]=[];let attempts=0;
+  await fetchSteamCatalogJson("x",(async()=>++attempts===1?
+    new Response("",{status:429,headers:{"Retry-After":"2"}}):
+    new Response("{}")) as typeof fetch,async ms=>{delays.push(ms);});
+  assert.deepEqual(delays,[750,2000]);
+});
 function row(id=1,platform="xbox",name="Example"):CatalogRow{
   return {id,title_id:10000+id,platform:platform as any,external_sku:"SKU"+id,
     concept_id:null,sku_role:"ratings_only",business_model:"unknown",msrp_usd_cents:null,
