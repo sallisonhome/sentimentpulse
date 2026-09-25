@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { openYoutubeDb, type YtDb } from "./db";
 import { matchVideo, parseIsoDuration, isShortForm, RELEVANCE_VERSION } from "./relevance";
 import { readCommentFeed } from "./feed";
@@ -143,6 +144,49 @@ test("total view charts use title-specific observed snapshots, never sum buckets
   } finally {
     db.close();
   }
+});
+
+test("daily views exclude discovery totals, preserve corrections and require consecutive dates", () => {
+  const db = freshDb();
+  try {
+    syncTitles(db, src([
+      { id: 1, title: "Daily views example", steamAppId: "123", releaseDate: null },
+      { id: 2, title: "Other title", steamAppId: "456", releaseDate: null },
+    ]));
+    addVideo(db, { video_id: "old", title_id: 123, published_at: "2020-01-01T00:00:00Z" });
+    addVideo(db, { video_id: "discovered", title_id: 123, published_at: "2020-01-01T00:00:00Z" });
+    addVideo(db, { video_id: "other", title_id: 456, published_at: "2020-01-01T00:00:00Z" });
+    const snap = db.prepare("INSERT INTO yt_video_stats_daily(video_id,date,view_count) VALUES(?,?,?)");
+    for (const [date, views] of [["2026-09-20", 1000], ["2026-09-21", 1100], ["2026-09-22", 1100], ["2026-09-23", 1080], ["2026-09-25", 1200]] as const) snap.run("old", date, views);
+    snap.run("discovered", "2026-09-21", 9000000); // lifetime total must never become daily growth
+    snap.run("other", "2026-09-20", 0);
+    snap.run("other", "2026-09-21", 500000);
+    const now = new Date("2026-09-25T12:00:00Z");
+    const daily = readYoutubeSeries(db, 123, { start: "2026-09-20", end: "2026-09-25" }, now);
+    assert.deepEqual(daily.rows.map(r => r.netViews), [null, 100, 0, -20, null, null]);
+    assert.equal(daily.rows[1].snapshotViews, 9001100);
+    for (const bucket of ["day", "week", "month"]) {
+      const series = readYoutubeSeries(db, 123, { start: "2026-09-21", end: "2026-09-23", bucket }, now);
+      assert.deepEqual(series.rows.map(r => r.netViews), bucket === "day" ? [100, 0, -20] : [80]);
+      // The day preceding the custom start remains a valid baseline.
+      const csv = youtubeSeriesCsv(series).trim().split("\r\n");
+      const column = csv[0].split(",").indexOf("netViews");
+      assert.deepEqual(csv.slice(1).map(line => Number(line.split(",")[column].replaceAll('"', ""))),
+        series.rows.map(r => r.netViews));
+      if (bucket !== "day") {
+        const incomplete = readYoutubeSeries(db, 123, { start: "2026-09-21", end: "2026-09-25", bucket }, now);
+        assert.equal(incomplete.rows[0].netViews, null);
+      }
+    }
+  } finally { db.close(); }
+});
+
+test("PDP featured views chart uses daily changes rather than lifetime snapshots", () => {
+  const page = readFileSync(new URL("../../client/src/pages/youtube-title-detail.tsx", import.meta.url), "utf8");
+  assert.match(page, /metric="netViews" title=\{`\$\{viewsLabel\} over time`\}/);
+  assert.doesNotMatch(page, /metric="snapshotViews"/);
+  assert.doesNotMatch(page, /Total views over time/);
+  assert.match(page, /color="#38a8c9" featured bars/);
 });
 
 // ─── relevance ───────────────────────────────────────────────────────────────
