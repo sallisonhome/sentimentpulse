@@ -1,23 +1,22 @@
-name: SignalPulse — Audited Steam overlap repair
+name: SignalPulse — Classification and timer safety rollout
 "on":
   workflow_dispatch:
     inputs:
       mode:
         type: choice
-        options: [dry, apply, inspect, recover]
-        default: dry
+        options: [preflight, install]
+        default: preflight
         required: true
-      expected_sha:
-        description: Fresh reviewed manifest SHA (apply only)
-        default: none
+      expected_head:
+        description: Exact approved deployed commit
         required: true
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
 jobs:
-  repair:
+  safety:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - name: Configure SSH
         run: |
@@ -25,184 +24,90 @@ jobs:
           echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts
-      - name: Review or apply exact approved repair
+      - name: Verify idle state and apply approved timer unit only
         env:
           MODE: ${{ inputs.mode }}
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
         run: |
           set -euo pipefail
-          [[ "$MODE" == dry || "$MODE" == apply || "$MODE" == inspect || "$MODE" == recover ]]
-          [[ "$EXPECTED_SHA" == none || "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$MODE" == preflight || "$MODE" == install ]]
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
           mkdir -p evidence
-          ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=15 -o ServerAliveCountMax=12 \
-            root@104.236.239.46 "MODE=$MODE EXPECTED_SHA=$EXPECTED_SHA bash -s" <<'REMOTE' | tee evidence/operation.log
+          ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            root@104.236.239.46 "MODE=$MODE EXPECTED_HEAD=$EXPECTED_HEAD bash -s" <<'REMOTE' | tee evidence/safety.log
           set -euo pipefail
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
           cd "$WD"
-          [ "$(git rev-parse HEAD)" = 0060341047bf4354e57da90cf87ee1cb8984f69b ]
-          [ -f data.db ] && [ -x node_modules/.bin/tsx ]
-          [ -f scripts/repair-steam-review-overlap.ts ]
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
           systemctl is-active --quiet signalpulse
-          if [ "$MODE" = recover ]; then
-            daily_state=$(systemctl show -p ActiveState --value signalpulse-daily.service)
-            [[ "$daily_state" == inactive || "$daily_state" == failed ]]
-            export EXPECTED_SHA
-            node <<'NODE'
-          const D=require('better-sqlite3'),fs=require('fs'),assert=require('assert/strict'),crypto=require('crypto');
-          (async()=>{
-            const live=new D('data.db'),before=new D('repair-backups/steam-overlap-2026-09-25T02-57-15-534Z.db',{readonly:true});
-            const hash=x=>crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex');
-            const plan=()=>{
-              const changes=[];
-              for(const old of before.prepare("SELECT * FROM platform_sku_map WHERE platform='steam' AND business_model='paid'").all()){
-                const current=live.prepare("SELECT * FROM platform_sku_map WHERE platform=? AND external_sku=?").get(old.platform,old.external_sku);
-                if(current?.business_model!==old.business_model)changes.push({before:old,current});
-              }
-              assert.equal(changes.length,144);
-              for(const r of changes){
-                assert.equal(r.current.business_model,'unknown');
-                assert.equal(r.current.business_model_source,'steam_appdetails.is_free=false;type=?');
-                assert.equal(r.current.refreshed_at,'2026-09-25T02:58:33.762Z');
-                assert.equal(r.current.title_id,r.before.title_id);
-                assert.equal(r.current.is_manual_override,0);
-              }
-              assert.equal(hash(changes),process.env.EXPECTED_SHA);
-              return changes;
-            };
-            const changes=plan();
-            const backup='repair-backups/classification-recovery-'+new Date().toISOString().replace(/[:.]/g,'-')+'.db';
-            await live.backup(backup);
-            const tables=['title_ltd_state','window_estimates_daily','steam_review_history','store_rating_signal_daily','ownership_multipliers','title_multiplier_overrides','revenue_calibration_anchors'];
-            const tableHash=t=>hash(live.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all());
-            const original=Object.fromEntries(tables.map(t=>[t,tableHash(t)]));
-            const skuRows=live.prepare('SELECT * FROM platform_sku_map ORDER BY id').all();
-            live.transaction(()=>{
-              plan();
-              const write=live.prepare("UPDATE platform_sku_map SET business_model=?,business_model_source=? WHERE id=?");
-              for(const r of changes)assert.equal(write.run(r.before.business_model,r.before.business_model_source,r.current.id).changes,1);
-              for(const old of skuRows){
-                const c=changes.find(r=>r.current.id===old.id);
-                assert.deepEqual(live.prepare('SELECT * FROM platform_sku_map WHERE id=?').get(old.id),
-                  c?{...old,business_model:c.before.business_model,business_model_source:c.before.business_model_source}:old);
-              }
-            }).immediate();
-            for(const [t,h] of Object.entries(original))assert.equal(tableHash(t),h);
-            fs.writeFileSync(backup+'.audit.json',JSON.stringify({changes,protectedTableHashes:original},null,2),{mode:0o600});
-            console.log(JSON.stringify({restoredClassifications:changes.length,allOtherSkuFieldsUnchanged:true,estimatesAndInputsUnchanged:true,backup,audit:backup+'.audit.json'}));
-            live.close();before.close();
-          })().catch(e=>{console.error(e);process.exit(1)});
-          NODE
-            systemctl is-active signalpulse-daily.timer
-            systemctl list-timers signalpulse-daily.timer --no-pager
-            exit 0
-          fi
-          if [ "$MODE" = inspect ]; then
-            systemctl show -p ActiveState,ExecMainStartTimestamp,ExecMainExitTimestamp,Result signalpulse-daily.service
-            systemctl list-timers signalpulse-daily.timer --no-pager
-            journalctl -u signalpulse-daily.service -n 60 --no-pager
-            node <<'NODE'
-          const D=require('better-sqlite3');
-          const live=new D('data.db',{readonly:true});
-          const before=new D('repair-backups/steam-overlap-2026-09-25T02-57-15-534Z.db',{readonly:true});
-          const rows=before.prepare("SELECT * FROM platform_sku_map WHERE platform='steam' AND business_model='paid'").all();
-          const changes=[];
-          for(const old of rows){
-            const current=live.prepare("SELECT * FROM platform_sku_map WHERE platform=? AND external_sku=?").get(old.platform,old.external_sku);
-            if(current?.business_model!==old.business_model)changes.push({before:old,current});
-          }
-          console.log('CLASSIFICATION_CHANGES_JSON='+JSON.stringify(changes));
-          console.log('ZERO_STATE_JSON='+JSON.stringify(live.prepare("SELECT * FROM title_ltd_state WHERE title_id=10014").all()));
-          live.close();before.close();
-          NODE
-            exit 0
-          fi
+          systemctl is-active --quiet signalpulse-daily.timer
           daily_state=$(systemctl show -p ActiveState --value signalpulse-daily.service)
           [[ "$daily_state" == inactive || "$daily_state" == failed ]]
-          # Refuse concurrent collectors/estimators; do not kill someone else's work.
-          if pgrep -af '(tsx|node).*(scripts/collect-|scripts/estimate-console|scripts/discover-|scripts/seed-|scripts/evaluate-daily|scripts/repair-steam-review)'; then
-            echo 'Refusing: maintenance process already active'; exit 1
+          if pgrep -af '(tsx|node).*(scripts/verify-discovery|scripts/verify-console-collectors|scripts/estimate-console|scripts/collect-|scripts/discover-|scripts/seed-|scripts/evaluate-daily|scripts/repair-steam-review)'; then
+            echo 'Refusing: another maintenance process is active'; exit 1
           fi
           curl -fsS --max-time 15 http://127.0.0.1:8000/api/ingest/status |
             python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["is_running"] is False; print("Sentiment ingestion idle")'
-          # Repair the approved September 24 snapshot, not newly eligible titles.
-          export DB_PATH="$WD/data.db" AS_OF=2026-09-24
-          OUT="$WD/repair-backups/overlap-ops-2026-09-25"
-          if [ "$MODE" = dry ]; then
-            node_modules/.bin/tsx scripts/repair-steam-review-overlap.ts
-            exit 0
+          TOKEN=$(sed -n 's/^INGESTION_OPS_TOKEN=//p' /etc/signalpulse/env)
+          [ -n "$TOKEN" ]
+          curl -fsS --max-time 15 -H "x-ops-token: $TOKEN" http://127.0.0.1:5000/api/ingestion/status |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["inFlight"] is False; print("SignalPulse ingestion idle")'
+          unset TOKEN
+          START_BEFORE=$(systemctl show -p ExecMainStartTimestamp --value signalpulse-daily.service)
+          NEXT_BEFORE=$(systemctl show -p NextElapseUSecRealtime --value signalpulse-daily.timer)
+          UNIT=$(systemctl show -p FragmentPath --value signalpulse-daily.timer)
+          [ -f "$UNIT" ]
+          echo "Deployed head: $EXPECTED_HEAD"
+          echo "Daily state: $daily_state; last start: $START_BEFORE"
+          echo "Next scheduled activation before: $NEXT_BEFORE"
+          systemctl show -p Requires,TimersCalendar,Persistent,RandomizedDelayUSec signalpulse-daily.timer
+          node <<'NODE'
+          const D=require('better-sqlite3'),assert=require('assert/strict');
+          const db=new D('data.db',{readonly:true});
+          const sku=db.prepare("SELECT business_model FROM platform_sku_map WHERE platform='steam' AND external_sku='2075800'").get();
+          assert.equal(sku.business_model,'paid');
+          const ltd=db.prepare("SELECT ltd_units FROM title_ltd_state WHERE title_id=10014 AND platform='steam'").get();
+          assert.equal(ltd.ltd_units,838342);
+          console.log(JSON.stringify({zeroCompanyPaid:true,steamLifetimeUnits:ltd.ltd_units}));db.close();
+          NODE
+          if [ "$MODE" = preflight ]; then exit 0; fi
+          SOURCE="$WD/deploy/signalpulse-daily.timer"
+          # Ensure installation changes only the unwanted activation dependency,
+          # never the existing calendar, persistence, jitter or target service.
+          python3 - "$UNIT" "$SOURCE" <<'PY'
+          import configparser,sys
+          old,new=(configparser.ConfigParser(interpolation=None) for _ in range(2))
+          old.read(sys.argv[1]);new.read(sys.argv[2])
+          assert dict(old["Timer"])==dict(new["Timer"]), "Timer schedule/settings changed"
+          assert dict(old["Install"])==dict(new["Install"])
+          assert not new.has_option("Unit","Requires")
+          PY
+          node_modules/.bin/tsx --test server/steam-classification-preservation.test.ts
+          BACKUP="$WD/repair-backups/timer-before-safety-$(date -u +%Y%m%dT%H%M%SZ).timer"
+          install -m 0600 "$UNIT" "$BACKUP"
+          install -m 0644 "$SOURCE" "$UNIT"
+          systemctl daemon-reload
+          # No stop/start/restart of timer or daily service, and no collectors.
+          systemctl is-active --quiet signalpulse-daily.timer
+          START_AFTER=$(systemctl show -p ExecMainStartTimestamp --value signalpulse-daily.service)
+          [ "$START_BEFORE" = "$START_AFTER" ]
+          daily_after=$(systemctl show -p ActiveState --value signalpulse-daily.service)
+          [[ "$daily_after" == inactive || "$daily_after" == failed ]]
+          REQUIREMENTS=$(systemctl show -p Requires --value signalpulse-daily.timer)
+          if [[ " $REQUIREMENTS " == *" signalpulse-daily.service "* ]]; then
+            echo 'Unexpected activation dependency remains'; exit 1
           fi
-          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
-          timer_was_active=0
-          if systemctl is-active --quiet signalpulse-daily.timer; then
-            timer_was_active=1
-            systemctl stop signalpulse-daily.timer
-          fi
-          restore_timer() { if [ "$timer_was_active" = 1 ]; then systemctl start signalpulse-daily.timer; fi; }
-          trap restore_timer EXIT
-          daily_state=$(systemctl show -p ActiveState --value signalpulse-daily.service)
-          [[ "$daily_state" == inactive || "$daily_state" == failed ]]
-          mkdir -p "$OUT"; chmod 700 "$WD/repair-backups" "$OUT"
-          export OUT
-          node <<'NODE'
-          const D=require('better-sqlite3'),fs=require('fs'),crypto=require('crypto');
-          const db=new D(process.env.DB_PATH,{readonly:true});
-          const tables=['steam_review_history','store_rating_signal_daily','ownership_multipliers','title_multiplier_overrides','revenue_calibration_anchors'];
-          const hash=t=>crypto.createHash('sha256').update(JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all())).digest('hex');
-          fs.writeFileSync(process.env.OUT+'/before.json',JSON.stringify({
-            states:db.prepare('SELECT * FROM title_ltd_state ORDER BY title_id,platform').all(),
-            hashes:Object.fromEntries(tables.map(t=>[t,hash(t)]))
-          })); db.close();
-          NODE
-          node_modules/.bin/tsx scripts/repair-steam-review-overlap.ts \
-            --apply --confirm CONFIRM --expected-sha "$EXPECTED_SHA" | tee "$OUT/result.json"
-          node <<'NODE'
-          const D=require('better-sqlite3'),fs=require('fs'),assert=require('assert/strict'),crypto=require('crypto');
-          const db=new D(process.env.DB_PATH,{readonly:true});
-          const out=process.env.OUT,b=JSON.parse(fs.readFileSync(out+'/before.json')),r=JSON.parse(fs.readFileSync(out+'/result.json'));
-          assert.equal(r.repaired,127); assert.ok(fs.statSync(r.backup).size>0);
-          const audit=db.prepare('SELECT * FROM steam_overlap_repair_audit WHERE run_id=?').all(r.runId);
-          assert.equal(audit.length,127);
-          const ids=new Set(audit.map(a=>a.title_id));
-          for(const old of b.states) {
-            if(old.platform==='steam'&&ids.has(old.title_id)) continue;
-            assert.deepEqual(db.prepare('SELECT * FROM title_ltd_state WHERE title_id=? AND platform=?').get(old.title_id,old.platform),old);
-          }
-          for(const [t,h] of Object.entries(b.hashes)) assert.equal(crypto.createHash('sha256').update(JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all())).digest('hex'),h);
-          assert.equal(db.prepare("SELECT ltd_units FROM title_ltd_state WHERE title_id=10014 AND platform='steam'").get().ltd_units,838342);
-          console.log(JSON.stringify({repairOnlyVerified:true,repaired:127,untouchedStates:b.states.length-127,backup:r.backup,runId:r.runId}));
-          db.close();
-          NODE
-          LTD_FLAG=$(systemctl show -p Environment --value signalpulse | tr ' ' '\n' | sed -n 's/^LTD_ACCUMULATOR_ENABLED=//p' | head -n1)
-          [ "$LTD_FLAG" = 1 ]
-          export LTD_ACCUMULATOR_ENABLED="$LTD_FLAG"
-          export AS_OF="$(date -u +%F)"
-          timeout 180 node_modules/.bin/tsx scripts/estimate-console-units.ts > "$OUT/estimator-first.log" 2>&1
-          sqlite3 -json data.db "SELECT title_id,platform,window,signal_value,units_mid,method,gated_reason FROM window_estimates_daily WHERE as_of_date='$AS_OF' ORDER BY title_id,platform,window" > "$OUT/first-numeric.json"
-          timeout 180 node_modules/.bin/tsx scripts/estimate-console-units.ts > "$OUT/estimator-second.log" 2>&1
-          sqlite3 -json data.db "SELECT title_id,platform,window,signal_value,units_mid,method,gated_reason FROM window_estimates_daily WHERE as_of_date='$AS_OF' ORDER BY title_id,platform,window" > "$OUT/second-numeric.json"
-          cmp "$OUT/first-numeric.json" "$OUT/second-numeric.json"
-          timeout 60 node_modules/.bin/tsx scripts/evaluate-daily-revenue-mix.ts | tee "$OUT/daily-mix.log"
-          node <<'NODE'
-          const D=require('better-sqlite3'),fs=require('fs'),assert=require('assert/strict'),crypto=require('crypto');
-          const db=new D(process.env.DB_PATH,{readonly:true});
-          const b=JSON.parse(fs.readFileSync(process.env.OUT+'/before.json'));
-          for(const [t,h] of Object.entries(b.hashes)) assert.equal(crypto.createHash('sha256').update(JSON.stringify(db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all())).digest('hex'),h, t+' changed');
-          const rows=db.prepare('SELECT window,signal_value,units_mid,method FROM window_estimates_daily WHERE title_id=10014 AND platform=? AND as_of_date=? ORDER BY window').all('steam',process.env.AS_OF);
-          assert.equal(rows.length,5);
-          assert.equal(rows.find(r=>r.window==='ltd').units_mid,838342);
-          for(const r of rows) {
-            assert.ok(r.signal_value<=20854);
-            assert.ok(r.method.includes(r.window==='ltd' ? 'ltd_state:derived_max_windows' : 'steam_histogram_nonoverlap_v1'));
-          }
-          console.log(JSON.stringify({estimatorIdempotent:true,protectedInputsUnchanged:true,zeroCompany:rows}));
-          db.close();
-          NODE
-          echo 'Repair, estimator refresh, repeat-run and daily-mix verification completed'
+          cmp "$SOURCE" "$UNIT"
+          echo "Retained timer backup: $BACKUP"
+          echo "Daily service not started: $START_AFTER"
+          echo "Next scheduled activation after: $(systemctl show -p NextElapseUSecRealtime --value signalpulse-daily.timer)"
+          systemctl show -p Requires,TimersCalendar,Persistent,RandomizedDelayUSec signalpulse-daily.timer
+          echo 'PASS: deployed classifier regressions, unchanged schedule, active timer, no discovery activation'
           REMOTE
-      - name: Retain non-secret repair evidence
+      - name: Retain non-secret safety evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: steam-overlap-operation-${{ inputs.mode }}
+          name: classification-timer-safety-${{ inputs.mode }}
           path: evidence/
           retention-days: 30
