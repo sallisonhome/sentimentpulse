@@ -73,6 +73,7 @@ on:
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   link:
@@ -129,6 +130,8 @@ jobs:
               MAX_STEAM_ADDS="$MAX_STEAM_ADDS" \
               bash -s <<'REMOTE'
           set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 600 9 || { echo "Refresh busy; no linking performed"; exit 75; }
 
           DRY_RUN="${DRY_RUN:-true}"
           ALLOW_MERGES="${ALLOW_MERGES:-false}"

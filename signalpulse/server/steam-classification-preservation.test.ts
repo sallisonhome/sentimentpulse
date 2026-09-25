@@ -21,6 +21,8 @@ test("missing Steam classification preserves paid evidence but explicit DLC does
     upsertSkuMap([{...unavailable,externalSku:"qa-new",titleId:99002}]);
     assert.equal(row("qa-new").business_model,"unknown");
     upsertSkuMap([{...base,msrpUsdCents:5999}]);assert.equal(row().msrp_usd_cents,5999);
+    upsertSkuMap([{...base,titleId:123456,msrpUsdCents:6499}]);
+    assert.equal(row().title_id,99001);assert.equal(row().msrp_usd_cents,6499);
     upsertSkuMap([{...unavailable,classificationUnavailable:false,businessModelSource:"steam_appdetails.is_free=false;type=dlc",skuRole:"dlc"}]);
     assert.equal(row().business_model,"unknown");assert.equal(row().sku_role,"dlc");
     upsertSkuMap([{...base,externalSku:"qa-manual",titleId:99003,isManualOverride:true}]);
@@ -28,6 +30,17 @@ test("missing Steam classification preserves paid evidence but explicit DLC does
     assert.equal(row("qa-manual").business_model,"paid");
     assert.throws(()=>upsertSkuMap([{...base,businessModel:"free_to_play"}]),/free_to_play/);
   }finally{db?.close();process.chdir(cwd);rmSync(dir,{recursive:true,force:true});}
+});
+
+test("Steam appdetails rate limit opens the circuit instead of hammering remaining titles",async()=>{
+  const {classifySteamAppIds}=await import("./signals/console/discovery");
+  const original=globalThis.fetch;let calls=0;
+  try {
+    globalThis.fetch=async()=>{calls++;return new Response("null",{status:429,statusText:"Too Many Requests"});};
+    const rows=await classifySteamAppIds(["123","456","789"]);
+    assert.equal(calls,1);assert.equal(rows.length,3);
+    assert.ok(rows.every(row=>row.businessModel==="unknown"&&row.type===null));
+  }finally{globalThis.fetch=original;}
 });
 
 test("timer schedules its service without activating it on timer startup",()=>{

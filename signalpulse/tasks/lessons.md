@@ -1,5 +1,21 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-25: timer success requires fresh evidence and cross-scheduler locking
+
+Discovery's freshly-classified count is not the eligible paid catalog: unavailable
+metadata may correctly preserve prior paid evidence. Count retained evidence only
+for the current candidates, never unknown new SKUs or verified non-games. Stop
+appdetails requests on rate limiting rather than hammering the remaining list.
+Keep synthetic seed/invariant tests out of the production daily path.
+
+GitHub cancel-in-progress:false does not protect pending jobs under its default
+single queue. Use queue:max consistently across the shared group. GitHub queues
+do not lock systemd timers; use a shared host lock before refreshes and shared
+checkout deployments. Retire duplicate schedules rather than relying on timing.
+Do not stop another run to make room. Budget collection against the full catalog,
+and verify a new invocation, fresh per-platform observations, all phases and the
+completion marker before claiming success.
+
 ## 2026-09-25: real reviews are not necessarily new sales
 
 The deduplicated histogram still treated an extreme negative review campaign as

@@ -36,6 +36,7 @@ on:
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   backfill:

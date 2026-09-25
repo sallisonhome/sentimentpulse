@@ -35,6 +35,7 @@ concurrency:
   # Share the droplet concurrency group so a probe never races a deploy.
   group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   probe:

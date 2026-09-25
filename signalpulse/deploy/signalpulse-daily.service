@@ -15,9 +15,11 @@ Type=oneshot
 ExecStart=/bin/sh -c 'WD=$(systemctl show -p WorkingDirectory --value signalpulse); [ -n "$WD" ] || exit 1; exec "$WD/deploy/signalpulse-daily.sh"'
 StandardOutput=journal
 StandardError=journal
-# 20-minute hard cap. Individual phases in the wrapper have their own
-# per-phase timeout guards; this is the last-resort ceiling.
-TimeoutStartSec=1200
+# Includes 600s lock wait + 2640s phase caps + termination grace.
+# The full paid catalog has outgrown the former 360s collection budget.
+TimeoutStartSec=3600
+TimeoutStopSec=30
+KillMode=control-group
 # A bad run should NOT block tomorrow's scheduled fire.
 Restart=no
 

@@ -35,11 +35,12 @@ name: Deploy Promo Calendar
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 75
     steps:
       - name: Configure SSH
         run: |
@@ -58,6 +59,9 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
               root@104.236.239.46 "OPS_TOKEN_SECRET='${OPS_TOKEN_SECRET}' bash -s" <<'REMOTEEOF'
           set -euo pipefail
+
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 3600 9 || { echo "Refresh still busy; no deployment performed"; exit 75; }
 
           REPO_DIR=/opt/sentimentpulse
           APP_DIR="${REPO_DIR}/promocalendar"

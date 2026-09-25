@@ -203,9 +203,14 @@ export interface SteamClassification {
 
 export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassification[]> {
   const out: SteamClassification[] = [];
+  let rateLimited = false;
   // appdetails supports batch via comma-separated appids but returns partial data;
   // one-at-a-time is more reliable and Valve rate-limits leniently.
   for (const id of appIds) {
+    if (rateLimited) {
+      out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null, headerImageUrl: null, releaseDateIso: null });
+      continue;
+    }
     // filters is a Steam whitelist — `basic` alone does NOT include release_date,
     // so we ask for it explicitly. Without this, release_date comes back null
     // on every appid and the store_release_date column stays empty.
@@ -239,8 +244,14 @@ export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassi
     } catch (e) {
       out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null, headerImageUrl: null, releaseDateIso: null });
       log(`steam classify: appid=${id} failed: ${e instanceof Error ? e.message : e}`);
+      if (e instanceof Error && e.message.includes("HTTP 429")) {
+        rateLimited = true;
+        log("steam classify: rate limited; stopping appdetails requests for this run. Remaining candidates are unavailable, never guessed paid.");
+      }
+    } finally {
+      // Includes success:false, non-game and F2P early-continue paths.
+      await new Promise(r => setTimeout(r, 350));
     }
-    await new Promise(r => setTimeout(r, 350));
   }
   return out;
 }
@@ -1010,7 +1021,7 @@ export function bootstrapConsoleTitleNames(
 export interface DiscoveryResult {
   startedAt: string;
   completedAt: string;
-  steam: { discovered: number; classified: number; paid: number; f2p: number; unknown: number; written: number };
+  steam: { discovered: number; classified: number; paid: number; preservedPaid: number; f2p: number; unknown: number; written: number };
   xbox: { discovered: number; classified: number; paid: number; f2p: number; unknown: number; written: number };
   ps: { discovered: number; classified: number; paid: number; f2p: number; unknown: number; written: number };
 }
@@ -1323,12 +1334,21 @@ export async function runFullDiscovery(opts: {
   for (const c of psManualCls) psAll.set(c.productId, c);
   const psMerged = Array.from(psAll.values());
 
+  // Count only unavailable candidates whose existing paid BASE evidence was
+  // retained. Never add unrelated catalog rows, newly unknown SKUs, or DLCs.
+  const retainedPaidBase = rawSqlite.prepare(
+    "SELECT 1 FROM platform_sku_map WHERE platform='steam' AND external_sku=? AND business_model='paid' AND sku_role='base'"
+  );
+  const preservedPaid = steamCls.filter(c => c.businessModel === "unknown" &&
+    c.type == null && retainedPaidBase.get(c.appId)).length;
+
   return {
     startedAt,
     completedAt: new Date().toISOString(),
     steam: {
       discovered: steamRaw.length, classified: steamCls.length,
       paid: steamCls.filter(c => c.businessModel === "paid").length,
+      preservedPaid,
       f2p: steamCls.filter(c => c.businessModel === "free_to_play").length,
       unknown: steamCls.filter(c => c.businessModel === "unknown").length,
       written: steamW.inserted + steamW.updated,

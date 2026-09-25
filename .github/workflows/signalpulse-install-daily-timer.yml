@@ -14,10 +14,13 @@ on:
         description: '"install" (default), "disable", or "status"'
         required: false
         default: "install"
+        type: choice
+        options: [install, disable, status]
 
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   manage-timer:
@@ -45,6 +48,11 @@ jobs:
 
           case "$ACTION" in
             install)
+              exec 9>/run/lock/signalpulse-maintenance.lock
+              flock -n 9 || { echo "Refresh busy; no unit changes performed"; exit 75; }
+              state=$(systemctl show -p ActiveState --value signalpulse-daily.service)
+              case "$state" in active|activating|deactivating) echo "Refresh active; refusing unit changes"; exit 75;; esac
+              before=$(systemctl show -p InvocationID --value signalpulse-daily.service)
               # Preflight: verify BOTH unit files AND the runner wrapper are deployed.
               # `enable --now` fires the service immediately, so a missing wrapper
               # would cause an immediate exit 2 (INVALIDARGUMENT) — exactly the bug
@@ -61,6 +69,8 @@ jobs:
               # journal output and gate GHA-cron retirement on a clean invocation.
               systemctl enable signalpulse-daily.timer
               systemctl start signalpulse-daily.timer
+              after=$(systemctl show -p InvocationID --value signalpulse-daily.service)
+              [ "$before" = "$after" ] || { echo "Unexpected refresh activation during timer update"; exit 1; }
               echo "── Timer status ──"
               systemctl status signalpulse-daily.timer --no-pager | head -20 || true
               echo ""
@@ -84,6 +94,8 @@ jobs:
               echo "── Installed refresh units ──"
               systemctl cat signalpulse-daily.service signalpulse-daily.timer
               systemctl show signalpulse-daily.service -p ActiveState -p SubState -p InvocationID -p Result -p ExecMainStatus -p ExecMainStartTimestamp -p TimeoutStartUSec
+              echo "── Completed oneshot invocation retention probe (read-only) ──"
+              systemctl show sysstat-collect.service -p ActiveState -p InvocationID -p Result -p ExecMainStatus
               echo "── All scheduled host timers ──"
               systemctl list-timers --all --no-pager
               echo "── Refresh-related OS schedule locations (names only) ──"

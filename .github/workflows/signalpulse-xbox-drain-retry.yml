@@ -18,8 +18,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: xbox-title-retry
+  group: deploy-droplet
   cancel-in-progress: false
+  queue: max
 
 jobs:
   drain:
@@ -38,6 +39,9 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
               root@104.236.239.46 bash -s <<'REMOTE'
           set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          # Hourly enrichment can defer; it never interrupts a paid refresh.
+          flock -n 9 || { echo "DEFERRED: refresh/deployment owns lock; retry next scheduled hour"; exit 0; }
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
           [ -n "$WD" ] || { echo "ERR: no signalpulse WorkingDirectory"; exit 1; }
           cd "$WD"
