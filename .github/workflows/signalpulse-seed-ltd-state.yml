@@ -115,7 +115,10 @@ jobs:
           const rows=db.prepare('SELECT window,signal_value,units_mid,method FROM window_estimates_daily WHERE title_id=10014 AND platform=? AND as_of_date=? ORDER BY window').all('steam',process.env.AS_OF);
           assert.equal(rows.length,5);
           assert.equal(rows.find(r=>r.window==='ltd').units_mid,838342);
-          for(const r of rows) { assert.ok(r.signal_value<=20854); assert.ok(r.method.includes('steam_histogram_nonoverlap_v1')); }
+          for(const r of rows) {
+            assert.ok(r.signal_value<=20854);
+            assert.ok(r.method.includes(r.window==='ltd' ? 'ltd_state:derived_max_windows' : 'steam_histogram_nonoverlap_v1'));
+          }
           console.log(JSON.stringify({estimatorIdempotent:true,protectedInputsUnchanged:true,zeroCompany:rows}));
           db.close();
           NODE
