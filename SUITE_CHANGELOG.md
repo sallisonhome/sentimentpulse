@@ -12,6 +12,14 @@ A running suite-wide log of what shipped across every app. Each entry is tagged 
 
 ---
 
+## September 25, 2026
+
+- Improved
+
+  ### SignalPulse: Daily paid-platform coverage beyond the rankings
+
+  Buying estimates now check known Steam, PS5 and Xbox catalog gaps during the existing daily refresh, even when a platform listing is outside its Top 40. A verified paid base game can join its title family without creating a second copy of the same platform's sales. Regional listings, shared PlayStation concepts and editions are checked for duplicate coverage; ambiguous, unsupported and free listings remain excluded. SignalPulse supplies the same results to howmanyareplaying across all five time periods.
+
 ## September 24, 2026
 
 - New

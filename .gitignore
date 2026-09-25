@@ -47,6 +47,7 @@ coverage.xml
 *.db
 *.db-shm
 *.db-wal
+signalpulse/catalog-coverage-audit/
 
 # NLP model cache (large, download at runtime)
 backend/.cache/

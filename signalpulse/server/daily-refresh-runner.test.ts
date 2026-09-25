@@ -21,7 +21,7 @@ case "$*" in
 esac
 `);
   put("bin/journalctl",`#!/bin/bash
-for n in 1 2 3 4 5; do echo "PHASE $n:"; done
+for n in 1 1b 2 3 4 5; do echo "PHASE $n:"; done
 [ "\${QA_DONE:-yes}" = yes ] && echo 'signalpulse-daily done'
 exit 0
 `);
@@ -46,19 +46,19 @@ test("real flock serializes simultaneous refresh runners without cancelling eith
   try {
     assert.deepEqual(await Promise.all([run("a"),run("b")]),[0,0]);
     const ids=readFileSync(join(f.dir,"calls"),"utf8").trim().split("\n").map(s=>s[0]);
-    assert.equal(ids.length,10);
-    assert.ok(ids.slice(0,5).every(x=>x===ids[0]));
-    assert.ok(ids.slice(5).every(x=>x!==ids[0]));
+    assert.equal(ids.length,12);
+    assert.ok(ids.slice(0,6).every(x=>x===ids[0]));
+    assert.ok(ids.slice(6).every(x=>x!==ids[0]));
   } finally {f.cleanup();}
 });
 test("phase failure stops downstream writes and never emits done",()=>{
-  const phases=["verify-discovery","collect-console-signals","estimate-console-units","write-revenue-anchors","evaluate-daily-revenue-mix"];
+  const phases=["verify-discovery","reconcile-sales-catalog","collect-console-signals","estimate-console-units","write-revenue-anchors","evaluate-daily-revenue-mix"];
   for(let i=0;i<phases.length;i++){
     const f=fixture();
     try {
       const r=spawnSync("bash",[join(f.dir,"daily.sh")],{
         env:{...f.env,QA_ID:"a",QA_FAIL:`scripts/${phases[i]}.ts`},encoding:"utf8"});
-      assert.equal(r.status,(i+1)*10);
+      assert.equal(r.status,[10,15,20,30,40,50][i]);
       assert.doesNotMatch(r.stdout,/signalpulse-daily done/);
       assert.equal(readFileSync(join(f.dir,"calls"),"utf8").trim().split("\n").length,i+1);
     }finally{f.cleanup();}
@@ -106,5 +106,6 @@ test("queue, schedule, lock and timeout configuration cannot regress silently",(
   assert.match(wrapper,/verify-discovery.ts --production/);
   assert.doesNotMatch(wrapper,/scripts\/verify-console-collectors.ts/);
   assert.match(wrapper,/1800.*collect-console-signals/);
+  assert.ok(wrapper.indexOf("scripts/reconcile-sales-catalog.ts")<wrapper.indexOf("scripts/collect-console-signals.ts"));
   assert.match(readFileSync("deploy/signalpulse-daily.service","utf8"),/TimeoutStartSec=3600/);
 });

@@ -1,5 +1,18 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-25 — Ratings coverage and sales eligibility are different contracts
+
+A verified ratings mapping is not proof of a released paid base game. Conversely,
+an out-of-chart listing must not be excluded from family sales merely because it
+was first enrolled for ratings. Reconcile the known catalog in the existing locked
+daily refresh, using exact native identity, platform, release and purchase evidence.
+Never promote all ratings-only rows, synthesize a missing platform, copy histories,
+or add a second same-family/platform observation. PS concept and regional duplicates
+need explicit guards. Temporary new-row title ID zero is not a shared identity.
+Test multiple new Steam counterparts together, unchanged reruns, conflicting writes,
+rollback on the actual NOT NULL schema, and every supported window. Storefront and
+display spelling can differ; exercise the actual route's title-family key in QA.
+
 ## 2026-09-25 — Profile source collection before optimizing summaries
 
 Three scheduled runs took 140, 151 and 160 minutes. The September 25

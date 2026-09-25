@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # signalpulse-daily.sh — daily refresh runner invoked by signalpulse-daily.service.
 #
-# Runs the five-phase console-leaderboards pipeline against the live droplet
+# Runs the console-leaderboards pipeline against the live droplet
 # database (SQLite WAL, concurrent reads from the running signalpulse.service
 # are safe — the write set here is disjoint from the request-path writer set).
 #
@@ -24,10 +24,11 @@
 #      accumulator disabled).
 #
 # Exit codes:
-#   0   — all five phases completed successfully
+#   0   — all phases completed successfully
 #   1   — WorkingDirectory could not be resolved
 #   2   — tsx binary missing (deploy incomplete)
 #   10  — PHASE 1 (verify-discovery) failed
+#   15  — PHASE 1b (verified sales-catalog reconciliation) failed
 #   20  — PHASE 2 (collect-console-signals) failed
 #   30  — PHASE 3 (estimate-console-units) failed
 #   40  — PHASE 4 (write-revenue-anchors) failed
@@ -98,6 +99,12 @@ log "── PHASE 1: verify-discovery ──"
 if ! timeout --kill-after=15 360 "$TSX" scripts/verify-discovery.ts --production; then
   log "PHASE 1 failed (timeout=360s)"
   exit 10
+fi
+
+log "── PHASE 1b: reconcile-sales-catalog ──"
+if ! timeout --kill-after=15 240 "$TSX" scripts/reconcile-sales-catalog.ts; then
+  log "PHASE 1b failed (timeout=240s)"
+  exit 15
 fi
 
 log "── PHASE 2: collect-console-signals ──"
