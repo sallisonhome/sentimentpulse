@@ -1,27 +1,24 @@
-name: SignalPulse — Seed LTD accumulator state
-
-# One-off dispatchable workflow that seeds title_ltd_state.
-#
-# Inputs:
-#   dry_run: "1" (default) prints proposed rows without writing.
-#            "0" commits the seed to title_ltd_state.
-#
-# Uses same SSH pattern as other estimator workflows. Idempotent.
-
-on:
+name: SignalPulse — Review-burst repair
+"on":
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: '"1" to preview only, "0" to commit'
-        required: false
-        default: "1"
-
+      mode:
+        type: choice
+        options: [preflight, plan, apply]
+        default: preflight
+        required: true
+      expected_head:
+        description: Exact deployed commit
+        required: true
+      expected_sha:
+        description: Owner-reviewed repair manifest hash
+        default: a1f833ef3f09748d5a91fe811c32addc83d9db99df12046aa95b251b0f01dc2d
+        required: true
 concurrency:
   group: deploy-droplet
   cancel-in-progress: false
-
 jobs:
-  seed-ltd-state:
+  repair:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -30,50 +27,125 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Preflight
-        run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-              root@104.236.239.46 bash -s <<'REMOTE'
-          set -euo pipefail
-          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
-          echo "Working dir: $WD"
-          [ -f "$WD/data.db" ] || { echo "ERR: DB missing"; exit 1; }
-          [ -f "$WD/scripts/seed-title-ltd-state.ts" ] || { echo "ERR: seed script missing — deploy first"; exit 1; }
-          [ -x "$WD/node_modules/.bin/tsx" ] || { echo "ERR: tsx missing — deploy first"; exit 1; }
-          echo "── Pre-run: title_ltd_state row count (should be 0 on first run) ──"
-          sqlite3 -header -column "$WD/data.db" "SELECT COUNT(*) AS current_rows FROM title_ltd_state;" \
-            || echo "(table may not exist yet — will be created by service boot)"
-          REMOTE
-
-      - name: Run seed script
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts
+      - name: Verify isolated service and execute bounded mode
         env:
-          DRY_RUN_INPUT: ${{ inputs.dry_run }}
+          MODE: ${{ inputs.mode }}
+          EXPECTED_HEAD: ${{ inputs.expected_head }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-              root@104.236.239.46 "DRY_RUN=$DRY_RUN_INPUT bash -s" <<'REMOTE'
           set -euo pipefail
+          [[ "$MODE" == preflight || "$MODE" == plan || "$MODE" == apply ]]
+          [[ "$EXPECTED_HEAD" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
+          mkdir -p evidence
+          ssh -i ~/.ssh/id_ed25519 -o ServerAliveInterval=15 -o ServerAliveCountMax=8 \
+            root@104.236.239.46 "MODE=$MODE EXPECTED_HEAD=$EXPECTED_HEAD EXPECTED_SHA=$EXPECTED_SHA bash -s" <<'REMOTE' | tee evidence/repair.log
+          set -euo pipefail
+          umask 077
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
           cd "$WD"
-          echo "── Running seed-title-ltd-state.ts (DRY_RUN=${DRY_RUN:-1}) ──"
-          DRY_RUN="${DRY_RUN:-1}" DB_PATH="$WD/data.db" \
-            node_modules/.bin/tsx scripts/seed-title-ltd-state.ts
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_HEAD" ]
+          systemctl is-active --quiet signalpulse
+          systemctl is-active --quiet signalpulse-daily.timer
+          daily_state=$(systemctl show -p ActiveState --value signalpulse-daily.service)
+          [[ "$daily_state" == inactive || "$daily_state" == failed ]]
+          if pgrep -af '(tsx|node).*(scripts/verify-discovery|scripts/verify-console-collectors|scripts/estimate-console|scripts/collect-|scripts/discover-|scripts/seed-|scripts/evaluate-daily|scripts/repair-steam-review)'; then
+            echo 'Refusing: a SignalPulse maintenance process is active'; exit 1
+          fi
+          # SentimentPulse is a separate Python service/database. Observe it,
+          # never restart it; this rollout modifies only signalpulse/ files.
+          curl -fsS --max-time 15 http://127.0.0.1:8000/api/ingest/status |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print({k:d.get(k) for k in ("is_running","last_run_at","games_processed")})'
+          TOKEN=$(sed -n 's/^INGESTION_OPS_TOKEN=//p' /etc/signalpulse/env)
+          [ -n "$TOKEN" ]
+          curl -fsS --max-time 15 -H "x-ops-token: $TOKEN" http://127.0.0.1:5000/api/ingestion/status |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print("SignalPulse inFlight:",d.get("inFlight")); assert d["inFlight"] is False'
+          unset TOKEN
+          START_BEFORE=$(systemctl show -p ExecMainStartTimestamp --value signalpulse-daily.service)
+          echo "Deployed head: $EXPECTED_HEAD; daily state: $daily_state"
+          echo "Daily last start: $START_BEFORE"
+          echo "Next timer: $(systemctl show -p NextElapseUSecRealtime --value signalpulse-daily.timer)"
+          if [ "$MODE" = preflight ]; then echo 'PASS: SignalPulse idle; no service changed'; exit 0; fi
+          [ "$(date -u +%F)" = 2026-09-25 ]
+          export DB_PATH="$WD/data.db" AS_OF=2026-09-25
+          PLAN=$(mktemp /tmp/steam-review-shock-plan.XXXXXX.json)
+          export PLAN
+          node_modules/.bin/tsx scripts/repair-steam-review-shocks.ts > "$PLAN"
+          node <<'NODE'
+          const fs=require('fs'),assert=require('assert/strict');
+          const p=JSON.parse(fs.readFileSync(process.env.PLAN,'utf8')),r=p.entries.filter(e=>e.status==='repair');
+          console.log(JSON.stringify({sha256:p.sha256,repairs:r},null,2));
+          assert.equal(p.sha256,process.env.EXPECTED_SHA,'Manifest changed: stop for review');
+          assert.deepEqual(r.map(e=>[e.titleId,e.after.ltd_units,e.after.last_signal_value]),[
+            [10092,6000415,149262],[10098,4108901,102210],[10111,12449469,309684],
+            [10149,2714904,67534],[10786,4093984,101839],[10787,9326448,231998]]);
+          NODE
+          if [ "$MODE" = plan ]; then echo 'PASS: exact approved manifest; no database writes'; exit 0; fi
+          # Read the existing service flag, never change configuration.
+          PID=$(systemctl show -p MainPID --value signalpulse)
+          LTD_FLAG=$(tr '\0' '\n' < "/proc/$PID/environ" | sed -n 's/^LTD_ACCUMULATOR_ENABLED=//p')
+          [ "$LTD_FLAG" = 1 ]
+          export LTD_ACCUMULATOR_ENABLED="$LTD_FLAG"
+          RECEIPT=$(mktemp /tmp/steam-review-shock-receipt.XXXXXX.json)
+          export RECEIPT
+          node_modules/.bin/tsx scripts/repair-steam-review-shocks.ts \
+            --apply --confirm CONFIRM --expected-sha "$EXPECTED_SHA" | tee "$RECEIPT"
+          node <<'NODE'
+          const D=require('better-sqlite3'),fs=require('fs'),assert=require('assert/strict');
+          const receipt=JSON.parse(fs.readFileSync(process.env.RECEIPT,'utf8'));
+          assert.equal(receipt.repaired,6);
+          const db=new D(process.env.DB_PATH,{readonly:true}),old=new D(receipt.backup,{readonly:true});
+          const expected=new Set([10092,10098,10111,10149,10786,10787]);
+          const rows=db.prepare('SELECT * FROM title_ltd_state ORDER BY title_id,platform').all();
+          const prior=old.prepare('SELECT * FROM title_ltd_state ORDER BY title_id,platform').all();
+          assert.equal(rows.length,prior.length);let changed=0;
+          rows.forEach((r,i)=>{if(JSON.stringify(r)!==JSON.stringify(prior[i])){
+            assert.equal(r.platform,'steam');assert.ok(expected.has(r.title_id));changed++;
+          }});
+          assert.equal(changed,6);
+          console.log(JSON.stringify({repairOnlySixStates:true,backup:receipt.backup,runId:receipt.runId}));
+          db.close();old.close();
+          NODE
+          timeout 300 node_modules/.bin/tsx scripts/estimate-console-units.ts
+          FIRST=$(mktemp /tmp/steam-review-shock-estimates.XXXXXX.json)
+          export FIRST
+          node <<'NODE'
+          const D=require('better-sqlite3'),fs=require('fs'),db=new D(process.env.DB_PATH,{readonly:true});
+          fs.writeFileSync(process.env.FIRST,JSON.stringify(db.prepare(`SELECT title_id,platform,window,
+            signal_value,units_mid,method,gated_reason FROM window_estimates_daily
+            WHERE as_of_date='2026-09-25' ORDER BY title_id,platform,window`).all()));db.close();
+          NODE
+          timeout 300 node_modules/.bin/tsx scripts/estimate-console-units.ts
+          node <<'NODE'
+          const D=require('better-sqlite3'),fs=require('fs'),assert=require('assert/strict');
+          const receipt=JSON.parse(fs.readFileSync(process.env.RECEIPT,'utf8'));
+          const db=new D(process.env.DB_PATH,{readonly:true}),old=new D(receipt.backup,{readonly:true});
+          const rows=db.prepare(`SELECT title_id,platform,window,signal_value,units_mid,method,gated_reason
+            FROM window_estimates_daily WHERE as_of_date='2026-09-25' ORDER BY title_id,platform,window`).all();
+          assert.deepEqual(rows,JSON.parse(fs.readFileSync(process.env.FIRST,'utf8')));
+          for(const t of ['steam_review_history','store_rating_signal_daily','platform_sku_map',
+            'ownership_multipliers','revenue_calibration_anchors','title_multiplier_overrides']){
+            assert.deepEqual(db.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all(),old.prepare(`SELECT * FROM ${t} ORDER BY rowid`).all(),t);
+          }
+          const hoi=rows.filter(r=>r.title_id===10111&&r.platform==='steam');
+          assert.equal(hoi.length,5);assert.equal(hoi.find(r=>r.window==='d7').units_mid,24844);
+          assert.equal(hoi.find(r=>r.window==='ltd').units_mid,12449469);
+          assert.equal(db.prepare("SELECT ltd_units FROM title_ltd_state WHERE title_id=10014 AND platform='steam'").get().ltd_units,838342);
+          console.log(JSON.stringify({repeatStable:true,protectedTablesUnchanged:true,rows:rows.length,hoi},null,2));
+          db.close();old.close();
+          NODE
+          systemctl is-active --quiet signalpulse-daily.timer
+          [ "$START_BEFORE" = "$(systemctl show -p ExecMainStartTimestamp --value signalpulse-daily.service)" ]
+          echo "Next timer unchanged: $(systemctl show -p NextElapseUSecRealtime --value signalpulse-daily.timer)"
+          curl -fsS --max-time 15 http://127.0.0.1:8000/api/ingest/status |
+            python3 -c 'import json,sys; d=json.load(sys.stdin); print({k:d.get(k) for k in ("is_running","last_run_at","games_processed")})'
+          echo 'PASS: bounded repair, estimator repeat, raw data preserved, timer not activated'
           REMOTE
-
-      - name: Post-run audit
-        run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-              root@104.236.239.46 bash -s <<'REMOTE'
-          set -euo pipefail
-          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
-          echo "── Post-run: title_ltd_state row count + breakdown ──"
-          sqlite3 -header -column "$WD/data.db" "
-            SELECT ltd_source, COUNT(*) AS rows FROM title_ltd_state GROUP BY ltd_source;
-            SELECT '' AS sep;
-            SELECT title_id, platform, ROUND(ltd_units) AS ltd_units, ltd_source, seeded_from
-              FROM title_ltd_state
-              WHERE title_id IN (10000, 10185, 10336)
-              ORDER BY title_id, platform;
-          "
-          REMOTE
+      - name: Retain non-secret repair evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-review-shock-${{ inputs.mode }}
+          path: evidence/
+          retention-days: 30
