@@ -1,0 +1,38 @@
+name: SentimentPulse targeted YouTube catch-up
+on:
+  workflow_dispatch:
+    inputs:
+      game_ids:
+        description: Comma-separated active SentimentPulse game IDs
+        required: true
+        type: string
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+jobs:
+  catchup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts
+      - name: Import and classify only the requested YouTube titles
+        env:
+          GAME_IDS: ${{ inputs.game_ids }}
+        run: |
+          set -euo pipefail
+          case "$GAME_IDS" in *[!0-9,]*|'') echo "Invalid game IDs"; exit 2;; esac
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 "GAME_IDS=$GAME_IDS bash -s" <<'REMOTE'
+          set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 600 9 || { echo "Maintenance busy; no catch-up performed"; exit 75; }
+          cd /opt/sentimentpulse/backend
+          .venv/bin/python scripts/catchup_youtube.py --game-ids "$GAME_IDS" \
+            --max-pages 200 --max-seconds 180
+          REMOTE

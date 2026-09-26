@@ -202,7 +202,7 @@ def _synthesize_topics_background(game_id: int, game_name: str, period_key: str,
     key = (game_id, period_key)
     session = SessionLocal()
     try:
-        gen = snapshots.generation(session)
+        gen = snapshots.generation(session, game_id)
         for sentiment in (SentimentEnum.positive, SentimentEnum.negative, SentimentEnum.neutral):
             prior = snapshots.read(session, game_id, period_key, sentiment.value, period_start)
             if not snapshots.retry_due(prior, gen):
@@ -294,7 +294,7 @@ def get_dashboard_topics(
         return TopTopicsSummary(positive=[], negative=[], neutral=[],
                                 status="unsupported", message=snapshots.UNSUPPORTED_MESSAGE)
     p_start = _period_start(period)
-    gen = snapshots.generation(db)
+    gen = snapshots.generation(db, game_id)
     records = {s: snapshots.read(db, game_id, period.value, s, p_start)
                for s in snapshots.SENTIMENTS}
     payload = {s: (r or {}).get("payload") or [] for s, r in records.items()}
@@ -1283,7 +1283,7 @@ def warmup_topics_cache(logger_override=None) -> dict:
         )
         for game in active_games:
             for period in periods_to_warm:
-                gen = snapshots.generation(db)
+                gen = snapshots.generation(db, game.id)
                 p_start = _period_start(period)
                 records = [snapshots.read(db, game.id, period.value, s, p_start)
                            for s in snapshots.SENTIMENTS]
@@ -1326,15 +1326,18 @@ def warmup_topics_cache(logger_override=None) -> dict:
     return summary
 
 
-def start_topics_warmup_background(logger_override=None, force=False) -> dict:
+def start_topics_warmup_background(logger_override=None, force=False, game_ids=None) -> dict:
     """Fire-and-forget wrapper so ingest is not blocked on LLM synthesis."""
     global _TOPICS_WARMUP_THREAD
     if force:
         from database import SessionLocal
-        from services.topic_snapshots import invalidate
+        from services.topic_snapshots import invalidate, invalidate_games
         session = SessionLocal()
         try:
-            invalidate(session)
+            if game_ids is None:
+                invalidate(session)
+            else:
+                invalidate_games(session, game_ids)
         finally:
             session.close()
     with _TOPICS_WARMUP_THREAD_LOCK:
@@ -1418,10 +1421,22 @@ def dashboard_warmup_endpoint():
 
 
 @router.post("/dashboard/topics-warmup", tags=["dashboard-admin"])
-def dashboard_topics_warmup_endpoint():
+def dashboard_topics_warmup_endpoint(
+    game_ids: Optional[str] = Query(None, description="Optional comma-separated active game IDs"),
+    db: Session = Depends(get_db),
+):
     """Start a background Top Topics warmup (today + weekly + monthly, all active
     games). Returns {status: 'started'|'already_running'} immediately."""
-    return start_topics_warmup_background(force=True)
+    selected = None
+    if game_ids is not None:
+        try:
+            selected = sorted({int(x) for x in game_ids.split(",")})
+        except ValueError:
+            raise HTTPException(status_code=422, detail="game_ids must be comma-separated integers")
+        active = {g.id for g in db.query(Game).filter(Game.id.in_(selected), Game.is_active.is_(True))}
+        if not selected or active != set(selected):
+            raise HTTPException(status_code=422, detail="Every selected game must be active")
+    return start_topics_warmup_background(force=True, game_ids=selected)
 
 
 @router.get("/dashboard/warmup-status", tags=["dashboard-admin"])

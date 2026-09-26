@@ -1,5 +1,29 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-26 — Draining an old snapshot is not current feed completion
+
+Hellraiser, Space Marine 2 and Townfall had saved pagination snapshots from
+September 25. On September 26 the importer consumed their final old pages,
+reported `complete=True`, and exited without opening the current producer
+window. Read-only reconciliation found 171, 240 and 2,175 comments dated
+September 26 upstream but absent from SentimentPulse respectively. Other
+titles imported normally; this was not a total YouTube outage or a UI bug.
+
+- Keep old pagination boundaries immutable, but transition from their final
+  committed watermark into one new bounded snapshot before claiming current
+  completion. If a budget or failure intervenes, report incomplete and retain
+  the checkpoint.
+- Preserve original publication dates, source ownership and deduplication.
+  A recovered raw comment is not automatically an eligible dashboard count:
+  normal classification and off-topic filtering still apply.
+- A fixed 5,000-row daily ceiling was too small for high-volume refreshed
+  feeds. Use a larger page safety ceiling plus an elapsed-time bound, with
+  observable remaining backlog.
+- Repairs should fetch only the affected source/title scope, classify that
+  source only, and invalidate repaired titles' topic generations rather than
+  regenerating the entire portfolio. Verify source-to-consumer missing counts,
+  classification completion and visible source totals separately.
+
 ## 2026-09-25 evening — Partial topics were hidden behind all-buckets readiness
 
 Live checks across Space Marine 2, Townfall, Halloween and SnowRunner showed

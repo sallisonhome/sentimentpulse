@@ -16,9 +16,27 @@ UNSUPPORTED_MESSAGE = "Top Topics are only available for Today, 7 Day and 30 Day
 GEN_KEY = "dashboard_topics_generation_v1"
 
 
-def generation(db):
+def generation(db, game_id=None):
     row = db.get(AppSetting, GEN_KEY, populate_existing=True)
-    return row.value if row else "initial"
+    base = row.value if row else "initial"
+    if game_id is not None:
+        scoped = db.get(AppSetting, f"{GEN_KEY}:game:{game_id}", populate_existing=True)
+        if scoped:
+            return f"{base}:{scoped.value}"
+    return base
+
+
+def invalidate_games(db, game_ids):
+    """Refresh repaired titles without regenerating the whole portfolio."""
+    for game_id in game_ids:
+        row_key = f"{GEN_KEY}:game:{game_id}"
+        row = db.get(AppSetting, row_key)
+        value = uuid.uuid4().hex
+        if row is None:
+            db.add(AppSetting(key=row_key, value=value))
+        else:
+            row.value = value
+    db.commit()
 
 
 def invalidate(db):
@@ -67,7 +85,7 @@ def retry_due(data, gen):
 
 def write(db, game_id, period, sentiment, period_start, gen, payload, error=None):
     # A worker from an older ingest must not overwrite a newer generation.
-    if generation(db) != gen:
+    if generation(db, game_id) != gen:
         return
     old = read(db, game_id, period, sentiment, period_start)
     data = {

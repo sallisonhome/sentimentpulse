@@ -81,10 +81,12 @@ def test_page_failure_resumes_without_advancing_failed_page(db, game, configured
     assert db.query(RawPost).count() == 1
     state = json.loads(cursor_row(db, game).value)
     assert state["cursor"] == token
-    next_get = getter(payload([comment(game, "c2")], snapshot=snapshot))
+    next_get = getter(payload([comment(game, "c2")], snapshot=snapshot),
+                      payload([], snapshot=stamp()))
     import_game_comments(db, game, get=next_get)
-    assert next_get.call_args.kwargs["params"]["cursor"] == token
-    assert next_get.call_args.kwargs["params"]["until"] == snapshot
+    assert next_get.call_args_list[0].kwargs["params"]["cursor"] == token
+    assert next_get.call_args_list[0].kwargs["params"]["until"] == snapshot
+    assert "until" not in next_get.call_args_list[1].kwargs["params"]
     assert db.query(RawPost).count() == 2
     assert "cursor" not in json.loads(cursor_row(db, game).value)
 
@@ -136,7 +138,8 @@ def test_budget_persists_cursor_and_unlimited_retains_old_text(db, game, configu
     assert result["complete"] is False
     assert json.loads(cursor_row(db, game).value)["cursor"] == token
     assert db.query(RawPost).count() == 1
-    import_game_comments(db, game, get=getter(payload([], snapshot=snapshot, mode="policy30")))
+    import_game_comments(db, game, get=getter(
+        payload([], snapshot=snapshot, mode="policy30"), payload([])))
     assert db.query(RawPost).count() == 1  # even a producer policy30 flag cannot erase stored text
 
 
@@ -155,3 +158,93 @@ def test_classifier_uses_comment_only_and_flags_solicitation(db, game, configure
     spam = db.query(RawPost).filter_by(external_id="youtube:spam").one()
     assert spam.is_off_topic_drift is True
     assert spam.sentiment_record.sentiment == SentimentEnum.neutral
+
+
+def resume_state(db, game, snapshot="2026-09-25T13:14:30.000Z"):
+    key = f"youtube_feed_cursor:{game.id}:{game.steam_app_id}"
+    db.add(AppSetting(key=key, value=json.dumps({
+        "since": "2026-09-24T00:00:00.000Z", "until": snapshot,
+        "cursor": "2026-09-25T08:30:00.000Z|old",
+        "deletedSince": "2026-09-24T00:00:00.000Z",
+    })))
+    db.commit()
+    return snapshot
+
+
+def test_resume_old_snapshot_then_import_today_in_same_call(db, game, configured):
+    old = resume_state(db, game)
+    current = "2026-09-26T10:00:00.000Z"
+    fresh = comment(game, "today", fetched="2026-09-26T08:31:25.000Z")
+    fresh["publishedAt"] = "2026-09-26T01:00:00.000Z"
+    get = getter(payload([], snapshot=old), payload([fresh], snapshot=current))
+    result = import_game_comments(db, game, get=get)
+    assert result["complete"] and result["snapshots_completed"] == 2
+    assert result["completed_through"] == current
+    assert result["stop_reason"] == "current_snapshot_complete"
+    second = get.call_args_list[1].kwargs["params"]
+    assert "cursor" not in second and "until" not in second
+    assert second["since"] == second["deletedSince"] == "2026-09-25T13:14:29.000Z"
+    assert db.query(RawPost).one().post_date == datetime(2026, 9, 26, 1)
+    assert json.loads(cursor_row(db, game).value)["since"] == "2026-09-26T09:59:59.000Z"
+
+
+def test_budget_at_old_snapshot_boundary_is_not_complete(db, game, configured):
+    old = resume_state(db, game)
+    result = import_game_comments(db, game, get=getter(payload([], snapshot=old)), max_pages=1)
+    assert not result["complete"]
+    assert result["stop_reason"] == "page_budget"
+    assert result["snapshots_completed"] == 1
+    state = json.loads(cursor_row(db, game).value)
+    assert "cursor" not in state and "until" not in state
+    assert state["since"] == "2026-09-25T13:14:29.000Z"
+
+
+def test_fresh_request_failure_keeps_completed_old_checkpoint(db, game, configured):
+    old = resume_state(db, game)
+    get = Mock(side_effect=[
+        Mock(status_code=200, json=lambda: payload([], snapshot=old)),
+        Mock(status_code=503),
+    ])
+    with pytest.raises(RuntimeError, match="503"):
+        import_game_comments(db, game, get=get)
+    state = json.loads(cursor_row(db, game).value)
+    assert state["since"] == "2026-09-25T13:14:29.000Z"
+    assert "cursor" not in state
+    followup = getter(payload([], snapshot="2026-09-26T10:00:00.000Z"))
+    assert import_game_comments(db, game, get=followup)["complete"]
+
+
+def test_time_budget_checkpoints_last_successful_page(db, game, configured, monkeypatch):
+    import services.youtube_service as service
+    monkeypatch.setattr(service.time, "monotonic", Mock(side_effect=[0, 0, 6]))
+    snapshot = stamp()
+    token = comment(game)["fetchedAt"] + "|c1"
+    result = import_game_comments(db, game, get=getter(
+        payload([comment(game)], next_cursor=token, snapshot=snapshot)), max_seconds=5)
+    assert not result["complete"] and result["stop_reason"] == "time_budget"
+    assert result["pages"] == 1
+    assert json.loads(cursor_row(db, game).value)["cursor"] == token
+
+
+def test_targeted_classification_leaves_other_sources_unprocessed(db, game, configured):
+    import_game_comments(db, game, get=getter(payload([comment(game)])))
+    other = RawPost(game_id=game.id, source=SourceEnum.steam_review,
+                    external_id="untouched-steam", body="Great combat", is_relevant=None)
+    db.add(other); db.commit()
+    fake = dict(label="positive", score=.9, signal_quality="high", language="en", applied_rules=[])
+    with patch("services.ingestor.classify_batch_with_gate_v2", return_value=[fake]):
+        _step5_classify_sentiment(db, game, [], [], source_filter=SourceEnum.youtube_comment)
+    assert db.query(SentimentRecord).count() == 1
+    assert other.is_relevant is None
+
+
+def test_default_budget_can_finish_more_than_ten_pages(db, game, configured):
+    snapshot = stamp()
+    pages = []
+    for i in range(12):
+        item = comment(game, cid=f"large-{i}")
+        token = item["fetchedAt"] + f"|large-{i}" if i < 11 else None
+        pages.append(payload([item], next_cursor=token, snapshot=snapshot))
+    result = import_game_comments(db, game, get=getter(*pages))
+    assert result["complete"] and result["pages"] == 12
+    assert db.query(RawPost).count() == 12

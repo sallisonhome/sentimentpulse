@@ -105,6 +105,23 @@ def test_old_generation_worker_cannot_overwrite_new_result(db, game):
                       router._period_start(PeriodEnum.weekly))["payload"]
 
 
+def test_targeted_refresh_does_not_invalidate_other_games(db, game):
+    before = store.generation(db, game.id)
+    other_before = store.generation(db, game.id + 1000)
+    fill(db, game.id)
+    store.invalidate_games(db, [game.id])
+    after = store.generation(db, game.id)
+    assert after != before
+    assert store.generation(db, game.id + 1000) == other_before
+    record = store.read(db, game.id, "weekly", "positive",
+                        router._period_start(PeriodEnum.weekly))
+    assert record["payload"] and not store.fresh(record, after)
+    store.write(db, game.id, "weekly", "positive", router._period_start(PeriodEnum.weekly),
+                before, [])
+    assert store.read(db, game.id, "weekly", "positive",
+                      router._period_start(PeriodEnum.weekly))["payload"]
+
+
 @pytest.mark.parametrize("text", ["", "I cannot return JSON", '{"topics": ['])
 def test_invalid_primary_triggers_validated_fallback(monkeypatch, text):
     valid = json.dumps({"topics": [{"label": "Combat", "detail": "Hits feel weighty.",

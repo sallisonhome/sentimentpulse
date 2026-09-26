@@ -1,5 +1,17 @@
 # SentimentPulse Changelog
 
+## September 26, 2026: YouTube resume freshness
+
+- A resumed comment import now finishes its saved snapshot and then opens a
+  fresh snapshot in the same invocation. `complete` means the fresh feed
+  snapshot was drained, not merely that yesterday's cursor reached its end.
+- Each page still commits atomically with its checkpoint. Daily imports allow
+  up to 100 pages per title with a 120-second between-page budget, preserving
+  progress and reporting partial coverage if either bound is reached.
+- Added a guarded, explicitly scoped YouTube catch-up workflow. It imports
+  only the selected active titles, classifies only YouTube rows, refreshes
+  aggregates and invalidates only those titles' Top Topics generations.
+
 ## September 25, 2026: Top Topics window reliability
 
 - Top Topics supports Today, 7 Day and 30 Day for every active title.
