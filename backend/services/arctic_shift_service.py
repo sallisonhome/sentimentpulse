@@ -37,8 +37,8 @@ _HEADERS = {
 
 _TIMEOUT = 15  # seconds per request
 
-# Courtesy delay between requests to respect Arctic Shift's rate limit
-# (2 000 requests/hour is visible in response headers).
+# Courtesy floor. The API documents dynamic, complexity-based limits, not
+# a fixed 2,000/hour budget. Actual 429 reset headers control transport pauses.
 _REQUEST_DELAY = 1.0  # seconds
 
 # Large general subreddits where posts must be filtered by game name at
@@ -152,7 +152,7 @@ def _fetch_one(params: dict) -> list[dict]:
             params=params,
             headers=_HEADERS,
             timeout=_TIMEOUT,
-            provider="arctic_shift", interval=1.8,
+            provider="arctic_shift", interval=1.0,
         )
     except Exception as exc:
         logger.warning("arctic_shift: request failed — %s", exc)
@@ -410,7 +410,7 @@ def fetch_arctic_shift_comments(
             params=params,
             timeout=_TIMEOUT,
             headers=_HEADERS,
-            provider="arctic_shift", interval=1.8,
+            provider="arctic_shift", interval=1.0,
         )
     except (requests.RequestException, UpstreamFailure) as exc:
         logger.warning(

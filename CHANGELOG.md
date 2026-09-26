@@ -1,5 +1,19 @@
 # SentimentPulse Changelog
 
+## September 26, 2026: Automatic ingestion admission and avoidable wait repair
+
+- Startup recovery now respects the same 05:45 Eastern daily slot and upstream
+  dependency checks as scheduled ingestion, with shared admission locking.
+- Fixed the scheduled job's nonexistent YouTube enablement-function import.
+- Completed and partial runs spanning today's slot are not repeated on restart.
+  Interrupted/error runs remain eligible for guarded recovery after the slot.
+- Removed invented global 5s/10s cooldowns for Reddit query timeouts, while
+  retaining both attempts, fallback reads, partial status and unchanged cursors.
+- Restored one-request-per-second Arctic Shift pacing and honor actual 429
+  reset headers. Added HTTP/pacing timing and provider-specific status metrics.
+- No title, source, history window, parent limit or comment limit was removed.
+  Full-run speed and coverage acceptance still require the unattended run.
+
 ## September 26, 2026: YouTube resume freshness
 
 - A resumed comment import now finishes its saved snapshot and then opens a
