@@ -8,7 +8,7 @@
     "build": "tsx script/build.ts",
     "start": "cross-env NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "pretest": "tsx --test server/console-weekly-window.test.ts server/sales-catalog-reconcile.test.ts server/daily-refresh-health.test.ts server/daily-refresh-runner.test.ts server/steam-classification-preservation.test.ts server/steam-review-shocks.test.ts server/steam-review-shock-repair.test.ts && npm run test:steam-overlap && npm run test:pass-players && npm run test:pass-activity && npm run test:ratings && npm run test:demo-history",
+    "pretest": "tsx --test server/steam-catalog-cooldown.test.ts server/steam-unnamed-recovery.test.ts server/console-weekly-window.test.ts server/sales-catalog-reconcile.test.ts server/daily-refresh-health.test.ts server/daily-refresh-runner.test.ts server/steam-classification-preservation.test.ts server/steam-review-shocks.test.ts server/steam-review-shock-repair.test.ts && npm run test:steam-overlap && npm run test:pass-players && npm run test:pass-activity && npm run test:ratings && npm run test:demo-history",
     "test:steam-overlap": "tsx --test server/steam-review-windows.test.ts server/steam-ltd-overlap-repair.test.ts server/steam-overlap-integration.test.ts server/lifetime-seed-repair.test.ts server/lifetime-signal-integration.test.ts server/lifetime-catalog-repair.test.ts",
     "test:ratings": "tsx --test server/reviews-ratings*.test.ts server/ccu-ratings-backfill.test.ts server/portfolio-ratings-backfill.test.ts",
     "test:pass-players": "tsx --test server/signals/demos/pass-player-model.test.ts server/signals/demos/pass-player-routes.test.ts server/signals/demos/pass-scenarios.test.ts",

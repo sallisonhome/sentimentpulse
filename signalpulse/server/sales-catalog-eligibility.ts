@@ -7,6 +7,8 @@ export type SaleEvidence = {
   platform: SalesPlatform; sku: string; name: string; checkedAt: string;
   sourceUrls: string[]; released: string | null; msrpUsdCents: number | null;
   eligible: boolean; reason: string; conceptId?: string | null;
+  /** Populated only after steamAppDetails validates the embedded exact ID. */
+  verifiedAppId?: string;
 };
 const edition = /\b(deluxe|ultimate|premium|gold edition|complete edition|anniversary edition|collector|bundle|season pass|expansion|upgrade|dlc|starter pack|founder|trial|friends?['’]? pass)\b/i;
 const released = (s: unknown, today: string) => {
@@ -107,10 +109,13 @@ export function steamSaleEvidence(raw:any,sku:string,expectedName:string,now=new
     sourceUrls:[`https://store.steampowered.com/api/appdetails?appids=${sku}&cc=us&l=english`],
     released:p?.release_date?.coming_soon?null:released(p?.release_date?.date,now.toISOString().slice(0,10)),
     msrpUsdCents:null,eligible:false,reason:"not_paid_base"};
-  if(p?.type==="game" && !p.is_free && p.price_overview?.currency==="USD" && p.price_overview.initial>0){
+  if(p) e.verifiedAppId=String(p.steam_appid);
+  if(p?.type==="game" && p.is_free===false && p.price_overview?.currency==="USD" &&
+    Number.isSafeInteger(p.price_overview.initial) && p.price_overview.initial>0){
     e.eligible=true;e.reason="verified_paid_base";e.msrpUsdCents=p.price_overview.initial;
   }
-  return finish(e,expectedName);
+  // Only exact-ID-validated native metadata can name an unnamed candidate.
+  return finish(e,expectedName.trim() ? expectedName : e.name);
 }
 
 export async function fetchSaleEvidence(platform:SalesPlatform,sku:string,name:string): Promise<SaleEvidence> {

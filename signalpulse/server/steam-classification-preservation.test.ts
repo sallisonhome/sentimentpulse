@@ -35,12 +35,18 @@ test("missing Steam classification preserves paid evidence but explicit DLC does
 test("Steam appdetails rate limit opens the circuit instead of hammering remaining titles",async()=>{
   const {classifySteamAppIds}=await import("./signals/console/discovery");
   const original=globalThis.fetch;let calls=0;
+  const dir=mkdtempSync(join(tmpdir(),"classification-cooldown-")),oldPath=process.env.STEAM_CATALOG_COOLDOWN_PATH;
+  process.env.STEAM_CATALOG_COOLDOWN_PATH=join(dir,"state.json");
   try {
     globalThis.fetch=async()=>{calls++;return new Response("null",{status:429,statusText:"Too Many Requests"});};
     const rows=await classifySteamAppIds(["123","456","789"]);
     assert.equal(calls,1);assert.equal(rows.length,3);
     assert.ok(rows.every(row=>row.businessModel==="unknown"&&row.type===null));
-  }finally{globalThis.fetch=original;}
+  }finally{
+    globalThis.fetch=original;
+    if(oldPath===undefined)delete process.env.STEAM_CATALOG_COOLDOWN_PATH;else process.env.STEAM_CATALOG_COOLDOWN_PATH=oldPath;
+    rmSync(dir,{recursive:true,force:true});
+  }
 });
 
 test("timer schedules its service without activating it on timer startup",()=>{

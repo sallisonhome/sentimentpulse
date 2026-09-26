@@ -20,6 +20,8 @@ import { log } from "../../log";
 import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from "./types";
 import { fetchXboxRatingSignal } from "./xbox";
 import { writeRankSnapshot, computeTop50Churn } from "./rankSnapshot";
+import { fetchSteamCatalogJson } from "../../sales-catalog-steam-http";
+import { SteamCatalogDeferred } from "../../steam-catalog-cooldown";
 
 // ─── SKU-to-base-title remap (2026-09-12) ─────────────────────────────────
 //
@@ -216,7 +218,7 @@ export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassi
     // on every appid and the store_release_date column stays empty.
     const url = `https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(id)}&cc=us&l=english&filters=basic,price_overview,release_date`;
     try {
-      const resp = await fetchJson<SteamAppDetailsResponse>(url, { timeoutMs: 15000 });
+      const resp = await fetchSteamCatalogJson(url) as SteamAppDetailsResponse;
       const entry = resp[id];
       if (!entry || !entry.success || !entry.data) {
         out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null, headerImageUrl: null, releaseDateIso: null });
@@ -244,14 +246,11 @@ export async function classifySteamAppIds(appIds: string[]): Promise<SteamClassi
     } catch (e) {
       out.push({ appId: id, businessModel: "unknown", msrpUsdCents: null, name: null, type: null, headerImageUrl: null, releaseDateIso: null });
       log(`steam classify: appid=${id} failed: ${e instanceof Error ? e.message : e}`);
-      if (e instanceof Error && e.message.includes("HTTP 429")) {
+      if (e instanceof SteamCatalogDeferred || (e instanceof Error && e.message.includes("HTTP 429"))) {
         rateLimited = true;
-        log("steam classify: rate limited; stopping appdetails requests for this run. Remaining candidates are unavailable, never guessed paid.");
+        log("steam classify: metadata deferred; shared cooldown stops appdetails across phases. Remaining candidates are unavailable, never guessed paid.");
       }
-    } finally {
-      // Includes success:false, non-game and F2P early-continue paths.
-      await new Promise(r => setTimeout(r, 350));
-    }
+    } // Shared transport paces every attempt, including early-continue paths.
   }
   return out;
 }
