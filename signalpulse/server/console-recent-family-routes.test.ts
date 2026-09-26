@@ -5,7 +5,7 @@ import {tmpdir} from "node:os";
 import {join} from "node:path";
 import express from "express";
 
-test("rolling family correction is canonical, reversible, non-writing and protects long windows/actuals",async()=>{
+test("all-period family correction is canonical, reversible, non-writing and protects actuals",async()=>{
   const cwd=process.cwd(),dir=mkdtempSync(join(tmpdir(),"fc26-routes-"));
   process.chdir(dir);let db:any,server:any;
   try{
@@ -38,7 +38,6 @@ test("rolling family correction is canonical, reversible, non-writing and protec
     delete process.env.FC26_RECENT_FAMILY_ENABLED;
     for(const w of windows){
       const f=await family(w);
-      if(["m12","ltd"].includes(w)){assert.deepEqual(f,baseline[w]);continue;}
       const s=f.perPlatform.steam.revenueUsd;
       assert.ok(s<baseline[w].perPlatform.steam.revenueUsd);
       assert.ok(Math.abs(f.perPlatform.ps5.revenueUsd/s-6.5)<1e-10);
@@ -59,22 +58,51 @@ test("rolling family correction is canonical, reversible, non-writing and protec
         assert.equal(pdp.windowKpisPerPlatform[0].revenueCaveat,k.revenueCaveat);
       }
     }
+    process.env.FC26_LONG_FAMILY_ENABLED="0";
+    for(const w of ["m12","ltd"])assert.deepEqual(await family(w),baseline[w]);
+    assert.ok((await family("d30")).perPlatform.steam.revenueUsd<baseline.d30.perPlatform.steam.revenueUsd);
+    delete process.env.FC26_LONG_FAMILY_ENABLED;
     assert.deepEqual((await get("leaderboards/steam?window=d30")).titles.find((r:any)=>r.titleId===10083),
       control.titles.find((r:any)=>r.titleId===10083));
     assert.deepEqual(db.prepare("SELECT * FROM window_estimates_daily").all(),frozen);
-    const fc26BeforeFc27Spike=await family("d30");
+    const fc26BeforeFc27Spike=Object.fromEntries(await Promise.all(windows.map(async w=>[w,await family(w)])));
     db.prepare("UPDATE window_estimates_daily SET units_mid=units_mid*100,owners_mid=owners_mid*100 WHERE title_id=10083").run();
-    assert.deepEqual(await family("d30"),fc26BeforeFc27Spike,"FC27 sales cannot leak into FC26");
+    for(const w of windows)assert.deepEqual(await family(w),fc26BeforeFc27Spike[w],"FC27 sales cannot leak into FC26 "+w);
     db.prepare("UPDATE window_estimates_daily SET units_mid=units_mid/100,owners_mid=owners_mid/100 WHERE title_id=10083").run();
     process.env.FC26_RECENT_FAMILY_ENABLED="0";
-    assert.deepEqual(await family("d30"),baseline.d30);
+    for(const w of windows)assert.deepEqual(await family(w),baseline[w]);
     delete process.env.FC26_RECENT_FAMILY_ENABLED;
+    for(const w of windows){
     db.prepare(`INSERT INTO revenue_calibration_anchors(title_id,platform,window,as_of_date,actual_revenue_usd,
       actual_units,reference_msrp_usd_cents,sale_state,data_source,created_at)
-      VALUES(11166,'steam','d30','2026-09-26',123456,3000,6999,'regular','manual_anchor_verified_test','2026-09-26')`).run();
-    assert.equal((await family("d30")).perPlatform.steam.revenueUsd,123456);
-    assert.equal((await family("d30")).perPlatform.steam.unitsMid,3000);
+      VALUES(11166,'steam',?,'2026-09-26',123456,3000,6999,'regular','manual_anchor_verified_test','2026-09-26')`).run(w);
+    assert.equal((await family(w)).perPlatform.steam.revenueUsd,123456);
+    assert.equal((await family(w)).perPlatform.steam.unitsMid,3000);
+    }
     db.prepare("DELETE FROM revenue_calibration_anchors WHERE title_id=11166").run();
+    for(const w of ["m12","ltd"]){
+      db.prepare(`INSERT INTO revenue_calibration_anchors(title_id,platform,window,as_of_date,actual_revenue_usd,
+        actual_units,reference_msrp_usd_cents,sale_state,data_source,created_at)
+        VALUES(10328,'ps5',?,'2026-09-26',654321,12000,6999,'regular','manual_anchor_verified_test','2026-09-26')`).run(w);
+      const f=await family(w);
+      assert.equal(f.perPlatform.ps5.revenueUsd,654321);
+      assert.equal(f.perPlatform.ps5.unitsMid,12000);
+      assert.equal(f.perPlatform.steam.revenueUsd,baseline[w].perPlatform.steam.revenueUsd,
+        "protected peer cannot become a model ceiling");
+    }
+    db.prepare("DELETE FROM revenue_calibration_anchors WHERE title_id=10328").run();
+    db.prepare(`INSERT INTO title_multiplier_overrides(title_id,platform,multiplier,ci_pct,digital_unit_share,
+      confidence,method,effective_from,created_at)
+      VALUES(11078,'xbox',147,10,0.9,'verified','manual','2026-09-01','2026-09-01')`).run();
+    for(const w of ["m12","ltd"])assert.equal((await family(w)).perPlatform.steam.revenueUsd,
+      baseline[w].perPlatform.steam.revenueUsd,"override peer protected");
+    db.prepare("DELETE FROM title_multiplier_overrides WHERE title_id=11078").run();
+    db.prepare("UPDATE window_estimates_daily SET units_mid=NULL WHERE window='m12' AND title_id IN(11166,10328,11078)").run();
+    const missingAnnual=await family("m12");
+    for(const k of Object.values(missingAnnual.perPlatform) as any[]){
+      assert.equal(k.revenueUsd,null);assert.equal(k.unitsMid,null);assert.equal(k.windowUsed,null);
+    }
+    assert.equal(missingAnnual.revenueSummary.incomplete,true);
     db.prepare("UPDATE window_estimates_daily SET units_mid=NULL WHERE window='d30' AND title_id IN(11166,10328,11078)").run();
     const missing=await family("d30");
     for(const k of Object.values(missing.perPlatform) as any[]){
@@ -83,6 +111,7 @@ test("rolling family correction is canonical, reversible, non-writing and protec
     assert.equal(missing.revenueSummary.incomplete,true);
   }finally{
     delete process.env.FC26_RECENT_FAMILY_ENABLED;
+    delete process.env.FC26_LONG_FAMILY_ENABLED;
     if(server)await new Promise<void>(r=>server.close(()=>r()));
     db?.close();process.chdir(cwd);rmSync(dir,{recursive:true,force:true});
   }

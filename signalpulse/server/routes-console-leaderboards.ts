@@ -1038,7 +1038,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               continue;
             }
           }
-          // Calibrate only the rolling FC26 model. Actuals and verified LTD
+          // Calibrate the FC26 model in the selected period. Actuals and verified LTD
           // calibration have already won above. Per-title overrides are also
           // protected, both as targets and as native constraints.
           const protectedModel = (row:any, p:Platform) => (row.familyTitleIds as number[]).some(id =>

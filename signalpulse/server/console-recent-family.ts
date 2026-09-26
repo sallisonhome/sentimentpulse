@@ -1,16 +1,20 @@
 /** Scoped, conservative model policy, NOT an actual-sales anchor.
- * FC 26's subscription-era rolling reviews cannot independently justify an
+ * FC 26's reviews cannot independently justify an
  * unconstrained Steam -> console uplift. Keep the existing sports mix, but
  * require its scale not to exceed any available same-period native model.
- * Do not change m12/LTD, raw evidence, coefficients or accumulator state.
+ * All five periods are in scope. Never change raw evidence, coefficients or
+ * accumulator state. The long-window extension can be disabled independently.
  * Evidence: https://help.ea.com/en/articles/ea-sports-fc/playstation-plus-monthly-games/
  * https://news.xbox.com/en-us/2026/06/18/ea-play-fc-26/
  */
 export const RECENT_FAMILY_VERSION = "fc26_recent_family_consistency_v1";
+export const LONG_FAMILY_VERSION = "fc26_long_family_consistency_v1";
 export const RECENT_FAMILY_CAVEAT =
-  "Subscription-era rolling estimate: conservatively limited by same-period platform models while retaining the sports platform mix. Modeled sales, not verified purchases. Annual and lifetime estimates are unchanged.";
+  "Cross-platform consistency estimate: conservatively limited by same-period platform models while retaining the sports platform mix. Modeled sales, not verified purchases or a measured subscription adjustment.";
 export function recentFamilyApplies(family: string, window: string) {
-  return family === "ea sports fc 26" && ["d7", "d30", "d90"].includes(window);
+  return family === "ea sports fc 26" &&
+    (["d7", "d30", "d90"].includes(window) ||
+      (process.env.FC26_LONG_FAMILY_ENABLED !== "0" && ["m12", "ltd"].includes(window)));
 }
 export type NativePeer = {
   platform: string; revenue: number | null; windowUsed: string | null;
@@ -32,7 +36,7 @@ export function recentFamilyScale(input: {
   const ceilings = peers.map(p => ({...p, steamEquivalentUsd: p.revenue! / p.ratio}));
   const limiting = ceilings.reduce((a,b) => a.steamEquivalentUsd <= b.steamEquivalentUsd ? a : b);
   const revenue = Math.min(input.steamRevenue, limiting.steamEquivalentUsd);
-  return {version: RECENT_FAMILY_VERSION, window: input.window,
+  return {version: ["m12", "ltd"].includes(input.window) ? LONG_FAMILY_VERSION : RECENT_FAMILY_VERSION, window: input.window,
     revenue, originalSteamRevenueUsd: input.steamRevenue, factor: revenue / input.steamRevenue,
     limitingPlatform: limiting.platform, nativeModels: ceilings,
     caveat: RECENT_FAMILY_CAVEAT, applied: revenue < input.steamRevenue};

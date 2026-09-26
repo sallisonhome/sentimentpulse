@@ -1,5 +1,17 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-26: FC26 correction now explicitly includes annual and lifetime
+
+The user superseded the earlier short-window-only scope: "12 month estimate
+formed 26 is still way off apply change to 12 month and lifetime estimates".
+Use each long window's own eligible native platform models, never today's
+weekly attenuation factor or a newly invented sales actual. Retain the sports
+mix, verified anchors/overrides, raw observations and accumulator state.
+Reject Steam-derived peers as independent constraints. Keep the long-window
+extension separately reversible and prove all-surface parity, monotonic
+window values on the audited inputs and unchanged repeated writer behavior.
+Copy and changelogs must no longer promise annual/LTD remain unchanged.
+
 ## 2026-09-26: fix rolling inference without inventing a lifetime restatement
 
 FC 26's rolling Steam model amplified PS5 revenue 6.5x even when native
