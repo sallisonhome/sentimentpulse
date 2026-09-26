@@ -80,6 +80,7 @@ if [[ -n "$ENV_LINE" ]]; then
   LTD_FLAG="$(echo "$ENV_LINE" | tr ' ' '\n' | sed -n 's/^LTD_ACCUMULATOR_ENABLED=//p' | head -n1)"
 fi
 export LTD_ACCUMULATOR_ENABLED="${LTD_FLAG:-}"
+export STEAM_CATALOG_COOLDOWN_PATH="${STEAM_CATALOG_COOLDOWN_PATH:-$WD/.steam-catalog-cooldown.sqlite}"
 
 # --- 3. Run the pipeline ----------------------------------------------------
 log "═══ signalpulse-daily start ═══"

@@ -44,7 +44,7 @@ async function main(){
     receipt.applied=applySalesCoverage(db,decisions);
   }
   receipt.status="complete";
-  receipt.coverageStatus=decisions.some(d=>d.status==="error")?"partial":"complete";
+  receipt.coverageStatus=decisions.some(d=>d.status==="error"||d.status==="deferred")?"partial":"complete";
   receipt.completedAt=new Date().toISOString();save();
   // Keep the newest three completed backups owned by this job, retaining every
   // small JSON receipt. Never purge unrelated or interrupted-run backups.
@@ -57,7 +57,7 @@ async function main(){
   for(const backup of backups.slice(3)){
     try{unlinkSync(backup);}catch(e:any){if(e.code!=="ENOENT")throw e;}
   }
-  const counts=Object.fromEntries(["promote","covered","hold","error"].map(s=>[s,decisions.filter(d=>d.status===s).length]));
+  const counts=Object.fromEntries(["promote","covered","hold","error","deferred"].map(s=>[s,decisions.filter(d=>d.status===s).length]));
   console.log(JSON.stringify({mode,path,counts,applied:receipt.applied.length}));
   for(const d of decisions)console.log(JSON.stringify({platform:d.before.platform,title:d.before.name,
     sku:d.before.external_sku,status:d.status,reason:d.reason,coveredBy:d.coveredBy}));

@@ -3,6 +3,7 @@ import { identityName } from "./console-title-identity";
 import { editionGroupKey } from "./console-sales-family";
 import { isVerifiedRatingsOnly, RATINGS_ONLY_SOURCES } from "./ratings-only-sku";
 import { fetchSaleEvidence, type SaleEvidence, type SalesPlatform } from "./sales-catalog-eligibility";
+import { SteamCatalogDeferred } from "./steam-catalog-cooldown";
 
 export type CatalogRow = {
   id:number; title_id:number; platform:SalesPlatform; external_sku:string; concept_id:string|null;
@@ -11,8 +12,9 @@ export type CatalogRow = {
   steam_app_id?:string|null; steam_name?:string|null; [key:string]:unknown;
 };
 export type CoverageDecision = {
-  before:CatalogRow; status:"promote"|"covered"|"hold"|"error"; reason:string;
+  before:CatalogRow; status:"promote"|"covered"|"hold"|"error"|"deferred"; reason:string;
   evidence?:SaleEvidence; coveredBy?:number[]; after?:CatalogRow;
+  metadataRecovery?:{before:Record<string,any>|null;after:Record<string,any>};
 };
 export function loadSalesCatalog(db:Database.Database):CatalogRow[] {
   const hasLinks=!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='verified_rating_links'").get();
@@ -43,6 +45,16 @@ export function loadSalesCatalog(db:Database.Database):CatalogRow[] {
 function pending(row:CatalogRow){
   return isVerifiedRatingsOnly(row) ||
     (row.sku_role==="base" && row.business_model==="unknown" && row.is_manual_override===0);
+}
+function unnamedSteam(row:CatalogRow){
+  return row.platform==="steam" && row.title_id>0 && /^[1-9]\d*$/.test(row.external_sku) &&
+    !row.name?.trim() && row.sku_role==="base" && row.business_model==="unknown" && row.is_manual_override===0;
+}
+function identityAgrees(row:CatalogRow,e:SaleEvidence){
+  return e.platform===row.platform && e.sku===row.external_sku && !!e.name.trim() &&
+    (unnamedSteam(row) ? e.verifiedAppId===row.external_sku :
+      identityName(e.name)===identityName(row.name??"") ||
+      (row.is_new && editionGroupKey(e.name)===editionGroupKey(row.name)));
 }
 /** Same-platform regional/edition identities are alternative observations,
  * not incremental sales. Also block duplicate title IDs and shared PS concepts. */
@@ -80,7 +92,7 @@ export async function planSalesCoverage(
     const before={...original};
     const d:CoverageDecision={before,status:"hold",reason:"unverified_ratings_mapping"};
     decisions.push(d);
-    if(!pending(before) || !before.name)continue;
+    if(!pending(before) || (!before.name?.trim() && !unnamedSteam(before)))continue;
     const covered=coveredBy(before,projected);
     if(covered.length){d.status="covered";d.reason="existing_sales_family";d.coveredBy=covered;continue;}
     // A ratings-version alias alone does not authorize combining commercial
@@ -91,10 +103,10 @@ export async function planSalesCoverage(
       d.reason="sales_family_identity_requires_review";continue;
     }
     if(Date.now()>=(options.deadlineMs??Infinity)){
-      d.status="error";d.reason="verification_budget_deferred";continue;
+      d.status="deferred";d.reason="verification_budget_deferred";continue;
     }
     try{
-      let e=await verify(before.platform,before.external_sku,before.name);
+      let e=await verify(before.platform,before.external_sku,before.name??"");
       // New Steam IDs come only from pre-verified exact storefront links.
       // A reviewed console-version name may differ, but its sales-family key
       // must match. Native product type, price and release still must pass.
@@ -103,19 +115,21 @@ export async function planSalesCoverage(
         e={...e,eligible:true,reason:"verified_paid_base"};
       }
       d.evidence=e;
-      if(e.platform!==before.platform || e.sku!==before.external_sku ||
-        (identityName(e.name)!==identityName(before.name) &&
-          !(before.is_new && editionGroupKey(e.name)===editionGroupKey(before.name)))){
+      if(!identityAgrees(before,e)){
         d.reason="identity_mismatch";continue;
       }
       if(!e.eligible || !e.released || !(e.msrpUsdCents!>0)){d.reason=e.reason;continue;}
+      const recoveredCovered=coveredBy({...before,name:e.name},projected);
+      if(recoveredCovered.length){
+        d.status="covered";d.reason="existing_sales_family";d.coveredBy=recoveredCovered;continue;
+      }
       if(before.platform==="ps5" && before.concept_id && e.conceptId!==before.concept_id){
         d.reason="ps_concept_mismatch";continue;
       }
       d.status="promote";d.reason="verified_missing_paid_platform";
       const p=projected.find(p=>p.id===before.id)!;
       Object.assign(p,{name:e.name,sku_role:"base",business_model:"paid",msrp_usd_cents:e.msrpUsdCents});
-    }catch(error){d.status="error";d.reason=error instanceof Error?error.message:String(error);}
+    }catch(error){d.status=error instanceof SteamCatalogDeferred?"deferred":"error";d.reason=error instanceof Error?error.message:String(error);}
   }
   return decisions;
 }
@@ -142,15 +156,23 @@ export function applySalesCoverage(db:Database.Database,decisions:CoverageDecisi
         row.business_model_source!==d.before.business_model_source ||
         row.concept_id!==d.before.concept_id || row.is_manual_override!==d.before.is_manual_override ||
         row.name!==d.before.name) throw Error(`Catalog changed during verification: ${d.before.id}`);
-      if(coveredBy(row,catalog).length)throw Error(`Concurrent family coverage detected: ${row.id}`);
+      if(coveredBy({...row,name:e.name},catalog).length)throw Error(`Concurrent family coverage detected: ${row.id}`);
       const age=now.getTime()-Date.parse(e.checkedAt);
-      if(!e.eligible || e.sku!==row.external_sku || e.platform!==row.platform ||
-        (identityName(e.name)!==identityName(row.name??"") &&
-          !(row.is_new && editionGroupKey(e.name)===editionGroupKey(row.name))) ||
+      if(!e.eligible || !identityAgrees(row,e) ||
         (row.platform==="ps5" && row.concept_id && e.conceptId!==row.concept_id) ||
         !Number.isFinite(age) || age<0 || age>86400_000 ||
         !Number.isSafeInteger(e.msrpUsdCents) || e.msrpUsdCents!<=0 ||
         !e.released || e.released>now.toISOString().slice(0,10))throw Error("Invalid/stale sale evidence");
+      let metadataRecovery:CoverageDecision["metadataRecovery"];
+      if(unnamedSteam(row)){
+        const before=db.prepare("SELECT * FROM console_title_igdb WHERE title_id=?").get(row.title_id) as Record<string,any>|undefined;
+        db.prepare(`INSERT INTO console_title_igdb(title_id,name,store_name,store_release_date,refreshed_at,created_at)
+          VALUES(?,?,?,?,?,?) ON CONFLICT(title_id) DO UPDATE SET
+          name=CASE WHEN NULLIF(TRIM(console_title_igdb.name),'') IS NULL THEN excluded.name ELSE console_title_igdb.name END,
+          store_name=excluded.store_name,store_release_date=excluded.store_release_date,refreshed_at=excluded.refreshed_at`)
+          .run(row.title_id,e.name,e.name,e.released,now.toISOString(),now.toISOString());
+        metadataRecovery={before:before??null,after:db.prepare("SELECT * FROM console_title_igdb WHERE title_id=?").get(row.title_id) as Record<string,any>};
+      }
       if(row.is_new){
         const title=(db.prepare(`SELECT MAX(9999,COALESCE((SELECT MAX(title_id) FROM platform_sku_map),0),
           COALESCE((SELECT MAX(title_id) FROM console_title_igdb),0))+1 AS id`).get() as {id:number}).id;
@@ -166,9 +188,9 @@ export function applySalesCoverage(db:Database.Database,decisions:CoverageDecisi
         .run(e.msrpUsdCents,COVERAGE_SOURCE,now.toISOString(),row.id,row.sku_role,row.business_model);
       if(change.changes!==1)throw Error("Promotion compare-and-set failed");
       }
-      Object.assign(row,{sku_role:"base",business_model:"paid",msrp_usd_cents:e.msrpUsdCents,
+      Object.assign(row,{name:e.name,sku_role:"base",business_model:"paid",msrp_usd_cents:e.msrpUsdCents,
         business_model_source:COVERAGE_SOURCE,refreshed_at:now.toISOString()});
-      applied.push({...d,after:{...row}});
+      applied.push({...d,after:{...row},...(metadataRecovery?{metadataRecovery}:{})});
     }
   }).immediate();
   return applied;
@@ -188,6 +210,16 @@ export function rollbackSalesCoverage(db:Database.Database,applied:CoverageDecis
         if((current?.[key]??null)!==(a[key]??null))throw Error(`Rollback conflict: ${a.id}/${key}`);
       }
       const b=d.before;
+      if(d.metadataRecovery){
+        const {before,after}=d.metadataRecovery;
+        const currentMetadata=db.prepare("SELECT * FROM console_title_igdb WHERE title_id=?").get(a.title_id) as Record<string,any>|undefined;
+        if(!currentMetadata || Object.keys(currentMetadata).length!==Object.keys(after).length ||
+          Object.keys(after).some(k=>currentMetadata[k]!==after[k])) throw Error(`Rollback conflict: metadata/${a.title_id}`);
+        if(before){
+          db.prepare(`UPDATE console_title_igdb SET name=?,store_name=?,store_release_date=?,refreshed_at=? WHERE title_id=?`)
+            .run(before.name,before.store_name,before.store_release_date,before.refreshed_at,a.title_id);
+        }else db.prepare("DELETE FROM console_title_igdb WHERE title_id=?").run(a.title_id);
+      }
       db.prepare(`UPDATE platform_sku_map SET sku_role=?,business_model=?,msrp_usd_cents=?,
         business_model_source=?,is_manual_override=?,refreshed_at=? WHERE id=?`)
         .run(b.is_new?"ratings_only":b.sku_role,b.is_new?"unknown":b.business_model,

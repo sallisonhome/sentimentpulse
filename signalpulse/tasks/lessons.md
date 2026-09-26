@@ -33,6 +33,26 @@ activity, hour-weight monthly means, and preserve broad sensitivity bounds.
 The sparse weekday sample does not establish new pass-specific weekend spikes.
 Never request that the user re-upload research files already in the workspace.
 
+## 2026-09-26: provider cooldowns must survive phase and process boundaries
+
+A discovery-local 429 flag does not stop the next process from spending a fresh
+retry budget against the same Steam appdetails throttle. Discovery and paid-sales
+reconciliation must share durable Retry-After state. Defer metadata explicitly,
+preserve existing paid evidence, and leave review/histogram collection independent.
+Use transactional operational state that releases its lock after process death;
+corrupt, unwritable or busy cooldown state must fail closed before HTTP. Never
+shorten a provider deadline, including a long header on the final retry.
+
+Missing stored names are not proof that an App ID is ineligible. Unnamed,
+non-manual unknown Steam bases can recover only from native metadata whose
+embedded App ID matches exactly, followed by the unchanged paid/released/base
+gates. Recheck the recovered family name against existing and same-plan paid
+coverage inside the apply transaction. Preserve IDs, raw observations, anchors,
+overrides and LTD state; do not copy history to fabricate coverage. Record full
+metadata before/after images and refuse rollback over a later metadata writer.
+QA must include the real production schema, separate processes, writer crash,
+exact rollback and a same-day control when replaying clock-sensitive estimators.
+
 ## 2026-09-25: monotonic state can preserve an invalid initial snapshot forever
 
 Sniper Elite: Resistance inherited a first snapshot of 880,801 reviews followed
