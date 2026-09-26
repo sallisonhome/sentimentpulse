@@ -43,6 +43,7 @@ const PLATFORM_META: Record<Platform, { label: string; accent: string }> = {
 };
 
 interface PerPlatformKpi {
+  revenueCaveat?: string;
   titleId: number;
   revenueUsd: number | null;
   unitsMid: number | null;
@@ -240,6 +241,7 @@ export default function ConsoleMultiplatformDetail() {
                     <div className="font-mono text-xl font-semibold tabular-nums mt-1">{formatUsdCompact(k.revenueUsd)}</div>
                     {k.revenueUsd == null && <div className="text-xs text-muted-foreground mt-1">Estimate unavailable for this period</div>}
                     <div className="text-xs text-muted-foreground mt-1">est. revenue · {k.dataSource === "derived_from_steam_daily_mix" ? "daily adjusted" : k.source}</div>
+                    {k.revenueCaveat && <div className="text-xs text-muted-foreground mt-2" data-testid="recent-family-note">{k.revenueCaveat}</div>}
                     {k.estimateMethod?.includes("steam_review_shock_guard_v1") && <div className="text-xs text-muted-foreground mt-2" data-testid="review-shock-note">Review-burst adjusted estimate. Raw review activity is preserved, not counted directly as purchases.</div>}
                     <div className="text-xs text-muted-foreground mt-2">
                       {formatNumberCompact(k.unitsMid)} units

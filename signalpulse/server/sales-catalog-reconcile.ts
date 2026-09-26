@@ -155,6 +155,7 @@ export function applySalesCoverage(db:Database.Database,decisions:CoverageDecisi
         row.business_model!==d.before.business_model || row.msrp_usd_cents!==d.before.msrp_usd_cents ||
         row.business_model_source!==d.before.business_model_source ||
         row.concept_id!==d.before.concept_id || row.is_manual_override!==d.before.is_manual_override ||
+        (e.subscriptionIncluded && row.is_gamepass!==d.before.is_gamepass) ||
         row.name!==d.before.name) throw Error(`Catalog changed during verification: ${d.before.id}`);
       if(coveredBy({...row,name:e.name},catalog).length)throw Error(`Concurrent family coverage detected: ${row.id}`);
       const age=now.getTime()-Date.parse(e.checkedAt);
@@ -164,7 +165,7 @@ export function applySalesCoverage(db:Database.Database,decisions:CoverageDecisi
         !Number.isSafeInteger(e.msrpUsdCents) || e.msrpUsdCents!<=0 ||
         !e.released || e.released>now.toISOString().slice(0,10))throw Error("Invalid/stale sale evidence");
       let metadataRecovery:CoverageDecision["metadataRecovery"];
-      if(unnamedSteam(row)){
+      if(unnamedSteam(row) || e.retailParentSku){
         const before=db.prepare("SELECT * FROM console_title_igdb WHERE title_id=?").get(row.title_id) as Record<string,any>|undefined;
         db.prepare(`INSERT INTO console_title_igdb(title_id,name,store_name,store_release_date,refreshed_at,created_at)
           VALUES(?,?,?,?,?,?) ON CONFLICT(title_id) DO UPDATE SET
@@ -187,9 +188,11 @@ export function applySalesCoverage(db:Database.Database,decisions:CoverageDecisi
         msrp_usd_cents=?,business_model_source=?,refreshed_at=? WHERE id=? AND sku_role=? AND business_model=?`)
         .run(e.msrpUsdCents,COVERAGE_SOURCE,now.toISOString(),row.id,row.sku_role,row.business_model);
       if(change.changes!==1)throw Error("Promotion compare-and-set failed");
+      if(e.subscriptionIncluded)db.prepare("UPDATE platform_sku_map SET is_gamepass=1 WHERE id=?").run(row.id);
       }
       Object.assign(row,{name:e.name,sku_role:"base",business_model:"paid",msrp_usd_cents:e.msrpUsdCents,
         business_model_source:COVERAGE_SOURCE,refreshed_at:now.toISOString()});
+      if(e.subscriptionIncluded)row.is_gamepass=1;
       applied.push({...d,after:{...row},...(metadataRecovery?{metadataRecovery}:{})});
     }
   }).immediate();
@@ -206,7 +209,8 @@ export function rollbackSalesCoverage(db:Database.Database,applied:CoverageDecis
       if(!a)throw Error("Missing applied after-image");
       const current=db.prepare("SELECT * FROM platform_sku_map WHERE id=?").get(a.id) as CatalogRow|undefined;
       for(const key of ["title_id","platform","external_sku","concept_id","sku_role","business_model",
-        "msrp_usd_cents","business_model_source","is_manual_override","refreshed_at"]){
+        "msrp_usd_cents","business_model_source","is_manual_override","refreshed_at",
+        ...(d.evidence?.subscriptionIncluded?["is_gamepass"]:[])]){
         if((current?.[key]??null)!==(a[key]??null))throw Error(`Rollback conflict: ${a.id}/${key}`);
       }
       const b=d.before;
@@ -225,6 +229,8 @@ export function rollbackSalesCoverage(db:Database.Database,applied:CoverageDecis
         .run(b.is_new?"ratings_only":b.sku_role,b.is_new?"unknown":b.business_model,
           b.is_new?null:b.msrp_usd_cents,b.is_new?"manual:coverage_rollback":b.business_model_source,
           b.is_new?1:b.is_manual_override,b.refreshed_at??a.refreshed_at,a.id);
+      if(d.evidence?.subscriptionIncluded)
+        db.prepare("UPDATE platform_sku_map SET is_gamepass=? WHERE id=?").run(b.is_gamepass??0,a.id);
     }
   }).immediate();
   return applied.length;

@@ -1,6 +1,7 @@
 import { identityName } from "./console-title-identity";
 import { steamAppDetails } from "./reviews-ratings-normalize";
 import { fetchSteamCatalogJson } from "./sales-catalog-steam-http";
+import { editionGroupKey } from "./console-sales-family";
 
 export type SalesPlatform = "steam" | "ps5" | "xbox";
 export type SaleEvidence = {
@@ -9,7 +10,12 @@ export type SaleEvidence = {
   eligible: boolean; reason: string; conceptId?: string | null;
   /** Populated only after steamAppDetails validates the embedded exact ID. */
   verifiedAppId?: string;
+  /** Exact, reviewed retail bundle that fulfills the existing child identity. */
+  retailParentSku?: string;
+  subscriptionIncluded?: boolean;
 };
+// Not a fuzzy edition search. New mappings require reviewed native membership.
+const XBOX_RETAIL_PARENTS:Record<string,string> = {"9P9FTXPKQ35P":"9MXZBTLG26VX"};
 const edition = /\b(deluxe|ultimate|premium|gold edition|complete edition|anniversary edition|collector|bundle|season pass|expansion|upgrade|dlc|starter pack|founder|trial|friends?['’]? pass)\b/i;
 const released = (s: unknown, today: string) => {
   if (typeof s !== "string" || !Number.isFinite(Date.parse(s))) return null;
@@ -47,6 +53,43 @@ export function xboxSaleEvidence(raw: any, sku: string, expectedName: string, no
   if (prices.size===1) {e.msrpUsdCents=Array.from(prices)[0];e.eligible=true;e.reason="verified_paid_base";}
   else if (prices.size>1) e.reason="ambiguous_retail_price";
   return finish(e,expectedName);
+}
+
+/** A non-purchasable child can be sold through a verified standard bundle.
+ * Keep the child's rating identity; never create/sum another sales SKU.
+ * Both product IDs, family identity, full SKU and native bundle membership
+ * must agree. Subscription licenses and preorder offers cannot qualify.
+ */
+export function xboxBundledSaleEvidence(childRaw:any, parentRaw:any, sku:string,
+  expectedName:string, now=new Date()):SaleEvidence {
+  const child=childRaw?.Product ?? (childRaw?.Products?.length===1?childRaw.Products[0]:null);
+  const parent=parentRaw?.Product ?? (parentRaw?.Products?.length===1?parentRaw.Products[0]:null);
+  const original=xboxSaleEvidence(childRaw,sku,expectedName,now);
+  const parentSku=XBOX_RETAIL_PARENTS[sku];
+  if (!parentSku || parent?.ProductId!==parentSku || child?.ProductId!==sku ||
+      child.ProductType!=="Game" || child.Properties?.IsDemo ||
+      !child.Properties?.XboxConsoleGenCompatible?.includes("ConsoleGen9") ||
+      identityName(original.name)!==identityName(expectedName))
+    return {...original,eligible:false,reason:"retail_parent_identity_mismatch"};
+  const parentName=parent.LocalizedProperties?.[0]?.ProductTitle??"";
+  if (!/\bStandard Edition\b/i.test(parentName) ||
+      editionGroupKey(parentName)!==editionGroupKey(original.name))
+    return {...original,eligible:false,reason:"retail_parent_family_mismatch"};
+  const matching=(parent.DisplaySkuAvailabilities??[]).filter((d:any)=>
+    d.Sku?.SkuType?.toLowerCase()==="full" && !d.Sku?.Properties?.IsPreOrder &&
+    !d.Sku?.Properties?.IsSubscription && !d.Sku?.Properties?.IsTrial &&
+    d.Sku?.Properties?.IsBundle===true &&
+    d.Sku.Properties.BundledSkus?.some((s:any)=>s.BigId===sku && s.IsPrimary===true));
+  const retail=xboxSaleEvidence({Product:{...parent,DisplaySkuAvailabilities:matching}},
+    parentSku,parentName,now);
+  if (!matching.length || !retail.eligible)
+    return {...original,eligible:false,reason:"retail_parent_not_purchasable"};
+  return {...original,eligible:true,reason:"verified_paid_base_via_standard_bundle",
+    released:retail.released,msrpUsdCents:retail.msrpUsdCents,retailParentSku:parentSku,
+    // Official full EA Play inclusion, not an inference from a zero-price offer.
+    subscriptionIncluded:now.toISOString().slice(0,10)>="2026-06-18",
+    sourceUrls:[...original.sourceUrls,...retail.sourceUrls,
+      "https://news.xbox.com/en-us/2026/06/18/ea-play-fc-26/"]};
 }
 
 /** Parse exact-product Apollo caches, never the first price/release date on a
@@ -139,5 +182,11 @@ export async function fetchSaleEvidence(platform:SalesPlatform,sku:string,name:s
   if(platform==="steam")return steamSaleEvidence(await fetchSteamCatalogJson(url),sku,name);
   const r=await fetch(url,{signal:AbortSignal.timeout(15000)});
   if(!r.ok)throw Error(`${platform} storefront HTTP ${r.status}`);
-  return xboxSaleEvidence(await r.json(),sku,name);
+  const raw=await r.json(), evidence=xboxSaleEvidence(raw,sku,name);
+  const parentSku=XBOX_RETAIL_PARENTS[sku];
+  if(evidence.eligible || !parentSku)return evidence;
+  const parentResponse=await fetch(`https://displaycatalog.mp.microsoft.com/v7.0/products/${parentSku}?market=US&languages=en-us`,
+    {signal:AbortSignal.timeout(15000)});
+  if(!parentResponse.ok)throw Error(`xbox retail parent HTTP ${parentResponse.status}`);
+  return xboxBundledSaleEvidence(raw,await parentResponse.json(),sku,name);
 }

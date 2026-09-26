@@ -58,6 +58,7 @@ interface IgdbData {
 }
 type KpiWindow = "d7" | "d30" | "d90" | "m12" | "ltd";
 interface WindowKpi {
+  revenueCaveat?: string;
   platform: Platform;
   window: KpiWindow;
   windowUsed: KpiWindow | null;
@@ -287,6 +288,7 @@ export default function ConsoleTitleDetail() {
                   {formatCompact(latest?.ratingCount ?? k.ratingCountEnd)} ratings · avg {avgRatingText}
                 </div>
               )}
+              {k.revenueCaveat && <div className="text-xs text-muted-foreground mt-2" data-testid="recent-family-note">{k.revenueCaveat}</div>}
               {k.method?.includes("steam_review_shock_guard_v1") && (
                 <div className="text-xs text-muted-foreground mt-2" data-testid="review-shock-note">Review-burst adjusted estimate. Raw review activity is preserved, not counted directly as purchases.</div>
               )}

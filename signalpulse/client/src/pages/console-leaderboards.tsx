@@ -55,6 +55,7 @@ const FULL_TOP_N = 40; // Rows shown on the per-platform full-page view.
 // walks the full ~150-title corpus per platform; we just cap what's rendered.
 
 interface LeaderboardRow {
+  revenueCaveat?: string;
   titleId: number;
   externalSku: string;
   msrpUsdCents: number | null;
@@ -172,6 +173,7 @@ function usePlatformLeaderboard(
 // SAME overlay pipeline as the per-platform boards, so the combined revenue
 // value is the sum of the same per-platform revenues you see in each column.
 interface MultiplatformRow {
+  revenueCaveat?: string;
   editionGroupKey: string;
   name: string;
   coverUrl: string | null;
@@ -485,6 +487,7 @@ function MultiplatformSection({
                       >
                         {formatUsdCompact(t.revenueCombined)}
                         {t.revenueIncomplete && <div className="text-xs text-muted-foreground">Partial subtotal</div>}
+                        {t.revenueCaveat && <div className="text-xs text-muted-foreground" title={t.revenueCaveat}>Rolling model adjusted</div>}
                       </span>
                       <span className="text-[9px] uppercase tracking-wide text-muted-foreground">
                         combined
@@ -684,6 +687,7 @@ function PlatformColumn({
                           : t.unitsMid != null
                             ? `~${formatNumberCompact(t.unitsMid)}u`
                             : "—"}
+                        {t.revenueCaveat && <small className="block text-xs text-muted-foreground" title={t.revenueCaveat}>Rolling model adjusted</small>}
                       </span>
                       <span
                         className="font-mono text-[10px] tabular-nums text-muted-foreground"
@@ -954,6 +958,7 @@ export function ConsoleLeaderboardsPlatform() {
                     )}
                   </td>
                   <td className="px-3 py-2 text-right font-mono">
+                    {t.revenueCaveat && <small className="block text-xs text-muted-foreground" title={t.revenueCaveat}>Rolling model adjusted</small>}
                     {t.revenueMidUsd != null ? formatUsdCompact(t.revenueMidUsd) : (
                       <span className="text-muted-foreground" title={gatedTooltip(t.gatedReason)}>—</span>
                     )}
