@@ -33,6 +33,12 @@ def test_only_requested_active_title_and_youtube_classifier(game, environment):
     assert classify.call_args.kwargs["source_filter"] == SourceEnum.youtube_comment
     assert http.post.call_args.kwargs["params"]["game_ids"] == str(game.id)
     assert http.post.call_count == 2
+    # Assert against the mounted application routes, not only mocked HTTP.
+    from main import app
+    from urllib.parse import urlparse
+    post_routes = {r.path for r in app.routes if "POST" in (getattr(r, "methods", None) or [])}
+    assert all(urlparse(call.args[0]).path in post_routes
+               for call in http.post.call_args_list)
 
 
 def test_busy_ingestion_prevents_any_import(game, environment):
