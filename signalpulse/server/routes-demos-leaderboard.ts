@@ -24,6 +24,7 @@
  */
 
 import type { Express } from "express";
+import { registerPassScenarioRoutes } from "./routes-pass-scenarios";
 import { rawSqlite } from "./storage";
 import { WINDOWS, type WindowKey } from "./signals/demos/estimator";
 import { DEMO_FEED_LIMIT, DEMO_NEW_FEED_MAX } from "./signals/demos/feeds";
@@ -232,6 +233,7 @@ export function loadDemoDetailSummary(appId: string) {
 }
 
 export function registerDemosLeaderboardRoutes(app: Express, playerEvidence: readonly PassPlayerEvidence[] = PASS_PLAYER_EVIDENCE) {
+  registerPassScenarioRoutes(app);
   app.get("/api/demos/leaderboard", (req, res) => {
     try {
       const window = ((req.query.window as string) || "d7") as WindowKey;

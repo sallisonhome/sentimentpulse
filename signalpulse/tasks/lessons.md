@@ -22,6 +22,17 @@ Label that scope explicitly; parent reviews, downloads and CCU never enter a
 demo PDP. Deactivated demos remain excluded except approved Saber lifetime
 totals. Hook retention into existing collectors; do not add a competing cron.
 
+## 2026-09-26: qualified pass scenarios are not measured pass users
+
+The user explicitly authorized qualified modeled inputs for Lords and It Takes
+Two. This does not relax the standalone measured-player evidence gates.
+Keep modeled average CCU/player-hours in a separate dated scenario contract,
+not downloads, unique-user columns, ranks, or actuals. Persist the original
+inputs and coefficients, distinguish incremental guests from total client
+activity, hour-weight monthly means, and preserve broad sensitivity bounds.
+The sparse weekday sample does not establish new pass-specific weekend spikes.
+Never request that the user re-upload research files already in the workspace.
+
 ## 2026-09-25: monotonic state can preserve an invalid initial snapshot forever
 
 Sniper Elite: Resistance inherited a first snapshot of 880,801 reviews followed

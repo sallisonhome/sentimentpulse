@@ -1,0 +1,35 @@
+{
+  "version": "qualified_planning_v1",
+  "production_enabled": false,
+  "it_takes_two": {
+    "central_share": 0.260689755191204,
+    "sensitivity_low_share": 0.226640891183616,
+    "sensitivity_high_share": 0.3287799094835292,
+    "central_basis": "last 12 complete pre-transition months, player-hour weighted",
+    "low_basis": "minimum monthly share in last 12 pre-transition months",
+    "high_basis": "maximum monthly share in last 24 pre-transition months",
+    "unverified_assumption": "historical client mix transfers to the current shared runtime"
+  },
+  "lords_of_the_fallen": {
+    "baseline": "last observation; selected using pre-event backtest",
+    "uplift_fraction_attributed_to_pass": 0.5,
+    "incremental_owner_ccu_per_incremental_pass_guest": 0.5,
+    "allocation_status": "USER-REVIEWABLE PLANNING ASSUMPTIONS, NOT FITTED PARAMETERS",
+    "central_formula": "max(0, observed-minus-selected-baseline) * 0.5 / (1 + 0.5)",
+    "sensitivity_low": "0: no positive pass attribution established",
+    "sensitivity_high": "max(0, maximum excess across baseline models), all assigned to guests",
+    "unverified_assumption": "pass guest and induced owner activity can be allocated from net uplift"
+  },
+  "allowed_downstream": [
+    "scenario planning with explicit metric scope",
+    "engagement/player-hour sensitivity models",
+    "separately labeled analog priors, never observed calibration targets"
+  ],
+  "not_directly_allowed": [
+    "actuals or high-confidence count",
+    "downloads, unique people, sales, revenue or conversion without additional calibrated inputs",
+    "adding estimated pass activity to parent totals already containing it",
+    "combining incremental guest CCU and total pass-client CCU as one comparable metric",
+    "treating range as a statistical confidence interval"
+  ]
+}
