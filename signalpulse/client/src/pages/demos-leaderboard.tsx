@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { Link } from "wouter";
 import { FriendsPassReference } from "@/components/friends-pass-reference";
+import { PassScenarios } from "@/components/pass-scenarios";
 import { PASS_PLAYER_GATES, PASS_PLAYER_STATUS_LABELS, type PassPlayerEstimate } from "@shared/pass-player-estimates";
 import type { ActivityWindow, PassParentActivity } from "@shared/pass-parent-activity";
 import { PassParentActivityCell } from "@/components/pass-parent-activity";
@@ -267,6 +268,7 @@ export default function DemosLeaderboard() {
         </>}
       </div>}
 
+      {pass && <PassScenarios />}
       {pass && <FriendsPassReference />}
       {pass && <section className="rounded-md border border-border bg-muted/30 px-3 py-3 text-xs text-muted-foreground"
         aria-label="Pass / Parent Activity controls">

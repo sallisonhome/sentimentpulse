@@ -410,3 +410,12 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
   ### SignalPulse launched as part of the Saber Intelligence Suite
 
   Combined with SentimentPulse under a unified launcher. Dark-mode preference now persists across both apps via a shared localStorage key. Wishlist and Steam sales dashboards, launch forecasting, and the first pass at product detail pages all shipped in this initial release.
+# Qualified Friend’s Pass scenarios (pending deployment)
+
+- Add a separate DemoPulse Friends Pass panel for the reviewed Lords and
+  It Takes Two historical planning inputs, with complete-month selectors,
+  monthly charts, explicit assumptions and exact-selection CSV export.
+- Read-only scenario API preserves provenance, confidence, bounds and metric
+  scope for opt-in downstream use. No automatic model application.
+- Keep observed players, download actuals, rankings, database schema,
+  collection schedules and retention unchanged.
