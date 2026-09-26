@@ -1,11 +1,11 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {recentFamilyScale} from "./console-recent-family";
+import {recentFamilyScale, recentFamilyApplies, LONG_FAMILY_VERSION} from "./console-recent-family";
 import {editionGroupKey} from "./console-sales-family";
 const input={family:"ea sports fc 26",window:"d30",steamRevenue:7502270.094,steamWindow:"d30",
   peers:[{platform:"ps5",revenue:12638850.192,windowUsed:"d30",ratio:6.5,protected:false}]};
-test("rolling scale preserves the existing sports mix, never increases revenue",()=>{
-  for(const window of ["d7","d30","d90"]){
+test("all-period scale preserves the existing sports mix, never increases revenue",()=>{
+  for(const window of ["d7","d30","d90","m12","ltd"]){
     const result=recentFamilyScale({...input,window,steamWindow:window,
       peers:input.peers.map(p=>({...p,windowUsed:window}))})!;
     assert.equal(result.revenue,12638850.192/6.5);
@@ -14,12 +14,29 @@ test("rolling scale preserves the existing sports mix, never increases revenue",
   }
   assert.equal(recentFamilyScale({...input,steamRevenue:100})!.revenue,100);
 });
-test("annual, lifetime, other editions/years and protected models are untouched",()=>{
-  for(const window of ["ltd","m12"])assert.equal(recentFamilyScale({...input,window}),null);
+test("other editions/years and protected models are untouched",()=>{
   for(const family of ["ea sports fc 27","ea sports fc 26 showcase"])
     assert.equal(recentFamilyScale({...input,family}),null);
   assert.equal(recentFamilyScale({...input,peers:[...input.peers,
     {...input.peers[0],platform:"xbox",protected:true}]}),null);
+});
+test("long-window rollback retains short-window repair",()=>{
+  try {
+    process.env.FC26_LONG_FAMILY_ENABLED="0";
+    for(const window of ["ltd","m12"])assert.equal(recentFamilyApplies(input.family,window),false);
+    assert.ok(recentFamilyScale(input));
+    delete process.env.FC26_LONG_FAMILY_ENABLED;
+    for(const window of ["m12","ltd"]){
+      const r=recentFamilyScale({...input,window,steamWindow:window,
+        peers:input.peers.map(p=>({...p,windowUsed:window}))})!;
+      assert.equal(r.version,LONG_FAMILY_VERSION);
+      assert.ok(!r.caveat.includes("unchanged"));
+      assert.equal(recentFamilyScale({...input,window,steamWindow:window}),null,
+        "short-window evidence cannot restate a long window");
+      assert.equal(recentFamilyScale({...input,window,steamWindow:window,
+        peers:[{...input.peers[0],windowUsed:window,method:"backfill-steam-pace+ltd_state:derived_max_windows"}]}),null);
+    }
+  } finally {delete process.env.FC26_LONG_FAMILY_ENABLED;}
 });
 test("missing, nonfinite, zero and wider-period peers cannot fabricate a ceiling",()=>{
   for(const revenue of [null,0,-1,NaN,Infinity])
