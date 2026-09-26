@@ -1,5 +1,24 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-26 — Test the actual automatic entry points, not just cron expressions
+
+Production journal proved startup's 20-hour age rule fired ingestion at 02:48
+Eastern before upstream readiness. The intended 05:45 scheduler then crashed
+importing `youtube_import_enabled`; the module exports `import_enabled`.
+Static imports of the ingestor and DST trigger tests did not exercise that path.
+
+- Startup recovery and scheduled fires must share slot admission, dependency
+  guards and concurrency protection. A restart is not permission to start early.
+- Execute both real entry points with only side effects mocked. Verify the
+  service-owned function imports, arguments, busy guards and duplicate cases.
+- Distinguish query timeout (422) from rate limiting (429). An invented global
+  cooldown after every failed keyword query also delays unrelated good reads.
+  Respect Retry-After and documented reset headers, keeping incomplete reads
+  explicit and leaving their cursors unchanged.
+- A live same-ID pacing probe is evidence for that bounded read, not proof of
+  next day's full-run runtime or archive completeness. Report those separately.
+
+
 ## 2026-09-26 — Draining an old snapshot is not current feed completion
 
 Hellraiser, Space Marine 2 and Townfall had saved pagination snapshots from

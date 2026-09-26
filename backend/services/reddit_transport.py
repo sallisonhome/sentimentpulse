@@ -59,6 +59,18 @@ def retry_seconds(headers, default=5):
             return max(0.0, (parsedate_to_datetime(value) -
                             datetime.now(timezone.utc)).total_seconds())
         except (TypeError, ValueError, OverflowError):
+            pass
+    # Arctic Shift documents these headers, rather than Retry-After.
+    # Reset is a duration; Reset-At can be epoch milliseconds.
+    try:
+        return max(0.0, float(headers["X-RateLimit-Reset"]))
+    except (KeyError, TypeError, ValueError):
+        try:
+            epoch = float(headers["X-RateLimit-Reset-At"])
+            if epoch > 100_000_000_000:
+                epoch /= 1000
+            return max(0.0, epoch - time.time())
+        except (KeyError, TypeError, ValueError):
             return float(default)
 
 
@@ -71,6 +83,7 @@ def _pace(provider, interval):
         _next_request[provider] = now + wait + interval
     if wait:
         time.sleep(wait)
+        getattr(_local, "metrics", Counter())["pacing_seconds"] += wait
 
 
 def fetch_json(url, params, *, headers, timeout, provider, interval):
@@ -93,11 +106,13 @@ def fetch_json(url, params, *, headers, timeout, provider, interval):
         if session is not None:
             _pace(provider, interval)
         metrics["requests"] += 1
+        request_started = time.monotonic()
         try:
             response = (session.get if session is not None else requests.get)(
                 url, params=params, headers=headers, timeout=timeout)
             status = response.status_code
             metrics[f"http_{status}"] += 1
+            metrics[f"{provider}_http_{status}"] += 1
             if status == 200:
                 payload = response.json()
                 # Missing/error schemas are failures, not successful empties.
@@ -123,10 +138,20 @@ def fetch_json(url, params, *, headers, timeout, provider, interval):
                 raise UpstreamFailure("upstream error or invalid data schema")
             if status not in (422, 429, 500, 502, 503, 504):
                 raise UpstreamFailure(f"HTTP {status}")
-            delay = retry_seconds(response.headers, default=5 * (attempt + 1))
+            # 422 is a query timeout, not a provider rate limit. Previously
+            # every failed query imposed an invented 5s retry + 10s GLOBAL
+            # cooldown, delaying unrelated comment reads too. Still retry the
+            # query once (warm databases can recover), at normal courtesy pace.
+            # Explicit Retry-After remains authoritative on every status;
+            # rate-reset headers apply to 429 only, not every 422/200 response.
+            delay_headers = response.headers if status == 429 else {
+                "Retry-After": response.headers.get("Retry-After")
+            }
+            delay = retry_seconds(
+                delay_headers, default=0 if status == 422 else 5 * (attempt + 1))
             # Respect long Retry-After without sleeping for an unbounded period:
             # publish cooldown, fail this request visibly, allow fallback.
-            if session is not None:
+            if session is not None and delay:
                 with _lock:
                     _next_request[provider] = max(
                         _next_request.get(provider, 0), time.monotonic() + delay)
@@ -139,4 +164,6 @@ def fetch_json(url, params, *, headers, timeout, provider, interval):
                 with _lock:
                     _next_request[provider] = max(
                         _next_request.get(provider, 0), time.monotonic() + 5)
+        finally:
+            metrics["http_seconds"] += time.monotonic() - request_started
     raise UpstreamFailure("upstream request exhausted")

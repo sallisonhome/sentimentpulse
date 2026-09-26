@@ -83,6 +83,45 @@ def test_retry_after_long_cooldown_fails_visibly(transport):
     assert transport.get.call_count == 1
 
 
+def test_query_timeout_does_not_penalize_next_unrelated_request(transport, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(rt.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(rt.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    transport.get.side_effect = [
+        response(422, headers={"X-RateLimit-Reset": "60"}),
+        response(422, headers={"X-RateLimit-Reset": "60"}),
+        response(),
+    ]
+    with pytest.raises(rt.UpstreamFailure):
+        fetch()
+    fetch({"unrelated_comment": 1})
+    assert transport.get.call_count == 3
+    assert clock[0] == pytest.approx(3.6)  # only two normal 1.8s test intervals
+
+
+def test_arctic_rate_reset_is_honored_on_429(transport, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(rt.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(rt.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    transport.get.side_effect = [response(429, headers={"X-RateLimit-Reset": "24"}), response()]
+    fetch()
+    assert clock[0] == 24
+
+
+def test_explicit_retry_after_on_query_timeout_is_honored(transport, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(rt.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(rt.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    transport.get.side_effect = [response(422, headers={"Retry-After": "20"}), response()]
+    fetch()
+    assert clock[0] == 20
+
+
+def test_reset_at_milliseconds(monkeypatch):
+    monkeypatch.setattr(rt.time, "time", lambda: 1790437000)
+    assert rt.retry_seconds({"X-RateLimit-Reset-At": "1790437011000"}) == 11
+
+
 def test_successful_empty_does_not_trigger_fallback():
     from services.reddit_service import fetch_subreddit_posts
     with patch("services.arctic_shift_service.fetch_arctic_shift_subreddit_posts",

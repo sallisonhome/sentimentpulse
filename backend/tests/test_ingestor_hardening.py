@@ -137,7 +137,7 @@ def test_scheduler_daily_job_passes_no_args():
     """
     import inspect
     import scheduler  # will fail if module can't import
-    src = inspect.getsource(scheduler._ingest_job)
+    src = inspect.getsource(scheduler._run_guarded_ingest)
     # Must contain a bare 'run_ingestion()' call — no args at all.
     assert "run_ingestion()" in src, (
         "Daily scheduler entry-point must call run_ingestion() with no "

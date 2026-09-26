@@ -16,6 +16,7 @@ Usage (in main.py lifespan):
         scheduler.shutdown(wait=False)
 """
 import logging
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -33,6 +34,7 @@ _MONTHLY_DIGEST_JOB_ID = "monthly_executive_digest"
 
 # Module-level scheduler instance — created once in create_scheduler()
 _scheduler: Optional[BackgroundScheduler] = None
+_automatic_ingest_lock = threading.Lock()
 
 
 def create_scheduler() -> BackgroundScheduler:
@@ -172,14 +174,25 @@ def get_next_run_time() -> Optional[str]:
     if _scheduler is None:
         return None
     job = _scheduler.get_job(_JOB_ID)
-    if job is None or job.next_run_time is None:
+    if job is None or getattr(job, "next_run_time", None) is None:
         return None
     return job.next_run_time.isoformat()
 
 
 # ── Internal job ──────────────────────────────────────────────────────────────
 
-def _ingest_job() -> None:
+def _ingest_job(trigger="scheduled") -> None:
+    """Serialize automatic entry points, including their dependency wait."""
+    if not _automatic_ingest_lock.acquire(blocking=False):
+        logger.info("Automatic ingestion skipped: another automatic entry owns admission.")
+        return
+    try:
+        _run_guarded_ingest(trigger)
+    finally:
+        _automatic_ingest_lock.release()
+
+
+def _run_guarded_ingest(trigger) -> None:
     """
     APScheduler entry-point for the daily run.
     Imports are deferred to avoid circular-import issues at module load time.
@@ -194,21 +207,33 @@ def _ingest_job() -> None:
     window.
     """
     # Deferred import — scheduler.py is imported by main.py before services
-    from services.ingestor import run_ingestion, set_next_run  # noqa: PLC0415
+    from services.ingestor import run_ingestion, set_next_run, get_status  # noqa: PLC0415
     from services.cron_alerts import run_with_retry  # noqa: PLC0415
+    from services.ingest_schedule import admission_reason
+    from config import settings
 
-    logger.info("Scheduled daily ingestion starting.")
+    def reason():
+        return admission_reason(get_status(), hour=settings.ingest_hour_et,
+                                minute=settings.ingest_minute_et,
+                                startup=trigger == "startup")
+
+    blocked = reason()
+    if blocked:
+        logger.info("Automatic ingestion trigger=%s skipped: %s", trigger, blocked)
+        return
+
+    logger.info("Automatic daily ingestion admitted trigger=%s.", trigger)
 
     # Earlier start must not race the 04:30 ET YouTube producer or an
     # over-running 09:15 UTC storefront refresh. A failure is an explicit
     # alert, never an unsafe restart or silently successful skipped run.
     from services.ingest_dependencies import wait_for_dependencies
-    from services.youtube_service import youtube_import_enabled
+    from services.youtube_service import import_enabled
     from database import SessionLocal
     from services.cron_alerts import send_failure_alert
     db = SessionLocal()
     try:
-        check_youtube = youtube_import_enabled(db)
+        check_youtube = import_enabled(db)
     finally:
         db.close()
     try:
@@ -220,8 +245,15 @@ def _ingest_job() -> None:
         return
 
     def _do(attempt: int) -> None:
+        blocked = reason()
+        if blocked:
+            logger.info("Automatic ingestion recheck skipped: %s", blocked)
+            return
         logger.info("daily_ingestion attempt %d", attempt)
-        run_ingestion()
+        result = run_ingestion()
+        if result.get("status") == "error":
+            raise RuntimeError("Ingestion returned error; inspect last_run_errors")
+        logger.info("Automatic ingestion returned status=%s", result.get("status"))
 
     try:
         run_with_retry(job_name="daily_ingestion", job=_do, max_attempts=4)
