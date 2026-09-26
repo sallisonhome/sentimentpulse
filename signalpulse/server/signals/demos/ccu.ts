@@ -7,17 +7,13 @@
  * Mirrors SteamDB's own "Most played game demos" chart
  * (steamdb.info/charts/?category=10), which ranks by Current / 24h Peak /
  * All-Time Peak CCU — this collector feeds the Current + All-Time Peak
- * columns. A true rolling 24h peak needs continuous (5-10 min) polling,
- * which is NOT wired into a production schedule yet — this collector is
- * currently invoked manually / from this branch's tests only. Follow-up:
- * a GitHub Actions cron hitting an ops-authenticated endpoint, the same
- * pattern the other daily signal collectors use (workspace sandbox has no
- * SSH to the droplet; all droplet-side scheduling goes through GH
- * Actions per project convention).
+ * columns. The existing daily pipeline calls this for available and
+ * retired demos. Daily sampling is not continuous 24-hour peak monitoring.
  */
 
 import { rawSqlite } from "../../storage";
 import { log } from "../../log";
+import {loadDemoCatalog} from "./catalog";
 
 const CCU_ENDPOINT = "https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/";
 
@@ -28,9 +24,7 @@ interface DemoForCcu {
 }
 
 function loadActiveDemosForCcu(): DemoForCcu[] {
-  return rawSqlite
-    .prepare(`SELECT id, steam_app_id, sku_kind FROM demo_titles WHERE is_active = 1`)
-    .all() as DemoForCcu[];
+  return [...loadDemoCatalog("demo"),...loadDemoCatalog("friends_pass")];
 }
 
 const insertSnapshotStmt = () => rawSqlite.prepare(
@@ -57,7 +51,8 @@ export async function fetchCurrentPlayers(appId: string): Promise<number | null>
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const json = await res.json() as { response?: { result?: number; player_count?: number } };
   if (json.response?.result !== 1) return null;
-  return json.response.player_count ?? null;
+  const n=json.response.player_count;
+  return Number.isSafeInteger(n)&&n!>=0?n!:null;
 }
 
 export async function runDemosCcuCollector(delayMs = 250, eligibleAppIds?: ReadonlySet<string>): Promise<CcuRunResult> {

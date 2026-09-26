@@ -18,8 +18,8 @@
  *     preserving Steam's order independently of estimates or CCU.
  * Coverage includes per-feed attempts/success/error and candidate counts.
  *
- * Deactivated demos are excluded except approved Saber lifetime actuals.
- * Current Steam feeds and current-CCU views remain available-demo only.
+ * Retired demos remain in metric views, dated and still checked daily.
+ * Current Steam source feeds remain available-demo only.
  * This is a tracked, sampled catalog, not every historical demo on Steam.
  */
 
@@ -48,6 +48,9 @@ interface DemoLeaderboardRow {
   releaseDate: string | null;
   isSaberPublished: boolean;
   isArchived: boolean;
+  retiredAt: string | null;
+  estimateAsOf: string | null;
+  estimateStale: boolean;
   skuKind: SkuKind;
   isHybridPass: boolean;
   releaseDateUnverified: boolean;
@@ -113,8 +116,10 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
 
   const ccuRows = rawSqlite
     .prepare(
-      `SELECT demo_title_id, MAX(peak_ccu) as all_time_peak
-       FROM demo_ccu_daily_peaks GROUP BY demo_title_id`
+      `SELECT demo_title_id, MAX(peak_ccu) as all_time_peak FROM (
+         SELECT demo_title_id,peak_ccu FROM demo_ccu_daily_peaks
+         UNION ALL SELECT demo_title_id,ccu AS peak_ccu FROM demo_ccu_snapshots
+       ) GROUP BY demo_title_id`
     )
     .all() as Array<{ demo_title_id: number; all_time_peak: number }>;
   const ccuPeakByDemoId = new Map(ccuRows.map((r) => [r.demo_title_id, r.all_time_peak]));
@@ -142,23 +147,24 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
 
   let asOfDate: string | null = null;
   const rows: DemoLeaderboardRow[] = demos
-    .filter(d => d.is_active === 1 || window === "ltd")
-    .filter(d => !["top","new","ccu"].includes(sort) || d.is_active === 1)
+    .filter(d => !["top","new"].includes(sort) || d.is_active === 1)
     .filter(d => (sort !== "top" && sort !== "new") || sourceRanks.has(d.id))
     .filter(d => !genre || (d.genre ?? "").split(", ").includes(genre))
     .filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.steam_app_id === search)
     .map((d) => {
-    const est = d.is_active === 1 ? estimateByDemoId.get(d.id) : undefined;
+    const est = estimateByDemoId.get(d.id);
+    const estimateStale=!!est?.as_of_date&&est.as_of_date<new Date().toISOString().slice(0,10);
+    const usableEstimate=!(d.is_active!==1&&window!=="ltd"&&estimateStale);
     const snap = ccuCurrentByDemoId.get(d.id);
     const saber = d.is_saber_published === 1;
     const lifetime = lifetimeById.get(d.id);
     // Never use legacy license-category "actuals" from the estimate table.
-    const reviewEstimate = saber ? null : demoReviewEstimate(est?.review_delta ?? null,
+    const reviewEstimate = saber||!usableEstimate ? null : demoReviewEstimate(est?.review_delta ?? null,
       est?.method === "review_delta_multiplier" ? est.units_mid : null, "review_delta_multiplier", false);
     const actual = actualByAppId.get(d.steam_app_id);
     const actualValue = Number.isSafeInteger(actual?.downloads) && actual.downloads >= 0 ? actual.downloads : null;
     const dailyPeak = ccuPeakByDemoId.get(d.id);
-    const observedPeak = d.is_active !== 1 || (dailyPeak == null && snap == null)
+    const observedPeak = (dailyPeak == null && snap == null)
       ? null : Math.max(dailyPeak ?? 0, snap?.ccu ?? 0);
     const resolved = saber ? {
       unitsMid: actualValue, reviewEstimate: null, isObservedMinimum: false,
@@ -166,7 +172,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     } : reconcileDemoDownloads({
       window, releaseDate: d.release_date, reviewEstimate,
       lifetimeReviewEstimate: lifetime ? demoReviewEstimate(lifetime.review_delta, lifetime.units_mid, "review_delta_multiplier", saber) : null,
-      method: reviewEstimate == null ? null : "review_delta_multiplier", observedPeak,
+      method: reviewEstimate == null ? null : "review_delta_multiplier", observedPeak:usableEstimate?observedPeak:null,
     });
     if (est?.as_of_date && (!asOfDate || est.as_of_date > asOfDate)) asOfDate = est.as_of_date;
     return {
@@ -177,6 +183,8 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       releaseDate: d.release_date,
       isSaberPublished: d.is_saber_published === 1,
       isArchived: d.is_active !== 1,
+      retiredAt:d.deactivated_at??null,
+      estimateAsOf:est?.as_of_date??null,estimateStale,
       skuKind: kind,
       isHybridPass: kind === "friends_pass" && HYBRID_PASS_IDS.has(d.steam_app_id),
       releaseDateUnverified: d.availability_source === "store_download" && !d.release_date,
@@ -195,9 +203,9 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       actualsEndDate: saber ? actual?.report_end_date ?? null : null,
       actualsStale: saber && (!actual?.fetched_at || Date.now() - Date.parse(actual.fetched_at) > 3 * 86400_000),
       actualsRefreshFailed: saber && !!actual?.last_error,
-      ccuCurrent: d.is_active === 1 ? snap?.ccu ?? null : null,
+      ccuCurrent: snap?.ccu ?? null,
       ccuAllTimePeak: observedPeak,
-      ccuAsOf: d.is_active === 1 ? snap?.captured_at ?? null : null,
+      ccuAsOf: snap?.captured_at ?? null,
       sourceRank: sourceRanks.get(d.id) ?? null,
     };
   });

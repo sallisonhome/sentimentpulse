@@ -2,6 +2,21 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 26, 2026
+
+- Added an Archived demos view with search, genre filters, sortable dates/metrics
+  and links to retained demo PDPs, including Graveyard Keeper 2.
+- Updated retirement policy: publisher takedowns no longer remove demos from
+  metric views or daily own-App-ID source checks. Retirement badges show the
+  detected date; unknown historical dates remain explicitly unknown. Top/New
+  storefront feeds remain available-only and Friends Pass behavior is unchanged.
+- Preserved last-good review history when retired Steam apps return a zeroed
+  histogram. Failed review refreshes do not advance estimate dates; stale
+  rolling windows are not presented as current. Saber retired demos continue
+  verified Steamworks report checks across all supported windows.
+- Added an additive invalid-identity exclusion field, separating non-game/
+  unreleased/invalid SKUs from genuinely retired demos. No cadence change.
+
 ## September 25, 2026
 
 - Fixed: lifetime initialization no longer replays superseded initial review snapshots. Existing states are insert-only on reseed, and daily mature accumulators retain a cumulative-signal high-water mark so review-count dips and rebounds cannot count twice.

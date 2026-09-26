@@ -1,5 +1,28 @@
 # Steam demo product-detail pages
 
+## Retirement tracking (September 26 update)
+
+Publisher takedowns no longer stop demo tracking. The main metric views retain
+retired demos, label their detected retirement date, and link to their PDPs.
+`/demos-leaderboard/archive` is a separate retired-demo filter with search,
+genre, numeric/date sorting and pagination. `/api/demos/archive` is authenticated.
+Top/New source feeds remain available-only; Friends Pass behavior is unchanged.
+
+The existing daily pipeline checks retired demos' own review/CCU endpoints and
+all verified Saber download-report windows. No new schedule is added. Failed
+sources retain last-good values; an all-zero retired histogram cannot replace
+positive stored reviews. Only a successful review refresh advances retired
+download estimates. Stale rolling estimates are unavailable in current-window
+rankings; their original dated records remain accessible in the PDP.
+
+`demo_titles.tracking_excluded_reason` separates invalid identities (software,
+paid game, DLC, unverified manual rows) from retirement. Its additive migration
+does not alter existing metrics or availability flags. `deactivated_at` means
+first detected inactivity, not the publisher's exact takedown time. Unknown
+pre-existing dates stay unknown; verified reactivation clears current retirement.
+
+This update supersedes earlier lifetime-only/exclusion rules below.
+
 ## Scope
 
 - Internal route: `#/demos-leaderboard/:appId`, linked from demo titles on the existing leaderboard.

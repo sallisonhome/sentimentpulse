@@ -4,13 +4,15 @@ import { NON_SABER_DOWNLOAD_TRIAL } from "./download-consistency";
 const DAY = 86400000;
 const dayOf = (timestamp: number) => new Date(timestamp).toISOString().slice(0,10);
 const millis = (date: string) => Date.parse(`${date}T00:00:00Z`);
-type Title = {id:number;steam_app_id:string;is_saber_published:number;is_active:number};
+type Title = {id:number;steam_app_id:string;is_saber_published:number;is_active:number;deactivated_at?:string|null};
 
 /** No interpolation, zero-filling, weekly-to-daily prorating or parent joins.
  * Activity dates (review buckets) and observation dates have separate columns.
  */
 export function loadDemoHistory(db: Database.Database, title: Title, range: DemoRange, today = dayOf(Date.now())) {
-  const saber = title.is_saber_published === 1, archived = title.is_active !== 1;
+  const saber = title.is_saber_published === 1;
+  // Availability retirement does not stop observations. Never invent missing days.
+  const end = today;
   const points = new Map<string, DemoHistoryPoint>();
   const point = (date: string) => {
     if (!points.has(date)) points.set(date,{date,dailyDownloads:null,lifetimeDownloads:null,downloadObservedAt:null,
@@ -29,7 +31,7 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
       p.reportEndDate=actual.report_end_date; p.downloadMethod=actual.source;
       // Same report window start, adjacent capture dates AND adjacent report
       // end dates. Skipped/repeated report dates are not a one-day change.
-      if (!archived && previous &&
+      if (previous &&
           millis(actual.observation_date)-millis(previous.observation_date)===DAY &&
           millis(actual.report_end_date)-millis(previous.report_end_date)===DAY &&
           actual.report_start_date===previous.report_start_date) {
@@ -37,7 +39,7 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
       }
       previous=actual;
     }
-  } else if (!archived) {
+  } else {
     const estimates = db.prepare(`SELECT * FROM demo_window_estimates_daily
       WHERE demo_title_id=? AND window='ltd' AND method='review_delta_multiplier' ORDER BY as_of_date`).all(title.id) as any[];
     for (const e of estimates) {
@@ -48,7 +50,7 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
       p.downloadObservedAt=e.as_of_date;
     }
   }
-  if (!archived) {
+  {
     // The estimator already retained the observed review input each day.
     // Reuse that evidence (including Saber rows) without exposing Saber's
     // legacy modeled download outputs or manufacturing sentiment history.
@@ -86,10 +88,10 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
       const p=point(r.peak_date);p.ccuPeak=Math.max(p.ccuPeak??0,r.peak_ccu);
     }
   }
-  const dates=Array.from(points.keys()).filter(d=>Number.isFinite(millis(d))&&d<=today&&d>="2000-01-01").sort();
+  const dates=Array.from(points.keys()).filter(d=>Number.isFinite(millis(d))&&d<=end&&d>="2000-01-01").sort();
   const firstHistoryDate=dates[0] ?? null;
-  const start=range==="all" ? firstHistoryDate ?? today : dayOf(millis(today)-(Number(range)-1)*DAY);
+  const start=range==="all" ? firstHistoryDate ?? end : dayOf(millis(end)-(Number(range)-1)*DAY);
   const rows: DemoHistoryPoint[]=[];
-  for(let t=millis(start);t<=millis(today);t+=DAY) rows.push(point(dayOf(t)));
-  return {rows,start,end:today,firstHistoryDate};
+  for(let t=millis(start);t<=millis(end);t+=DAY) rows.push(point(dayOf(t)));
+  return {rows,start,end,firstHistoryDate};
 }

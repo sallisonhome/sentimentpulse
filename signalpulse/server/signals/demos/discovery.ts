@@ -34,6 +34,7 @@ const upsertDemoTitleStmt = () => rawSqlite.prepare(
      release_date = excluded.release_date,
      is_active = 1,
      deactivated_at = NULL,
+     tracking_excluded_reason = NULL,
      availability_source = excluded.availability_source,
      availability_source_url = excluded.availability_source_url,
      availability_checked_at = excluded.availability_checked_at,

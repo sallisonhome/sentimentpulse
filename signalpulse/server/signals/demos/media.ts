@@ -52,6 +52,12 @@ async function load(appId:string):Promise<DemoMediaResponse>{
       if(parent){matchedAppId=parent;scope="parent";match=await fetchIgdbDetailBySteamAppid(Number(parent));}
     }
     const value=match ? {...match,matchedAppId,scope}:null;
+    // A takedown can remove the identity lookup without invalidating the
+    // previously exact IGDB match. Retain that media rather than erase it.
+    if(!value&&media){
+      rawSqlite.prepare("UPDATE demo_media_cache SET last_attempt_at=?,status='unavailable' WHERE steam_app_id=?").run(now,appId);
+      return response("unavailable");
+    }
     const status=value?"matched":"no_match";
     rawSqlite.prepare(`INSERT INTO demo_media_cache VALUES(?,?,?,?,?)
       ON CONFLICT(steam_app_id) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at,

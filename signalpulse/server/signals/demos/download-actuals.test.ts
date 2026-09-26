@@ -87,14 +87,14 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     const { refreshDashboardDemoActuals }=await import("./download-actuals");
     const p=refreshDashboardDemoActuals(); assert.equal(p,refreshDashboardDemoActuals(),"single-flight");
     const result=await p; assert.equal(result.succeeded,6); assert.equal(result.failed,0);
-    assert.equal(requests.length,20,"active: landing plus five windows; retired: landing plus lifetime only");
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_actuals").get().n,14);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,14);
+    assert.equal(requests.length,36,"all approved demos: landing plus five windows, including retired");
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_actuals").get().n,30);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,30);
     assert.equal(db.prepare("SELECT downloads FROM demo_download_observations WHERE steam_app_id='4010800' AND window='d7'").get().downloads,0);
     for (const demo of SABER_DEMO_ROSTER.filter(d=>!d.isActive)) {
       const scoped=requests.map(url=>new URL(url)).filter(url=>url.searchParams.get("appID")===demo.steamAppId);
-      assert.equal(scoped.length,2);
-      assert.ok(scoped.every(url=>!url.searchParams.has("dateStart") || url.searchParams.get("dateStart")==="2000-01-01"));
+      assert.equal(scoped.length,6);
+      assert.ok(scoped.some(url=>url.searchParams.get("dateStart")==="2000-01-01"));
     }
     assert.equal(db.prepare("SELECT COUNT(*) n FROM steam_sales_daily").get().n,0);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_portal_daily").get().n,0);
@@ -142,29 +142,30 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
       assert.equal(own.unitsMid,window==="ltd"?128512:window==="d7"?0:353);
       assert.equal(own.method,"steamworks_actual"); assert.equal(own.downloadMultiplier,null); assert.equal(own.isObservedMinimum,false);
       assert.equal(comp.unitsMid,1300); assert.equal(comp.calibrationMode,"non_saber_trial");
-      assert.ok(!body.demos.some((d:any)=>["997","998"].includes(d.steamAppId)),"retired competitors and flag-only Saber rows stay excluded");
+      assert.ok(!body.demos.some((d:any)=>d.steamAppId==="997"),"flag-only Saber rows stay excluded");
+      assert.ok(body.demos.some((d:any)=>d.steamAppId==="998"),"retired competitors remain tracked");
       const toxic=body.demos.find((d:any)=>d.steamAppId==="4354730");
       if(window==="ltd") {
         assert.equal(toxic.unitsMid,332853); assert.equal(toxic.isArchived,true);
-        assert.equal(toxic.ccuCurrent,null);assert.equal(toxic.ccuAllTimePeak,null);assert.equal(toxic.ccuAsOf,null);
+        assert.equal(toxic.ccuCurrent,9999);assert.equal(toxic.ccuAllTimePeak,9999);assert.equal(toxic.ccuAsOf,stamp);
         assert.equal(toxic.steamReviews,null);assert.equal(toxic.reviewDelta,null);
-        assert.equal(body.coverage.archivedCount,4);
+        assert.equal(body.coverage.archivedCount,5);
         assert.equal(body.coverage.completeSteamCatalog,false);
-      } else assert.equal(toxic,undefined,"retired Saber is lifetime only");
+      } else assert.ok(toxic?.isArchived,"retired Saber remains in every metric window");
       const values=body.demos.map((d:any)=>d.unitsMid).filter((n:any)=>n!==null);
       assert.deepEqual(values,[...values].sort((a,b)=>direction==="asc"?a-b:b-a));
     }
     for(const window of DEMO_ACTUAL_WINDOWS) for(const sort of ["top","new","ccu","reviews","rating","peak","release"]) {
       const body=await(await realFetch(`http://127.0.0.1:${server.address().port}/api/demos/leaderboard?window=${window}&sort=${sort}&limit=250`)).json();
       const archived=body.demos.filter((d:any)=>d.isArchived);
-      assert.equal(archived.length,window==="ltd" && !["top","new","ccu"].includes(sort)?4:0);
+      assert.equal(archived.length,!["top","new"].includes(sort)?5:0);
     }
     const { computeDemoWindowEstimates }=await import("./estimator");
     computeDemoWindowEstimates("2099-01-01");
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM demo_window_estimates_daily e JOIN demo_titles t ON t.id=e.demo_title_id
-      WHERE t.is_active=0 AND e.as_of_date='2099-01-01'`).get().n,0,"deactivated estimates are never refreshed");
+      WHERE t.is_active=0 AND e.as_of_date='2099-01-01'`).get().n,0,"retired estimates require explicit fresh review success, not stale cache recomputation");
     fail=true; const failed=await refreshDashboardDemoActuals(); assert.equal(failed.failed,6);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,14,"failed refresh creates no fabricated observations");
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,30,"failed refresh creates no fabricated observations");
     assert.equal(db.prepare("SELECT downloads FROM demo_download_actuals WHERE steam_app_id='4010800' AND window='d7'").get().downloads,0);
     assert.equal(loadDashboardDemoDownloads(products).get(15)?.[0].refreshFailed,true);
     db.prepare("UPDATE demo_download_actuals SET fetched_at='2020-01-01T00:00:00Z'").run();

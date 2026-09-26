@@ -7,7 +7,7 @@ interface RefreshResult { attempted: number; succeeded: number; failed: number; 
 let inFlight: Promise<RefreshResult> | null = null;
 
 /** Only verified Saber game-demo App IDs, never parent-game App IDs.
- * Retired demos refresh lifetime only, never rolling periods or public signals.
+ * Availability retirement does not stop verified demo report collection.
  * Dedicated cache; no writes to paid sales or demo leaderboard estimates.
  */
 export function refreshDashboardDemoActuals(): Promise<RefreshResult> {
@@ -20,10 +20,7 @@ async function refresh(): Promise<RefreshResult> {
   const result = { attempted: 0, succeeded: 0, failed: 0, rowsWritten: 0 };
   const session = storage.getSteamworksSession("default");
   for (const demo of SABER_DEMO_ROSTER) {
-    const tracked = rawSqlite.prepare("SELECT is_active FROM demo_titles WHERE steam_app_id=?")
-      .get(demo.steamAppId) as { is_active: number } | undefined;
-    const active = tracked ? tracked.is_active === 1 : demo.isActive;
-    const windows: readonly ActualWindow[] = active ? DEMO_ACTUAL_WINDOWS : ["ltd"];
+    const windows: readonly ActualWindow[] = DEMO_ACTUAL_WINDOWS;
     result.attempted++;
     const attemptedAt = new Date().toISOString();
     const recordFailure = (window: ActualWindow) => {
