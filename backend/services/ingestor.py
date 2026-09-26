@@ -926,7 +926,11 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                     if not yt_result["complete"]:
                         if _status["youtube_health"] != "failed":
                             _status["youtube_health"] = "degraded"
-                        errors.append(f"[YouTube] game_id={game.id}: page budget reached; will resume")
+                        errors.append(
+                            f"[YouTube] game_id={game.id}: "
+                            f"{yt_result.get('stop_reason', 'page_budget')} reached; "
+                            "current snapshot incomplete, will resume"
+                        )
                 except Exception as exc:
                     db.rollback()
                     _status["youtube_health"] = "failed"
@@ -1953,6 +1957,7 @@ def _step5_classify_sentiment(
     game: Game,
     log_lines: list,
     errors: list,
+    source_filter: Optional[SourceEnum] = None,
 ) -> None:
     """
     Batch-classify unprocessed posts for this game.
@@ -1963,7 +1968,7 @@ def _step5_classify_sentiment(
     topic posts never get a SentimentRecord created, so they can never count
     toward dashboard aggregates. See code_plan.md §1 for the full rationale.
     """
-    unprocessed: list[RawPost] = (
+    unprocessed_query = (
         db.query(RawPost)
         .outerjoin(SentimentRecord, RawPost.id == SentimentRecord.raw_post_id)
         .filter(
@@ -1971,8 +1976,10 @@ def _step5_classify_sentiment(
             SentimentRecord.id.is_(None),
             RawPost.is_relevant.is_(None),   # not yet gated
         )
-        .all()
     )
+    if source_filter is not None:
+        unprocessed_query = unprocessed_query.filter(RawPost.source == source_filter)
+    unprocessed: list[RawPost] = unprocessed_query.all()
 
     if not unprocessed:
         log_lines.append(f"[Step 5] '{game.name}': no unclassified posts.")

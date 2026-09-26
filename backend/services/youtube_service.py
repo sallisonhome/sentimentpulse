@@ -11,6 +11,7 @@ The YouTube API key stays in SignalPulse; this consumer never needs it.
 import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -20,7 +21,8 @@ from models import AppSetting, RawPost, SourceEnum
 
 EPOCH = "1970-01-01T00:00:00.000Z"
 PAGE_LIMIT = 500
-MAX_PAGES_PER_GAME = 10
+MAX_PAGES_PER_GAME = 100
+MAX_SECONDS_PER_GAME = 120
 
 
 def comment_is_focused(text, game):
@@ -65,7 +67,8 @@ def feed_options(db):
     return base, token
 
 
-def import_game_comments(db, game, *, get=requests.get, max_pages=MAX_PAGES_PER_GAME):
+def import_game_comments(db, game, *, get=requests.get, max_pages=MAX_PAGES_PER_GAME,
+                         max_seconds=MAX_SECONDS_PER_GAME):
     """Fetch and commit bounded pages; raise on errors without losing progress.
 
     collected_at is the producer's fetchedAt for this source. Original comment
@@ -80,8 +83,23 @@ def import_game_comments(db, game, *, get=requests.get, max_pages=MAX_PAGES_PER_
     cursor = state.get("cursor")
     until = state.get("until")
     deleted_since = state.get("deletedSince", EPOCH)
-    counts = {"inserted": 0, "updated": 0, "excluded": 0, "fetched": 0, "pages": 0, "complete": False}
+    if bool(cursor) != bool(until):
+        raise ValueError("YouTube saved cursor and snapshot must be paired")
+    if max_pages < 1 or max_seconds <= 0:
+        raise ValueError("YouTube import budgets must be positive")
+    # A saved pagination window is immutable, but it is NOT current coverage.
+    # Finish it, then open exactly one fresh producer window in this call.
+    resuming_saved_snapshot = bool(cursor)
+    started = time.monotonic()
+    counts = {"inserted": 0, "updated": 0, "excluded": 0, "fetched": 0, "pages": 0,
+              "complete": False, "snapshots_completed": 0, "completed_through": None,
+              "stop_reason": "page_budget"}
     for _ in range(max_pages):
+        # Check between atomic pages. An already in-flight request retains its
+        # bounded (5, 30) HTTP timeout and commits with its checkpoint.
+        if time.monotonic() - started >= max_seconds:
+            counts["stop_reason"] = "time_budget"
+            break
         params = {"since": since, "steamAppId": str(game.steam_app_id), "limit": PAGE_LIMIT,
                   "deletedSince": deleted_since}
         if cursor:
@@ -192,7 +210,20 @@ def import_game_comments(db, game, *, get=requests.get, max_pages=MAX_PAGES_PER_
         counts["fetched"] += len(page["comments"])
         counts["pages"] += 1
         if not next_cursor:
+            counts["snapshots_completed"] += 1
+            counts["completed_through"] = snapshot
+            if resuming_saved_snapshot:
+                # Old-window checkpoint has committed. If the next request
+                # fails or the budget expires, a later run starts fresh from
+                # this watermark, never reports the old snapshot as current.
+                since = new_state["since"]
+                deleted_since = new_state["deletedSince"]
+                cursor = None
+                until = None
+                resuming_saved_snapshot = False
+                continue
             counts["complete"] = True
+            counts["stop_reason"] = "current_snapshot_complete"
             break
         cursor = next_cursor
     return counts
