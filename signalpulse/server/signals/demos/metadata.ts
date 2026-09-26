@@ -121,6 +121,12 @@ export function createDemoVerifier(delayMs = 250, kind: SkuKind = "demo") {
       for (const id of ids) {
         const item = cache.get(id)!;
         if (item instanceof Error) { out.set(id, { demo: null, error: item.message }); continue; }
+        if (item.success !== 1 && item.success !== 15) {
+          out.set(id,{demo:null,error:`Steam metadata unresolved (${item.success}); retaining availability`});continue;
+        }
+        if (item.success === 15 || item.visible === false) {
+          out.set(id,{demo:null,reason:"unavailable"});continue;
+        }
         if (!eligibleIdentity(item)) { out.set(id, { demo: null, reason: "identity_or_availability" }); continue; }
         if (kind === "demo" && isFriendsPassSku(id,item.name ?? "")) {
           out.set(id, { demo: null, reason: "friend_pass_review_required" }); continue;

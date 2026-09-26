@@ -18,6 +18,7 @@ import AmazonProductDetail from "@/pages/amazon/product-detail";
 import ConsoleLeaderboards, { ConsoleLeaderboardsPlatform } from "@/pages/console-leaderboards";
 import DemosLeaderboard from "@/pages/demos-leaderboard";
 import DemoDetail from "@/pages/demo-detail";
+import ArchivedDemos from "@/pages/archived-demos";
 import YoutubeLeaderboard from "@/pages/youtube-leaderboard";
 import YoutubeTitleDetail from "@/pages/youtube-title-detail";
 import ConsoleTitleDetail from "@/pages/console-title-detail";
@@ -45,6 +46,7 @@ function AppRouter() {
         <Route path="/amazon/product/:asin" component={AmazonProductDetail} />
         <Route path="/console-leaderboards" component={ConsoleLeaderboards} />
         <Route path="/demos-leaderboard" component={DemosLeaderboard} />
+        <Route path="/demos-leaderboard/archive" component={ArchivedDemos} />
         <Route path="/demos-leaderboard/:appId" component={DemoDetail} />
         <Route path="/youtube/titles/:titleId" component={YoutubeTitleDetail} />
         <Route path="/youtube" component={YoutubeLeaderboard} />

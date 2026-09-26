@@ -17,7 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
-import { Link } from "wouter";
+import { Link, useSearch } from "wouter";
 import { FriendsPassReference } from "@/components/friends-pass-reference";
 import { PassScenarios } from "@/components/pass-scenarios";
 import { PASS_PLAYER_GATES, PASS_PLAYER_STATUS_LABELS, type PassPlayerEstimate } from "@shared/pass-player-estimates";
@@ -52,6 +52,9 @@ interface DemoRow {
   releaseDate: string | null;
   isSaberPublished: boolean;
   isArchived: boolean;
+  retiredAt: string | null;
+  estimateAsOf: string | null;
+  estimateStale: boolean;
   isHybridPass: boolean;
   releaseDateUnverified: boolean;
   reviewCountTotal: number | null;
@@ -133,7 +136,8 @@ function formatDate(value: string | null): string {
 }
 
 export default function DemosLeaderboard() {
-  const [kind, setKind] = useState<SkuKind>("demo");
+  const query=useSearch();
+  const [kind, setKind] = useState<SkuKind>(()=>new URLSearchParams(query).get("kind")==="friends_pass"?"friends_pass":"demo");
   const pass = kind === "friends_pass";
   const noun = pass ? "Friend’s Pass SKUs" : "demos";
   const [windowSel, setWindowSel] = useState<WindowKey>("d7");
@@ -188,13 +192,14 @@ export default function DemosLeaderboard() {
           )}
         </div>
         <div className="flex flex-col items-start md:items-end gap-2 w-full">
-          <div className="flex gap-2 w-full" role="tablist" aria-label="SKU category">
+          <div className="flex flex-wrap gap-2 w-full" role="tablist" aria-label="SKU category">
             {(["demo","friends_pass"] as const).map(value=><Button key={value}
               role="tab" aria-selected={kind===value} variant={kind===value?"default":"outline"}
               data-testid={`btn-demos-kind-${value}`}
               onClick={()=>{setKind(value);setSortSel("downloads");setSortDirection("desc");setGenre("");setSearch("");setOffset(0);}}>
               {value==="demo"?"Demos":"Friends Pass"}
             </Button>)}
+            <Button variant="outline" asChild><Link href="/demos-leaderboard/archive">Archived demos</Link></Button>
           </div>
           <div className="flex gap-1 flex-wrap" role="tablist" aria-label={pass ? "Metric window" : "Download window"}>
             <span className="text-xs text-muted-foreground self-center mr-1">{pass ? "Metric window" : "Download window"}</span>
@@ -262,9 +267,10 @@ export default function DemosLeaderboard() {
         {pass ? <>Tracked catalog: {data.coverage.availableCount} available Friend’s Pass SKUs. Discovery pages through Steam’s US/English name searches and verifies each free download offer.
           {" "}Unavailable and unreleased passes, paid games, software and DLC are excluded. Search coverage is not a guarantee of every Steam SKU worldwide.
           {" "}Hybrid clients remain here only; their activity cannot be split into demo play versus owner-hosted co-op.</> : <>
-        Tracked catalog: {data.coverage.availableCount} available demos. Lifetime totals retained for {data.coverage.archivedCount} deactivated Saber demos.
+        Tracked catalog: {data.coverage.availableCount} available demos and {data.coverage.archivedCount} retired demos.
         {" "}Top/Trending discovery checks up to {data.coverage.candidateLimitPerFeed} slots each. New Releases starts at that depth and catches up to the prior snapshot, with a {data.coverage.newReleaseCatchUpLimit}-slot safety cap. This is not a complete Steam catalog.
-        {" "}Demos deactivated by publishers are not tracked. The only exception is Saber lifetime download actuals, shown in Lifetime and on dashboard cards.
+        {" "}Publisher takedowns do not stop daily tracking. Retired demos remain in metric views and Archived demos with their retirement dates.
+        {" "}Top Demos and New Releases remain available-only Steam feeds. Missing sources preserve last good data; stale rolling estimates are not presented as current.
         </>}
       </div>}
 
@@ -476,7 +482,8 @@ export default function DemosLeaderboard() {
                       </Badge>
                     )}
                     {d.isArchived && <Badge className="ml-2 text-xs" variant="outline"
-                      data-testid={`badge-archived-${d.steamAppId}`}>Deactivated · lifetime only</Badge>}
+                      title="Retirement detected by SignalPulse; daily source checks continue."
+                      data-testid={`badge-archived-${d.steamAppId}`}>Retired · {d.retiredAt?.slice(0,10)??"date not recorded"}</Badge>}
                     {d.isHybridPass && <Badge className="ml-2 text-xs" variant="outline">Demo + Friend’s Pass</Badge>}
                   </td>
                   <td className="px-3 py-2 text-xs leading-5 text-muted-foreground">{d.genre ?? "—"}</td>
@@ -518,6 +525,10 @@ export default function DemosLeaderboard() {
                         </span>
                       )
                     ) : d.isSaberPublished ? <span className="text-xs text-muted-foreground">Actuals unavailable</span> : "—"}
+                    {!d.isSaberPublished&&d.estimateAsOf&&<span className="block text-xs text-muted-foreground">
+                      {d.estimateStale?"Last review estimate":"Review estimate"}: {d.estimateAsOf}
+                      {d.isArchived&&d.estimateStale&&windowSel!=="ltd"?" · current window unavailable":""}
+                    </span>}
                     {d.lifetimeModelBelowPeak && !d.isObservedMinimum && (
                       <span className="block text-[11px] text-amber-600 dark:text-amber-400"
                         title="This title's lifetime review estimate is below observed concurrency. This shorter-window estimate remains review-based; lifetime players cannot be counted as new period downloads.">
@@ -545,6 +556,7 @@ export default function DemosLeaderboard() {
                   </td>}
                   <td className="px-3 py-2 text-right tabular-nums" title={d.ccuAsOf ? `Sample collected: ${d.ccuAsOf}` : "No CCU sample collected"}>
                     {formatNumberCompact(d.ccuCurrent)}
+                    {d.isArchived&&d.ccuAsOf&&<span className="block text-xs text-muted-foreground">{d.ccuAsOf.slice(0,10)}</span>}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.ccuAllTimePeak)}</td>
                 </tr>

@@ -18,7 +18,7 @@ export function loadDemoReviewSummaries(): Map<string, DemoReviewSummary> {
       MIN(h.bucket_start) AS coverage_start,MAX(h.created_at) AS newest_bucket_seen,
       t.release_date
     FROM steam_review_history h JOIN demo_titles t ON t.steam_app_id=h.app_id
-    WHERE t.is_active=1
+    WHERE t.tracking_excluded_reason IS NULL AND (t.is_active=1 OR t.sku_kind='demo')
     GROUP BY h.app_id,h.bucket_granularity
     ORDER BY h.app_id,
       CASE h.bucket_granularity WHEN 'day' THEN 1 ELSE 0 END,

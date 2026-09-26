@@ -34,6 +34,7 @@
 import { rawSqlite } from "../../storage";
 import { log } from "../../log";
 import { DEMO_DOWNLOAD_MULTIPLIER, demoDownloadMultiplier } from "./download-consistency";
+import {loadDemoCatalog} from "./catalog";
 
 export type WindowKey = "d7" | "d30" | "d90" | "m12" | "ltd";
 
@@ -53,15 +54,12 @@ export const DOWNLOAD_MULTIPLIER = DEMO_DOWNLOAD_MULTIPLIER;
 interface DemoTitleForEstimate {
   id: number;
   steam_app_id: string;
-  first_seen_at: string;
   is_saber_published: number;
+  is_active: number;
 }
 
 function loadEstimableDemos(): DemoTitleForEstimate[] {
-  return rawSqlite
-    .prepare(`SELECT id, steam_app_id, first_seen_at, is_saber_published
-      FROM demo_titles WHERE is_active = 1`)
-    .all() as DemoTitleForEstimate[];
+  return [...loadDemoCatalog("demo"),...loadDemoCatalog("friends_pass")];
 }
 
 /**
@@ -126,7 +124,7 @@ export interface DemoEstimateRunResult {
  * unique index). Call daily from a scheduled job.
  */
 export function computeDemoWindowEstimates(asOfDate = new Date().toISOString().slice(0, 10), eligibleAppIds?: ReadonlySet<string>): DemoEstimateRunResult {
-  const demos = loadEstimableDemos().filter(d => !eligibleAppIds || eligibleAppIds.has(d.steam_app_id));
+  const demos = loadEstimableDemos().filter(d => eligibleAppIds ? eligibleAppIds.has(d.steam_app_id) : d.is_active===1);
   const nowUnix = Math.floor(Date.now() / 1000);
   const nowIso = new Date().toISOString();
   let rowsWritten = 0;

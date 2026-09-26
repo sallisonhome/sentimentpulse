@@ -34,6 +34,8 @@ export interface DemoDetail {
   appId: string; name: string; isSaber: boolean; archived: boolean;
   genre: string | null; releaseDate: string | null;
   firstSeenAt: string; lastCheckedAt: string | null;
+  deactivatedAt: string | null;
+  snapshotAsOf: string | null;
   start: string; end: string; range: DemoRange; multiplier: number | null;
   latest: {
     downloads: number | null; observedMinimum: boolean;
@@ -46,14 +48,25 @@ export interface DemoDetail {
   latestWindows: Array<{ window: string; downloads: number | null; asOf: string | null; source: string }>;
 }
 
+export interface ArchivedDemoRow {
+  appId: string; name: string; genre: string | null; releaseDate: string | null;
+  isSaber: boolean; deactivatedAt: string | null; snapshotAsOf: string | null;
+  downloads: number | null; reviews: number | null; peak: number | null;
+}
+export interface ArchivedDemosResponse {
+  demos: ArchivedDemoRow[]; genres: string[]; total: number;
+  offset: number; limit: number; hasMore: boolean;
+}
+
 export function demoHistoryCsv(data: DemoDetail): string {
   const keys: Array<keyof DemoHistoryPoint> = ["date","dailyDownloads","lifetimeDownloads","downloadObservedAt",
     "reportEndDate","downloadMethod","multiplierId","reviewsAdded","positiveAdded","negativeAdded",
     "reviewBucketObservedAt","totalReviews","positivePercent","reviewObservedAt","reviewSource","ccuLatest","ccuPeak","ccuSamples"];
   const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g,'""')}"`;
   return [
-    ["appId","downloadBasis","dailyDownloadDefinition",...keys].join(","),
-    ...data.rows.map(r=>[data.appId,data.isSaber ? "Steamworks actual" : "provisional review model",
+    ["appId","availabilityStatus","retirementDetectedAt","downloadBasis","dailyDownloadDefinition",...keys].join(","),
+    ...data.rows.map(r=>[data.appId,data.archived?"retired_still_tracked":"available",data.deactivatedAt,
+      data.isSaber ? "Steamworks actual" : "provisional review model",
       data.isSaber ? "net change in consecutive comparable observed LTD totals; not audited daily downloads" : `daily review bucket x ${data.multiplier}`,
       ...keys.map(k=>r[k])].map(cell).join(",")),
   ].join("\r\n");

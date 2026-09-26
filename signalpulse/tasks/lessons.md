@@ -1,5 +1,21 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-26: publisher retirement is not tracking retirement
+
+The user superseded the earlier lifetime-only archive policy: keep retired
+demos in daily own-App-ID source checks, the main metric views and PDPs.
+Record the first detected unavailable date, preserve it on repeat checks,
+and leave unknown older dates unknown. Keep the archive as a retired filter.
+Top/New source feeds remain available-only. Friends Pass retirement policy
+does not change. Separate verified invalid identities from retired demos.
+
+Graveyard Keeper 2's retired App ID returned success=1 with zeroed historical
+review buckets, while 695 reviews remained in the database. Reject an empty
+replacement of positive saved review history on a retired demo. Only successful
+review refreshes may advance its estimate date. Show stale evidence dates and
+do not present a previous rolling period as a current one. Valid CCU zero is
+different from unavailable/404. Never substitute parent-game metrics.
+
 ## 2026-09-26: demo PDP history must distinguish activity from observations
 
 The latest-only Steamworks demo cache is not a historical time series. Retain

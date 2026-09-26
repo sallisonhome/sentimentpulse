@@ -32,14 +32,14 @@ test("migration is repeatable; seeds only original last-good capture date and ex
   assert.equal((db.prepare("SELECT downloads FROM demo_download_observations").get() as any).downloads,15);
   db.close();
 });
-test("actual changes require consecutive comparable reports; corrections retained, gaps/repeated dates null, archive LTD-only",()=>{
+test("actual changes require consecutive comparable reports; corrections retained, gaps/repeated dates null, retired tracking continues",()=>{
   const db=fixture();
   for(const r of [report("2026-09-21",100),report("2026-09-22",130),report("2026-09-23",125),
     report("2026-09-25",200),report("2026-09-26",210,"2026-09-25")])recordDownloadObservation(db,saber.steam_app_id,r);
   const result=loadDemoHistory(db,saber,"7","2026-09-26");
   assert.deepEqual(result.rows.map(r=>r.dailyDownloads),[null,null,30,-5,null,null,null]);
   assert.equal(result.rows[0].lifetimeDownloads,null);
-  assert.equal(loadDemoHistory(db,{...saber,is_active:0},"all","2026-09-26").rows.some(r=>r.dailyDownloads!==null),false);
+  assert.equal(loadDemoHistory(db,{...saber,is_active:0},"all","2026-09-26").rows.some(r=>r.dailyDownloads!==null),true);
   recordDownloadObservation(db,saber.steam_app_id,report("2026-09-26",0));
   assert.equal(loadDemoHistory(db,saber,"7","2026-09-26").rows.at(-1)?.dailyDownloads,-200);
   db.close();

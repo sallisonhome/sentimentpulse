@@ -14,12 +14,13 @@ import { log } from "../../log";
 import { seedSaberDemos } from "./saber-seed";
 import { runDemosHubDiscovery } from "./discovery";
 import { createDemoVerifier } from "./metadata";
-import { loadActiveDemoTitles, runDemosReviewHistoryCollector } from "./runner";
+import { runDemosReviewHistoryCollector } from "./runner";
 import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
 import { rawSqlite } from "../../storage";
 import { refreshDashboardDemoActuals } from "./download-actuals";
 import { runFriendsPassPipeline } from "./friends-pass";
+import { loadDemoCatalog } from "./catalog";
 
 export interface DemosPipelineRunResult {
   seeded: number;
@@ -46,17 +47,24 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
   // Includes seeded/manual/previously discovered entries, not just today's
   // hub. Fail closed for this run on missing metadata or network errors,
   // without deactivating a demo due to a transient failure. Confirmed
-  // non-game/unreleased/unavailable entries must also leave metric views.
+  // non-game/unreleased identities leave metric views. Previously verified
+  // demos that become unavailable remain tracked with retirement metadata.
   const eligibleAppIds = new Set<string>();
   const eligibility = { eligible: 0, excluded: 0, failed: 0 };
-  const active = loadActiveDemoTitles();
+  const active = loadDemoCatalog("demo");
   const verified = await verifier.verify(active.map(demo => demo.steam_app_id));
   for (const demo of active) {
     const result = verified.get(demo.steam_app_id)!;
-    if (result.error) eligibility.failed += 1;
+    if (result.error) {
+      eligibility.failed += 1;
+      // A metadata outage must not stop already-retired, accepted demos from
+      // checking their own metric sources. It cannot enroll unknown identities.
+      if(demo.is_active!==1)eligibleAppIds.add(demo.steam_app_id);
+    }
     else if (result.demo) {
       eligibleAppIds.add(demo.steam_app_id);
-      rawSqlite.prepare(`UPDATE demo_titles SET genre=?,release_date=?,availability_source=?,
+      rawSqlite.prepare(`UPDATE demo_titles SET is_active=1,deactivated_at=NULL,tracking_excluded_reason=NULL,
+        genre=?,release_date=?,availability_source=?,
         availability_source_url=?,availability_checked_at=? WHERE id=?`)
         .run(result.demo.genre, result.demo.releaseDate, result.demo.availabilitySource,
           result.demo.availabilitySourceUrl, result.demo.availabilityCheckedAt, demo.id);
@@ -64,15 +72,22 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
     else {
       eligibility.excluded += 1;
       const now = new Date().toISOString();
-      rawSqlite.prepare(`UPDATE demo_titles SET is_active=0,deactivated_at=?,last_checked_at=?,updated_at=?
-        WHERE id=?`).run(now, now, now, demo.id);
+      const retired=result.reason==="unavailable"||result.reason==="date_unverified_no_download_offer";
+      // Only prior accepted identities survive a takedown. Manual unknown
+      // rows, paid games, software, DLC and upcoming SKUs never become demos.
+      const known=demo.is_saber_published===1||!!demo.availability_source||
+        !!rawSqlite.prepare("SELECT 1 FROM demo_window_estimates_daily WHERE demo_title_id=? LIMIT 1").get(demo.id);
+      rawSqlite.prepare(`UPDATE demo_titles SET is_active=0,deactivated_at=COALESCE(deactivated_at,CASE WHEN is_active=1 THEN ? END),
+        tracking_excluded_reason=?,last_checked_at=?,updated_at=? WHERE id=?`)
+        .run(now,retired&&known?null:result.reason??"identity_unverified",now,now,demo.id);
+      if(retired&&known)eligibleAppIds.add(demo.steam_app_id);
     }
   }
   eligibility.eligible = eligibleAppIds.size;
 
   const reviewHistory = await runDemosReviewHistoryCollector(delayMs, eligibleAppIds);
   const ccu = await runDemosCcuCollector(delayMs, eligibleAppIds);
-  const estimates = computeDemoWindowEstimates(undefined, eligibleAppIds);
+  const estimates = computeDemoWindowEstimates(undefined, new Set(reviewHistory.succeededAppIds));
   const portalActualsFetch = {
     source: "demos_portal",
     status: "skipped" as const,

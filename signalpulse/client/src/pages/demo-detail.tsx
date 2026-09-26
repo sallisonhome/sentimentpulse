@@ -59,7 +59,7 @@ export default function DemoDetail(){
     queryFn:async()=>(await apiRequest("GET",`/api/demos/titles/${appId}/media`)).json(),
     enabled:!!detail.data,retry:false});
   const data=detail.data,art=media.data?.media,archived=!!data?.archived;
-  const downloadMetric=archived||downloadMode==="lifetime"?"lifetimeDownloads":"dailyDownloads";
+  const downloadMetric=downloadMode==="lifetime"?"lifetimeDownloads":"dailyDownloads";
   const downloadTitle=downloadMetric==="lifetimeDownloads"
     ? data?.isSaber?"Observed lifetime downloads":"Recorded lifetime download estimates"
     : data?.isSaber?"Daily net change in observed lifetime downloads":"Estimated daily downloads";
@@ -76,12 +76,12 @@ export default function DemoDetail(){
   };
   const visibleRows=data?.rows.filter(r=>Object.entries(r).some(([key,value])=>key!=="date"&&value!==null))??[];
   return <div className="p-4 md:p-6 space-y-5 min-w-0 max-w-[1600px] mx-auto pb-12" data-testid="page-demo-detail">
-    <Link href="/demos-leaderboard" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-      <ArrowLeft className="h-4 w-4"/>Steam demos
+    <Link href={archived?"/demos-leaderboard/archive":"/demos-leaderboard"} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+      <ArrowLeft className="h-4 w-4"/>{archived?"Archived demos":"Steam demos"}
     </Link>
     {detail.error&&<Card className="p-6" role="alert"><h1 className="text-xl font-semibold">Demo history unavailable</h1>
       <p className="text-sm text-muted-foreground mt-2">{detail.error.message.startsWith("404")
-        ? "This demo is not in the available catalog. Deactivated non-Saber demos and Friends Passes do not have demo detail pages."
+        ? "This App ID is not a tracked demo. Friends Passes do not have demo detail pages."
         : data ? "The reload failed. Previously loaded data is shown below; please try again."
           : "The stored history could not be loaded. Please try again or return to the demo leaderboard."}</p>
       <Button variant="outline" className="mt-4" onClick={()=>detail.refetch()}>Try again</Button></Card>}
@@ -95,12 +95,14 @@ export default function DemoDetail(){
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-semibold break-words">{data.name}</h1>
             <Badge variant="outline">{data.isSaber?"Saber actuals":"Non-Saber estimates"}</Badge>
-            {archived&&<Badge variant="secondary">Deactivated · lifetime only</Badge>}
+            {archived&&<Badge variant="secondary">Retired · still tracked</Badge>}
           </div>
           <p className="text-sm text-muted-foreground mt-2">Steam demo App ID {data.appId} · {data.genre??"Genre unavailable"}</p>
           <p className="text-xs text-muted-foreground mt-1">Demo release: {data.releaseDate??"Unverified"} · First tracked: {data.firstSeenAt.slice(0,10)}</p>
+          {archived&&<p className="text-xs text-muted-foreground mt-1">Retirement detected: {data.deactivatedAt?.replace("T"," ").slice(0,16)??"Date not recorded"}{data.deactivatedAt?" UTC":""}
+            {` · Latest stored evidence: ${data.snapshotAsOf??"Not available"}`}</p>}
           <a className="inline-flex items-center gap-1 text-sm hover:underline mt-3"
-            href={`https://store.steampowered.com/app/${data.appId}/`} target="_blank" rel="noreferrer">Demo on Steam<ExternalLink className="h-3.5 w-3.5"/></a>
+            href={`https://store.steampowered.com/app/${data.appId}/`} target="_blank" rel="noreferrer">{archived?"Original Steam page (may be unavailable)":"Demo on Steam"}<ExternalLink className="h-3.5 w-3.5"/></a>
         </div>
         <div className="flex items-start gap-2 shrink-0">
           <Button variant="outline" size="sm" aria-label="Reload stored history" disabled={detail.isFetching}
@@ -114,8 +116,8 @@ export default function DemoDetail(){
           {label:data.latest.observedMinimum?"Observed minimum, not an estimate":data.isSaber?"Lifetime demo downloads":"Lifetime estimated downloads",
             value:fmt(data.latest.downloads),note:data.isSaber?`Steamworks · ${data.latest.actualsAsOf?.slice(0,10)??"Not observed"}`
               :data.latest.observedMinimum?"Concurrency exceeded the review model":"Own-demo review model · provisional"},
-          {label:"Lifetime Steam reviews",value:fmt(data.latest.reviews),note:data.latest.positivePercent==null?"Own-demo reviews only":`${fmt(data.latest.positivePercent)}% positive · own demo`},
-          {label:"Latest sampled CCU",value:fmt(data.latest.ccu),note:data.latest.ccuObservedAt?`${data.latest.ccuObservedAt.replace("T"," ").slice(0,16)} UTC`:"No active observation"},
+          {label:"Last recorded review total",value:fmt(data.latest.reviews),note:data.latest.positivePercent==null?"Own-demo reviews only":`${fmt(data.latest.positivePercent)}% positive · own demo`},
+          {label:"Latest sampled CCU",value:fmt(data.latest.ccu),note:data.latest.ccuObservedAt?`${data.latest.ccuObservedAt.replace("T"," ").slice(0,16)} UTC`:"No observation"},
           {label:"Peak observed CCU",value:fmt(data.latest.peak),note:"Highest stored sample, not continuous monitoring"},
         ].map(k=><Card key={k.label} className="p-4 min-w-0"><p className="text-xs text-muted-foreground">{k.label}</p>
           <p className="text-2xl font-semibold tabular-nums mt-2">{k.value}</p><p className="text-xs text-muted-foreground mt-2">{k.note}</p></Card>)}
@@ -126,13 +128,15 @@ export default function DemoDetail(){
       {data.latest.observedMinimum&&<p className="text-sm text-amber-700 dark:text-amber-400">
         The headline is a concurrency-based lower bound. History below shows the review model as recorded, not that lower bound.
       </p>}
-      {archived&&<Card className="p-4 text-sm text-muted-foreground">Publisher-deactivated demos are not tracked.
-        Approved Saber demos retain lifetime Steamworks totals only. No daily activity, reviews, or player tracking is implied.</Card>}
+      {archived&&<Card className="p-4 text-sm text-muted-foreground" data-testid="demo-archive-notice">
+        This demo is retired from public availability but remains tracked on the daily schedule.
+        If Steam no longer supplies a usable signal, its last good observations stay dated; missing data is not zero.
+        {" "}The retirement date records SignalPulse’s detection, not the publisher’s exact removal time.</Card>}
 
       <section aria-label="Daily history" className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div><h2 className="text-base font-semibold">Day-by-day history</h2>
-            <p className="text-xs text-muted-foreground mt-1">Chart dates in UTC · Headline cards always show latest available totals</p></div>
+            <p className="text-xs text-muted-foreground mt-1">Chart dates in UTC · Headline cards show latest available observations, which can be stale</p></div>
           <div className="flex flex-wrap gap-1" aria-label="History range">
             {(["7","30","90","365","all"] as DemoRange[]).map(r=><Button key={r} size="sm" aria-pressed={range===r}
               variant={range===r?"secondary":"outline"} onClick={()=>setRange(r)}>{r==="all"?"All history":r==="365"?"12 months":`${r} days`}</Button>)}
@@ -140,7 +144,7 @@ export default function DemoDetail(){
         </div>
         <p className="text-xs text-muted-foreground" data-testid="demo-history-range">{data.start} through {data.end} · {data.firstHistoryDate?`Earliest retained history: ${data.firstHistoryDate}`:"History not yet available"}
           {detail.isFetching?" · Loading…":""}</p>
-        {!archived&&<div className="flex gap-2" aria-label="Download history mode">
+        {<div className="flex gap-2" aria-label="Download history mode">
           <Button size="sm" variant={downloadMode==="daily"?"secondary":"outline"} aria-pressed={downloadMode==="daily"} onClick={()=>setDownloadMode("daily")}>Daily changes</Button>
           <Button size="sm" variant={downloadMode==="lifetime"?"secondary":"outline"} aria-pressed={downloadMode==="lifetime"} onClick={()=>setDownloadMode("lifetime")}>Lifetime snapshots</Button>
         </div>}
@@ -148,7 +152,7 @@ export default function DemoDetail(){
         {data.isSaber&&downloadMetric==="dailyDownloads"&&!data.rows.some(r=>r.dailyDownloads!==null)&&
           <p className="text-xs text-muted-foreground">Daily changes need comparable lifetime reports from two consecutive dates.
             Older actual-download reports were not retained by the previous collector; the latest report is preserved as a starting snapshot.</p>}
-        {!archived&&<div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        {<div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="space-y-3 min-w-0">
             <div className="flex flex-wrap gap-1" aria-label="Review history mode">
               {(["daily","lifetime","sentiment"] as const).map(m=><Button key={m} size="sm" aria-pressed={reviewMode===m}
@@ -202,7 +206,7 @@ export default function DemoDetail(){
         <p className="text-xs text-muted-foreground mt-3 leading-5">Rolling 7/30/90-day totals are not daily downloads.
           Non-Saber daily estimates use the current {data.multiplier??130}× trial; recorded lifetime estimates retain their historical model.
           Steamworks actuals are from the demo App ID’s Downloads by Region report, not complimentary licenses or parent-game purchases.
-          Its definition counts demo users with recorded playtime or demo preloads. Collection continues on the existing daily schedule.
+          Its definition counts demo users with recorded playtime or demo preloads. Daily source checks continue even after retirement.
           Reload reads stored data; it does not trigger ingestion.</p>
       </details>
       <Card className="p-4 space-y-4">
