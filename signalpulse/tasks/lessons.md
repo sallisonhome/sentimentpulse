@@ -1,5 +1,27 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-26: fix rolling inference without inventing a lifetime restatement
+
+FC 26's rolling Steam model amplified PS5 revenue 6.5x even when native
+same-period console models were much lower. The owner's clarification narrowed
+the repair to d7/d30/d90, not annual/LTD. Keep that scope explicit. A conservative
+family-consistency ceiling is a model policy, not an actual-sales anchor or a
+measured subscriber fraction. Exclude Steam-derived peers from independent
+constraints, preserve manual/verified protections and retain the sports split.
+Do not force worldwide estimates to match a current US storefront rank or use
+today's rank to rewrite 90 days of history.
+
+Test annual franchise identities explicitly. FC 26/27 native App IDs and stored
+histograms were distinct; inflating FC27 100x must not move FC26. Do not attribute
+inflation to cross-title leakage without evidence.
+
+Xbox's FC26 child has a sentinel release date and no retail offer. Its exact
+Standard Edition parent has the real paid offer and native child membership.
+Validate both IDs, family, primary fulfillment membership, release and current
+USD full-game offer. Retain the child rating identity; never sum the retail
+bundle as an additional sale. Record catalog/metadata/GP before-images and test
+field-level rollback plus repeated real writers, not just parser fixtures.
+
 ## 2026-09-26: publisher retirement is not tracking retirement
 
 The user superseded the earlier lifetime-only archive policy: keep retired

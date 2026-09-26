@@ -58,6 +58,7 @@ import { steamPortrait } from "./console-portrait-art";
 import { ensureMixSchema, runMixShadow } from "./revenue-mix-shadow";
 import type { Mix } from "./revenue-mix-model";
 import { resolveSalesUnits } from "./console-sales-units";
+import { recentFamilyApplies, recentFamilyScale, type NativePeer } from "./console-recent-family";
 import { ensureDailyMixSchema, runDailyMix, dailyMixStatus, publishedDailyAdjustments, applyDailyAdjustment, publishedDailyRevenue } from "./revenue-mix-daily";
 
 type Platform = "steam" | "xbox" | "ps5";
@@ -250,7 +251,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   // ─── Leaderboard list ─────────────────────────────────────────────────────
   // One read-side revenue/units pipeline, shared by every Buying surface.
   // Return the complete catalog so anchors and unit sorting precede top-N slicing.
-  function platformSales(platform: Platform, window: string, sort = "revenue", dir = "desc") {
+  function platformSales(platform: Platform, window: string, sort = "revenue", dir = "desc", nativeOnly = false) {
       // Default is the 7d window so fresh weekly hits (launches like
       // Halloween: The Game and How to Fish) surface first. Because the
       // estimator sometimes doesn't have 7d numbers yet for very recent
@@ -761,7 +762,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         g.aspUsdCents = g.unitsMid > 0 && g.revenueMidUsd != null
           ? g.revenueMidUsd * 100 / g.unitsMid
           : (g.msrpUsdCents != null ? g.msrpUsdCents * aspFactor : null);
+        if (process.env.FC26_RECENT_FAMILY_ENABLED !== "0" &&
+            recentFamilyApplies(g.editionGroupKey,window) && g.windowUsed !== window) {
+          // A later missing monthly row must not silently undo the repair by
+          // substituting 90 days. Verified same-period anchors can still win.
+          g.unitsMid=null;g.revenueMidUsd=null;g.windowUsed=null;
+          g.gatedReason="insufficient_history";
+        }
       }
+      // Internal native-model read: same SQL, eligibility and family dedupe,
+      // before overlays. Never call back into the Steam overlay recursively.
+      if (nativeOnly) return {platform, window, sort, dir, aspFactor, cascade,
+        count: groups.length, titles: groups, latestCaptureDate: null, refreshCronUtc: "09:15"};
       // ── Path A: Steam anchor overlay (Steam platform only) ─────────────
       // For any group whose (titleId, 'steam', window) matches a row in
       // revenue_calibration_anchors for the most recent as_of_date, swap the
@@ -851,7 +863,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // display name (same helper the client uses to collapse editions
         // within a platform). This is the fix for Path B silently missing
         // every cross-platform title.
-        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"; windowUsed:string|null}>();
+        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"; windowUsed:string|null; recentFamilyAdjustment?:any}>();
         if (consoleRatio != null) {
           // Steam never enters this branch, so recursion terminates after one
           // level. Reusing its final result also preserves verified LTD scaling,
@@ -862,6 +874,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                 revenue: s.revenueMidUsd,
                 source: s.dataSource === "actual" ? "anchor" : "estimator",
                 windowUsed: s.windowUsed,
+                ...(s.recentFamilyAdjustment ? {recentFamilyAdjustment:s.recentFamilyAdjustment} : {}),
               });
             }
           }
@@ -1025,6 +1038,39 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               continue;
             }
           }
+          // Calibrate only the rolling FC26 model. Actuals and verified LTD
+          // calibration have already won above. Per-title overrides are also
+          // protected, both as targets and as native constraints.
+          const protectedModel = (row:any, p:Platform) => (row.familyTitleIds as number[]).some(id =>
+            !!rawSqlite.prepare(`SELECT 1 FROM title_multiplier_overrides
+              WHERE title_id=? AND platform=? AND effective_from<=? LIMIT 1`)
+              .get(id,p,new Date().toISOString()) ||
+            !!rawSqlite.prepare(`SELECT 1 FROM revenue_calibration_anchors
+              WHERE title_id=? AND platform=? AND (window=? OR window='ltd')
+              AND (data_source LIKE 'manual_anchor_verified_%' OR data_source LIKE 'portal_fetch%') LIMIT 1`)
+              .get(id,p,win));
+          if (platform === "steam" && process.env.FC26_RECENT_FAMILY_ENABLED !== "0" &&
+              recentFamilyApplies(g.editionGroupKey,win) && !protectedModel(g,platform)) {
+            const peers:NativePeer[] = [];
+            for (const p of ["ps5","xbox"] as Platform[]) {
+              const native = platformSales(p,win,"revenue","desc",true).titles
+                .find(r=>r.editionGroupKey===g.editionGroupKey);
+              const ratio = ipOverrideFactorFor(g.name,p)?.factor;
+              if (native && ratio) peers.push({platform:p,ratio,
+                revenue:native.revenueMidUsd,windowUsed:native.windowUsed,
+                protected:protectedModel(native,p),method:native.estimateMethod});
+            }
+            const adjustment=recentFamilyScale({family:g.editionGroupKey,window:win,
+              steamRevenue:g.revenueMidUsd,steamWindow:g.windowUsed,peers});
+            if(adjustment?.applied){
+              g.revenueMidUsdEstimated=g.revenueMidUsd;
+              g.revenueMidUsd=adjustment.revenue;
+              g.revenueCaveat=adjustment.caveat;
+              g.recentFamilyAdjustment=adjustment;
+              g.dataSource="recent_family_consistency";
+              continue;
+            }
+          }
           // Path B: derive PS5/Xbox windowed revenue from Steam via ratio,
           // then back-compute units from that derived revenue so units and
           // revenue stay internally consistent.
@@ -1054,14 +1100,20 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             // Also fall through when a Steam SKU exists but reports \$0 for
             // this window (e.g. a delisted PC port), because Steam × factor
             // = 0 would zero out an otherwise-real console row.
-            const hasMeaningfulSteam = s != null && s.revenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD;
+            const hasMeaningfulSteam = s != null && (s.revenue >= STEAM_MEANINGFUL_REVENUE_FLOOR_USD ||
+              (s.recentFamilyAdjustment && s.revenue > 0));
             if (hasMeaningfulSteam && s) {
               const ipOverride = ipOverrideFactorFor(g.name as string | null | undefined, platform);
               const factor = ipOverride ? ipOverride.factor : consoleRatio;
               const derivedRevenue = s.revenue * factor;
               g.revenueMidUsdEstimated = g.revenueMidUsd;
               g.revenueMidUsd = derivedRevenue;
-              g.dataSource = ipOverride ? "derived_from_steam_ip_override" : "derived_from_steam";
+              g.dataSource = s.recentFamilyAdjustment ? "derived_from_steam_recent_family" :
+                ipOverride ? "derived_from_steam_ip_override" : "derived_from_steam";
+              if (s.recentFamilyAdjustment) {
+                g.revenueCaveat = s.recentFamilyAdjustment.caveat;
+                g.recentFamilyAdjustment = s.recentFamilyAdjustment;
+              }
               g.derivationRatio = factor;
               g.derivationSteamSource = s.source; // 'anchor' | 'estimator'
               g.windowUsed = s.windowUsed;
@@ -1395,6 +1447,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         revenueSteam: number | null; revenuePs5: number | null; revenueXbox: number | null;
         revenueCombined: number;
         revenueIncomplete: boolean;
+        revenueCaveat?: string;
         revenueSource: "overlay-ratio" | "overlay-ip-override" | "ps5-exclusive-fallback" | "mixed";
       };
       const multiRows: MultiRow[] = [];
@@ -1467,6 +1520,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           revenueCombined,
           revenueIncomplete,
           revenueSource,
+          ...([ps5Sales,xboxSales].some(r=>r?.revenueCaveat)
+            ? {revenueCaveat: [ps5Sales,xboxSales].find(r=>r?.revenueCaveat)!.revenueCaveat} : {}),
         });
       }
 
@@ -1690,7 +1745,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const steamSku = skuList.find(s => s.platform === "steam") ?? skuList[0];
       const displayName = steamSku?.name ?? key;
 
-      type PerPlatOut = { titleId: number; revenueUsd: number | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw"; aspUsdCents?: number | null; unitsMidEstimated?: number | null; unitSource?: string; dataSource?: string; estimateMethod?: string };
+      type PerPlatOut = { titleId: number; revenueUsd: number | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw"; aspUsdCents?: number | null; unitsMidEstimated?: number | null; unitSource?: string; dataSource?: string; estimateMethod?: string; revenueCaveat?: string; recentFamilyAdjustment?: unknown };
       const out: Partial<Record<Platform, PerPlatOut>> = {};
       for (const platform of PLATFORMS) {
         const members = matching.filter(r => r.platform === platform);
@@ -1709,6 +1764,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           unitSource: canonical?.unitSource ?? "unavailable",
           windowUsed: canonical?.windowUsed ?? null,
           dataSource: canonical?.dataSource ?? "unavailable",
+          ...(canonical?.revenueCaveat ? {revenueCaveat: canonical.revenueCaveat, recentFamilyAdjustment: canonical.recentFamilyAdjustment} : {}),
           source: canonical?.dataSource === "actual" ? "anchor"
             : canonical?.dataSource?.startsWith("derived_from_steam") ? "overlay" : "raw",
         };
@@ -2009,6 +2065,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           aspUsdCents: canonical?.aspUsdCents ?? null,
           unitSource: canonical?.unitSource ?? "unavailable",
           dataSource: canonical?.dataSource ?? "unavailable",
+          ...(canonical?.revenueCaveat ? {revenueCaveat: canonical.revenueCaveat, recentFamilyAdjustment: canonical.recentFamilyAdjustment} : {}),
           windowUsed: canonical?.windowUsed ?? null,
           cascade: sales.cascade,
           gatedReason: canonical?.revenueMidUsd != null ? null : kpi.gatedReason ?? "no_estimate",

@@ -4,6 +4,14 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 26, 2026
 
+- Constrained FC 26's 7/30/90-day family revenue model using the lower eligible
+  same-period native platform model, retaining the existing 65% PS5 / 25% Xbox /
+  10% Steam allocation. UI labels distinguish this conservative model policy
+  from verified purchases. Existing annual/lifetime figures and raw data are unchanged.
+- Restored a verified eligibility path for FC 26's Xbox child through its exact
+  purchasable Standard Edition parent. Daily reconciliation keeps one rating
+  identity, records EA Play inclusion, and does not add a second bundle sale.
+
 - Added an Archived demos view with search, genre filters, sortable dates/metrics
   and links to retained demo PDPs, including Graveyard Keeper 2.
 - Updated retirement policy: publisher takedowns no longer remove demos from
