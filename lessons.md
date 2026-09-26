@@ -23,6 +23,11 @@ titles imported normally; this was not a total YouTube outage or a UI bug.
   source only, and invalidate repaired titles' topic generations rather than
   regenerating the entire portfolio. Verify source-to-consumer missing counts,
   classification completion and visible source totals separately.
+- Cache admin routes inherit the dashboard router's `/games` prefix:
+  `/api/games/dashboard/warmup` and `/api/games/dashboard/topics-warmup`.
+  Mocked HTTP acceptance is insufficient; compare operator URLs against
+  `app.routes`. The first recovery imported/classified all three titles but
+  failed its refresh call because this prefix was omitted.
 
 ## 2026-09-25 evening — Partial topics were hidden behind all-buckets readiness
 

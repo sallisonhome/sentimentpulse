@@ -63,9 +63,9 @@ def run(game_ids, *, max_pages=200, max_seconds=180):
         finally:
             db.close()
         # Run cache work inside the serving process, not this short-lived CLI.
-        r = http.post("http://127.0.0.1:8000/api/dashboard/warmup", timeout=20)
+        r = http.post("http://127.0.0.1:8000/api/games/dashboard/warmup", timeout=20)
         r.raise_for_status()
-        r = http.post("http://127.0.0.1:8000/api/dashboard/topics-warmup",
+        r = http.post("http://127.0.0.1:8000/api/games/dashboard/topics-warmup",
                       params={"game_ids": ",".join(map(str, game_ids))}, timeout=20)
         r.raise_for_status()
         print("CACHE_REFRESH_QUEUED", r.text, flush=True)
