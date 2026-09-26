@@ -39,6 +39,7 @@ import { registerPromoSupportRoutes } from "./promo-support-routes";
 import { registerAmazonRoutes } from "./amazon-routes";
 import { registerConsoleLeaderboardRoutes } from "./routes-console-leaderboards";
 import { registerDemosLeaderboardRoutes } from "./routes-demos-leaderboard";
+import { registerDemoDetailRoutes } from "./routes-demo-detail";
 import { registerYoutubeRoutes } from "./routes-youtube";
 import { registerReviewsRatingsRoutes } from "./routes-reviews-ratings";
 import { loadDashboardDemoDownloads } from "./signals/demos/dashboard";
@@ -158,6 +159,7 @@ export async function registerRoutes(
   registerAmazonRoutes(app);
   registerConsoleLeaderboardRoutes(app);
   registerDemosLeaderboardRoutes(app);
+  registerDemoDetailRoutes(app);
   registerYoutubeRoutes(app);
   registerReviewsRatingsRoutes(app);
 

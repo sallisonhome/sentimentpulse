@@ -1,5 +1,27 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-26: demo PDP history must distinguish activity from observations
+
+The latest-only Steamworks demo cache is not a historical time series. Retain
+one successful observation per UTC date/window alongside it; seed only the
+original fetched date of an existing verified report. Failed refreshes create
+no observations. Daily net changes require adjacent observation dates and
+adjacent report-end dates with identical report starts; preserve corrections
+and never allocate a multi-day gap into individual days. Label these as changes
+in observed lifetime totals, not audited calendar-day downloads.
+
+Steam daily review histogram buckets are activity dates; estimator inputs and
+new review snapshots are observation dates. Their daily changes need not match.
+Use retained estimator review-count inputs where available, but never infer
+historical positive percentages or replace Saber's actuals with old modeled
+downloads. Historical model outputs keep their original multiplier ID.
+Weekly/monthly review buckets are never divided into invented daily reviews.
+
+IGDB may use the verified parent game's App ID for metadata and media only.
+Label that scope explicitly; parent reviews, downloads and CCU never enter a
+demo PDP. Deactivated demos remain excluded except approved Saber lifetime
+totals. Hook retention into existing collectors; do not add a competing cron.
+
 ## 2026-09-25: monotonic state can preserve an invalid initial snapshot forever
 
 Sniper Elite: Resistance inherited a first snapshot of 880,801 reviews followed
