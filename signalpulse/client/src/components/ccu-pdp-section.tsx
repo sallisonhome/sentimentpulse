@@ -13,7 +13,7 @@
 //   - CcuHourlyResult   <- GET /api/products/:id/ccu/hourly   (ccu-history.ts)
 //   - RelatedGame[]     <- GET /api/products/:id/ccu/related  (ccu-related.ts)
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ResponsiveContainer,
@@ -29,6 +29,7 @@ import {
 import { Gamepad2, Play, X, Users } from "lucide-react";
 import { formatNumber, formatDate } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import * as Dialog from "@radix-ui/react-dialog";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -141,6 +142,7 @@ type LightboxItem = { kind: "image"; url: string } | { kind: "video"; videoId: s
 
 export function GameMediaCarousel({ media }: { media: IgdbMediaResult | undefined }) {
   const [lightbox, setLightbox] = useState<LightboxItem | null>(null);
+  const lastTrigger = useRef<HTMLButtonElement | null>(null);
   const screenshots = media?.screenshotIds ?? [];
   const videos = media?.videoIds ?? [];
 
@@ -154,11 +156,11 @@ export function GameMediaCarousel({ media }: { media: IgdbMediaResult | undefine
         {videos.map((videoId) => (
           <button
             key={`video-${videoId}`}
-            onClick={() => setLightbox({ kind: "video", videoId })}
+            onClick={e => { lastTrigger.current=e.currentTarget; setLightbox({ kind: "video", videoId }); }}
             className="relative shrink-0 h-24 w-40 rounded-md overflow-hidden bg-muted group"
             data-testid={`ccu-media-video-${videoId}`}
           >
-            <img src={youtubeThumbUrl(videoId)} alt="Trailer" className="h-full w-full object-cover" />
+            <img src={youtubeThumbUrl(videoId)} alt="Trailer" loading="lazy" className="h-full w-full object-cover" />
             <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/40 transition-colors">
               <Play className="h-8 w-8 text-white fill-white" />
             </div>
@@ -167,37 +169,40 @@ export function GameMediaCarousel({ media }: { media: IgdbMediaResult | undefine
         {screenshots.map((id) => (
           <button
             key={`shot-${id}`}
-            onClick={() => setLightbox({ kind: "image", url: igdbScreenshotUrl(id) })}
+            onClick={e => { lastTrigger.current=e.currentTarget; setLightbox({ kind: "image", url: igdbScreenshotUrl(id) }); }}
             className="shrink-0 h-24 w-40 rounded-md overflow-hidden bg-muted"
             data-testid={`ccu-media-screenshot-${id}`}
           >
-            <img src={igdbScreenshotUrl(id)} alt="Screenshot" className="h-full w-full object-cover hover:opacity-90 transition-opacity" />
+            <img src={igdbScreenshotUrl(id)} alt="Screenshot" loading="lazy" className="h-full w-full object-cover hover:opacity-90 transition-opacity" />
           </button>
         ))}
       </div>
 
-      {lightbox && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-6"
-          onClick={() => setLightbox(null)}
+      <Dialog.Root open={!!lightbox} onOpenChange={open=>{if(!open)setLightbox(null);}}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/80"/>
+          <Dialog.Content
+          aria-describedby={undefined}
+          onCloseAutoFocus={e=>{e.preventDefault();lastTrigger.current?.focus();}}
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50 flex items-center justify-center w-[90vw] max-w-5xl outline-none"
           data-testid="ccu-media-lightbox"
         >
-          <button
-            className="absolute top-4 right-4 text-white/80 hover:text-white"
-            onClick={() => setLightbox(null)}
+          <Dialog.Title className="sr-only">{lightbox?.kind==="video"?"Game trailer":"Game screenshot"}</Dialog.Title>
+          <Dialog.Close
+            className="absolute -top-12 right-0 p-2 text-white/80 hover:text-white focus-visible:outline focus-visible:outline-white"
             aria-label="Close"
             data-testid="button-close-lightbox"
           >
             <X className="h-6 w-6" />
-          </button>
-          {lightbox.kind === "image" ? (
+          </Dialog.Close>
+          {lightbox?.kind === "image" ? (
             <img
               src={lightbox.url.replace("t_screenshot_big", "t_1080p")}
               alt="Screenshot"
-              className="max-h-[85vh] max-w-[90vw] rounded-md"
+              className="max-h-[75vh] max-w-[90vw] rounded-md"
               onClick={(e) => e.stopPropagation()}
             />
-          ) : (
+          ) : lightbox ? (
             <div className="w-full max-w-3xl aspect-video" onClick={(e) => e.stopPropagation()}>
               <iframe
                 className="h-full w-full rounded-md"
@@ -207,9 +212,10 @@ export function GameMediaCarousel({ media }: { media: IgdbMediaResult | undefine
                 allowFullScreen
               />
             </div>
-          )}
-        </div>
-      )}
+          ) : null}
+        </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </>
   );
 }

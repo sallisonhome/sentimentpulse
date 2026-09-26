@@ -25,7 +25,7 @@
  * the ingestion log, not masked forever by degraded-but-working behavior.
  */
 
-import { log } from "./index";
+import { log } from "./log";
 import { storage } from "./storage";
 
 const HMAP_WISHLIST_URL = "https://howmanyareplaying.com/api/wishlist";
@@ -91,6 +91,7 @@ async function mintTwitchToken(): Promise<string> {
   });
 
   const res = await fetch(TWITCH_TOKEN_URL, {
+    signal: AbortSignal.timeout(15_000),
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -137,6 +138,11 @@ function backoffFor429(res: Response, attempt: number): number {
 
 interface IgdbGameRow {
   id: number;
+  name?: string;
+  cover?: { image_id?: string };
+  genres?: { name?: string }[];
+  involved_companies?: { developer?: boolean; publisher?: boolean; company?: {name?: string} }[];
+  first_release_date?: number;
   hypes?: number;
   summary?: string;
   screenshots?: { image_id?: string }[];
@@ -149,6 +155,7 @@ async function postGames(queryText: string, retriedAfter401 = false, retryCount4
   const { clientId } = readTwitchCreds();
 
   const res = await fetch(`${IGDB_BASE}/games`, {
+    signal: AbortSignal.timeout(15_000),
     method: "POST",
     headers: {
       "Client-ID": clientId,
@@ -283,6 +290,26 @@ export interface IgdbMediaResult {
   summary: string | null;
   screenshotIds: string[];
   videoIds: string[];
+}
+
+/** Exact Steam identity only. Ambiguous matches are unavailable, not guessed. */
+export async function fetchIgdbDetailBySteamAppid(appid: number) {
+  if (!Number.isSafeInteger(appid) || appid <= 0 || !directIgdbAvailable()) return null;
+  const rows = await postGames(
+    `fields id,name,summary,cover.image_id,genres.name,first_release_date,`+
+    `involved_companies.developer,involved_companies.publisher,involved_companies.company.name,`+
+    `screenshots.image_id,videos.video_id,external_games.uid,external_games.external_game_source;`+
+    ` where external_games.uid="${appid}" & external_games.external_game_source=1; limit 50;`);
+  const matched=rows.filter(r=>r.external_games?.some(e=>e.external_game_source===1&&e.uid===String(appid)));
+  if(matched.length!==1) return null;
+  const r=matched[0], safeId=(s:string|undefined):s is string=>!!s&&/^[a-zA-Z0-9_-]+$/.test(s);
+  return {igdbId:r.id,name:r.name,summary:r.summary ?? null,coverId:safeId(r.cover?.image_id)?r.cover!.image_id!:null,
+    screenshotIds:(r.screenshots??[]).map(s=>s.image_id).filter(safeId),
+    videoIds:(r.videos??[]).map(v=>v.video_id).filter(safeId),
+    genres:(r.genres??[]).flatMap(g=>g.name?[g.name]:[]),
+    developers:(r.involved_companies??[]).flatMap(c=>c.developer&&c.company?.name?[c.company.name]:[]),
+    publishers:(r.involved_companies??[]).flatMap(c=>c.publisher&&c.company?.name?[c.company.name]:[]),
+    releaseDate:r.first_release_date ? new Date(r.first_release_date*1000).toISOString().slice(0,10):null};
 }
 
 async function fetchOneMediaBatchDirect(appids: number[]): Promise<Map<number, IgdbMediaResult>> {

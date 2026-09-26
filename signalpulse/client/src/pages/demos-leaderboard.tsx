@@ -17,6 +17,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
+import { Link } from "wouter";
 import { FriendsPassReference } from "@/components/friends-pass-reference";
 import { PASS_PLAYER_GATES, PASS_PLAYER_STATUS_LABELS, type PassPlayerEstimate } from "@shared/pass-player-estimates";
 import type { ActivityWindow, PassParentActivity } from "@shared/pass-parent-activity";
@@ -463,14 +464,10 @@ export default function DemosLeaderboard() {
                 <tr key={d.id} className="border-b border-border/50 hover:bg-muted/30" data-testid={`row-demo-${d.steamAppId}`}>
                   <td className="px-3 py-2 text-muted-foreground">{sourceView ? d.sourceRank : data.offset + i + 1}</td>
                   <td className="px-3 py-2">
-                    <a
-                      href={`https://store.steampowered.com/app/${d.steamAppId}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-medium hover:underline break-words"
-                    >
-                      {d.name}
-                    </a>
+                    {pass ? <a href={`https://store.steampowered.com/app/${d.steamAppId}`} target="_blank"
+                      rel="noreferrer" className="font-medium hover:underline break-words">{d.name}</a>
+                      : <Link href={`/demos-leaderboard/${d.steamAppId}`}
+                        className="font-medium hover:underline break-words">{d.name}</Link>}
                     {d.isSaberPublished && (
                       <Badge className="ml-2 text-[10px]" variant="secondary" data-testid={`badge-saber-${d.steamAppId}`}>
                         Saber

@@ -21,6 +21,7 @@
 import { rawSqlite } from "../../storage";
 import { log } from "../../log";
 import { fetchSteamRatingSignal, type SteamCollectorInput } from "../console/steam";
+import { recordReviewObservation } from "./history-schema";
 
 const insertSteamBucketStmt = () => rawSqlite.prepare(
   `INSERT INTO steam_review_history
@@ -78,12 +79,20 @@ export async function runDemosReviewHistoryCollector(delayMs = 250, eligibleAppI
     const input: SteamCollectorInput = { titleId: demo.id, appId: demo.steam_app_id };
     try {
       const out = await fetchSteamRatingSignal(input);
-      for (const b of out.buckets) {
-        insertSteamBucketStmt().run(
-          b.appId, b.bucketStart, b.bucketGranularity,
-          b.recommendationsUp, b.recommendationsDown, b.sourceEndpoint, nowIso,
-        );
-      }
+      rawSqlite.transaction(() => {
+        for (const b of out.buckets) {
+          insertSteamBucketStmt().run(
+            b.appId, b.bucketStart, b.bucketGranularity,
+            b.recommendationsUp, b.recommendationsDown, b.sourceEndpoint, nowIso,
+          );
+        }
+        // Only a real lifetime rollup can establish a cumulative observation.
+        // Recent-only daily buckets must not masquerade as lifetime reviews.
+        const evidence = JSON.parse(out.snapshot.rawJson ?? "{}");
+        const distribution = JSON.parse(out.snapshot.distributionJson ?? "{}");
+        if (evidence.rollups_len > 0) recordReviewObservation(rawSqlite, demo.steam_app_id,
+          distribution.up, distribution.down, new Date().toISOString());
+      })();
       markCheckedStmt().run(nowIso, nowIso, demo.id);
       result.ingested += 1;
     } catch (e) {

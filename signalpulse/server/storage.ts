@@ -33,6 +33,7 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
+import { initializeDemoHistory } from "./signals/demos/history-schema";
 import { metadataMatchesStorefront } from "./console-title-identity";
 import { eq, and, desc, isNull, isNotNull, asc, gte, lte, notInArray, inArray, sql } from "drizzle-orm";
 
@@ -1330,6 +1331,7 @@ function runMigrations() {
 }
 
 initializeDatabase();
+initializeDemoHistory(sqlite);
 runMigrations();
 
 /**

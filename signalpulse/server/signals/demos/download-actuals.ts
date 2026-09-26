@@ -1,6 +1,7 @@
 import { rawSqlite, storage } from "../../storage";
 import { SABER_DEMO_ROSTER } from "./saber-seed";
 import { DEMO_ACTUAL_WINDOWS, fetchDemoDownloadReports, type ActualWindow } from "./download-report";
+import { recordDownloadObservation } from "./history-schema";
 
 interface RefreshResult { attempted: number; succeeded: number; failed: number; rowsWritten: number }
 let inFlight: Promise<RefreshResult> | null = null;
@@ -35,7 +36,8 @@ async function refresh(): Promise<RefreshResult> {
       if (!session?.cookieValue) throw Error("Steamworks session unavailable");
       const { reports, failures } = await fetchDemoDownloadReports(demo.steamAppId, demo.name, session.cookieValue, windows);
       for (const report of reports) {
-        rawSqlite.prepare(`INSERT INTO demo_download_actuals
+        rawSqlite.transaction(() => {
+          rawSqlite.prepare(`INSERT INTO demo_download_actuals
           (steam_app_id,window,downloads,report_start_date,report_end_date,fetched_at,source_url,source,last_attempt_at,last_error)
           VALUES (?,?,?,?,?,?,?,'steamworks_downloads_report',?,NULL)
           ON CONFLICT(steam_app_id,window) DO UPDATE SET
@@ -43,6 +45,8 @@ async function refresh(): Promise<RefreshResult> {
             fetched_at=excluded.fetched_at,source_url=excluded.source_url,source=excluded.source,
             last_attempt_at=excluded.last_attempt_at,last_error=NULL`)
           .run(demo.steamAppId, report.window, report.downloads, report.reportStartDate, report.reportEndDate, report.fetchedAt, report.sourceUrl, attemptedAt);
+          recordDownloadObservation(rawSqlite, demo.steamAppId, report);
+        })();
         result.rowsWritten++;
       }
       failures.forEach(recordFailure);

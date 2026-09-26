@@ -225,6 +225,12 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     offset: resolvedOffset, hasMore: resolvedOffset + limit < rows.length };
 }
 
+/** PDP headline uses the exact same actual/model/observed-minimum resolver. */
+export function loadDemoDetailSummary(appId: string) {
+  return loadLeaderboardRows("ltd","downloads","desc","",250,0,appId,"demo",PASS_PLAYER_EVIDENCE,"latest")
+    .rows.find(row=>row.steamAppId===appId) ?? null;
+}
+
 export function registerDemosLeaderboardRoutes(app: Express, playerEvidence: readonly PassPlayerEvidence[] = PASS_PLAYER_EVIDENCE) {
   app.get("/api/demos/leaderboard", (req, res) => {
     try {

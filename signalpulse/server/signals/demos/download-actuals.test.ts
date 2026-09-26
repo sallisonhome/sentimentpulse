@@ -89,6 +89,8 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     const result=await p; assert.equal(result.succeeded,6); assert.equal(result.failed,0);
     assert.equal(requests.length,20,"active: landing plus five windows; retired: landing plus lifetime only");
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_actuals").get().n,14);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,14);
+    assert.equal(db.prepare("SELECT downloads FROM demo_download_observations WHERE steam_app_id='4010800' AND window='d7'").get().downloads,0);
     for (const demo of SABER_DEMO_ROSTER.filter(d=>!d.isActive)) {
       const scoped=requests.map(url=>new URL(url)).filter(url=>url.searchParams.get("appID")===demo.steamAppId);
       assert.equal(scoped.length,2);
@@ -162,6 +164,7 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM demo_window_estimates_daily e JOIN demo_titles t ON t.id=e.demo_title_id
       WHERE t.is_active=0 AND e.as_of_date='2099-01-01'`).get().n,0,"deactivated estimates are never refreshed");
     fail=true; const failed=await refreshDashboardDemoActuals(); assert.equal(failed.failed,6);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,14,"failed refresh creates no fabricated observations");
     assert.equal(db.prepare("SELECT downloads FROM demo_download_actuals WHERE steam_app_id='4010800' AND window='d7'").get().downloads,0);
     assert.equal(loadDashboardDemoDownloads(products).get(15)?.[0].refreshFailed,true);
     db.prepare("UPDATE demo_download_actuals SET fetched_at='2020-01-01T00:00:00Z'").run();
