@@ -1,0 +1,50 @@
+name: SignalPulse Steam session health (read-only)
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signalpulse-steam-session-health
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the probe
+        run: python3 -m unittest discover -s .github/scripts -p test_steam_session_health.py -v
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          ssh-keyscan -T 10 -H 104.236.239.46 > ~/.ssh/known_hosts
+      - name: Read SignalPulse session status over SSH
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Stream code over encrypted SSH; no server-side file is created.
+          # Token is read and used only on the server's loopback interface.
+          ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 \
+            root@104.236.239.46 'python3 -' \
+            < .github/scripts/steam_session_health.py > out/health.json
+      - name: Retain sanitized result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: steam-session-health-${{ github.run_id }}
+          path: out/health.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove runner SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519
