@@ -89,9 +89,14 @@ async function safeToResume(){
     {encoding:"utf8",maxBuffer:16*1024*1024});
   const daily=journal.split("\n").filter(l=>l.includes("[ingestion]")&&
     /Starting daily ingestion run|Ingestion complete\.|Ingestion cron error:/.test(l));
-  assert(daily.length&&!daily.at(-1).includes("Starting daily ingestion run"),"Daily ingestion may still be active");
   const demos=journal.split("\n").filter(l=>l.includes("[demos-pipeline]")&&
     /Demos pipeline: released|Demos pipeline: eligible=/.test(l));
+  console.log(JSON.stringify({phase:"ingestion-safety-check",manualInFlight:status.inFlight,lastRun:status.lastRun,
+    lastRunStartedAt:status.lastResult?.startedAt,lastRunCompletedAt:status.lastResult?.completedAt,
+    dailyMarkers:daily.map(l=>l.includes("Starting daily")?"started":l.includes("Ingestion complete.")?"completed":"error"),
+    demoMarkers:demos.map(l=>l.includes("eligible=")?"completed":"started"),
+    rawMarkerCount:journal.split("\n").filter(l=>l.trim()).length}));
+  assert(daily.length&&!daily.at(-1).includes("Starting daily ingestion run"),"Daily ingestion may still be active");
   assert(demos.length&&demos.at(-1).includes("Demos pipeline: eligible="),"Demo pipeline may still be active");
   const previous=JSON.parse(fs.readFileSync("/tmp/demo-history-156-window.json","utf8"));
   assert(previous.status==="stopped","Previous work window not stopped");
