@@ -2,16 +2,16 @@ const {spawn}=require("node:child_process"),fs=require("node:fs");
 const Database=require(process.cwd()+"/node_modules/better-sqlite3");
 exports.run=async expected=>{
   const easternHour=()=>Number(new Intl.DateTimeFormat("en-US",{timeZone:"America/New_York",hour:"2-digit",hourCycle:"h23"}).format(new Date()));
-  if(easternHour()>=1&&easternHour()<8)throw Error("Outside the approved safe evening window; daily schedule must not overlap");
-  const dir="/tmp/demo-history-156-batches";fs.mkdirSync(dir,{recursive:true,mode:0o700});
+  if(easternHour()>=1&&easternHour()<8)throw Error("Outside the safe work window; daily schedule must not overlap");
+  const dir="/tmp/demo-history-resume-sep27-batches";fs.mkdirSync(dir,{recursive:true,mode:0o700});
   const db=new Database("data.db",{readonly:true});
   // An already completed authorized invocation is inspected, never blindly
   // replayed after an SSH disconnect or workflow retry.
-  const statePath="/tmp/demo-history-156-window.json";
-  if(fs.existsSync(statePath))throw Error("Prior PR156 initial work window exists; inspect it before any further run");
+  const statePath="/tmp/demo-history-resume-sep27-window.json";
+  if(fs.existsSync(statePath))throw Error("This authorized continuation already started; inspect rather than replay");
   const started=Date.now(),deadline=started+3600000;
   fs.writeFileSync(statePath,JSON.stringify({expected,startedAt:new Date(started).toISOString(),deadline:new Date(deadline).toISOString(),status:"running"}),{mode:0o600});
-  let batches=0,stopReason="one-hour initial window reached",requests=0;
+  let batches=0,stopReason="one-hour continuation window reached",requests=0;
   try{
     while(Date.now()+30000<deadline){
       if(easternHour()>=1&&easternHour()<8){stopReason="approaching morning collection window";break;}
@@ -19,8 +19,7 @@ exports.run=async expected=>{
       const file=`${dir}/batch-${String(batches+1).padStart(3,"0")}.json`;
       await new Promise((resolve,reject)=>{
         const out=fs.openSync(file,"w",0o600);
-        const child=spawn("node_modules/.bin/tsx",["--tsconfig","tsconfig.json","scripts/backfill-demo-history.ts",
-          "--since","2025-01-01","--until","2026-09-25","--scope","all","--apply","--max-requests","200","--max-ms",String(ms)],
+        const child=spawn("node_modules/.bin/tsx",["--tsconfig","tsconfig.json","/tmp/demo-history-resume.mts","200",String(ms)],
           {env:{...process.env,DEMO_HISTORY_MAINTENANCE_LOCK:"1"},stdio:["ignore",out,"inherit"]});
         child.once("error",e=>{fs.closeSync(out);reject(e);});
         child.once("exit",code=>{fs.closeSync(out);code===0?resolve():reject(Error(`Backfill child exited ${code}`));});

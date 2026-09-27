@@ -1,11 +1,11 @@
-name: Approved demo history PR156 rollout
+name: Approved demo history continuation September 27
 on:
   workflow_dispatch:
     inputs:
       phase:
         required: true
         type: choice
-        options: [backup, verify, backfill, report]
+        options: [inspect, backup, verify, backfill, report]
       expected_sha:
         required: false
         default: ""
@@ -31,19 +31,23 @@ jobs:
           EXPECTED: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          case "$PHASE" in backup|verify|backfill|report) ;; *) exit 1;; esac
-          if [ "$PHASE" != backup ]; then [[ "$EXPECTED" =~ ^[a-f0-9]{40}$ ]]; fi
+          case "$PHASE" in inspect|backup|verify|backfill|report) ;; *) exit 1;; esac
+          [[ "$EXPECTED" =~ ^[a-f0-9]{40}$ ]]
           mkdir -p out
-          scp .github/scripts/demo-history-rollout.cjs .github/scripts/demo-history-bounded.cjs root@104.236.239.46:/tmp/
+          scp .github/scripts/demo-history-rollout.cjs .github/scripts/demo-history-bounded.cjs .github/scripts/demo-history-resume.mts root@104.236.239.46:/tmp/
           ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8 root@104.236.239.46 \
             "exec 9>/run/lock/signalpulse-maintenance.lock; flock -w 300 9 || exit 75; cd /opt/sentimentpulse/signalpulse; set -a; . /etc/signalpulse/env; set +a; node /tmp/demo-history-rollout.cjs '$PHASE' '$EXPECTED'" \
             | tee out/summary.jsonl
           if [ "$PHASE" = backfill ] || [ "$PHASE" = report ]; then
-            scp root@104.236.239.46:/tmp/demo-history-156-coverage.json out/coverage.json
+            scp root@104.236.239.46:/tmp/demo-history-resume-sep27-coverage.json out/coverage.json
+            scp root@104.236.239.46:/tmp/demo-history-resume-sep27-before.json out/before.json
+          fi
+          if [ "$PHASE" = backup ]; then
+            scp root@104.236.239.46:/tmp/demo-history-resume-sep27-before.json out/before.json
           fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: demo-history-${{ inputs.phase }}-${{ github.run_id }}
+          name: demo-history-resume-${{ inputs.phase }}-${{ github.run_id }}
           path: out/
           retention-days: 14
