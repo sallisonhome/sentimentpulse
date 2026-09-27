@@ -4,6 +4,17 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## September 26, 2026
 
+- Added bounded demo-history recovery: direct daily Steamworks actuals,
+  date-bounded cumulative reports, and separately reconciled review dates.
+  Original observed lifetime snapshots, model IDs and net changes remain
+  distinct. PDP charts/CSV expose provenance and per-title coverage.
+- Added a bounded three-day Saber report refresh to the existing daily
+  pipeline; no schedule change. One-time all-demo recovery is resumable,
+  source-validated, and requires explicit operator invocation.
+- Preserved retired-demo scope, histogram precedence, last-good data and
+  strict dashboard lifetime validation. Count disagreements withhold
+  recovered estimates; no past CCU, review totals or zeros are fabricated.
+
 - Constrained FC 26's family revenue model across all five periods, including
   12 months and lifetime, using the lower eligible
   same-period native platform model, retaining the existing 65% PS5 / 25% Xbox /

@@ -9,7 +9,7 @@ export function archivedSnapshot(title: CatalogDemo): DemoDetail["latest"] & {sn
   const last=(key:"lifetimeDownloads"|"totalReviews"|"positivePercent"|"ccuLatest") =>
     [...history.rows].reverse().find(row=>row[key]!==null);
   const downloads=last("lifetimeDownloads"),reviews=last("totalReviews"),sentiment=last("positivePercent"),ccu=last("ccuLatest");
-  const evidence=history.rows.filter(row=>row.lifetimeDownloads!==null||row.totalReviews!==null||
+  const evidence=history.rows.filter(row=>row.lifetimeDownloads!==null||row.dailyDownloads!==null||row.reportedDownloadsToDate!==null||row.totalReviews!==null||
     row.reviewsAdded!==null||row.ccuPeak!==null||row.ccuLatest!==null);
   const peaks=history.rows.flatMap(row=>row.ccuPeak===null?[]:[row.ccuPeak]);
   return {

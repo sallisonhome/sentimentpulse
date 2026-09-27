@@ -63,7 +63,18 @@ export function registerDemoDetailRoutes(app: Express) {
           reviews:summary!.reviewCountTotal,positivePercent:summary!.steamReviews?.positivePercent??null,
           ccu:summary!.ccuCurrent,peak:summary!.ccuAllTimePeak,ccuObservedAt:summary!.ccuAsOf,
           actualsAsOf:summary!.actualsAsOf,actualsStale:summary!.actualsStale,actualsRefreshFailed:summary!.actualsRefreshFailed},
-        latestWindows:latestWindows.sort((a,b)=>["d7","d30","d90","m12","ltd"].indexOf(a.window)-["d7","d30","d90","m12","ltd"].indexOf(b.window))};
+        latestWindows:latestWindows.sort((a,b)=>["d7","d30","d90","m12","ltd"].indexOf(a.window)-["d7","d30","d90","m12","ltd"].indexOf(b.window)),
+        historyCoverage:{
+          dailyReportDays:(rawSqlite.prepare("SELECT COUNT(*) n FROM demo_download_dated_reports WHERE steam_app_id=? AND scope='day'").get(t.steam_app_id) as any).n,
+          cumulativeReportDays:(rawSqlite.prepare("SELECT COUNT(*) n FROM demo_download_dated_reports WHERE steam_app_id=? AND scope='to_date'").get(t.steam_app_id) as any).n,
+          histogramDays:(rawSqlite.prepare("SELECT COUNT(*) n FROM steam_review_history WHERE app_id=? AND bucket_granularity='day'").get(t.steam_app_id) as any).n,
+          recoveredReviewDays:(rawSqlite.prepare(`SELECT COUNT(*) n FROM demo_review_recovered_daily r JOIN demo_history_backfill_jobs j
+            ON j.steam_app_id=r.steam_app_id AND j.kind='reviews' AND j.status='complete' WHERE r.steam_app_id=?`).get(t.steam_app_id) as any).n,
+          jobs:rawSqlite.prepare(`SELECT kind,status,start_date AS startDate,end_date AS endDate,next_date AS nextDate,error,updated_at AS updatedAt
+            FROM demo_history_backfill_jobs WHERE steam_app_id=?`).all(t.steam_app_id) as any[],
+          checks:rawSqlite.prepare(`SELECT source,attempted_at AS attemptedAt,succeeded_at AS succeededAt,error
+            FROM demo_history_source_checks WHERE steam_app_id=?`).all(t.steam_app_id) as any[],
+        }};
       res.set("Cache-Control","no-store").json(data);
     }catch{res.status(500).json({error:"Demo history unavailable. Please retry."});}
   });

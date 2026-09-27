@@ -327,3 +327,18 @@ Shadow calibration must never be described as an already-trained revenue model. 
 ## 2026-09-25 — Views over time must use the requested flow metric
 
 The user corrected the YouTube PDP's featured lifetime-snapshot chart: they want daily views, not cumulative views. Use same-video changes between consecutive daily observations (`netViews`), never differences between portfolio snapshot sums that can jump as videos are discovered. Keep first observations and missing comparisons blank; label weekly/monthly grouping as summed period views. Verify the actual chart series, headline, table and CSV rather than only changing the chart title.
+## 2026-09-26: Download report dates are not observation dates
+
+The demo PDP showed one Saber lifetime snapshot and blank older download cells
+because the prior cache retained only its latest fetch. Historical single-day
+reports are available, but summing them does not necessarily reproduce a wider
+Steamworks report. Retain direct day reports, baseline-through-date reports,
+observed lifetime snapshots and net snapshot changes as independent series.
+Keep the legacy lifetime parser's explicit scope guard; a historical
+date-bounded report is not a past observed lifetime snapshot.
+
+Public review pagination can disagree with both its summary and histogram.
+Exhausting a cursor alone is not proof of completeness. Reconcile counts before
+publishing recovered daily estimates, preserve histogram precedence, record
+current retrieval timestamps, and surface disagreement rather than overwrite.
+No historical CCU, zero-filled missing days, or backdated cumulative observations.

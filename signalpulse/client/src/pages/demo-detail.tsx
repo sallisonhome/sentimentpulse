@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Download, ExternalLink, RefreshCw } from "lucide-react";
@@ -14,7 +14,7 @@ import { demoHistoryCsv, type DemoDetail as Detail, type DemoHistoryPoint, type 
 const fmt=(n:number|null|undefined)=>n==null?"Not available":n.toLocaleString("en-US",{maximumFractionDigits:1});
 const tableNumber=(n:number|null)=>n==null?"—":fmt(n);
 const windowLabel:Record<string,string>={d7:"7 days",d30:"30 days",d90:"90 days",m12:"12 months",ltd:"Lifetime"};
-type Metric="dailyDownloads"|"lifetimeDownloads"|"reviewsAdded"|"totalReviews"|"positivePercent"|"ccuPeak"|"ccuLatest";
+type Metric="dailyDownloads"|"lifetimeDownloads"|"reportedDownloadsToDate"|"netLifetimeChange"|"reviewsAdded"|"totalReviews"|"positivePercent"|"ccuPeak"|"ccuLatest";
 
 function HistoryChart({rows,metric,title,note,bars=false}:{
   rows:DemoHistoryPoint[];metric:Metric;title:string;note:string;bars?:boolean;
@@ -35,7 +35,7 @@ function HistoryChart({rows,metric,title,note,bars=false}:{
             domain={metric==="positivePercent"?[0,100]:[points.some(p=>p[metric]!<0)?"auto":0,"auto"]}
             tick={{fontSize:12,fill:"hsl(var(--muted-foreground))"}}
             tickFormatter={n=>metric==="positivePercent"?`${n}%`:Intl.NumberFormat("en",{notation:"compact",maximumFractionDigits:1}).format(n)}/>
-          <Tooltip labelFormatter={d=>`${d} (UTC)`} formatter={(v:number)=>[`${fmt(v)}${metric==="positivePercent"?"%":""}`,title]}
+          <Tooltip labelFormatter={d=>`${d}`} formatter={(v:number)=>[`${fmt(v)}${metric==="positivePercent"?"%":""}`,title]}
             contentStyle={{background:"hsl(var(--card))",borderColor:"hsl(var(--border))",borderRadius:8,fontSize:12}}/>
           {bars?<Bar dataKey={metric} fill="#38a8c9" maxBarSize={28} isAnimationActive={false}/>
             :<Line dataKey={metric} type="linear" stroke="#38a8c9" strokeWidth={2} connectNulls={false}
@@ -50,24 +50,31 @@ function HistoryChart({rows,metric,title,note,bars=false}:{
 export default function DemoDetail(){
   const {appId}=useParams<{appId:string}>();
   const [range,setRange]=useState<DemoRange>("30");
-  const [downloadMode,setDownloadMode]=useState<"daily"|"lifetime">("lifetime");
+  const [downloadMode,setDownloadMode]=useState<"daily"|"lifetime"|"reported"|"change">("daily");
   const [reviewMode,setReviewMode]=useState<"daily"|"lifetime"|"sentiment">("daily");
   const [ccuMode,setCcuMode]=useState<"peak"|"latest">("peak");
+  useEffect(()=>setDownloadMode("daily"),[appId]);
   const detail=useQuery<Detail>({queryKey:["/api/demos/titles",appId,range],
     queryFn:async()=>(await apiRequest("GET",`/api/demos/titles/${appId}?days=${range}`)).json(),retry:false});
   const media=useQuery<DemoMediaResponse>({queryKey:["/api/demos/titles",appId,"media"],
     queryFn:async()=>(await apiRequest("GET",`/api/demos/titles/${appId}/media`)).json(),
     enabled:!!detail.data,retry:false});
   const data=detail.data,art=media.data?.media,archived=!!data?.archived;
-  const downloadMetric=downloadMode==="lifetime"?"lifetimeDownloads":"dailyDownloads";
-  const downloadTitle=downloadMetric==="lifetimeDownloads"
+  const downloadMetric=downloadMode==="lifetime"?"lifetimeDownloads":downloadMode==="reported"?"reportedDownloadsToDate":downloadMode==="change"?"netLifetimeChange":"dailyDownloads";
+  const downloadTitle=downloadMetric==="reportedDownloadsToDate"?"Reported downloads through date"
+    :downloadMetric==="netLifetimeChange"?"Net change in observed lifetime totals"
+    :downloadMetric==="lifetimeDownloads"
     ? data?.isSaber?"Observed lifetime downloads":"Recorded lifetime download estimates"
-    : data?.isSaber?"Daily net change in observed lifetime downloads":"Estimated daily downloads";
-  const downloadNote=downloadMetric==="lifetimeDownloads"
+    : data?.isSaber?"Daily demo downloads · Steamworks actuals":"Estimated daily downloads";
+  const downloadNote=downloadMetric==="reportedDownloadsToDate"
+    ? "Steamworks report from its 2000-01-01 baseline through each date, retrieved later. Not a snapshot observed on that past date and not a sum of daily reports."
+    :downloadMetric==="netLifetimeChange"
+    ? "Difference between consecutive comparable lifetime observations. This includes reporting revisions and is not the single-day download report."
+    :downloadMetric==="lifetimeDownloads"
     ? "One recorded total per observation date. Historical estimates retain their original model; no invented past totals."
     : data?.isSaber
-      ? "Difference between consecutive comparable lifetime reports. This can include reporting revisions and partial days; it is not an audited daily-download report."
-      : `Own-demo daily review buckets × ${data?.multiplier??130}, provisional. This is a modeled download proxy, not measured downloads. No CCU floor is applied to daily history.`;
+      ? "Direct single-day Steamworks report for this demo App ID, on the source report’s calendar date. Reports may be revised; they need not sum to the cumulative report."
+      : `Own-demo daily reviews × ${data?.multiplier??130}, provisional. Valve histogram buckets take priority; reconciled recovered review-creation dates fill older gaps. Not measured downloads or a CCU-based count.`;
   const exportCsv=()=>{
     if(!data)return;
     const url=URL.createObjectURL(new Blob([demoHistoryCsv(data)],{type:"text/csv;charset=utf-8"}));
@@ -136,7 +143,7 @@ export default function DemoDetail(){
       <section aria-label="Daily history" className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div><h2 className="text-base font-semibold">Day-by-day history</h2>
-            <p className="text-xs text-muted-foreground mt-1">Chart dates in UTC · Headline cards show latest available observations, which can be stale</p></div>
+            <p className="text-xs text-muted-foreground mt-1">{data.isSaber?"Downloads use Steamworks report dates; review/CCU dates are UTC":"Review and CCU dates are UTC"} · Headline cards show latest available observations</p></div>
           <div className="flex flex-wrap gap-1" aria-label="History range">
             {(["7","30","90","365","all"] as DemoRange[]).map(r=><Button key={r} size="sm" aria-pressed={range===r}
               variant={range===r?"secondary":"outline"} onClick={()=>setRange(r)}>{r==="all"?"All history":r==="365"?"12 months":`${r} days`}</Button>)}
@@ -144,14 +151,25 @@ export default function DemoDetail(){
         </div>
         <p className="text-xs text-muted-foreground" data-testid="demo-history-range">{data.start} through {data.end} · {data.firstHistoryDate?`Earliest retained history: ${data.firstHistoryDate}`:"History not yet available"}
           {detail.isFetching?" · Loading…":""}</p>
-        {<div className="flex gap-2" aria-label="Download history mode">
-          <Button size="sm" variant={downloadMode==="daily"?"secondary":"outline"} aria-pressed={downloadMode==="daily"} onClick={()=>setDownloadMode("daily")}>Daily changes</Button>
-          <Button size="sm" variant={downloadMode==="lifetime"?"secondary":"outline"} aria-pressed={downloadMode==="lifetime"} onClick={()=>setDownloadMode("lifetime")}>Lifetime snapshots</Button>
+        {<div className="flex flex-wrap gap-2" aria-label="Download history mode">
+          <Button size="sm" variant={downloadMode==="daily"?"secondary":"outline"} aria-pressed={downloadMode==="daily"} onClick={()=>setDownloadMode("daily")}>Daily downloads</Button>
+          {data.isSaber&&<Button size="sm" variant={downloadMode==="reported"?"secondary":"outline"} aria-pressed={downloadMode==="reported"} onClick={()=>setDownloadMode("reported")}>Reported through date</Button>}
+          <Button size="sm" variant={downloadMode==="lifetime"?"secondary":"outline"} aria-pressed={downloadMode==="lifetime"} onClick={()=>setDownloadMode("lifetime")}>Observed lifetime</Button>
+          {data.isSaber&&<Button size="sm" variant={downloadMode==="change"?"secondary":"outline"} aria-pressed={downloadMode==="change"} onClick={()=>setDownloadMode("change")}>Net LTD change</Button>}
         </div>}
-        <HistoryChart rows={data.rows} metric={downloadMetric} title={downloadTitle} note={downloadNote} bars={downloadMetric==="dailyDownloads"}/>
-        {data.isSaber&&downloadMetric==="dailyDownloads"&&!data.rows.some(r=>r.dailyDownloads!==null)&&
-          <p className="text-xs text-muted-foreground">Daily changes need comparable lifetime reports from two consecutive dates.
-            Older actual-download reports were not retained by the previous collector; the latest report is preserved as a starting snapshot.</p>}
+        <HistoryChart rows={data.rows} metric={downloadMetric} title={downloadTitle} note={downloadNote} bars={downloadMetric==="dailyDownloads"||downloadMetric==="netLifetimeChange"}/>
+        <Card className="p-4 text-xs text-muted-foreground space-y-2" data-testid="demo-history-coverage">
+          <h3 className="text-sm font-semibold text-foreground">History coverage</h3>
+          <p>{data.isSaber?`${data.historyCoverage.dailyReportDays} daily actual reports · ${data.historyCoverage.cumulativeReportDays} date-bounded cumulative reports · `:""}
+            {data.historyCoverage.histogramDays} retained review histogram dates · {data.historyCoverage.recoveredReviewDays} reconciled recovered review dates.
+            {" "}Counts cover retained history, not just the selected range.</p>
+          {!data.historyCoverage.jobs.length&&<p>Historical recovery has not been run for this title. Daily source checks continue; a blank is unavailable, not zero.</p>}
+          {data.historyCoverage.jobs.map(j=><p key={j.kind}>
+            {j.kind==="downloads"?"Steamworks backfill":"Review-date recovery"}: {j.status==="complete"?"complete within requested scope":j.status==="mismatch"?"counts disagree; recovered estimates withheld":j.status==="error"?"source unavailable; checkpoint retained":j.status==="running"?"partially collected; more batches needed":"not yet processed"}
+            {` · ${j.startDate} to ${j.endDate}`}</p>)}
+          {data.historyCoverage.checks.filter(c=>c.error).map(c=><p key={c.source} role="status">{c.error} · Last attempt {c.attemptedAt.slice(0,10)}</p>)}
+          <p>Recovered reviews represent currently retrievable reviews by creation date, not past observed totals. Original lifetime snapshots and unavailable past CCU are never manufactured.</p>
+        </Card>
         {<div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="space-y-3 min-w-0">
             <div className="flex flex-wrap gap-1" aria-label="Review history mode">
@@ -160,7 +178,7 @@ export default function DemoDetail(){
             </div>
             <HistoryChart rows={data.rows} metric={reviewMode==="daily"?"reviewsAdded":reviewMode==="lifetime"?"totalReviews":"positivePercent"}
               title={reviewMode==="daily"?"Daily Steam reviews":reviewMode==="lifetime"?"Observed lifetime reviews":"Observed positive review share"}
-              note={reviewMode==="daily"?"Actual day-grain histogram buckets for this demo. Today may be partial; weekly/monthly rollups are never split into invented days."
+              note={reviewMode==="daily"?"Own-demo day-grain histogram buckets, with reconciled review-creation dates used only where a histogram day is missing. Today may be partial; weekly/monthly rollups are never prorated."
                 :reviewMode==="lifetime"?"Retained review-count inputs and new lifetime review observations for this demo. No backdated cumulative totals."
                   :"Captured lifetime positive share for this demo. Sentiment snapshot retention starts with this release; older percentages are not reconstructed."}
               bars={reviewMode==="daily"}/>
@@ -178,18 +196,20 @@ export default function DemoDetail(){
 
       <Card className="p-4 space-y-3">
         <h2 className="text-base font-semibold">Daily records</h2>
-        <p className="text-xs text-muted-foreground">Reviews use activity dates; lifetime totals use observation dates, so their daily changes need not match. Only dates with evidence are listed.
-          Blank cells mean unavailable, not zero. CSV includes all dates, sources, model IDs, and observation timestamps.</p>
-        <div className="overflow-auto max-h-96">
+        <p className="text-xs text-muted-foreground">Daily actuals and reported-through-date totals use Steamworks report dates; observed lifetime totals use capture dates.
+          Reviews use activity dates. These series need not reconcile by addition. Blank cells mean unavailable, not zero; CSV preserves sources and retrieval timestamps.</p>
+        <p className="text-xs text-muted-foreground sm:hidden">Swipe the table to see all metrics.</p>
+        <div className="overflow-auto max-h-96" tabIndex={0} role="region" aria-label="Demo daily records">
           <table className="w-full text-xs whitespace-nowrap text-right">
-            <thead className="sticky top-0 bg-card"><tr className="border-b">
-              {["Date (UTC)",data.isSaber?"Net LTD change":"Est. daily downloads",data.isSaber?"LTD actual":"Recorded LTD estimate",
-                "Daily reviews","+ reviews","− reviews","Total reviews","Positive %","Last CCU","Peak sample","Samples"].map((h,i)=><th key={h} className={`p-3 font-medium ${i===0?"text-left":""}`}>{h}</th>)}
+            <thead className="sticky top-0 z-20 bg-card"><tr className="border-b">
+              {["Date",data.isSaber?"Daily actual downloads":"Est. daily downloads",...(data.isSaber?["Reported through date","Net LTD change"]:[]),data.isSaber?"Observed LTD actual":"Recorded LTD estimate",
+                "Daily reviews","+ reviews","− reviews","Total reviews","Positive %","Last CCU","Peak sample","Samples","Review-day source"].map((h,i)=><th key={h} className={`p-3 font-medium ${i===0?"text-left sticky left-0 bg-card z-20":""}`}>{h}</th>)}
             </tr></thead>
             <tbody>{[...visibleRows].reverse().map(r=><tr key={r.date} className="border-b border-border/50">
-              <td className="p-3 text-left">{r.date}</td>
-              {[r.dailyDownloads,r.lifetimeDownloads,r.reviewsAdded,r.positiveAdded,r.negativeAdded,r.totalReviews,r.positivePercent,r.ccuLatest,r.ccuPeak,r.ccuSamples]
-                .map((n,i)=><td key={i} className="p-3 tabular-nums">{tableNumber(n)}{i===6&&n!=null?"%":""}</td>)}
+              <td className="p-3 text-left sticky left-0 bg-card">{r.date}</td>
+              {[r.dailyDownloads,...(data.isSaber?[r.reportedDownloadsToDate,r.netLifetimeChange]:[]),r.lifetimeDownloads,r.reviewsAdded,r.positiveAdded,r.negativeAdded,r.totalReviews,r.positivePercent,r.ccuLatest,r.ccuPeak,r.ccuSamples]
+                .map((n,i)=><td key={i} className="p-3 tabular-nums">{tableNumber(n)}{i===(data.isSaber?8:6)&&n!=null?"%":""}</td>)}
+              <td className="p-3 text-muted-foreground">{r.reviewActivitySource==="steam:appreviews:created-date"?"Recovered creation dates":r.reviewActivitySource?"Steam histogram":"Not available"}</td>
             </tr>)}</tbody>
           </table>
           {!visibleRows.length&&<p className="py-8 text-center text-sm text-muted-foreground">No daily records in this range.</p>}

@@ -11,16 +11,17 @@
  * The separate read-only portal probe remains an operator diagnostic.
  */
 import { log } from "../../log";
-import { seedSaberDemos } from "./saber-seed";
+import { seedSaberDemos, SABER_DEMO_ROSTER } from "./saber-seed";
 import { runDemosHubDiscovery } from "./discovery";
 import { createDemoVerifier } from "./metadata";
 import { runDemosReviewHistoryCollector } from "./runner";
 import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
-import { rawSqlite } from "../../storage";
+import { rawSqlite, storage } from "../../storage";
 import { refreshDashboardDemoActuals } from "./download-actuals";
 import { runFriendsPassPipeline } from "./friends-pass";
 import { loadDemoCatalog } from "./catalog";
+import { HistoryBudget, refreshRecentDemoReports } from "./history-backfill";
 
 export interface DemosPipelineRunResult {
   seeded: number;
@@ -32,6 +33,7 @@ export interface DemosPipelineRunResult {
   portalActualsFetch: { source: string; status: "skipped"; message: string };
   actuals: { demosWithActuals: number; rowsWritten: number };
   dashboardActuals: Awaited<ReturnType<typeof refreshDashboardDemoActuals>>;
+  datedActuals: Awaited<ReturnType<typeof refreshRecentDemoReports>>;
   friendsPass: Awaited<ReturnType<typeof runFriendsPassPipeline>>;
 }
 
@@ -41,6 +43,10 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
   const friendsPass = await runFriendsPassPipeline(delayMs);
   // Independent of public availability: archived demos still have actuals.
   const dashboardActuals = await refreshDashboardDemoActuals();
+  const datedActuals = await refreshRecentDemoReports(rawSqlite,loadDemoCatalog("demo"),
+    new Set(SABER_DEMO_ROSTER.map(d=>d.steamAppId)),storage.getSteamworksSession("default")?.cookieValue,
+    new HistoryBudget(48,120000,delayMs));
+  log(`Demo dated reports: ${JSON.stringify(datedActuals)}`,"demos-pipeline");
   const verifier = createDemoVerifier(delayMs);
   const discovery = await runDemosHubDiscovery(delayMs, verifier);
 
@@ -95,5 +101,5 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
   };
   const actuals = { demosWithActuals: 0, rowsWritten: 0 };
   log(`Demos pipeline: eligible=${eligibility.eligible} excluded=${eligibility.excluded} failed=${eligibility.failed}`, "demos-pipeline");
-  return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals, dashboardActuals, friendsPass };
+  return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals, dashboardActuals, datedActuals, friendsPass };
 }
