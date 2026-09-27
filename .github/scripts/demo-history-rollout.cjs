@@ -77,6 +77,13 @@ function coverage(){
   const actualSamples=db.prepare(`SELECT * FROM demo_download_dated_reports WHERE steam_app_id='5184670' ORDER BY report_date DESC,scope`).all();
   return {observedAt:new Date().toISOString(),head,since:"2025-01-01",until:"2026-09-25",titles,jobs,stats,actualSamples};
 }
+function chronologicalMarkers(text){
+  return text.split("\n").filter(l=>l.trim()).map(l=>{
+    const e=JSON.parse(l);
+    if(typeof e.MESSAGE!=="string"||!/^\d+$/.test(e.__REALTIME_TIMESTAMP))throw Error("Invalid journal marker");
+    return {message:e.MESSAGE,at:new Date(Number(e.__REALTIME_TIMESTAMP)/1000).toISOString(),time:Number(e.__REALTIME_TIMESTAMP)};
+  }).sort((a,b)=>a.time-b.time);
+}
 async function safeToResume(){
   assert(process.env.INGESTION_OPS_TOKEN,"Server ops configuration unavailable");
   const r=await fetch("http://127.0.0.1:5000/api/ingestion/status",{
@@ -84,20 +91,21 @@ async function safeToResume(){
   assert(r.status===200,"Ingestion status unavailable");
   const status=await r.json();
   assert(status.inFlight===false&&status.status!=="running","Manual ingestion active");
-  const journal=execFileSync("journalctl",["-u","signalpulse","--since","24 hours ago","-o","cat","--no-pager",
+  const journal=execFileSync("journalctl",["-u","signalpulse","--since","24 hours ago","-o","json","--no-pager",
     "--grep","Starting daily ingestion run|Ingestion complete[.]|Ingestion cron error:|Demos pipeline: (released|eligible=)","-n","100"],
     {encoding:"utf8",maxBuffer:16*1024*1024});
-  const daily=journal.split("\n").filter(l=>l.includes("[ingestion]")&&
-    /Starting daily ingestion run|Ingestion complete\.|Ingestion cron error:/.test(l));
-  const demos=journal.split("\n").filter(l=>l.includes("[demos-pipeline]")&&
-    /Demos pipeline: released|Demos pipeline: eligible=/.test(l));
+  const markers=chronologicalMarkers(journal);
+  const daily=markers.filter(l=>l.message.includes("[ingestion]")&&
+    /Starting daily ingestion run|Ingestion complete\.|Ingestion cron error:/.test(l.message));
+  const demos=markers.filter(l=>l.message.includes("[demos-pipeline]")&&
+    /Demos pipeline: released|Demos pipeline: eligible=/.test(l.message));
   console.log(JSON.stringify({phase:"ingestion-safety-check",manualInFlight:status.inFlight,lastRun:status.lastRun,
     lastRunStartedAt:status.lastResult?.startedAt,lastRunCompletedAt:status.lastResult?.completedAt,
-    dailyMarkers:daily.map(l=>l.includes("Starting daily")?"started":l.includes("Ingestion complete.")?"completed":"error"),
-    demoMarkers:demos.map(l=>l.includes("eligible=")?"completed":"started"),
-    rawMarkerCount:journal.split("\n").filter(l=>l.trim()).length}));
-  assert(daily.length&&!daily.at(-1).includes("Starting daily ingestion run"),"Daily ingestion may still be active");
-  assert(demos.length&&demos.at(-1).includes("Demos pipeline: eligible="),"Demo pipeline may still be active");
+    dailyMarkers:daily.map(l=>({at:l.at,event:l.message.includes("Starting daily")?"started":l.message.includes("Ingestion complete.")?"completed":"error"})),
+    demoMarkers:demos.map(l=>({at:l.at,event:l.message.includes("eligible=")?"completed":"started"})),
+    rawMarkerCount:markers.length}));
+  assert(daily.length&&!daily.at(-1).message.includes("Starting daily ingestion run"),"Daily ingestion may still be active");
+  assert(demos.length&&demos.at(-1).message.includes("Demos pipeline: eligible="),"Demo pipeline may still be active");
   const previous=JSON.parse(fs.readFileSync("/tmp/demo-history-156-window.json","utf8"));
   assert(previous.status==="stopped","Previous work window not stopped");
   assert(!fs.existsSync(prefix+"-window.json"),"This authorized continuation already started; inspect rather than replay");
