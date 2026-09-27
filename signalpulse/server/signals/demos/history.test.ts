@@ -37,11 +37,12 @@ test("actual changes require consecutive comparable reports; corrections retaine
   for(const r of [report("2026-09-21",100),report("2026-09-22",130),report("2026-09-23",125),
     report("2026-09-25",200),report("2026-09-26",210,"2026-09-25")])recordDownloadObservation(db,saber.steam_app_id,r);
   const result=loadDemoHistory(db,saber,"7","2026-09-26");
-  assert.deepEqual(result.rows.map(r=>r.dailyDownloads),[null,null,30,-5,null,null,null]);
+  assert.deepEqual(result.rows.map(r=>r.netLifetimeChange),[null,null,30,-5,null,null,null]);
+  assert.ok(result.rows.every(r=>r.dailyDownloads===null),"LTD changes are not direct daily reports");
   assert.equal(result.rows[0].lifetimeDownloads,null);
-  assert.equal(loadDemoHistory(db,{...saber,is_active:0},"all","2026-09-26").rows.some(r=>r.dailyDownloads!==null),true);
+  assert.equal(loadDemoHistory(db,{...saber,is_active:0},"all","2026-09-26").rows.some(r=>r.netLifetimeChange!==null),true);
   recordDownloadObservation(db,saber.steam_app_id,report("2026-09-26",0));
-  assert.equal(loadDemoHistory(db,saber,"7","2026-09-26").rows.at(-1)?.dailyDownloads,-200);
+  assert.equal(loadDemoHistory(db,saber,"7","2026-09-26").rows.at(-1)?.netLifetimeChange,-200);
   db.close();
 });
 test("demo history never includes parents, overlapping weekly buckets, legacy license actuals, or invented cumulative reviews",()=>{
@@ -118,6 +119,18 @@ test("real routes, authentication, collector snapshot writes, archived gates and
     const body=await(await realFetch(`${base}/api/demos/titles/5184670`)).json();
     assert.equal(body.latest.reviews,10);assert.equal(body.latest.downloads,null);
     assert.equal(body.rows.at(-1).totalReviews,10);
+    db.prepare("INSERT INTO demo_download_dated_reports VALUES(?,?,?,?,?,?,?)")
+      .run("5184670",stamp.slice(0,10),"day",123,stamp.slice(0,10),stamp,"https://partner.steampowered.com/nav_regions.php?downloads=1&appID=5184670");
+    db.prepare("INSERT INTO demo_download_dated_reports VALUES(?,?,?,?,?,?,?)")
+      .run("5184670",stamp.slice(0,10),"to_date",456,"2000-01-01",stamp,"https://partner.steampowered.com/nav_regions.php?downloads=1&appID=5184670");
+    const dated=await(await realFetch(`${base}/api/demos/titles/5184670`)).json();
+    assert.equal(dated.rows.at(-1).dailyDownloads,123);
+    assert.equal(dated.rows.at(-1).reportedDownloadsToDate,456);
+    assert.equal(dated.rows.at(-1).lifetimeDownloads,null);
+    assert.equal(dated.latest.downloads,null,"Historical report does not overwrite latest observed headline");
+    assert.equal(dated.historyCoverage.dailyReportDays,1);
+    assert.equal(dated.historyCoverage.cumulativeReportDays,1);
+    assert.equal(dated.historyCoverage.histogramDays,1);
 
     module.storage.upsertSetting("twitch_client_id","fixture-id");module.storage.upsertSetting("twitch_client_secret","fixture-secret");
     const calls:string[]=[];

@@ -21,6 +21,36 @@ export function initializeDemoHistory(db: Database.Database) {
       steam_app_id TEXT PRIMARY KEY, payload TEXT,
       fetched_at TEXT, last_attempt_at TEXT NOT NULL, status TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS demo_download_dated_reports (
+      steam_app_id TEXT NOT NULL, report_date TEXT NOT NULL,
+      scope TEXT NOT NULL CHECK(scope IN ('day','to_date')),
+      downloads INTEGER NOT NULL CHECK(downloads>=0),
+      report_start_date TEXT NOT NULL, fetched_at TEXT NOT NULL, source_url TEXT NOT NULL,
+      PRIMARY KEY(steam_app_id,report_date,scope)
+    );
+    CREATE TABLE IF NOT EXISTS demo_history_backfill_jobs (
+      steam_app_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('downloads','reviews')),
+      start_date TEXT NOT NULL, end_date TEXT NOT NULL, next_date TEXT,
+      cursor TEXT NOT NULL DEFAULT '*', status TEXT NOT NULL DEFAULT 'pending',
+      pages INTEGER NOT NULL DEFAULT 0, expected_reviews INTEGER,
+      started_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT,
+      PRIMARY KEY(steam_app_id,kind)
+    );
+    CREATE TABLE IF NOT EXISTS demo_review_backfill_items (
+      steam_app_id TEXT NOT NULL, review_key TEXT NOT NULL, activity_date TEXT NOT NULL,
+      positive INTEGER NOT NULL CHECK(positive IN (0,1)),
+      PRIMARY KEY(steam_app_id,review_key)
+    );
+    CREATE TABLE IF NOT EXISTS demo_review_recovered_daily (
+      steam_app_id TEXT NOT NULL, activity_date TEXT NOT NULL,
+      positive INTEGER NOT NULL, negative INTEGER NOT NULL, fetched_at TEXT NOT NULL,
+      source TEXT NOT NULL, PRIMARY KEY(steam_app_id,activity_date)
+    );
+    CREATE TABLE IF NOT EXISTS demo_history_source_checks (
+      steam_app_id TEXT NOT NULL, source TEXT NOT NULL,
+      attempted_at TEXT NOT NULL, succeeded_at TEXT, error TEXT,
+      PRIMARY KEY(steam_app_id,source)
+    );
   `);
   // Only the last genuinely observed report can be recovered from the old
   // latest-only cache. Never seed historical dates or replace newer evidence.

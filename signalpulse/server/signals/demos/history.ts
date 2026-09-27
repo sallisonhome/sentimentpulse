@@ -15,7 +15,8 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
   const end = today;
   const points = new Map<string, DemoHistoryPoint>();
   const point = (date: string) => {
-    if (!points.has(date)) points.set(date,{date,dailyDownloads:null,lifetimeDownloads:null,downloadObservedAt:null,
+    if (!points.has(date)) points.set(date,{date,dailyDownloads:null,netLifetimeChange:null,reportedDownloadsToDate:null,
+      dailyDownloadSource:null,dailyReportFetchedAt:null,cumulativeReportFetchedAt:null,reviewActivitySource:null,lifetimeDownloads:null,downloadObservedAt:null,
       reportEndDate:null,downloadMethod:null,multiplierId:null,reviewsAdded:null,positiveAdded:null,negativeAdded:null,
       reviewBucketObservedAt:null,totalReviews:null,positivePercent:null,reviewObservedAt:null,reviewSource:null,ccuLatest:null,ccuPeak:null,ccuSamples:null});
     return points.get(date)!;
@@ -35,9 +36,19 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
           millis(actual.observation_date)-millis(previous.observation_date)===DAY &&
           millis(actual.report_end_date)-millis(previous.report_end_date)===DAY &&
           actual.report_start_date===previous.report_start_date) {
-        p.dailyDownloads=actual.downloads-previous.downloads; // retain corrections
+        p.netLifetimeChange=actual.downloads-previous.downloads; // retain corrections, NOT daily actuals
       }
       previous=actual;
+    }
+    const reports=db.prepare("SELECT * FROM demo_download_dated_reports WHERE steam_app_id=? ORDER BY report_date").all(title.steam_app_id) as any[];
+    for(const report of reports){
+      const p=point(report.report_date);
+      if(report.scope==="day"){
+        p.dailyDownloads=report.downloads;p.dailyReportFetchedAt=report.fetched_at;
+        p.dailyDownloadSource="steamworks_single_day_report";
+      }else{
+        p.reportedDownloadsToDate=report.downloads;p.cumulativeReportFetchedAt=report.fetched_at;
+      }
     }
   } else {
     const estimates = db.prepare(`SELECT * FROM demo_window_estimates_daily
@@ -60,13 +71,25 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
       const p=point(r.as_of_date);p.totalReviews=r.review_count_total;
       p.reviewObservedAt=r.as_of_date;p.reviewSource="retained_estimator_review_input";
     }
+    // Recovered surviving-review creation dates are not observed review-count
+    // snapshots. Only completed, reconciled backfills can supply a fallback.
+    const recovered=db.prepare(`SELECT r.* FROM demo_review_recovered_daily r
+      JOIN demo_history_backfill_jobs j ON j.steam_app_id=r.steam_app_id AND j.kind='reviews' AND j.status='complete'
+      WHERE r.steam_app_id=? ORDER BY r.activity_date`).all(title.steam_app_id) as any[];
+    for(const r of recovered){
+      const p=point(r.activity_date);
+      p.positiveAdded=r.positive;p.negativeAdded=r.negative;p.reviewsAdded=r.positive+r.negative;
+      p.reviewBucketObservedAt=r.fetched_at;p.reviewActivitySource=r.source;
+      if(!saber){p.dailyDownloads=Math.round(p.reviewsAdded!*NON_SABER_DOWNLOAD_TRIAL);p.dailyDownloadSource=r.source;}
+    }
     const buckets = db.prepare(`SELECT * FROM steam_review_history
       WHERE app_id=? AND bucket_granularity='day' ORDER BY bucket_start`).all(title.steam_app_id) as any[];
     for (const b of buckets) {
       const p=point(dayOf(b.bucket_start*1000));
       p.positiveAdded=b.recommendations_up; p.negativeAdded=b.recommendations_down;
       p.reviewsAdded=b.recommendations_up+b.recommendations_down; p.reviewBucketObservedAt=b.created_at;
-      if (!saber) p.dailyDownloads=Math.round(p.reviewsAdded! * NON_SABER_DOWNLOAD_TRIAL);
+      p.reviewActivitySource="steam:appreviewhistogram";
+      if (!saber) {p.dailyDownloads=Math.round(p.reviewsAdded! * NON_SABER_DOWNLOAD_TRIAL);p.dailyDownloadSource="steam:appreviewhistogram";}
     }
     const reviews = db.prepare(`SELECT * FROM demo_review_observations WHERE steam_app_id=? ORDER BY observation_date`)
       .all(title.steam_app_id) as any[];

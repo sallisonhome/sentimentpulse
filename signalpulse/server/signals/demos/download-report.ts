@@ -48,8 +48,19 @@ export function downloadWindowStart(window: ActualWindow, endDate: string): stri
 }
 
 export function parseDownloadReport(html: string, expectedName: string, startDate: string, endDate: string): number {
-  validateReport(html, expectedName);
   if (startDate === "2000-01-01" && !/\blifetime sales shown\b/i.test(text(html))) throw Error("Lifetime scope not confirmed");
+  return parseDatedDownloadReport(html,expectedName,startDate,endDate);
+}
+
+/** A dated report is NOT a past observed lifetime snapshot. The 2000 baseline
+ * means "reported downloads through date"; never sum daily values into it. */
+export function parseDatedDownloadReport(html: string, expectedName: string, startDate: string, endDate: string): number {
+  validateReport(html, expectedName);
+  for(const date of [startDate,endDate]) {
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||!Number.isFinite(Date.parse(date))||
+      new Date(date).toISOString().slice(0,10)!==date)throw Error("Invalid report date");
+  }
+  if(startDate>endDate)throw Error("Invalid report interval");
   const inputs = Array.from(html.matchAll(/<input\b[^>]*>/gi)).map(m => {
     const attrs = Object.fromEntries(Array.from(m[0].matchAll(/([\w-]+)\s*=\s*["']([^"']*)["']/g)).map(a => [a[1].toLowerCase(), a[2]]));
     return attrs;

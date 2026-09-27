@@ -64,3 +64,11 @@ Synthetic tests cover corrections, daily gaps, genuine zeroes, original multipli
 Feature is not deployed until explicit squash-merge/deploy approval. Before production migration, take a consistent SQLite backup under the existing maintenance lock. After deployment, verify authenticated detail JSON, row-to-PDP links, source labels, migration row counts and the next daily collector's retained observations. No need to rerun discovery or ingest the catalog to initialize pages.
 
 Rollback the application commit if necessary; the three additive history/media tables can remain safely in place. Do not delete observed history as part of rollback.
+## September 26 history-backfill extension
+
+See [Demo history recovery](demo-history-backfill.md) for the current contract:
+direct daily reports and date-bounded cumulative reports are distinct from
+observed lifetime snapshots and net snapshot changes. The Daily downloads
+chart now defaults to direct Saber actuals or source-labeled non-Saber
+estimates. Prior wording below that calls the daily series only an LTD delta
+is superseded by that extension. Retired-demo tracking remains enabled.

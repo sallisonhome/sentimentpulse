@@ -2,6 +2,12 @@ export type DemoRange = "7" | "30" | "90" | "365" | "all";
 export interface DemoHistoryPoint {
   date: string;
   dailyDownloads: number | null;
+  netLifetimeChange: number | null;
+  reportedDownloadsToDate: number | null;
+  dailyDownloadSource: string | null;
+  dailyReportFetchedAt: string | null;
+  cumulativeReportFetchedAt: string | null;
+  reviewActivitySource: string | null;
   lifetimeDownloads: number | null;
   downloadObservedAt: string | null;
   reportEndDate: string | null;
@@ -46,6 +52,11 @@ export interface DemoDetail {
   rows: DemoHistoryPoint[];
   firstHistoryDate: string | null;
   latestWindows: Array<{ window: string; downloads: number | null; asOf: string | null; source: string }>;
+  historyCoverage: {
+    dailyReportDays:number; cumulativeReportDays:number; recoveredReviewDays:number; histogramDays:number;
+    jobs:Array<{kind:string;status:string;startDate:string;endDate:string;nextDate:string|null;error:string|null;updatedAt:string}>;
+    checks:Array<{source:string;attemptedAt:string;succeededAt:string|null;error:string|null}>;
+  };
 }
 
 export interface ArchivedDemoRow {
@@ -59,7 +70,8 @@ export interface ArchivedDemosResponse {
 }
 
 export function demoHistoryCsv(data: DemoDetail): string {
-  const keys: Array<keyof DemoHistoryPoint> = ["date","dailyDownloads","lifetimeDownloads","downloadObservedAt",
+  const keys: Array<keyof DemoHistoryPoint> = ["date","dailyDownloads","netLifetimeChange","reportedDownloadsToDate",
+    "dailyDownloadSource","dailyReportFetchedAt","cumulativeReportFetchedAt","reviewActivitySource","lifetimeDownloads","downloadObservedAt",
     "reportEndDate","downloadMethod","multiplierId","reviewsAdded","positiveAdded","negativeAdded",
     "reviewBucketObservedAt","totalReviews","positivePercent","reviewObservedAt","reviewSource","ccuLatest","ccuPeak","ccuSamples"];
   const cell = (v: unknown) => `"${String(v ?? "").replace(/"/g,'""')}"`;
@@ -67,7 +79,7 @@ export function demoHistoryCsv(data: DemoDetail): string {
     ["appId","availabilityStatus","retirementDetectedAt","downloadBasis","dailyDownloadDefinition",...keys].join(","),
     ...data.rows.map(r=>[data.appId,data.archived?"retired_still_tracked":"available",data.deactivatedAt,
       data.isSaber ? "Steamworks actual" : "provisional review model",
-      data.isSaber ? "net change in consecutive comparable observed LTD totals; not audited daily downloads" : `daily review bucket x ${data.multiplier}`,
+      data.isSaber ? "Steamworks single-day report; report calendar date, fetched timestamp separate" : `daily review bucket x ${data.multiplier}; source identifies histogram or reconciled created-date recovery`,
       ...keys.map(k=>r[k])].map(cell).join(",")),
   ].join("\r\n");
 }
