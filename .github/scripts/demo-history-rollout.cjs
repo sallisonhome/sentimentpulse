@@ -84,7 +84,8 @@ async function safeToResume(){
   assert(r.status===200,"Ingestion status unavailable");
   const status=await r.json();
   assert(status.inFlight===false&&status.status!=="running","Manual ingestion active");
-  const journal=execFileSync("journalctl",["-u","signalpulse","--since","24 hours ago","-o","cat","--no-pager"],
+  const journal=execFileSync("journalctl",["-u","signalpulse","--since","24 hours ago","-o","cat","--no-pager",
+    "--grep","Starting daily ingestion run|Ingestion complete[.]|Ingestion cron error:|Demos pipeline: (released|eligible=)","-n","100"],
     {encoding:"utf8",maxBuffer:16*1024*1024});
   const daily=journal.split("\n").filter(l=>l.includes("[ingestion]")&&
     /Starting daily ingestion run|Ingestion complete\.|Ingestion cron error:/.test(l));
