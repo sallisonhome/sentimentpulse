@@ -2,12 +2,14 @@
 import {createRequire} from "node:module";
 import {pathToFileURL} from "node:url";
 import {resolve} from "node:path";
+import {fileURLToPath} from "node:url";
 const require=createRequire(resolve("package.json"));
 const Database=require("better-sqlite3");
 const load=(file:string)=>import(pathToFileURL(resolve(file)).href);
 const {HistoryBudget,runHistoryBackfill}=await load("server/signals/demos/history-backfill.ts");
 const {SABER_DEMO_ROSTER}=await load("server/signals/demos/saber-roster.ts");
 const {isFriendsPassSku}=await load("server/signals/demos/friends-pass-identity.ts");
+const {runReviewPriority}=require(fileURLToPath(new URL("./demo-review-priority.cjs",import.meta.url)));
 const [maxRequests,maxMs]=process.argv.slice(2).map(Number);
 if(process.env.DEMO_HISTORY_MAINTENANCE_LOCK!=="1"||
   !Number.isSafeInteger(maxRequests)||maxRequests<1||maxRequests>200||
@@ -25,8 +27,7 @@ try{
     AND EXISTS(SELECT 1 FROM demo_history_backfill_jobs j WHERE j.steam_app_id=t.steam_app_id)
     ORDER BY is_saber_published DESC,name`).all().filter((t:any)=>
       !isFriendsPassSku(t.steam_app_id,t.name)&&(!t.is_saber_published||approved.has(t.steam_app_id)));
-  const cookie=db.prepare("SELECT cookie_value FROM steamworks_sessions WHERE id='default'").get()?.cookie_value;
-  const result=await runHistoryBackfill(db,titles,approved,cookie,new HistoryBudget(maxRequests,maxMs),"all");
+  const result=await runReviewPriority(db,titles,approved,new HistoryBudget(maxRequests,maxMs),runHistoryBackfill);
   const jobsAfter=db.prepare(`SELECT steam_app_id,kind,start_date,end_date FROM demo_history_backfill_jobs
     ORDER BY steam_app_id,kind`).all();
   if(JSON.stringify(jobsBefore)!==JSON.stringify(jobsAfter))throw Error("Job scope unexpectedly changed");

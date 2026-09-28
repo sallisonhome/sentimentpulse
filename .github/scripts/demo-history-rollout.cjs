@@ -1,11 +1,16 @@
 const fs=require("node:fs"),crypto=require("node:crypto"),{execFileSync}=require("node:child_process");
 const Database=require(process.cwd()+"/node_modules/better-sqlite3");
 const phase=process.argv[2],expected=process.argv[3],assert=(v,m)=>{if(!v)throw Error(m);};
-const prefix="/tmp/demo-history-resume-sep27";
+const prefix="/tmp/demo-review-priority-sep28";
 const db=new Database("data.db",{readonly:true});
 const head=execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).trim();
 const schedulerHash=crypto.createHash("sha256").update(fs.readFileSync("server/ingestion.ts")).digest("hex");
-const tables=["demo_titles","demo_download_actuals","demo_download_observations","demo_window_estimates_daily","steam_review_history","demo_ccu_snapshots","demo_ccu_daily_peaks"];
+const tables=["demo_titles","demo_download_actuals","demo_download_observations","demo_window_estimates_daily","steam_review_history","demo_ccu_snapshots","demo_ccu_daily_peaks","demo_download_dated_reports"];
+const rowHash=row=>crypto.createHash("sha256").update(JSON.stringify(row)).digest("hex");
+function protectedJobs(conn){
+  return conn.prepare("SELECT * FROM demo_history_backfill_jobs WHERE kind='downloads' OR status IN ('complete','mismatch') ORDER BY steam_app_id,kind")
+    .all().map(row=>({appId:row.steam_app_id,kind:row.kind,sha256:rowHash(row)}));
+}
 function fingerprints(conn,columns){
   return Object.fromEntries(tables.map(table=>{
     const cols=columns?.[table]??conn.pragma(`table_info(${table})`).map(c=>c.name);
@@ -25,6 +30,11 @@ async function verify(){
   const columns=Object.fromEntries(Object.entries(before.fingerprints).map(([t,r])=>[t,r.columns]));
   const after=fingerprints(db,columns),preserved=Object.fromEntries(tables.map(t=>[t,after[t].sha256===before.fingerprints[t].sha256]));
   assert(Object.values(preserved).every(Boolean),"Original demo data changed; inspect before proceeding");
+  const unchangedJobs=before.protectedJobs.every(j=>{
+    const row=db.prepare("SELECT * FROM demo_history_backfill_jobs WHERE steam_app_id=? AND kind=?").get(j.appId,j.kind);
+    return row&&rowHash(row)===j.sha256;
+  });
+  assert(unchangedJobs,"Protected download/completed/mismatch job changed");
   const jwt=require(process.cwd()+"/node_modules/jsonwebtoken");
   assert(process.env.SABER_AUTH_JWT_SECRET,"Server auth configuration unavailable");
   const token=jwt.sign({sub:"deployment-verification-pr156",email:"deployment-verification@localhost",scopes:["signalpulse"],
@@ -55,7 +65,7 @@ async function verify(){
   const asset=html.match(/src="\/signal\/assets\/([^"]+\.js)"/)?.[1];assert(asset,"Built app asset missing");
   const js=fs.readFileSync("dist/public/assets/"+asset,"utf8");
   assert(js.includes("Reported through date")&&js.includes("History coverage")&&js.includes("netLifetimeChange"),"Built UI missing");
-  return {head,backup:before.backup,integrity:"ok",preserved,schedulerHash,scheduler:"03:00 America/New_York, unchanged",checked,asset};
+  return {head,backup:before.backup,integrity:"ok",preserved,unchangedProtectedJobs:unchangedJobs,protectedJobCount:before.protectedJobs.length,schedulerHash,scheduler:"03:00 America/New_York, unchanged",checked,asset};
 }
 function coverage(){
   const titles=db.prepare(`SELECT t.steam_app_id appId,t.name,t.is_saber_published isSaber,t.is_active isActive,
@@ -106,7 +116,7 @@ async function safeToResume(){
     rawMarkerCount:markers.length}));
   assert(daily.length&&!daily.at(-1).message.includes("Starting daily ingestion run"),"Daily ingestion may still be active");
   assert(demos.length&&demos.at(-1).message.includes("Demos pipeline: eligible="),"Demo pipeline may still be active");
-  const previous=JSON.parse(fs.readFileSync("/tmp/demo-history-156-window.json","utf8"));
+  const previous=JSON.parse(fs.readFileSync("/tmp/demo-history-resume-sep27-window.json","utf8"));
   assert(previous.status==="stopped","Previous work window not stopped");
   assert(!fs.existsSync(prefix+"-window.json"),"This authorized continuation already started; inspect rather than replay");
   const scopes=db.prepare("SELECT DISTINCT start_date,end_date FROM demo_history_backfill_jobs").all();
@@ -129,14 +139,16 @@ async function main(){
     const disk=fs.statfsSync("."),size=fs.statSync("data.db").size;
     assert(disk.bavail*disk.bsize>size+128*1024*1024,"Insufficient backup space");
     process.umask(0o077);
-    const backup=`/opt/sentimentpulse/signalpulse/data.pre-demo-history-resume-sep27.${new Date().toISOString().replace(/[:.]/g,"-")}.db`;
+    const backup=`/opt/sentimentpulse/signalpulse/data.pre-demo-review-priority-sep28.${new Date().toISOString().replace(/[:.]/g,"-")}.db`;
     await db.backup(backup);fs.chmodSync(backup,0o600);
     const saved=new Database(backup,{readonly:true}),integrity=saved.pragma("integrity_check",{simple:true});
     assert(integrity==="ok","Backup integrity failed");
-    const baseline={phase,head,backup,integrity,schedulerHash,fingerprints:fingerprints(saved),at:new Date().toISOString(),safety};saved.close();
+    const baseline={phase,head,backup,integrity,schedulerHash,fingerprints:fingerprints(saved),
+      protectedJobs:protectedJobs(saved),at:new Date().toISOString(),safety};saved.close();
     fs.writeFileSync(prefix+"-before.json",JSON.stringify(coverage()),{mode:0o600});
     fs.writeFileSync(prefix+"-baseline.json",JSON.stringify(baseline),{mode:0o600});
-    console.log(JSON.stringify(baseline));return;
+    const {protectedJobs:protectedJobRows,...safeBaseline}=baseline;
+    console.log(JSON.stringify({...safeBaseline,protectedJobCount:protectedJobRows.length}));return;
   }
   if(phase==="verify"){console.log(JSON.stringify({phase,ok:true,...await verify()}));return;}
   if(phase==="backfill"){
