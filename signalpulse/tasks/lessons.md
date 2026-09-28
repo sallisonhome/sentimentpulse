@@ -1,5 +1,20 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-27: calibrate volume without inventing a sales-date spike
+
+The user wants public Steam milestones to preserve the existing modeled sales
+pattern at a revised volume. Use a frozen, nonoverlapping activity-day basis,
+not an intraday lifetime snapshot or an old inflated accumulator as denominator.
+Public units do not establish actual revenue or actual per-day sales. Retain
+old inputs separately, explicitly supersede only the audited assumption, and
+prove immediate rollback without erasing new raw observations.
+
+Sustained CCU can corroborate a per-product hypothesis but cannot distinguish
+new buyers from retention, patches or free events. Shadow proposals stay
+unapplied, require comparable UTC samples and paired review coverage, and
+must not compound or propagate into consoles. Missing top-chart coverage is
+unknown, never zero activity. No new schedule is required.
+
 ## 2026-09-26: FC26 correction now explicitly includes annual and lifetime
 
 The user superseded the earlier short-window-only scope: "12 month estimate

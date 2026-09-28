@@ -50,6 +50,7 @@
 import type { Express, Request } from "express";
 import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
+import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -251,7 +252,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   // ─── Leaderboard list ─────────────────────────────────────────────────────
   // One read-side revenue/units pipeline, shared by every Buying surface.
   // Return the complete catalog so anchors and unit sorting precede top-N slicing.
-  function platformSales(platform: Platform, window: string, sort = "revenue", dir = "desc", nativeOnly = false) {
+  function platformSales(platform: Platform, window: string, sort = "revenue", dir = "desc", nativeOnly = false, skipUnitMilestones = false) {
       // Default is the 7d window so fresh weekly hits (launches like
       // Halloween: The Game and How to Fish) surface first. Because the
       // estimator sometimes doesn't have 7d numbers yet for very recent
@@ -868,7 +869,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // Steam never enters this branch, so recursion terminates after one
           // level. Reusing its final result also preserves verified LTD scaling,
           // family deduplication, and future approved revenue adjustments.
-          for (const s of platformSales("steam", window).titles) {
+          // Steam-only public-unit calibration must not manufacture console sales.
+          for (const s of platformSales("steam", window,"revenue","desc",false,true).titles) {
             if (s.editionGroupKey && s.revenueMidUsd != null) {
               steamRevenueByKey.set(s.editionGroupKey, {
                 revenue: s.revenueMidUsd,
@@ -880,7 +882,30 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           }
         }
 
+        const unitMilestones=platform==="steam"&&!skipUnitMilestones?activeMilestones(rawSqlite):[];
         for (const g of groups) {
+          const milestone=unitMilestones.find(m=>g.familyTitleIds.length===1&&g.familyTitleIds[0]===m.titleId);
+          if(milestone&&milestoneCanOverlay(rawSqlite,milestone,window)){
+            const projection=milestoneProjection(rawSqlite,milestone,window,todayIsoDate());
+            if(projection){
+              g.revenueMidUsdEstimated=g.revenueMidUsd;
+              g.revenueMidUsd=projection.units==null||g.aspUsdCents==null?null:projection.units*g.aspUsdCents/100;
+              g.unitsMid=projection.units;
+              g.dataSource="estimated_public_unit_milestone";
+              g.estimateMethod=STEAM_UNIT_CALIBRATION_VERSION;
+              g.windowUsed=projection.complete?window:null;
+              g.gatedReason=projection.complete?null:"incomplete_calibrated_daily_history";
+              g.asOfDate=projection.asOfDate;
+              g.revenueCaveat=projection.caveat;
+              g.unitMilestone={id:milestone.id,units:milestone.units,date:milestone.asOfDate,
+                sourceUrl:milestone.sourceUrl,scope:"steam",revenueIsActual:false};
+              continue;
+            }
+            g.revenueMidUsd=null;g.unitsMid=null;g.windowUsed=null;
+            g.gatedReason="missing_calibrated_daily_history";g.dataSource="unavailable";
+            g.revenueCaveat="Public unit milestone calibration is active, but its daily history is unavailable.";
+            continue;
+          }
           // Path A precedence:
           //   * Steam platform: always wins. Steam anchors are the whole
           //     point of the calibration pipeline (portal_fetch actuals).
@@ -1473,7 +1498,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
         // Steam revenue: anchor wins over estimator. Zero when there is no
         // Steam SKU (dual-anchored branch b).
-        const steamRevenue = steam ? (resolvedSales.get("steam")?.get(key)?.revenueMidUsd ?? null) : 0;
+        const steamSales=resolvedSales.get("steam")?.get(key);
+        const steamRevenue = steam ? (steamSales?.revenueMidUsd ?? null) : 0;
         // Reuse the canonical final revenue, including protected LTD scaling.
         const ps5Sales = resolvedSales.get("ps5")?.get(key);
         const xboxSales = resolvedSales.get("xbox")?.get(key);
@@ -1520,8 +1546,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           revenueCombined,
           revenueIncomplete,
           revenueSource,
-          ...([ps5Sales,xboxSales].some(r=>r?.revenueCaveat)
-            ? {revenueCaveat: [ps5Sales,xboxSales].find(r=>r?.revenueCaveat)!.revenueCaveat} : {}),
+          ...([steamSales,ps5Sales,xboxSales].some(r=>r?.revenueCaveat)
+            ? {revenueCaveat: [steamSales,ps5Sales,xboxSales].find(r=>r?.revenueCaveat)!.revenueCaveat} : {}),
         });
       }
 
@@ -1745,7 +1771,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const steamSku = skuList.find(s => s.platform === "steam") ?? skuList[0];
       const displayName = steamSku?.name ?? key;
 
-      type PerPlatOut = { titleId: number; revenueUsd: number | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw"; aspUsdCents?: number | null; unitsMidEstimated?: number | null; unitSource?: string; dataSource?: string; estimateMethod?: string; revenueCaveat?: string; recentFamilyAdjustment?: unknown };
+      type PerPlatOut = { titleId: number; revenueUsd: number | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null; msrpUsdCents: number | null; source: "anchor" | "overlay" | "raw"; aspUsdCents?: number | null; unitsMidEstimated?: number | null; unitSource?: string; dataSource?: string; estimateMethod?: string; revenueCaveat?: string; recentFamilyAdjustment?: unknown; asOfDate?: string; unitMilestone?: unknown };
       const out: Partial<Record<Platform, PerPlatOut>> = {};
       for (const platform of PLATFORMS) {
         const members = matching.filter(r => r.platform === platform);
@@ -1764,6 +1790,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           unitSource: canonical?.unitSource ?? "unavailable",
           windowUsed: canonical?.windowUsed ?? null,
           dataSource: canonical?.dataSource ?? "unavailable",
+          ...(canonical?.unitMilestone ? {unitMilestone: canonical.unitMilestone, asOfDate: canonical.asOfDate} : {}),
           ...(canonical?.revenueCaveat ? {revenueCaveat: canonical.revenueCaveat, recentFamilyAdjustment: canonical.recentFamilyAdjustment} : {}),
           source: canonical?.dataSource === "actual" ? "anchor"
             : canonical?.dataSource?.startsWith("derived_from_steam") ? "overlay" : "raw",
@@ -2065,6 +2092,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           aspUsdCents: canonical?.aspUsdCents ?? null,
           unitSource: canonical?.unitSource ?? "unavailable",
           dataSource: canonical?.dataSource ?? "unavailable",
+          ...(canonical?.unitMilestone ? {unitMilestone: canonical.unitMilestone, asOfDate: canonical.asOfDate, method: canonical.estimateMethod} : {}),
           ...(canonical?.revenueCaveat ? {revenueCaveat: canonical.revenueCaveat, recentFamilyAdjustment: canonical.recentFamilyAdjustment} : {}),
           windowUsed: canonical?.windowUsed ?? null,
           cascade: sales.cascade,
@@ -2384,10 +2412,30 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       }
 
       const recordedDaily = publishedDailyRevenue(rawSqlite,dailyMixPolicy(),seedKey,from,to);
+      const calibrated=activeMilestones(rawSqlite).find(m=>siblingIds.includes(m.titleId)&&milestoneCanOverlay(rawSqlite,m,"ltd"));
+      const calibratedDays=calibrated?milestoneProjection(rawSqlite,calibrated,"ltd",to):null;
+      const calibratedRevenue=new Map<string,number>();
+      if(calibratedDays){
+        const asp=aspFactorFor("steam");
+        for(const day of calibratedDays.days){
+          if(day.date<from||day.date>to)continue;
+          if(!dates.includes(day.date))dates.push(day.date);
+          const msrp=msrpByPlatform.steam;
+          if(msrp!=null)calibratedRevenue.set(day.date,day.units*msrp*asp/100);
+        }
+      }
       for (const d of Array.from(recordedDaily.keys())) if(!dates.includes(d)) dates.push(d);
       dates.sort();
       const points = dates.map((d) => {
         const recorded = recordedDaily.get(d);
+        if(calibratedDays){
+          const steam=calibratedRevenue.get(d)??null;
+          const ps5=recorded?.[1]??dailyByPlatform.ps5?.[d]??null;
+          const xbox=recorded?.[2]??dailyByPlatform.xbox?.[d]??null;
+          const values=[steam,ps5,xbox].filter((v):v is number=>v!=null);
+          return {date:d,steam,ps5,xbox,combined:values.length?values.reduce((a,b)=>a+b,0):null,
+            source:STEAM_UNIT_CALIBRATION_VERSION};
+        }
         if(recorded) {
           const [steam,ps5,xbox]=recorded;
           return {date:d,steam,ps5,xbox,combined:steam+ps5+xbox,source:"daily_mix_ledger"};
@@ -2400,8 +2448,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         return { date: d, steam, ps5, xbox, combined, source:"raw_daily_estimator" };
       });
 
-      res.json({ titleId, from, to, collectionStart: COLLECTION_START, points,
-        methodology:"Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated." });
+      res.json({ titleId, from, to, collectionStart: calibrated?.startDate??COLLECTION_START, points,
+        methodology:calibratedDays?.caveat??"Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated." });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

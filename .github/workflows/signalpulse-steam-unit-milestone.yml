@@ -1,0 +1,55 @@
+name: SignalPulse Steam unit milestone
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [audit, apply, rollback]
+        default: audit
+        required: true
+      manifest_sha:
+        description: Reviewed Wardogs manifest SHA-256 (required for apply/rollback)
+        default: ''
+      confirm:
+        description: CONFIRM required for apply/rollback
+        default: ''
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+jobs:
+  milestone:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Locked milestone operation
+        env:
+          ACTION: ${{ inputs.action }}
+          MANIFEST_SHA: ${{ inputs.manifest_sha }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          case "$ACTION" in audit|apply|rollback) ;; *) exit 1;; esac
+          if [ "$ACTION" != audit ]; then
+            [ "$CONFIRM" = CONFIRM ]
+            [[ "$MANIFEST_SHA" =~ ^[a-f0-9]{64}$ ]]
+          else
+            MANIFEST_SHA=""
+          fi
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 root@104.236.239.46 \
+            "bash -s -- '$ACTION' '$MANIFEST_SHA'" <<'REMOTE'
+          set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 600 9 || { echo "Maintenance busy; nothing changed"; exit 75; }
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+          export APPROVED_MILESTONE_SHA256="$2"
+          node_modules/.bin/tsx scripts/manage-steam-unit-milestone.ts "$1"
+          REMOTE

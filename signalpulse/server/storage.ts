@@ -33,6 +33,8 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
+import {initSteamUnitCalibration} from "./steam-unit-calibration";
+import {initSteamSalesShadow} from "./steam-sales-shadow";
 import { initializeDemoHistory } from "./signals/demos/history-schema";
 import { metadataMatchesStorefront } from "./console-title-identity";
 import { eq, and, desc, isNull, isNotNull, asc, gte, lte, notInArray, inArray, sql } from "drizzle-orm";
@@ -46,6 +48,8 @@ sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
 
 export const db = drizzle(sqlite);
+initSteamUnitCalibration(sqlite);
+initSteamSalesShadow(sqlite);
 
 // Raw better-sqlite3 handle exposed for modules that need direct SQL access
 // (e.g. server/signals/console/* + routes-console-leaderboards.ts). Ported

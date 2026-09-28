@@ -45,6 +45,8 @@ import { getPeerRankNeighbors, type SortKey } from "../server/signals/console/ra
 import { reviewWindow, STEAM_HISTOGRAM_VERSION, type ReviewBucket } from "../server/steam-review-windows";
 import {reviewShockEvidence,STEAM_REVIEW_SHOCK_VERSION,type ShockEvidence} from "../server/steam-review-shocks";
 import { advanceLifetimeSignal } from "../server/lifetime-signal";
+import {refreshSteamUnitCalibration} from "../server/steam-unit-calibration";
+import {evaluateSteamSalesShadow} from "../server/steam-sales-shadow";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -1390,6 +1392,9 @@ async function main() {
     byOutcome[key] = (byOutcome[key] ?? 0) + 1;
   }
   console.log(`[estimate-console-units] wrote ${rows.length} rows to window_estimates_daily`);
+  console.log("[steam-unit-calibration]",refreshSteamUnitCalibration(db,asOfDate));
+  try { console.log("[steam-sales-shadow]",evaluateSteamSalesShadow(db,asOfDate)); }
+  catch(error) { console.error("[steam-sales-shadow] unavailable; live sales unchanged",error); }
   try { console.log("[revenue-mix-shadow]", evaluateRevenueMixShadow()); }
   catch (error) { console.error("[revenue-mix-shadow] audit failed; baseline estimates retained", error); }
   for (const [k, v] of Object.entries(byOutcome).sort((a, b) => b[1] - a[1])) {

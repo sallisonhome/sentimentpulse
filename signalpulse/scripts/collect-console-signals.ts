@@ -5,6 +5,7 @@
 import { rawSqlite } from "../server/storage";
 import { runConsoleLeaderboardIngest } from "../server/signals/console/runner";
 import { collectionHealth } from "../server/daily-refresh-health";
+import {collectSteamSalesCcu} from "../server/steam-sales-shadow";
 
 async function main() {
   const skus = (platform: string) => (rawSqlite.prepare(
@@ -20,5 +21,8 @@ async function main() {
   for (const warning of health.warnings) console.warn(`COLLECTION WARNING: ${warning}`);
   if (health.errors.length) throw new Error(health.errors.join("; "));
   console.log("PRODUCTION COLLECTION PASSED: fresh per-platform observations verified");
+  // Optional shadow evidence, isolated from paid-sales success and provider retries.
+  try {console.log("[steam-sales-shadow-ccu]",await collectSteamSalesCcu(rawSqlite));}
+  catch(error){console.error("[steam-sales-shadow-ccu] unavailable; primary collection preserved",error);}
 }
 main().then(() => process.exit(0)).catch(error => { console.error(error); process.exit(1); });
