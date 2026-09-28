@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { ArrowLeft } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -404,7 +404,7 @@ const DAILY_PRESETS: Array<{ id: PresetRange; label: string; days?: number }> = 
   { id: "7d",  label: "7d",  days: 7   },
   { id: "30d", label: "30d", days: 30  },
   { id: "90d", label: "90d", days: 90  },
-  { id: "ltd", label: "Since 2026-09-14" },
+  { id: "ltd", label: "Full history" },
 ];
 
 function formatMoneyFull(v: number | null | undefined): string {
@@ -417,15 +417,16 @@ function formatMoneyFull(v: number | null | undefined): string {
 
 function DailyRevenueCard({ titleId }: { titleId: number }) {
   const [preset, setPreset] = useState<PresetRange>("30d");
+  const [historyStart, setHistoryStart] = useState("2026-09-14");
   const [visible, setVisible] = useState<Record<"steam" | "ps5" | "xbox" | "combined", boolean>>({
     steam: true, ps5: true, xbox: true, combined: true,
   });
 
   const { from, to } = useMemo(() => {
-    if (preset === "ltd") return { from: "2026-09-14", to: isoToday() };
+    if (preset === "ltd") return { from: historyStart, to: isoToday() };
     const days = DAILY_PRESETS.find(p => p.id === preset)?.days ?? 30;
     return { from: daysAgoIso(days), to: isoToday() };
-  }, [preset]);
+  }, [preset, historyStart]);
 
   const { data, isLoading } = useQuery<DailyRevResp>({
     queryKey: [`/api/console/titles/${titleId}/revenue-daily`, { from, to }],
@@ -437,6 +438,10 @@ function DailyRevenueCard({ titleId }: { titleId: number }) {
     },
     enabled: Number.isFinite(titleId),
   });
+
+  useEffect(() => {
+    if (data?.collectionStart) setHistoryStart(data.collectionStart);
+  }, [data?.collectionStart]);
 
   const points = data?.points ?? [];
   const hasAnyValue = points.some(p =>
@@ -456,7 +461,7 @@ function DailyRevenueCard({ titleId }: { titleId: number }) {
               onClick={() => setPreset(p.id)}
               data-testid={`btn-daily-rev-range-${p.id}`}
             >
-              {p.label}
+              {p.id === "ltd" ? `Since ${historyStart}` : p.label}
             </Button>
           ))}
         </div>

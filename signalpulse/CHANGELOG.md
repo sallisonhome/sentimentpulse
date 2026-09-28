@@ -2,6 +2,21 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## September 27, 2026
+
+- Added explicit, reversible activation of Wardogs' September 26 public Steam
+  milestone: at least three million copies. The audited daily review shape is
+  scaled to that milestone; later review activity adds separate modeled growth.
+  Revenue and individual-day sales remain estimates. The old raw observations,
+  anchors, overrides and lifetime state are preserved for audit and rollback.
+- Canonical Buying boards, PDPs and daily charts consume one calibrated ledger.
+  Steam calibration does not change console projections or create absent SKUs.
+- Daily revenue full-history controls use the API's available-history start,
+  so calibrated launch days are not cut off by a hardcoded collection date.
+- Added per-title Steam CCU/review shadow evaluation in the existing daily
+  pipeline, with dated coverage, bounded proposals, rate-limit protection and a
+  durable off switch. No live application or automatic graduation is enabled.
+
 ## September 26, 2026
 
 - Added bounded demo-history recovery: direct daily Steamworks actuals,
