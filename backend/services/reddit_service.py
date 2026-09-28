@@ -714,9 +714,16 @@ def _post_mentions_game(
             return False
         # AND at least one distinctive keyword must appear (or the game
         # name phrase, per v0027 addition above).
-        companion_hit = any(k in text for k in distinctive_normalized)
+        # A duplicate primary keyword must be a real word, not merely part of
+        # another name (e.g. "aliens" inside the creator name "Aliensrock").
+        # Otherwise it falsely supplies both halves of the two-token gate.
+        companion_hit = any(
+            k in text and (k not in primary_words or re.search(r"(?<!\w)" + re.escape(k) + r"(?!\w)", text))
+            for k in distinctive_normalized
+        )
         if not companion_hit and name_phrase and name_phrase in text:
-            companion_hit = True
+            companion_hit = bool(" " in name_phrase or re.search(
+                r"(?<!\w)" + re.escape(name_phrase) + r"(?!\w)", text))
         if not companion_hit:
             return False
         return True

@@ -1,5 +1,30 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-28 — Archive read failures and relevance failures are separate gates
+
+- Slow keyword searches can fail while paginated subreddit listings work.
+  Prove the replacement against the original date bounds, both text fields,
+  pagination overlaps and failed reads. A successful empty window can advance
+  a checked-through cursor; a capped or partial scan cannot invent that proof.
+- Share listing pages across titles, not mutable relevance annotations.
+  Bound temporary storage and clean it up at run end. Preserve old cursor
+  ranges instead of silently clamping away a difficult backlog.
+- Positive fetched volume is not source completeness. Surface partial
+  subreddit reads separately, including local budget and upstream stop reasons.
+- A generic recommendation community is not dedicated to whichever game
+  fetched it first. Keep broad-community rules consistent at collection and
+  tagging. Replies cannot inherit legitimacy from a falsely admitted parent.
+- Every summary evidence sampler must apply the noise/drift/rejected-row
+  gates, not only the metric and topic queries. A valid citation to an
+  unrelated game is not valid evidence about the focal game.
+- Retagging alone does not repair cached narratives. Audit before-state,
+  preserve raw data, invalidate affected derived caches, and stop old workers
+  during a coordinated maintenance correction before rebuilding and resending.
+- This repository is public: keep private digest text, recipient addresses
+  and operational audit payloads out of workflow logs. Encrypt receipts to a
+  session-owned recipient key before transferring them through public surfaces.
+
+
 ## 2026-09-26 — Test the actual automatic entry points, not just cron expressions
 
 Production journal proved startup's 20-hour age rule fired ingestion at 02:48

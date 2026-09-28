@@ -200,3 +200,20 @@ def test_disk_payload_budget_evicts_old_pages_without_corruption(run, monkeypatc
     assert cache.size <= 260
     assert cache.get("gaming", 999) is None
     assert cache.get("gaming", 995)[0]["id"] == "4"
+
+
+def test_creator_name_cannot_supply_duplicate_game_keyword_as_companion():
+    from services.reddit_service import _post_mentions_game
+    args = dict(search_query="Aliens", distinctive_keywords=["aliens", "fireteam", "xenomorph"],
+                game_name="Aliens: Fireteam Elite 2")
+    assert not _post_mentions_game(
+        {"title":"Gentoo Rescue", "body":"Gameplay from Aliensrock's series about penguin puzzles."}, **args)
+    assert _post_mentions_game(
+        {"title":"Aliens: Fireteam Elite 2", "body":"Fireteam combat feels great."}, **args)
+
+
+def test_single_word_game_name_must_not_match_inside_a_creator_handle():
+    from services.reddit_service import _post_mentions_game
+    args = dict(search_query="SnowRunner", distinctive_keywords=["snowrunner"], game_name="SnowRunner")
+    assert not _post_mentions_game({"title":"Other game", "body":"SnowRunnerGuy plays a puzzle."}, **args)
+    assert _post_mentions_game({"title":"SnowRunner", "body":"The mud physics feel great."}, **args)
