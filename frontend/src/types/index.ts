@@ -298,6 +298,7 @@ export type SourceHealth =
   | 'skipped'
   | 'ok'
   | 'degraded'
+  | 'partial'
   | 'failed'
   | 'silent'
   | 'auth_broken'

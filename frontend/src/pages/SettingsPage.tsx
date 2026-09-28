@@ -22,7 +22,7 @@ import type { IngestStatus } from '../types'
 // Render a single source's health line.  Covers ok / degraded / failed /
 // silent / skipped — values produced by the backend per-source verdict
 // machinery in services/ingestor.py.
-function SourceHealthRow(props: {
+export function SourceHealthRow(props: {
   label: string
   health?: string
   fetched?: number
@@ -32,7 +32,7 @@ function SourceHealthRow(props: {
   if (!health || health === 'unknown') return null
   const retryWord = retries === 1 ? 'retry' : 'retries'
   return (
-    <p className="text-muted-foreground flex items-center gap-1.5 pt-1">
+    <p className="text-muted-foreground flex flex-wrap items-center gap-1.5 pt-1">
       <span className="font-medium">{label}:</span>
       {health === 'ok' && (
         <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
@@ -42,6 +42,11 @@ function SourceHealthRow(props: {
       {health === 'degraded' && (
         <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
           <AlertTriangle className="h-3 w-3" /> degraded (recovered after {retries} {retryWord})
+        </span>
+      )}
+      {health === 'partial' && (
+        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="h-3 w-3" /> partial (some reads incomplete)
         </span>
       )}
       {health === 'failed' && (
@@ -62,7 +67,7 @@ function SourceHealthRow(props: {
       {health === 'skipped' && (
         <span className="text-muted-foreground">skipped (not eligible this run)</span>
       )}
-      {health === 'ok' && (
+      {(health === 'ok' || health === 'partial') && (
         <span className="text-muted-foreground">· {fetched.toLocaleString()} fetched</span>
       )}
     </p>
@@ -71,10 +76,10 @@ function SourceHealthRow(props: {
 
 // Compute a list of source labels whose health indicates a regression we
 // want to surface as a top-of-card amber banner.
-function degradedSources(status: IngestStatus): string[] {
+export function degradedSources(status: IngestStatus): string[] {
   const out: string[] = []
   const check = (label: string, health?: string) => {
-    if (health === 'failed' || health === 'silent' || health === 'auth_broken') {
+    if (health === 'failed' || health === 'silent' || health === 'auth_broken' || health === 'partial') {
       out.push(`${label} (${health})`)
     }
   }
@@ -82,6 +87,7 @@ function degradedSources(status: IngestStatus): string[] {
   check('Bluesky', status.bluesky_health)
   check('Steam reviews', status.steam_review_health)
   check('Steam forums', status.steam_forum_health)
+  check('YouTube', status.youtube_health)
   return out
 }
 
@@ -211,7 +217,8 @@ export default function SettingsPage() {
                   <div>
                     <p className="font-medium">Source regression detected</p>
                     <p>
-                      {flagged.join(', ')} — investigate before next cron. Silent
+                      {flagged.join(', ')}: investigate before the next scheduled run. Partial
+                      sources retained available posts but did not complete every read. Silent
                       sources fetched but persisted &lt;10% of their prior‑7d
                       baseline; failed sources fetched 0 posts after retries.
                     </p>

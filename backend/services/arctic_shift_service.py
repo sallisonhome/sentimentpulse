@@ -203,6 +203,9 @@ def fetch_arctic_shift_subreddit_posts(
         ONE request: ?subreddit=<sub>&limit=<n>&sort=desc
 
     For general subs (e.g. r/gaming, r/pcgaming) with a game_name:
+        During bounded daily runs: shared paginated listings, local selection
+        of the same single keyword and per-field limits, then the game gate.
+        Backfills/non-run callers retain:
         TWO requests: ?subreddit=<sub>&title=<q>&limit=<n>&sort=desc
                       ?subreddit=<sub>&selftext=<q>&limit=<n>&sort=desc
         Arctic Shift has no single 'q' param; title+selftext is the workaround.
@@ -231,8 +234,26 @@ def fetch_arctic_shift_subreddit_posts(
             query = _game_search_query(game_name, game=game)
             seen: dict[str, dict] = {}
             complete = True
+            checked_through = None
+            stop_reason = None
 
-            for field in ("title", "selftext"):
+            # Daily runs share cheap unfiltered listing pages. Backfills and
+            # non-run callers retain their existing keyword request contract.
+            listing_path = run_active() and after > 0 and len(query.split()) == 1
+            if listing_path:
+                from services.reddit_listing import fetch_candidates
+                raw_rows = fetch_candidates(subreddit_name, query, after=after, limit=limit)
+                complete = raw_rows.complete
+                checked_through = raw_rows.checked_through
+                stop_reason = raw_rows.stop_reason
+                for raw in raw_rows:
+                    raw = dict(raw)
+                    raw.setdefault("permalink", f"/r/{subreddit_name}/comments/{raw['id']}/")
+                    post = _convert_post(raw)
+                    if post is not None:
+                        seen[post["external_id"]] = post
+
+            for field in (() if listing_path else ("title", "selftext")):
                 params = {
                     "subreddit": subreddit_name,
                     field: query,
@@ -277,7 +298,8 @@ def fetch_arctic_shift_subreddit_posts(
             ]
             posts_returned = len(merged)
             status = "ok" if complete else "partial_failure"
-            return FetchRows(merged, complete=complete)
+            return FetchRows(merged, complete=complete, checked_through=checked_through,
+                             stop_reason=stop_reason)
 
         else:
             # Single-request path: all recent posts from the subreddit

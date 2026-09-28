@@ -453,13 +453,15 @@ def fetch_subreddit_posts(
             merged = {p["external_id"]: p for p in list(primary) + posts}
             # Cached/manual fallback does not prove both live search channels
             # completed; leave the primary cursor untouched and report partial.
-            return FetchRows(merged.values(), complete=False)
+            return FetchRows(merged.values(), complete=False,
+                             stop_reason=getattr(primary, "stop_reason", None))
 
     # ── 3. PullPush fallback — last-resort Reddit archive ─────────────────────
     logger.info("No Gist data for '%s' / r/%s — trying PullPush", game_name, subreddit_name)
     fallback = _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
     merged = {p["external_id"]: p for p in list(primary) + list(fallback)}
-    return FetchRows(merged.values(), complete=False)
+    return FetchRows(merged.values(), complete=False,
+                     stop_reason=getattr(primary, "stop_reason", None))
 
 
 # ── Comment fetching ──────────────────────────────────────────────────────────
