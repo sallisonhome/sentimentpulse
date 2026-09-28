@@ -121,6 +121,8 @@ _GENERAL_SUBREDDITS = {
     "simracing", "simulators", "drivingsimulators",
     "tycoon", "movies",
 }
+from services.reddit_community_rules import GENERIC_DISCUSSION_SUBS
+_GENERAL_SUBREDDITS |= GENERIC_DISCUSSION_SUBS
 
 
 def _fetch_rss(subreddit_name: str, game_name: str = "", force_filter: bool = False) -> list[dict]:

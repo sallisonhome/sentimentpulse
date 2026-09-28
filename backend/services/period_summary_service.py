@@ -1162,6 +1162,9 @@ def _sample_posts_for_window(
                 SentimentRecord.sentiment == sentiment,
                 effective_date >= start_dt,
                 effective_date <= end_dt,
+                RawPost.is_off_topic_drift.is_(False),
+                (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
+                RawPost.is_relevant.is_not(False),
             )
             .order_by(RawPost.upvotes.desc().nullslast(), effective_date.desc())
             .limit(per_bucket * 3)  # over-fetch so we can dedup near-identical
@@ -1942,6 +1945,9 @@ def _sample_posts_with_ids(
                 SentimentRecord.sentiment == sentiment,
                 effective_date >= start_dt,
                 effective_date <= end_dt,
+                RawPost.is_off_topic_drift.is_(False),
+                (RawPost.relevance_tier.is_(None)) | (RawPost.relevance_tier != "noise"),
+                RawPost.is_relevant.is_not(False),
             )
             .order_by(RawPost.upvotes.desc().nullslast(), effective_date.desc())
             .limit(per_bucket * 3)

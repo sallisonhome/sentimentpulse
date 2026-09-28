@@ -25,6 +25,7 @@ import re
 from typing import Iterable, Optional
 
 from models import RawPost, Game, SourceEnum
+from services.reddit_community_rules import GENERIC_DISCUSSION_SUBS
 
 
 # ── Dedicated-source rules ───────────────────────────────────────────────
@@ -163,6 +164,8 @@ GENERAL_SUBS: frozenset[str] = frozenset({
     "truckers", "trucking",
     "logitechg", "logitech", "fanatec",
 })
+
+GENERAL_SUBS = GENERAL_SUBS | GENERIC_DISCUSSION_SUBS
 
 _SUB_RE = re.compile(r"/r/([^/]+)/", re.IGNORECASE)
 
