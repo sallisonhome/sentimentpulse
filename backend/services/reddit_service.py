@@ -121,6 +121,8 @@ _GENERAL_SUBREDDITS = {
     "simracing", "simulators", "drivingsimulators",
     "tycoon", "movies",
 }
+from services.reddit_community_rules import GENERIC_DISCUSSION_SUBS
+_GENERAL_SUBREDDITS |= GENERIC_DISCUSSION_SUBS
 
 
 def _fetch_rss(subreddit_name: str, game_name: str = "", force_filter: bool = False) -> list[dict]:
@@ -453,13 +455,15 @@ def fetch_subreddit_posts(
             merged = {p["external_id"]: p for p in list(primary) + posts}
             # Cached/manual fallback does not prove both live search channels
             # completed; leave the primary cursor untouched and report partial.
-            return FetchRows(merged.values(), complete=False)
+            return FetchRows(merged.values(), complete=False,
+                             stop_reason=getattr(primary, "stop_reason", None))
 
     # ── 3. PullPush fallback — last-resort Reddit archive ─────────────────────
     logger.info("No Gist data for '%s' / r/%s — trying PullPush", game_name, subreddit_name)
     fallback = _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
     merged = {p["external_id"]: p for p in list(primary) + list(fallback)}
-    return FetchRows(merged.values(), complete=False)
+    return FetchRows(merged.values(), complete=False,
+                     stop_reason=getattr(primary, "stop_reason", None))
 
 
 # ── Comment fetching ──────────────────────────────────────────────────────────
@@ -710,9 +714,16 @@ def _post_mentions_game(
             return False
         # AND at least one distinctive keyword must appear (or the game
         # name phrase, per v0027 addition above).
-        companion_hit = any(k in text for k in distinctive_normalized)
+        # A duplicate primary keyword must be a real word, not merely part of
+        # another name (e.g. "aliens" inside the creator name "Aliensrock").
+        # Otherwise it falsely supplies both halves of the two-token gate.
+        companion_hit = any(
+            k in text and (k not in primary_words or re.search(r"(?<!\w)" + re.escape(k) + r"(?!\w)", text))
+            for k in distinctive_normalized
+        )
         if not companion_hit and name_phrase and name_phrase in text:
-            companion_hit = True
+            companion_hit = bool(" " in name_phrase or re.search(
+                r"(?<!\w)" + re.escape(name_phrase) + r"(?!\w)", text))
         if not companion_hit:
             return False
         return True

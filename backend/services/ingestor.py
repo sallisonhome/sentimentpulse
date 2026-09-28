@@ -152,6 +152,10 @@ def get_status() -> dict:
                 db.close()
         except Exception as exc:
             logger.warning("get_status: failed to hydrate from AppSetting: %s", exc)
+    # Derive honest health for older persisted runs too; do not rewrite their
+    # historical errors, volumes, dates or overall outcome.
+    snapshot["reddit_health"] = _reddit_completeness_health(
+        snapshot.get("reddit_health", "unknown"), snapshot.get("last_run_errors") or [])
     return snapshot
 
 
@@ -800,6 +804,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         reddit_health = _verdict(
             bool(eligible_reddit_games), reddit_fetched_total, reddit_retries
         )
+        reddit_health = _reddit_completeness_health(reddit_health, errors)
         bluesky_health = _verdict(
             bluesky_eligible, bluesky_fetched_total, bluesky_retries
         )
@@ -1513,6 +1518,15 @@ def _step3_steam_forums(
 
 # ── Step 4: Reddit ────────────────────────────────────────────────────────────
 
+def _reddit_completeness_health(health, errors):
+    """Positive volume is not proof that every subreddit query completed."""
+    if health in ("ok", "degraded") and any(
+        error.startswith(("[Step 4]", "[Step 4a]")) for error in errors
+    ):
+        return "partial"
+    return health
+
+
 @timed_step
 def _step4_reddit(
     db: Session,
@@ -1583,8 +1597,11 @@ def _step4_reddit(
                 errors.append(
                     f"[Step 4] '{game.name}' r/{sub_name}: upstream incomplete; "
                     "available rows retained, cursor not advanced"
+                    + (f"; stop_reason={submissions.stop_reason}"
+                       if getattr(submissions, "stop_reason", None) else "")
                 )
             total_fetched += len(submissions)
+            save_error_count = len(errors)
             saved = _bulk_save_posts(
                 db, game.id, SourceEnum.reddit, submissions, errors
             )
@@ -1595,8 +1612,12 @@ def _step4_reddit(
             # thread-local flag.  Cursor uses MAX() so a spurious old post
             # can't rewind.
             newest = newest_epoch_from_posts(submissions)
-            if newest and source_complete:
-                write_cursor(db, game.id, "reddit", sub_name, newest)
+            # A fully exhausted listing proves even a quiet/empty interval.
+            # Only that proof can move beyond the last matching post. Capped,
+            # failed or timed-out scans never receive this watermark.
+            checked = getattr(submissions, "checked_through", None)
+            if source_complete and len(errors) == save_error_count and (checked or newest):
+                write_cursor(db, game.id, "reddit", sub_name, max(checked or 0, newest or 0))
 
             # NOTE: Comment fetching is disabled because Reddit blocks all
             # JSON API requests from datacenter IPs (403 Blocked). Each

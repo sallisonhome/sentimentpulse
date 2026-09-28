@@ -1,5 +1,20 @@
 # SentimentPulse Changelog
 
+## September 28, 2026: Reddit query reliability and digest relevance
+
+- Bounded daily general-community reads use shared paginated listings and
+  local keyword selection instead of fragile provider-side text searches.
+  Publication windows and per-field limits are preserved; only fully read
+  windows advance an empty interval's checkpoint.
+- Incomplete source reads display as partial even when other reads returned
+  posts. Query stop reasons remain visible; historical errors are not erased.
+- Broad recommendation and simulation communities require game relevance
+  rather than inheriting dedicated-community status. Summary evidence
+  excludes noise, rejected and off-topic-drift records.
+- Added a game-scoped, dry-run-first repair operator with exact-plan approval,
+  protected audit backups and derived-cache invalidation. Raw posts and
+  sentiment records are preserved.
+
 ## September 26, 2026: Automatic ingestion admission and avoidable wait repair
 
 - Startup recovery now respects the same 05:45 Eastern daily slot and upstream

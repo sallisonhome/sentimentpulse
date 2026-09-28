@@ -20,9 +20,11 @@ _next_request = {}
 
 
 class FetchRows(list):
-    def __init__(self, rows=(), *, complete=True):
+    def __init__(self, rows=(), *, complete=True, checked_through=None, stop_reason=None):
         super().__init__(rows)
         self.complete = complete
+        self.checked_through = checked_through if complete else None
+        self.stop_reason = stop_reason
 
 
 class UpstreamFailure(RuntimeError):
@@ -35,9 +37,15 @@ def begin_run():
     _local.cache = OrderedDict()
     _local.cache_bytes = 0
     _local.metrics = Counter()
+    _local.started_epoch = int(time.time())
+    _local.listing_cache = None
 
 
 def end_run():
+    listing_cache = getattr(_local, "listing_cache", None)
+    if listing_cache is not None:
+        listing_cache.close()
+        _local.listing_cache = None
     session = getattr(_local, "session", None)
     if session:
         session.close()
