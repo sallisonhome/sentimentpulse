@@ -1,5 +1,23 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-30 — A zero-revenue DLC row is an entitlement, not a second sale
+
+Hellraiser's leaderboard and country charts showed roughly double the units and half
+the ASP. Read-only production evidence: 19,303 base units / $809,597, plus exactly
+19,303 "DLC" units / $0 over 42 portal days. Steamworks lists the bonus content of a
+pre-purchase edition as a DLC unit with no revenue; it rides on a base unit already
+counted. There is no paid Hellraiser DLC.
+
+- Units that carry no revenue are not sold units. `isBonusEntitlementRow` in
+  `server/steam-sales-accounting.ts` is the single rule; summary, 24h leaderboard,
+  weekly digest and `computeSalesByCountry` (PDP and cross-title country charts) use it.
+- Paid DLC (for example the planned $10 base-to-Deluxe upgrade) has revenue, so it is
+  still tracked as DLC, separately from base copies. Verify it after release day.
+- Ingestion still stores the raw portal rows for audit. The correction is applied when
+  reading, so no production data was rewritten.
+- Before changing a unit/ASP rule, pull the raw per-SKU-group rows first; the symptom
+  (halved ASP) pointed straight at the denominator once units and revenue were compared.
+
 ## 2026-09-30 — A chart cutoff must not change earlier evidence eligibility
 
 - Reproduce missing points across multiple end dates, not just the report's

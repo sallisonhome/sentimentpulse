@@ -32,6 +32,7 @@ import {
   type RelatedGamesUpcomingMeta, relatedGamesUpcomingMeta,
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/better-sqlite3";
+import { isBonusEntitlementRow } from "./steam-sales-accounting";
 import Database from "better-sqlite3";
 import {initSteamUnitCalibration} from "./steam-unit-calibration";
 import {initSteamSalesShadow} from "./steam-sales-shadow";
@@ -1378,6 +1379,8 @@ export interface SteamSalesSummary {
   baseNetRevenueUsd: number;
   dlcNetUnits: number;
   dlcNetRevenueUsd: number;
+  /** Zero-revenue DLC rows (bonus entitlements); reported, never counted as sold units. */
+  bonusEntitlementUnits: number;
   otherNetUnits: number;
   otherNetRevenueUsd: number;
   firstDate: string | null;
@@ -2081,6 +2084,7 @@ export class DatabaseStorage implements IStorage {
       baseNetRevenueUsd: 0,
       dlcNetUnits: 0,
       dlcNetRevenueUsd: 0,
+      bonusEntitlementUnits: 0,
       otherNetUnits: 0,
       otherNetRevenueUsd: 0,
       firstDate: null,
@@ -2096,8 +2100,12 @@ export class DatabaseStorage implements IStorage {
         summary.baseReturns += r.returns;
         summary.baseNetRevenueUsd += r.netRevenueUsd;
       } else if (r.skuGroup === "dlc") {
-        summary.dlcNetUnits += r.netUnits;
-        summary.dlcNetRevenueUsd += r.netRevenueUsd;
+        if (isBonusEntitlementRow(r)) {
+          summary.bonusEntitlementUnits += r.netUnits;
+        } else {
+          summary.dlcNetUnits += r.netUnits;
+          summary.dlcNetRevenueUsd += r.netRevenueUsd;
+        }
       } else {
         summary.otherNetUnits += r.netUnits;
         summary.otherNetRevenueUsd += r.netRevenueUsd;

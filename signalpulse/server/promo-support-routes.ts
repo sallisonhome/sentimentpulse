@@ -14,6 +14,7 @@
 
 import type { Express, Request, Response } from "express";
 import { storage } from "./storage";
+import { isBonusEntitlementRow } from "./steam-sales-accounting";
 
 // Shape validation: cheap runtime checks in place of a full Zod schema.
 // The endpoint is called by a single trusted sibling service over
@@ -440,6 +441,9 @@ export function computeSalesByCountry(
   let baseRevTot  = 0, dlcRevTot  = 0;
   for (const r of dailyRows) {
     if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
+    // Bonus entitlements (zero-revenue DLC rows) ride on a base purchase that
+    // is already counted. Counting them doubled units and halved ASP.
+    if (isBonusEntitlementRow(r)) continue;
     dayTotalRev.set(r.date, (dayTotalRev.get(r.date) ?? 0) + (r.netRevenueUsd || 0));
     dayTotalUnits.set(r.date, (dayTotalUnits.get(r.date) ?? 0) + (r.netUnits || 0));
     if (r.skuGroup === "base") {

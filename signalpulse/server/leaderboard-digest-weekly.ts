@@ -27,6 +27,7 @@
  * to the user's stated cookie-expiry concern.
  */
 import { storage } from "./storage";
+import { isBonusEntitlementRow } from "./steam-sales-accounting";
 import { getPreReleaseSaberSteamTitles, getRevenueEligibleSteamTitles } from "./leaderboards";
 
 // ─── Week window ─────────────────────────────────────────────────────────
@@ -236,7 +237,7 @@ export function getWeeklyRevenueRows(window: WeekWindow): WeeklyRevenueRow[] {
       if (r.skuGroup === "base") {
         baseUnitsWeek += r.netUnits;
         baseRevenueWeek += r.netRevenueUsd;
-      } else if (r.skuGroup === "dlc") {
+      } else if (r.skuGroup === "dlc" && !isBonusEntitlementRow(r)) {
         dlcUnitsWeek += r.netUnits;
         dlcRevenueWeek += r.netRevenueUsd;
       }
