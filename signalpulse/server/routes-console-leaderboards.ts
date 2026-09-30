@@ -143,7 +143,7 @@ type IpOverrideRule = { pattern: RegExp; label: string; ps5: number; xbox: numbe
 const IP_OVERRIDE_RULES: IpOverrideRule[] = [
   // Sports IPs — console-dominant mix (PS5 65 / Xbox 25 / Steam 10).
   { pattern: /^\s*nba\s*2k/i,                     label: "NBA 2K",                      ps5: 65, xbox: 25, steam: 10 },
-  { pattern: /^\s*madden\s*nfl/i,                 label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
+  { pattern: /^\s*(ea\s*sports\s*)?madden\s*nfl/i,  label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
   // Sony first-party IPs — PS5 flagship mix (PS5 90 / Steam 10 / Xbox 0).
@@ -156,11 +156,24 @@ const IP_OVERRIDE_RULES: IpOverrideRule[] = [
   { pattern: /^\s*ratchet\s*(&|and)\s*clank/i,    label: "Ratchet & Clank",             ps5: 90, xbox: 0,  steam: 10 },
 ];
 
-function ipOverrideFactorFor(displayName: string | null | undefined, plat: Platform): { factor: number; label: string } | null {
+// Store names carry trademark glyphs and publisher prefixes ("EA SPORTS™ Madden NFL 27",
+// "NBA 2K26 for PS5®"). Rules are matched against the name with those glyphs removed so a
+// franchise is never missed because of a ™ or ® between words.
+export function normalizeIpName(name: string): string {
+  return name.replace(/[\u2122\u00AE\u00A9\u2120]/g, "").replace(/\s+/g, " ").trim();
+}
+export function ipRuleMatches(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = normalizeIpName(name);
+  return IP_OVERRIDE_RULES.some(r => r.pattern.test(n));
+}
+
+export function ipOverrideFactorFor(displayName: string | null | undefined, plat: Platform): { factor: number; label: string } | null {
   if (plat !== "ps5" && plat !== "xbox") return null;
   if (!displayName) return null;
+  const name = normalizeIpName(displayName);
   for (const r of IP_OVERRIDE_RULES) {
-    if (r.pattern.test(displayName)) {
+    if (r.pattern.test(name)) {
       const numer = plat === "ps5" ? r.ps5 : r.xbox;
       return { factor: numer / r.steam, label: r.label };
     }
@@ -178,14 +191,14 @@ export function evaluateRevenueMixShadow() {
   const weights = [1, PLATFORM_RATIO_VS_STEAM.ps5!, PLATFORM_RATIO_VS_STEAM.xbox!];
   const total = weights.reduce((a,b) => a+b,0);
   return runMixShadow(rawSqlite, editionGroupKey,
-    name => IP_OVERRIDE_RULES.some(r => r.pattern.test(name)),
+    name => ipRuleMatches(name),
     weights.map(n => n/total) as Mix);
 }
 
 function dailyMixPolicy() {
   const weights = [1, PLATFORM_RATIO_VS_STEAM.ps5!, PLATFORM_RATIO_VS_STEAM.xbox!];
   const total = weights.reduce((a,b)=>a+b,0);
-  return { familyKey: editionGroupKey, protectedTitle: (name: string) => IP_OVERRIDE_RULES.some(r=>r.pattern.test(name)),
+  return { familyKey: editionGroupKey, protectedTitle: (name: string) => ipRuleMatches(name),
     baseline: weights.map(n=>n/total) as Mix,
     asp: [aspFactorFor("steam"),aspFactorFor("ps5"),aspFactorFor("xbox")] as Mix };
 }

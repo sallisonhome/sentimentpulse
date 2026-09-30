@@ -1,5 +1,18 @@
 # SentimentPulse Changelog
 
+## September 30, 2026: Madden NFL 27 and other console-first sports titles
+
+- Madden NFL 27 was valued as a Steam-derived title at the generic console ratios (PS5 0.77x, Xbox 0.25x
+  of Steam revenue) instead of the console-first sports mix the boards already use for NBA 2K, College
+  Football, EA Sports FC and Madden (PS5 6.5x, Xbox 2.5x of Steam). The rule did not recognize
+  store names such as "EA SPORTS(TM) Madden NFL 27" because of the trademark glyph and publisher prefix, so
+  Madden 27 sat far below the top 100 on PS5, Xbox and Steam-derived views. Names are now normalized
+  before the franchise rules are applied.
+- Effect on the PS5 and Xbox boards: Madden NFL 27 now ranks inside the 7, 30 and 90 day top 100 on both
+  consoles. No other title's value changed in a before/after replay of all three boards and five windows.
+- Stored estimates, Steam values, anchors, overrides and Saber actuals are unchanged. Daily charts start
+  at the collection start (Sep 14); earlier launch days are not reconstructed.
+
 ## September 30, 2026: Daily revenue days across the Steam multiplier reset
 
 - Steam titles whose units-per-review ratio was reset between the Sep 23 and Sep 25 estimates
