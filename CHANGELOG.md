@@ -1,5 +1,19 @@
 # SentimentPulse Changelog
 
+## September 30, 2026: Daily revenue cutoff and null-sibling stability
+
+- Preserve valid daily revenue and early launch allocations when a later
+  same-platform sibling has no unit estimate. A null Deluxe row must not erase
+  base-game history merely because the requested end date was extended.
+- Scope genuinely conflicting sibling observations from their first ambiguous
+  date onward, rather than invalidating earlier unique history.
+- This read-only chart-route correction leaves stored estimates, lifetime
+  totals, calibration anchors, public milestones, manual overrides and Saber
+  actuals unchanged. Protected groups and the allocation kill switch retain
+  their original route behavior.
+- Added real-HTTP regression coverage for start/end-date invariance, null
+  siblings, conflicting valued siblings, conservation and anchored exclusions.
+
 ## September 28, 2026: Reddit query reliability and digest relevance
 
 - Bounded daily general-community reads use shared paginated listings and

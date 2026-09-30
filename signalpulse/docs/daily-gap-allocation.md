@@ -50,6 +50,17 @@ lifetime, window or leaderboard total and writes nothing.
     split evenly or zero-filled.
 - The existing outlier guards still apply to gap spans, and the daily mix ledger
   still overrides recorded days.
+- Duplicate same-platform sibling rows disable allocation from the first
+  ambiguous date onward, not for the preceding unique history. Extending the
+  requested end date must not erase earlier valid launch/gap allocations merely
+  because a later duplicate row entered the response window. This is a read-time
+  scope correction; it does not deduplicate ambiguous rows or alter LTD totals,
+  calibration anchors, manual overrides, milestones, or Saber actuals.
+- For eligible, unprotected groups only, a null sibling estimate is ignored
+  when a valued estimate exists on that platform/date. It cannot overwrite a
+  valid daily point. Two valued sibling rows are still treated as ambiguous,
+  not summed or arbitrarily selected. Protected groups and the kill switch
+  retain their original behavior byte-for-byte.
 - Each allocated point carries `allocation: {platform: "gap|launch:<basis>"}` and
   the methodology text says allocated days are modeled.
 

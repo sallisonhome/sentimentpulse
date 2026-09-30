@@ -1,5 +1,20 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-30 — A chart cutoff must not change earlier evidence eligibility
+
+- Reproduce missing points across multiple end dates, not just the report's
+  exact URL. Control's early Xbox allocations disappeared when the response
+  included a later null Deluxe sibling. A series-wide uniqueness flag made
+  historical eligibility depend on future rows; null rows also overwrote valid
+  daily values on the duplicate dates.
+- Discard a null sibling only when the same platform/date has a valued row
+  and the family is unprotected and allocation-enabled. Never pick a winner
+  between two valued siblings. Limit ambiguity to its causal date onward.
+- Preserve protected behavior and kill-switch behavior exactly. Add HTTP
+  prefix-invariance tests, real-data replay and no-write/LTD conservation
+  checks before asking for production rollout. A fixed report cutoff alone
+  does not prove the live chart bug is resolved.
+
 ## 2026-09-28 — Archive read failures and relevance failures are separate gates
 
 - Slow keyword searches can fail while paginated subreddit listings work.

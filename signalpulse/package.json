@@ -4,7 +4,7 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "test:gap-allocation": "tsx --test server/daily-gap-allocation.test.ts server/daily-gap-allocation-routes.test.ts",
+    "test:gap-allocation": "tsx --test server/daily-gap-allocation.test.ts server/daily-gap-allocation-routes.test.ts server/daily-gap-cutoff.test.ts",
     "test:launch-daily": "tsx --test server/launch-daily-reconstruction.test.ts",
     "posttest": "npm run test:launch-daily",
     "test:steam-milestone": "tsx --test server/steam-unit-calibration.test.ts server/steam-sales-shadow.test.ts",

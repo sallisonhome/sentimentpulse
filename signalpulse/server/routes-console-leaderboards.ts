@@ -2362,15 +2362,31 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const allocations: Partial<Record<Platform, Record<string, { kind: string; basis: string }>>> = {};
       const dailyByPlatform: Partial<Record<Platform, Record<string, number | null>>> = {};
       for (const p of Object.keys(byPlatform) as Platform[]) {
-        const arr = byPlatform[p] ?? [];
+        const rawArr = byPlatform[p] ?? [];
+        // A sibling with no estimate is not a competing observation. Do not let
+        // its null row erase a unique valued row on the same day (or invalidate
+        // the platform's launch history). Keep the exact legacy path for every
+        // protected group and when allocation is disabled. Multiple valued
+        // siblings remain ambiguous; no arbitrary winner or sum is introduced.
+        const valuedDates = new Set(rawArr.filter(r => r.units != null).map(r => r.date));
+        const arr = gapEvidence
+          ? rawArr.filter(r => r.units != null || !valuedDates.has(r.date))
+          : rawArr;
         const msrpCents = msrpByPlatform[p];
         const aspFactor = aspFactorFor(p);
         const dailyRev: Record<string, number | null> = {};
         const rollingDeltas: number[] = [];
         let base: { date: string; units: number; method: string | null; signal: number | null } | null = null;
-        // One row per date is required to allocate. Sibling SKUs that share a platform
-        // make the series ambiguous, which keeps the strict nonadjacent-day rule.
-        const uniqueDates = new Set(arr.map(r => r.date)).size === arr.length;
+        // One row per date is required to allocate. A later ambiguous sibling
+        // must not retroactively erase an earlier, unambiguous allocation when
+        // the caller extends `to`. Keep the strict rule from the first duplicate
+        // date onward, while preserving the unique historical prefix.
+        const seenDates = new Set<string>();
+        let firstAmbiguousDate: string | null = null;
+        for (const row of arr) {
+          if (seenDates.has(row.date)) { firstAmbiguousDate = row.date; break; }
+          seenDates.add(row.date);
+        }
         const dayMs = 86400000;
         const outlierSuppressed = (perDay: number, isTransitionDay: boolean): boolean => {
           if (!(perDay > 0)) return false;
@@ -2396,6 +2412,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           }
         };
         arr.forEach((row, idx) => {
+          const uniqueDates = firstAmbiguousDate == null || row.date < firstAmbiguousDate;
           if (row.date < COLLECTION_START) {
             dailyRev[row.date] = null;
             if (row.units != null) base = { date: row.date, units: row.units, method: row.method, signal: row.signal };
