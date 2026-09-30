@@ -52,6 +52,7 @@ import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
 import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
+import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,protectionReason,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -2282,12 +2283,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // grouping below use whichever set is non-null on the same date. In
       // practice sibling sets are one-titleId-per-platform.
       const rows = rawSqlite.prepare(`
-        SELECT platform, as_of_date AS date, units_mid AS units, method
+        SELECT platform, as_of_date AS date, units_mid AS units, method, signal_value AS signal
           FROM window_estimates_daily
          WHERE title_id IN (${idPlaceholders}) AND window = 'ltd'
            AND as_of_date <= ?
          ORDER BY platform, as_of_date
-      `).all(...siblingIds, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null }>;
+      `).all(...siblingIds, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null; signal: number | null }>;
 
       // Primary SKU MSRP per platform across the sibling set (lowest-priced
       // anchor SKU on each platform, regardless of which sibling titleId
@@ -2302,10 +2303,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       for (const r of skuRows) if (r.msrp_usd_cents != null) msrpByPlatform[r.platform] = r.msrp_usd_cents;
 
       // Group by platform, then compute day-over-day diff.
-      const byPlatform: Partial<Record<Platform, Array<{ date: string; units: number | null; method: string | null }>>> = {};
+      const byPlatform: Partial<Record<Platform, Array<{ date: string; units: number | null; method: string | null; signal: number | null }>>> = {};
       for (const r of rows) {
         const arr = byPlatform[r.platform] ?? (byPlatform[r.platform] = []);
-        arr.push({ date: r.date, units: r.units, method: r.method });
+        arr.push({ date: r.date, units: r.units, method: r.method, signal: r.signal });
       }
 
       // Suppression rules for accumulator initialization jumps. The
@@ -2354,77 +2355,88 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const dates = Array.from(dateSet).sort();
 
       // For each platform, compute incremental revenue for each date.
+      // Days the daily history is missing (a missed run, or the pre-history of a
+      // launch) are allocated from the published LTD change using dated evidence
+      // (daily-gap-allocation.ts); the LTD change itself is never altered.
+      const gapEvidence = allocationEnabled(rawSqlite) && !protectionReason(rawSqlite, siblingIds) ? loadGapEvidence(rawSqlite, siblingIds) : null;
+      const allocations: Partial<Record<Platform, Record<string, { kind: string; basis: string }>>> = {};
       const dailyByPlatform: Partial<Record<Platform, Record<string, number | null>>> = {};
       for (const p of Object.keys(byPlatform) as Platform[]) {
         const arr = byPlatform[p] ?? [];
         const msrpCents = msrpByPlatform[p];
         const aspFactor = aspFactorFor(p);
         const dailyRev: Record<string, number | null> = {};
-        // All positive deltas we've accepted so far on this platform,
-        // used by both outlier rules below. Bootstrap-era deltas count
-        // toward this baseline so a real accumulator jump on the flip
-        // day has something to be compared against.
         const rollingDeltas: number[] = [];
-        let prev: number | null = null;
-        let prevMethod: string | null = null;
-        let prevDate: string | null = null;
-        for (const row of arr) {
+        let base: { date: string; units: number; method: string | null; signal: number | null } | null = null;
+        // One row per date is required to allocate. Sibling SKUs that share a platform
+        // make the series ambiguous, which keeps the strict nonadjacent-day rule.
+        const uniqueDates = new Set(arr.map(r => r.date)).size === arr.length;
+        const dayMs = 86400000;
+        const outlierSuppressed = (perDay: number, isTransitionDay: boolean): boolean => {
+          if (!(perDay > 0)) return false;
+          if (rollingDeltas.length >= 2) {
+            const recent = rollingDeltas.slice(-7).slice().sort((a, b) => a - b);
+            const median = recent[Math.floor(recent.length / 2)];
+            if (median > 0 && perDay > 20 * median) return true;
+          }
+          if (isTransitionDay && rollingDeltas.length >= 1) {
+            const maxPrior = Math.max(...rollingDeltas);
+            if (maxPrior > 0 && perDay > 20 * maxPrior) return true;
+          }
+          return false;
+        };
+        const place = (alloc: Allocation | null, date: string): void => {
+          if (!alloc || msrpCents == null) { dailyRev[date] = null; return; }
+          const platAlloc = allocations[p] ?? (allocations[p] = {});
+          for (const [d, units] of Array.from(alloc.units.entries())) {
+            if (d < COLLECTION_START) continue;
+            dailyRev[d] = (units * msrpCents * aspFactor) / 100;
+            platAlloc[d] = { kind: alloc.kind, basis: alloc.basis };
+            if (units > 0) rollingDeltas.push(units);
+          }
+        };
+        arr.forEach((row, idx) => {
           if (row.date < COLLECTION_START) {
             dailyRev[row.date] = null;
-            prev = row.units;
-            prevMethod = row.method;
-            prevDate = row.date;
-            continue;
+            if (row.units != null) base = { date: row.date, units: row.units, method: row.method, signal: row.signal };
+            return;
           }
           const cur = row.units;
-          if (prev == null || cur == null || msrpCents == null ||
-              prevDate == null || Date.parse(row.date)-Date.parse(prevDate)!==86400000) {
+          if (cur == null || msrpCents == null) {
             dailyRev[row.date] = null;
-          } else {
-            const deltaUnits = Math.max(0, cur - prev);
-            const isTransitionDay =
-              isBootstrapOnlyMethod(prevMethod) && isAccumulatorMethod(row.method);
-
-            let suppress = false;
-
-            if (deltaUnits > 0) {
-              // Rule A: general outlier guard. Once we have >=2 prior
-              // accepted positive deltas, suppress a new delta that
-              // exceeds 20x the median of the trailing 7-day window.
-              if (rollingDeltas.length >= 2) {
-                const recent = rollingDeltas.slice(-7).slice().sort((a, b) => a - b);
-                const median = recent[Math.floor(recent.length / 2)];
-                if (median > 0 && deltaUnits > 20 * median) {
-                  suppress = true;
-                }
-              }
-
-              // Rule B: method-transition outlier. On the flip from
-              // bootstrap-only to accumulator, suppress only if the
-              // flip-day delta is >20x the MAX of prior accepted deltas.
-              // Distinguishes Wolverine-style init jumps from Valheim-
-              // style clean handovers where bootstrap already tracked
-              // the real value.
-              if (!suppress && isTransitionDay && rollingDeltas.length >= 1) {
-                const maxPrior = Math.max(...rollingDeltas);
-                if (maxPrior > 0 && deltaUnits > 20 * maxPrior) {
-                  suppress = true;
-                }
-              }
-            }
-
-            if (suppress) {
+            return;
+          }
+          const span = base ? Math.round((Date.parse(row.date) - Date.parse(base.date)) / dayMs) : 0;
+          if (base && span === 1) {
+            const deltaUnits = Math.max(0, cur - base.units);
+            const isTransitionDay = isBootstrapOnlyMethod(base.method) && isAccumulatorMethod(row.method);
+            if (outlierSuppressed(deltaUnits, isTransitionDay)) {
               dailyRev[row.date] = null;
             } else {
-              const rev = (deltaUnits * msrpCents * aspFactor) / 100;
-              dailyRev[row.date] = rev;
+              dailyRev[row.date] = (deltaUnits * msrpCents * aspFactor) / 100;
               if (deltaUnits > 0) rollingDeltas.push(deltaUnits);
             }
+          } else if (base && span > 1) {
+            const dates = Array.from({ length: span }, (_, i) => new Date(Date.parse(base!.date) + (i + 1) * dayMs).toISOString().slice(0, 10));
+            const delta = cur - base.units;
+            let alloc: Allocation | null = null;
+            if (gapEvidence && uniqueDates && changeExplainedBySignal(delta, base.signal, row.signal, cur) &&
+                !outlierSuppressed(delta / span, isBootstrapOnlyMethod(base.method) && isAccumulatorMethod(row.method))) {
+              alloc = allocateSpan(p, "gap", dates, delta, base.date, false, gapEvidence);
+            }
+            place(alloc, row.date);
+          } else if (!base && gapEvidence && uniqueDates) {
+            const z = launchBaseline(arr, idx, gapEvidence, p);
+            const span0 = z ? Math.round((Date.parse(row.date) - Date.parse(z)) / dayMs) : 0;
+            if (z && span0 >= 1) {
+              const dates = Array.from({ length: span0 }, (_, i) => new Date(Date.parse(z) + (i + 1) * dayMs).toISOString().slice(0, 10));
+              place(allocateSpan(p, "launch", dates, cur, z, true, gapEvidence), row.date);
+            } else dailyRev[row.date] = null;
+          } else {
+            dailyRev[row.date] = null;
           }
-          prev = cur;
-          prevMethod = row.method;
-          prevDate = row.date;
-        }
+          base = { date: row.date, units: cur, method: row.method, signal: row.signal };
+        });
         dailyByPlatform[p] = dailyRev;
       }
 
@@ -2462,11 +2474,19 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const xbox  = dailyByPlatform.xbox?.[d]  ?? null;
         const parts = [steam, ps5, xbox].filter((v): v is number => typeof v === "number");
         const combined = parts.length > 0 ? parts.reduce((a, b) => a + b, 0) : null;
-        return { date: d, steam, ps5, xbox, combined, source:"raw_daily_estimator" };
+        const allocation: Record<string, string> = {};
+        for (const pl of ["steam","ps5","xbox"] as Platform[]) {
+          const al = allocations[pl]?.[d];
+          if (al && dailyByPlatform[pl]?.[d] != null) allocation[pl] = `${al.kind}:${al.basis}`;
+        }
+        return { date: d, steam, ps5, xbox, combined, source:"raw_daily_estimator",
+          ...(Object.keys(allocation).length ? { allocation } : {}) };
       });
+      const anyAllocated = points.some((pt: any) => pt.allocation);
 
       res.json({ titleId, from, to, collectionStart: calibrated?.startDate??COLLECTION_START, points,
-        methodology:calibratedDays?.caveat??"Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated." });
+        methodology:calibratedDays?.caveat??("Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated."+
+          (anyAllocated?" Days missing from the estimate history are modeled: the published lifetime change is split across them using dated review or rating evidence (marked on each point), and lifetime totals are unchanged.":"")) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
