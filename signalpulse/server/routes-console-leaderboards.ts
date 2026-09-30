@@ -52,7 +52,7 @@ import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
 import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
-import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,protectionReason,type Allocation} from "./daily-gap-allocation";
+import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,protectionReason,rebasedGapUnits,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -2440,6 +2440,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             if (gapEvidence && uniqueDates && changeExplainedBySignal(delta, base.signal, row.signal, cur) &&
                 !outlierSuppressed(delta / span, isBootstrapOnlyMethod(base.method) && isAccumulatorMethod(row.method))) {
               alloc = allocateSpan(p, "gap", dates, delta, base.date, false, gapEvidence);
+            } else if (gapEvidence && uniqueDates && delta < 0) {
+              // Estimator ratio reset (e.g. the Steam multiplier reset): value the gap days at the
+              // post-reset ratio, confirmed by the next adjacent published pair.
+              const nx = arr[idx + 1];
+              const units = rebasedGapUnits(
+                { units: base.units, signal: base.signal, method: base.method },
+                { units: cur, signal: row.signal, method: row.method },
+                nx && nx.units != null && Math.round((Date.parse(nx.date) - Date.parse(row.date)) / dayMs) === 1
+                  ? { units: nx.units, signal: nx.signal, method: nx.method } : null);
+              if (units != null && !outlierSuppressed(units / span, false)) {
+                alloc = allocateSpan(p, "rebased_gap", dates, units, base.date, false, gapEvidence);
+              }
             }
             place(alloc, row.date);
           } else if (!base && gapEvidence && uniqueDates) {
@@ -2503,7 +2515,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
       res.json({ titleId, from, to, collectionStart: calibrated?.startDate??COLLECTION_START, points,
         methodology:calibratedDays?.caveat??("Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated."+
-          (anyAllocated?" Days missing from the estimate history are modeled: the published lifetime change is split across them using dated review or rating evidence (marked on each point), and lifetime totals are unchanged.":"")) });
+          (anyAllocated?" Days missing from the estimate history are modeled: the published lifetime change is split across them using dated review or rating evidence (marked on each point), and lifetime totals are unchanged.":"")+
+          (points.some((pt: any) => Object.values(pt.allocation ?? {}).some((v: any) => String(v).startsWith("rebased_gap")))?" Where the estimator's units-per-review ratio was reset across the missing days, those days are the review growth valued at the post-reset ratio, not the (re-scaled) lifetime change.":"")) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

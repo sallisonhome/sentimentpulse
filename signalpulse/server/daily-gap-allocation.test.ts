@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import Database from "better-sqlite3";
-import { changeExplainedBySignal, allocateSpan, allocationEnabled, launchBaseline, loadGapEvidence, protectionReason, type GapEvidence, type SeriesRow } from "./daily-gap-allocation";
+import { changeExplainedBySignal, allocateSpan, allocationEnabled, launchBaseline, loadGapEvidence, protectionReason, rebasedGapUnits, type GapEvidence, type SeriesRow } from "./daily-gap-allocation";
 
 const sum = (m: Map<string, number>) => Array.from(m.values()).reduce((a, b) => a + b, 0);
 function evidence(): GapEvidence {
@@ -152,4 +152,23 @@ test("anchored, overridden, milestone and Saber titles are never reallocated", (
   assert.equal(protectionReason(db, []), "no_titles");
   db.exec("DROP TABLE products");
   assert.equal(protectionReason(db, [5]), null);
+});
+
+test("rebased gap: review growth at the post-reset ratio, fail closed otherwise", () => {
+  // Halloween: The Game (Steam), 2026-09-23 -> 09-25 -> 09-26. Ratio 80.4 -> 40.2 units per review.
+  const m = "calibrated_from_actuals_v1+ltd_state:derived_max_windows";
+  const base = { units: 1060089, signal: 13185, method: m };
+  const cur = { units: 542507, signal: 13495, method: m };
+  const next = { units: 548577, signal: 13646, method: m };
+  const u = rebasedGapUnits(base, cur, next)!;
+  assert.ok(Math.abs(u - 310 * (542507 / 13495)) < 1e-6);
+  // The next adjacent day is valued exactly this way: 151 reviews * 40.2 = 6070 units.
+  assert.ok(Math.abs((next.units - cur.units) - 151 * (cur.units / cur.signal)) < 1);
+  // Not a reset (LTD rose), method flip, no confirmation, non-constant ratio, no signal growth: nothing.
+  assert.equal(rebasedGapUnits({ ...base, units: 500000 }, cur, next), null);
+  assert.equal(rebasedGapUnits(base, { ...cur, method: "other+ltd_state:x" }, next), null);
+  assert.equal(rebasedGapUnits(base, cur, null), null);
+  assert.equal(rebasedGapUnits(base, cur, { ...next, units: 560000 }), null);
+  assert.equal(rebasedGapUnits({ ...base, signal: 13495 }, cur, next), null);
+  assert.equal(rebasedGapUnits({ ...base, signal: null }, cur, next), null);
 });

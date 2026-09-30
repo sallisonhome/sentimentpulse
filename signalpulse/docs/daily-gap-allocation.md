@@ -35,6 +35,13 @@ lifetime, window or leaderboard total and writes nothing.
   is the latest earlier row recording zero signal, otherwise the day before
   release. A launch needs the platform's own dated evidence: never a borrowed
   shape, never an even split.
+- Rebased gap: when LTD units fell across the gap because the estimator's units-per-review
+  ratio was reset (Steam multiplier reset, 2026-09-24/25), the published change is a re-scale,
+  not sales. The gap days are the review growth valued at the post-reset ratio, the same way
+  every adjacent day after the reset is valued. Requires the same estimator method on both
+  sides, review growth, and confirmation of the ratio (within 2%) by the next adjacent
+  published pair; otherwise nothing is allocated. Labelled `rebased_gap:<basis>`. Days before the
+  reset keep their old scale; they are not restated.
 - Weights, first available:
   - Steam launch: next-day review activity. Saber's own Steamworks actuals for
     Twisted Tower (launch 2026-08-18) show reviews trail purchases: same-day

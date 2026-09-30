@@ -1,5 +1,14 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-30: claiming a global fix requires auditing every title, not the reported one
+
+The gap fix (#161) was called fixed after checking Control Resonant, a replay sample and the protected
+titles. A live scan of all 1,126 paid-base series found 639 still blank on Sep 24/25 (44 protected).
+Halloween: The Game's Steam series was blank because the Steam multiplier reset halved LTD units
+across the gap and the rule skips negative changes. Audit the whole population live, classify every
+blank by cause, and only then claim. A negative LTD change can be a re-scale, not a data artifact:
+value it from signal growth at the current ratio when the next adjacent pair confirms the ratio.
+
 ## 2026-09-30: anchored and Saber titles are never reallocated; re-read the rules on resume
 
 The user corrected two things during the global missing-day repair. (1) Anything
