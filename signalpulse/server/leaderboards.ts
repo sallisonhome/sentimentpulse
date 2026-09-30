@@ -10,6 +10,7 @@
  */
 
 import { storage } from "./storage";
+import { isBonusEntitlementRow } from "./steam-sales-accounting";
 import { getYesterdayGmtDateString } from "./ingestion";
 
 function getTodayDateString(): string {
@@ -361,7 +362,9 @@ export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
         if (r.skuGroup === "base") {
           baseUnitsYesterday += r.netUnits;
           baseRevYesterday += r.netRevenueUsd;
-        } else {
+        } else if (!isBonusEntitlementRow(r)) {
+          // Zero-revenue DLC rows are bonus entitlements on base purchases,
+          // not DLC sales (see steam-sales-accounting.ts).
           dlcUnitsYesterday += r.netUnits;
           dlcRevYesterday += r.netRevenueUsd;
         }
