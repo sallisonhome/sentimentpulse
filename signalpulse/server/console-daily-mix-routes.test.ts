@@ -95,6 +95,22 @@ test("active daily mix reaches every real route and units, and off restores base
     mode("off");
     assert.equal(db.prepare("SELECT COUNT(*) n FROM revenue_mix_daily").get().n,12);
     assert.deepEqual(db.prepare("SELECT * FROM window_estimates_daily ORDER BY id").all(),rawBefore);
+    // Raw fallback: never put two days' activity on the next observed day,
+    // never bridge a null in the UI, and retain a predecessor outside `from`.
+    db.prepare(`INSERT INTO platform_sku_map(title_id,platform,external_sku,sku_role,business_model,msrp_usd_cents,refreshed_at,created_at)
+      VALUES(49999,'steam','49999','base','paid',6000,?,?)`).run(stamp,stamp);
+    db.prepare(`INSERT INTO console_title_igdb(title_id,name,store_name,release_date,store_release_date,refreshed_at,created_at)
+      VALUES(49999,'Gap QA','Gap QA','2020-01-01','2020-01-01',?,?)`).run(stamp,stamp);
+    for(const [day,units] of [["2026-09-20",1000],["2026-09-22",3000],["2026-09-23",4000]]) {
+      db.prepare(`INSERT INTO window_estimates_daily(title_id,platform,window,as_of_date,units_mid,method,created_at)
+        VALUES(49999,'steam','ltd',?,?,'review:ltd_state:accumulator',?)`).run(day,units,stamp);
+    }
+    const gap=await get("/api/console/titles/49999/revenue-daily?from=2026-09-20&to=2026-09-23");
+    assert.equal(gap.points.find((p:any)=>p.date==="2026-09-21").steam,null);
+    assert.equal(gap.points.find((p:any)=>p.date==="2026-09-22").steam,null);
+    assert.equal(gap.points.find((p:any)=>p.date==="2026-09-23").steam,39600);
+    const narrow=await get("/api/console/titles/49999/revenue-daily?from=2026-09-23&to=2026-09-23");
+    assert.deepEqual(narrow.points,[gap.points.at(-1)]);
   } finally {
     globalThis.fetch=fetchOriginal;
     if(server)await new Promise<void>((resolve,reject)=>server.close((e:any)=>e?reject(e):resolve()));

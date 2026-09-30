@@ -51,6 +51,7 @@ import type { Express, Request } from "express";
 import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
+import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -2231,6 +2232,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         LIMIT 1
       `).get(titleId) as { name: string | null } | undefined;
       const seedKey = editionGroupKey(seedNameRow?.name ?? null);
+      const launch = reconstructLaunchDaily(rawSqlite,seedKey,from,to,{
+        steamFactor:aspFactorFor("steam"),
+        ps5Factor:aspFactorFor("ps5"),
+        ps5Ratio:PLATFORM_RATIO_VS_STEAM.ps5!,
+      });
+      if(launch)return res.json({titleId,...launch});
 
       // If we can't resolve a key, fall back to the requested titleId only.
       // sibs is guaranteed to contain the requested titleId.
@@ -2278,9 +2285,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         SELECT platform, as_of_date AS date, units_mid AS units, method
           FROM window_estimates_daily
          WHERE title_id IN (${idPlaceholders}) AND window = 'ltd'
-           AND as_of_date >= ? AND as_of_date <= ?
+           AND as_of_date <= ?
          ORDER BY platform, as_of_date
-      `).all(...siblingIds, from, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null }>;
+      `).all(...siblingIds, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null }>;
 
       // Primary SKU MSRP per platform across the sibling set (lowest-priced
       // anchor SKU on each platform, regardless of which sibling titleId
@@ -2336,8 +2343,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Union of all dates across platforms in range.
       const dateSet = new Set<string>();
       for (const p of Object.keys(byPlatform) as Platform[]) {
-        for (const row of byPlatform[p] ?? []) dateSet.add(row.date);
+        for (const row of byPlatform[p] ?? []) if(row.date>=from)dateSet.add(row.date);
       }
+      // Missing observation dates are explicit gaps, never sales zeroes.
+      // Keep the fallback bounded and do not invent future points.
+      const lastDate=Array.from(dateSet).sort().at(-1);
+      if(lastDate&&Number.isFinite(Date.parse(from))&&Date.parse(lastDate)-Date.parse(from)<=3660*86400000)
+        for(let t=Date.parse(from);t<=Date.parse(lastDate);t+=86400000)
+          dateSet.add(new Date(t).toISOString().slice(0,10));
       const dates = Array.from(dateSet).sort();
 
       // For each platform, compute incremental revenue for each date.
@@ -2354,15 +2367,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const rollingDeltas: number[] = [];
         let prev: number | null = null;
         let prevMethod: string | null = null;
+        let prevDate: string | null = null;
         for (const row of arr) {
           if (row.date < COLLECTION_START) {
             dailyRev[row.date] = null;
             prev = row.units;
             prevMethod = row.method;
+            prevDate = row.date;
             continue;
           }
           const cur = row.units;
-          if (prev == null || cur == null || msrpCents == null) {
+          if (prev == null || cur == null || msrpCents == null ||
+              prevDate == null || Date.parse(row.date)-Date.parse(prevDate)!==86400000) {
             dailyRev[row.date] = null;
           } else {
             const deltaUnits = Math.max(0, cur - prev);
@@ -2407,6 +2423,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           }
           prev = cur;
           prevMethod = row.method;
+          prevDate = row.date;
         }
         dailyByPlatform[p] = dailyRev;
       }

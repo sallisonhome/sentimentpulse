@@ -1,5 +1,17 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-29: preserve evidence, not an arbitrary existing revenue total
+
+The user clarified: increase totals when evidence establishes omitted sales.
+Do not turn anti-double-counting into a fixed-total policy. Distinguish missing
+activity evidence from a missing estimate date: Townfall's September 24 review
+bucket was already in all five current totals, but no estimate row existed for
+that date. Reconstruct from activity dates, not differences across missing
+observation dates. Label console timing as modeled and reconcile every window.
+New admitted evidence must raise totals normally; never insert fabricated
+console rating observations or another copy of revenue already in the total.
+Keep recovery reversible and prove repeat daily writers do not erase or compound it.
+
 ## 2026-09-27: calibrate volume without inventing a sales-date spike
 
 The user wants public Steam milestones to preserve the existing modeled sales

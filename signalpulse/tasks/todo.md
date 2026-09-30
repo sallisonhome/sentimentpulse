@@ -1,3 +1,13 @@
+# Townfall launch-day reconstruction
+
+- [x] Audit native identities, daily review evidence, missing estimate dates and all five live totals.
+- [x] Confirm owner allows evidence-backed increases, not a frozen revenue target.
+- [x] Implement scoped reversible activity-date reconstruction with all-window reconciliation.
+- [x] Test new evidence increases, invalid/missing evidence, protected anchors and repeated writers.
+- [x] QA real endpoints and both app renderers on an isolated production-evidence replay.
+- [x] Review diff, typecheck, full tests/builds, changelog and rollback.
+- [ ] Obtain merge/deploy approval after QA; no production write is part of local implementation.
+
 # Portrait artwork and shadow revenue calibration
 
 Governing CLAUDE.md, PRINCIPLES.md and lessons.md read before implementation.

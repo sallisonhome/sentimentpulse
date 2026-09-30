@@ -4,6 +4,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
+    "test:launch-daily": "tsx --test server/launch-daily-reconstruction.test.ts",
+    "posttest": "npm run test:launch-daily",
     "test:steam-milestone": "tsx --test server/steam-unit-calibration.test.ts server/steam-sales-shadow.test.ts",
     "dev": "cross-env NODE_ENV=development tsx server/index.ts",
     "build": "tsx script/build.ts",
