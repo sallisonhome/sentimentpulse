@@ -1,5 +1,17 @@
 # SentimentPulse Changelog
 
+## September 30, 2026: Daily revenue days across the Steam multiplier reset
+
+- Steam titles whose units-per-review ratio was reset between the Sep 23 and Sep 25 estimates
+  showed blank daily revenue for Sep 24-25. The days are now valued from the review growth at the
+  post-reset ratio (the same valuation every adjacent day already uses), split by dated review
+  activity, and labelled as modeled on each point. Days before the reset keep their old scale.
+- Filled only when the same estimator is on both sides, reviews grew, and the next adjacent
+  published pair confirms the ratio. Otherwise the days stay empty.
+- Read-only chart-route change: stored estimates, lifetime and window totals, calibration anchors,
+  public milestones, manual overrides and Saber actuals are unchanged, and protected groups keep
+  their original behavior. The allocation kill switch covers this path.
+
 ## September 30, 2026: Daily revenue cutoff and null-sibling stability
 
 - Preserve valid daily revenue and early launch allocations when a later

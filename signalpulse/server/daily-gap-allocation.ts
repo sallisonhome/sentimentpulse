@@ -15,7 +15,7 @@ import type Database from "better-sqlite3";
 
 export type GapPlatform = "steam" | "ps5" | "xbox";
 export type AllocationBasis = "own_ratings" | "steam_review_activity" | "steam_review_activity_lag1" | "steam_activity_shape";
-export type AllocationKind = "gap" | "launch";
+export type AllocationKind = "gap" | "launch" | "rebased_gap";
 export interface SeriesRow { date: string; units: number | null; signal: number | null }
 export interface GapEvidence {
   releaseDate: string | null;
@@ -125,7 +125,7 @@ function spanWeights(kind: AllocationKind, platform: GapPlatform, dates: string[
 /** Allocate `units` (a non-negative LTD change) across `dates` (ascending, contiguous, ending at the observed row). */
 export function allocateSpan(platform: GapPlatform, kind: AllocationKind, dates: string[], units: number, baseDate: string, baseZero: boolean, ev: GapEvidence): Allocation | null {
   if (!dates.length || !(units >= 0) || !Number.isFinite(units)) return null;
-  if (dates.length > (kind === "gap" ? MAX_GAP_DAYS : MAX_LAUNCH_DAYS)) return null;
+  if (dates.length > (kind === "launch" ? MAX_LAUNCH_DAYS : MAX_GAP_DAYS)) return null;
   const sw = spanWeights(kind, platform, dates, baseDate, baseZero, ev);
   if (!sw) return null;
   // A launch needs the platform's own dated evidence. Borrowed shapes are only
@@ -173,6 +173,28 @@ export function changeExplainedBySignal(deltaUnits: number, baseSignal: number |
   const growth = curSignal - baseSignal;
   if (growth < 0) return false;
   return deltaUnits <= 3 * growth * (curUnits / curSignal) + 100;
+}
+
+export interface RebaseRow { units: number; signal: number | null; method: string | null }
+
+/**
+ * A multi-day gap where the estimator's units-per-signal ratio was reset (LTD units fell although the
+ * signal kept growing). The published LTD change is a re-scale, not sales, so it is not allocated. The
+ * days' sales are the signal growth at the post-reset ratio, which is exactly how the estimator values
+ * every adjacent day after the reset. Fail closed unless: the same estimator method is on both sides,
+ * the signal grew, and the next adjacent published pair confirms the ratio within 2%.
+ * Returns the units to allocate, or null.
+ */
+export function rebasedGapUnits(base: RebaseRow, cur: RebaseRow, next: RebaseRow | null): number | null {
+  if (!(cur.units - base.units < 0)) return null;
+  if (!base.method || !cur.method || base.method.split("+")[0] !== cur.method.split("+")[0]) return null;
+  if (base.signal == null || cur.signal == null || !(base.signal > 0) || !(cur.signal > base.signal) || !(cur.units > 0)) return null;
+  if (!next || next.signal == null || !(next.signal > cur.signal) || !(next.units >= cur.units)) return null;
+  if (next.method?.split("+")[0] !== cur.method.split("+")[0]) return null;
+  const r = cur.units / cur.signal;
+  const nextR = (next.units - cur.units) / (next.signal - cur.signal);
+  if (!Number.isFinite(nextR) || Math.abs(nextR / r - 1) > 0.02) return null;
+  return (cur.signal - base.signal) * r;
 }
 
 /**
