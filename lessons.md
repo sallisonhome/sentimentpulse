@@ -1,5 +1,25 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-09-30 — Identical country ASPs: skipped days plus rescaling, not bad panel data
+
+Every Hellraiser country showed one ASP ($41.94 in 85 countries) although the portal
+day rows differ (US about $49, CN about $31, UA about $25). Day-level country rows
+existed for 17 of 42 days; the other 25 had no country rows of any granularity, and
+the August month panel carried $216 of country revenue against about $810k of sales.
+`computeSalesByCountry` skipped rows-less days, rescaled units up to the authoritative
+total while revenue stayed unscaled, then clipped and renormalized every country to one ASP.
+
+- A day with no usable country revenue is attributed with the pooled profile of days
+  that have authoritative shares (`days_pooled_profile` in the response), never skipped.
+- A wide-window panel is unusable for revenue when its summed revenue is under half of
+  the authoritative sales revenue for the same days (`isRevenueIncomplete`).
+- Backfill (`/api/ops/portal-fetch` per day) restores real rows. Dispatching the
+  country-daily-window workflow also fires the chain workflow, which cannot read logs
+  from its own token and then starts a 2024-09-01 backfill for all products. Pause the
+  chain workflow before any manual daily-window run and cancel stray chain runs.
+- Test isolation: import `./storage` (and anything that imports it) only after
+  `process.chdir(tmpdir)`, or the test writes `data.db` into the repo directory.
+
 ## 2026-09-30 — A zero-revenue DLC row is an entitlement, not a second sale
 
 Hellraiser's leaderboard and country charts showed roughly double the units and half
