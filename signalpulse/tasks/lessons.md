@@ -1,5 +1,12 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-30: name-pattern rules must normalize store names
+
+The console-first sports IP rules were anchored regexes on the display name. Store names carry a trademark
+glyph and publisher prefix ("EA SPORTS(TM) Madden NFL 27"), so Madden 27 silently fell to the generic
+console ratios and dropped off the boards. Normalize names (strip TM/R/C glyphs, collapse whitespace)
+before matching, and when a franchise rule exists audit every catalog name against it, not one title.
+
 ## 2026-09-30: claiming a global fix requires auditing every title, not the reported one
 
 The gap fix (#161) was called fixed after checking Control Resonant, a replay sample and the protected
