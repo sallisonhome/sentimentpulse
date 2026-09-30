@@ -13,10 +13,11 @@ total while revenue stayed unscaled, then clipped and renormalized every country
   that have authoritative shares (`days_pooled_profile` in the response), never skipped.
 - A wide-window panel is unusable for revenue when its summed revenue is under half of
   the authoritative sales revenue for the same days (`isRevenueIncomplete`).
-- Backfill (`/api/ops/portal-fetch` per day) restores real rows. Dispatching the
-  country-daily-window workflow also fires the chain workflow, which cannot read logs
-  from its own token and then starts a 2024-09-01 backfill for all products. Pause the
-  chain workflow before any manual daily-window run and cancel stray chain runs.
+- Backfill (`/api/ops/portal-fetch` per day) restores real rows. The old
+  country-daily-window-chain workflow fired on every manual daily-window run, could not
+  read logs with its own token, and then started a 2024-09-01 backfill for all products.
+  It was deleted on 2026-09-30. Always pass `only_product_id` to a manual daily-window
+  run so it cannot fan out to every product.
 - Test isolation: import `./storage` (and anything that imports it) only after
   `process.chdir(tmpdir)`, or the test writes `data.db` into the repo directory.
 
