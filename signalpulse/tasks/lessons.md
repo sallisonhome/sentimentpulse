@@ -1,5 +1,24 @@
 # SignalPulse scoped regression lessons
 
+## 2026-09-30: anchored and Saber titles are never reallocated; re-read the rules on resume
+
+The user corrected two things during the global missing-day repair. (1) Anything
+anchored to actual or publicly reported data, and every Saber title, must never
+change. Saber's Steamworks actuals inform the algorithm instead. Protection is
+fail-closed at the sibling-group level (calibration anchors, multiplier overrides,
+active milestones, Saber products); a failed check also protects. Wardogs and
+Marvel's Wolverine are covered by those tables. (2) A resumed compacted session
+must re-read CLAUDE.md and lessons.md before touching code; that was skipped and
+the first replays showed it: a $953M "increase" was rebasing artifacts, not sales.
+
+- A gap fix must only fill null days for titles that have one and must leave every
+  existing point byte-identical. Diff before/after on real data and count changed
+  existing points (must be 0) and protected titles touched (must be 0).
+- Never split evenly and never zero-fill: no dated evidence means the day stays empty.
+- Reviews trail purchases. Saber's Twisted Tower actuals (launch 2026-08-18): same-day
+  review shares misallocated 21-34% of units across launch days, next-day shares 3-9%.
+  One launch is validation of a starting point, not a universal constant.
+
 ## 2026-09-29: preserve evidence, not an arbitrary existing revenue total
 
 The user clarified: increase totals when evidence establishes omitted sales.
@@ -369,3 +388,9 @@ Exhausting a cursor alone is not proof of completeness. Reconcile counts before
 publishing recovered daily estimates, preserve histogram precedence, record
 current retrieval timestamps, and surface disagreement rather than overwrite.
 No historical CCU, zero-filled missing days, or backdated cumulative observations.
+
+A missed daily run is a global data hole, not a per-title one. When the daily
+series is derived from consecutive published lifetime values, allocate the
+published change across missing days from dated evidence in one generic path
+(gap and first-observation), conserving the total. Do not hard-code titles, do
+not synthesize lifetime rows, and label modeled days on each point.

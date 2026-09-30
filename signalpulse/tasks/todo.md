@@ -27,3 +27,8 @@ Acceptance: publisher identity must stay correct, portrait must load with native
 Pre-deployment evidence: 18 focused tests pass; type check and both builds pass. Twenty-five HTTP before/after comparisons against the previous route implementation preserve every numeric field across five periods. Both apps' four Halloween PDPs pass 1440px/390px browser checks with actual 600x900 Steam artwork. hmap's deliberately substituted landscape asset is rejected. SP mobile screenshots taken after the sidebar-collapse transition settles.
 
 Full suite: existing unrelated promo-calendar-client `active beats from /live-now...` assertion fails because response includes extra fields; 67/68 passed before the added collector test. No promo-calendar files changed.
+
+## Global daily gap and launch allocation
+- [x] Audit: no September 24 estimate row for any of 1,142 platform-titles; Control Resonant empty before September 26.
+- [x] Generic gap and launch allocation in the raw daily path, kill switch, tests.
+- [ ] Production replay, PR, deploy, live verification.
