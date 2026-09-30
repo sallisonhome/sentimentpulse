@@ -399,6 +399,21 @@ export function registerPromoSupportRoutes(app: Express): void {
 // /api/products/:id/sales-by-country (routes.ts) call this. The math is
 // identical; only the input keying (AppID vs product_id) differs.
 
+// A wide-window (month/custom) country panel whose summed revenue covers less
+// than half of the authoritative sales revenue for the same days cannot be used
+// to attribute revenue: the country revenue column of those panels is sparse.
+export function isRevenueIncomplete(
+  bucket: { start: string; end: string },
+  rows: Array<{ revenueUsd: number }>,
+  dayTotalRev: Map<string, number>,
+): boolean {
+  let panelRev = 0;
+  for (const r of rows) panelRev += r.revenueUsd || 0;
+  let salesRev = 0;
+  dayTotalRev.forEach((v, day) => { if (day >= bucket.start && day <= bucket.end) salesRev += v; });
+  return salesRev > 0 && panelRev < salesRev * 0.5;
+}
+
 type CountryRowOut = {
   country_iso: string;
   country_name: string;
@@ -422,6 +437,7 @@ export function computeSalesByCountry(
   days_with_shares: number;
   days_in_window: number;
   days_authoritative_rev: number;
+  days_pooled_profile: number;
   total_units_authoritative: number;
   base_units: number;
   dlc_units: number;
@@ -463,7 +479,7 @@ export function computeSalesByCountry(
       total_units: 0, total_revenue_usd: 0, asp_usd: 0,
       countries_count: 0, countries: [],
       shares_source: "authoritative",
-      days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0, total_units_authoritative: 0,
+      days_with_shares: 0, days_in_window: 0, days_authoritative_rev: 0, days_pooled_profile: 0, total_units_authoritative: 0,
       base_units: 0, dlc_units: 0, base_revenue_usd: 0, dlc_revenue_usd: 0,
     };
   }
@@ -525,6 +541,26 @@ export function computeSalesByCountry(
 
   let daysWithShares = 0;
   let usedLegacyFallback = false;
+  let daysPooledProfile = 0;
+
+  // Pooled country profile built from days whose shares are authoritative
+  // (pct_of_units / pct_of_revenue present). Used for days whose only country
+  // source is a wide-window panel with incomplete revenue (see below).
+  const pooledUnits = new Map<string, { name: string; v: number }>();
+  const pooledRev = new Map<string, number>();
+  type DeferredDay = { day: string; dayUnits: number; dayRev: number; rows: SharesRow[] };
+  const deferred: DeferredDay[] = [];
+
+  const allocateLegacy = (dayUnits: number, dayRev: number, rows: SharesRow[]) => {
+    let sumU = 0, sumR = 0;
+    for (const s of rows) { sumU += s.units; sumR += s.revenueUsd; }
+    for (const s of rows) {
+      const revShare = sumR > 0 ? s.revenueUsd / sumR : 0;
+      const unitShare = sumU > 0 ? s.units / sumU : 0;
+      if (revShare === 0 && unitShare === 0) continue;
+      push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
+    }
+  };
 
   const dayEntries: Array<[string, number]> = [];
   dayTotalRev.forEach((v, k) => dayEntries.push([k, v]));
@@ -533,6 +569,7 @@ export function computeSalesByCountry(
 
     // 1. Prefer exact-day shares
     let sharesRows: SharesRow[] | null = dayIndex.get(day) ?? null;
+    let fromWideBucket: WideBucket | null = null;
 
     // 2. Wide-bucket fallback: pick the SHORTEST bucket that contains this day
     if (!sharesRows) {
@@ -544,10 +581,17 @@ export function computeSalesByCountry(
           if (len < bestLen) { bestLen = len; bestBucket = b; }
         }
       }
-      if (bestBucket) sharesRows = bestBucket.rows;
+      if (bestBucket) { sharesRows = bestBucket.rows; fromWideBucket = bestBucket; }
     }
 
-    if (!sharesRows || sharesRows.length === 0) continue;
+    if (!sharesRows || sharesRows.length === 0) {
+      // No country rows of any granularity for this day (e.g. a backfill gap).
+      // Skipping it lets the unit renormalization below inflate country units
+      // while revenue stays unscaled, which flattens every country to one ASP.
+      // Attribute it with the pooled profile like any other incomplete day.
+      deferred.push({ day, dayUnits, dayRev, rows: [] });
+      continue;
+    }
     daysWithShares++;
 
     // v3.33 (2026-09-05): per-day units + raw revenue accumulation.
@@ -574,16 +618,39 @@ export function computeSalesByCountry(
           : 0;
         if (revShare === 0 && unitShare === 0) continue;
         push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
+        const pu = pooledUnits.get(s.countryIso);
+        if (pu) pu.v += dayUnits * unitShare;
+        else pooledUnits.set(s.countryIso, { name: s.countryName, v: dayUnits * unitShare });
+        pooledRev.set(s.countryIso, (pooledRev.get(s.countryIso) ?? 0) + dayRev * revShare);
       }
+    } else if (fromWideBucket && isRevenueIncomplete(fromWideBucket, sharesRows, dayTotalRev)) {
+      // Wide-window panel without usable revenue (e.g. Hellraiser's month
+      // rows: ~\$216 of country revenue against ~\$810k of real sales). Using it
+      // clips every country to the ASP floor and renormalizes them all to one
+      // identical ASP. Defer to the pooled profile instead.
+      deferred.push({ day, dayUnits, dayRev, rows: sharesRows });
     } else {
       usedLegacyFallback = true;
-      let sumU = 0, sumR = 0;
-      for (const s of sharesRows) { sumU += s.units; sumR += s.revenueUsd; }
-      for (const s of sharesRows) {
-        const revShare = sumR > 0 ? s.revenueUsd / sumR : 0;
-        const unitShare = sumU > 0 ? s.units / sumU : 0;
-        if (revShare === 0 && unitShare === 0) continue;
-        push(s.countryIso, s.countryName, dayUnits * unitShare, dayRev * revShare);
+      allocateLegacy(dayUnits, dayRev, sharesRows);
+    }
+  }
+
+  // Deferred days: spread units and revenue using the country profile of the
+  // days with authoritative shares. No pooled profile -> previous behavior.
+  if (deferred.length > 0) {
+    let pooledUnitsSum = 0, pooledRevSum = 0;
+    pooledUnits.forEach(p => { pooledUnitsSum += p.v; });
+    pooledRev.forEach(v => { pooledRevSum += v; });
+    for (const d of deferred) {
+      if (pooledUnitsSum > 0 && pooledRevSum > 0) {
+        daysPooledProfile++;
+        pooledUnits.forEach((p, iso) => {
+          const revShare = (pooledRev.get(iso) ?? 0) / pooledRevSum;
+          push(iso, p.name, d.dayUnits * (p.v / pooledUnitsSum), d.dayRev * revShare);
+        });
+      } else if (d.rows.length > 0) {
+        usedLegacyFallback = true;
+        allocateLegacy(d.dayUnits, d.dayRev, d.rows);
       }
     }
   }
@@ -694,6 +761,7 @@ export function computeSalesByCountry(
     days_authoritative_rev: Math.round(
       Array.from(dayTotalRev.values()).reduce((s, v) => s + v, 0) * 100,
     ) / 100,
+    days_pooled_profile: daysPooledProfile,
     // v3.33.3 (2026-09-05): base + DLC split totals from steam_sales_daily.
     // Consumers can display 'Base units' and 'DLC units' separately on the
     // KPI card without needing a second query. Country table rows stay
