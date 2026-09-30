@@ -390,6 +390,7 @@ type DailyRevPoint = {
   ps5: number | null;
   xbox: number | null;
   combined: number | null;
+  units?: Record<"steam"|"ps5"|"xbox"|"combined",number|null>|null;
 };
 type DailyRevResp = {
   titleId: number;
@@ -497,20 +498,24 @@ function DailyRevenueCard({ titleId }: { titleId: number }) {
               <YAxis tick={{ fontSize: 11 }} tickFormatter={v => formatMoneyFull(Number(v))} />
               <Tooltip
                 labelFormatter={d => format(parseISO(String(d)), "PPP")}
-                formatter={(v: number, name: string) => [formatMoneyFull(v), DAILY_REV_LABELS[name as keyof typeof DAILY_REV_LABELS] ?? name]}
+                formatter={(v: number, name: string, item: any) => {
+                  const units=item.payload?.units?.[name];
+                  return [formatMoneyFull(v)+(units!=null?` · ${units.toLocaleString()} est. units`:""),
+                    DAILY_REV_LABELS[name as keyof typeof DAILY_REV_LABELS] ?? name];
+                }}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               {visible.steam && (
-                <Line type="monotone" dataKey="steam" name="steam" stroke={DAILY_REV_COLORS.steam} strokeWidth={2} dot={false} connectNulls />
+                <Line type="monotone" dataKey="steam" name="steam" stroke={DAILY_REV_COLORS.steam} strokeWidth={2} dot={false} connectNulls={false} />
               )}
               {visible.ps5 && (
-                <Line type="monotone" dataKey="ps5" name="ps5" stroke={DAILY_REV_COLORS.ps5} strokeWidth={2} dot={false} connectNulls />
+                <Line type="monotone" dataKey="ps5" name="ps5" stroke={DAILY_REV_COLORS.ps5} strokeWidth={2} dot={false} connectNulls={false} />
               )}
               {visible.xbox && (
-                <Line type="monotone" dataKey="xbox" name="xbox" stroke={DAILY_REV_COLORS.xbox} strokeWidth={2} dot={false} connectNulls />
+                <Line type="monotone" dataKey="xbox" name="xbox" stroke={DAILY_REV_COLORS.xbox} strokeWidth={2} dot={false} connectNulls={false} />
               )}
               {visible.combined && (
-                <Line type="monotone" dataKey="combined" name="combined" stroke={DAILY_REV_COLORS.combined} strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls />
+                <Line type="monotone" dataKey="combined" name="combined" stroke={DAILY_REV_COLORS.combined} strokeWidth={2} strokeDasharray="4 4" dot={false} connectNulls={false} />
               )}
             </LineChart>
           </ResponsiveContainer>
@@ -522,7 +527,7 @@ function DailyRevenueCard({ titleId }: { titleId: number }) {
       )}
 
       <p className="text-xs text-muted-foreground leading-relaxed">
-        {data?.methodology ?? "Estimated daily revenue is derived from day-over-day changes in lifetime unit estimates."} Collection began on {data?.collectionStart ?? "2026-09-14"}; early dates will be sparse and the chart will fill in with daily updates.
+        {data?.methodology ?? "Estimated daily revenue is derived from day-over-day changes in lifetime unit estimates."} History begins on {data?.collectionStart ?? "2026-09-14"}. Missing evidence remains a gap, not zero sales.
       </p>
     </Card>
   );
