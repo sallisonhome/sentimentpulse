@@ -1,5 +1,13 @@
 # SignalPulse scoped regression lessons
 
+## 2026-10-01: match rating pools with tolerance, not exact equality
+
+Sibling SKUs are captured at different moments, so identical pools differ by a few ratings, and a family
+key built from names misses siblings with different names. Exact-equality dedupe silently stopped working
+for Witcher 3, Ark, Skyrim, Minecraft and GTA Online. Match on count within a small tolerance plus a
+second sign of the same concept, prefer verified anchors, never merge a verified zero anchor, and check
+the candidate rule against unrelated titles that match by chance before shipping.
+
 ## 2026-10-01: sibling SKUs that share a rating pool must not be summed
 
 The family rollup treated sibling SKUs as additive sales. On PS5/Xbox, regional and edition SKUs of one

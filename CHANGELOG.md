@@ -1,5 +1,19 @@
 # SentimentPulse Changelog
 
+## October 1, 2026: shared rating pools now match across small count drift and different names
+
+- The first shared-pool fix required identical rating counts and the same edition name. Store ratings for
+  sibling SKUs are captured moments apart and can differ by 1 or 2, and some siblings have different
+  names, so The Witcher 3, Ark, Skyrim, Forza Horizon 5 and the Minecraft Collections were still counted
+  twice. Minecraft: Deluxe Collection showed $1.51B lifetime beside the verified 4M-unit Minecraft
+  anchor, and GTA Online showed $511M beside the GTA V anchor.
+- Counts within 1 plus 0.002% with the same average are one pool. Different names link only at 1,000 or
+  more ratings and with the same release date or the same leading two words, so unrelated titles that
+  match by chance never merge.
+- A verified positive anchor is the row counted, then a row measured in the window, then a priced SKU,
+  then the earliest release. Titles with a verified zero anchor (manual de-duplication such as Halloween
+  Digital Deluxe) are never merged. Anchors, Steam values and stored estimates are unchanged.
+
 ## October 1, 2026: PS5 and Xbox editions that share one rating pool are counted once
 
 - PS5 and Xbox SKUs of one concept (regional storefront listings, Standard, Deluxe and Definitive
