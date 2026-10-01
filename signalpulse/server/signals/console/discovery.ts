@@ -87,6 +87,11 @@ const SKU_BASE_TITLE_ID: ReadonlyMap<string, number> = new Map<string, number>([
   //     discovery could allocate a new title_id if it ever hit Deluxe first on
   //     the sales chart. Remap keeps the game consolidated.
   ["ps5:UP9000-PPSA03671_00-WOLVERINEDELUXE0", 10302],
+  // ─── 2026-10-01: Minecraft Dungeons II Deluxe edition SKU. It had been attached to the Space Marine II
+  //     EU title 10387, which gave that title Minecraft's name and a phantom $1.5B-class row. The
+  //     production mapping row was deleted; this pin keeps rediscovery from re-attaching it there.
+  //     Its base (same PPSA16064 product) is title 10969.
+  ["ps5:EP4433-PPSA16064_00-0424848725030098", 10969],
 ]);
 
 function remapTitleId(platform: string, externalSku: string, defaultTitleId: number): number {

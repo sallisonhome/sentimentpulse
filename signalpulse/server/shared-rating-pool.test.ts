@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pickSharedPoolPrimaries } from "./routes-console-leaderboards";
+import { pickSharedPoolPrimaries } from "./console-shared-pool";
 import { editionGroupKey } from "./console-sales-family";
 
 const row = (o: any) => ({ ratingCount: 30707, avgRating: 4.04, windowUsed: "d30", estimateMethod: "backfill-observed-pace", msrpUsdCents: 4999, revenueMidUsd: 1e6, ...o });
@@ -75,4 +75,13 @@ test("unrelated titles matching by chance never merge; JP twin links by release 
   const e = row({ titleId: 3, name: "ソニック A", ratingCount: 20000, avgRating: 4, releaseDate: "2020-01-01" });
   const f = row({ titleId: 4, name: "ソニック B Deluxe", ratingCount: 20001, avgRating: 4, releaseDate: "2020-01-01" });
   assert.equal(pickSharedPoolPrimaries([e, f], "ps5", "ltd", editionGroupKey).dropped.length, 1);
+});
+
+import { sharedPoolViolations } from "./console-shared-pool";
+test("output invariant: a board with two rows of one pool is flagged; two actual rows are allowed", () => {
+  const a = row({ titleId: 10318, name: "Grand Theft Auto V", ratingCount: 1012310, avgRating: 4.1, dataSource: "actual", releaseDate: "2022-03-15" });
+  const b = row({ titleId: 10768, name: "Grand Theft Auto Online", ratingCount: 1012310, avgRating: 4.1, dataSource: "estimated_console_exclusive", releaseDate: "2022-03-15" });
+  assert.deepEqual(sharedPoolViolations([a, b], "ps5", editionGroupKey), [[10768, 10318]]);
+  assert.deepEqual(sharedPoolViolations([a, { ...b, dataSource: "actual" }], "ps5", editionGroupKey), []);
+  assert.deepEqual(sharedPoolViolations([a], "ps5", editionGroupKey), []);
 });
