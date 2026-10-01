@@ -182,38 +182,78 @@ export function ipOverrideFactorFor(displayName: string | null | undefined, plat
 }
 
 /**
- * PS5/Xbox SKUs of one concept share one store rating pool. Within an edition family, rows on the same
- * platform with the same pool (identical rating count >= 100 and average) are one body of sales, so only
- * one of them is summed. Preference: a row measured in the requested window (not a cascaded or
- * bootstrap fallback), then the earliest release (the pool was earned by the original), then a priced
- * SKU, then higher revenue, then lower id. Dropped rows stay listed as editions of the family.
+ * PS5/Xbox SKUs of one concept share one store rating pool: the same rating count and average, captured
+ * a moment apart so the counts can differ by a few ratings. Rows on the same platform in one pool are one
+ * body of sales, so only one of them is summed, even when their names differ (Minecraft and its
+ * Collection SKUs, GTA V and GTA Online). Counts within 1 + 0.002% match; different names link only at 1,000+ ratings
+ * with the same release date or the same leading two words, so unrelated titles that match by chance (Xbox Mortal Shell II and
+ * Mortal Kombat 11 both at 1,170 ratings and 4.3) never merge; smaller pools need the same edition-family key. Preference: a verified positive
+ * anchor, then a row measured in the requested window (not a cascaded or bootstrap fallback), then a priced SKU
+ * (so the family keeps its revenue), then the earliest release, then higher revenue, then lower id. Titles with a verified zero
+ * anchor (an operator's manual de-duplication) are left alone, and several anchored titles in one pool
+ * all stay. Dropped rows remain listed as editions of the primary's family.
  */
 export function pickSharedPoolPrimaries<R extends { titleId: number; unitsMid?: number | null; ratingCount?: number | null; avgRating?: number | null;
   windowUsed?: string | null; estimateMethod?: string | null; releaseDate?: string | null; msrpUsdCents?: number | null;
   revenueMidUsd?: number | null; name?: string | null }>(
-  rows: R[], platform: string, window: string, keyFor: (name: string) => string): { kept: R[]; dropped: R[] } {
-  if (platform === "steam") return { kept: rows, dropped: [] };
-  const pools = new Map<string, R[]>();
-  for (const r of rows) {
-    const k = keyFor((r.name ?? "") as string);
-    if (k.length < 2 || !(typeof r.ratingCount === "number" && r.ratingCount >= 100)) continue;
-    const pk = `${k}|${r.ratingCount}|${r.avgRating ?? ""}`;
-    (pools.get(pk) ?? pools.set(pk, []).get(pk)!).push(r);
+  rows: R[], platform: string, window: string, keyFor: (name: string) => string,
+  anchors: { positive: Set<number>; zero: Set<number> } = { positive: new Set(), zero: new Set() },
+): { kept: R[]; dropped: R[]; primaryOf: Map<number, number> } {
+  const primaryOf = new Map<number, number>();
+  if (platform === "steam") return { kept: rows, dropped: [], primaryOf };
+  const cand = rows.filter(r => typeof r.ratingCount === "number" && r.ratingCount >= 100 && !anchors.zero.has(r.titleId))
+    .sort((a, b) => (a.ratingCount as number) - (b.ratingCount as number));
+  const clusters: R[][] = [];
+  for (const r of cand) {
+    const last = clusters[clusters.length - 1];
+    const prev = last?.[last.length - 1];
+    if (prev && prev.avgRating === r.avgRating &&
+        (r.ratingCount as number) - (prev.ratingCount as number) <= 1 + 2e-5 * (prev.ratingCount as number)) last.push(r);
+    else clusters.push([r]);
+  }
+  const pools: R[][] = [];
+  const words = (r: R) => ((r.name ?? "") as string).toLowerCase().replace(/[^a-z0-9\u00C0-\uFFFF]+/g, " ").trim().split(" ").filter(Boolean);
+  const sharedLead = (a: R, b: R) => {
+    const x = words(a), y = words(b);
+    let n = 0;
+    while (n < x.length && n < y.length && x[n] === y[n]) n++;
+    return n >= Math.min(2, x.length, y.length) && n >= 1 && x[0].length >= 3;
+  };
+  const related = (a: R, b: R) => {
+    const ka = keyFor((a.name ?? "") as string);
+    if (ka.length >= 2 && ka === keyFor((b.name ?? "") as string)) return true;
+    // Different names link only at 1,000+ ratings and with a second sign of the same concept.
+    if ((a.ratingCount as number) < 1000) return false;
+    return Boolean(a.releaseDate && a.releaseDate === b.releaseDate) || sharedLead(a, b);
+  };
+  for (const c of clusters) {
+    if (c.length < 2) continue;
+    const parent = c.map((_, i) => i);
+    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    for (let i = 0; i < c.length; i++) for (let j = i + 1; j < c.length; j++) if (related(c[i], c[j])) parent[find(j)] = find(i);
+    const comps = new Map<number, R[]>();
+    c.forEach((r, i) => (comps.get(find(i)) ?? comps.set(find(i), []).get(find(i))!).push(r));
+    for (const v of Array.from(comps.values())) if (v.length > 1) pools.push(v);
   }
   const dropped = new Set<R>();
-  for (const members of Array.from(pools.values())) {
-    if (members.length < 2) continue;
+  for (const members of pools) {
     const measured = (r: R) => (r.windowUsed === window && r.estimateMethod !== "backfill-bootstrap" ? 1 : 0);
+    const anchored = (r: R) => (anchors.positive.has(r.titleId) ? 1 : 0);
     const rel = (r: R) => (r.releaseDate && /^\d{4}-\d{2}-\d{2}/.test(r.releaseDate) ? r.releaseDate : "9999-12-31");
     const ordered = members.slice().sort((a, b) =>
+      anchored(b) - anchored(a) ||
       measured(b) - measured(a) ||
-      (rel(a) < rel(b) ? -1 : rel(a) > rel(b) ? 1 : 0) ||
       ((b.msrpUsdCents != null ? 1 : 0) - (a.msrpUsdCents != null ? 1 : 0)) ||
+      (rel(a) < rel(b) ? -1 : rel(a) > rel(b) ? 1 : 0) ||
       ((b.revenueMidUsd ?? 0) - (a.revenueMidUsd ?? 0)) ||
       a.titleId - b.titleId);
-    for (const r of ordered.slice(1)) dropped.add(r);
+    for (const r of ordered.slice(1)) {
+      if (anchored(r)) continue;
+      dropped.add(r);
+      primaryOf.set(r.titleId, ordered[0].titleId);
+    }
   }
-  return { kept: rows.filter(r => !dropped.has(r)), dropped: rows.filter(r => dropped.has(r)) };
+  return { kept: rows.filter(r => !dropped.has(r)), dropped: rows.filter(r => dropped.has(r)), primaryOf };
 }
 
 // Threshold below which a Steam revenue value is treated as "no meaningful
@@ -755,14 +795,20 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // share a single store rating pool, and the estimator gives each of them the same
       // lifetime/window estimate from that pool. Adding them double- or triple-counts one set of
       // sales, so each shared pool contributes once to its family (see pickSharedPoolPrimaries).
+      const anchorFlags = platform === "steam" ? { positive: new Set<number>(), zero: new Set<number>() } : (() => {
+        const positive = new Set<number>(), zero = new Set<number>();
+        const ar = rawSqlite.prepare(`SELECT title_id, MAX(actual_revenue_usd) rev FROM revenue_calibration_anchors
+          WHERE platform = ? AND data_source LIKE 'manual_anchor_verified_%' GROUP BY title_id`).all(platform) as Array<{title_id:number; rev:number|null}>;
+        for (const a of ar) ((a.rev ?? 0) > 0 ? positive : zero).add(a.title_id);
+        return { positive, zero };
+      })();
       const poolPick = pickSharedPoolPrimaries(
         uniquePlatformTitles(rows as Array<Row & { titleId: number; platform: string; msrpUsdCents: number | null }>),
-        platform, window, editionGroupKey);
-      const poolDupIdsByKey = new Map<string, Row[]>();
+        platform, window, editionGroupKey, anchorFlags);
+      const poolDupsByPrimary = new Map<number, Row[]>();
       for (const r of poolPick.dropped) {
-        const k = editionGroupKey((r.name ?? "") as string);
-        const gk = k.length >= 2 ? `k:${k}` : `t:${r.titleId}`;
-        (poolDupIdsByKey.get(gk) ?? poolDupIdsByKey.set(gk, []).get(gk)!).push(r);
+        const pid = poolPick.primaryOf.get(r.titleId)!;
+        (poolDupsByPrimary.get(pid) ?? poolDupsByPrimary.set(pid, []).get(pid)!).push(r);
       }
       for (const r of poolPick.kept) {
         const rawName = (r.name ?? "") as string;
@@ -818,9 +864,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           existing.familyTitleIds.push(r.titleId);
         }
       }
-      for (const [gk, dups] of Array.from(poolDupIdsByKey.entries())) {
-        const g = byKey.get(gk);
-        if (!g) continue;
+      for (const g of groups) {
+        const dups = (g.familyTitleIds as number[]).flatMap(id => poolDupsByPrimary.get(id) ?? []);
+        if (!dups.length) continue;
         for (const d of dups) {
           g.editionCount += 1;
           g.editionTitles.push((d.name ?? "") as string);
