@@ -51,6 +51,8 @@ Phase 12 complete — all phases done
 Frontend calls backend at http://localhost:8000/api in dev (Vite proxy configured)
 
 ## DO NOT
+
+- **Never remove or bypass the console shared-rating-pool rule** (`signalpulse/server/console-shared-pool.ts`, called from the family grouping in `routes-console-leaderboards.ts`). PS5/Xbox SKUs of one concept share one rating pool and one estimate; summing them double- or triple-counts sales (Mafia, Minecraft Deluxe Collection, GTA Online, Witcher 3). Its tests live in `server/shared-rating-pool.test.ts`; `SignalPulse CI` runs them on every PR and audits the live boards daily with `scripts/audit-shared-pool-duplicates.ts`. A failing audit means a regression: fix the cause, never loosen the audit. A verified zero anchor is a manual de-duplication and must never be merged or overridden.
 - Do not add features beyond what is specified unless asked
 - Do not change the database schema without running a new Alembic migration
 - Do not remove existing tests
