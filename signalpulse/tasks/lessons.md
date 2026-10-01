@@ -1,5 +1,13 @@
 # SignalPulse scoped regression lessons
 
+## 2026-10-01: sibling SKUs that share a rating pool must not be summed
+
+The family rollup treated sibling SKUs as additive sales. On PS5/Xbox, regional and edition SKUs of one
+concept share one rating pool and get the same estimate, so the sum doubled or tripled units (Stellar
+Blade, Gran Turismo 7, Mafia, Undisputed and others) and a new Definitive Edition's bootstrap lifetime
+value was shown as a 30-day figure. A user report on one title (Mafia PS5 30 days) was a family-wide
+defect: audit every board row with a shared pool before fixing.
+
 ## 2026-09-30: name-pattern rules must normalize store names
 
 The console-first sports IP rules were anchored regexes on the display name. Store names carry a trademark
