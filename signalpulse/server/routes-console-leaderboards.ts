@@ -1300,7 +1300,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   // matches what appears in its Steam / PS5 / Xbox column.
   //
   // Query: window=d7|d30|d90|m12|ltd  (default d7)
-  //        limit=1..20                 (default 20)
+  //        limit=1..40                 (default 20; the combined board UIs request 40)
   //
   // Response: { window, count, titles: MultiplatformRow[] } where
   //   MultiplatformRow = {
@@ -1319,7 +1319,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
     try {
       const window = ((req.query.window as string) || "d7").toLowerCase();
       if (!["d7","d30","d90","m12","ltd"].includes(window)) return res.status(400).json({ error: "invalid window" });
-      const limit = Math.min(20, Math.max(1, parseInt((req.query.limit as string) || "20", 10) || 20));
+      const limit = Math.min(40, Math.max(1, parseInt((req.query.limit as string) || "20", 10) || 20));
 
       const steamAspFactor = aspFactorFor("steam");
       const ps5AspFactor   = aspFactorFor("ps5");

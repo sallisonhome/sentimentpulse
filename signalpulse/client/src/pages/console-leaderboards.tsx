@@ -49,6 +49,7 @@ const WINDOWS: Array<{ id: WindowKey; label: string }> = [
   { id: "ltd", label: "Lifetime"  },
 ];
 
+const MULTI_TOP_N = 40; // Combined cross-platform rows per window.
 const HUB_TOP_N = 20;  // Rows per column on the hub (top-level presentation).
 const FULL_TOP_N = 40; // Rows shown on the per-platform full-page view.
 // The backend still returns up to LIMIT 250 and the daily discovery cron still
@@ -255,7 +256,7 @@ export default function ConsoleLeaderboardsHub() {
   const steamQ = usePlatformLeaderboard("steam", window);
   const xboxQ  = usePlatformLeaderboard("xbox",  window);
   const ps5Q   = usePlatformLeaderboard("ps5",   window);
-  const multiQ = useMultiplatformLeaderboard(window, 20);
+  const multiQ = useMultiplatformLeaderboard(window, MULTI_TOP_N);
 
   const queries: Record<Platform, ReturnType<typeof usePlatformLeaderboard>> = {
     steam: steamQ, xbox: xboxQ, ps5: ps5Q,
@@ -392,7 +393,7 @@ function MultiplatformSection({
             <h2 className="font-semibold text-base" style={{ color: "#a855f7" }}>
               Cross-Platform Leaders — Combined Revenue
             </h2>
-            <Badge variant="outline" className="text-[10px] uppercase tracking-wide">top 20</Badge>
+            <Badge variant="outline" className="text-[10px] uppercase tracking-wide">top {MULTI_TOP_N}</Badge>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
             Titles shipping on Steam AND at least one console, ranked by summed in-window revenue across the platforms that carry a base SKU. Per-platform figures use the same overlay math (immutable revenue-share ratio, IP overrides, PS5-exclusive fallback) as the three columns above.
