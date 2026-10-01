@@ -181,6 +181,41 @@ export function ipOverrideFactorFor(displayName: string | null | undefined, plat
   return null;
 }
 
+/**
+ * PS5/Xbox SKUs of one concept share one store rating pool. Within an edition family, rows on the same
+ * platform with the same pool (identical rating count >= 100 and average) are one body of sales, so only
+ * one of them is summed. Preference: a row measured in the requested window (not a cascaded or
+ * bootstrap fallback), then the earliest release (the pool was earned by the original), then a priced
+ * SKU, then higher revenue, then lower id. Dropped rows stay listed as editions of the family.
+ */
+export function pickSharedPoolPrimaries<R extends { titleId: number; unitsMid?: number | null; ratingCount?: number | null; avgRating?: number | null;
+  windowUsed?: string | null; estimateMethod?: string | null; releaseDate?: string | null; msrpUsdCents?: number | null;
+  revenueMidUsd?: number | null; name?: string | null }>(
+  rows: R[], platform: string, window: string, keyFor: (name: string) => string): { kept: R[]; dropped: R[] } {
+  if (platform === "steam") return { kept: rows, dropped: [] };
+  const pools = new Map<string, R[]>();
+  for (const r of rows) {
+    const k = keyFor((r.name ?? "") as string);
+    if (k.length < 2 || !(typeof r.ratingCount === "number" && r.ratingCount >= 100)) continue;
+    const pk = `${k}|${r.ratingCount}|${r.avgRating ?? ""}`;
+    (pools.get(pk) ?? pools.set(pk, []).get(pk)!).push(r);
+  }
+  const dropped = new Set<R>();
+  for (const members of Array.from(pools.values())) {
+    if (members.length < 2) continue;
+    const measured = (r: R) => (r.windowUsed === window && r.estimateMethod !== "backfill-bootstrap" ? 1 : 0);
+    const rel = (r: R) => (r.releaseDate && /^\d{4}-\d{2}-\d{2}/.test(r.releaseDate) ? r.releaseDate : "9999-12-31");
+    const ordered = members.slice().sort((a, b) =>
+      measured(b) - measured(a) ||
+      (rel(a) < rel(b) ? -1 : rel(a) > rel(b) ? 1 : 0) ||
+      ((b.msrpUsdCents != null ? 1 : 0) - (a.msrpUsdCents != null ? 1 : 0)) ||
+      ((b.revenueMidUsd ?? 0) - (a.revenueMidUsd ?? 0)) ||
+      a.titleId - b.titleId);
+    for (const r of ordered.slice(1)) dropped.add(r);
+  }
+  return { kept: rows.filter(r => !dropped.has(r)), dropped: rows.filter(r => dropped.has(r)) };
+}
+
 // Threshold below which a Steam revenue value is treated as "no meaningful
 // Steam signal" (delisted PC port, missing SKU, etc.) so console rows fall
 // through to their raw estimator instead of getting zeroed. Matches the
@@ -716,7 +751,20 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       type Row = Record<string, any>;
       const groups: Row[] = [];
       const byKey = new Map<string, Row>();
-      for (const r of uniquePlatformTitles(rows as Array<Row & { titleId: number; platform: string; msrpUsdCents: number | null }>)) {
+      // Console SKUs of one concept (regional storefronts, standard/definitive/deluxe editions)
+      // share a single store rating pool, and the estimator gives each of them the same
+      // lifetime/window estimate from that pool. Adding them double- or triple-counts one set of
+      // sales, so each shared pool contributes once to its family (see pickSharedPoolPrimaries).
+      const poolPick = pickSharedPoolPrimaries(
+        uniquePlatformTitles(rows as Array<Row & { titleId: number; platform: string; msrpUsdCents: number | null }>),
+        platform, window, editionGroupKey);
+      const poolDupIdsByKey = new Map<string, Row[]>();
+      for (const r of poolPick.dropped) {
+        const k = editionGroupKey((r.name ?? "") as string);
+        const gk = k.length >= 2 ? `k:${k}` : `t:${r.titleId}`;
+        (poolDupIdsByKey.get(gk) ?? poolDupIdsByKey.set(gk, []).get(gk)!).push(r);
+      }
+      for (const r of poolPick.kept) {
         const rawName = (r.name ?? "") as string;
         const key = editionGroupKey(rawName);
         // Fall back to title_id-anchored key when name normalization yields
@@ -769,6 +817,16 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           existing.editionTitles.push(rawName);
           existing.familyTitleIds.push(r.titleId);
         }
+      }
+      for (const [gk, dups] of Array.from(poolDupIdsByKey.entries())) {
+        const g = byKey.get(gk);
+        if (!g) continue;
+        for (const d of dups) {
+          g.editionCount += 1;
+          g.editionTitles.push((d.name ?? "") as string);
+          g.familyTitleIds.push(d.titleId);
+        }
+        g.sharedRatingPoolTitleIds = dups.map(d => d.titleId);
       }
       for (const g of groups) {
         g.unitsMidEstimated = g.unitsMid;

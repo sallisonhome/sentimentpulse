@@ -1,5 +1,19 @@
 # SentimentPulse Changelog
 
+## October 1, 2026: PS5 and Xbox editions that share one rating pool are counted once
+
+- PS5 and Xbox SKUs of one concept (regional storefront listings, Standard, Deluxe and Definitive
+  editions) share a single store rating pool, and the estimator gives each the same estimate. The
+  boards added them together, so units were doubled or tripled and, where two members carried a price,
+  revenue too. Mafia: The Old Country on PS5 showed about $51M and 1.0M units for the last 30 days
+  because the new Definitive Edition's start-up lifetime figure was added to the original's real
+  22k-unit month.
+- Each shared pool now contributes once to its family: a row measured in the requested window first,
+  then the earliest release, then a priced SKU. Other editions stay listed under the title.
+- Revenue is unchanged where only one member carried a price or the value comes from Steam or an
+  anchor; units on those rows now match their revenue. Lifetime anchors, Steam values, stored estimates
+  and Saber actuals are unchanged.
+
 ## September 30, 2026: Madden NFL 27 and other console-first sports titles
 
 - Madden NFL 27 was valued as a Steam-derived title at the generic console ratios (PS5 0.77x, Xbox 0.25x
