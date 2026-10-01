@@ -1,18 +1,20 @@
 name: SignalPulse CI
 
-# Type check, build and the full regression suite on every pull request touching signalpulse, plus a
+# Type check, build and the full regression suite on every pull request (required by branch protection on main), plus a
 # daily audit of the live boards for shared-rating-pool double counting (the Mafia / Minecraft Deluxe /
 # GTA Online class of defect). A failing run means a regression reached production or is about to.
 
 on:
+  # No path filter: a required status check must report on every pull request, otherwise a PR that
+  # does not touch signalpulse/ could never merge.
   pull_request:
-    paths: ["signalpulse/**", ".github/workflows/signalpulse-ci.yml"]
   schedule:
     - cron: "40 13 * * *"
   workflow_dispatch:
 
 jobs:
   test:
+    name: SignalPulse tests
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
