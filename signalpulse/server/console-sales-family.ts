@@ -77,6 +77,11 @@ export function editionGroupKey(name: string | null | undefined): string {
   // are recognized before their sub-strings. Match at end-of-string only; the
   // pattern anchors at (a) end or (b) end after a colon/dash separator.
   const SUFFIXES: string[] = [
+    // Store pre-order listings of a base game ("Gears of War: E-Day Premium Edition Pre-Order") are the
+    // same parent title as the launched game. Trailing position only; "Pre-Order Pack: ..." is untouched.
+    "pre-order",
+    "pre-purchase",
+    "preorder",
     // Composite / multi-word first
     "digital deluxe edition",
     "premium deluxe edition",
