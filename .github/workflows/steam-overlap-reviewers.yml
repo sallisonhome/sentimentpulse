@@ -1,0 +1,131 @@
+name: Steam overlap pilot - reviewer sample (read-only)
+
+# Read-only. Reads steam_api_key from signalpulse's app_settings on the droplet (never printed).
+# Samples authors of Steam reviews for each app id (reviews API, no community-group page), checks profile and
+# game-list visibility, and reports aggregates: public rates, how many sampled owners also own the target app
+# (prepurchase check), and the top co-owned games. No Steam IDs printed or stored; no DB writes.
+
+"on":
+  workflow_dispatch:
+    inputs:
+      appids:
+        description: 'Comma-separated Steam app ids to sample reviewers from'
+        required: true
+        default: '5184670,3764200'
+      target:
+        description: 'App id whose ownership (prepurchase) is checked among sampled owners'
+        required: true
+        default: '1551980'
+      sample:
+        description: 'Reviewers to probe per app (max 300)'
+        required: true
+        default: '200'
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  reviewers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run reviewer sample
+        env:
+          APPIDS: ${{ inputs.appids }}
+          TARGET: ${{ inputs.target }}
+          SAMPLE: ${{ inputs.sample }}
+        run: |
+          set -e
+          case "$APPIDS" in *[!0-9,]*|'') echo "bad appids"; exit 1;; esac
+          case "$TARGET" in *[!0-9]*|'') echo "bad target"; exit 1;; esac
+          case "$SAMPLE" in *[!0-9]*|'') echo "bad sample"; exit 1;; esac
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
+              APPIDS="$APPIDS" TARGET="$TARGET" SAMPLE="$SAMPLE" bash -s <<'REMOTEEOF'
+          set -uo pipefail
+          KEY=$(sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT value FROM app_settings WHERE key='steam_api_key';" 2>/dev/null || true)
+          if [ -z "${KEY:-}" ]; then echo "ERROR: no steam_api_key in app_settings"; exit 1; fi
+          echo "key_present true"
+          STEAM_KEY="$KEY" python3 - <<'PY'
+          import os, json, time, random, urllib.request, urllib.error, urllib.parse
+          from collections import Counter
+          KEY = os.environ["STEAM_KEY"]
+          SAMPLE = min(300, int(os.environ["SAMPLE"]))
+          TARGET = int(os.environ["TARGET"])
+          UA = {"User-Agent": "Mozilla/5.0"}
+          def get(url, timeout=30):
+              try:
+                  with urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=timeout) as r:
+                      return r.status, r.read().decode("utf-8", "replace")
+              except urllib.error.HTTPError as e:
+                  return e.code, ""
+              except Exception:
+                  return 0, ""
+          for appid in [a for a in os.environ["APPIDS"].split(",") if a]:
+              print("=" * 50, "reviewers of app", appid)
+              authors = []
+              cursor = "*"; total_reviews = None; stop = None
+              for _ in range(8):
+                  s, body = get(f"https://store.steampowered.com/appreview/{appid}?json=1&filter=recent&language=all&purchase_type=all&num_per_page=100&cursor={urllib.parse.quote(cursor)}")
+                  if s != 200:
+                      stop = s; break
+                  j = json.loads(body)
+                  if total_reviews is None:
+                      total_reviews = j.get("query_summary", {}).get("total_reviews")
+                  revs = j.get("reviews", [])
+                  authors += [r["author"]["steamid"] for r in revs]
+                  nc = j.get("cursor")
+                  if not revs or not nc or nc == cursor: break
+                  cursor = nc
+                  time.sleep(1)
+              uniq = list(dict.fromkeys(authors))
+              print("reviews_total", total_reviews, "| authors_collected", len(uniq), "| review_http_stop", stop)
+              if not uniq:
+                  print("cannot continue (no authors)"); continue
+              random.shuffle(uniq)
+              pick = uniq[:SAMPLE]
+              pub = []; states = {}
+              for i in range(0, len(pick), 100):
+                  b = pick[i:i + 100]
+                  s, body = get(f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={KEY}&steamids={','.join(b)}")
+                  if s != 200:
+                      print("summaries_http", s); break
+                  for pl in json.loads(body)["response"]["players"]:
+                      v = pl.get("communityvisibilitystate")
+                      states[v] = states.get(v, 0) + 1
+                      if v == 3: pub.append(pl["steamid"])
+                  time.sleep(0.5)
+              print("probed", len(pick), "visibility_states", json.dumps(states), "public_profiles", len(pub))
+              with_games = 0; ng = []; http = {}; owns_target = 0
+              co = Counter(); names = {}
+              for sid in pub:
+                  s, body = get(f"https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key={KEY}&steamid={sid}&include_played_free_games=1&include_appinfo=1")
+                  http[s] = http.get(s, 0) + 1
+                  if s == 200:
+                      g = json.loads(body).get("response", {})
+                      if isinstance(g.get("game_count"), int) and g.get("games") is not None:
+                          with_games += 1; ng.append(g["game_count"])
+                          ids = set()
+                          for x in g["games"]:
+                              ids.add(x["appid"]); names[x["appid"]] = x.get("name")
+                          if TARGET in ids: owns_target += 1
+                          ids.discard(TARGET); ids.discard(int(appid))
+                          co.update(ids)
+                  time.sleep(0.5)
+              ng.sort()
+              print("owned_games_http", json.dumps(http), "public_with_game_details", with_games, "of", len(pub), "median_games", ng[len(ng)//2] if ng else None)
+              print("usable_rate_of_probed", round(with_games / len(pick), 3) if pick else None)
+              print("owners_of_target", TARGET, ":", owns_target, "of", with_games)
+              print("top_co_owned (n of", with_games, "usable):")
+              for aid, n in co.most_common(25):
+                  print("  ", aid, names.get(aid), n)
+          PY
+          REMOTEEOF
