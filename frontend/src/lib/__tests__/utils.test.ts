@@ -83,6 +83,25 @@ describe('relativeTime', () => {
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString()
     expect(relativeTime(twoDaysAgo)).toBe('2d ago')
   })
+
+  // 2026-10-02: Settings "Next:" showed "Just now" for a run 21h away.
+  it('formats future timestamps as "in X" rather than Just now', () => {
+    const offset = 60_000 * 0.5 // keep strictly inside each bucket
+    expect(relativeTime(new Date(Date.now() + 30_000).toISOString())).toBe('in <1m')
+    expect(relativeTime(new Date(Date.now() + 5 * 60_000 + offset).toISOString())).toBe('in 5m')
+    expect(relativeTime(new Date(Date.now() + 21 * 3_600_000 + offset).toISOString())).toBe('in 21h')
+    expect(relativeTime(new Date(Date.now() + 2 * 86_400_000 + offset).toISOString())).toBe('in 2d')
+  })
+
+  it('returns Never for an unparseable timestamp', () => {
+    expect(relativeTime('not-a-date')).toBe('Never')
+  })
+
+  it('handles the live ET-offset next_run_at shape', () => {
+    const next = new Date(Date.now() + 21 * 3_600_000 + 30_000)
+    const iso = next.toISOString().replace('Z', '+00:00')
+    expect(relativeTime(iso)).toBe('in 21h')
+  })
 })
 
 // ── sourceLabel ───────────────────────────────────────────────────────────────

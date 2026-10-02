@@ -3435,7 +3435,8 @@ def daily_raw_counts(
 @router.get("/admin/health-drops")
 def health_drops(
     baseline_days: int = Query(7, ge=3, le=30),
-    check_date: Optional[str] = Query(None, description="ISO date, default today UTC"),
+    check_date: Optional[str] = Query(
+        None, description="ISO date, default the latest complete UTC day (yesterday)"),
     min_baseline: float = Query(3.0, description="Only flag sources with baseline >= this many/day"),
     min_active_days: int = Query(3, description="Baseline must be active on >= this many days"),
     threshold_pct: float = Query(0.5, description="Flag when check_date < threshold_pct * baseline_avg"),
@@ -3444,7 +3445,8 @@ def health_drops(
 
     Computes rolling `baseline_days` SIGNAL-tier volume (signal +
     dedicated_sub only, no drift, no noise) for every active game and
-    every source, then compares `check_date` (default today UTC) against
+    every source, then compares `check_date` (default: latest complete UTC
+    day, i.e. yesterday) against
     that baseline. Flags any (game, source) pair where the check-date
     volume is below `threshold_pct` of the baseline average, when the
     baseline itself is meaningful (>=`min_baseline`/day active on
@@ -3461,10 +3463,13 @@ def health_drops(
     from sqlalchemy import func
     from models import Game, RawPost
     from database import SessionLocal
+    from services.ingestor import health_check_day
 
     db = SessionLocal()
     try:
-        today = _date.today() if not check_date else _date.fromisoformat(check_date)
+        # 2026-10-02: default to the latest complete UTC day; the current
+        # day is partial after the morning run and always looked like a drop.
+        today = health_check_day() if not check_date else _date.fromisoformat(check_date)
         baseline_start = today - _td(days=baseline_days)
         baseline_end = today - _td(days=1)
         baseline_dates = [

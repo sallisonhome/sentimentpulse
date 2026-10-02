@@ -195,6 +195,7 @@ def fetch_arctic_shift_subreddit_posts(
     is_general_sub: bool = False,
     game=None,
     after: int = 0,
+    resume=None,
 ) -> list[dict]:
     """
     Fetch posts from a single subreddit via Arctic Shift.
@@ -236,16 +237,19 @@ def fetch_arctic_shift_subreddit_posts(
             complete = True
             checked_through = None
             stop_reason = None
+            next_resume = None
 
             # Daily runs share cheap unfiltered listing pages. Backfills and
             # non-run callers retain their existing keyword request contract.
             listing_path = run_active() and after > 0 and len(query.split()) == 1
             if listing_path:
                 from services.reddit_listing import fetch_candidates
-                raw_rows = fetch_candidates(subreddit_name, query, after=after, limit=limit)
+                raw_rows = fetch_candidates(subreddit_name, query, after=after, limit=limit,
+                                            resume=resume)
                 complete = raw_rows.complete
                 checked_through = raw_rows.checked_through
                 stop_reason = raw_rows.stop_reason
+                next_resume = getattr(raw_rows, "resume", None)
                 for raw in raw_rows:
                     raw = dict(raw)
                     raw.setdefault("permalink", f"/r/{subreddit_name}/comments/{raw['id']}/")
@@ -299,7 +303,7 @@ def fetch_arctic_shift_subreddit_posts(
             posts_returned = len(merged)
             status = "ok" if complete else "partial_failure"
             return FetchRows(merged, complete=complete, checked_through=checked_through,
-                             stop_reason=stop_reason)
+                             stop_reason=stop_reason, resume=next_resume)
 
         else:
             # Single-request path: all recent posts from the subreddit

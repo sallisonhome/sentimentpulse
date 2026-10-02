@@ -380,9 +380,14 @@ def fetch_subreddit_posts(
     game_name: str = "",
     game=None,
     after: int = 0,
+    resume=None,
 ) -> list[dict]:
     """
     Fetch posts from a subreddit, trying Arctic Shift first.
+
+    `resume` (2026-10-02) is the persisted scanned-interval record for a
+    time-budgeted shared listing; it is forwarded to Arctic Shift and the
+    returned `.resume` survives the partial fallbacks below.
 
     Strategy (in order):
       1. Arctic Shift — free public Reddit archive, confirmed reachable from
@@ -412,6 +417,7 @@ def fetch_subreddit_posts(
             is_general_sub=is_general,
             game=game,
             after=after,
+            resume=resume,
         )
         primary = posts
         if getattr(posts, "complete", False) or (
@@ -456,14 +462,16 @@ def fetch_subreddit_posts(
             # Cached/manual fallback does not prove both live search channels
             # completed; leave the primary cursor untouched and report partial.
             return FetchRows(merged.values(), complete=False,
-                             stop_reason=getattr(primary, "stop_reason", None))
+                             stop_reason=getattr(primary, "stop_reason", None),
+                             resume=getattr(primary, "resume", None))
 
     # ── 3. PullPush fallback — last-resort Reddit archive ─────────────────────
     logger.info("No Gist data for '%s' / r/%s — trying PullPush", game_name, subreddit_name)
     fallback = _fetch_pullpush(subreddit_name, game_name=game_name, limit=100)
     merged = {p["external_id"]: p for p in list(primary) + list(fallback)}
     return FetchRows(merged.values(), complete=False,
-                     stop_reason=getattr(primary, "stop_reason", None))
+                     stop_reason=getattr(primary, "stop_reason", None),
+                             resume=getattr(primary, "resume", None))
 
 
 # ── Comment fetching ──────────────────────────────────────────────────────────
