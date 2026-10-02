@@ -1,23 +1,29 @@
-name: Steam overlap pilot - reviewer sample (read-only)
+name: Steam overlap pilot - reviewer sample with control-group lift (read-only)
 
 # Read-only. Reads steam_api_key from signalpulse's app_settings on the droplet (never printed).
-# Samples authors of Steam reviews for each app id (reviews API, no community-group page), checks profile and
-# game-list visibility, and reports aggregates: public rates, how many sampled owners also own the target app
-# (prepurchase check), and the top co-owned games. No Steam IDs printed or stored; no DB writes.
+# Cohorts: reviewers of each app id, plus confirmed owners of the target app among them (prepurchasers).
+# Controls: A = reviewers of other recent games (engaged-player baseline), B = uniformly random public accounts.
+# Candidates: paid type=game, released in the last 3 years, not a re-release/free-upgrade by name, not the cohort franchise.
+# Ranking: lower bound of the 95% bootstrap interval of lift = p_cohort / p_control (Control A), subject to
+# p_cohort >= 5% and a minimum owner count. Prints aggregates only; no Steam IDs printed or stored; no DB writes.
 
 "on":
   workflow_dispatch:
     inputs:
       appids:
-        description: 'Comma-separated app ids to sample reviewers from, each optionally id:max_profiles (e.g. 5184670:2000,3764200:300)'
+        description: 'Cohort app ids, each optionally id:max_profiles (e.g. 5184670:400,3764200:200)'
         required: true
-        default: '5184670:2000,3764200:300'
+        default: '5184670:400,3764200:200'
       target:
-        description: 'App id whose ownership (prepurchase) is checked among sampled owners'
+        description: 'App id whose ownership (prepurchase) defines the owners cohort'
         required: true
         default: '1551980'
+      controls:
+        description: 'Control A app ids (reviewers of other recent games)'
+        required: true
+        default: '2379780,1623730,1086940'
       sample:
-        description: 'Reviewers to probe per app (max 300)'
+        description: 'Profiles to probe per control (max 300)'
         required: true
         default: '200'
 
@@ -29,7 +35,7 @@ concurrency:
 jobs:
   reviewers:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    timeout-minutes: 90
     steps:
       - name: Configure SSH
         run: |
@@ -42,20 +48,22 @@ jobs:
         env:
           APPIDS: ${{ inputs.appids }}
           TARGET: ${{ inputs.target }}
+          CONTROLS: ${{ inputs.controls }}
           SAMPLE: ${{ inputs.sample }}
         run: |
           set -e
           case "$APPIDS" in *[!0-9,:]*|'') echo "bad appids"; exit 1;; esac
           case "$TARGET" in *[!0-9]*|'') echo "bad target"; exit 1;; esac
+          case "$CONTROLS" in *[!0-9,]*|'') echo "bad controls"; exit 1;; esac
           case "$SAMPLE" in *[!0-9]*|'') echo "bad sample"; exit 1;; esac
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=20 -o ServerAliveCountMax=30 root@104.236.239.46 \
-              APPIDS="$APPIDS" TARGET="$TARGET" SAMPLE="$SAMPLE" bash -s <<'REMOTEEOF'
+              APPIDS="$APPIDS" TARGET="$TARGET" CONTROLS="$CONTROLS" SAMPLE="$SAMPLE" bash -s <<'REMOTEEOF'
           set -uo pipefail
           KEY=$(sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT value FROM app_settings WHERE key='steam_api_key';" 2>/dev/null || true)
           if [ -z "${KEY:-}" ]; then echo "ERROR: no steam_api_key in app_settings"; exit 1; fi
           echo "key_present true"
           STEAM_KEY="$KEY" python3 -u - <<'PY'
-          import os, json, time, random, urllib.request, urllib.error, urllib.parse
+          import os, re, json, time, random, datetime, math, urllib.request, urllib.error, urllib.parse
           from collections import Counter
           KEY = os.environ["STEAM_KEY"]
           SAMPLE_DEFAULT = min(300, int(os.environ["SAMPLE"]))
@@ -69,10 +77,10 @@ jobs:
                   return e.code, ""
               except Exception:
                   return 0, ""
-          BLOCK = {431960, 4000000}  # Wallpaper Engine (software staple)
-          meta = {}
-          import datetime, re as _re
+          BLOCK = {431960, 3240220}  # Wallpaper Engine; GTA V Enhanced (free upgrade for GTA V owners)
+          RERELEASE = re.compile(r"enhanced|remaster|definitive|director'?s cut|anniversary|resynced|redux|game of the year|goty|complete edition|upgrade|collection|bundle|legacy|classic edition", re.I)
           CUTOFF = datetime.date.today() - datetime.timedelta(days=3 * 365)
+          meta = {}
           def parse_date(s):
               for fmt in ("%b %d, %Y", "%d %b, %Y", "%B %d, %Y", "%d %B, %Y"):
                   try: return datetime.datetime.strptime(s.strip(), fmt).date()
@@ -88,92 +96,139 @@ jobs:
                   except Exception:
                       meta[aid] = None
               return meta[aid]
-          def eligible(aid):
-              # paid game, released (not coming soon) within the last 3 years
-              if aid in BLOCK: return False
+          excluded_notes = Counter()
+          STORE = {"run_at": datetime.datetime.utcnow().isoformat() + "Z", "cutoff": str(CUTOFF), "controls": {}, "cohorts": {}}
+          def eligible(aid, name):
+              if aid in BLOCK: excluded_notes["blocklist"] += 1; return False
+              if name and RERELEASE.search(name): excluded_notes["re-release/free-upgrade by name"] += 1; return False
               x = details(aid)
-              if not x or x.get("type") != "game" or x.get("is_free"): return False
+              if not x or x.get("type") != "game": excluded_notes["not a game"] += 1; return False
+              if x.get("is_free"): excluded_notes["free-to-play"] += 1; return False
               rd = x.get("release_date", {})
-              if rd.get("coming_soon"): return False
+              if rd.get("coming_soon"): excluded_notes["unreleased"] += 1; return False
               d = parse_date(rd.get("date", ""))
-              return d is not None and d >= CUTOFF
-          def report(label, co, n, names, excl, fran=None):
-              print(f"--- {label}: n={n} confirmed-owner profiles{' (THIN: under 40)' if n < 40 else ''}")
-              shown = 0
-              for aid, c in co.most_common(400):
-                  if aid in excl or (fran and names.get(aid, '').lower().startswith(fran)) or not eligible(aid): continue
-                  shown += 1
-                  print(f"   {shown}. {aid} {names.get(aid)}  {c} of {n} ({c / n * 100:.0f}%)")
-                  if shown >= 5: break
-              if shown < 5: print("   (fewer than 5 eligible candidates in top 400)")
-          for spec in [a for a in os.environ["APPIDS"].split(",") if a]:
-              appid, _, cap = spec.partition(":")
-              SAMPLE = int(cap) if cap else SAMPLE_DEFAULT
-              print("=" * 50, "reviewers of app", appid, "cap", SAMPLE)
-              authors = []
-              cursor = "*"; total_reviews = None; stop = None
-              for _ in range(40):
+              if d is None or d < CUTOFF: excluded_notes["older than 3 years"] += 1; return False
+              return True
+          def reviewers(appid, pages=40):
+              authors = []; cursor = "*"
+              for _ in range(pages):
                   s, body = get(f"https://store.steampowered.com/appreviews/{appid}?json=1&filter=recent&language=all&purchase_type=all&num_per_page=100&cursor={urllib.parse.quote(cursor)}")
-                  if s != 200:
-                      stop = s; break
-                  try:
-                      j = json.loads(body)
-                  except Exception:
-                      stop = 'non-json'; break
-                  if total_reviews is None:
-                      total_reviews = j.get("query_summary", {}).get("total_reviews")
+                  if s != 200: break
+                  try: j = json.loads(body)
+                  except Exception: break
                   revs = j.get("reviews", [])
                   authors += [r["author"]["steamid"] for r in revs]
                   nc = j.get("cursor")
                   if not revs or not nc or nc == cursor: break
-                  cursor = nc
-                  time.sleep(1)
-              uniq = list(dict.fromkeys(authors))
-              print("reviews_total", total_reviews, "| authors_collected", len(uniq), "| review_http_stop", stop)
-              if not uniq:
-                  print("cannot continue (no authors)"); continue
-              random.shuffle(uniq)
-              pick = uniq[:SAMPLE]
+                  cursor = nc; time.sleep(1)
+              return list(dict.fromkeys(authors))
+          def probe(ids):
+              """returns (list of owned-app-id sets for usable profiles, stats)"""
               pub = []; states = {}
-              for i in range(0, len(pick), 100):
-                  b = pick[i:i + 100]
+              for i in range(0, len(ids), 100):
+                  b = ids[i:i + 100]
                   s, body = get(f"https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key={KEY}&steamids={','.join(b)}")
-                  if s != 200:
-                      print("summaries_http", s); break
+                  if s != 200: print("summaries_http", s); break
                   for pl in json.loads(body)["response"]["players"]:
-                      v = pl.get("communityvisibilitystate")
-                      states[v] = states.get(v, 0) + 1
+                      v = pl.get("communityvisibilitystate"); states[v] = states.get(v, 0) + 1
                       if v == 3: pub.append(pl["steamid"])
                   time.sleep(0.5)
-              print("probed", len(pick), "visibility_states", json.dumps(states), "public_profiles", len(pub))
-              with_games = 0; ng = []; http = {}; owns_target = 0
-              co = Counter(); names = {}; co_own = Counter(); n_own = 0
+              sets = []; names = {}
               for sid in pub:
                   s, body = get(f"https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key={KEY}&steamid={sid}&include_played_free_games=1&include_appinfo=1")
-                  http[s] = http.get(s, 0) + 1
                   if s == 200:
                       g = json.loads(body).get("response", {})
                       if isinstance(g.get("game_count"), int) and g.get("games") is not None:
-                          with_games += 1; ng.append(g["game_count"])
-                          ids = set()
-                          for x in g["games"]:
-                              ids.add(x["appid"]); names[x["appid"]] = x.get("name")
-                          ids.discard(int(appid))
-                          if TARGET in ids:
-                              owns_target += 1; n_own += 1
-                              co_own.update(ids - {TARGET})
-                          ids.discard(TARGET)
-                          co.update(ids)
+                          sets.append(frozenset(x["appid"] for x in g["games"]))
+                          for x in g["games"]: names[x["appid"]] = x.get("name")
                   time.sleep(0.5)
-              ng.sort()
-              print("owned_games_http", json.dumps(http), "public_with_game_details", with_games, "of", len(pub), "median_games", ng[len(ng)//2] if ng else None)
-              print("usable_rate_of_probed", round(with_games / len(pick), 3) if pick else None)
-              print("owners_of_target", TARGET, ":", owns_target, "of", with_games)
+              return sets, names, {"probed": len(ids), "visibility": states, "public": len(pub), "usable": len(sets)}
+          # ---------- controls ----------
+          print("=" * 50, "CONTROL A: reviewers of other recent games")
+          ctrl_sets = []; names = {}
+          for cid in [c for c in os.environ["CONTROLS"].split(",") if c]:
+              d = details(int(cid)) or {}
+              a = reviewers(cid, pages=4); random.shuffle(a)
+              sets, nm, st = probe(a[:SAMPLE_DEFAULT]); names.update(nm)
+              print("control", cid, d.get("name"), "|", json.dumps(st))
+              ctrl_sets += sets
+          STORE["controls"]["A"] = [sorted(s) for s in ctrl_sets]
+          print("CONTROL A usable profiles:", len(ctrl_sets))
+          print("=" * 50, "CONTROL B: uniformly random accounts")
+          rb = [str(76561197960265728 + random.randint(1, 1_900_000_000)) for _ in range(6000)]
+          setsB, nm, st = probe(rb[:3000] if False else rb[:2000]); names.update(nm)
+          print("control B", json.dumps(st))
+          ctrl_B = setsB
+          STORE["controls"]["B"] = [sorted(s) for s in setsB]
+          # ---------- lift ----------
+          def binom(n, p): return random.binomialvariate(n, min(max(p, 0.0), 1.0))
+          def lift_row(k_h, n_h, k_c, n_c):
+              ph = k_h / n_h; pc = (k_c + 0.5) / (n_c + 1)
+              lifts = []
+              for _ in range(1500):
+                  h = binom(n_h, ph) / n_h
+                  c = (binom(n_c, k_c / n_c) + 0.5) / (n_c + 1)
+                  lifts.append(h / c)
+              lifts.sort()
+              return ph, pc, ph / pc, lifts[int(0.025 * len(lifts))]
+          def report(label, sets, excl, fran):
+              n = len(sets)
+              print(f"--- {label}: n={n} confirmed-owner profiles{' (THIN: under 40)' if n < 40 else ''}")
+              if n < 5: print("   too few profiles"); return
+              co = Counter()
+              for s in sets: co.update(s - excl)
+              min_owners = max(3, math.ceil(0.07 * n))
+              pool = [(a, c) for a, c in co.most_common(150) if c / n >= 0.05 and c >= min_owners]
+              rows = []
+              for a, c in pool:
+                  nm_ = names.get(a, "") or ""
+                  if fran and nm_.lower().startswith(fran): excluded_notes["cohort franchise"] += 1; continue
+                  if not eligible(a, nm_): continue
+                  kA = sum(1 for s in ctrl_sets if a in s)
+                  ph, pc, lf, lb = lift_row(c, n, kA, len(ctrl_sets))
+                  kB = sum(1 for s in ctrl_B if a in s)
+                  rows.append((lb, a, nm_, c, ph, pc, lf, kB / len(ctrl_B) if ctrl_B else None))
+              rows.sort(reverse=True)
+              print(f"   ranked by lift lower bound vs Control A (min owners {min_owners}, p>=5%); control A n={len(ctrl_sets)}, B n={len(ctrl_B)}")
+              for i, (lb, a, nm_, c, ph, pc, lf, pb) in enumerate(rows[:5], 1):
+                  print(f"   {i}. {a} {nm_}: {c} of {n} own ({ph*100:.0f}%) | control A {pc*100:.0f}% | control B {('%.0f%%' % (pb*100)) if pb is not None else 'n/a'} | lift {lf:.2f}x (95% lower bound {lb:.2f}x)")
+              print("   by raw share for comparison:", "; ".join(f"{r[2]} {r[4]*100:.0f}%" for r in sorted(rows, key=lambda r: -r[4])[:5]))
+          # ---------- cohorts ----------
+          for spec in [a for a in os.environ["APPIDS"].split(",") if a]:
+              appid, _, cap = spec.partition(":")
+              cap = int(cap) if cap else SAMPLE_DEFAULT
               own = details(int(appid)) or {}
-              fran = " ".join(own.get("name", "").lower().split()[:2]) or None
-              print("franchise prefix excluded:", fran)
+              fran = " ".join((own.get("name") or "").lower().split()[:2]) or None
+              print("=" * 50, "cohort: reviewers of", appid, own.get("name"), "| cap", cap, "| franchise prefix excluded:", fran)
+              a = reviewers(appid); random.shuffle(a)
+              print("authors_collected", len(a))
+              sets, nm, st = probe(a[:cap]); names.update(nm)
+              print(json.dumps(st))
               EXCL = {TARGET, int(appid), 5184670, 3764200, 1551980}
-              report(f"TOP 5 next games (paid, released in last 3 years), all {appid} reviewers with visible lists", co, with_games, names, EXCL, fran) if with_games else None
-              if n_own: report(f"TOP 5 next games (paid, released in last 3 years), owners of {TARGET} (full-game prepurchasers) among {appid} reviewers", co_own, n_own, names, EXCL, fran)
+              STORE["cohorts"][appid] = {"name": own.get("name"), "profiles": [sorted(s) for s in sets], "target_owner_flags": [TARGET in s for s in sets]}
+              report(f"reviewers of {appid}", sets, EXCL, fran)
+              owners = [s for s in sets if TARGET in s]
+              print("owners_of_target", TARGET, ":", len(owners), "of", len(sets))
+              if owners: report(f"owners of {TARGET} (full-game prepurchasers) among {appid} reviewers", owners, EXCL, fran)
+          print("candidate exclusions by reason:", json.dumps(dict(excluded_notes)))
+          used = set()
+          for grp in list(STORE["controls"].values()) + [c["profiles"] for c in STORE["cohorts"].values()]:
+              for p in grp: used.update(p)
+          STORE["app_names"] = {str(a): names.get(a) for a in used if names.get(a)}
+          STORE["app_meta"] = {str(a): {"type": (m or {}).get("type"), "is_free": (m or {}).get("is_free"), "release": ((m or {}).get("release_date") or {}).get("date")} for a, m in meta.items() if a != 0}
+          out = "/tmp/overlap-results.json"
+          fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+          with os.fdopen(fd, "w") as fh: json.dump(STORE, fh)
+          print("stored", out, os.path.getsize(out), "bytes; anonymous per-profile app-id lists only, no Steam IDs")
           PY
           REMOTEEOF
+          scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46:/tmp/overlap-results.json ./overlap-results.json
+          ssh -i ~/.ssh/id_ed25519 root@104.236.239.46 'shred -u /tmp/overlap-results.json 2>/dev/null || rm -f /tmp/overlap-results.json'
+          ls -l overlap-results.json
+
+      - name: Upload stored results (anonymous app-id lists, no Steam IDs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlap-results
+          path: overlap-results.json
+          retention-days: 90
