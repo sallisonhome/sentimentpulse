@@ -48,13 +48,13 @@ jobs:
           case "$APPIDS" in *[!0-9,:]*|'') echo "bad appids"; exit 1;; esac
           case "$TARGET" in *[!0-9]*|'') echo "bad target"; exit 1;; esac
           case "$SAMPLE" in *[!0-9]*|'') echo "bad sample"; exit 1;; esac
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=20 -o ServerAliveCountMax=30 root@104.236.239.46 \
               APPIDS="$APPIDS" TARGET="$TARGET" SAMPLE="$SAMPLE" bash -s <<'REMOTEEOF'
           set -uo pipefail
           KEY=$(sqlite3 /opt/sentimentpulse/signalpulse/data.db "SELECT value FROM app_settings WHERE key='steam_api_key';" 2>/dev/null || true)
           if [ -z "${KEY:-}" ]; then echo "ERROR: no steam_api_key in app_settings"; exit 1; fi
           echo "key_present true"
-          STEAM_KEY="$KEY" python3 - <<'PY'
+          STEAM_KEY="$KEY" python3 -u - <<'PY'
           import os, json, time, random, urllib.request, urllib.error, urllib.parse
           from collections import Counter
           KEY = os.environ["STEAM_KEY"]
