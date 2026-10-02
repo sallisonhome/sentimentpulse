@@ -18,17 +18,23 @@ export function truncate(str: string | null | undefined, maxLen: number): string
   return str.length <= maxLen ? str : `${str.slice(0, maxLen)}…`
 }
 
-/** Return a human-readable relative time string */
+/** Return a human-readable relative time string.
+ *  Past times read "5m ago"; future times (e.g. the next scheduled ingest)
+ *  read "in 21h" instead of collapsing to "Just now" (2026-10-02). */
 export function relativeTime(isoString: string | null | undefined): string {
   if (!isoString) return 'Never'
-  const diff = Date.now() - new Date(isoString).getTime()
-  const minutes = Math.floor(diff / 60_000)
-  if (minutes < 1)  return 'Just now'
-  if (minutes < 60) return `${minutes}m ago`
+  const t = new Date(isoString).getTime()
+  if (Number.isNaN(t)) return 'Never'
+  const diff = Date.now() - t
+  const future = diff < 0
+  const minutes = Math.floor(Math.abs(diff) / 60_000)
+  if (minutes < 1)  return future ? 'in <1m' : 'Just now'
+  const fmt = (n: number, unit: string) => (future ? `in ${n}${unit}` : `${n}${unit} ago`)
+  if (minutes < 60) return fmt(minutes, 'm')
   const hours = Math.floor(minutes / 60)
-  if (hours < 24)   return `${hours}h ago`
+  if (hours < 24)   return fmt(hours, 'h')
   const days = Math.floor(hours / 24)
-  return `${days}d ago`
+  return fmt(days, 'd')
 }
 
 /** Map a source string to a display label */

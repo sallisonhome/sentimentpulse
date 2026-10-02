@@ -20,11 +20,15 @@ _next_request = {}
 
 
 class FetchRows(list):
-    def __init__(self, rows=(), *, complete=True, checked_through=None, stop_reason=None):
+    def __init__(self, rows=(), *, complete=True, checked_through=None, stop_reason=None,
+                 resume=None):
         super().__init__(rows)
         self.complete = complete
         self.checked_through = checked_through if complete else None
         self.stop_reason = stop_reason
+        # Scanned-interval progress for a time-budgeted listing (never a
+        # completeness claim); only meaningful while incomplete.
+        self.resume = None if complete else resume
 
 
 class UpstreamFailure(RuntimeError):

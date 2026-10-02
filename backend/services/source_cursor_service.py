@@ -36,7 +36,7 @@ from typing import Optional
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
-from models import SourceFetchCursor
+from models import AppSetting, SourceFetchCursor
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,62 @@ def write_cursor(
             game_id, source, scope_key, exc,
         )
         db.rollback()
+
+
+# ─── Reddit listing resume records (2026-10-02) ───────────────────────
+#
+# A shared-listing scan that hits its time budget records the interval it
+# DID read ([before, upper) for one exact `after`) so the next run continues
+# below it instead of restarting at the top. This is progress, not a
+# completeness claim: the fetch cursor still moves only on an exhausted
+# window. Stored in app_settings as JSON; one key per (game, subreddit).
+
+_LISTING_RESUME_PREFIX = "reddit_listing_resume"
+
+
+def _listing_resume_key(game_id: int, subreddit: str) -> str:
+    return f"{_LISTING_RESUME_PREFIX}:{int(game_id)}:{_normalize_scope('reddit', subreddit)}"
+
+
+def read_listing_resume(db: Session, game_id: int, subreddit: str) -> Optional[dict]:
+    """Return the stored resume record, or None (missing or unreadable)."""
+    import json
+    try:
+        row = db.query(AppSetting).filter_by(key=_listing_resume_key(game_id, subreddit)).first()
+        if row is None or not row.value:
+            return None
+        value = json.loads(row.value)
+        return value if isinstance(value, dict) else None
+    except Exception as exc:
+        logger.warning("listing resume: read failed game_id=%s sub=%r: %s", game_id, subreddit, exc)
+        return None
+
+
+def write_listing_resume(db: Session, game_id: int, subreddit: str, resume: dict) -> None:
+    """Upsert a resume record. Skipped during backfills, like write_cursor."""
+    import json
+    if _is_backfill_active() or not isinstance(resume, dict):
+        return
+    try:
+        record = {k: int(resume[k]) for k in ("after", "before", "upper")}
+    except (KeyError, TypeError, ValueError):
+        logger.warning("listing resume: refusing malformed record %r", resume)
+        return
+    key = _listing_resume_key(game_id, subreddit)
+    row = db.query(AppSetting).filter_by(key=key).first()
+    if row is None:
+        db.add(AppSetting(key=key, value=json.dumps(record)))
+    else:
+        row.value = json.dumps(record)
+    db.flush()
+
+
+def clear_listing_resume(db: Session, game_id: int, subreddit: str) -> None:
+    """Delete the resume record once the window is exhausted."""
+    if _is_backfill_active():
+        return
+    db.query(AppSetting).filter_by(key=_listing_resume_key(game_id, subreddit)).delete()
+    db.flush()
 
 
 # ─── Read-path helper: compute the after= epoch to pass upstream ──────

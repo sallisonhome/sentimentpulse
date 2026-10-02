@@ -10,7 +10,7 @@ Guarantees:
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import json
 import pytest
@@ -24,8 +24,15 @@ from services.ingestor import (
 
 
 def _seed(db, game, source, day_offset, count, tier="signal"):
-    """Seed `count` RawPost rows at a specific day offset from today."""
-    base = datetime.utcnow() - timedelta(days=day_offset)
+    """Seed `count` RawPost rows `day_offset` days before the CHECKED day.
+
+    2026-10-02: the checked day is the latest complete UTC day (yesterday),
+    so offset 0 maps to yesterday noon UTC and baseline offsets 1..7 to the
+    seven days before it.
+    """
+    from services.ingestor import health_check_day
+    checked = health_check_day()
+    base = datetime(checked.year, checked.month, checked.day, 12) - timedelta(days=day_offset)
     for i in range(count):
         db.add(RawPost(
             game_id=game.id,
@@ -120,3 +127,40 @@ class TestHealthDropCheck:
         # signal, no flag. This is correct because noise is dashboard-
         # filtered anyway.
         assert not any("HEALTH DROP" in l for l in log_lines)
+
+
+class TestCompleteDaySelection:
+    def test_partial_current_day_is_not_checked(self, db, game):
+        """2026-10-02: a half-collected current UTC day must not flag drops."""
+        from services.ingestor import health_check_day
+        for d in range(0, 8):
+            _seed(db, game, SourceEnum.reddit, d, 10)
+        # Current UTC day: only a fraction collected so far.
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        db.add(RawPost(game_id=game.id, source=SourceEnum.reddit, external_id="partial_today",
+                       author="u/test", title="seed", body="seed", url="https://reddit.com/x",
+                       upvotes=0, post_date=now, relevance_tier="signal",
+                       matched_keywords=["seed"]))
+        db.commit()
+        log_lines: list[str] = []
+        _run_health_drop_check(db, log_lines, [])
+        assert not any("HEALTH DROP" in l for l in log_lines), log_lines
+        assert health_check_day().isoformat() in log_lines[0]
+
+    def test_health_check_day_is_previous_utc_date(self):
+        from services.ingestor import health_check_day
+        now = datetime(2026, 10, 2, 0, 30, tzinfo=timezone.utc)
+        assert health_check_day(now).isoformat() == "2026-10-01"
+
+    def test_empty_result_replaces_stale_snapshot(self, db, game):
+        db.add(AppSetting(key="ingest_last_health_drops",
+                          value=json.dumps({"drops": [{"game_name": "old"}]})))
+        db.commit()
+        for d in range(0, 8):
+            _seed(db, game, SourceEnum.reddit, d, 5)
+        _run_health_drop_check(db, [], [])
+        row = db.query(AppSetting).filter(AppSetting.key == "ingest_last_health_drops").first()
+        payload = json.loads(row.value)
+        assert payload["drops"] == []
+        from services.ingestor import health_check_day
+        assert payload["checked_date"] == health_check_day().isoformat()

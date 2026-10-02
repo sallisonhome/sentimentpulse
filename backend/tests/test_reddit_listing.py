@@ -217,3 +217,198 @@ def test_single_word_game_name_must_not_match_inside_a_creator_handle():
     args = dict(search_query="SnowRunner", distinctive_keywords=["snowrunner"], game_name="SnowRunner")
     assert not _post_mentions_game({"title":"Other game", "body":"SnowRunnerGuy plays a puzzle."}, **args)
     assert _post_mentions_game({"title":"SnowRunner", "body":"The mud physics feel great."}, **args)
+
+
+# ── 2026-10-02: resumable deep windows (Knightling r/Games ratchet) ─────────
+
+class Provider:
+    """Simulated Arctic Shift listing: newest-first pages of PAGE_SIZE=3,
+    with a clock that advances 5s per request (budget 10s = 2 pages)."""
+
+    def __init__(self, epochs, hits=()):
+        self.posts = [post(f"p{e}", e, "Knightling" if e in hits else "") for e in epochs]
+        self.calls = 0
+        self.befores = []
+
+    def __call__(self, url, params, **kw):
+        self.calls += 1
+        self.befores.append(params["before"])
+        rows = [p for p in self.posts if p["created_utc"] < params["before"]]
+        rows.sort(key=lambda p: -p["created_utc"])
+        return {"data": rows[:3]}
+
+    def clock(self):
+        return self.calls * 5
+
+
+def budgeted(run, monkeypatch, provider, *, upper, after, resume=None):
+    rt._local.started_epoch = upper
+    rt._local.listing_cache = None      # each daily run starts with a cold cache
+    run.side_effect = provider
+    monkeypatch.setattr(listing.time, "monotonic", provider.clock)
+    start = provider.calls
+    rows = listing.fetch_candidates("Games", "Knightling", after=after,
+                                    max_seconds=10, resume=resume)
+    provider.calls_this_run = provider.calls - start
+    return rows
+
+
+def test_time_budget_returns_scanned_interval_not_completion(run, monkeypatch):
+    prov = Provider(range(990, 700, -10))
+    rows = budgeted(run, monkeypatch, prov, upper=1000, after=100)
+    assert not rows.complete and rows.checked_through is None
+    assert rows.stop_reason == "time_budget"
+    # Pages before=1000 (990,980,970) and before=971 (970,960,950; one-second
+    # overlap) were read; continue strictly below the oldest page boundary.
+    assert prov.befores == [1000, 971]
+    assert rows.resume == {"after": 100, "before": 951, "upper": 1000}
+
+
+def test_resume_reads_new_top_then_continues_below_old_boundary(run):
+    # Earlier run read [931, 1000) for after=100; this run's upper is 1100.
+    rt._local.started_epoch = 1100
+    rt._local.listing_cache = None
+    run.side_effect = [
+        # New top segment 1100 -> down to old upper 1000 (exclusive 999).
+        {"data": [post("n1", 1090, "Knightling"), post("n2", 1050), post("n3", 990)]},
+        # Continue below 931 down to after=100.
+        {"data": [post("o1", 920, body="Knightling"), post("o2", 500), post("o3", 300)]},
+        {"data": [post("o4", 200)]},
+    ]
+    rows = listing.fetch_candidates("Games", "Knightling", after=100,
+                                    resume={"after": 100, "before": 931, "upper": 1000})
+    assert {p["id"] for p in rows} == {"n1", "o1"}
+    assert rows.complete and rows.checked_through == 1100 and rows.resume is None
+    assert [c.args[1]["before"] for c in run.call_args_list] == [1100, 931, 301]
+
+
+def test_deep_window_finishes_with_resume_but_never_by_restarting(run, monkeypatch):
+    """The production failure: restarting at the top never finishes."""
+    epochs = list(range(990, 870, -10))          # 12 posts = 4 pages
+    hits = {950, 890}
+    # Old behaviour: every run restarts at the top and stops after 2 pages.
+    for _ in range(3):
+        restart = budgeted(run, monkeypatch, Provider(epochs, hits), upper=1000, after=880)
+        assert not restart.complete and {p["id"] for p in restart} == {"p950"}
+    # New behaviour: each run resumes below the previous boundary until done.
+    prov = Provider(epochs, hits)
+    found, resume, runs = set(), None, 0
+    while True:
+        runs += 1
+        rows = budgeted(run, monkeypatch, prov, upper=1000, after=880, resume=resume)
+        found |= {p["id"] for p in rows}
+        assert runs <= 6, "resume must make monotonic progress"
+        if rows.complete:
+            break
+        assert rows.resume and (resume is None or rows.resume["before"] < resume["before"])
+        resume = rows.resume
+    assert rows.checked_through == 1000 and rows.resume is None and runs > 1
+    assert found == {"p950", "p890"}
+
+
+def test_new_posts_above_old_upper_are_read_before_resuming(run, monkeypatch):
+    prov = Provider([1090, 1050] + list(range(990, 870, -10)), hits={1090})
+    prior = {"after": 880, "before": 941, "upper": 1000}
+    rows = budgeted(run, monkeypatch, prov, upper=1100, after=880, resume=prior)
+    # Top segment 1100 -> 999 first (one page reaches 990), then below 941;
+    # the 2-page budget ends mid-way and the new record spans [921, 1100).
+    assert prov.befores[0] == 1100 and prov.befores[1] == 941
+    assert "p1090" in {p["id"] for p in rows}
+    assert not rows.complete
+    assert rows.resume == {"after": 880, "before": 921, "upper": 1100}
+
+
+def test_mismatched_or_malformed_resume_is_ignored(run):
+    run.return_value = {"data": []}
+    for bad in ({"after": 99, "before": 931, "upper": 1000},
+                {"after": 100, "before": 2000, "upper": 3000},
+                {"after": 100, "before": 50, "upper": 1000},
+                {"before": 931}, "junk"):
+        rows = listing.fetch_candidates("Games", "Knightling", after=100, resume=bad)
+        assert rows.complete and rows.checked_through == 1000
+        assert run.call_args_list[-1].args[1]["before"] == 1000
+
+
+def test_unfinished_top_segment_keeps_prior_record(run, monkeypatch):
+    clock = iter([0, 999, 999, 999])
+    monkeypatch.setattr(listing.time, "monotonic", lambda: next(clock))
+    rt._local.started_epoch = 1100
+    rt._local.listing_cache = None
+    prior = {"after": 100, "before": 931, "upper": 1000}
+    run.side_effect = [{"data": [post("n1", 1090), post("n2", 1080), post("n3", 1070)]}]
+    rows = listing.fetch_candidates("Games", "Knightling", after=100,
+                                    max_seconds=10, resume=prior)
+    assert not rows.complete and rows.resume == prior
+
+
+def test_upstream_error_returns_no_new_resume(run):
+    run.side_effect = rt.UpstreamFailure("HTTP 422")
+    rows = listing.fetch_candidates("Games", "Knightling", after=100)
+    assert not rows.complete and rows.resume is None
+
+
+@pytest.mark.parametrize("scenario", ["partial", "complete", "save_error", "backfill"])
+def test_step4_persists_and_retires_resume_records(db, monkeypatch, scenario):
+    from models import Game, Publisher
+    from services import ingestor
+    from services.source_cursor_service import (
+        read_cursor, read_listing_resume, write_listing_resume,
+        backfill_suppress_cursor_updates,
+    )
+    publisher = Publisher(name="Test")
+    db.add(publisher)
+    db.flush()
+    game = Game(name="Example", steam_app_id=1, publisher_id=publisher.id,
+                subreddits=["Games"], is_active=True)
+    db.add(game)
+    db.commit()
+    seen = {}
+    prior = {"after": 100, "before": 931, "upper": 1000}
+    if scenario in ("complete", "save_error"):
+        write_listing_resume(db, game.id, "games", prior)
+    new = {"after": 100, "before": 500, "upper": 1100}
+
+    def fake_fetch(*a, **kw):
+        seen["resume"] = kw.get("resume")
+        if scenario == "complete":
+            return rt.FetchRows([], complete=True, checked_through=1100)
+        return rt.FetchRows([], complete=False, stop_reason="time_budget", resume=new)
+    monkeypatch.setattr(ingestor, "fetch_subreddit_posts", fake_fetch)
+    if scenario == "save_error":
+        def failed_save(db, gid, source, rows, errors):
+            errors.append("save failed")
+            return 0
+        monkeypatch.setattr(ingestor, "_bulk_save_posts", failed_save)
+    log_lines, errors = [], []
+    if scenario == "backfill":
+        with backfill_suppress_cursor_updates():
+            ingestor._step4_reddit(db, game, log_lines, errors)
+    else:
+        ingestor._step4_reddit(db, game, log_lines, errors)
+    stored = read_listing_resume(db, game.id, "Games")
+    if scenario == "partial":
+        assert seen["resume"] is None and stored == new
+        assert read_cursor(db, game.id, "reddit", "Games") is None
+        assert any("listing progress saved" in l for l in log_lines)
+    elif scenario == "complete":
+        assert seen["resume"] == prior and stored is None
+        assert read_cursor(db, game.id, "reddit", "Games") == 1100
+    elif scenario == "save_error":
+        assert stored == prior                 # never advanced past unsaved rows
+        assert read_cursor(db, game.id, "reddit", "Games") is None
+    else:
+        assert stored is None                  # backfills never write progress
+
+
+def test_partial_fallback_preserves_listing_resume(monkeypatch):
+    from services import reddit_service, arctic_shift_service
+    resume = {"after": 100, "before": 500, "upper": 1100}
+    monkeypatch.setattr(arctic_shift_service, "fetch_arctic_shift_subreddit_posts",
+                        lambda *a, **kw: rt.FetchRows([], complete=False,
+                                                      stop_reason="time_budget", resume=resume))
+    monkeypatch.setattr(reddit_service, "_load_gist_data", lambda: {})
+    monkeypatch.setattr(reddit_service, "_fetch_pullpush", lambda *a, **kw: [])
+    rows = reddit_service.fetch_subreddit_posts("Games", limit=100, game_name="Knightling",
+                                                after=100, resume=resume)
+    assert not rows.complete and rows.resume == resume
+    assert rows.stop_reason == "time_budget"

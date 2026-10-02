@@ -1557,6 +1557,7 @@ def _step4_reddit(
     """
     from services.source_cursor_service import (
         read_cursor, write_cursor, compute_after_epoch, newest_epoch_from_posts,
+        read_listing_resume, write_listing_resume, clear_listing_resume,
     )
 
     subreddits: list[str] = game.subreddits or []
@@ -1589,8 +1590,13 @@ def _step4_reddit(
             # steady-state case pulls FEWER than 100 because after= filters
             # out already-seen posts server-side.  Duplicate risk is still
             # covered by _bulk_save_posts's external_id dedup.
+            # 2026-10-02: a deep window (sparse game, months-old cursor) can
+            # exceed one run's listing budget. Pass the interval earlier runs
+            # already read so the scan continues instead of restarting.
+            prior_resume = read_listing_resume(db, game.id, sub_name)
             submissions = fetch_subreddit_posts(
-                sub_name, limit=100, game_name=game.name, game=game, after=after_epoch
+                sub_name, limit=100, game_name=game.name, game=game, after=after_epoch,
+                resume=prior_resume,
             )
             source_complete = getattr(submissions, "complete", True)
             if not source_complete:
@@ -1616,8 +1622,23 @@ def _step4_reddit(
             # Only that proof can move beyond the last matching post. Capped,
             # failed or timed-out scans never receive this watermark.
             checked = getattr(submissions, "checked_through", None)
-            if source_complete and len(errors) == save_error_count and (checked or newest):
+            saved_cleanly = len(errors) == save_error_count
+            if source_complete and saved_cleanly and (checked or newest):
                 write_cursor(db, game.id, "reddit", sub_name, max(checked or 0, newest or 0))
+            # Resume progress is recorded only after its matches saved safely;
+            # it never moves the cursor. An exhausted window retires it.
+            next_resume = getattr(submissions, "resume", None)
+            if saved_cleanly:
+                if source_complete:
+                    if prior_resume is not None:
+                        clear_listing_resume(db, game.id, sub_name)
+                elif not source_complete and next_resume:
+                    write_listing_resume(db, game.id, sub_name, next_resume)
+                    log_lines.append(
+                        f"[Step 4] '{game.name}' r/{sub_name}: listing progress saved "
+                        f"(scanned {next_resume['before']}..{next_resume['upper']}, "
+                        f"window starts {next_resume['after']}); next run resumes below it."
+                    )
 
             # NOTE: Comment fetching is disabled because Reddit blocks all
             # JSON API requests from datacenter IPs (403 Blocked). Each
@@ -2642,9 +2663,22 @@ HEALTH_MIN_ACTIVE_DAYS = 3
 HEALTH_THRESHOLD_PCT = 0.5
 
 
+def health_check_day(now=None):
+    """Most recent COMPLETE UTC post-date day (2026-10-02).
+
+    The daily run finishes mid-morning UTC, so the current UTC day holds only
+    a few hours of posts. Comparing it with full baseline days flagged every
+    busy (game, source) pair at roughly -50..-60% after each run. Yesterday
+    is complete once today's run has read through it.
+    """
+    now = now or datetime.now(timezone.utc)
+    return now.date() - timedelta(days=1)
+
+
 def _run_health_drop_check(db: Session, log_lines: list, errors: list) -> None:
-    """v0028 (2026-08-28): after every ingest, compare today's SIGNAL-tier
-    volume per (game, source) against a rolling 7d baseline. Any pair
+    """v0028 (2026-08-28): after every ingest, compare the latest complete
+    UTC day's SIGNAL-tier volume (2026-10-02: yesterday, not the partial
+    current day) per (game, source) against the 7 days before it. Any pair
     where the baseline is meaningful (>=3/day active on >=3 days) AND
     today's count is <50% of baseline is flagged. Flagged pairs get:
       1. A HEALTH DROP block appended to log_lines (so it appears in
@@ -2658,10 +2692,12 @@ def _run_health_drop_check(db: Session, log_lines: list, errors: list) -> None:
     them here (pre-deploy check_ingestor_health.py forbids local
     imports that shadow module-level ones, see lessons.md 2026-08-14).
     """
-    from datetime import date as _date, timedelta as _td
+    from datetime import timedelta as _td
     from collections import defaultdict
 
-    today = _date.today()
+    # `today` is the checked day: the latest complete UTC day, not the
+    # partial current one (see health_check_day).
+    today = health_check_day()
     baseline_start = today - _td(days=HEALTH_BASELINE_DAYS)
     baseline_dates = [
         (baseline_start + _td(days=i)).isoformat()
@@ -2719,18 +2755,16 @@ def _run_health_drop_check(db: Session, log_lines: list, errors: list) -> None:
             f"pairs are at or above {int(HEALTH_THRESHOLD_PCT*100)}% of their "
             f"{HEALTH_BASELINE_DAYS}d baseline."
         )
-        return
-
-    # Log block
-    log_lines.append(
-        f"[HEALTH] '{today.isoformat()}': {len(drops)} signal drop(s) below "
-        f"{int(HEALTH_THRESHOLD_PCT*100)}% of {HEALTH_BASELINE_DAYS}d baseline:"
-    )
-    for d in drops:
+    else:
         log_lines.append(
-            f"  [HEALTH DROP] {d['game_name']} / {d['source']}: today={d['today']} "
-            f"vs baseline avg {d['baseline_avg']}/day"
+            f"[HEALTH] '{today.isoformat()}': {len(drops)} signal drop(s) below "
+            f"{int(HEALTH_THRESHOLD_PCT*100)}% of {HEALTH_BASELINE_DAYS}d baseline:"
         )
+        for d in drops:
+            log_lines.append(
+                f"  [HEALTH DROP] {d['game_name']} / {d['source']}: "
+                f"{today.isoformat()}={d['today']} vs baseline avg {d['baseline_avg']}/day"
+            )
 
     # v0028 (2026-08-28): also persist the drop set to AppSetting so the
     # /admin/health-drops endpoint AND scheduled monitoring crons can
@@ -2742,8 +2776,12 @@ def _run_health_drop_check(db: Session, log_lines: list, errors: list) -> None:
     try:
         import json as _json
         from models import AppSetting
+        # Persist every run, including an empty set, so a stale drop list
+        # never outlives the run that produced it. `today` key retained in
+        # each drop for compatibility; it is the checked day's count.
         snapshot = _json.dumps({
-            "generated_at": today.isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "checked_date": today.isoformat(),
             "drops": drops,
         })
         existing = db.query(AppSetting).filter(
