@@ -74,10 +74,13 @@ jobs:
               authors = []
               cursor = "*"; total_reviews = None; stop = None
               for _ in range(8):
-                  s, body = get(f"https://store.steampowered.com/appreview/{appid}?json=1&filter=recent&language=all&purchase_type=all&num_per_page=100&cursor={urllib.parse.quote(cursor)}")
+                  s, body = get(f"https://store.steampowered.com/appreviews/{appid}?json=1&filter=recent&language=all&purchase_type=all&num_per_page=100&cursor={urllib.parse.quote(cursor)}")
                   if s != 200:
                       stop = s; break
-                  j = json.loads(body)
+                  try:
+                      j = json.loads(body)
+                  except Exception:
+                      stop = 'non-json'; break
                   if total_reviews is None:
                       total_reviews = j.get("query_summary", {}).get("total_reviews")
                   revs = j.get("reviews", [])
