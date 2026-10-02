@@ -71,29 +71,41 @@ jobs:
                   return 0, ""
           BLOCK = {431960, 4000000}  # Wallpaper Engine (software staple)
           meta = {}
-          def eligible(aid):
-              if aid in BLOCK: return False
+          import datetime, re as _re
+          CUTOFF = datetime.date.today() - datetime.timedelta(days=3 * 365)
+          def parse_date(s):
+              for fmt in ("%b %d, %Y", "%d %b, %Y", "%B %d, %Y", "%d %B, %Y"):
+                  try: return datetime.datetime.strptime(s.strip(), fmt).date()
+                  except Exception: pass
+              return None
+          def details(aid):
               if aid not in meta:
                   s, body = get(f"https://store.steampowered.com/api/appdetails?appids={aid}&cc=us&l=en")
                   time.sleep(1.5)
-                  ok = False
                   try:
                       d = json.loads(body)[str(aid)]
-                      x = d.get("data") if d.get("success") else None
-                      ok = bool(x) and x.get("type") == "game" and not x.get("is_free")
+                      meta[aid] = d.get("data") if d.get("success") else None
                   except Exception:
-                      ok = None
-                  meta[aid] = ok
-              return meta[aid] is True
-          def report(label, co, n, names, excl):
-              print(f"--- {label}: n={n} confirmed-owner profiles")
+                      meta[aid] = None
+              return meta[aid]
+          def eligible(aid):
+              # paid game, released (not coming soon) within the last 3 years
+              if aid in BLOCK: return False
+              x = details(aid)
+              if not x or x.get("type") != "game" or x.get("is_free"): return False
+              rd = x.get("release_date", {})
+              if rd.get("coming_soon"): return False
+              d = parse_date(rd.get("date", ""))
+              return d is not None and d >= CUTOFF
+          def report(label, co, n, names, excl, fran=None):
+              print(f"--- {label}: n={n} confirmed-owner profiles{' (THIN: under 40)' if n < 40 else ''}")
               shown = 0
-              for aid, c in co.most_common(80):
-                  if aid in excl or not eligible(aid): continue
+              for aid, c in co.most_common(400):
+                  if aid in excl or (fran and names.get(aid, '').lower().startswith(fran)) or not eligible(aid): continue
                   shown += 1
                   print(f"   {shown}. {aid} {names.get(aid)}  {c} of {n} ({c / n * 100:.0f}%)")
                   if shown >= 5: break
-              if shown < 5: print("   (fewer than 5 eligible candidates in top 80)")
+              if shown < 5: print("   (fewer than 5 eligible candidates in top 400)")
           for spec in [a for a in os.environ["APPIDS"].split(",") if a]:
               appid, _, cap = spec.partition(":")
               SAMPLE = int(cap) if cap else SAMPLE_DEFAULT
@@ -157,8 +169,11 @@ jobs:
               print("owned_games_http", json.dumps(http), "public_with_game_details", with_games, "of", len(pub), "median_games", ng[len(ng)//2] if ng else None)
               print("usable_rate_of_probed", round(with_games / len(pick), 3) if pick else None)
               print("owners_of_target", TARGET, ":", owns_target, "of", with_games)
+              own = details(int(appid)) or {}
+              fran = " ".join(own.get("name", "").lower().split()[:2]) or None
+              print("franchise prefix excluded:", fran)
               EXCL = {TARGET, int(appid), 5184670, 3764200, 1551980}
-              report(f"TOP 5 next games, all {appid} reviewers with visible lists", co, with_games, names, EXCL) if with_games else None
-              if n_own: report(f"TOP 5 next games, owners of {TARGET} (full-game prepurchasers) among {appid} reviewers", co_own, n_own, names, EXCL)
+              report(f"TOP 5 next games (paid, released in last 3 years), all {appid} reviewers with visible lists", co, with_games, names, EXCL, fran) if with_games else None
+              if n_own: report(f"TOP 5 next games (paid, released in last 3 years), owners of {TARGET} (full-game prepurchasers) among {appid} reviewers", co_own, n_own, names, EXCL, fran)
           PY
           REMOTEEOF
