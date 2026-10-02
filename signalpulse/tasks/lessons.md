@@ -1,5 +1,14 @@
 # SignalPulse scoped regression lessons
 
+## 2026-10-02: a release-date filter written for one platform's signal must not hide another platform's real sales
+
+The unreleased-title filter exists because console store ratings accumulate during pre-order. Steam reviews
+cannot, so the same filter hid Gears of War: E-Day while its paid early access was selling. Before widening
+or narrowing a gate, list which rows it admits today on production (here exactly one Steam title) and make
+every dependent rule (console revenue derived from Steam) inherit the same boundary, otherwise exposing the
+row changes a different platform's number (Xbox E-Day would have dropped about 20x). Listing names like
+"... Pre-Order" are the same parent game and must group with it.
+
 ## 2026-10-01: match rating pools with tolerance, not exact equality
 
 Sibling SKUs are captured at different moments, so identical pools differ by a few ratings, and a family

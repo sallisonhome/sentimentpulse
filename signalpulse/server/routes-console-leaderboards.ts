@@ -50,6 +50,7 @@
 import type { Express, Request } from "express";
 import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
+import { unreleasedGateSql, steamDerivationBlockedByFutureRelease } from "./console-release-gate";
 import { pickSharedPoolPrimaries, sharedPoolViolations } from "./console-shared-pool";
 export { pickSharedPoolPrimaries, sharedPoolViolations };
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
@@ -463,16 +464,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Those rows historically don't hit this failure mode because they lack
       // strong signal in the first place.
       const unreleasedFilter = `
-        AND (
-          (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
-          OR date(
-               CASE
-                 WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
-                   THEN COALESCE(igdb.store_release_date, igdb.release_date)
-                 ELSE COALESCE(igdb.release_date, igdb.store_release_date)
-               END
-             ) <= date('now')
-        )
+        ${unreleasedGateSql(null, platform)}
       `;
 
       // Cascade-cliff gate: reject rows whose earliest non-null cascade rung is
@@ -915,7 +907,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // display name (same helper the client uses to collapse editions
         // within a platform). This is the fix for Path B silently missing
         // every cross-platform title.
-        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"; windowUsed:string|null; recentFamilyAdjustment?:any}>();
+        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"; windowUsed:string|null; releaseDate?:string|null; recentFamilyAdjustment?:any}>();
         if (consoleRatio != null) {
           // Steam never enters this branch, so recursion terminates after one
           // level. Reusing its final result also preserves verified LTD scaling,
@@ -927,6 +919,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                 revenue: s.revenueMidUsd,
                 source: s.dataSource === "actual" ? "anchor" : "estimator",
                 windowUsed: s.windowUsed,
+                releaseDate: s.releaseDate ?? null,
                 ...(s.recentFamilyAdjustment ? {recentFamilyAdjustment:s.recentFamilyAdjustment} : {}),
               });
             }
@@ -1168,7 +1161,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // Final unit reconciliation below returns null when ASP is unknown.
           if (consoleRatio != null) {
             const gk = (g.editionGroupKey as string | undefined) ?? "";
-            const s = gk.length >= 2 ? steamRevenueByKey.get(gk) : undefined;
+            const s0 = gk.length >= 2 ? steamRevenueByKey.get(gk) : undefined;
+            // Steam early access / early unlock before the official release: keep the console native estimate.
+            const s = s0 && steamDerivationBlockedByFutureRelease(s0.releaseDate, todayIsoDate()) ? undefined : s0;
             // Steam-anchored derivation requires a MEANINGFUL Steam revenue.
             // PS5-exclusive Sony IPs (e.g. Gran Turismo 7) have no Steam SKU
             // at all -> s is undefined -> we fall through to
@@ -1383,16 +1378,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           -- games that haven't launched yet (e.g. COD MW4 at $1.82B on d7).
           -- See unreleasedFilter definition earlier in this file for the full
           -- rationale. Rows with unknown release_date are preserved.
-          AND (
-            (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
-            OR date(
-                 CASE
-                   WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
-                     THEN COALESCE(igdb.store_release_date, igdb.release_date)
-                   ELSE COALESCE(igdb.release_date, igdb.store_release_date)
-                 END
-               ) <= date('now')
-          )
+          ${unreleasedGateSql("psm.platform")}
       `).all() as Array<{
         titleId: number;
         platform: Platform;
@@ -1801,16 +1787,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           AND (psm.platform <> 'xbox' OR xtc.name IS NOT NULL)
           -- Unreleased-title filter (2026-09-13): mirrors per-platform routes.
           -- See leaderboards listing route above for full rationale.
-          AND (
-            (igdb.release_date IS NULL AND igdb.store_release_date IS NULL)
-            OR date(
-                 CASE
-                   WHEN (igdb.match_confidence = 'low' OR console_identity_matches(igdb.store_name, igdb.name) = 0)
-                     THEN COALESCE(igdb.store_release_date, igdb.release_date)
-                   ELSE COALESCE(igdb.release_date, igdb.store_release_date)
-                 END
-               ) <= date('now')
-          )
+          ${unreleasedGateSql("psm.platform")}
       `).all() as Array<{ titleId: number; platform: Platform; msrpUsdCents: number | null; name: string | null; coverUrl: string | null; unitsMid: number | null; ownersMid: number | null; windowUsed: string | null }>;
 
       // Filter to this key.

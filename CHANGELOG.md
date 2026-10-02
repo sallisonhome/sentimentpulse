@@ -1,5 +1,18 @@
 # SentimentPulse Changelog
 
+## October 2, 2026: Steam early access appears on the boards, and Pre-Order listings join their parent title
+
+- Gears of War: E-Day was missing from the Steam leaderboards. Its Premium Edition early access started
+  on Steam on 2026-10-01 with real reviews, but the unreleased-title filter (written for console pre-order
+  ratings) hid it because the official release is 2026-10-06. Steam rows are now exempt: a Steam estimate
+  comes from reviews, which only buyers write. PS5 and Xbox keep the filter.
+- A trailing "Pre-Order" or "Pre-Purchase" in a store name is now stripped when grouping editions, so the
+  Xbox listing "Gears of War: E-Day Premium Edition Pre-Order" and "ACE COMBAT 8: WINGS OF THEVE Deluxe
+  Edition Pre-Order" join their Steam and PS5 parents. Of 1,192 catalog names exactly these 2 change group.
+- Console revenue is not derived from a Steam row whose official release is still in the future, so an
+  Xbox-first title keeps its own estimate until the Steam release date arrives.
+- Replay on the 2026-09-30 data: 15 boards, 1,500 rows, 0 differences.
+
 ## October 1, 2026: shared rating pools now match across small count drift and different names
 
 - The first shared-pool fix required identical rating counts and the same edition name. Store ratings for
