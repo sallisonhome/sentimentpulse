@@ -47,3 +47,17 @@ test("Steam at or under the total, other windows and other titles are not capped
   assert.equal(steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Stardew Valley"), steamUnits: 38.1e6 }), null);
   assert.equal(steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Valheim"), steamUnits: null }), null);
 });
+
+test("Black Myth regional listing resolves to the family and reduces the Steam cap", () => {
+  assert.ok(publicCeilingFor(editionGroupKey("Black Myth: Wukong (Simplified Chinese)")));
+  const r = steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Black Myth: Wukong"), steamUnits: 36.15e6, consoleNativeUnits: 6.92e6 });
+  assert.ok(r); assert.ok(Math.abs(36.15e6 * r!.ratio - 23.08e6) < 1e3);
+});
+test("console units never push the Steam cap below half the total", () => {
+  const r = steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Valheim"), steamUnits: 19.85e6, consoleNativeUnits: 40e6 });
+  assert.ok(r); assert.ok(Math.abs(19.85e6 * r!.ratio - 8.5e6) < 1);
+});
+test("negative or missing console units behave as zero", () => {
+  const r = steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Valheim"), steamUnits: 19.85e6, consoleNativeUnits: -5 });
+  assert.ok(r); assert.ok(Math.abs(19.85e6 * r!.ratio - 17e6) < 1);
+});

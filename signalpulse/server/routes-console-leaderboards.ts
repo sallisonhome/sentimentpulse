@@ -106,7 +106,7 @@ function daysAgo(n: number): string {
 // Spider-Man 2" both collapse to the same key.
 export { editionGroupKey } from "./console-sales-family";
 import { editionGroupKey } from "./console-sales-family";
-import { overlayExceedsPublicCeiling, steamPublicCapRatio } from "./console-public-ceilings";
+import { overlayExceedsPublicCeiling, steamPublicCapRatio, publicCeilingFor } from "./console-public-ceilings";
 
 // Platform ASP factors used to translate MSRP into an Average Selling Price
 // estimate. Applied at read time so an operator can retune without a re-run
@@ -1225,14 +1225,25 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           if (platform === "steam") {
             const derivedUnits = g.aspUsdCents != null && g.aspUsdCents > 0 && g.revenueMidUsd != null
               ? g.revenueMidUsd * 100 / g.aspUsdCents : g.unitsMid;
-            const cap = steamPublicCapRatio({ window: win, familyKey: g.editionGroupKey as string | undefined, steamUnits: derivedUnits });
+            // Native console units for the same family (alias-matched, so regional or
+            // edition listings count). Read lazily, only for ceiling families.
+            let consoleNativeUnits = 0;
+            const ceilFam = win === "ltd" ? publicCeilingFor(g.editionGroupKey as string | undefined) : undefined;
+            if (ceilFam && (derivedUnits ?? 0) > ceilFam.ceilingUnits * 0.5) {
+              for (const p of ["ps5", "xbox"] as Platform[]) {
+                for (const r of platformSales(p, "ltd", "revenue", "desc", true).titles) {
+                  if (publicCeilingFor(r.editionGroupKey) === ceilFam) consoleNativeUnits += Number(r.unitsMid ?? 0) || 0;
+                }
+              }
+            }
+            const cap = steamPublicCapRatio({ window: win, familyKey: g.editionGroupKey as string | undefined, steamUnits: derivedUnits, consoleNativeUnits });
             if (cap && g.revenueMidUsd != null) {
               g.revenueMidUsdEstimated = g.revenueMidUsd;
               g.revenueMidUsd = g.revenueMidUsd * cap.ratio;
               g.unitsMid = Math.round((g.unitsMid ?? 0) * cap.ratio);
               g.ownersMid = Math.round((g.ownersMid ?? g.unitsMid) * cap.ratio);
               g.dataSource = "estimated_public_ceiling";
-              g.revenueCaveat = `Steam estimate capped at the public all-platform total of ${(cap.ceiling.statedUnits/1e6).toFixed(1)}M (${cap.ceiling.asOf}). Steam alone is likely lower.`;
+              g.revenueCaveat = `Steam estimate capped at ${(cap.capUnits/1e6).toFixed(1)}M: the public all-platform total of ${(cap.ceiling.statedUnits/1e6).toFixed(1)}M (${cap.ceiling.asOf}) less native console units counted for the family.`;
               g.publicCeiling = { units: cap.ceiling.statedUnits, asOf: cap.ceiling.asOf, source: cap.ceiling.source };
             }
           }

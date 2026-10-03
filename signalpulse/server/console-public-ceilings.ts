@@ -18,7 +18,7 @@ export const PUBLIC_LTD_CEILINGS: PublicCeiling[] = [
     source: "https://www.gamesindustry.biz/phasmophobia-developers-indie-label-kinetic-publishing-", note: "25M+ first-party Jan 2026" },
   { name: "Valheim", statedUnits: 17e6, ceilingUnits: 17e6, asOf: "2026-08-01",
     source: "https://videogamescritic.com/game/valheim-892970" },
-  { name: "Black Myth: Wukong", statedUnits: 30e6, ceilingUnits: 30e6, asOf: "2026-06-17",
+  { name: "Black Myth: Wukong", aliases: ["Black Myth: Wukong (Simplified Chinese)"], statedUnits: 30e6, ceilingUnits: 30e6, asOf: "2026-06-17",
     source: "https://www.kitguru.net/gaming/joao-silva/black-myth-wukong-reaches-30-million-sales-miles", note: "third-party (Communist Youth League of China)" },
   { name: "ARC Raiders", statedUnits: 16.3e6, ceilingUnits: 16.3e6, asOf: "2026-08-15",
     source: "https://otakukart.com/arc-raiders-earns-114-9-million-for-nexon-as-sales-reach-16-3-millio", note: "Nexon Q2 2026" },
@@ -55,9 +55,18 @@ export function overlayExceedsPublicCeiling(a: {
 // this. Returns the scale ratio (<1) to apply to revenue, or null.
 export function steamPublicCapRatio(a: {
   window: string; familyKey: string | null | undefined; steamUnits: number | null | undefined;
-}): { ratio: number; ceiling: PublicCeiling } | null {
+  // Native console units already counted for the same family, including regional or
+  // edition listings that carry a different name (matched through ceiling aliases).
+  consoleNativeUnits?: number;
+}): { ratio: number; ceiling: PublicCeiling; capUnits: number } | null {
   if (a.window !== "ltd") return null;
   const ceiling = publicCeilingFor(a.familyKey);
-  if (!ceiling || !(a.steamUnits! > 0) || a.steamUnits! <= ceiling.ceilingUnits) return null;
-  return { ratio: ceiling.ceilingUnits / a.steamUnits!, ceiling };
+  if (!ceiling || !(a.steamUnits! > 0)) return null;
+  // Steam plus console cannot exceed the all-platform total. Floor the cap at half
+  // the total so a bad console estimate cannot collapse Steam.
+  const capUnits = Math.max(ceiling.ceilingUnits * STEAM_CAP_FLOOR_SHARE,
+    ceiling.ceilingUnits - Math.max(0, a.consoleNativeUnits ?? 0));
+  if (a.steamUnits! <= capUnits) return null;
+  return { ratio: capUnits / a.steamUnits!, ceiling, capUnits };
 }
+export const STEAM_CAP_FLOOR_SHARE = 0.5;
