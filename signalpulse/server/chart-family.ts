@@ -22,8 +22,8 @@ export function chartFamilyKey(editionKey: string): string {
  * one platform (regional PS5 SKUs) can hold identical lifetime units on every shared day; the
  * chart then sees every day as "ambiguous" and the line drops out. Only a pair whose shared,
  * valued days all agree is collapsed. A pair that disagrees on any shared day is a genuine
- * conflict and both stay, so the route's existing ambiguity rule (null from that day) applies
- * unchanged. Rank: a priced base SKU, then the most recent native lifetime estimate with a
+ * conflict (for example Standard and Deluxe store entries): both stay and the route sums them,
+ * each at its own price, as the board does. Rank: a priced base SKU, then the most recent native lifetime estimate with a
  * value, then the lowest id. The requested id wins ties on its own platform.
  */
 export function canonicalSiblings(
@@ -34,7 +34,14 @@ export function canonicalSiblings(
   const byPlatform = new Map<string, number[]>();
   for (const r of ids) byPlatform.set(r.platform, [...(byPlatform.get(r.platform) ?? []), r.titleId]);
   const keep: number[] = [];
-  for (const [platform, list] of Array.from(byPlatform)) {
+  for (const [platform, listAll] of Array.from(byPlatform)) {
+    let list = listAll;
+    if (list.length === 1) { keep.push(list[0]); continue; }
+    // A listing with no base price carries no revenue on the board; when a priced twin exists
+    // on the same platform it is a duplicate (regional or stale) and is dropped.
+    const priced = list.filter(id => !!db.prepare(`SELECT 1 FROM platform_sku_map WHERE title_id=? AND sku_role='base'
+      AND msrp_usd_cents IS NOT NULL LIMIT 1`).get(id));
+    if (priced.length) list = priced;
     if (list.length === 1) { keep.push(list[0]); continue; }
     const series = (id: number) => new Map((db.prepare(`SELECT as_of_date AS d, units_mid AS u FROM window_estimates_daily
       WHERE title_id=? AND platform=? AND window='ltd' AND units_mid IS NOT NULL`).all(id, platform) as Array<{ d: string; u: number }>).map(r => [r.d, r.u]));
