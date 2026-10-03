@@ -106,6 +106,7 @@ function daysAgo(n: number): string {
 // Spider-Man 2" both collapse to the same key.
 export { editionGroupKey } from "./console-sales-family";
 import { editionGroupKey } from "./console-sales-family";
+import { detectReviewSurge, SURGE_WINDOWS, REVIEW_SURGE_VERSION } from "./steam-review-surge";
 import { overlayExceedsPublicCeiling, steamPublicCapRatio, publicCeilingFor } from "./console-public-ceilings";
 
 // Platform ASP factors used to translate MSRP into an Average Selling Price
@@ -1222,6 +1223,33 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // Steam platform, no anchor: unchanged, except a lifetime estimate above
           // a recent public all-platform total is capped at that total.
           g.dataSource = "estimated";
+          // Owner-driven review surge (free upgrade or re-release): replace surge days with
+          // the title's own baseline. Anchors, overrides and milestones were handled above;
+          // Saber products are excluded here. Read-time only.
+          if (platform === "steam" && SURGE_WINDOWS[win] && g.revenueMidUsd != null && g.externalSku &&
+              !protectedModel(g, platform) &&
+              !rawSqlite.prepare("SELECT 1 FROM products WHERE steam_app_id=? LIMIT 1").get(String(g.externalSku))) {
+            // Judge on complete UTC days only: the current UTC day is partial. Skip if the
+            // newest complete day is stale (more than 2 days old), because that is unknown.
+            const todayMid = Date.parse(`${todayIsoDate()}T00:00:00Z`) / 1000;
+            const from = todayMid - 45 * 86400;
+            const rows = (rawSqlite.prepare(`SELECT bucket_start AS start, recommendations_up AS up, recommendations_down AS down
+              FROM steam_review_history WHERE app_id=? AND bucket_granularity='day' AND bucket_start>=? AND bucket_start<?`)
+              .all(String(g.externalSku), from, todayMid) as Array<{start:number;up:number;down:number}>);
+            const newest = rows.reduce((m, r) => Math.max(m, r.start), 0);
+            const asOf = new Date((newest || 0) * 1000).toISOString().slice(0, 10);
+            const surge = newest && todayMid - newest <= 2 * 86400
+              ? detectReviewSurge(rows, asOf, SURGE_WINDOWS[win]) : { flagged: false, reason: "stale_history" } as ReturnType<typeof detectReviewSurge>;
+            if (surge.flagged && surge.scale != null && surge.scale < 1) {
+              g.revenueMidUsdEstimated = g.revenueMidUsd;
+              g.revenueMidUsd = g.revenueMidUsd * surge.scale;
+              g.unitsMid = Math.round((g.unitsMid ?? 0) * surge.scale);
+              g.ownersMid = Math.round((g.ownersMid ?? g.unitsMid) * surge.scale);
+              g.dataSource = "estimated_review_surge_guard";
+              g.revenueCaveat = `Review volume is ${surge.ratio!.toFixed(1)}x this title's recent baseline with a negative share of ${(surge.negShare!*100).toFixed(0)}% (normally ${(surge.baseNegShare!*100).toFixed(0)}%), which looks like owners reacting to a free upgrade or re-release, not sales. Surge days are replaced with the baseline.`;
+              g.reviewSurge = { version: REVIEW_SURGE_VERSION, ratio: surge.ratio, negShare: surge.negShare, scale: surge.scale };
+            }
+          }
           if (platform === "steam") {
             const derivedUnits = g.aspUsdCents != null && g.aspUsdCents > 0 && g.revenueMidUsd != null
               ? g.revenueMidUsd * 100 / g.aspUsdCents : g.unitsMid;
