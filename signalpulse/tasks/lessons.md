@@ -22,6 +22,19 @@ Audit of the 30 flagged multiplatform families against public lifetime figures (
 - Steam's own estimate exceeds the all-platform public total for Phasmophobia, Valheim and Black Myth. That is a
   Steam-side error; no overlay rule fixes it.
 
+Outcome (PRs 184 and 185, deployed 2026-10-02): `console-public-ceilings.ts` skips the lifetime PS5/Xbox overlay
+for 8 families when Steam plus overlay exceeds the dated public total, keeping the native console estimate. Live
+lifetime boards after deploy: Witcher 3 PS5 22.74M to 9.37M, Xbox 7.56M to 3.93M (tracked 49.3M vs the 65M+
+all-platform total); ARC Raiders, Ready or Not, Crusader Kings III, Crimson Desert and Valheim Xbox also switched to
+native; Stardew, Hogwarts, RDR2, Monster Hunter: World and Palworld unchanged. Not yet verified: Phasmophobia console
+rows and Valheim PS5 (not in the top 300 returned), client display, shorter windows (unaffected by design).
+Still open: Steam alone exceeds the public total for Phasmophobia, Valheim and Black Myth.
+
+Lesson from the miss: PR 184 passed its tests and CI, but Witcher 3, the reported title, was not fixed on the live
+board, because the live rows are named "The Witcher 3: Wild Hunt — Remastered" and the table key was the plain
+name. Match a name-keyed table against the live display names (add aliases), put the live name in the test, and
+check the originally reported title on the deployed board before calling the fix done.
+
 Rules for the fix and for future sales-estimate reports:
 - Check stored SKU rows and the shared-pool grouping first, then compare the displayed figure with the stored
   estimate for the same row. A gap between them points at the read-time overlay, not at double counting.
