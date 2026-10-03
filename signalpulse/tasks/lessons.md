@@ -48,6 +48,25 @@ rows and Valheim PS5 were not in the top-100 board and were not checked. Client 
 Lesson: a name-keyed guard misses regional or edition listings whose names differ across platforms; when a family
 trips a ceiling, check every listing in it, not only the name-matched ones.
 
+Name-matching follow-ups (PRs 189 and 190, deployed 2026-10-03 UTC):
+- PR 189 made the Steam cap "public total minus native console units for the family" (floor 50% of the total) and
+  added a short alias for Black Myth's PS5 listing. Live check: Black Myth Steam fell only to 29.55M, not the
+  predicted 23.1M, because the live PS5 name is "Black Myth: Wukong (Simplified Chinese, English, Korean, Thai,
+  Japanese, Traditional Chinese)" and my unit test used a short invented name. Its 6.92M was still not counted.
+- PR 190 matches the exact key first, then the key with one trailing parenthetical removed, and tests the exact live
+  name. Live result: Black Myth Steam 22.63M + PS5 6.92M (+ Xbox 0.45M native, not in the top-100 board) = the 30M
+  third-party total. Phasmophobia Steam 25.19M, Valheim 15.64M, ARC Raiders 11.59M, Crimson Desert 4.61M; other rows
+  unchanged. Client display, shorter windows, and console rows outside the top 100 were not checked.
+- I also wrote in PR 189 that other Steam rows would be unchanged. They were not: any family whose Steam plus native
+  console units exceeds its public total is lowered (ARC Raiders 12.45M to 11.59M, Crimson Desert 4.79M to 4.61M).
+  That is the designed behavior, but the PR text was wrong. Predict the effect from the rule, not from the three
+  titles that motivated it, and list every family that can move.
+Lessons: (1) This is the second name-keyed miss in this feature (Witcher 3 "Remastered", then Black Myth's language
+list). Before writing the test, read the exact live names for every platform from the API and use them verbatim;
+console storefronts append edition and language lists in parentheses. (2) Report a deployed fix only after reading
+the specific number it was meant to change, and compare it with the prediction. (3) A third-party public total is
+still a weak ceiling; get a developer figure for Black Myth when one appears.
+
 Rules for the fix and for future sales-estimate reports:
 - Check stored SKU rows and the shared-pool grouping first, then compare the displayed figure with the stored
   estimate for the same row. A gap between them points at the read-time overlay, not at double counting.
