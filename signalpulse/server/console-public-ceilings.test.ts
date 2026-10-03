@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { overlayExceedsPublicCeiling, PUBLIC_LTD_CEILINGS, publicCeilingFor } from "./console-public-ceilings";
+import { steamPublicCapRatio, overlayExceedsPublicCeiling, PUBLIC_LTD_CEILINGS, publicCeilingFor } from "./console-public-ceilings";
 import { editionGroupKey } from "./console-sales-family";
 
 const f = [0.766, 0.255];
@@ -32,4 +32,18 @@ test("every ceiling has a dated https source, resolves to a key, and no ceiling 
     assert.match(c.source, /^https?:\/\//); assert.match(c.asOf, /^\d{4}-\d\d-\d\d$/);
     assert.ok(c.ceilingUnits >= c.statedUnits); assert.ok(publicCeilingFor(editionGroupKey(c.name)));
   }
+});
+
+test("Steam is capped at the public total for Phasmophobia, Valheim and Black Myth", () => {
+  for (const [n, steam, cap] of [["Phasmophobia", 29.69e6, 27e6], ["Valheim", 19.85e6, 17e6], ["Black Myth: Wukong", 36.15e6, 30e6]] as const) {
+    const r = steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey(n), steamUnits: steam });
+    assert.ok(r); assert.ok(Math.abs(steam * r!.ratio - cap) < 1);
+  }
+});
+test("Steam at or under the total, other windows and other titles are not capped", () => {
+  assert.equal(steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Witcher 3: Wild Hunt \u2014 Remastered"), steamUnits: 36e6 }), null);
+  assert.equal(steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("ARC Raiders"), steamUnits: 12.45e6 }), null);
+  assert.equal(steamPublicCapRatio({ window: "d30", familyKey: editionGroupKey("Valheim"), steamUnits: 19.85e6 }), null);
+  assert.equal(steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Stardew Valley"), steamUnits: 38.1e6 }), null);
+  assert.equal(steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Valheim"), steamUnits: null }), null);
 });

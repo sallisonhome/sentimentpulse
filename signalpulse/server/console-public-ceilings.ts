@@ -47,3 +47,17 @@ export function overlayExceedsPublicCeiling(a: {
   const trackedUnits = a.steamUnits! * (1 + a.consoleFactors.reduce((s, f) => s + f, 0));
   return { exceeds: trackedUnits > ceiling.ceilingUnits, ceiling, trackedUnits };
 }
+
+// Steam-side cap. A public all-platform total is a hard upper bound for Steam
+// alone, so a Steam lifetime estimate above it is scaled down to the bound
+// (revenue is scaled; units are revenue-derived at read time). Lifetime window
+// only. Verified anchors and public-unit milestones win earlier and never reach
+// this. Returns the scale ratio (<1) to apply to revenue, or null.
+export function steamPublicCapRatio(a: {
+  window: string; familyKey: string | null | undefined; steamUnits: number | null | undefined;
+}): { ratio: number; ceiling: PublicCeiling } | null {
+  if (a.window !== "ltd") return null;
+  const ceiling = publicCeilingFor(a.familyKey);
+  if (!ceiling || !(a.steamUnits! > 0) || a.steamUnits! <= ceiling.ceilingUnits) return null;
+  return { ratio: ceiling.ceilingUnits / a.steamUnits!, ceiling };
+}
