@@ -59,15 +59,15 @@ test("null siblings cannot erase revenue; later conflicting siblings cannot eras
     assert.equal(at(wide, "2026-09-29").ps5, 480000, "null sibling must not overwrite a valued day");
     assert.equal(at(wide, "2026-09-30").ps5, 480000);
     assert.equal(at(wide, "2026-10-01").ps5, 480000);
-    // A genuinely conflicting observation disables allocation from its date,
-    // but must not erase the unambiguous historical prefix.
+    // A second listing with a single valued day cannot produce a day-over-day change. It is
+    // noise next to a listing that can, so it neither erases the prefix nor nulls later days.
     db.prepare("UPDATE window_estimates_daily SET units_mid=71560,signal_value=532 WHERE title_id=49882").run();
     const conflict = await get("2026-09-23", "2026-10-01");
     for (const day of ["2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28"]) {
-      assert.deepEqual(at(conflict, day), at(narrow, day), `conflicting future row: ${day}`);
+      assert.deepEqual(at(conflict, day), at(narrow, day), `second listing row: ${day}`);
     }
-    assert.equal(at(conflict, "2026-09-30").ps5, null);
-    assert.equal(at(conflict, "2026-10-01").ps5, null);
+    assert.equal(at(conflict, "2026-09-30").ps5, 480000);
+    assert.equal(at(conflict, "2026-10-01").ps5, 480000);
     // Anchored titles retain strict, unallocated output.
     db.prepare(`INSERT INTO revenue_calibration_anchors(title_id,platform,window,as_of_date,actual_revenue_usd,actual_units,reference_msrp_usd_cents,sale_state,data_source,created_at)
       VALUES(49881,'ps5','ltd','2026-09-28',2474880,51560,6000,'full','qa',?)`).run(stamp);
