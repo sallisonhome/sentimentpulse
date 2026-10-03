@@ -1,0 +1,51 @@
+name: SignalPulse — Seed reviewed Xbox SKUs (one-off)
+
+# Runs scripts/seed-xbox-reviewed-skus.ts on the droplet. Writes only the reviewed SKUs in
+# server/xbox-reviewed-skus.ts (idempotent). Default is a dry run that writes nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run — print the plan, write nothing"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run seed-xbox-reviewed-skus
+        env:
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 \
+              DRY_RUN="$DRY_RUN" \
+              bash -s <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          cd "$WD"
+          [ -f scripts/seed-xbox-reviewed-skus.ts ] || { echo "ERR: script missing, deploy first"; exit 1; }
+          if [ -f /etc/signalpulse/env ]; then set -a; . /etc/signalpulse/env; set +a; fi
+          export NODE_ENV="${NODE_ENV:-production}"
+          if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
+          timeout 240 ./node_modules/.bin/tsx scripts/seed-xbox-reviewed-skus.ts
+          echo "── rows ──"
+          sqlite3 -header -column "$WD/data.db" "SELECT title_id,platform,external_sku,sku_role,business_model,msrp_usd_cents,is_manual_override,business_model_source FROM platform_sku_map WHERE platform='xbox' AND external_sku IN ('9P5786PJB9RP','9NFDXGJ16M47')"
+          REMOTE
