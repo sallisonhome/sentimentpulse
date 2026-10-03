@@ -106,6 +106,7 @@ function daysAgo(n: number): string {
 // Spider-Man 2" both collapse to the same key.
 export { editionGroupKey } from "./console-sales-family";
 import { editionGroupKey } from "./console-sales-family";
+import { overlayExceedsPublicCeiling } from "./console-public-ceilings";
 
 // Platform ASP factors used to translate MSRP into an Average Selling Price
 // estimate. Applied at read time so an operator can retune without a re-run
@@ -915,7 +916,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // display name (same helper the client uses to collapse editions
         // within a platform). This is the fix for Path B silently missing
         // every cross-platform title.
-        const steamRevenueByKey = new Map<string, {revenue:number; source:"anchor"|"estimator"; windowUsed:string|null; recentFamilyAdjustment?:any}>();
+        const steamRevenueByKey = new Map<string, {revenue:number; units:number|null; source:"anchor"|"estimator"; windowUsed:string|null; recentFamilyAdjustment?:any}>();
         if (consoleRatio != null) {
           // Steam never enters this branch, so recursion terminates after one
           // level. Reusing its final result also preserves verified LTD scaling,
@@ -925,6 +926,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             if (s.editionGroupKey && s.revenueMidUsd != null) {
               steamRevenueByKey.set(s.editionGroupKey, {
                 revenue: s.revenueMidUsd,
+                units: typeof s.unitsMid === "number" ? s.unitsMid : null,
                 source: s.dataSource === "actual" ? "anchor" : "estimator",
                 windowUsed: s.windowUsed,
                 ...(s.recentFamilyAdjustment ? {recentFamilyAdjustment:s.recentFamilyAdjustment} : {}),
@@ -1181,6 +1183,19 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             if (hasMeaningfulSteam && s) {
               const ipOverride = ipOverrideFactorFor(g.name as string | null | undefined, platform);
               const factor = ipOverride ? ipOverride.factor : consoleRatio;
+              // Public-ceiling guard (lifetime only): when Steam + the derived
+              // console overlay exceed a recent public all-platform total, keep
+              // the native console estimate instead of the overlay.
+              const ceilingCheck = overlayExceedsPublicCeiling({ window: win, familyKey: gk, steamUnits: s.units,
+                consoleFactors: [ipOverrideFactorFor(g.name as string, "ps5")?.factor ?? PLATFORM_RATIO_VS_STEAM.ps5!,
+                  ipOverrideFactorFor(g.name as string, "xbox")?.factor ?? PLATFORM_RATIO_VS_STEAM.xbox!] });
+              if (ceilingCheck.exceeds && ceilingCheck.ceiling) {
+                g.dataSource = "native_public_ceiling";
+                g.revenueCaveat = `Derived-from-Steam overlay would put tracked units at ${(ceilingCheck.trackedUnits!/1e6).toFixed(1)}M, above the public total of ${(ceilingCheck.ceiling.statedUnits/1e6).toFixed(1)}M (${ceilingCheck.ceiling.asOf}); native console estimate shown.`;
+                g.publicCeiling = { units: ceilingCheck.ceiling.statedUnits, asOf: ceilingCheck.ceiling.asOf, source: ceilingCheck.ceiling.source };
+                pathBSkippedNoSteam++;
+                continue;
+              }
               const derivedRevenue = s.revenue * factor;
               g.revenueMidUsdEstimated = g.revenueMidUsd;
               g.revenueMidUsd = derivedRevenue;
