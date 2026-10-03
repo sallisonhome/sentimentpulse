@@ -107,6 +107,12 @@ export function editionGroupKey(name: string | null | undefined): string {
     "and great white shark card bundle",
     "and shark cash card bundle",
     "kickoff bundle",
+    // A pre-order listing is the same game as its released edition. Live Xbox names:
+    // "ACE COMBAT 8: WINGS OF THEVE Deluxe Edition Pre-Order" and
+    // "Gears of War: E-Day Premium Edition Pre-Order" (kept the Xbox SKU out of the family).
+    "pre-order",
+    "preorder",
+    "pre-purchase",
     "digital version",
     "friend's pass",
     "friends pass",
