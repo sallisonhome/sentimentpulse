@@ -1,5 +1,19 @@
 # SignalPulse scoped regression lessons
 
+## 2026-10-03: a reviewed Xbox SKU also needs an xbox_title_cache row, or the boards hide it
+
+**Report:** Minecraft Dungeons II had no Xbox SKU on the multiplatform charts.
+
+**Causes, in order found:** (1) No Xbox row existed: discovery reads only the top-100 paid browse list, and Microsoft shows this Game Pass day-one listing at $0 with no Purchase action, which the paid-only gate drops. (2) After the reviewed seed (PR 195: base 9P5786PJB9RP at 2999 and Deluxe 9NFDXGJ16M47 at 4999, the PS5 prices) and a full refresh, the estimator wrote d7 225,563 native units for title 11293, but the Xbox board and PDP still showed no estimate. The Xbox board query takes name and art only from xbox_title_cache and filters out any Xbox row without one. Seeded rows skip discovery, so they are never landed there.
+
+**Fix:** the seed script now lands each reviewed bigId through landXboxBigIds (idempotent) after writing the rows.
+
+**Rules:**
+1. For any Xbox row added outside discovery, land it in xbox_title_cache. A row in platform_sku_map plus an estimate in window_estimates_daily is not visible until it is.
+2. When the API shows "no estimate", read window_estimates_daily before blaming the estimator; here the estimate existed and a read-side filter hid it.
+3. The full refresh is the only manual refresh path and shares a deploy-droplet queue; check for running jobs before dispatching and expect read-only queries to queue behind long runs.
+4. Xbox ratio for this title is held at PS5 parity (ratings Steam 6,437, PS5 1,452, Xbox 1,405 plus 51 Deluxe; catalog median Xbox/PS5 ratings ratio 0.21 against a 0.33 unit ratio). That is a judgment, not a measurement; revisit with real Xbox sales evidence.
+
 ## 2026-10-03: owner-driven review surges are not sales; cross-check against Steam's own list before and after
 
 **Report:** The Witcher 3 Remastered was #1 on the Steam d7 board (336K units, $11.1M; PS5 #3, Xbox #4 derived from it). The user said it was not on Steam's top sellers.
