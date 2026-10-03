@@ -106,7 +106,7 @@ function daysAgo(n: number): string {
 // Spider-Man 2" both collapse to the same key.
 export { editionGroupKey } from "./console-sales-family";
 import { editionGroupKey } from "./console-sales-family";
-import { overlayExceedsPublicCeiling } from "./console-public-ceilings";
+import { overlayExceedsPublicCeiling, steamPublicCapRatio } from "./console-public-ceilings";
 
 // Platform ASP factors used to translate MSRP into an Average Selling Price
 // estimate. Applied at read time so an operator can retune without a re-run
@@ -1219,8 +1219,23 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             pathBSkippedNoSteam++;
             continue;
           }
-          // Steam platform, no anchor: unchanged.
+          // Steam platform, no anchor: unchanged, except a lifetime estimate above
+          // a recent public all-platform total is capped at that total.
           g.dataSource = "estimated";
+          if (platform === "steam") {
+            const derivedUnits = g.aspUsdCents != null && g.aspUsdCents > 0 && g.revenueMidUsd != null
+              ? g.revenueMidUsd * 100 / g.aspUsdCents : g.unitsMid;
+            const cap = steamPublicCapRatio({ window: win, familyKey: g.editionGroupKey as string | undefined, steamUnits: derivedUnits });
+            if (cap && g.revenueMidUsd != null) {
+              g.revenueMidUsdEstimated = g.revenueMidUsd;
+              g.revenueMidUsd = g.revenueMidUsd * cap.ratio;
+              g.unitsMid = Math.round((g.unitsMid ?? 0) * cap.ratio);
+              g.ownersMid = Math.round((g.ownersMid ?? g.unitsMid) * cap.ratio);
+              g.dataSource = "estimated_public_ceiling";
+              g.revenueCaveat = `Steam estimate capped at the public all-platform total of ${(cap.ceiling.statedUnits/1e6).toFixed(1)}M (${cap.ceiling.asOf}). Steam alone is likely lower.`;
+              g.publicCeiling = { units: cap.ceiling.statedUnits, asOf: cap.ceiling.asOf, source: cap.ceiling.source };
+            }
+          }
         }
 
         if (pathAOverlaid > 0 || pathBDerived > 0) {
