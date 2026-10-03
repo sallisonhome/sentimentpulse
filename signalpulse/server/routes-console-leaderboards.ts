@@ -2415,12 +2415,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // grouping below use whichever set is non-null on the same date. In
       // practice sibling sets are one-titleId-per-platform.
       const rows = rawSqlite.prepare(`
-        SELECT platform, as_of_date AS date, units_mid AS units, method, signal_value AS signal
+        SELECT title_id AS titleId, platform, as_of_date AS date, units_mid AS units, method, signal_value AS signal
           FROM window_estimates_daily
          WHERE title_id IN (${idPlaceholders}) AND window = 'ltd'
            AND as_of_date <= ?
          ORDER BY platform, as_of_date
-      `).all(...siblingIds, to) as Array<{ platform: Platform; date: string; units: number | null; method: string | null; signal: number | null }>;
+      `).all(...siblingIds, to) as Array<{ titleId: number; platform: Platform; date: string; units: number | null; method: string | null; signal: number | null }>;
 
       // Primary SKU MSRP per platform across the sibling set (lowest-priced
       // anchor SKU on each platform, regardless of which sibling titleId
@@ -2433,12 +2433,25 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       `).all(...siblingIds) as Array<{ platform: Platform; msrp_usd_cents: number | null }>;
       const msrpByPlatform: Partial<Record<Platform, number>> = {};
       for (const r of skuRows) if (r.msrp_usd_cents != null) msrpByPlatform[r.platform] = r.msrp_usd_cents;
+      // Distinct listings of one platform (a Standard and a Deluxe store entry) are different
+      // products with their own units and price. The board sums them; so does the chart, each
+      // priced at its own MSRP.
+      const msrpByTitle = new Map<number, number>();
+      for (const r of rawSqlite.prepare(`SELECT title_id AS titleId, MIN(msrp_usd_cents) AS m FROM platform_sku_map
+          WHERE title_id IN (${idPlaceholders}) AND msrp_usd_cents IS NOT NULL GROUP BY title_id`).all(...siblingIds) as Array<{ titleId: number; m: number }>)
+        msrpByTitle.set(r.titleId, r.m);
 
       // Group by platform, then compute day-over-day diff.
       const byPlatform: Partial<Record<Platform, Array<{ date: string; units: number | null; method: string | null; signal: number | null }>>> = {};
       for (const r of rows) {
         const arr = byPlatform[r.platform] ?? (byPlatform[r.platform] = []);
         arr.push({ date: r.date, units: r.units, method: r.method, signal: r.signal });
+      }
+      const byPlatformTitle: Partial<Record<Platform, Map<number, Array<{ date: string; units: number | null; method: string | null; signal: number | null }>>>> = {};
+      for (const r of rows) {
+        const m = byPlatformTitle[r.platform] ?? (byPlatformTitle[r.platform] = new Map());
+        const a = m.get(r.titleId) ?? (m.set(r.titleId, []), m.get(r.titleId)!);
+        a.push({ date: r.date, units: r.units, method: r.method, signal: r.signal });
       }
 
       // Suppression rules for accumulator initialization jumps. The
@@ -2490,11 +2503,21 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Days the daily history is missing (a missed run, or the pre-history of a
       // launch) are allocated from the published LTD change using dated evidence
       // (daily-gap-allocation.ts); the LTD change itself is never altered.
-      const gapEvidence = allocationEnabled(rawSqlite) && !protectionReason(rawSqlite, siblingIds) ? loadGapEvidence(rawSqlite, siblingIds) : null;
+      const gapEvidenceAll = allocationEnabled(rawSqlite) && !protectionReason(rawSqlite, siblingIds) ? loadGapEvidence(rawSqlite, siblingIds) : null;
       const allocations: Partial<Record<Platform, Record<string, { kind: string; basis: string }>>> = {};
       const dailyByPlatform: Partial<Record<Platform, Record<string, number | null>>> = {};
       for (const p of Object.keys(byPlatform) as Platform[]) {
-        const rawArr = byPlatform[p] ?? [];
+        let titleMap = byPlatformTitle[p] ?? new Map<number, any[]>();
+        // A listing with fewer than two valued days cannot produce a day-over-day change; it is
+        // noise next to a listing that can. (A platform with no such listing keeps them all.)
+        const productive = new Map(Array.from(titleMap).filter(([, a]) => a.filter(r => r.units != null).length >= 2));
+        if (productive.size) titleMap = productive;
+        const multi = titleMap.size > 1;
+        const perTitle: Array<Record<string, number | null>> = [];
+        for (const [tid, rawArr] of Array.from(titleMap)) {
+        // Several distinct listings on one platform: ratings evidence is per platform, not per
+        // listing, so allocation stays off and gap days remain gaps (never invented).
+        const gapEvidence = multi ? null : gapEvidenceAll;
         // A sibling with no estimate is not a competing observation. Do not let
         // its null row erase a unique valued row on the same day (or invalidate
         // the platform's launch history). Keep the exact legacy path for every
@@ -2504,7 +2527,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const arr = gapEvidence
           ? rawArr.filter(r => r.units != null || !valuedDates.has(r.date))
           : rawArr;
-        const msrpCents = msrpByPlatform[p];
+        const msrpCents = msrpByTitle.get(tid);
         const aspFactor = aspFactorFor(p);
         const dailyRev: Record<string, number | null> = {};
         const rollingDeltas: number[] = [];
@@ -2598,7 +2621,21 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           }
           base = { date: row.date, units: cur, method: row.method, signal: row.signal };
         });
-        dailyByPlatform[p] = dailyRev;
+        perTitle.push(dailyRev);
+        }
+        if (perTitle.length <= 1) dailyByPlatform[p] = perTitle[0] ?? {};
+        else {
+          const sum: Record<string, number | null> = {};
+          const firstDay = Array.from(titleMap.values()).map(a => a.reduce((m, r) => r.date < m ? r.date : m, "9999-12-31"));
+          const all = new Set<string>(perTitle.flatMap(x => Object.keys(x)));
+          for (const d of Array.from(all)) {
+            // Before a listing's first observation it contributes nothing; a missing day after
+            // that is a gap, so the sum is a gap too (never a silent understatement).
+            const vals = perTitle.map((x, i) => d < firstDay[i] ? 0 : (x[d] ?? null));
+            sum[d] = vals.every(v => v != null) ? (vals as number[]).reduce((s, v) => s + v, 0) : null;
+          }
+          dailyByPlatform[p] = sum;
+        }
       }
 
       const recordedDaily = publishedDailyRevenue(rawSqlite,dailyMixPolicy(),seedKey,from,to);

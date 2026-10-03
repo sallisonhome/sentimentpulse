@@ -29,9 +29,10 @@ test("one title per platform: the priced PS5 listing wins, the others pass throu
     assert.deepEqual(canonicalSiblings(db,ids.filter(i=>i.titleId!==10387),10029).sort(),[10029,10400,10948]);
   }finally{db.close();}
 });
-test("listings that disagree on a shared day are a real conflict: both stay for the route's ambiguity rule",()=>{
+test("listings that disagree on a shared day are a real conflict: both priced listings stay (the route sums them)",()=>{
   const db=fixture();
   try{
+    db.exec("UPDATE platform_sku_map SET msrp_usd_cents=5999 WHERE title_id=10387");
     db.exec("UPDATE window_estimates_daily SET units_mid=250 WHERE title_id=10387 AND as_of_date='2026-10-02'");
     assert.deepEqual(canonicalSiblings(db,ids,10400).sort(),[10029,10387,10400,10948]);
     db.exec("DELETE FROM window_estimates_daily WHERE title_id=10387");
