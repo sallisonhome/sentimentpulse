@@ -1,10 +1,12 @@
 /**
  * Writes the reviewed Xbox SKUs in server/xbox-reviewed-skus.ts into platform_sku_map.
  * DRY_RUN=1 prints the plan and writes nothing. Idempotent: existing rows are left alone.
+ * Also lands each bigId in xbox_title_cache (required for the Xbox boards to show the row).
  * The base SKU gets a new title_id (max + 1, inside an immediate transaction); editions share it.
  */
 import { rawSqlite } from "../server/storage";
 import { classifyXboxBigIds, upsertSkuMap, bootstrapConsoleTitleNames } from "../server/signals/console/discovery";
+import { landXboxBigIds } from "../server/signals/console/xbox-title-resolver";
 import { REVIEWED_XBOX_FAMILIES, XBOX_REVIEWED_SOURCE, planReviewedFamily } from "../server/xbox-reviewed-skus";
 
 const DRY = process.env.DRY_RUN === "1";
@@ -20,6 +22,10 @@ async function main() {
     console.log(`[${fam.family}]`, JSON.stringify(plan), "store names:", JSON.stringify(names));
     if (plan.some(p => p.action === "reject")) { failed++; console.error("rejected, nothing written for this family"); continue; }
     if (DRY) continue;
+    // The Xbox boards read name and art from xbox_title_cache and drop any Xbox row without one.
+    // Rows that discovery never saw are not in that cache, so land them here (idempotent).
+    const landed = await landXboxBigIds(fam.skus.map(s => s.bigId));
+    console.log("xbox_title_cache land:", JSON.stringify(landed));
     const base = fam.skus.find(s => s.role === "base")!;
     const titleId = rawSqlite.transaction((): number => {
       const have = existingRows.find(r => r.external_sku === base.bigId) ?? existingRows[0];
