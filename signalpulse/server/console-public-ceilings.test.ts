@@ -8,6 +8,10 @@ test("Witcher 3 lifetime overlay is rejected (tracked > 65M public total)", () =
   const r = overlayExceedsPublicCeiling({ window: "ltd", familyKey: editionGroupKey("The Witcher 3: Wild Hunt"), steamUnits: 36e6, consoleFactors: f });
   assert.equal(r.exceeds, true);
 });
+test("the live Remastered display name resolves to the Witcher 3 ceiling", () => {
+  const r = overlayExceedsPublicCeiling({ window: "ltd", familyKey: editionGroupKey("The Witcher 3: Wild Hunt — Remastered"), steamUnits: 36e6, consoleFactors: f });
+  assert.equal(r.exceeds, true);
+});
 test("ARC Raiders and Ready or Not are rejected", () => {
   assert.equal(overlayExceedsPublicCeiling({ window: "ltd", familyKey: editionGroupKey("ARC Raiders"), steamUnits: 12.45e6, consoleFactors: f }).exceeds, true);
   assert.equal(overlayExceedsPublicCeiling({ window: "ltd", familyKey: editionGroupKey("Ready or Not"), steamUnits: 11.45e6, consoleFactors: f }).exceeds, true);

@@ -8,10 +8,10 @@ import { editionGroupKey } from "./console-sales-family";
 // (audit of 2026-10-02). Add a family only with a dated, linked source.
 // Never add Saber titles or titles with verified anchors: those are protected.
 export interface PublicCeiling {
-  name: string; ceilingUnits: number; statedUnits: number; asOf: string; source: string; note?: string;
+  name: string; aliases?: string[]; ceilingUnits: number; statedUnits: number; asOf: string; source: string; note?: string;
 }
 export const PUBLIC_LTD_CEILINGS: PublicCeiling[] = [
-  { name: "The Witcher 3: Wild Hunt", statedUnits: 65e6, ceilingUnits: 65e6, asOf: "2026-05-29",
+  { name: "The Witcher 3: Wild Hunt", aliases: ["The Witcher 3: Wild Hunt — Remastered"], statedUnits: 65e6, ceilingUnits: 65e6, asOf: "2026-05-29",
     source: "https://www.kitguru.net/tech-news/mustafa-mahmoud/the-witcher-3-wild-hunt-has-officially-sold-over-65-million-copies/",
     note: "CD Projekt Q1 2026; includes PS4, Xbox One, Switch, GOG and Epic that this board does not track" },
   { name: "Phasmophobia", statedUnits: 27e6, ceilingUnits: 27e6, asOf: "2026-08-05",
@@ -30,7 +30,7 @@ export const PUBLIC_LTD_CEILINGS: PublicCeiling[] = [
     source: "http://www.pearlabyss.com/en-US/Board/Detail?_boardNo=14780", note: "+30% allowance for 5 months of growth" },
 ];
 
-const BY_KEY = new Map(PUBLIC_LTD_CEILINGS.map(c => [editionGroupKey(c.name), c]));
+const BY_KEY = new Map(PUBLIC_LTD_CEILINGS.flatMap(c => [c.name, ...(c.aliases ?? [])].map(n => [editionGroupKey(n), c] as const)));
 export const publicCeilingFor = (key: string | null | undefined) => (key ? BY_KEY.get(key) : undefined);
 
 // Read-time guard. The Path B overlay shows PS5/Xbox lifetime units as Steam x
