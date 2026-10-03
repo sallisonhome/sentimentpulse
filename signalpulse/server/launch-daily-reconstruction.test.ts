@@ -139,21 +139,33 @@ function mcdFixture() {
   return db;
 }
 const mcd=(db:Database.Database)=>reconstructLaunchDaily(db,mcdName,"2026-09-20","2026-10-03",mcdOpts);
-test("Minecraft Dungeons II adds an Xbox line at PS5 parity and conserves the board totals",()=>{
+test("Minecraft Dungeons II console lines carry each console's own native estimate, not Steam times a ratio",()=>{
   const db=mcdFixture();
   try{
     const before=db.serialize(),r=mcd(db)!;
     assert.ok(r);assert.equal(r.points.filter(p=>p.source!=="unavailable").length,5);
     const live=r.points.filter(p=>p.units);
-    const steamRev=live.reduce((s,p)=>s+p.steam!,0),ps5Rev=live.reduce((s,p)=>s+p.ps5!,0),xboxRev=live.reduce((s,p)=>s+p.xbox!,0);
-    assert.ok(Math.abs(steamRev-Math.round(14200*mcdFactor)*29.99*.66)<1e-6);
-    assert.ok(Math.abs(xboxRev-steamRev*37.9/49.5)<1e-6);assert.ok(Math.abs(xboxRev-ps5Rev)<1e-6);
-    assert.equal(live.reduce((s,p)=>s+p.units!.xbox!,0),Math.round(Math.round(14200*mcdFactor)*29.99*.66*(37.9/49.5)/(29.99*.9)));
+    const sum=(f:(p:any)=>number)=>live.reduce((s,p)=>s+f(p),0);
+    assert.ok(Math.abs(sum(p=>p.steam)-Math.round(14200*mcdFactor)*29.99*.66)<1e-6);
+    assert.equal(sum(p=>p.units!.ps5),46000);assert.equal(sum(p=>p.units!.xbox!),225000);
+    assert.ok(Math.abs(sum(p=>p.ps5)-46000*29.99*.8)<1e-6);
+    assert.ok(Math.abs(sum(p=>p.xbox)-225000*29.99*.9)<1e-6);
     assert.equal(live[0].basis?.xbox,"modeled_platform_allocation");
     assert.ok(live.every(p=>Math.abs(p.combined!-(p.steam!+p.ps5!+p.xbox!))<1e-6));
     assert.ok(r.points.every(p=>p.date>="2026-09-29"||p.source==="unavailable"));
-    assert.match(r.methodology,/PS5 and Xbox timing/);
+    assert.match(r.methodology,/PS5 and Xbox timing.*own lifetime estimate/);
     assert.deepEqual(mcd(db),r);assert.deepEqual(db.serialize(),before);
+  }finally{db.close();}
+});
+test("a changed native Xbox estimate moves the Xbox line and nothing else",()=>{
+  const db=mcdFixture();
+  try{
+    const a=mcd(db)!;
+    db.exec("UPDATE window_estimates_daily SET units_mid=300000 WHERE platform='xbox'");
+    const b=mcd(db)!;
+    assert.equal(b.points.reduce((s,p)=>s+(p.units?.xbox??0),0),300000);
+    assert.deepEqual(b.points.map(p=>p.steam),a.points.map(p=>p.steam));
+    assert.deepEqual(b.points.map(p=>p.ps5),a.points.map(p=>p.ps5));
   }finally{db.close();}
 });
 test("Townfall output still carries no Xbox",()=>{

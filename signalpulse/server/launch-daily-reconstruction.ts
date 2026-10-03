@@ -11,6 +11,8 @@ type Scope = {
   xboxId?:number; xboxSku?:string; start:string; source:string;
   // Console SKUs may carry edition rows (Deluxe); only base rows enter the checks.
   ignoreEditions?:boolean;
+  // Console lines allocate each console's OWN native estimate (never Steam times a ratio).
+  nativeConsole?:boolean;
 };
 const SCOPES:Scope[] = [{
   key:"silent hill: townfall", steamId:10175, appId:"1636440",
@@ -19,10 +21,11 @@ const SCOPES:Scope[] = [{
   source:"https://www.konami.com/games/eu/en/topics/19323/",
 },{
   // Minecraft Dungeons II (Xbox Game Studios, Game Pass day one), released 2026-09-29.
-  // Xbox rows are the reviewed PS5-price-matched SKUs (PR 195); Xbox is held at PS5 parity.
+  // Xbox rows are the reviewed PS5-price-matched SKUs (PR 195). Console lines carry each
+  // platform's native estimate spread over the launch days by Steam review activity.
   key:"minecraft dungeons ii", steamId:10102, appId:"1912410",
   ps5Id:10969, ps5Sku:"EP4433-PPSA16064_00-SWPS500000000000",
-  xboxId:11293, xboxSku:"9P5786PJB9RP", ignoreEditions:true,
+  xboxId:11293, xboxSku:"9P5786PJB9RP", ignoreEditions:true, nativeConsole:true,
   start:"2026-09-29",
   source:"https://store.steampowered.com/app/1912410/",
 }];
@@ -79,7 +82,8 @@ export function reconstructLaunchDaily(
   const price=(p:string)=>Math.min(...maps.filter(r=>r.platform===p).map(r=>r.msrp_usd_cents??NaN))/100;
   const steamAsp=price("steam")*steamFactor,ps5Asp=price("ps5")*ps5Factor;
   const xboxAsp=xbox?price("xbox")*(xboxFactor??NaN):0;
-  if(![steamAsp,ps5Asp,ps5Ratio,...(xbox?[xboxAsp,xboxRatio??NaN]:[1])].every(n=>Number.isFinite(n)&&n>0))return null;
+  const native=!!SCOPE.nativeConsole;
+  if(![steamAsp,ps5Asp,...(native?[]:[ps5Ratio]),...(xbox?[xboxAsp,...(native?[]:[xboxRatio??NaN])]:[1])].every(n=>Number.isFinite(n)&&n>0))return null;
   if(db.prepare(`SELECT 1 FROM revenue_calibration_anchors WHERE title_id IN (${marks}) LIMIT 1`).get(...ids)||
      db.prepare(`SELECT 1 FROM title_multiplier_overrides WHERE title_id IN (${marks}) LIMIT 1`).get(...ids)||
      db.prepare(`SELECT 1 FROM steam_unit_milestones WHERE title_id IN (${marks}) AND active=1 LIMIT 1`).get(...ids))return null;
@@ -118,11 +122,12 @@ export function reconstructLaunchDaily(
     const consoleRow=(id:number,platform:string)=>db.prepare(`SELECT * FROM window_estimates_daily WHERE title_id=? AND platform=?
       AND window=? ORDER BY as_of_date DESC LIMIT 1`).get(id,platform,window) as any;
     const consoleOk=(c:any)=>!!c&&!c.gated_reason&&c.units_mid!=null&&c.as_of_date===end;
-    if(!consoleOk(consoleRow(SCOPE.ps5Id,"ps5"))||(xbox&&!consoleOk(consoleRow(SCOPE.xboxId!,"xbox")))||
+    const ps5Row=consoleRow(SCOPE.ps5Id,"ps5"),xboxRow=xbox?consoleRow(SCOPE.xboxId!,"xbox"):null;
+    if(!consoleOk(ps5Row)||(xbox&&!consoleOk(xboxRow))||
       units*steamAsp<=1000)return null; // match public overlay's meaningful-Steam gate
     targets.set(start,units);
-    ps5Targets.set(start,Math.round(units*steamAsp*ps5Ratio/ps5Asp));
-    if(xbox)xboxTargets.set(start,Math.round(units*steamAsp*xboxRatio!/xboxAsp));
+    ps5Targets.set(start,native?Math.round(ps5Row.units_mid):Math.round(units*steamAsp*ps5Ratio/ps5Asp));
+    if(xbox)xboxTargets.set(start,native?Math.round(xboxRow.units_mid):Math.round(units*steamAsp*xboxRatio!/xboxAsp));
   }
   const steamUnits=allocateNestedDays(days,Array.from(targets,([start,units])=>({start,units})));
   const consoleWeights=days.map(d=>({...d,signal:steamUnits?.get(d.date)??0}));
@@ -136,8 +141,8 @@ export function reconstructLaunchDaily(
       points.push({date,steam:null,ps5:null,xbox:null,combined:null,units:null,source:"unavailable"});
       continue;
     }
-    const steam=units*steamAsp,ps5=steam*ps5Ratio,xr=xbox?steam*xboxRatio!:null;
-    const xu=xbox?xboxUnits!.get(date)!:null;
+    const steam=units*steamAsp,xu=xbox?xboxUnits!.get(date)!:null;
+    const ps5=native?ps5Units.get(date)!*ps5Asp:steam*ps5Ratio,xr=xbox?(native?xu!*xboxAsp:steam*xboxRatio!):null;
     points.push({date,steam,ps5,xbox:xr,combined:steam+ps5+(xr??0),
       units:{steam:units,ps5:ps5Units.get(date)!,xbox:xu,combined:units+ps5Units.get(date)!+(xu??0)},
       source:LAUNCH_DAILY_VERSION,
@@ -146,5 +151,5 @@ export function reconstructLaunchDaily(
   }
   return {from,to,collectionStart:SCOPE.start,asOfDate:end,estimateCreatedAt:latest.created_at,
     sourceUrl:SCOPE.source,points,version:LAUNCH_DAILY_VERSION,
-    methodology:`Reconstructed daily sales estimates from Steam review activity, including early access. ${xbox?"PS5 and Xbox timing are modeled allocations":"PS5 timing is a modeled allocation"} using the same platform share as the leaderboards, not observed daily ${xbox?"PS5 or Xbox":"PS5"} sales. Revenue-derived units are rounded within period bands to reconcile with published totals. Newly admitted evidence can increase totals; missing days are not additional sales by themselves.`};
+    methodology:`Reconstructed daily sales estimates from Steam review activity, including early access. ${xbox?"PS5 and Xbox timing are modeled allocations":"PS5 timing is a modeled allocation"} ${SCOPE.nativeConsole?"from each console's own lifetime estimate":"using the same platform share as the leaderboards"}, not observed daily ${xbox?"PS5 or Xbox":"PS5"} sales. Revenue-derived units are rounded within period bands to reconcile with published totals. Newly admitted evidence can increase totals; missing days are not additional sales by themselves.`};
 }
