@@ -150,6 +150,14 @@ const IP_OVERRIDE_RULES: IpOverrideRule[] = [
   { pattern: /^\s*(ea\s*sports\s*)?madden\s*nfl/i,  label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
+  // Minecraft Dungeons II (Xbox Game Studios, Game Pass day one). Lifetime store ratings on
+  // 2026-10-03: Steam 6,437, PS5 1,452, Xbox 1,405 base + 51 Deluxe (about 1 : 1 with PS5).
+  // Across the 45 titles on all three boards the median Xbox/PS5 ratings ratio is 0.21, while
+  // the default mix assumes Xbox units are 0.33 of PS5. Ratings calibration would put Xbox at
+  // about 1.6x PS5; the Xbox listing also counts PC Play Anywhere and Game Pass players, so
+  // Xbox is held at parity with PS5 (same factor as PS5: 37.9/49.5 of Steam). Range: default
+  // 0.25x Steam (low), parity 0.77x (used), ratings-calibrated 1.22x (high).
+  { pattern: /^\s*minecraft\s+dungeons\s+(ii|2)\b/i, label: "Minecraft Dungeons II", ps5: 37.9, xbox: 37.9, steam: 49.5 },
   // Sony first-party IPs — PS5 flagship mix (PS5 90 / Steam 10 / Xbox 0).
   { pattern: /^\s*(marvel'?s\s+)?spider-?man/i,   label: "Spider-Man",                  ps5: 90, xbox: 0,  steam: 10 },
   { pattern: /^\s*god\s*of\s*war/i,               label: "God of War",                  ps5: 90, xbox: 0,  steam: 10 },
