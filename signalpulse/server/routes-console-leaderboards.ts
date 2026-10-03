@@ -2362,7 +2362,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const launch = reconstructLaunchDaily(rawSqlite,seedKey,from,to,{
         steamFactor:aspFactorFor("steam"),
         ps5Factor:aspFactorFor("ps5"),
-        ps5Ratio:PLATFORM_RATIO_VS_STEAM.ps5!,
+        ps5Ratio:ipOverrideFactorFor(seedNameRow?.name,"ps5")?.factor??PLATFORM_RATIO_VS_STEAM.ps5!,
+        xboxFactor:aspFactorFor("xbox"),
+        xboxRatio:ipOverrideFactorFor(seedNameRow?.name,"xbox")?.factor??PLATFORM_RATIO_VS_STEAM.xbox!,
       });
       if(launch)return res.json({titleId,...launch});
 
