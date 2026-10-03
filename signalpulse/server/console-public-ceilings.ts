@@ -31,7 +31,13 @@ export const PUBLIC_LTD_CEILINGS: PublicCeiling[] = [
 ];
 
 const BY_KEY = new Map(PUBLIC_LTD_CEILINGS.flatMap(c => [c.name, ...(c.aliases ?? [])].map(n => [editionGroupKey(n), c] as const)));
-export const publicCeilingFor = (key: string | null | undefined) => (key ? BY_KEY.get(key) : undefined);
+// Console storefronts append language or edition lists in parentheses, for example
+// "Black Myth: Wukong (Simplified Chinese, English, Korean, ...)". Match the exact key
+// first, then the key with one trailing parenthetical removed.
+export const publicCeilingFor = (key: string | null | undefined) => {
+  if (!key) return undefined;
+  return BY_KEY.get(key) ?? BY_KEY.get(key.replace(/\s*\([^)]*\)\s*$/, "").trim());
+};
 
 // Read-time guard. The Path B overlay shows PS5/Xbox lifetime units as Steam x
 // console ratio. When Steam + overlay units for the family exceed the public

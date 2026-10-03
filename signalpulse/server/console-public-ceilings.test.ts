@@ -61,3 +61,14 @@ test("negative or missing console units behave as zero", () => {
   const r = steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Valheim"), steamUnits: 19.85e6, consoleNativeUnits: -5 });
   assert.ok(r); assert.ok(Math.abs(19.85e6 * r!.ratio - 17e6) < 1);
 });
+
+test("the live Black Myth PS5 name with a language list resolves to the family ceiling", () => {
+  const live = "Black Myth: Wukong (Simplified Chinese, English, Korean, Thai, Japanese, Traditional Chinese)";
+  assert.equal(publicCeilingFor(editionGroupKey(live)), publicCeilingFor(editionGroupKey("Black Myth: Wukong")));
+  const r = steamPublicCapRatio({ window: "ltd", familyKey: editionGroupKey("Black Myth: Wukong"), steamUnits: 36.15e6, consoleNativeUnits: 6.92e6 + 0.45e6 });
+  assert.ok(r); assert.ok(Math.abs(36.15e6 * r!.ratio - 22.63e6) < 1e3);
+});
+test("a parenthetical suffix does not match unrelated titles", () => {
+  assert.equal(publicCeilingFor(editionGroupKey("Stardew Valley (Digital Deluxe)")), undefined);
+  assert.equal(publicCeilingFor(editionGroupKey("Valheim Soundtrack")), undefined);
+});
