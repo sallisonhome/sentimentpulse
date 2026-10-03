@@ -54,6 +54,7 @@ import { pickSharedPoolPrimaries, sharedPoolViolations } from "./console-shared-
 export { pickSharedPoolPrimaries, sharedPoolViolations };
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
 import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
+import {chartFamilyKey,canonicalSiblings} from "./chart-family";
 import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,protectionReason,rebasedGapUnits,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
@@ -2358,7 +2359,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         WHERE psm.title_id = ?
         LIMIT 1
       `).get(titleId) as { name: string | null } | undefined;
-      const seedKey = editionGroupKey(seedNameRow?.name ?? null);
+      const seedKey = chartFamilyKey(editionGroupKey(seedNameRow?.name ?? null));
       const launch = reconstructLaunchDaily(rawSqlite,seedKey,from,to,{
         steamFactor:aspFactorFor("steam"),
         ps5Factor:aspFactorFor("ps5"),
@@ -2389,9 +2390,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         `).all() as Array<{ titleId: number; name: string | null }>;
         const matched = new Set<number>([titleId]);
         for (const r of sibRows) {
-          if (editionGroupKey(r.name) === seedKey) matched.add(r.titleId);
+          if (chartFamilyKey(editionGroupKey(r.name)) === seedKey) matched.add(r.titleId);
         }
-        siblingIds = Array.from(matched);
+        const platformOf = rawSqlite.prepare(`SELECT DISTINCT platform FROM platform_sku_map WHERE title_id=?`);
+        siblingIds = canonicalSiblings(rawSqlite,
+          Array.from(matched).flatMap(id => (platformOf.all(id) as Array<{platform:string}>).map(p => ({titleId:id, platform:p.platform}))),
+          titleId);
       }
       const idPlaceholders = siblingIds.map(() => "?").join(",");
 
