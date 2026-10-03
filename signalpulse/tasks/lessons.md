@@ -1,5 +1,28 @@
 # SignalPulse scoped regression lessons
 
+## 2026-10-03: owner-driven review surges are not sales; cross-check against Steam's own list before and after
+
+**Report:** The Witcher 3 Remastered was #1 on the Steam d7 board (336K units, $11.1M; PS5 #3, Xbox #4 derived from it). The user said it was not on Steam's top sellers.
+
+**Cause:** Steam d7 and d30 units are new reviews times a sales multiplier (about 40.8 for this title). The free upgrade made owners review: about 120 reviews/day became 2,442 up and 1,133 down on 9/29, a negative share of 28% vs 4% normal, about 9.8x the weekly baseline. Reviews from owners are not purchases, and nothing guarded against it.
+
+**Fix (PR 192, deployed 2026-10-03 UTC), read-time only:** `steam-review-surge.ts` flags a Steam d7 or d30 row (no anchor, override, milestone or Saber product) when the trailing 7 days are at least 3x the title's 21-day baseline, at least 1,500 reviews, and the negative share is at least 15% and 3x baseline. It replaces only surge days (over 2x the daily baseline, inside the trailing 14) with the baseline. Missing or stale daily history is never flagged. dataSource `estimated_review_surge_guard`. Console rows derived from Steam inherit it. Not included: a re-release name heuristic (never audited).
+
+**Audit before building:** 181 Steam titles on the top-100 d7, d30, m12 and ltd boards, 166 analyzable. Only the Witcher 3 met the rule. Ori (14.9x, normal negative share) is a sale-style bump and was left alone. The smaller 1.8x to 3.8x bumps were likely sales and were not verified. Titles outside the top-100 boards were not audited.
+
+**Live result:** Steam d7 336K units, $11.1M, #1 to 42K units, $1.4M, #17; PS5 d7 $8.5M to $1.1M; Xbox d7 $2.8M to $0.4M; Steam d30 458K to 205K units ($6.7M, #17). Ori unchanged.
+
+**Steam cross-check:** [SteamDB weekly](https://steamdb.info/topsellers/) (22 to 29 Sep) ranks the remaster #49, and [Steam's chart](https://store.steampowered.com/charts/topselling/global) also had it #49 at 50% off. Our corrected $1.38M sits within the range of neighbors ranked #44 to #58 (median $1.03M, range $0.5M to $2.1M), so the multiplier was not changed. Our rank reads #17 because the board is paid titles only. The surge week itself (9/29 to 10/6) was not yet published, and revenue ranks are not dollars.
+
+**My error:** I first repeated the user's statement that the title was "absent" from Steam's list without checking. It was on the list at #49. State what a source shows only after reading it.
+
+**Rules:**
+1. A review count is evidence of sales only for paying buyers. For a free upgrade, re-release or review-bomb, the negative share rises with the volume; require both before capping.
+2. Before building a rule from one title, run the detector read-only over the catalog and list every title it would move.
+3. Check any "this title is not on Steam's list" claim against Steam's chart or SteamDB first, then compare our dollars to rank neighbors, not to a rank alone.
+4. A fix is done when the originally reported number on the deployed board matches the prediction. Here, rank and revenue both moved as predicted.
+5. Not checked: client display, d90 and longer windows (no guard by design), and the multiplier on other old high-review titles.
+
 ## 2026-10-02: validate lifetime units against public totals before trusting a derived console figure
 
 A Witcher 3 report ("looks high") was a family-wide defect, not a double count. Stored rows were clean: one Steam
