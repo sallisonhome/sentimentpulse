@@ -1,5 +1,37 @@
 # SignalPulse scoped regression lessons
 
+## 2026-10-02: validate lifetime units against public totals before trusting a derived console figure
+
+A Witcher 3 report ("looks high") was a family-wide defect, not a double count. Stored rows were clean: one Steam
+app, one Xbox SKU, and the two regional PS5 SKUs share one rating pool that the board already counts once. The
+inflation came from the Path B overlay in `routes-console-leaderboards.ts`, which shows PS5/Xbox lifetime units as
+Steam revenue times a fixed console ratio instead of the database's own console estimate (Witcher 3 PS5 22.7M
+shown vs 9.4M stored; Xbox 7.6M vs 3.9M). Combined tracked units (66.3M) exceeded CD Projekt's all-platform
+65M+ total while omitting PS4, Xbox One, Switch, GOG and Epic.
+
+Audit of the 30 flagged multiplatform families against public lifetime figures (full table with sources:
+`public-sales-audit-30-families.md`, shared asset "Audit of 30 flagged families against public lifetime sales"):
+- 11 over a recent public total or probably over: Witcher 3, Phasmophobia, Valheim, Black Myth: Wukong, ARC Raiders,
+  Ready or Not, Crusader Kings III, Crimson Desert, Don't Starve Together, Bannerlord, Satisfactory. Starfield's PS5
+  overlay (3.1M) vs about 140K one week after launch is also inflated.
+- 5 within the public total (Palworld, Stardew Valley, Red Dead Redemption 2, Monster Hunter: World, Hogwarts Legacy);
+  11 with no usable public figure; Space Marine 2 is a Saber title and is never changed.
+- Where a recent first-party figure exists (ARC Raiders 16.3M, Ready or Not 13M, Phasmophobia 25M+), the native
+  estimate sits near it and the overlay is far above it. But native is not reliable everywhere: Forza Horizon 5 PS5
+  native 2.2M vs public 5M to 6M, where the overlay (7.05M) is closer. Do not blanket-switch to native.
+- Steam's own estimate exceeds the all-platform public total for Phasmophobia, Valheim and Black Myth. That is a
+  Steam-side error; no overlay rule fixes it.
+
+Rules for the fix and for future sales-estimate reports:
+- Check stored SKU rows and the shared-pool grouping first, then compare the displayed figure with the stored
+  estimate for the same row. A gap between them points at the read-time overlay, not at double counting.
+- A public all-platform total is a ceiling for the tracked platforms, not a platform split. Build a small table of
+  recent first-party totals with sources and dates, and apply it only to families that have one.
+- The rule runs at read time, so stored data is untouched and daily writers cannot overwrite it. Anchored and Saber
+  titles are excluded. A test must fail if a tracked total exceeds its ceiling.
+- Audit the whole flagged population before building, and say which figures are weak (undated, unattributed,
+  third-party, or years old) instead of treating them as ceilings.
+
 ## 2026-10-01: match rating pools with tolerance, not exact equality
 
 Sibling SKUs are captured at different moments, so identical pools differ by a few ratings, and a family
