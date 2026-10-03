@@ -35,6 +35,19 @@ board, because the live rows are named "The Witcher 3: Wild Hunt — Remastered"
 name. Match a name-keyed table against the live display names (add aliases), put the live name in the test, and
 check the originally reported title on the deployed board before calling the fix done.
 
+Steam-side follow-up (PR 187, deployed 2026-10-03 UTC): a read-only production query found no anchors, overrides
+or unit milestones for Phasmophobia (title 10088), Valheim (10006) or Black Myth (10463), so nothing protected them.
+`steamPublicCapRatio` scales a Steam lifetime estimate above the public all-platform total down to that total
+(revenue scaled, units revenue-derived, dataSource `estimated_public_ceiling`, caveat on the row). Live lifetime
+board after deploy: Phasmophobia 29.69M to 27.00M, Valheim 19.85M to 17.00M, Black Myth 36.15M to 30.00M; all other
+Steam rows unchanged. The cap is an upper bound, so Steam alone may still be overstated by the console share.
+Open: Black Myth's PS5 listing "Black Myth: Wukong (Simplified Chinese)" (6.92M, estimated_console_exclusive) has no
+Steam name match, so the console guard never sees it; Steam 30M plus 6.9M PS5 exceeds the 30M total. The 30M is
+third-party (Communist Youth League of China), so do not tighten it without a developer figure. Phasmophobia console
+rows and Valheim PS5 were not in the top-100 board and were not checked. Client display not checked.
+Lesson: a name-keyed guard misses regional or edition listings whose names differ across platforms; when a family
+trips a ceiling, check every listing in it, not only the name-matched ones.
+
 Rules for the fix and for future sales-estimate reports:
 - Check stored SKU rows and the shared-pool grouping first, then compare the displayed figure with the stored
   estimate for the same row. A gap between them points at the read-time overlay, not at double counting.
