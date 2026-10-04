@@ -20,12 +20,15 @@ const q = `
    WHERE c.window = ? AND c.as_of_date = ?`;
 const rows = db.prepare(q).all(window, asOf) as Array<{ platform: string; title_id: number; name: string | null; before: number | null; after: number | null }>;
 const changed = rows.filter(r => (r.before ?? 0) !== (r.after ?? 0));
-console.log(`[preview-estimate-diff] as_of=${asOf} window=${window} rows=${rows.length} changed=${changed.length} newOrMissingInLive=${rows.filter(r => r.before == null).length}`);
+const revived = rows.filter(r => !(r.before ?? 0) && (r.after ?? 0) > 0).length;   // blank or zero in live, an estimate in the candidate
+const lost = rows.filter(r => (r.before ?? 0) > 0 && !(r.after ?? 0)).length;       // an estimate in live, blank in the candidate
+console.log(`[preview-estimate-diff] as_of=${asOf} window=${window} rows=${rows.length} changed=${changed.length} revived=${revived} lost=${lost} noLiveRow=${rows.filter(r => r.before == null).length}`);
 for (const p of ["ps5", "xbox", "steam"]) {
   const pr = rows.filter(r => r.platform === p);
   if (!pr.length) continue;
   const b = pr.reduce((s, r) => s + (r.before ?? 0), 0), a = pr.reduce((s, r) => s + (r.after ?? 0), 0);
-  console.log(`  ${p}: units before ${Math.round(b).toLocaleString()} after ${Math.round(a).toLocaleString()} (${b ? (((a - b) / b) * 100).toFixed(1) : "n/a"}%)`);
+  const pRev = pr.filter(r => !(r.before ?? 0) && (r.after ?? 0) > 0).length;
+  console.log(`  ${p}: revived=${pRev}; units before ${Math.round(b).toLocaleString()} after ${Math.round(a).toLocaleString()} (${b ? (((a - b) / b) * 100).toFixed(1) : "n/a"}%)`);
 }
 const movers = changed.filter(r => r.before && r.after).sort((x, y) => Math.abs(Math.log(y.after! / y.before!)) - Math.abs(Math.log(x.after! / x.before!))).slice(0, Number(topN));
 for (const m of movers) console.log(`  ${m.platform} ${m.title_id} ${(m.name ?? "?").slice(0, 36)}: ${Math.round(m.before!).toLocaleString()} -> ${Math.round(m.after!).toLocaleString()}`);
