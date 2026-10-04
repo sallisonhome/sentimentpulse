@@ -50,11 +50,20 @@ jobs:
         run: |
           set -e
           case "$ACTION" in ranks-preview|estimate-preview|ranks-apply|estimate-apply) ;; *) echo "bad action"; exit 64;; esac
+          # ssh joins its arguments into one command line for the remote shell: an empty argument is dropped (the next one
+          # shifts into its place) and shell metacharacters would be interpreted. So the free-text inputs travel as prefixed
+          # base64, which is never empty and never carries a metacharacter, and are decoded and re-quoted on the droplet.
+          # The anchor mode only applies to estimate-preview; the other actions get an empty mode.
+          [ "$ACTION" = "estimate-preview" ] || ANCHOR_MODE=""
+          OV_ARG="o:$(printf '%s' "$OVERLAY" | base64 -w0)"
+          MD_ARG="m:$(printf '%s' "$ANCHOR_MODE" | base64 -w0)"
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
-            root@104.236.239.46 bash -s -- "$ACTION" "$OVERLAY" "$ANCHOR_MODE" <<'REMOTE'
+            root@104.236.239.46 bash -s -- "$ACTION" "$OV_ARG" "$MD_ARG" <<'REMOTE'
           set -euo pipefail
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
           [ -n "$WD" ] && [ -f "$WD/deploy/signalpulse-recompute.sh" ]
-          bash "$WD/deploy/signalpulse-recompute.sh" "$1" "${2:-}" "${3:-}"
+          OV=$(printf '%s' "${2#o:}" | base64 -d)
+          MD=$(printf '%s' "${3#m:}" | base64 -d)
+          bash "$WD/deploy/signalpulse-recompute.sh" "$1" "$OV" "$MD"
           REMOTE

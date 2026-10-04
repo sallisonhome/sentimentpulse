@@ -184,3 +184,25 @@ esac`); chmodSync(join(bin, "systemctl"), 0o755); };
     assert.ok(!existsSync(join(wd, "tmp-should-not-exist")));
   } finally { rmSync(wd, { recursive: true, force: true }); rmSync(bin, { recursive: true, force: true }); }
 });
+
+test("recompute workflow: empty and hostile inputs survive the ssh command line (ssh drops empty arguments and re-parses the rest)", () => {
+  const yml = readFileSync(join(SP, "..", ".github/workflows/signalpulse-recompute.yml"), "utf8");
+  const lines = yml.split("\n").map(l => l.trim());
+  const pick = (re: RegExp) => { const l = lines.find(x => re.test(x)); assert.ok(l, `workflow line ${re}`); return l!; };
+  const encode = [pick(/^\[ "\$ACTION" = "estimate-preview" \]/), pick(/^OV_ARG=/), pick(/^MD_ARG=/)];
+  const decode = [pick(/^OV=\$\(printf/), pick(/^MD=\$\(printf/)];
+  assert.doesNotMatch(yml, /bash -s -- "\$ACTION" "\$OVERLAY"/, "raw inputs are no longer positional arguments");
+  const sim = (action: string, ov: string, md: string) => {
+    const local = spawnSync("bash", ["-c", `ACTION='${action}'; OVERLAY=$(printf %s "$1"); ANCHOR_MODE=$(printf %s "$2"); ${encode.join("; ")}; printf '%s %s %s' "$ACTION" "$OV_ARG" "$MD_ARG"`, "x", ov, md], { encoding: "utf8" });
+    assert.equal(local.status, 0, local.stderr);
+    // what ssh does: joins the arguments with spaces and hands the line to the remote shell
+    const remote = spawnSync("sh", ["-c", `bash -s -- ${local.stdout}`], { input: `set -euo pipefail\n${decode.join("\n")}\nprintf '%s|%s|%s' "$1" "$OV" "$MD"`, encoding: "utf8" });
+    assert.equal(remote.status, 0, remote.stderr);
+    return remote.stdout;
+  };
+  assert.equal(sim("ranks-apply", "", "legacy"), "ranks-apply||", "no overlay: nothing shifts, and the mode is blank outside estimate-preview");
+  assert.equal(sim("estimate-apply", "", "curve"), "estimate-apply||");
+  assert.equal(sim("estimate-preview", "noise_gate_min_signal.xbox=10", "report"), "estimate-preview|noise_gate_min_signal.xbox=10|report");
+  assert.equal(sim("estimate-preview", "", ""), "estimate-preview||", "preview with defaults");
+  assert.equal(sim("estimate-preview", "x=1;touch /tmp/pwned", "legacy"), "estimate-preview|x=1;touch /tmp/pwned|legacy", "metacharacters stay data");
+});
