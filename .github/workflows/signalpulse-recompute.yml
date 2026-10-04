@@ -1,0 +1,48 @@
+name: SignalPulse — Recompute from stored data (no store polling)
+
+# Re-derive title-level chart ranks and console estimates from data the daily job already collected today.
+# Nothing here calls Steam, Sony or Microsoft. The two *-preview actions write nothing to the live database.
+#   ranks-preview / estimate-preview : safe, read-only against live data (estimate-preview runs on a copy)
+#   ranks-apply / estimate-apply     : write to the live database; run only after a preview and an explicit go-ahead
+# Refuses to overlap the daily refresh (exit 75).
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What to do (previews are the default and write nothing)'
+        required: true
+        default: 'ranks-preview'
+        type: choice
+        options: [ranks-preview, estimate-preview, ranks-apply, estimate-apply]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  recompute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Run ${{ github.event.inputs.action }}
+        env:
+          ACTION: ${{ github.event.inputs.action }}
+        run: |
+          set -e
+          case "$ACTION" in ranks-preview|estimate-preview|ranks-apply|estimate-apply) ;; *) echo "bad action"; exit 64;; esac
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
+            root@104.236.239.46 bash -s -- "$ACTION" <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          [ -n "$WD" ] && [ -f "$WD/deploy/signalpulse-recompute.sh" ]
+          bash "$WD/deploy/signalpulse-recompute.sh" "$1"
+          REMOTE

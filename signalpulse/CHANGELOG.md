@@ -2,6 +2,18 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## October 4, 2026
+
+- Console boards now rank titles by their combined storefront presence: every
+  edition of a game counts, ties follow the order the store shows, and a title
+  with one chart entry keeps its exact store position. A report-only check marks
+  estimates that disagree with the live PS5 and Xbox charts; it changes no
+  numbers, and titles in pre-order, early access or launch week are never
+  flagged for a cut.
+- The daily job now stores each day's raw chart positions, and a new manual
+  recompute action rebuilds ranks and previews estimate changes from data already
+  collected, without polling the stores again.
+
 ## September 27, 2026
 
 - Added explicit, reversible activation of Wardogs' September 26 public Steam

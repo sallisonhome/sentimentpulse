@@ -1065,6 +1065,22 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS console_storefront_rank_daily_by_title
       ON console_storefront_rank_daily (platform, title_id, snapshot_date DESC);
 
+    -- Raw storefront chart positions (2026-10-04). One row per chart position the shopper sees (free-to-play
+    -- already removed, same list the rank snapshot is derived from). Lets the title-level rank be rebuilt from
+    -- stored data when the combining/tie-break rule changes, without polling the stores again.
+    CREATE TABLE IF NOT EXISTS console_chart_slot_daily (
+      platform TEXT NOT NULL,
+      sort_key TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      title_id INTEGER NOT NULL,
+      external_sku TEXT,
+      captured_at TEXT NOT NULL,
+      PRIMARY KEY (platform, sort_key, snapshot_date, position)
+    );
+    CREATE INDEX IF NOT EXISTS console_chart_slot_daily_by_title
+      ON console_chart_slot_daily (platform, sort_key, snapshot_date, title_id);
+
     -- Steam Demos leaderboard (2026-09-22). Deliberately NOT a row in
     -- products -- demos are free, so they must never be reachable by the
     -- store_rating_signal_daily F2P/business_model gate in
