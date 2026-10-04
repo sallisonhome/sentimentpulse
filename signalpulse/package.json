@@ -6,7 +6,7 @@
   "scripts": {
     "test:gap-allocation": "tsx --test server/daily-gap-allocation.test.ts server/daily-gap-allocation-routes.test.ts server/daily-gap-cutoff.test.ts",
     "test:launch-daily": "tsx --test server/launch-daily-reconstruction.test.ts",
-    "test:chart-family": "tsx --test server/chart-family.test.ts server/chart-multi-listing.test.ts server/rank-anchor-guard.test.ts",
+    "test:chart-family": "tsx --test server/chart-family.test.ts server/chart-multi-listing.test.ts server/rank-anchor-guard.test.ts server/ltd-state-cap-correction.test.ts",
     "posttest": "npm run test:launch-daily && npm run test:chart-family",
     "test:steam-milestone": "tsx --test server/steam-unit-calibration.test.ts server/steam-sales-shadow.test.ts",
     "dev": "cross-env NODE_ENV=development tsx server/index.ts",
