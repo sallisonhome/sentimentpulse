@@ -19,6 +19,12 @@ on:
         description: 'estimate-preview only: settings applied to the COPY, e.g. noise_gate_min_signal.xbox=10 (numbers only)'
         required: false
         default: ''
+      anchor_mode:
+        description: 'estimate-preview only: rank-anchor floor on the COPY: legacy (default), report (legacy applied, comparison printed), curve (durable floor applied)'
+        required: false
+        default: 'legacy'
+        type: choice
+        options: [legacy, report, curve]
 
 concurrency:
   group: deploy-droplet
@@ -40,14 +46,15 @@ jobs:
         env:
           ACTION: ${{ github.event.inputs.action }}
           OVERLAY: ${{ github.event.inputs.overlay }}
+          ANCHOR_MODE: ${{ github.event.inputs.anchor_mode }}
         run: |
           set -e
           case "$ACTION" in ranks-preview|estimate-preview|ranks-apply|estimate-apply) ;; *) echo "bad action"; exit 64;; esac
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
-            root@104.236.239.46 bash -s -- "$ACTION" "$OVERLAY" <<'REMOTE'
+            root@104.236.239.46 bash -s -- "$ACTION" "$OVERLAY" "$ANCHOR_MODE" <<'REMOTE'
           set -euo pipefail
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
           [ -n "$WD" ] && [ -f "$WD/deploy/signalpulse-recompute.sh" ]
-          bash "$WD/deploy/signalpulse-recompute.sh" "$1" "${2:-}"
+          bash "$WD/deploy/signalpulse-recompute.sh" "$1" "${2:-}" "${3:-}"
           REMOTE
