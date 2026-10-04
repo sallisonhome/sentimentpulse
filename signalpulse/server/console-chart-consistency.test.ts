@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyChartConsistency, chartModeFromEnv, groupChartRank, isChartExempt, CHART_MAX_RAISE, CHART_TOLERANCE, type ChartGroup } from "./console-chart-consistency";
+import { applyChartConsistency, inLaunchWindow, chartModeFromEnv, groupChartRank, isChartExempt, CHART_MAX_RAISE, CHART_TOLERANCE, type ChartGroup } from "./console-chart-consistency";
 
 // 60 charted titles whose units follow a clean power law; ids 1..60 sit at rank = id.
 function fixture() {
@@ -123,4 +123,20 @@ test("off-chart cap never applies to a title that charted on a recent snapshot; 
   assert.equal(g1[60].unitsMid, 900000, "missed today but charted recently: untouched"); assert.ok(g1[61].unitsMid! < 900000);
   const g2 = clone(groups); applyChartConsistency(g2, ranks, new Set(), "enforce", { recentlyCharted: new Set(), extraExempt: g => g.editionGroupKey === "valheim" });
   assert.ok(g2[60].unitsMid! < 900000, "absent from every recent snapshot: capped"); assert.equal(g2[61].unitsMid, 900000, "public ceiling family exempt");
+});
+
+test("launch window: a pre-order / launch-week title is annotated but never moved, in enforce mode too", () => {
+  const { groups, ranks } = fixture();
+  groups[29].unitsMid = groups[29].unitsMid! * 8; groups[29].revenueMidUsd = groups[29].revenueMidUsd! * 8;
+  groups[29].releaseDate = "2026-10-01";          // Gears-like: premium early access opened 10-01, launch 10-06
+  const g = clone(groups); const before = g[29].unitsMid;
+  const res = applyChartConsistency(g, ranks, new Set(), "enforce", { today: "2026-10-04" });
+  assert.equal(g[29].unitsMid, before); assert.equal(res.protectedLaunch, 1);
+  assert.equal((g[29].chartConsistency as any).bound, "launch_window_protected"); assert.equal((g[29].chartConsistency as any).applied, false);
+  // same title once the window has passed is moved like any other
+  const h = clone(groups); applyChartConsistency(h, ranks, new Set(), "enforce", { today: "2026-10-09" });
+  assert.ok(h[29].unitsMid! < before);
+  assert.equal(inLaunchWindow("2026-10-06", "2026-10-04"), true);   // future release (pre-order)
+  assert.equal(inLaunchWindow("2026-09-26", "2026-10-04"), false);
+  assert.equal(inLaunchWindow(null, "2026-10-04"), false); assert.equal(inLaunchWindow("bad", "2026-10-04"), false);
 });

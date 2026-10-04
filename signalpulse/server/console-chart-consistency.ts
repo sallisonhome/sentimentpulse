@@ -37,7 +37,7 @@ export interface ChartGroup {
   [k: string]: unknown;
 }
 export interface ChartNote {
-  chartRank: number | null; before: number; after: number; bound: "ceiling" | "floor" | "off_chart_cap";
+  chartRank: number | null; before: number; after: number; bound: "ceiling" | "floor" | "off_chart_cap" | "launch_window_protected";
   applied: boolean; neighbours: number;
 }
 
@@ -56,7 +56,19 @@ export function isChartExempt(g: ChartGroup, overrideTitleIds: Set<number>): boo
 }
 
 /** Annotates (report) or adjusts (enforce) groups in place. Returns the rows it would move / moved. */
+export const CHART_LAUNCH_WINDOW_DAYS = 7;
+
+/** Pre-order, early access and launch week: the storefront chart is incomplete for these (e.g. a standard pre-order SKU
+ *  that does not chart while the premium SKU does), so chart evidence must not move the estimate. */
+export function inLaunchWindow(releaseDate: unknown, today: string): boolean {
+  if (typeof releaseDate !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(releaseDate)) return false;
+  const rel = Date.parse(releaseDate.slice(0, 10) + "T00:00:00Z"), now = Date.parse(today + "T00:00:00Z");
+  return Number.isFinite(rel) && Number.isFinite(now) && now - rel < CHART_LAUNCH_WINDOW_DAYS * 86400000;
+}
+
 export interface ChartOptions {
+  /** YYYY-MM-DD used by the launch-window guard (defaults to today, UTC). */
+  today?: string;
   /** Extra protection, e.g. a configured public sales ceiling for the title family. */
   extraExempt?: (g: ChartGroup) => boolean;
   /** Title ids charted on ANY of the last few snapshots. Only titles absent from all of them are treated as off-chart. */
@@ -65,16 +77,17 @@ export interface ChartOptions {
 
 export function applyChartConsistency(
   groups: ChartGroup[], rankByTitle: Map<number, number>, overrideTitleIds: Set<number>, mode: ChartMode, opts: ChartOptions = {},
-): { moved: number; capped: number; skipped: string | null } {
-  if (mode === "off") return { moved: 0, capped: 0, skipped: "off" };
+): { moved: number; capped: number; protectedLaunch: number; skipped: string | null } {
+  if (mode === "off") return { moved: 0, capped: 0, protectedLaunch: 0, skipped: "off" };
+  const today = opts.today ?? new Date().toISOString().slice(0, 10);
   const refs = groups
     .map(g => ({ g, rank: groupChartRank(g, rankByTitle), units: g.unitsMid }))
     .filter((x): x is { g: ChartGroup; rank: number; units: number } => x.rank != null && x.units != null && x.units > 0)
     .sort((a, b) => a.rank - b.rank);
-  if (refs.length < CHART_MIN_RANKED) return { moved: 0, capped: 0, skipped: `thin_chart(${refs.length})` };
+  if (refs.length < CHART_MIN_RANKED) return { moved: 0, capped: 0, protectedLaunch: 0, skipped: `thin_chart(${refs.length})` };
   const baseUnits = new Map(refs.map(r => [r.g, r.units]));   // references use PRE-adjustment values
   const deepest = refs.slice(-CHART_NEIGHBOURS).map(r => r.units);
-  let moved = 0, capped = 0;
+  let moved = 0, capped = 0, protectedLaunch = 0;
 
   for (const g of groups) {
     if (g.unitsMid == null || g.unitsMid <= 0) continue;
@@ -101,6 +114,12 @@ export function applyChartConsistency(
     }
     if (target == null) continue;
     const before = g.unitsMid; const after = Math.round(target); const f = after / before;
+    if (inLaunchWindow(g.releaseDate, today)) {
+      // Shown so the contradiction is visible, but never applied: the chart is incomplete for pre-order / launch-week titles.
+      g.chartConsistency = { chartRank: rank, before, after, bound: "launch_window_protected", applied: false, neighbours: nb } as ChartNote;
+      protectedLaunch++;
+      continue;
+    }
     const note: ChartNote = { chartRank: rank, before, after, bound, applied: mode === "enforce", neighbours: nb };
     g.chartConsistency = note;
     if (bound === "off_chart_cap") capped++; else moved++;
@@ -111,5 +130,5 @@ export function applyChartConsistency(
       g.estimateMethod = `${g.estimateMethod ?? g.dataSource ?? "est"}+chart_consistency_v1`;
     }
   }
-  return { moved, capped, skipped: null };
+  return { moved, capped, protectedLaunch, skipped: null };
 }

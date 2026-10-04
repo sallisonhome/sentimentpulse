@@ -38,6 +38,9 @@ test("leaderboard route: chart consistency report/enforce/off", async () => {
     seed(OFF + 2, "Missed Today Huge", 900000, 900000 * 4, false);   // charted yesterday only: an ID/one-day gap, never capped
     db.prepare(`INSERT INTO console_storefront_rank_daily VALUES('xbox','xbox_api_top_paid',?,?,?,?)`).run(new Date(Date.now() - 86400000).toISOString().slice(0, 10), OFF + 2, 3, stamp);
 
+    // launch-week title: over-estimated 8x like Gears-style pre-order, must be shown but never cut
+    db.prepare("UPDATE window_estimates_daily SET units_mid=units_mid*8, owners_mid=owners_mid*8 WHERE title_id=35 AND window IN ('d7','d30')").run();
+    db.prepare("UPDATE console_title_igdb SET release_date=?, store_release_date=? WHERE title_id=35").run(stamp, stamp);
     const before = db.prepare("SELECT * FROM window_estimates_daily ORDER BY id").all();
     const app = express(); registerConsoleLeaderboardRoutes(app);
     server = app.listen(0, "127.0.0.1"); await new Promise<void>(r => server.once("listening", r));
@@ -62,6 +65,9 @@ test("leaderboard route: chart consistency report/enforce/off", async () => {
       assert.ok(e30.unitsMid < 3 * units(30) * (window === "d30" ? 4 : 1), "lands near the chart-consistent value");
       const o45 = off.get("Title 45"), e45 = enf.get("Title 45");
       assert.ok(e45.unitsMid > o45.unitsMid && e45.unitsMid <= 3 * o45.unitsMid + 1, `${window} under-estimate raised within cap`);
+      // launch-week title: annotated, never moved
+      assert.equal(enf.get("Title 35").unitsMid, off.get("Title 35").unitsMid, "launch-window title untouched");
+      assert.equal(enf.get("Title 35").chartConsistency?.bound, "launch_window_protected");
       // anchored + overridden rows untouched
       assert.equal(enf.get("Title 20").unitsMid, off.get("Title 20").unitsMid, "anchored row untouched");
       assert.equal(enf.get("Title 25").unitsMid, off.get("Title 25").unitsMid, "overridden row untouched");
@@ -70,7 +76,7 @@ test("leaderboard route: chart consistency report/enforce/off", async () => {
       assert.equal(enf.get("Off Chart Small").unitsMid, off.get("Off Chart Small").unitsMid);
       assert.equal(enf.get("Missed Today Huge").unitsMid, off.get("Missed Today Huge").unitsMid, "recently charted title never capped");
       // consistent rows (every title that was not seeded as a contradiction) are identical in all modes
-      for (const i of [1, 2, 3, 10, 15, 35, 40, 50, 59]) assert.equal(enf.get(`Title ${i}`).unitsMid, off.get(`Title ${i}`).unitsMid, `Title ${i} unchanged`);
+      for (const i of [1, 2, 3, 10, 15, 40, 50, 59]) assert.equal(enf.get(`Title ${i}`).unitsMid, off.get(`Title ${i}`).unitsMid, `Title ${i} unchanged`);
     }
     // other windows are never touched
     const o90 = by(await get("off", "/api/console/leaderboards/xbox?window=d90&limit=100")), e90 = by(await get("enforce", "/api/console/leaderboards/xbox?window=d90&limit=100"));
