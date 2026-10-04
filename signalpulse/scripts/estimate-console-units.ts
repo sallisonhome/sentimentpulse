@@ -47,6 +47,7 @@ import {reviewShockEvidence,STEAM_REVIEW_SHOCK_VERSION,type ShockEvidence} from 
 import { advanceLifetimeSignal } from "../server/lifetime-signal";
 import {refreshSteamUnitCalibration} from "../server/steam-unit-calibration";
 import {evaluateSteamSalesShadow} from "../server/steam-sales-shadow";
+import { capRankAnchorFloor, enforceRankAnchorWindows } from "../server/rank-anchor-guard";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -970,7 +971,12 @@ async function main() {
       const peerUnitMean = stabilisedPeers.reduce((s, p) => s + p.units, 0) / stabilisedPeers.length;
       const peerWeightMean = stabilisedPeers.reduce((s, p) => s + Math.pow(p.rank, -alpha), 0) / stabilisedPeers.length;
       const anchorWeight = Math.pow(anchorRank, -alpha);
-      const anchorFloor = peerUnitMean * (anchorWeight / peerWeightMean);
+      const uncappedFloor = peerUnitMean * (anchorWeight / peerWeightMean);
+      // Ceiling from the title's own ratings-derived lifetime units (see rank-anchor-guard.ts).
+      const ltdOfTitle = rows.find(r => r.titleId === row.titleId && r.platform === row.platform && r.window === "ltd");
+      const capped = capRankAnchorFloor(uncappedFloor, ltdOfTitle);
+      const anchorFloor = capped.floor;
+      if (capped.capped) console.log(`[estimate-console-units] rank-anchor floor capped title=${row.titleId} ${row.platform}: ${Math.round(uncappedFloor)} -> ${Math.round(anchorFloor)}`);
 
       if (row.unitsMid != null && row.unitsMid >= anchorFloor) continue; // natural signal already exceeds floor
 
@@ -989,7 +995,7 @@ async function main() {
       row.ownersMid = flooredOwners;
       row.ownersLow  = Math.round(flooredOwners * (1 - appliedCiPct));
       row.ownersHigh = Math.round(flooredOwners * (1 + appliedCiPct));
-      row.method = `rank_anchor:${sortKey}`;
+      row.method = `rank_anchor:${sortKey}${capped.capped ? "+ratings_cap_v1" : ""}`;
       row.gatedReason = null;                                   // un-gate if noise-gate had tripped
       // Keep signal_value as-is (audit trail of what ratings gave us) so the
       // floor's contribution over the raw signal is visible in the DB.
@@ -998,6 +1004,15 @@ async function main() {
       // old anyway), just keeps the map internally consistent.
       d7UnitsByKey.set(`${row.titleId}|${row.platform}`, flooredUnits);
       anchoredCount++;
+    }
+
+    // A window that contains d7 cannot be smaller than the floored d7.
+    {
+      const byTP = new Map<string, EstimateRow[]>();
+      for (const r of rows) { const k = `${r.titleId}|${r.platform}`; (byTP.get(k) ?? byTP.set(k, []).get(k)!).push(r); }
+      let raisedWindows = 0;
+      for (const [k, list] of byTP) raisedWindows += enforceRankAnchorWindows(list, overrideByKey.has(k));
+      if (raisedWindows > 0) console.log(`[estimate-console-units] rank-anchor window consistency: raised=${raisedWindows}`);
     }
 
     if (anchoredCount > 0 || skippedNoPeers > 0) {

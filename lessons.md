@@ -3063,3 +3063,10 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Rule: the chart reads each platform's own native lifetime estimate day over day. Never overlay or overwrite a native estimate to make a line appear (the Minecraft Dungeons II Steam-times-ratio chart was wrong for that reason).
 - Chart rule now: drop an unpriced base listing when a priced twin exists on that platform; collapse identical-estimate duplicates; sum genuinely distinct listings each at its own MSRP (the board does the same); gap allocation stays off for such platforms, so gaps remain gaps. Listings with fewer than two valued days are ignored. Name alias for the "2" spelling lives in chart-family.ts only (editionGroupKey and the board join are untouched).
 - Test with the exact live names from the API/DB, not synthetic ones.
+
+## 2026-10-03: rank-anchor floor had no ceiling (Samson on Xbox)
+- Symptom: Samson - A Tyndalston Story, Xbox, d7 = 311,931 units / $6.2M ($24.99, 307 ratings), above FC 27 and Gears E-Day, while d30 = 50,143 (smaller than d7) and PS5 = 47,526 on 1,505 ratings.
+- Cause: the d7 storefront rank-anchor floor (estimate-console-units.ts, 8a) is the mean of mature neighbours on the chart scaled by rank, with no price scaling and no check against the title's own ratings. LTD then inherits it through derived_max_windows, which also takes max with the persisted title_ltd_state value.
+- Fix: floor capped at 3x the title's ratings-derived lifetime units once the title has >= 200 ratings (thin-ratings launches keep the floor, which is why it exists); when d7 carries the floor, d30/d90/m12 are raised to d7 (never lowered); override-anchored and gated rows are untouched. Pure logic in server/rank-anchor-guard.ts.
+- Not fixed by the code change: a value already persisted in title_ltd_state stays (LTD is a max with state). Correcting Samson's stored LTD is a production data write and needs its own reviewed, approved step.
+- Not verified on production data; peers and Samson's actual chart rank were never read (the read-only query was declined).
