@@ -37,7 +37,7 @@ export interface ChartGroup {
   [k: string]: unknown;
 }
 export interface ChartNote {
-  chartRank: number | null; before: number; after: number; bound: "ceiling" | "floor" | "off_chart_cap" | "launch_window_protected";
+  chartRank: number | null; before: number; after: number; bound: "ceiling" | "floor" | "off_chart_cap" | "deep_rank_ceiling" | "launch_window_protected";
   applied: boolean; neighbours: number;
 }
 
@@ -66,7 +66,41 @@ export function inLaunchWindow(releaseDate: unknown, today: string): boolean {
   return Number.isFinite(rel) && Number.isFinite(now) && now - rel < CHART_LAUNCH_WINDOW_DAYS * 86400000;
 }
 
+export const DEEP_FIT_MIN_REFS = 20;
+export interface DeepCurve { a: number; b: number; n: number; r2: number }
+
+/** Log-log least squares of units on chart rank over the reference rows: units = exp(a) * rank^b. Null when the data
+ *  cannot support a sensible curve (too few points, flat or rising, or an absurd slope). */
+export function fitRankCurve(points: Array<{ rank: number; units: number }>): DeepCurve | null {
+  const first = fitOnce(points);
+  if (!first) return null;
+  // One trimming pass: drop reference rows more than 2x above or below the first curve (these are the rows the pass is
+  // about to flag, and they would drag the curve toward themselves), then refit. Keep the first fit if too few remain.
+  const kept = points.filter(x => x.rank >= 1 && x.units > 0 && x.units <= 2 * curveUnits(first, x.rank) && x.units >= curveUnits(first, x.rank) / 2);
+  return fitOnce(kept) ?? first;
+}
+function fitOnce(points: Array<{ rank: number; units: number }>): DeepCurve | null {
+  const p = points.filter(x => x.rank >= 1 && x.units > 0);
+  if (p.length < DEEP_FIT_MIN_REFS) return null;
+  const xs = p.map(x => Math.log(x.rank)), ys = p.map(x => Math.log(x.units));
+  const mx = xs.reduce((a, b) => a + b, 0) / p.length, my = ys.reduce((a, b) => a + b, 0) / p.length;
+  const sxx = xs.reduce((a, x) => a + (x - mx) ** 2, 0);
+  if (sxx === 0) return null;
+  const b = xs.reduce((a, x, i) => a + (x - mx) * (ys[i] - my), 0) / sxx;
+  if (!(b < -0.2 && b > -2.5)) return null;
+  const a = my - b * mx;
+  const sst = ys.reduce((acc, y) => acc + (y - my) ** 2, 0);
+  const sse = xs.reduce((acc, x, i) => acc + (ys[i] - (a + b * x)) ** 2, 0);
+  return { a, b, n: p.length, r2: sst > 0 ? 1 - sse / sst : 0 };
+}
+export const curveUnits = (c: DeepCurve, rank: number) => Math.exp(c.a) * Math.pow(rank, c.b);
+
 export interface ChartOptions {
+  /** Paid-only deep chart rank per title id (newest deep snapshot). Titles below the stored top ranks get a rank-based
+   *  ceiling from a curve fitted on today's reference rows, instead of one flat off-chart cap. Never raises an estimate. */
+  deepRankByTitle?: Map<number, number>;
+  /** Override of CHART_MIN_RANKED (tests and offline replays only). */
+  minRanked?: number;
   /** YYYY-MM-DD used by the launch-window guard (defaults to today, UTC). */
   today?: string;
   /** Extra protection, e.g. a configured public sales ceiling for the title family. */
@@ -84,21 +118,29 @@ export function applyChartConsistency(
     .map(g => ({ g, rank: groupChartRank(g, rankByTitle), units: g.unitsMid }))
     .filter((x): x is { g: ChartGroup; rank: number; units: number } => x.rank != null && x.units != null && x.units > 0)
     .sort((a, b) => a.rank - b.rank);
-  if (refs.length < CHART_MIN_RANKED) return { moved: 0, capped: 0, protectedLaunch: 0, skipped: `thin_chart(${refs.length})` };
+  if (refs.length < (opts.minRanked ?? CHART_MIN_RANKED)) return { moved: 0, capped: 0, protectedLaunch: 0, skipped: `thin_chart(${refs.length})` };
   const baseUnits = new Map(refs.map(r => [r.g, r.units]));   // references use PRE-adjustment values
   const deepest = refs.slice(-CHART_NEIGHBOURS).map(r => r.units);
+  const curve = opts.deepRankByTitle && opts.deepRankByTitle.size > 0 ? fitRankCurve(refs.map(r => ({ rank: r.rank, units: r.units }))) : null;
   let moved = 0, capped = 0, protectedLaunch = 0;
 
   for (const g of groups) {
     if (g.unitsMid == null || g.unitsMid <= 0) continue;
     if (isChartExempt(g, overrideTitleIds) || opts.extraExempt?.(g)) continue;
     const rank = groupChartRank(g, rankByTitle);
-    let target: number | null = null; let bound: ChartNote["bound"] = "ceiling"; let nb = 0;
+    let target: number | null = null; let bound: ChartNote["bound"] = "ceiling"; let nb = 0; let deepRank: number | null = null;
     if (rank == null) {
       // A title that charted on a recent snapshot but is missing today may be a one-day miss or an ID-mapping gap:
       // never cap it. Only titles absent from every recent snapshot count as off-chart.
       if (opts.recentlyCharted && g.familyTitleIds.some(id => opts.recentlyCharted!.has(id))) continue;
       target = CHART_TOLERANCE * median(deepest); bound = "off_chart_cap"; nb = deepest.length;
+      // A deep paid rank (below the top-ranked set) gives a rank-based ceiling; it can only lower the flat cap, never raise it.
+      const deepRanks = curve ? g.familyTitleIds.map(id => opts.deepRankByTitle!.get(id)).filter((v): v is number => v != null) : [];
+      if (curve && deepRanks.length > 0) {
+        const dr = Math.min(...deepRanks);
+        const byRank = CHART_TOLERANCE * curveUnits(curve, dr);
+        if (byRank < target) { target = byRank; bound = "deep_rank_ceiling"; nb = curve.n; deepRank = dr; }
+      }
       if (!(g.unitsMid > target)) target = null;
     } else {
       const above = refs.filter(r => r.rank < rank && r.g !== g).slice(-CHART_NEIGHBOURS);
@@ -121,8 +163,9 @@ export function applyChartConsistency(
       continue;
     }
     const note: ChartNote = { chartRank: rank, before, after, bound, applied: mode === "enforce", neighbours: nb };
+    if (deepRank != null) (note as any).deepPaidRank = deepRank;
     g.chartConsistency = note;
-    if (bound === "off_chart_cap") capped++; else moved++;
+    if (bound === "off_chart_cap" || bound === "deep_rank_ceiling") capped++; else moved++;
     if (mode === "enforce") {
       g.unitsMid = after;
       if (g.revenueMidUsd != null) g.revenueMidUsd = g.revenueMidUsd * f;

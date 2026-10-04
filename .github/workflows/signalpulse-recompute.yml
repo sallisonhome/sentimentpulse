@@ -15,6 +15,10 @@ on:
         default: 'ranks-preview'
         type: choice
         options: [ranks-preview, estimate-preview, ranks-apply, estimate-apply]
+      overlay:
+        description: 'estimate-preview only: settings applied to the COPY, e.g. noise_gate_min_signal.xbox=10 (numbers only)'
+        required: false
+        default: ''
 
 concurrency:
   group: deploy-droplet
@@ -35,14 +39,15 @@ jobs:
       - name: Run ${{ github.event.inputs.action }}
         env:
           ACTION: ${{ github.event.inputs.action }}
+          OVERLAY: ${{ github.event.inputs.overlay }}
         run: |
           set -e
           case "$ACTION" in ranks-preview|estimate-preview|ranks-apply|estimate-apply) ;; *) echo "bad action"; exit 64;; esac
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
-            root@104.236.239.46 bash -s -- "$ACTION" <<'REMOTE'
+            root@104.236.239.46 bash -s -- "$ACTION" "$OVERLAY" <<'REMOTE'
           set -euo pipefail
           WD=$(systemctl show -p WorkingDirectory --value signalpulse)
           [ -n "$WD" ] && [ -f "$WD/deploy/signalpulse-recompute.sh" ]
-          bash "$WD/deploy/signalpulse-recompute.sh" "$1"
+          bash "$WD/deploy/signalpulse-recompute.sh" "$1" "${2:-}"
           REMOTE

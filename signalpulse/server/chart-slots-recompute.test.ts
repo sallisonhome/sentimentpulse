@@ -110,13 +110,19 @@ test("estimate diff: reports changed rows and totals, never writes either databa
     const [h1, h2] = [sha(live), sha(cand)];
     const r = run(dir, [join(SP, "scripts/preview-estimate-diff.ts"), live, cand, "d30", "5"]);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /rows=4 changed=3 newOrMissingInLive=1/);
-    assert.match(r.stdout, /xbox: units before 1,500 after 750 \(-50\.0%\)/);
+    assert.match(r.stdout, /rows=4 changed=3 revived=1 lost=0 noLiveRow=1/);
+    assert.match(r.stdout, /xbox: revived=0; units before 1,500 after 750 \(-50\.0%\)/);
     assert.match(r.stdout, /xbox 1 Game 1: 1,000 -> 250/);
     assert.equal(sha(live), h1); assert.equal(sha(cand), h2);
     assert.equal(run(dir, [join(SP, "scripts/preview-estimate-diff.ts")]).status, 2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+function db2seed(dir: string, key: string, value: string) {
+  const d = new Database(join(dir, "data.db"));
+  d.prepare(`INSERT INTO app_settings(key,value,label,category,is_secret,created_at,updated_at) VALUES(?,?,'t','t',0,'t','t') ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(key, value);
+  d.close();
+}
 
 // End-to-end through the real shell script with a fake systemctl: every action, guard rails and exit codes.
 test("signalpulse-recompute.sh: previews leave the live DB byte-identical; refuses unknown actions and a running daily refresh", { skip: spawnSync("which", ["sqlite3"]).status !== 0 }, () => {
@@ -145,6 +151,22 @@ esac`); chmodSync(join(bin, "systemctl"), 0o755); };
     const ra = sh("ranks-apply"); assert.equal(ra.status, 0, ra.stdout + ra.stderr);
     const chk = new Database(join(wd, "data.db"), { readonly: true });
     assert.equal((chk.prepare(`SELECT rank FROM console_storefront_rank_daily WHERE title_id=1`).get() as any).rank, 1); chk.close();
+    // overlay: validated, applied to the COPY only, and visible to the estimator (noise gate printed by the estimator itself)
+    db2seed(wd, "noise_gate_min_signal", "50");
+    const hOv = sha(join(wd, "data.db"));
+    const shOv = (action: string, ov: string) => spawnSync("bash", [join(SP, "deploy/signalpulse-recompute.sh"), action, ov], { encoding: "utf8", timeout: 280000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SP_LOCK_FILE: join(wd, "lock") } });
+    assert.equal(shOv("estimate-preview", "noise_gate_min_signal.xbox=abc").status, 64, "non-numeric overlay rejected");
+    assert.equal(shOv("estimate-preview", "x=1;rm -rf /").status, 64, "shell metacharacters rejected");
+    assert.equal(shOv("ranks-preview", "noise_gate_min_signal.xbox=10").status, 64, "overlay only allowed for estimate-preview");
+    const ov = shOv("estimate-preview", "noise_gate_min_signal.xbox=10");
+    assert.equal(ov.status, 0, ov.stdout.slice(-900) + ov.stderr.slice(-900));
+    assert.match(ov.stdout, /overlay applied to the COPY only: noise_gate_min_signal\.xbox=10/);
+    assert.match(ov.stdout, /noise_gate\.xbox=10/, "the estimator on the copy used the overlaid gate");
+    const plain = shOv("estimate-preview", ""); assert.equal(plain.status, 0, plain.stdout.slice(-600));
+    assert.match(plain.stdout, /noise_gate\.xbox=50/, "without the overlay the copy keeps the legacy gate");
+    assert.doesNotMatch(plain.stdout, /overlay applied/);
+    assert.equal((ov.stdout.match(/^CHART /gm) ?? []).length, 8, "chart report printed for before and after, 2 platforms x 2 windows");
+    assert.equal(sha(join(wd, "data.db")), hOv, "live DB unchanged by an overlay preview");
     const ea = sh("estimate-apply"); assert.equal(ea.status, 0, ea.stdout.slice(-600) + ea.stderr.slice(-600)); assert.match(ea.stdout, /PHASE 3[\s\S]*PHASE 4[\s\S]*recompute done/);
     fake("active");
     const busy = sh("estimate-apply"); assert.equal(busy.status, 75); assert.match(busy.stdout, /refusing to overlap/);

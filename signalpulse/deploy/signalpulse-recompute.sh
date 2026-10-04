@@ -2,17 +2,25 @@
 # signalpulse-recompute.sh — re-derive stored ranks / estimates from data ALREADY collected today.
 # No storefront, Steam, Sony or Microsoft requests are made by any action here.
 #
-# Usage: signalpulse-recompute.sh <action>
+# Usage: signalpulse-recompute.sh <action> [overlay]
 #   ranks-preview     rebuild title-level chart ranks from stored raw chart slots; print the diff; write nothing
 #   ranks-apply       same, then write the rebuilt ranks (idempotent)
-#   estimate-preview  copy the live DB, run the estimator on the COPY, print the before/after diff; live DB untouched
+#   estimate-preview  copy the live DB, run the estimator on the COPY, print the before/after diff and the chart-consistency
+#                     report for the live-data copy and for the candidate; live DB untouched.
+#                     Optional overlay "key=value,key=value" (numeric values, keys like noise_gate_min_signal.xbox) is
+#                     applied to the COPY's app_settings only, to measure a setting before anyone changes production.
 #   estimate-apply    run the estimator and the revenue-anchor writer on the live DB (same phases 3 and 4 as the daily job)
 #
 # Exit codes: 1 no working dir, 2 tsx missing, 3 no raw chart slots yet, 75 lock busy / daily refresh running,
 #             76 not enough free disk for a preview copy, 30/40 estimator / anchor phase failed.
 set -Eeuo pipefail
 ACTION="${1:-}"
+OVERLAY="${2:-}"
 case "$ACTION" in ranks-preview|ranks-apply|estimate-preview|estimate-apply) ;; *) echo "unknown action '$ACTION'" >&2; exit 64;; esac
+if [[ -n "$OVERLAY" ]]; then
+  [[ "$ACTION" == "estimate-preview" ]] || { echo "overlay is only allowed for estimate-preview" >&2; exit 64; }
+  [[ "$OVERLAY" =~ ^[A-Za-z0-9_.]+=[0-9]+(\.[0-9]+)?(,[A-Za-z0-9_.]+=[0-9]+(\.[0-9]+)?)*$ ]] || { echo "bad overlay (want key=number[,key=number])" >&2; exit 64; }
+fi
 
 log() { printf '%s %s\n' "$(date -Iseconds)" "$*"; }
 WD="$(systemctl show -p WorkingDirectory --value signalpulse 2>/dev/null || true)"
@@ -38,14 +46,29 @@ case "$ACTION" in
   ranks-apply)   log "ranks apply"; timeout --kill-after=15 120 "$TSX" scripts/rebuild-chart-ranks.ts --apply ;;
   estimate-preview)
     SIZE=$(stat -c %s "$WD/data.db"); FREE=$(df --output=avail -B1 /tmp | tail -1)
-    (( FREE > SIZE * 2 )) || { log "not enough free disk in /tmp for a copy ($FREE free, db $SIZE)"; exit 76; }
+    (( FREE > SIZE * 3 )) || { log "not enough free disk in /tmp for two copies ($FREE free, db $SIZE)"; exit 76; }
     TMPD="$(mktemp -d /tmp/sp-preview.XXXXXX)"; trap 'rm -rf "$TMPD"' EXIT
+    mkdir "$TMPD/base" "$TMPD/cand"
+    export TSX_TSCONFIG_PATH="$WD/tsconfig.json"
     log "copying live DB (online backup, live DB is only read)"
-    sqlite3 "$WD/data.db" ".backup '$TMPD/data.db'"
-    log "running the estimator on the COPY"
-    ( cd "$TMPD" && TSX_TSCONFIG_PATH="$WD/tsconfig.json" timeout --kill-after=15 300 "$TSX" "$WD/scripts/estimate-console-units.ts" ) || { log "estimator failed on the copy"; exit 30; }
-    "$TSX" "$WD/scripts/preview-estimate-diff.ts" "$WD/data.db" "$TMPD/data.db" d30 15
-    "$TSX" "$WD/scripts/preview-estimate-diff.ts" "$WD/data.db" "$TMPD/data.db" d7 10
+    sqlite3 "$WD/data.db" ".backup '$TMPD/base/data.db'"
+    cp "$TMPD/base/data.db" "$TMPD/cand/data.db"
+    if [[ -n "$OVERLAY" ]]; then
+      IFS=',' read -ra KV <<< "$OVERLAY"
+      for kv in "${KV[@]}"; do
+        k="${kv%%=*}"; v="${kv#*=}"
+        sqlite3 "$TMPD/cand/data.db" "INSERT INTO app_settings(key, value, label, category, is_secret, created_at, updated_at) VALUES('$k', '$v', 'preview overlay', 'preview', 0, datetime('now'), datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;"
+        log "overlay applied to the COPY only: $k=$v"
+      done
+    fi
+    log "chart report on the live-data copy (before)"
+    ( cd "$TMPD/base" && timeout --kill-after=15 240 "$TSX" "$WD/scripts/preview-chart-report.ts" before ) | grep '^CHART' || true
+    log "running the estimator on the candidate COPY"
+    ( cd "$TMPD/cand" && timeout --kill-after=15 300 "$TSX" "$WD/scripts/estimate-console-units.ts" ) || { log "estimator failed on the copy"; exit 30; }
+    "$TSX" "$WD/scripts/preview-estimate-diff.ts" "$TMPD/base/data.db" "$TMPD/cand/data.db" d7 10
+    "$TSX" "$WD/scripts/preview-estimate-diff.ts" "$TMPD/base/data.db" "$TMPD/cand/data.db" d30 10
+    log "chart report on the candidate copy (after)"
+    ( cd "$TMPD/cand" && timeout --kill-after=15 240 "$TSX" "$WD/scripts/preview-chart-report.ts" after ) | grep '^CHART' || true
     log "preview done; live database unchanged" ;;
   estimate-apply)
     log "PHASE 3: estimate-console-units"; timeout --kill-after=15 300 "$TSX" scripts/estimate-console-units.ts || { log "PHASE 3 failed"; exit 30; }

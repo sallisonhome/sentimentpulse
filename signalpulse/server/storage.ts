@@ -1081,6 +1081,24 @@ function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS console_chart_slot_daily_by_title
       ON console_chart_slot_daily (platform, sort_key, snapshot_date, title_id);
 
+    -- Deep daily storefront chart (2026-10-04): the whole returned chart, free-to-play kept for audit (paid_rank NULL),
+    -- survivors re-ranked paid-only. No title_id here: unknown SKUs never mint ids; join platform_sku_map by external_sku.
+    CREATE TABLE IF NOT EXISTS console_chart_rank_deep_daily (
+      platform TEXT NOT NULL,
+      sort_key TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL,
+      raw_position INTEGER NOT NULL,
+      paid_rank INTEGER,
+      external_sku TEXT NOT NULL,
+      name TEXT,
+      business_model TEXT NOT NULL,
+      msrp_usd_cents INTEGER,
+      captured_at TEXT NOT NULL,
+      PRIMARY KEY (platform, sort_key, snapshot_date, raw_position)
+    );
+    CREATE INDEX IF NOT EXISTS console_chart_rank_deep_by_sku
+      ON console_chart_rank_deep_daily (platform, sort_key, snapshot_date, external_sku);
+
     -- Steam Demos leaderboard (2026-09-22). Deliberately NOT a row in
     -- products -- demos are free, so they must never be reachable by the
     -- store_rating_signal_daily F2P/business_model gate in

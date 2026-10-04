@@ -20,6 +20,7 @@ import { log } from "../../log";
 import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from "./types";
 import { fetchXboxRatingSignal } from "./xbox";
 import { writeRankSnapshot, writeChartSlots, computeTop50Churn } from "./rankSnapshot";
+import { runDeepChartSnapshot } from "./deepChart";
 import { combineChartSlots } from "./chartRank";
 import { fetchSteamCatalogJson } from "../../sales-catalog-steam-http";
 import { SteamCatalogDeferred } from "../../steam-catalog-cooldown";
@@ -318,7 +319,7 @@ interface XboxEmeraldResponse {
  * Discovered via network trace on xbox.com/en-US/games/browse/top-paid-games
  * (Session 2026-09-10). Confirmed 4 sequential calls → 100 unique productIds.
  */
-async function fetchXboxEmeraldPage(
+export async function fetchXboxEmeraldPage(
   channelId: string,
   encodedCT: string | null,
 ): Promise<{ productIds: string[]; nextCT: string | null; totalItems: number }> {
@@ -1184,6 +1185,10 @@ export async function runFullDiscovery(opts: {
   } catch (e: any) {
     log(`rank snapshot write failed (non-fatal): ${e?.message ?? String(e)}`);
   }
+
+  // Deep chart (2026-10-04): full returned chart, free-to-play dropped, paid-only rerank, stored for the
+  // chart-consistency pass. Best-effort and independent of the top-100 flow above; DEEP_CHART_DISABLE=1 turns it off.
+  try { await runDeepChartSnapshot({ log }); } catch (e: any) { log(`deep chart failed (non-fatal): ${e?.message ?? String(e)}`); }
 
   // Emit top-50 churn metric per (platform, sort_key). Null on the first-ever
   // run (no yesterday baseline) is logged and skipped; once 2+ days of history
