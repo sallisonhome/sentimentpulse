@@ -7,14 +7,18 @@
 // PS5 also numbered ranks by position in a flattened base+edition list, which shifted every later title
 // down by the number of editions above it.
 //
-// Fix: take each chart slot's own storefront rank, convert it to a demand score (rank^-exponent, the
-// same power-law taper the rank-anchor floor uses), sum the scores of all slots that resolve to one
-// title_id, then re-rank titles by combined score. One slot per title gives the same rank as before.
+// Fix: take each chart slot's own storefront position (the number a shopper sees), convert it to a demand
+// score (rank^-exponent, the same power-law taper the rank-anchor floor uses), sum the scores of all slots
+// that resolve to one title_id, and convert the total back to the equivalent single-slot position:
+// rank = max(1, score^(-1/exponent)). A title with one slot keeps its exact store position; a title with
+// several slots ranks at least as high as its best slot. Ranks are positions, so ties and gaps are normal.
 
 export const CHART_DEMAND_EXPONENT = 0.7;
 
 export interface ChartSlot { titleId: number; storefrontRank: number }
 export interface TitleRank { titleId: number; rank: number; slots: number; bestSlotRank: number }
+
+export const equivalentRank = (score: number, exponent = CHART_DEMAND_EXPONENT) => Math.max(1, Math.round(Math.pow(score, -1 / exponent)));
 
 export function combineChartSlots(slots: ChartSlot[], exponent = CHART_DEMAND_EXPONENT): TitleRank[] {
   const byTitle = new Map<number, { score: number; slots: number; best: number }>();
@@ -28,5 +32,5 @@ export function combineChartSlots(slots: ChartSlot[], exponent = CHART_DEMAND_EX
   }
   return Array.from(byTitle.entries())
     .sort((a, b) => b[1].score - a[1].score || a[1].best - b[1].best || a[0] - b[0])
-    .map(([titleId, v], i) => ({ titleId, rank: i + 1, slots: v.slots, bestSlotRank: v.best }));
+    .map(([titleId, v]) => ({ titleId, rank: equivalentRank(v.score, exponent), slots: v.slots, bestSlotRank: v.best }));
 }

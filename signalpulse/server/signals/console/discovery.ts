@@ -1118,11 +1118,8 @@ export async function runFullDiscovery(opts: {
   // F2P edition of a paid title is rare (usually a demo variant) and the
   // upsertSkuMap writer enforces the paid-only invariant regardless.
   const ps5DiscoveredRows: UpsertRow[] = [];
-  const ps5ChartSlots: { titleId: number; storefrontRank: number }[] = [];
-  for (let ps5Idx = 0; ps5Idx < ps5Paid.length; ps5Idx++) {
-    const c = ps5Paid[ps5Idx];
+  for (const c of ps5Paid) {
     const baseTitleId = remapTitleId("ps5", c.productId, opts.titleIdFor("ps5", c.productId, c.name));
-    ps5ChartSlots.push({ titleId: baseTitleId, storefrontRank: ps5Idx + 1 });
     ps5DiscoveredRows.push({
       platform: "ps5", externalSku: c.productId,
       titleId: baseTitleId,
@@ -1176,9 +1173,9 @@ export async function runFullDiscovery(opts: {
     if (xboxRankEntries.length > 0) {
       writeRankSnapshot("xbox", "xbox_api_top_paid", xboxRankEntries);
     }
-    // One slot per PSN grid product (editions ride inside their product and add no slot), at the
-    // product's own chart position, so edition rows no longer shift every later title down.
-    const ps5RankEntries = combineChartSlots(ps5ChartSlots);
+    // Every PSN grid row (base + edition) keeps its own position in the flattened sales30 list, which is the
+    // position a shopper sees on the store (Samson = 48), and rows of one game are combined, not last-write-wins.
+    const ps5RankEntries = combineChartSlots(ps5DiscoveredRows.map((r, i) => ({ titleId: r.titleId, storefrontRank: i + 1 })));
     if (ps5RankEntries.length > 0) {
       writeRankSnapshot("ps5", "psn_api_sales30", ps5RankEntries);
     }
