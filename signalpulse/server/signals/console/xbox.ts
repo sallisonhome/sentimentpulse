@@ -156,6 +156,33 @@ function windowFromTimeSpan(span: string | undefined): "d7" | "d30" | "ltd" | nu
   return null;
 }
 
+/**
+ * Pricing → business_model inputs from one displaycatalog product. Iterates every SKU/availability and collects MSRP
+ * values; allSkusZero (every MSRP is 0) means free_to_play. Shared by the per-title collector and the batched deep-chart
+ * classifier so both apply the identical paid-only rule.
+ */
+export function xboxPricingFromProduct(product: any): { allSkusZero: boolean; baseMsrpUsdCents: number | null; currency: string | null } {
+  const skuAvail = Array.isArray(product?.DisplaySkuAvailabilities) ? product.DisplaySkuAvailabilities : [];
+  const msrps: number[] = [];
+  let currency: string | null = null;
+  for (const dsa of skuAvail) {
+    const list = Array.isArray(dsa.Availabilities) ? dsa.Availabilities : [];
+    for (const av of list) {
+      const p = av.OrderManagementData?.Price;
+      if (!p) continue;
+      if (typeof p.MSRP === "number") msrps.push(p.MSRP);
+      if (!currency && typeof p.CurrencyCode === "string") currency = p.CurrencyCode;
+    }
+  }
+  const allSkusZero = msrps.length > 0 && msrps.every(m => m === 0);
+  // Base SKU MSRP heuristic: max non-zero MSRP across SKUs (base tends to be highest single SKU;
+  // editions/upgrades are separate SKUs with their own prices).
+  const nonZero = msrps.filter(m => m > 0);
+  const baseMsrpUsd = nonZero.length > 0 ? Math.max(...nonZero) : (allSkusZero ? 0 : null);
+  const baseMsrpUsdCents = baseMsrpUsd == null ? null : Math.round(baseMsrpUsd * 100);
+  return { allSkusZero, baseMsrpUsdCents, currency };
+}
+
 export async function fetchXboxRatingSignal(input: XboxCollectorInput): Promise<XboxCollectorOutput> {
   const url = `https://displaycatalog.mp.microsoft.com/v7.0/products/${encodeURIComponent(input.bigId)}?market=US&languages=en-us`;
   const raw = await fetchJson<DisplayCatalogResponse>(url, { timeoutMs: 15000 });
@@ -198,30 +225,12 @@ export async function fetchXboxRatingSignal(input: XboxCollectorInput): Promise<
   }
 
   // ─── Pricing → business_model classification ─────────────────────────────
-  // Iterate every SKU/availability and collect MSRP values.
-  const skuAvail = Array.isArray(product.DisplaySkuAvailabilities) ? product.DisplaySkuAvailabilities : [];
-  const msrps: number[] = [];
-  let currency: string | null = null;
-  for (const dsa of skuAvail) {
-    const list = Array.isArray(dsa.Availabilities) ? dsa.Availabilities : [];
-    for (const av of list) {
-      const p = av.OrderManagementData?.Price;
-      if (!p) continue;
-      if (typeof p.MSRP === "number") msrps.push(p.MSRP);
-      if (!currency && typeof p.CurrencyCode === "string") currency = p.CurrencyCode;
-    }
-  }
-  const allSkusZero = msrps.length > 0 && msrps.every(m => m === 0);
-  // Base SKU MSRP heuristic: max non-zero MSRP across SKUs (base tends to be highest single SKU;
-  // editions/upgrades are separate SKUs with their own prices).
-  const nonZero = msrps.filter(m => m > 0);
-  const baseMsrpUsd = nonZero.length > 0 ? Math.max(...nonZero) : (allSkusZero ? 0 : null);
-  const baseMsrpUsdCents = baseMsrpUsd == null ? null : Math.round(baseMsrpUsd * 100);
+  const pricing = xboxPricingFromProduct(product);
 
   return {
     input,
     snapshots,
-    pricing: { allSkusZero, baseMsrpUsdCents, currency },
+    pricing,
     productTitle,
     storeHeaderImageUrl,
     storeReleaseDateIso,

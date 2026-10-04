@@ -110,6 +110,7 @@ import { editionGroupKey } from "./console-sales-family";
 import { detectReviewSurge, SURGE_WINDOWS, REVIEW_SURGE_VERSION } from "./steam-review-surge";
 import { overlayExceedsPublicCeiling, steamPublicCapRatio, publicCeilingFor } from "./console-public-ceilings";
 import { applyChartConsistency, chartModeFromEnv } from "./console-chart-consistency";
+import { readDeepRankByTitle } from "./signals/console/deepChartStore";
 
 // Platform ASP factors used to translate MSRP into an Average Selling Price
 // estimate. Applied at read time so an operator can retune without a re-run
@@ -1341,6 +1342,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             ).all(platform, sortKey, platform, sortKey) as Array<{ title_id: number }>;
             const res = applyChartConsistency(groups as any, new Map(snap.map(r => [r.title_id, r.rank])), new Set(ov.map(r => r.title_id)), mode, {
               recentlyCharted: new Set(recent.map(r => r.title_id)),
+              deepRankByTitle: readDeepRankByTitle(platform).ranks,
               extraExempt: (g: any) => publicCeilingFor(g.editionGroupKey) != null,
             });
             console.log(`[chart-consistency] platform=${platform} window=${window} mode=${mode} ranked=${snap.length} moved=${res.moved} offChartCapped=${res.capped} launchProtected=${res.protectedLaunch} skipped=${res.skipped ?? "no"}`);
