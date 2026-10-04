@@ -159,7 +159,7 @@ esac`); chmodSync(join(bin, "systemctl"), 0o755); };
     // overlay: validated, applied to the COPY only, and visible to the estimator (noise gate printed by the estimator itself)
     db2seed(wd, "noise_gate_min_signal", "50");
     const hOv = sha(join(wd, "data.db"));
-    const shOv = (action: string, ov: string) => spawnSync("bash", [join(SP, "deploy/signalpulse-recompute.sh"), action, ov], { encoding: "utf8", timeout: 280000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SP_LOCK_FILE: join(wd, "lock") } });
+    const shOv = (action: string, ov: string, mode?: string) => spawnSync("bash", [join(SP, "deploy/signalpulse-recompute.sh"), action, ov, ...(mode ? [mode] : [])], { encoding: "utf8", timeout: 280000, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SP_LOCK_FILE: join(wd, "lock") } });
     assert.equal(shOv("estimate-preview", "noise_gate_min_signal.xbox=abc").status, 64, "non-numeric overlay rejected");
     assert.equal(shOv("estimate-preview", "x=1;rm -rf /").status, 64, "shell metacharacters rejected");
     assert.equal(shOv("ranks-preview", "noise_gate_min_signal.xbox=10").status, 64, "overlay only allowed for estimate-preview");
@@ -170,6 +170,12 @@ esac`); chmodSync(join(bin, "systemctl"), 0o755); };
     const plain = shOv("estimate-preview", ""); assert.equal(plain.status, 0, plain.stdout.slice(-600));
     assert.match(plain.stdout, /noise_gate\.xbox=50/, "without the overlay the copy keeps the legacy gate");
     assert.doesNotMatch(plain.stdout, /overlay applied/);
+    // anchor mode: validated, preview-only, passed to the copy's estimator
+    assert.equal(shOv("estimate-preview", "", "bogus").status, 64, "unknown anchor mode rejected");
+    assert.equal(shOv("ranks-preview", "", "report").status, 64, "anchor mode only allowed for estimate-preview");
+    const rep = shOv("estimate-preview", "", "report"); assert.equal(rep.status, 0, rep.stdout.slice(-600) + rep.stderr.slice(-600));
+    assert.match(rep.stdout, /no rank-anchor-compare lines \(mode report\)|\[rank-anchor-compare\] mode=report/, "report mode ran on the copy");
+    assert.match(plain.stdout, /no rank-anchor-compare lines \(mode legacy\)/, "default mode is legacy and prints no comparison");
     assert.equal((ov.stdout.match(/^CHART /gm) ?? []).length, 8, "chart report printed for before and after, 2 platforms x 2 windows");
     assert.equal(sha(join(wd, "data.db")), hOv, "live DB unchanged by an overlay preview");
     const ea = sh("estimate-apply"); assert.equal(ea.status, 0, ea.stdout.slice(-600) + ea.stderr.slice(-600)); assert.match(ea.stdout, /PHASE 3[\s\S]*PHASE 4[\s\S]*recompute done/);

@@ -2,7 +2,7 @@
 # signalpulse-recompute.sh — re-derive stored ranks / estimates from data ALREADY collected today.
 # No storefront, Steam, Sony or Microsoft requests are made by any action here.
 #
-# Usage: signalpulse-recompute.sh <action> [overlay]
+# Usage: signalpulse-recompute.sh <action> [overlay] [anchor_mode]
 #   ranks-preview     rebuild title-level chart ranks from stored raw chart slots; print the diff; write nothing
 #   ranks-apply       same, then write the rebuilt ranks (idempotent)
 #   estimate-preview  copy the live DB, run the estimator on the COPY, print the before/after diff and the chart-consistency
@@ -16,6 +16,11 @@
 set -Eeuo pipefail
 ACTION="${1:-}"
 OVERLAY="${2:-}"
+ANCHOR_MODE="${3:-}"   # estimate-preview only: legacy | report | curve (RANK_ANCHOR_MODE for the copy's estimator run)
+if [[ -n "$ANCHOR_MODE" ]]; then
+  [[ "$ACTION" == "estimate-preview" ]] || { echo "anchor mode is only allowed for estimate-preview" >&2; exit 64; }
+  [[ "$ANCHOR_MODE" =~ ^(legacy|report|curve)$ ]] || { echo "bad anchor mode (legacy|report|curve)" >&2; exit 64; }
+fi
 case "$ACTION" in ranks-preview|ranks-apply|estimate-preview|estimate-apply) ;; *) echo "unknown action '$ACTION'" >&2; exit 64;; esac
 if [[ -n "$OVERLAY" ]]; then
   [[ "$ACTION" == "estimate-preview" ]] || { echo "overlay is only allowed for estimate-preview" >&2; exit 64; }
@@ -64,7 +69,8 @@ case "$ACTION" in
     log "chart report on the live-data copy (before)"
     ( cd "$TMPD/base" && timeout --kill-after=15 240 "$TSX" "$WD/scripts/preview-chart-report.ts" before ) | grep '^CHART' || true
     log "running the estimator on the candidate COPY"
-    ( cd "$TMPD/cand" && timeout --kill-after=15 300 "$TSX" "$WD/scripts/estimate-console-units.ts" ) || { log "estimator failed on the copy"; exit 30; }
+    ( cd "$TMPD/cand" && RANK_ANCHOR_MODE="${ANCHOR_MODE:-legacy}" timeout --kill-after=15 300 "$TSX" "$WD/scripts/estimate-console-units.ts" | tee "$TMPD/cand-estimator.log" ) || { log "estimator failed on the copy"; exit 30; }
+    grep '\[rank-anchor-compare\]' "$TMPD/cand-estimator.log" || log "no rank-anchor-compare lines (mode ${ANCHOR_MODE:-legacy})"
     "$TSX" "$WD/scripts/preview-estimate-diff.ts" "$TMPD/base/data.db" "$TMPD/cand/data.db" d7 10
     "$TSX" "$WD/scripts/preview-estimate-diff.ts" "$TMPD/base/data.db" "$TMPD/cand/data.db" d30 10
     log "chart report on the candidate copy (after)"
