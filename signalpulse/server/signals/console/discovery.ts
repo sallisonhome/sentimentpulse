@@ -20,6 +20,7 @@ import { log } from "../../log";
 import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from "./types";
 import { fetchXboxRatingSignal } from "./xbox";
 import { writeRankSnapshot, computeTop50Churn } from "./rankSnapshot";
+import { combineChartSlots } from "./chartRank";
 import { fetchSteamCatalogJson } from "../../sales-catalog-steam-http";
 import { SteamCatalogDeferred } from "../../steam-catalog-cooldown";
 
@@ -1117,8 +1118,11 @@ export async function runFullDiscovery(opts: {
   // F2P edition of a paid title is rare (usually a demo variant) and the
   // upsertSkuMap writer enforces the paid-only invariant regardless.
   const ps5DiscoveredRows: UpsertRow[] = [];
-  for (const c of ps5Paid) {
+  const ps5ChartSlots: { titleId: number; storefrontRank: number }[] = [];
+  for (let ps5Idx = 0; ps5Idx < ps5Paid.length; ps5Idx++) {
+    const c = ps5Paid[ps5Idx];
     const baseTitleId = remapTitleId("ps5", c.productId, opts.titleIdFor("ps5", c.productId, c.name));
+    ps5ChartSlots.push({ titleId: baseTitleId, storefrontRank: ps5Idx + 1 });
     ps5DiscoveredRows.push({
       platform: "ps5", externalSku: c.productId,
       titleId: baseTitleId,
@@ -1167,11 +1171,14 @@ export async function runFullDiscovery(opts: {
   // Rank writes are best-effort: a failure here must not break discovery
   // (leaderboards still work without a snapshot; only churn / hot-badge do).
   try {
-    const xboxRankEntries = xboxRows.map((r, i) => ({ titleId: r.titleId, rank: i + 1 }));
+    // Title-level rank: SKUs of one game are combined by demand (chartRank.ts), not last-write-wins.
+    const xboxRankEntries = combineChartSlots(xboxRows.map((r, i) => ({ titleId: r.titleId, storefrontRank: i + 1 })));
     if (xboxRankEntries.length > 0) {
       writeRankSnapshot("xbox", "xbox_api_top_paid", xboxRankEntries);
     }
-    const ps5RankEntries = ps5DiscoveredRows.map((r, i) => ({ titleId: r.titleId, rank: i + 1 }));
+    // One slot per PSN grid product (editions ride inside their product and add no slot), at the
+    // product's own chart position, so edition rows no longer shift every later title down.
+    const ps5RankEntries = combineChartSlots(ps5ChartSlots);
     if (ps5RankEntries.length > 0) {
       writeRankSnapshot("ps5", "psn_api_sales30", ps5RankEntries);
     }
