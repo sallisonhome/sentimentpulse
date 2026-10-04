@@ -48,6 +48,7 @@ import { advanceLifetimeSignal } from "../server/lifetime-signal";
 import {refreshSteamUnitCalibration} from "../server/steam-unit-calibration";
 import {evaluateSteamSalesShadow} from "../server/steam-sales-shadow";
 import { capRankAnchorFloor, enforceRankAnchorWindows } from "../server/rank-anchor-guard";
+import { rankAnchorModeFromEnv, legacyFloor, chooseFloor, type Ref } from "../server/rank-anchor-curve";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -937,6 +938,28 @@ async function main() {
       d7UnitsByKey.set(`${r.titleId}|${r.platform}`, r.unitsMid);
     }
 
+    // Durable floor (2026-10-04): RANK_ANCHOR_MODE = legacy (default, unchanged) | report (legacy applied, alternative logged) | curve.
+    // Eligible references for the daily rank curve and for the peer median: stabilised, not overridden, not themselves
+    // rank-anchored, not gated, with a positive d7 estimate. Built per platform from the same snapshot the peers come from.
+    const rankAnchorMode = rankAnchorModeFromEnv(process.env.RANK_ANCHOR_MODE);
+    const refMethodByKey = new Map<string, string>();
+    for (const r of rows) if (r.window === "d7") refMethodByKey.set(`${r.titleId}|${r.platform}`, String(r.method ?? ""));
+    const eligibleRefsByPlatform = new Map<string, Map<number, number>>();   // platform -> titleId -> rank
+    for (const plat of ["ps5", "xbox"] as const) {
+      const snap = db.prepare(`SELECT title_id, rank FROM console_storefront_rank_daily WHERE platform = ? AND sort_key = ? AND snapshot_date = ?`)
+        .all(plat, RANK_ANCHOR_SORT_KEY[plat], asOfDate) as Array<{ title_id: number; rank: number }>;
+      const m = new Map<number, number>();
+      for (const sr of snap) {
+        const key = `${sr.title_id}|${plat}`;
+        const u = d7UnitsByKey.get(key);
+        if (u == null || !(u > 0)) continue;
+        if (isReleasedWithin(sr.title_id, RANK_ANCHOR_MAX_RELEASE_AGE_DAYS)) continue;
+        if (overrideByKey.has(key)) continue;
+        if ((refMethodByKey.get(key) ?? "").startsWith("rank_anchor:")) continue;
+        m.set(sr.title_id, sr.rank);
+      }
+      eligibleRefsByPlatform.set(plat, m);
+    }
     let anchoredCount = 0;
     let skippedNoPeers = 0;
     for (const row of rows) {
@@ -966,14 +989,33 @@ async function main() {
         units: d7UnitsByKey.get(`${p.titleId}|${row.platform}`)!,
       }));
 
-      if (stabilisedPeers.length === 0) { skippedNoPeers++; continue; }
-
       // Power-law taper: floor = mean(peer_units) × (anchor_rank^-α) / mean(peer_rank^-α)
       const alpha = RANK_ANCHOR_TAPER_EXPONENT;
-      const peerUnitMean = stabilisedPeers.reduce((s, p) => s + p.units, 0) / stabilisedPeers.length;
-      const peerWeightMean = stabilisedPeers.reduce((s, p) => s + Math.pow(p.rank, -alpha), 0) / stabilisedPeers.length;
-      const anchorWeight = Math.pow(anchorRank, -alpha);
-      const uncappedFloor = peerUnitMean * (anchorWeight / peerWeightMean);
+      const legacy = legacyFloor(stabilisedPeers, anchorRank, alpha);
+      let uncappedFloor: number;
+      let floorTag = "";
+      if (rankAnchorMode === "legacy") {
+        if (legacy == null) { skippedNoPeers++; continue; }
+        uncappedFloor = legacy;
+      } else {
+        const refMap = eligibleRefsByPlatform.get(row.platform)!;
+        const refs: Ref[] = [...refMap].map(([tid, rank]) => ({ rank, units: d7UnitsByKey.get(`${tid}|${row.platform}`)! }));
+        const eligiblePeers: Ref[] = peers.filter(p => refMap.has(p.titleId)).map(p => ({ rank: p.rank, units: d7UnitsByKey.get(`${p.titleId}|${row.platform}`)! }));
+        const choice = chooseFloor(refs, eligiblePeers, anchorRank, alpha);
+        const nm = (db.prepare(`SELECT name FROM console_title_igdb WHERE title_id = ?`).get(row.titleId) as { name?: string } | undefined)?.name ?? "?";
+        console.log(`[rank-anchor-compare] mode=${rankAnchorMode} platform=${row.platform} title=${row.titleId} name=${JSON.stringify(nm.slice(0, 40))} rank=${anchorRank} natural=${row.unitsMid ?? "null"} ` +
+          `legacy=${legacy == null ? "none" : Math.round(legacy)} legacyPeers=${stabilisedPeers.length} legacyPeerUnits=${JSON.stringify(stabilisedPeers.map(p => Math.round(p.units)))} ` +
+          `durable=${choice.floor == null ? "none" : Math.round(choice.floor)} basis=${choice.basis ?? "none"} median=${choice.medianFloor == null ? "none" : Math.round(choice.medianFloor)} ` +
+          `curveN=${choice.curve?.n ?? 0} slope=${choice.curve ? choice.curve.b.toFixed(2) : "n/a"} r2=${choice.curve ? choice.curve.r2.toFixed(2) : "n/a"} eligiblePeers=${eligiblePeers.length}`);
+        if (rankAnchorMode === "report") {
+          if (legacy == null) { skippedNoPeers++; continue; }
+          uncappedFloor = legacy;
+        } else {
+          if (choice.floor == null) { skippedNoPeers++; continue; }
+          uncappedFloor = choice.floor;
+          floorTag = choice.basis === "curve" ? "+curve_v1" : "+median_v1";
+        }
+      }
       // Ceiling from the title's own ratings-derived lifetime units (see rank-anchor-guard.ts).
       const ltdOfTitle = rows.find(r => r.titleId === row.titleId && r.platform === row.platform && r.window === "ltd");
       const capped = capRankAnchorFloor(uncappedFloor, ltdOfTitle);
@@ -997,7 +1039,7 @@ async function main() {
       row.ownersMid = flooredOwners;
       row.ownersLow  = Math.round(flooredOwners * (1 - appliedCiPct));
       row.ownersHigh = Math.round(flooredOwners * (1 + appliedCiPct));
-      row.method = `rank_anchor:${sortKey}${capped.capped ? "+ratings_cap_v1" : ""}`;
+      row.method = `rank_anchor:${sortKey}${floorTag}${capped.capped ? "+ratings_cap_v1" : ""}`;
       row.gatedReason = null;                                   // un-gate if noise-gate had tripped
       // Keep signal_value as-is (audit trail of what ratings gave us) so the
       // floor's contribution over the raw signal is visible in the DB.

@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 4, 2026
 
+- New-release floor on console boards now has a more stable method available (off by default): a floor read from that day's
+  rank curve, or a median of neighbours, instead of an average that one outlier could move. A comparison mode shows both
+  side by side before anything changes. Preview-only so far.
 - Console boards now rank titles by their combined storefront presence: every
   edition of a game counts, ties follow the order the store shows, and a title
   with one chart entry keeps its exact store position. A report-only check marks
