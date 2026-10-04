@@ -1343,7 +1343,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               recentlyCharted: new Set(recent.map(r => r.title_id)),
               extraExempt: (g: any) => publicCeilingFor(g.editionGroupKey) != null,
             });
-            console.log(`[chart-consistency] platform=${platform} window=${window} mode=${mode} ranked=${snap.length} moved=${res.moved} offChartCapped=${res.capped} skipped=${res.skipped ?? "no"}`);
+            console.log(`[chart-consistency] platform=${platform} window=${window} mode=${mode} ranked=${snap.length} moved=${res.moved} offChartCapped=${res.capped} launchProtected=${res.protectedLaunch} skipped=${res.skipped ?? "no"}`);
           }
         } catch (chartErr: any) {
           console.log(`[chart-consistency] skipped (${chartErr?.message ?? chartErr}); returning estimates unchanged`);
