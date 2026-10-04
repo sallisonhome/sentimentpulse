@@ -1,0 +1,59 @@
+name: SignalPulse YouTube Query (read-only)
+
+# Read-only SQLite query helper for youtube.db on the droplet (YouTube Pulse).
+# Same guard style as signalpulse-db-query.yml, but opens youtube.db with
+# sqlite3 -readonly, so nothing can be written even if the guard is bypassed.
+# Added 2026-10-04 at the owner's request so the Hellraiser daily briefing can
+# read YouTube Pulse stats without a signed-in browser session. Does not touch
+# data.db, does not call the YouTube API, does not run ingestion.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sql:
+        description: 'SQL to run (single SELECT or WITH statement)'
+        required: true
+      mode:
+        description: 'Output format'
+        required: false
+        default: 'json'
+        type: choice
+        options: [column, csv, json, line]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  q:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run query
+        env:
+          SQL: ${{ github.event.inputs.sql }}
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -e
+          upper=$(printf '%s' "$SQL" | tr '[:lower:]' '[:upper:]' | tr '\n' ' ')
+          case "$upper" in
+            SELECT*|WITH*) ;;
+            *) echo "ERROR: only SELECT or WITH statements are allowed"; exit 1;;
+          esac
+          case " $upper " in
+            *" INSERT "*|*" UPDATE "*|*" DELETE "*|*" DROP "*|*" ALTER "*|*" CREATE "*|*" REPLACE "*|*" ATTACH "*|*" VACUUM "*|*" PRAGMA "*)
+              echo "ERROR: write-like statement rejected"; exit 1;;
+          esac
+          if printf '%s\n' "$SQL" | grep -qE '^[[:space:]]*\.'; then echo "ERROR: dot-commands rejected"; exit 1; fi
+          SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
+          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/youtube.db\"")
+          echo "DB: $DB_PATH"
+          printf '%s\n' "$SQL" | $SSH "cat > /tmp/yq.sql && sqlite3 -readonly -header -${MODE:-json} \"$DB_PATH\" < /tmp/yq.sql"
