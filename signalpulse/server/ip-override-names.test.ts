@@ -20,11 +20,12 @@ test("unrelated titles are not captured", () => {
   }
 });
 
-test("Minecraft Dungeons II holds Xbox at PS5 parity and leaves Minecraft Dungeons 1 on the default mix", () => {
-  const ps5 = ipOverrideFactorFor("Minecraft Dungeons II", "ps5")!.factor;
-  assert.ok(Math.abs(ps5 - 37.9 / 49.5) < 1e-9);
-  assert.equal(ipOverrideFactorFor("Minecraft Dungeons II", "xbox")!.factor, ps5);
-  assert.equal(ipOverrideFactorFor("MINECRAFT DUNGEONS II Deluxe Edition", "xbox")!.factor, ps5);
+test("Minecraft Dungeons II: PS5 is set from its own ratings (0.216x Steam), Xbox keeps 0.77x, Minecraft Dungeons 1 stays on the default mix", () => {
+  const ps5 = ipOverrideFactorFor("Minecraft Dungeons II", "ps5")!.factor, xbox = ipOverrideFactorFor("Minecraft Dungeons II", "xbox")!.factor;
+  assert.ok(Math.abs(ps5 - 10.7 / 49.5) < 1e-9);
+  assert.ok(Math.abs(xbox - 37.9 / 49.5) < 1e-9);
+  assert.equal(ipOverrideFactorFor("MINECRAFT DUNGEONS II Deluxe Edition", "xbox")!.factor, xbox);
+  assert.equal(ipOverrideFactorFor("MINECRAFT DUNGEONS II Deluxe Edition", "ps5")!.factor, ps5);
   assert.equal(ipOverrideFactorFor("Minecraft Dungeons for Windows + Launcher", "xbox"), null);
   assert.equal(ipOverrideFactorFor("Minecraft", "xbox"), null);
 });

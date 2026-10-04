@@ -69,7 +69,7 @@ test("anchors, actuals, verified anchors and overrides are never moved but still
   assert.equal(isChartExempt({ familyTitleIds: [1], unitsMid: 1, revenueMidUsd: 1, dataSource: "derived_from_steam_ip_override" }, new Set()), false);
 });
 
-test("references use pre-adjustment values, so results do not depend on row order and do not cascade", () => {
+test("results do not depend on row order even when neighbours are adjusted too", () => {
   const { groups, ranks } = fixture(); groups[29].unitsMid = groups[29].unitsMid! * 6; groups[30].unitsMid = groups[30].unitsMid! * 6;
   const a = clone(groups); applyChartConsistency(a, ranks, new Set(), "enforce");
   const rev = clone(groups).reverse(); applyChartConsistency(rev, ranks, new Set(), "enforce"); rev.reverse();
@@ -98,7 +98,7 @@ test("null, zero and gated units are ignored; multi-SKU family uses its combined
   assert.equal(groupChartRank(fam, ranks), 15);   // two SKUs near #40 sum to the demand of one slot at ~#15 (units ~ rank^-0.7)
 });
 
-test("invariant: after enforce no movable row exceeds its ceiling (randomised, 200 charts)", () => {
+test("invariant: values stay positive and finite and raises stay capped at 3x (randomised, 200 charts, iteration included)", () => {
   let seed = 7; const rnd = () => (seed = (seed * 1664525 + 1013904223) % 4294967296) / 4294967296;
   for (let t = 0; t < 200; t++) {
     const { groups, ranks } = fixture();
@@ -106,10 +106,6 @@ test("invariant: after enforce no movable row exceeds its ceiling (randomised, 2
     const pre = clone(groups); const g = clone(groups); applyChartConsistency(g, ranks, new Set(), "enforce");
     g.forEach((row, i) => {
       assert.ok(row.unitsMid! > 0 && Number.isFinite(row.unitsMid!));
-      if (row.unitsMid! < pre[i].unitsMid!) {
-        const above = pre.slice(Math.max(0, i - 5), i).map(x => x.unitsMid!).sort((a, b) => a - b);
-        assert.ok(row.unitsMid! >= Math.round(CHART_TOLERANCE * above[Math.floor(above.length / 2)]) - 1 || above.length < 5, "lowered row must land on its ceiling");
-      }
       if (row.unitsMid! > pre[i].unitsMid!) assert.ok(row.unitsMid! <= CHART_MAX_RAISE * pre[i].unitsMid! + 1);
     });
   }
@@ -139,4 +135,48 @@ test("launch window: a pre-order / launch-week title is annotated but never move
   assert.equal(inLaunchWindow("2026-10-06", "2026-10-04"), true);   // future release (pre-order)
   assert.equal(inLaunchWindow("2026-09-26", "2026-10-04"), false);
   assert.equal(inLaunchWindow(null, "2026-10-04"), false); assert.equal(inLaunchWindow("bad", "2026-10-04"), false);
+});
+
+// Regression for Minecraft Dungeons II on PS5 (2026-10-04): the ceiling for a title came from the median of its
+// neighbours' PRE-cut values, two of which were inflated and about to be cut or were launch-protected, so the title
+// kept a bound of 168K while its neighbours settled at 16K-54K.
+function mdFixture() {
+  const { groups, ranks } = fixture();
+  // title at rank 30; its five better-charting neighbours (ranks 25..29) are inflated 6x and are themselves out of bounds
+  for (const i of [24, 25, 26, 27, 28]) groups[i].unitsMid = groups[i].unitsMid! * 6;
+  groups[29].unitsMid = groups[29].unitsMid! * 10;
+  return { groups, ranks };
+}
+
+test("a ceiling follows the neighbours' adjusted values, not the pre-cut values they are about to lose", () => {
+  const { groups, ranks } = mdFixture();
+  const g = clone(groups); applyChartConsistency(g, ranks, new Set(), "enforce");
+  const adjAbove = g.slice(24, 29).map(x => x.unitsMid!).sort((a, b) => a - b);
+  const bound = Math.round(CHART_TOLERANCE * adjAbove[2]);
+  assert.ok(g[29].unitsMid! <= bound + 1, `rank 30 holds ${g[29].unitsMid} but adjusted neighbours bound it at ${bound}`);
+  // the old single-pass bound, for contrast, is far higher
+  const preAbove = groups.slice(24, 29).map(x => x.unitsMid!).sort((a, b) => a - b);
+  assert.ok(Math.round(CHART_TOLERANCE * preAbove[2]) > bound, "the single-pass bound would have been higher");
+  // report mode shows the same final bound and changes nothing
+  const r = clone(groups); applyChartConsistency(r, ranks, new Set(), "report");
+  assert.equal(r[29].unitsMid, groups[29].unitsMid);
+  assert.equal((r[29].chartConsistency as any).after, g[29].unitsMid);
+});
+
+test("a launch-week title is not used as a reference for its neighbours", () => {
+  const { groups, ranks } = fixture();
+  groups[26].unitsMid = groups[26].unitsMid! * 20; groups[26].releaseDate = "2026-10-01";   // inflated launch title at rank 27
+  groups[29].unitsMid = groups[29].unitsMid! * 3;                                            // rank 30, above its neighbours' scale
+  const g = clone(groups); applyChartConsistency(g, ranks, new Set(), "enforce", { today: "2026-10-04" });
+  assert.equal(g[26].unitsMid, groups[26].unitsMid, "the launch title itself is never moved");
+  const clean = groups.slice(24, 29).filter((_, i) => i !== 2).map(x => x.unitsMid!);   // neighbours without the launch title
+  const nbrs = [groups[23].unitsMid!, ...clean].sort((a, b) => a - b);
+  assert.ok(g[29].unitsMid! <= Math.round(CHART_TOLERANCE * nbrs[2]) + 1);
+});
+
+test("a consistent chart is untouched by the iteration", () => {
+  const { groups, ranks } = fixture();
+  const before = JSON.stringify(groups);
+  const g = clone(groups); applyChartConsistency(g, ranks, new Set(), "enforce");
+  assert.equal(JSON.stringify(g), before);
 });

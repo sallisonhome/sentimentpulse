@@ -153,14 +153,15 @@ const IP_OVERRIDE_RULES: IpOverrideRule[] = [
   { pattern: /^\s*(ea\s*sports\s*)?madden\s*nfl/i,  label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
-  // Minecraft Dungeons II (Xbox Game Studios, Game Pass day one). Lifetime store ratings on
-  // 2026-10-03: Steam 6,437, PS5 1,452, Xbox 1,405 base + 51 Deluxe (about 1 : 1 with PS5).
-  // Across the 45 titles on all three boards the median Xbox/PS5 ratings ratio is 0.21, while
-  // the default mix assumes Xbox units are 0.33 of PS5. Ratings calibration would put Xbox at
-  // about 1.6x PS5; the Xbox listing also counts PC Play Anywhere and Game Pass players, so
-  // Xbox is held at parity with PS5 (same factor as PS5: 37.9/49.5 of Steam). Range: default
-  // 0.25x Steam (low), parity 0.77x (used), ratings-calibrated 1.22x (high).
-  { pattern: /^\s*minecraft\s+dungeons\s+(ii|2)\b/i, label: "Minecraft Dungeons II", ps5: 37.9, xbox: 37.9, steam: 49.5 },
+  // Minecraft Dungeons II (Xbox Game Studios, Game Pass day one). Lifetime store ratings on 2026-10-03: Steam 6,437,
+  // PS5 1,452, Xbox 1,405 base + 51 Deluxe. PS5 ratings are 0.23x Steam, and the generic PS5 mix (37.9/49.5 = 0.77x Steam)
+  // put PS5 at 186,514 units, 3.4x what its own ratings estimate (52,800) supports and above four titles that chart ABOVE it
+  // on the PS5 store (CONTROL Resonant 54K at rank 9, Halloween 16K at rank 11, Dune 16K at rank 13; MD2 is rank 12).
+  // PS5 is therefore set to 10.7/49.5 = 0.216x Steam, which reproduces the PS5 ratings estimate (about 52.7K units at the
+  // $24 PS5 ASP when Steam is 295K). Ratings lag a launch, so this is the upper end of the 16K-54K chart-neighbour range.
+  // Xbox is unchanged (0.77x Steam): the Xbox listing counts PC Play Anywhere and Game Pass players and has no chart rank,
+  // so it is decided separately (the chart check caps it once the 7-day launch window ends).
+  { pattern: /^\s*minecraft\s+dungeons\s+(ii|2)\b/i, label: "Minecraft Dungeons II", ps5: 10.7, xbox: 37.9, steam: 49.5 },
   // Sony first-party IPs — PS5 flagship mix (PS5 90 / Steam 10 / Xbox 0).
   { pattern: /^\s*(marvel'?s\s+)?spider-?man/i,   label: "Spider-Man",                  ps5: 90, xbox: 0,  steam: 10 },
   { pattern: /^\s*god\s*of\s*war/i,               label: "God of War",                  ps5: 90, xbox: 0,  steam: 10 },
