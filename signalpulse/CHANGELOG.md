@@ -4,6 +4,11 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 4, 2026
 
+- Store-chart checks on the PS5 and Xbox 7- and 30-day boards now measure each title against its neighbours after their
+  own adjustments, and ignore launch-week titles as references. A title next to an inflated neighbour is no longer held
+  at a bound that neighbour was about to lose.
+- Minecraft Dungeons II on PS5 now follows its own store ratings (about 53K units in the first week instead of 187K),
+  in line with the titles charting on either side of it. Xbox is unchanged for now.
 - New-release floor on console boards now has a more stable method available (off by default): a floor read from that day's
   rank curve, or a median of neighbours, instead of an average that one outlier could move. A comparison mode shows both
   side by side before anything changes. Preview-only so far.

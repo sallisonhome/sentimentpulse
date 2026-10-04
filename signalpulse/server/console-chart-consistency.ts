@@ -109,63 +109,95 @@ export interface ChartOptions {
   recentlyCharted?: Set<number>;
 }
 
+export const CHART_MAX_PASSES = 4;
+
+interface Decision { g: ChartGroup; rank: number | null; target: number; bound: ChartNote["bound"]; nb: number; deepRank: number | null }
+
 export function applyChartConsistency(
   groups: ChartGroup[], rankByTitle: Map<number, number>, overrideTitleIds: Set<number>, mode: ChartMode, opts: ChartOptions = {},
 ): { moved: number; capped: number; protectedLaunch: number; skipped: string | null } {
   if (mode === "off") return { moved: 0, capped: 0, protectedLaunch: 0, skipped: "off" };
   const today = opts.today ?? new Date().toISOString().slice(0, 10);
-  const refs = groups
+  const exempt = (g: ChartGroup) => isChartExempt(g, overrideTitleIds) || !!opts.extraExempt?.(g);
+  const allRefs = groups
     .map(g => ({ g, rank: groupChartRank(g, rankByTitle), units: g.unitsMid }))
     .filter((x): x is { g: ChartGroup; rank: number; units: number } => x.rank != null && x.units != null && x.units > 0)
     .sort((a, b) => a.rank - b.rank);
-  if (refs.length < (opts.minRanked ?? CHART_MIN_RANKED)) return { moved: 0, capped: 0, protectedLaunch: 0, skipped: `thin_chart(${refs.length})` };
-  const baseUnits = new Map(refs.map(r => [r.g, r.units]));   // references use PRE-adjustment values
-  const deepest = refs.slice(-CHART_NEIGHBOURS).map(r => r.units);
-  const curve = opts.deepRankByTitle && opts.deepRankByTitle.size > 0 ? fitRankCurve(refs.map(r => ({ rank: r.rank, units: r.units }))) : null;
-  let moved = 0, capped = 0, protectedLaunch = 0;
+  if (allRefs.length < (opts.minRanked ?? CHART_MIN_RANKED)) return { moved: 0, capped: 0, protectedLaunch: 0, skipped: `thin_chart(${allRefs.length})` };
+  // Launch-week titles are never moved, so their own estimate is unreliable and the chart is incomplete for them:
+  // they must not serve as a reference for their neighbours either (unless exempt, e.g. an anchored actual).
+  const refs = allRefs.filter(r => exempt(r.g) || !inLaunchWindow(r.g.releaseDate, today));
 
-  for (const g of groups) {
-    if (g.unitsMid == null || g.unitsMid <= 0) continue;
-    if (isChartExempt(g, overrideTitleIds) || opts.extraExempt?.(g)) continue;
-    const rank = groupChartRank(g, rankByTitle);
-    let target: number | null = null; let bound: ChartNote["bound"] = "ceiling"; let nb = 0; let deepRank: number | null = null;
-    if (rank == null) {
-      // A title that charted on a recent snapshot but is missing today may be a one-day miss or an ID-mapping gap:
-      // never cap it. Only titles absent from every recent snapshot count as off-chart.
-      if (opts.recentlyCharted && g.familyTitleIds.some(id => opts.recentlyCharted!.has(id))) continue;
-      target = CHART_TOLERANCE * median(deepest); bound = "off_chart_cap"; nb = deepest.length;
-      // A deep paid rank (below the top-ranked set) gives a rank-based ceiling; it can only lower the flat cap, never raise it.
-      const deepRanks = curve ? g.familyTitleIds.map(id => opts.deepRankByTitle!.get(id)).filter((v): v is number => v != null) : [];
-      if (curve && deepRanks.length > 0) {
-        const dr = Math.min(...deepRanks);
-        const byRank = CHART_TOLERANCE * curveUnits(curve, dr);
-        if (byRank < target) { target = byRank; bound = "deep_rank_ceiling"; nb = curve.n; deepRank = dr; }
+  // The bound for a title is computed from its neighbours' values AFTER the same pass has adjusted them, found by
+  // iterating to a fixed point. Every pass reads only the previous pass's values, so the result does not depend on row
+  // order. A neighbour that is itself cut (or raised) therefore no longer anchors its neighbours to a value it is about
+  // to lose. Capped at CHART_MAX_PASSES; the last pass is used if the values are still moving.
+  const decide = (work: Map<ChartGroup, number>): Map<ChartGroup, Decision> => {
+    const out = new Map<ChartGroup, Decision>();
+    const unitsOf = (r: { g: ChartGroup }) => work.get(r.g)!;
+    const deepest = refs.slice(-CHART_NEIGHBOURS).map(unitsOf);
+    const curve = opts.deepRankByTitle && opts.deepRankByTitle.size > 0 ? fitRankCurve(refs.map(r => ({ rank: r.rank, units: unitsOf(r) }))) : null;
+    for (const g of groups) {
+      if (g.unitsMid == null || g.unitsMid <= 0) continue;
+      if (exempt(g)) continue;
+      const rank = groupChartRank(g, rankByTitle);
+      let target: number | null = null; let bound: ChartNote["bound"] = "ceiling"; let nb = 0; let deepRank: number | null = null;
+      if (rank == null) {
+        // A title that charted on a recent snapshot but is missing today may be a one-day miss or an ID-mapping gap:
+        // never cap it. Only titles absent from every recent snapshot count as off-chart.
+        if (opts.recentlyCharted && g.familyTitleIds.some(id => opts.recentlyCharted!.has(id))) continue;
+        target = CHART_TOLERANCE * median(deepest); bound = "off_chart_cap"; nb = deepest.length;
+        // A deep paid rank (below the top-ranked set) gives a rank-based ceiling; it can only lower the flat cap, never raise it.
+        const deepRanks = curve ? g.familyTitleIds.map(id => opts.deepRankByTitle!.get(id)).filter((v): v is number => v != null) : [];
+        if (curve && deepRanks.length > 0) {
+          const dr = Math.min(...deepRanks);
+          const byRank = CHART_TOLERANCE * curveUnits(curve, dr);
+          if (byRank < target) { target = byRank; bound = "deep_rank_ceiling"; nb = curve.n; deepRank = dr; }
+        }
+        if (!(g.unitsMid > target)) target = null;
+      } else {
+        const above = refs.filter(r => r.rank < rank && r.g !== g).slice(-CHART_NEIGHBOURS);
+        const below = refs.filter(r => r.rank > rank && r.g !== g).slice(0, CHART_NEIGHBOURS);
+        if (above.length >= 3) {
+          const ceil = CHART_TOLERANCE * median(above.map(unitsOf));
+          if (g.unitsMid > ceil) { target = ceil; bound = "ceiling"; nb = above.length; }
+        }
+        if (target == null && below.length >= 3) {
+          const floor = Math.min(median(below.map(unitsOf)) / CHART_TOLERANCE, CHART_MAX_RAISE * g.unitsMid);
+          if (g.unitsMid < floor) { target = floor; bound = "floor"; nb = below.length; }
+        }
       }
-      if (!(g.unitsMid > target)) target = null;
-    } else {
-      const above = refs.filter(r => r.rank < rank && r.g !== g).slice(-CHART_NEIGHBOURS);
-      const below = refs.filter(r => r.rank > rank && r.g !== g).slice(0, CHART_NEIGHBOURS);
-      if (above.length >= 3) {
-        const ceil = CHART_TOLERANCE * median(above.map(r => baseUnits.get(r.g)!));
-        if (g.unitsMid > ceil) { target = ceil; bound = "ceiling"; nb = above.length; }
-      }
-      if (target == null && below.length >= 3) {
-        const floor = Math.min(median(below.map(r => baseUnits.get(r.g)!)) / CHART_TOLERANCE, CHART_MAX_RAISE * g.unitsMid);
-        if (g.unitsMid < floor) { target = floor; bound = "floor"; nb = below.length; }
-      }
+      if (target == null) continue;
+      out.set(g, { g, rank, target, bound, nb, deepRank });
     }
-    if (target == null) continue;
-    const before = g.unitsMid; const after = Math.round(target); const f = after / before;
+    return out;
+  };
+
+  let work = new Map<ChartGroup, number>(refs.map(r => [r.g, r.units]));
+  let decisions = decide(work);
+  for (let pass = 1; pass < CHART_MAX_PASSES; pass++) {
+    const next = new Map(work);
+    for (const d of Array.from(decisions.values())) if (next.has(d.g) && !inLaunchWindow(d.g.releaseDate, today)) next.set(d.g, Math.round(d.target));
+    let changed = false;
+    next.forEach((u, g) => { if (Math.abs(u - work.get(g)!) >= 1) changed = true; });
+    if (!changed) break;
+    work = next; decisions = decide(work);
+  }
+
+  let moved = 0, capped = 0, protectedLaunch = 0;
+  for (const d of Array.from(decisions.values())) {
+    const g = d.g;
+    const before = g.unitsMid!; const after = Math.round(d.target); const f = after / before;
     if (inLaunchWindow(g.releaseDate, today)) {
       // Shown so the contradiction is visible, but never applied: the chart is incomplete for pre-order / launch-week titles.
-      g.chartConsistency = { chartRank: rank, before, after, bound: "launch_window_protected", applied: false, neighbours: nb } as ChartNote;
+      g.chartConsistency = { chartRank: d.rank, before, after, bound: "launch_window_protected", applied: false, neighbours: d.nb } as ChartNote;
       protectedLaunch++;
       continue;
     }
-    const note: ChartNote = { chartRank: rank, before, after, bound, applied: mode === "enforce", neighbours: nb };
-    if (deepRank != null) (note as any).deepPaidRank = deepRank;
+    const note: ChartNote = { chartRank: d.rank, before, after, bound: d.bound, applied: mode === "enforce", neighbours: d.nb };
+    if (d.deepRank != null) (note as any).deepPaidRank = d.deepRank;
     g.chartConsistency = note;
-    if (bound === "off_chart_cap" || bound === "deep_rank_ceiling") capped++; else moved++;
+    if (d.bound === "off_chart_cap" || d.bound === "deep_rank_ceiling") capped++; else moved++;
     if (mode === "enforce") {
       g.unitsMid = after;
       if (g.revenueMidUsd != null) g.revenueMidUsd = g.revenueMidUsd * f;
