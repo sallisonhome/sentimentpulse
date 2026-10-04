@@ -100,9 +100,9 @@ test("estimate diff: reports changed rows and totals, never writes either databa
   try {
     const mk = (name: string, rows: Array<[number, string, number]>) => {
       const p = join(dir, name); const d = new Database(p);
-      d.exec(`CREATE TABLE window_estimates_daily(id INTEGER PRIMARY KEY, title_id INT, platform TEXT, window TEXT, as_of_date TEXT, units_mid REAL);
+      d.exec(`CREATE TABLE window_estimates_daily(id INTEGER PRIMARY KEY, title_id INT, platform TEXT, window TEXT, as_of_date TEXT, units_mid REAL, signal_value REAL, gated_reason TEXT, method TEXT);
               CREATE TABLE console_title_igdb(title_id INT, name TEXT);`);
-      for (const [t, plat, u] of rows) { d.prepare(`INSERT INTO window_estimates_daily(title_id,platform,window,as_of_date,units_mid) VALUES(?,?,'d30','2026-10-04',?)`).run(t, plat, u); d.prepare(`INSERT INTO console_title_igdb VALUES(?,?)`).run(t, `Game ${t}`); }
+      for (const [t, plat, u] of rows) { d.prepare(`INSERT INTO window_estimates_daily(title_id,platform,window,as_of_date,units_mid,signal_value,gated_reason,method) VALUES(?,?,'d30','2026-10-04',?,?,?,?)`).run(t, plat, u, u / 10, u > 100 ? null : "signal_too_small", name.startsWith("live") ? "m,old" : "m-new"); d.prepare(`INSERT INTO console_title_igdb VALUES(?,?)`).run(t, `Game ${t}`); }
       d.close(); return p;
     };
     const live = mk("live.db", [[1, "xbox", 1000], [2, "xbox", 500], [3, "ps5", 200]]);
@@ -113,6 +113,11 @@ test("estimate diff: reports changed rows and totals, never writes either databa
     assert.match(r.stdout, /rows=4 changed=3 revived=1 lost=0 noLiveRow=1/);
     assert.match(r.stdout, /xbox: revived=0; units before 1,500 after 750 \(-50\.0%\)/);
     assert.match(r.stdout, /xbox 1 Game 1: 1,000 -> 250/);
+    const rowsOut = r.stdout.split("\n").filter(l => l.startsWith("ROW,"));
+    assert.equal(rowsOut[0], "ROW,window,platform,title_id,name,units_before,units_after,ratio,gated_before,gated_after,signal_before,signal_after,method_before,method_after");
+    assert.equal(rowsOut.length, 1 + 3, "header plus the 3 changed rows");
+    assert.ok(rowsOut.includes('ROW,d30,xbox,1,Game 1,1000,250,0.25,,,100,25,"m,old",m-new'), "csv quoting and before/after columns: " + rowsOut.join(" | "));
+    assert.ok(rowsOut.some(l => l.startsWith("ROW,d30,ps5,4,Game 4,,90,,,signal_too_small,,9,")), "new row has empty before");
     assert.equal(sha(live), h1); assert.equal(sha(cand), h2);
     assert.equal(run(dir, [join(SP, "scripts/preview-estimate-diff.ts")]).status, 2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
