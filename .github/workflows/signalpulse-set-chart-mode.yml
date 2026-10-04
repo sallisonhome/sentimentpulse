@@ -1,0 +1,59 @@
+name: SignalPulse — Set chart-consistency mode
+
+# Switches the console chart-consistency pass between report (annotate only), enforce (apply the bounds to the PS5 and
+# Xbox d7/d30 boards) and off. The pass runs per leaderboard request, so the database is not rewritten. Restarts the
+# service. Reversible by running it again. Refuses to run while the daily refresh holds the maintenance lock.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'report (default, annotate only), enforce, or off'
+        required: true
+        default: 'report'
+        type: choice
+        options: [report, enforce, off]
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  set-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Set mode
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          set -e
+          case "$MODE" in report|enforce|off) ;; *) echo "bad mode"; exit 64;; esac
+          # MODE is one of three fixed words (checked above), so it is safe and never empty as an ssh argument.
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s -- "$MODE" <<'REMOTE'
+          set -euo pipefail
+          WD=$(systemctl show -p WorkingDirectory --value signalpulse)
+          [ -n "$WD" ] && [ -f "$WD/deploy/signalpulse-set-chart-mode.sh" ]
+          bash "$WD/deploy/signalpulse-set-chart-mode.sh" "$1"
+          REMOTE
+      - name: Verify through the public API
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+        run: |
+          sleep 8
+          for plat in xbox ps5; do for w in d7 d30; do
+            curl -fsS "http://104.236.239.46/signal/api/console/leaderboards/$plat?window=$w&limit=100" | python3 -c "
+          import json,sys,collections
+          d=json.load(sys.stdin); c=collections.Counter()
+          for r in d['titles']:
+              cc=r.get('chartConsistency')
+              if cc: c[(cc.get('bound'), bool(cc.get('applied')))]+=1
+          print('$plat $w rows',len(d['titles']),'units',sum(r.get('unitsMid') or 0 for r in d['titles']),dict(c))"
+          done; done
