@@ -20,6 +20,7 @@ import { log } from "../../log";
 import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from "./types";
 import { fetchXboxRatingSignal } from "./xbox";
 import { writeRankSnapshot, computeTop50Churn } from "./rankSnapshot";
+import { combineChartSlots } from "./chartRank";
 import { fetchSteamCatalogJson } from "../../sales-catalog-steam-http";
 import { SteamCatalogDeferred } from "../../steam-catalog-cooldown";
 
@@ -1167,11 +1168,14 @@ export async function runFullDiscovery(opts: {
   // Rank writes are best-effort: a failure here must not break discovery
   // (leaderboards still work without a snapshot; only churn / hot-badge do).
   try {
-    const xboxRankEntries = xboxRows.map((r, i) => ({ titleId: r.titleId, rank: i + 1 }));
+    // Title-level rank: SKUs of one game are combined by demand (chartRank.ts), not last-write-wins.
+    const xboxRankEntries = combineChartSlots(xboxRows.map((r, i) => ({ titleId: r.titleId, storefrontRank: i + 1 })));
     if (xboxRankEntries.length > 0) {
       writeRankSnapshot("xbox", "xbox_api_top_paid", xboxRankEntries);
     }
-    const ps5RankEntries = ps5DiscoveredRows.map((r, i) => ({ titleId: r.titleId, rank: i + 1 }));
+    // Every PSN grid row (base + edition) keeps its own position in the flattened sales30 list, which is the
+    // position a shopper sees on the store (Samson = 48), and rows of one game are combined, not last-write-wins.
+    const ps5RankEntries = combineChartSlots(ps5DiscoveredRows.map((r, i) => ({ titleId: r.titleId, storefrontRank: i + 1 })));
     if (ps5RankEntries.length > 0) {
       writeRankSnapshot("ps5", "psn_api_sales30", ps5RankEntries);
     }
