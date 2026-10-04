@@ -943,6 +943,8 @@ async function main() {
       if (row.window !== "d7") continue;
       if (row.platform !== "ps5" && row.platform !== "xbox") continue;
       if (!isReleasedWithin(row.titleId, RANK_ANCHOR_MAX_RELEASE_AGE_DAYS)) continue;
+      // A per-title override is explicit evidence for that title; the chart-rank floor never overrides it.
+      if (overrideByKey.has(`${row.titleId}|${row.platform}`)) continue;
       const sortKey = RANK_ANCHOR_SORT_KEY[row.platform];
 
       const { anchorRank, peers } = getPeerRankNeighbors(
