@@ -19,7 +19,7 @@ import { rawSqlite } from "../../storage";
 import { log } from "../../log";
 import { fetchJson, todayUtc, type BusinessModel, type ConsolePlatform } from "./types";
 import { fetchXboxRatingSignal } from "./xbox";
-import { writeRankSnapshot, computeTop50Churn } from "./rankSnapshot";
+import { writeRankSnapshot, writeChartSlots, computeTop50Churn } from "./rankSnapshot";
 import { combineChartSlots } from "./chartRank";
 import { fetchSteamCatalogJson } from "../../sales-catalog-steam-http";
 import { SteamCatalogDeferred } from "../../steam-catalog-cooldown";
@@ -1172,12 +1172,14 @@ export async function runFullDiscovery(opts: {
     const xboxRankEntries = combineChartSlots(xboxRows.map((r, i) => ({ titleId: r.titleId, storefrontRank: i + 1 })));
     if (xboxRankEntries.length > 0) {
       writeRankSnapshot("xbox", "xbox_api_top_paid", xboxRankEntries);
+      writeChartSlots("xbox", "xbox_api_top_paid", xboxRows.map((r, i) => ({ position: i + 1, titleId: r.titleId, externalSku: r.externalSku })));
     }
     // Every PSN grid row (base + edition) keeps its own position in the flattened sales30 list, which is the
     // position a shopper sees on the store (Samson = 48), and rows of one game are combined, not last-write-wins.
     const ps5RankEntries = combineChartSlots(ps5DiscoveredRows.map((r, i) => ({ titleId: r.titleId, storefrontRank: i + 1 })));
     if (ps5RankEntries.length > 0) {
       writeRankSnapshot("ps5", "psn_api_sales30", ps5RankEntries);
+      writeChartSlots("ps5", "psn_api_sales30", ps5DiscoveredRows.map((r, i) => ({ position: i + 1, titleId: r.titleId, externalSku: r.externalSku })));
     }
   } catch (e: any) {
     log(`rank snapshot write failed (non-fatal): ${e?.message ?? String(e)}`);

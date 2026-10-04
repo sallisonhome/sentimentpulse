@@ -56,9 +56,10 @@ export function writeRankSnapshot(
   platform: "ps5" | "xbox",
   sortKey: SortKey,
   entries: RankEntry[],
+  date?: string,
 ): { rowsWritten: number; snapshotDate: string } {
-  if (entries.length === 0) return { rowsWritten: 0, snapshotDate: todayIsoUtc() };
-  const snapshotDate = todayIsoUtc();
+  const snapshotDate = date ?? todayIsoUtc();
+  if (entries.length === 0) return { rowsWritten: 0, snapshotDate };
   const snapshotAt = new Date().toISOString();
 
   const insert = rawSqlite.prepare(`
@@ -224,4 +225,60 @@ function daysAgoUtc(n: number, from?: string): string {
   const d = from ? new Date(from + "T00:00:00Z") : new Date();
   d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString().slice(0, 10);
+}
+
+export interface ChartSlotRow { position: number; titleId: number; externalSku?: string | null }
+
+/**
+ * Store the raw chart positions (one per shopper-visible slot) for a (platform, sort_key, date), replacing that
+ * day's rows in one transaction. An empty list writes nothing, so a storefront outage never wipes the day.
+ */
+export function writeChartSlots(
+  platform: "ps5" | "xbox",
+  sortKey: SortKey,
+  slots: ChartSlotRow[],
+  date?: string,
+): { rowsWritten: number; snapshotDate: string } {
+  const snapshotDate = date ?? todayIsoUtc();
+  if (slots.length === 0) return { rowsWritten: 0, snapshotDate };
+  const at = new Date().toISOString();
+  const del = rawSqlite.prepare(`DELETE FROM console_chart_slot_daily WHERE platform = ? AND sort_key = ? AND snapshot_date = ?`);
+  const ins = rawSqlite.prepare(`INSERT INTO console_chart_slot_daily (platform, sort_key, snapshot_date, position, title_id, external_sku, captured_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  rawSqlite.transaction((rows: ChartSlotRow[]) => {
+    del.run(platform, sortKey, snapshotDate);
+    for (const r of rows) ins.run(platform, sortKey, snapshotDate, r.position, r.titleId, r.externalSku ?? null, at);
+  })(slots);
+  return { rowsWritten: slots.length, snapshotDate };
+}
+
+export function readChartSlots(platform: "ps5" | "xbox", sortKey: SortKey, date: string): ChartSlotRow[] {
+  return rawSqlite.prepare(
+    `SELECT position, title_id AS titleId, external_sku AS externalSku FROM console_chart_slot_daily
+      WHERE platform = ? AND sort_key = ? AND snapshot_date = ? ORDER BY position`,
+  ).all(platform, sortKey, date) as ChartSlotRow[];
+}
+
+export function latestChartSlotDate(platform: "ps5" | "xbox", sortKey: SortKey): string | null {
+  const r = rawSqlite.prepare(`SELECT MAX(snapshot_date) AS d FROM console_chart_slot_daily WHERE platform = ? AND sort_key = ?`).get(platform, sortKey) as { d: string | null };
+  return r?.d ?? null;
+}
+
+/**
+ * Rebuild the title-level rank list for a stored day from its raw chart slots. Pure read: returns the
+ * ranks plus a diff against what the rank snapshot currently holds, so a caller can preview before writing.
+ */
+export function rebuildRanksFromSlots(
+  platform: "ps5" | "xbox",
+  sortKey: SortKey,
+  date: string,
+  combine: (slots: Array<{ titleId: number; storefrontRank: number }>) => RankEntry[],
+): { entries: RankEntry[]; slots: number; diff: Array<{ titleId: number; stored: number | null; rebuilt: number }>; missingFromRebuild: number[] } {
+  const slots = readChartSlots(platform, sortKey, date);
+  const entries = combine(slots.map(s => ({ titleId: s.titleId, storefrontRank: s.position })));
+  const stored = new Map<number, number>((rawSqlite.prepare(
+    `SELECT title_id, rank FROM console_storefront_rank_daily WHERE platform = ? AND sort_key = ? AND snapshot_date = ?`,
+  ).all(platform, sortKey, date) as Array<{ title_id: number; rank: number }>).map(r => [r.title_id, r.rank]));
+  const diff = entries.filter(e => stored.get(e.titleId) !== e.rank).map(e => ({ titleId: e.titleId, stored: stored.get(e.titleId) ?? null, rebuilt: e.rank }));
+  const built = new Set(entries.map(e => e.titleId));
+  return { entries, slots: slots.length, diff, missingFromRebuild: Array.from(stored.keys()).filter(id => !built.has(id)) };
 }
