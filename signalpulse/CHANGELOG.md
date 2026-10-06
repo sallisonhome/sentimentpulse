@@ -2,6 +2,13 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## October 6, 2026
+
+- Daily revenue history no longer changes when the report end date moves. CONTROL Resonant's Xbox days from September 29
+  to October 4 were blank in any report ending October 5 or later; they are back, and match the earlier report. A
+  second edition listing that gets its first estimate late now adds its daily change from that point, and the
+  response lists the lifetime units it carried at its first estimate (not shown as a single day).
+
 ## October 4, 2026
 
 - Store-chart checks on the PS5 and Xbox 7- and 30-day boards now measure each title against its neighbours after their

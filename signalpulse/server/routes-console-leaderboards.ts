@@ -2544,18 +2544,33 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const gapEvidenceAll = allocationEnabled(rawSqlite) && !protectionReason(rawSqlite, siblingIds) ? loadGapEvidence(rawSqlite, siblingIds) : null;
       const allocations: Partial<Record<Platform, Record<string, { kind: string; basis: string }>>> = {};
       const dailyByPlatform: Partial<Record<Platform, Record<string, number | null>>> = {};
+      const lateListings: Array<{ platform: Platform; titleId: number; firstValuedDate: string; unitsAtFirstValuedDate: number }> = [];
       for (const p of Object.keys(byPlatform) as Platform[]) {
         let titleMap = byPlatformTitle[p] ?? new Map<number, any[]>();
         // A listing with fewer than two valued days cannot produce a day-over-day change; it is
         // noise next to a listing that can. (A platform with no such listing keeps them all.)
         const productive = new Map(Array.from(titleMap).filter(([, a]) => a.filter(r => r.units != null).length >= 2));
         if (productive.size) titleMap = productive;
-        const multi = titleMap.size > 1;
+        // A listing whose first estimate arrives after the platform's main listing already has history (an edition
+        // listed or estimated later, e.g. a Deluxe SKU whose estimate rows were null until day N) is a LATE JOINER.
+        // It must not change what the earlier days show, or the report would depend on the query end date: with
+        // `to` before its second valued day it is filtered out above, with `to` after it every earlier gap day used to
+        // turn null. A late joiner contributes nothing up to and including its first valued day (that day carries its
+        // whole lifetime so far, which no single day owns; reported in `lateListings`) and its day-over-day change after.
+        // Only for allocation-enabled, unprotected groups; protected groups keep the exact legacy path.
+        const firstValuedOf = (a: Array<{ date: string; units: number | null }>) => a.filter(r => r.units != null).reduce((m, r) => r.date < m ? r.date : m, "9999-12-31");
+        const lateJoiners = new Set<number>();
+        if (gapEvidenceAll && titleMap.size > 1) {
+          const ents = Array.from(titleMap).map(([tid, a]) => ({ tid, first: firstValuedOf(a), n: a.filter(r => r.units != null).length }))
+            .sort((x, y) => x.first < y.first ? -1 : x.first > y.first ? 1 : (y.n - x.n) || (x.tid - y.tid));
+          for (const e of ents.slice(1)) if (e.first > ents[0].first) lateJoiners.add(e.tid);
+        }
+        const multi = titleMap.size - lateJoiners.size > 1;
         const perTitle: Array<Record<string, number | null>> = [];
         for (const [tid, rawArr] of Array.from(titleMap)) {
         // Several distinct listings on one platform: ratings evidence is per platform, not per
         // listing, so allocation stays off and gap days remain gaps (never invented).
-        const gapEvidence = multi ? null : gapEvidenceAll;
+        const gapEvidence = (multi || lateJoiners.has(tid)) ? null : gapEvidenceAll;
         // A sibling with no estimate is not a competing observation. Do not let
         // its null row erase a unique valued row on the same day (or invalidate
         // the platform's launch history). Keep the exact legacy path for every
@@ -2664,12 +2679,19 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         if (perTitle.length <= 1) dailyByPlatform[p] = perTitle[0] ?? {};
         else {
           const sum: Record<string, number | null> = {};
-          const firstDay = Array.from(titleMap.values()).map(a => a.reduce((m, r) => r.date < m ? r.date : m, "9999-12-31"));
+          const entries = Array.from(titleMap);
+          const firstDay = entries.map(([tid, a]) => lateJoiners.has(tid) ? firstValuedOf(a) : a.reduce((m, r) => r.date < m ? r.date : m, "9999-12-31"));
+          entries.forEach(([tid, a], i) => {
+            if (!lateJoiners.has(tid)) return;
+            const first = a.find(r => r.units != null && r.date === firstDay[i]);
+            if (first) lateListings.push({ platform: p, titleId: tid, firstValuedDate: first.date, unitsAtFirstValuedDate: first.units as number });
+          });
           const all = new Set<string>(perTitle.flatMap(x => Object.keys(x)));
           for (const d of Array.from(all)) {
-            // Before a listing's first observation it contributes nothing; a missing day after
-            // that is a gap, so the sum is a gap too (never a silent understatement).
-            const vals = perTitle.map((x, i) => d < firstDay[i] ? 0 : (x[d] ?? null));
+            // Before a listing's first observation it contributes nothing (a late joiner: up to and including its
+            // first valued day); a missing day after that is a gap, so the sum is a gap too (never a silent understatement).
+            // A launch allocation can sit on days before the listing's first row; keep it when present.
+            const vals = perTitle.map((x, i) => (lateJoiners.has(entries[i][0]) ? d <= firstDay[i] : d < firstDay[i]) ? (lateJoiners.has(entries[i][0]) ? 0 : (x[d] ?? 0)) : (x[d] ?? null));
             sum[d] = vals.every(v => v != null) ? (vals as number[]).reduce((s, v) => s + v, 0) : null;
           }
           dailyByPlatform[p] = sum;
@@ -2721,6 +2743,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const anyAllocated = points.some((pt: any) => pt.allocation);
 
       res.json({ titleId, from, to, collectionStart: calibrated?.startDate??COLLECTION_START, points,
+        ...(lateListings.length ? { lateListings } : {}),
         methodology:calibratedDays?.caveat??("Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated."+
           (anyAllocated?" Days missing from the estimate history are modeled: the published lifetime change is split across them using dated review or rating evidence (marked on each point), and lifetime totals are unchanged.":"")+
           (points.some((pt: any) => Object.values(pt.allocation ?? {}).some((v: any) => String(v).startsWith("rebased_gap")))?" Where the estimator's units-per-review ratio was reset across the missing days, those days are the review growth valued at the post-reset ratio, not the (re-scaled) lifetime change.":"")) });
