@@ -70,7 +70,8 @@ def test_actual_entrypoint_imports_enabled_check_and_guards_every_source(automat
     scheduler, ingest, guard, alert = automatic
     scheduler._ingest_job(trigger)
     guard.assert_called_once_with(check_youtube=False)
-    ingest.assert_called_once_with()
+    # 2026-10-06: retry bookkeeping only; never skip_sources.
+    ingest.assert_called_once_with(attempt=1, max_attempts=4)
     alert.assert_not_called()
 
 
@@ -89,7 +90,8 @@ def test_enabled_youtube_is_actually_dependency_gated(automatic, db):
     scheduler, ingest, guard, alert = automatic
     scheduler._ingest_job("startup")
     guard.assert_called_once_with(check_youtube=True)
-    ingest.assert_called_once_with()
+    # 2026-10-06: retry bookkeeping only; never skip_sources.
+    ingest.assert_called_once_with(attempt=1, max_attempts=4)
 
 
 def test_concurrent_automatic_entry_is_not_queued(automatic):

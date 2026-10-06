@@ -74,6 +74,17 @@ export function SourceHealthRow(props: {
   )
 }
 
+// 2026-10-06: while a scheduled retry runs, say so and show why the previous
+// attempt failed, instead of leaving the old "error" beside a spinner.
+export function retryNotice(status: IngestStatus): string | null {
+  const attempt = status.attempt ?? 1
+  if (!status.is_running || attempt <= 1) return null
+  const max = Math.max(status.max_attempts ?? attempt, attempt)
+  const prior = status.prior_attempt_status ? ` Previous attempt: ${status.prior_attempt_status}` : ''
+  const why = status.prior_attempt_error ? ` (${status.prior_attempt_error})` : ''
+  return `Retrying: attempt ${attempt} of ${max}.${prior}${why}`
+}
+
 // Compute a list of source labels whose health indicates a regression we
 // want to surface as a top-of-card amber banner.
 export function degradedSources(status: IngestStatus): string[] {
@@ -157,6 +168,11 @@ export default function SettingsPage() {
                             : 'Never run'}
                   </span>
                 </div>
+                {retryNotice(ingestStatus) && (
+                  <p className="text-amber-700 dark:text-amber-300 text-xs">
+                    {retryNotice(ingestStatus)}
+                  </p>
+                )}
                 <p className="text-muted-foreground">
                   Last run: {relativeTime(ingestStatus.last_run_at)} &middot;
                   Next: {relativeTime(ingestStatus.next_run_at)}

@@ -181,6 +181,9 @@ def get_next_run_time() -> Optional[str]:
 
 # ── Internal job ──────────────────────────────────────────────────────────────
 
+_INGEST_MAX_ATTEMPTS = 4
+
+
 def _ingest_job(trigger="scheduled") -> None:
     """Serialize automatic entry points, including their dependency wait."""
     if not _automatic_ingest_lock.acquire(blocking=False):
@@ -250,13 +253,13 @@ def _run_guarded_ingest(trigger) -> None:
             logger.info("Automatic ingestion recheck skipped: %s", blocked)
             return
         logger.info("daily_ingestion attempt %d", attempt)
-        result = run_ingestion()
+        result = run_ingestion(attempt=attempt, max_attempts=_INGEST_MAX_ATTEMPTS)
         if result.get("status") == "error":
             raise RuntimeError("Ingestion returned error; inspect last_run_errors")
         logger.info("Automatic ingestion returned status=%s", result.get("status"))
 
     try:
-        run_with_retry(job_name="daily_ingestion", job=_do, max_attempts=4)
+        run_with_retry(job_name="daily_ingestion", job=_do, max_attempts=_INGEST_MAX_ATTEMPTS)
     except Exception:
         # run_with_retry has already logged the exception and sent the
         # alert email. Swallow here so APScheduler's own error path

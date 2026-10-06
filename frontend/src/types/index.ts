@@ -323,6 +323,11 @@ export interface IngestStatus {
   steam_forum_fetched_total?: number
   youtube_health?: SourceHealth | string
   youtube_fetched_total?: number
+  // Scheduled-retry visibility (2026-10-06)
+  attempt?: number
+  max_attempts?: number
+  prior_attempt_status?: string | null
+  prior_attempt_error?: string | null
 }
 
 export interface IngestRunResult {

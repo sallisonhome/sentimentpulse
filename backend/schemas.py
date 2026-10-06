@@ -348,6 +348,11 @@ class IngestStatusResponse(BaseModel):
     steam_forum_fetched_total: int = 0
     youtube_health: str = "unknown"
     youtube_fetched_total: int = 0
+    # Scheduled-retry visibility (2026-10-06).
+    attempt: int = 1
+    max_attempts: int = 1
+    prior_attempt_status: Optional[str] = None
+    prior_attempt_error: Optional[str] = None
 
 
 class IngestRunResponse(BaseModel):
