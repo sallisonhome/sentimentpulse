@@ -113,6 +113,13 @@ _status: dict = {
     "steam_forum_fetched_total": 0,
     "youtube_health": "unknown",
     "youtube_fetched_total": 0,
+    # 2026-10-06: retry visibility. While attempt N>1 runs, the prior
+    # attempt's outcome is reported here instead of masquerading as the
+    # current run's status/errors (Oct 6 looked "stuck with errors").
+    "attempt": 1,
+    "max_attempts": 1,
+    "prior_attempt_status": None,
+    "prior_attempt_error": None,
 }
 
 
@@ -380,7 +387,48 @@ def _reclaim_stuck_lock_if_needed() -> None:
 _VALID_SKIP_SOURCES = frozenset({"reddit", "bluesky", "steam_review", "steam_forum", "dtf", "youtube_comment"})
 
 
-def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
+# 2026-10-06: per-game error handlers must never touch the database. After a
+# rollback every ORM instance is expired, so reading `game.name` or even
+# `game.id` issues a refresh SELECT; under a database lock that SELECT raised
+# from inside the handler and escaped as "Fatal ingestion error", aborting
+# the whole Oct 6 run. Labels are captured once while rows are loaded.
+_GAME_LABELS: dict[int, tuple] = {}
+
+
+def _remember_games(games) -> None:
+    _GAME_LABELS.clear()
+    for g in games:
+        _GAME_LABELS[id(g)] = (g.id, g.name)
+
+
+def _game_id(game):
+    """Primary key without a refresh query (falls back to the identity key)."""
+    cached = _GAME_LABELS.get(id(game))
+    if cached:
+        return cached[0]
+    try:
+        from sqlalchemy import inspect as _sa_inspect  # noqa: PLC0415
+        ident = _sa_inspect(game).identity
+        return ident[0] if ident else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _game_label(game) -> str:
+    """Display name for messages, never querying the database."""
+    cached = _GAME_LABELS.get(id(game))
+    if cached:
+        return cached[1]
+    return f"game_id={_game_id(game)}"
+
+
+def _is_db_lock_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "database is locked" in text or "database table is locked" in text
+
+
+def run_ingestion(skip_sources: Optional[set[str]] = None, *,
+                  attempt: int = 1, max_attempts: int = 1) -> dict:
     """
     Execute the full ingestion pipeline for all active games.
 
@@ -401,6 +449,10 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
             re-fetching the others. Dedup handles overlap for free, but
             skipping saves quota + wallclock.
 
+        attempt / max_attempts: supplied by the scheduled retry wrapper so
+            /api/ingest/status can say "attempt 2 of 4" and show why the
+            previous attempt failed (2026-10-06).
+
     Returns a summary dict suitable for serialising as a JSON response.
     """
     skip_sources = set(skip_sources or [])
@@ -420,6 +472,22 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         return {"status": "skipped", "reason": "already_running"}
 
     _status["is_running"] = True
+    if attempt > 1:
+        prior_errors = list(_status.get("last_run_errors") or [])
+        fatal = [e for e in prior_errors if str(e).startswith("Fatal ingestion error")]
+        _status["prior_attempt_status"] = _status.get("last_run_status")
+        _status["prior_attempt_error"] = (fatal or prior_errors[-1:] or [None])[0]
+        if _status["prior_attempt_error"]:
+            _status["prior_attempt_error"] = str(_status["prior_attempt_error"]).split("\n", 1)[0][:300]
+    else:
+        _status["prior_attempt_status"] = None
+        _status["prior_attempt_error"] = None
+    _status["attempt"] = int(attempt)
+    _status["max_attempts"] = int(max(max_attempts, attempt))
+    # The current run has no outcome or errors yet; never show the previous
+    # run's as if they belonged to this one.
+    _status["last_run_status"] = "running"
+    _status["last_run_errors"] = []
     _now_iso = datetime.now(timezone.utc).isoformat()
     _status["last_run_at"] = _now_iso
     # Reset counters so mid-run observers see progress on THIS run, not
@@ -488,12 +556,14 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
     _status["current_run_id"] = _current_run_id
     _status["resumed"] = bool(_games_completed_ids)
 
+    final_status = "error"  # overwritten on every normal exit path
     try:
         # ── Step 1: game discovery ────────────────────────────────────────────
         active_games = _step1_discover_games(db, log_lines, errors)
         log_lines.append(
             f"[Step 1] {len(active_games)} active game(s) queued."
         )
+        _remember_games(active_games)
 
         # Per-run aggregates that drive run-level health verdicts at the end.
         # Captured per source so we can detect silent-failure regressions on
@@ -658,9 +728,10 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
             # makes 'resume from where the deploy killed us' work — the counter
             # visible to /api/ingest/status reflects the RESUMED position, not
             # a fresh 0/N.
-            if game.id in _games_completed_ids:
+            gid = _game_id(game)
+            if gid in _games_completed_ids:
                 log_lines.append(
-                    f"[Phase A] '{game.name}' already completed in this run "
+                    f"[Phase A] '{_game_label(game)}' already completed in this run "
                     f"(run_id={_current_run_id}); skipping."
                 )
                 # Still advance the heartbeat counter so operators see the run
@@ -670,7 +741,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
 
             try:
                 (game_posts, r_f, b_f, sr_f, sf_f, d_f) = _safe_run_steps_2_to_4b(game)
-                per_game_posts[game.id] = per_game_posts.get(game.id, 0) + game_posts
+                per_game_posts[gid] = per_game_posts.get(gid, 0) + game_posts
                 reddit_fetched_total += r_f
                 bluesky_fetched_total += b_f
                 steam_review_fetched_total += sr_f
@@ -679,14 +750,24 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 # v0029: record this game's completion so a subsequent restart
                 # skips it. Only track successful runs — if the try block above
                 # raised, we want the next attempt to retry this game.
-                if game.id not in _games_completed_ids:
-                    _games_completed_ids.append(game.id)
+                if gid not in _games_completed_ids:
+                    _games_completed_ids.append(gid)
                     _save_run_state(
                         db, _current_run_id, _games_completed_ids,
                         _run_started_iso,
                     )
             except Exception as exc:
-                msg = f"Unhandled error processing game '{game.name}': {exc}"
+                # Roll back first so the shared session is usable for the
+                # next game; the label comes from the cache, not the DB.
+                try:
+                    db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                msg = (
+                    f"Unhandled error processing game '{_game_label(game)}': {exc}"
+                    + (" (database busy; game not marked complete, retry will redo it)"
+                       if _is_db_lock_error(exc) else "")
+                )
                 errors.append(msg)
                 logger.exception(msg)
                 # Continue with next game - never abort the whole pipeline
@@ -739,7 +820,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 except Exception as exc:
                     err = (
                         f"[Step 4 retry #{reddit_retries}] Unhandled error "
-                        f"for '{game.name}': {exc}"
+                        f"for '{_game_label(game)}': {exc}"
                     )
                     errors.append(err)
                     logger.exception(err)
@@ -780,7 +861,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 except Exception as exc:
                     err = (
                         f"[Step 4b retry #{bluesky_retries}] Unhandled error "
-                        f"for '{game.name}': {exc}"
+                        f"for '{_game_label(game)}': {exc}"
                     )
                     errors.append(err)
                     logger.exception(err)
@@ -895,7 +976,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                             recovery_fetched += fetched
                         except Exception as exc:
                             logger.exception(
-                                f"Bluesky auto-recovery for {game.name}: {exc}"
+                                f"Bluesky auto-recovery for {_game_label(game)}: {exc}"
                             )
                     posts_collected += recovery_saved
                     bluesky_fetched_total += recovery_fetched
@@ -940,7 +1021,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                     db.rollback()
                     _status["youtube_health"] = "failed"
                     # The transport never includes credentials in these messages.
-                    msg = f"[YouTube] game_id={game.id}: {type(exc).__name__}: {exc}"
+                    msg = f"[YouTube] game_id={_game_id(game)}: {type(exc).__name__}: {exc}"
                     errors.append(msg)
                     log_lines.append(msg)
 
@@ -967,7 +1048,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
                 posts_collected += per_game_posts.get(game.id, 0)
             except Exception as exc:
                 db.rollback()
-                msg = f"Steps 5-7 error for '{game.name}': {exc}"
+                msg = f"Steps 5-7 error for '{_game_label(game)}': {exc}"
                 errors.append(msg)
                 logger.exception(msg)
 
@@ -983,7 +1064,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
             except Exception as exc:
                 db.rollback()
                 logger.warning(
-                    "Step 5 sweep for '%s' raised — %s", game.name, exc,
+                    "Step 5 sweep for '%s' raised — %s", _game_label(game), exc,
                 )
 
         # Step 9: Monthly summaries on 1st of month
@@ -1060,10 +1141,22 @@ def run_ingestion(skip_sources: Optional[set[str]] = None) -> dict:
         # marker so tomorrow's cron starts fresh. If the process was killed
         # before reaching here, the marker stays and the next trigger
         # resumes.
-        try:
-            _clear_run_state(db)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("failed to clear resume state on clean exit: %s", exc)
+        # 2026-10-06: keep the marker when the attempt ended in a fatal
+        # error. cron_alerts.run_with_retry starts the next attempt within
+        # minutes; with the marker it resumes after the games that already
+        # finished Phase A instead of redoing ~1h40m of work (Oct 6). The
+        # _RESUME_WINDOW_S bound still keeps tomorrow's run fresh.
+        if final_status != "error":
+            try:
+                _clear_run_state(db)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("failed to clear resume state on clean exit: %s", exc)
+        else:
+            logger.info(
+                "run_ingestion: attempt ended in error; resume marker kept "
+                "(run_id=%s, %d game(s) completed in Phase A).",
+                _current_run_id, len(_games_completed_ids),
+            )
 
         # 2026-09-20: warm the dashboard TTL cache for every (active game ×
         # period) combo so the first post-cron dashboard visitor doesn't eat
@@ -2865,6 +2958,7 @@ def _bulk_save_posts(
 
     saved = 0
     skipped_due_to_error = 0
+    lock_skipped = 0
     first_error_logged = False
     for pd in post_data_list:
         if pd["external_id"] in known:
@@ -2939,8 +3033,15 @@ def _bulk_save_posts(
             # exception masks bugs like the Bluesky post_date type bug
             # (string vs datetime) that caused PR #17 to land 0 posts.
             db.rollback()
-            known.add(pd["external_id"])
             skipped_due_to_error += 1
+            if _is_db_lock_error(exc):
+                # 2026-10-06: a busy database is transient, not bad data.
+                # Leave the id out of `known` so a later pass can retry it,
+                # and surface it in `errors` so callers that gate cursor
+                # advancement on a clean save do not skip past it.
+                lock_skipped += 1
+            else:
+                known.add(pd["external_id"])
             if not first_error_logged:
                 first_error_logged = True
                 logger.warning(
@@ -2953,6 +3054,12 @@ def _bulk_save_posts(
                     str(exc)[:300],
                 )
 
+    if lock_skipped > 0:
+        errors.append(
+            f"[save] {lock_skipped} post(s) not saved because the database was busy "
+            f"(source={source.value if hasattr(source, 'value') else source} "
+            f"game_id={game_id}); cursor not advanced, next run retries"
+        )
     if skipped_due_to_error > 0:
         logger.warning(
             "_bulk_save_posts: %d post(s) skipped due to insert errors "

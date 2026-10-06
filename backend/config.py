@@ -37,6 +37,12 @@ class Settings(BaseSettings):
 
     # Database — defaults to SQLite in the backend working directory
     database_url: str = "sqlite:///./sentimentpulse.db"
+    # 2026-10-06: SQLite concurrency. WAL lets readers and the writer run at
+    # the same time; the busy timeout makes a contended write wait instead of
+    # failing after the 5s default ("database is locked" killed the Oct 6
+    # ingest). SQLITE_JOURNAL_MODE=delete restores the previous mode.
+    sqlite_journal_mode: str = "wal"
+    sqlite_busy_timeout_ms: int = 30000
 
     # Reddit
     reddit_client_id: str = ""

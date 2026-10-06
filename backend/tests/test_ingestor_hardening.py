@@ -138,11 +138,21 @@ def test_scheduler_daily_job_passes_no_args():
     import inspect
     import scheduler  # will fail if module can't import
     src = inspect.getsource(scheduler._run_guarded_ingest)
-    # Must contain a bare 'run_ingestion()' call — no args at all.
-    assert "run_ingestion()" in src, (
-        "Daily scheduler entry-point must call run_ingestion() with no "
-        "arguments so every source runs. Current source:\n" + src
-    )
+    # 2026-10-06: the call now passes retry bookkeeping only
+    # (attempt / max_attempts), which never narrows sources. The contract
+    # this test protects is unchanged: no skip_sources on the daily path.
+    import re
+    calls = re.findall(r"run_ingestion\(([^)]*)\)", src)
+    assert calls, "Daily scheduler entry-point must call run_ingestion()"
+    for args in calls:
+        assert "skip_sources" not in args, (
+            "Daily scheduler entry-point must not pass skip_sources. "
+            "Current source:\n" + src
+        )
+        names = {a.split("=")[0].strip() for a in args.split(",") if a.strip()}
+        assert names <= {"attempt", "max_attempts"}, (
+            f"Unexpected run_ingestion arguments on the daily path: {args!r}"
+        )
 
 
 def test_stuck_threshold_is_greater_than_wallclock_budget():

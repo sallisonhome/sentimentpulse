@@ -3135,3 +3135,20 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Chart-consistency references used PRE-adjustment neighbour values to stay order independent. That also meant a title was bounded by neighbours that the same pass was about to cut (MD2 PS5 d7 rank 12: ceiling 168,357 = 1.5 x CONTROL Resonant's pre-cut 112,238, while CONTROL settled at 54,327) and by launch-protected titles (ACE COMBAT 8, 229,683). Fix: each pass reads only the previous pass's values (still order independent), iterated to a fixed point (max 4 passes), and launch-window titles are not references unless exempt. A randomised test can no longer assert "lands exactly on its ceiling": with extreme noise the iteration may stop at the pass cap, as before it was equally non-idempotent (192/200 vs 188/200 charts changed on a second application of already-enforced data).
 - An IP rule is a claim about a ratio. The MD2 PS5 factor was the generic default 0.77x Steam; PS5 ratings were 0.23x Steam and the chart neighbours sat at 16K-54K. Set to 10.7/49.5 (about 52.7K units). Xbox untouched (Game Pass, no chart rank, separate decision).
 - Replay check on the report-mode capture (30 of about 100 ranks known): MD2 PS5 d7 bound 168,357 -> 39,777. Partial data, so the figure is indicative; verify on the live API after deploy.
+
+## 2026-10-06 — "database is locked" killed the daily ingest, and the retry looked stuck
+
+**What happened.** The 05:45 ET run collected normally until 07:06 ET. Then `_bulk_save_posts` began failing with `sqlite3.OperationalError: database is locked`. The timing matched the 07:00 portfolio-scan automation (`/api/portfolio/scan`, auto-onboard discovered 32 games). At 07:26 a dashboard visit started background topic synthesis. Seconds later a Step 4a statement for game 150 hit the lock. The per-game `except` formatted `game.name` on an instance the rollback had expired. That issued a refresh SELECT against the still-locked DB inside the handler, and it escaped as `Fatal ingestion error`. `run_with_retry` started attempt 2 at 07:32, but the `finally` block had cleared the resume marker, so it redid every game (~1h40m). Meanwhile `/api/ingest/status` showed attempt 1's `error` and 92 errors next to `is_running=true`, which read as "stuck". A py-spy dump showed it was not hung.
+
+**Root cause.** SQLite was in rollback-journal mode (`delete`) with pysqlite's 5 s busy wait. Any concurrent writer, or a long reader holding SHARED, blocks the ingest's commits. Only uvicorn held the file, so all contention was in-process.
+
+**Fix (PR: fix/ingest-db-lock-resilience).**
+1. `database.py`: every SQLite connection sets `busy_timeout=30000` and `journal_mode=wal` (persistent). `SQLITE_JOURNAL_MODE=delete` rolls back. Tests prove a contended write now waits, the old 5 s/delete setup reproduces the error, and in WAL a long reader no longer blocks the writer.
+2. Per-game handlers use cached labels (`_game_label` / `_game_id`) and roll back first; they never query the DB. A lock-skipped insert is appended to `errors` and is not marked known, so Step 4 does not advance its cursor past it.
+3. A fatal attempt keeps `ingest_run_state`; the retry resumes after finished games. A clean run still clears it.
+4. Status carries `attempt`, `max_attempts`, `prior_attempt_status` and `prior_attempt_error`, plus `last_run_status=running` with empty errors while a run is in progress. Settings shows "Retrying: attempt 2 of 4 …".
+
+**Rules.**
+- Never touch ORM attributes in an `except` handler that follows a DB error. Capture ids and names before the `try`.
+- Keep heavy in-process jobs (portfolio scan with auto-onboard, topics synthesis) out of the ingest window, or make sure the DB tolerates them (WAL + busy timeout).
+- A retry must resume, not restart, and the status must say it is a retry.

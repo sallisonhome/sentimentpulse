@@ -1,7 +1,7 @@
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { SourceHealthRow, degradedSources } from './SettingsPage'
+import { SourceHealthRow, degradedSources, retryNotice } from './SettingsPage'
 import type { IngestStatus } from '../types'
 
 describe('source completeness is visible independently of fetched volume', () => {
@@ -25,5 +25,22 @@ describe('source completeness is visible independently of fetched volume', () =>
     }))
     expect(html).toContain('text-green')
     expect(html).not.toContain('incomplete')
+  })
+})
+
+describe('scheduled retry visibility (2026-10-06)', () => {
+  it('names the attempt and the previous failure while a retry runs', () => {
+    const msg = retryNotice({
+      is_running: true, attempt: 2, max_attempts: 4,
+      prior_attempt_status: 'error',
+      prior_attempt_error: 'Fatal ingestion error: (sqlite3.OperationalError) database is locked',
+    } as IngestStatus)
+    expect(msg).toBe('Retrying: attempt 2 of 4. Previous attempt: error ' +
+      '(Fatal ingestion error: (sqlite3.OperationalError) database is locked)')
+  })
+  it('stays quiet for a first attempt or an idle service', () => {
+    expect(retryNotice({ is_running: true, attempt: 1 } as IngestStatus)).toBeNull()
+    expect(retryNotice({ is_running: false, attempt: 3 } as IngestStatus)).toBeNull()
+    expect(retryNotice({ is_running: true } as IngestStatus)).toBeNull()
   })
 })
