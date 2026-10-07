@@ -219,3 +219,45 @@ export function protectionReason(db: Database.Database, titleIds: number[]): str
   }
   return null;
 }
+
+/** Every protection reason that applies to the group, in the order protectionReason checks them. */
+export function protectionReasons(db: Database.Database, titleIds: number[]): string[] {
+  if (!titleIds.length) return ["no_titles"];
+  const ph = titleIds.map(() => "?").join(",");
+  const checks: Array<[string, string]> = [
+    ["revenue_anchor", `SELECT 1 FROM revenue_calibration_anchors WHERE title_id IN (${ph}) LIMIT 1`],
+    ["multiplier_override", `SELECT 1 FROM title_multiplier_overrides WHERE title_id IN (${ph}) LIMIT 1`],
+    ["public_milestone", `SELECT 1 FROM steam_unit_milestones WHERE active=1 AND title_id IN (${ph}) LIMIT 1`],
+    ["saber_product", `SELECT 1 FROM products p JOIN platform_sku_map m ON m.platform='steam' AND m.external_sku=p.steam_app_id
+       WHERE m.title_id IN (${ph}) LIMIT 1`],
+  ];
+  const out: string[] = [];
+  for (const [reason, sql] of checks) {
+    try { if (db.prepare(sql).get(...titleIds)) out.push(reason); }
+    catch (e: any) { if (!/no such table/i.test(String(e?.message))) return ["check_failed"]; }
+  }
+  return out;
+}
+
+/**
+ * Whether the DAILY revenue series may fill gap days and apply the late-joiner rule for this group.
+ * An anchor that is a manually verified or publicly reported lifetime figure (data_source `manual_anchor*`) alone does
+ * not block it: that anchor fixes lifetime and window totals, while the daily series is a read-side view that only
+ * fills days with no value (from the published LTD change, never altering it) and stops a late-listed edition from
+ * nulling or spiking earlier days. Anchors from actual sales feeds (Steamworks and the like), any other source, a
+ * manual/public multiplier override, an active public unit milestone, a Saber-published product and a failed check
+ * all still block. Days that already have a value are never touched.
+ * Returns the blocking reason, or null when allocation is allowed.
+ */
+export function dailyAllocationBlockReason(db: Database.Database, titleIds: number[]): string | null {
+  const reasons = protectionReasons(db, titleIds);
+  const other = reasons.filter(r => r !== "revenue_anchor");
+  if (other.length) return other[0];
+  if (!reasons.length) return null;
+  const ph = titleIds.map(() => "?").join(",");
+  try {
+    const nonManual = db.prepare(`SELECT 1 FROM revenue_calibration_anchors WHERE title_id IN (${ph})
+      AND COALESCE(data_source,'') NOT LIKE 'manual_anchor%' LIMIT 1`).get(...titleIds);
+    return nonManual ? "revenue_anchor" : null;
+  } catch { return "check_failed"; }
+}

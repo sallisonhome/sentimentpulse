@@ -55,7 +55,7 @@ export { pickSharedPoolPrimaries, sharedPoolViolations };
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
 import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
 import {chartFamilyKey,canonicalSiblings} from "./chart-family";
-import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,protectionReason,rebasedGapUnits,type Allocation} from "./daily-gap-allocation";
+import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -2593,7 +2593,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Days the daily history is missing (a missed run, or the pre-history of a
       // launch) are allocated from the published LTD change using dated evidence
       // (daily-gap-allocation.ts); the LTD change itself is never altered.
-      const gapEvidenceAll = allocationEnabled(rawSqlite) && !protectionReason(rawSqlite, siblingIds) ? loadGapEvidence(rawSqlite, siblingIds) : null;
+      const gapEvidenceAll = allocationEnabled(rawSqlite) && !dailyAllocationBlockReason(rawSqlite, siblingIds) ? loadGapEvidence(rawSqlite, siblingIds) : null;
       const allocations: Partial<Record<Platform, Record<string, { kind: string; basis: string }>>> = {};
       const dailyByPlatform: Partial<Record<Platform, Record<string, number | null>>> = {};
       const lateListings: Array<{ platform: Platform; titleId: number; firstValuedDate: string; unitsAtFirstValuedDate: number }> = [];

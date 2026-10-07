@@ -2,6 +2,13 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## October 7, 2026
+
+- A title with a manually verified or publicly reported lifetime figure now keeps the daily-history rules for late-listed editions and
+  missing days. Before, adding the anchor switched them off, so FC 27 on Xbox showed seven empty days and then a one-day $7.7M catch-up.
+  Titles anchored from actual sales feeds, with a manual multiplier, an active public milestone, or published by Saber are unchanged,
+  and days that already have a value never change.
+
 ## October 6, 2026
 
 - The chart fit now treats a title with a verified lifetime figure as an ordinary point at the estimator's own pre-anchor value, so an anchor
