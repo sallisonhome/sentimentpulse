@@ -3170,3 +3170,9 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - After the FC 27 anchors went live (PS5 units 1.39M to 9.05M at chart rank 1), about 40 unrelated PS5/Xbox d7/d30 rows were cut 1-18%, all `deep_rank_ceiling`. The ceiling comes from a log-log curve of units on chart rank fitted over reference rows; a protected row far above the pattern at rank 1 has the most leverage and lowers the curve everywhere. The existing 2x trim does not remove it because the distorted first fit moves toward it.
 - Fix: the curve is fitted on unprotected rows first; protected rows (verified anchors, actuals, overrides) join only when within 2x of that curve. Protected rows still protect their own estimate and still serve as neighbour references.
 - Rule: after adding or moving an anchor on a high-ranked title, diff the whole board before and after, not just the anchored title.
+
+### 2026-10-06 addendum 14 — dropping the protected outlier from the rank-curve fit over-corrected
+- PR 218 excluded protected rows more than 2x from the curve of the other rows. Live check (Xbox 7-day, against the live top-paid chart): 23 deep titles rose up to 65% above their pre-anchor values and out-of-order pairs (a deep title estimated above a better-ranked one) went from 108 to 269. FC 27 Ultimate is chart rank 6, a real point. An offline refit showed: dropped slope -0.26 vs pre-anchor -0.33; anchored value clamped to 2x the other rows' curve -0.32.
+- Fix: protected rows stay in the fit, clamped to [0.5x, 2x] of the curve of the unprotected rows.
+- Limits: on a synthetic rank-1 outlier the clamp still pulls the curve ~16% (the most leverage a point can have); the 0.1% match is on one live board (Xbox d7) using published board values, not the production pre-pass values.
+- Rule: a "fix" that removes evidence needs a before/after check against the live chart, not only against the symptom it was written for.
