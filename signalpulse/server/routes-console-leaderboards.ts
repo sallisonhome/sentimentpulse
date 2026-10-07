@@ -47,6 +47,7 @@
  *     Admin-only re-cache of IGDB metadata for one title.
  */
 
+import { boardResponseCache } from "./board-response-cache";
 import type { Express, Request } from "express";
 import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
@@ -281,6 +282,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   app.get("/api/console/leaderboards/xbox", publicLeaderboardLimiter);
   app.get("/api/console/leaderboards-multiplatform", publicLeaderboardLimiter);
   app.get("/api/console/multiplatform-title/:key", publicLeaderboardLimiter);
+  // Board data changes at most daily; identical refreshes within 5 minutes are served from memory (see board-response-cache.ts).
+  // Production only: route tests mutate the database between identical requests and must see fresh builds.
+  const boardCache = boardResponseCache({ ttlMs: process.env.NODE_ENV === "production" ? 5 * 60 * 1000 : 0 });
+  for (const p of ["/api/console/leaderboards/steam", "/api/console/leaderboards/ps5", "/api/console/leaderboards/xbox", "/api/console/leaderboards-multiplatform"]) app.get(p, boardCache);
 
 
   // ─── Leaderboard list ─────────────────────────────────────────────────────
