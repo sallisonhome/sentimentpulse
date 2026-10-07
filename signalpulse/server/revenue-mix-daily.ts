@@ -73,6 +73,16 @@ function families(db: DB, policy: Policy, date: string): Family[] {
   });
 }
 
+/** Read-side common catalog for ONE synchronous request and exact policy/date.
+ * The owner must not retain it across requests or share it with model writers.
+ * Lazy: disabled/stale daily mix still performs no catalog read.
+ */
+export function createDailyMixFamilyReader(db: DB, policy: Policy, now=new Date()) {
+  const date=iso(now);
+  let current: Family[] | undefined;
+  return () => current ??= families(db,policy,date);
+}
+
 /** Called after collection, estimation AND actual-revenue anchors finish. */
 export function runDailyMix(db: DB, policy: Policy, now = new Date()) {
   ensureDailyMixSchema(db);
@@ -201,13 +211,14 @@ function safeLedgerValues(row: any, policy: Policy) {
     return {delta,baseline};
   } catch { return null; }
 }
-export function publishedDailyAdjustments(db: DB, policy: Policy, window: string, now=new Date()) {
+export function publishedDailyAdjustments(db: DB, policy: Policy, window: string, now=new Date(),
+  readFamilies?: ReturnType<typeof createDailyMixFamilyReader>) {
   const output=new Map<string,DailyAdjustment>(), status=dailyMixStatus(db,now);
   if(status.mode!=="active"||!status.fresh||status.evaluationMode!=="active") return output;
   const days:Record<string,number>={d7:7,d30:30,d90:90,m12:365};
   if(window!=="ltd"&&!days[window]) return output;
   const date=iso(now), from=window==="ltd"?"0000-01-01":shift(date,-days[window]);
-  const current=new Map(families(db,policy,date).filter(f=>!f.blocked).map(f=>[f.key,f.signature]));
+  const current=new Map((readFamilies ? readFamilies() : families(db,policy,date)).filter(f=>!f.blocked).map(f=>[f.key,f.signature]));
   const rows=db.prepare(`SELECT * FROM revenue_mix_daily WHERE version=? AND date>? AND date<=? AND applied=1`)
     .all(DAILY_MIX_VERSION,from,date) as any[];
   for(const row of rows){
@@ -234,10 +245,11 @@ export function applyDailyAdjustment(revenue: number|null, adjustment: DailyAdju
 }
 
 /** Recorded eligible daily baseline/applied revenue for the daily chart. */
-export function publishedDailyRevenue(db: DB, policy: Policy, key: string, from: string, to: string, now=new Date()) {
+export function publishedDailyRevenue(db: DB, policy: Policy, key: string, from: string, to: string, now=new Date(),
+  readFamilies?: ReturnType<typeof createDailyMixFamilyReader>) {
   const output=new Map<string,Mix>(),status=dailyMixStatus(db,now);
   if(status.mode!=="active"||!status.fresh||status.evaluationMode!=="active") return output;
-  const family=families(db,policy,iso(now)).find(f=>f.key===key&&!f.blocked);
+  const family=(readFamilies ? readFamilies() : families(db,policy,iso(now))).find(f=>f.key===key&&!f.blocked);
   if(!family) return output;
   const rows=db.prepare(`SELECT date,baseline_revenue_json,delta_json,result_json,applied FROM revenue_mix_daily
     WHERE family_key=? AND signature=? AND version=? AND date>=? AND date<=? AND date<=?`)

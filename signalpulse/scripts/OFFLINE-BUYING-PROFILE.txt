@@ -1,0 +1,46 @@
+Offline runner: scripts/profile-buying-offline.mjs
+Run with candidate's installed dependencies, no app server/storage import.
+
+node scripts/profile-buying-offline.mjs --source <baseline-signalpulse-root>
+ --db <sanitized-snapshot.db> --manifest <manifest.json> --out <NEW-baseline-output-dir>
+node scripts/profile-buying-offline.mjs --source <candidate-signalpulse-root>
+ --db <same-snapshot.db> --manifest <same-manifest.json> --out <NEW-candidate-output-dir>
+node scripts/compare-buying-profiles.mjs <baseline-output-dir> <candidate-output-dir> <comparison.json>
+
+Optional --full covers all five sort modes, both directions, all five windows,
+all three platforms and combined limits20/40 (160 response bodies).
+Default25 responses: all five windows x3platforms +combined20/40.
+--path runs exactly one path for isolated cold process timings, e.g.
+--path '/api/console/leaderboards-multiplatform?window=ltd&limit=40'
+--date ISO overrides frozen evaluation clock; default manifest capture time.
+Synthetic test without manifest requires explicit --date for parity.
+--timing-only disables ALL SQL wrappers, UDF counters and EXPLAIN collection;
+use this for acceptance wall-clock measurements, not instrumented reports.
+--navigation runs exactly four normal d7 Buying requests concurrently from a
+separate Node client process, reporting completion times and all-complete time.
+--cpu-profile writes a local V8 CPU profile for a separate diagnostic run.
+
+Safety: separate bundle intercepts storage with readonly/fileMustExist SQLite,
+query_only=ON. Suppresses ONLY schema initialization + startup async model writer
+block, and bypasses response-cache middleware. No model flags disabled. Five
+manifest semantic modes are reapplied. Date fixed identically baseline/candidate.
+Outbound fetch rejected, routes accessed only through ephemeral localhost server.
+Source DB SHA256 checked before/after; compared to manifest if provided.
+No application database startup/migrations/estimators/anchors imported or run.
+Build fails closed if reviewed startup block seam changes.
+
+Instrumentation per response: exact output JSON, SHA256, total wall ms, SQL elapsed
+ms, call/returned-row counts per exact SQL string, identity-UDF callback count,
+statement preparation count/elapsed time separately from query execution,
+EXPLAIN QUERY PLAN for first bind combination of every distinct SQL. Explain runs
+AFTER response wall timer, outside query timers. Logs stay in private output dir.
+Output reveals commercially sensitive board values and names: keep local/private.
+Running same input in baseline and candidate must produce exact response ordering,
+numbers/identity/ranks/dedup/source metadata, not merely approximate totals.
+
+Current-data acceptance must use the parent-approved encrypted snapshot and
+manifest, never an unproven old local data.db. Do not infer production browser
+times from offline timings: live-host acceptance is a separate final check.
+For real measured timings, run baseline and candidate sequentially, repeat order
+ABBA; do not run tests or other heavy work simultaneously. Response caches remain
+bypassed on every sample; pure PR227 name normalization remains unchanged.

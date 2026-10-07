@@ -32,6 +32,13 @@ export function canonicalSiblings(
   requested: number,
 ): number[] {
   const byPlatform = new Map<string, number[]>();
+  // A priced check is title-only in the original policy (not platform-only).
+  const priceById = new Map<number, boolean>();
+  const pricedTitle = (id: number) => {
+    if (!priceById.has(id)) priceById.set(id, !!db.prepare(`SELECT 1 FROM platform_sku_map WHERE title_id=? AND sku_role='base'
+      AND msrp_usd_cents IS NOT NULL LIMIT 1`).get(id));
+    return priceById.get(id)!;
+  };
   for (const r of ids) byPlatform.set(r.platform, [...(byPlatform.get(r.platform) ?? []), r.titleId]);
   const keep: number[] = [];
   for (const [platform, listAll] of Array.from(byPlatform)) {
@@ -39,12 +46,15 @@ export function canonicalSiblings(
     if (list.length === 1) { keep.push(list[0]); continue; }
     // A listing with no base price carries no revenue on the board; when a priced twin exists
     // on the same platform it is a duplicate (regional or stale) and is dropped.
-    const priced = list.filter(id => !!db.prepare(`SELECT 1 FROM platform_sku_map WHERE title_id=? AND sku_role='base'
-      AND msrp_usd_cents IS NOT NULL LIMIT 1`).get(id));
+    const priced = list.filter(pricedTitle);
     if (priced.length) list = priced;
     if (list.length === 1) { keep.push(list[0]); continue; }
-    const series = (id: number) => new Map((db.prepare(`SELECT as_of_date AS d, units_mid AS u FROM window_estimates_daily
-      WHERE title_id=? AND platform=? AND window='ltd' AND units_mid IS NOT NULL`).all(id, platform) as Array<{ d: string; u: number }>).map(r => [r.d, r.u]));
+    const seriesById = new Map<number, Map<string, number>>();
+    const series = (id: number) => {
+      if (!seriesById.has(id)) seriesById.set(id, new Map((db.prepare(`SELECT as_of_date AS d, units_mid AS u FROM window_estimates_daily
+        WHERE title_id=? AND platform=? AND window='ltd' AND units_mid IS NOT NULL`).all(id, platform) as Array<{ d: string; u: number }>).map(r => [r.d, r.u])));
+      return seriesById.get(id)!;
+    };
     const agree = (a: number, b: number) => {
       const sa = series(a), sb = series(b);
       let shared = 0;
@@ -53,8 +63,7 @@ export function canonicalSiblings(
     };
     if (!list.every((x, i) => list.every((y, j) => i === j || agree(x, y)))) { keep.push(...list); continue; }
     const score = (id: number) => {
-      const priced = db.prepare(`SELECT 1 FROM platform_sku_map WHERE title_id=? AND sku_role='base'
-        AND msrp_usd_cents IS NOT NULL LIMIT 1`).get(id) ? 1 : 0;
+      const priced = pricedTitle(id) ? 1 : 0;
       const valued = (db.prepare(`SELECT COUNT(*) AS n FROM window_estimates_daily WHERE title_id=? AND platform=?
         AND window='ltd' AND units_mid IS NOT NULL`).get(id, platform) as { n: number }).n;
       return { id, priced, valued, req: id === requested ? 1 : 0 };

@@ -48,6 +48,7 @@
  */
 
 import { boardResponseCache } from "./board-response-cache";
+import { requestQueryWork } from "./request-query-work";
 import type { Express, Request } from "express";
 import rateLimit from "express-rate-limit";
 import { rawSqlite } from "./storage";
@@ -68,7 +69,7 @@ import { ensureMixSchema, runMixShadow } from "./revenue-mix-shadow";
 import type { Mix } from "./revenue-mix-model";
 import { resolveSalesUnits } from "./console-sales-units";
 import { recentFamilyApplies, recentFamilyScale, type NativePeer } from "./console-recent-family";
-import { ensureDailyMixSchema, runDailyMix, dailyMixStatus, publishedDailyAdjustments, applyDailyAdjustment, publishedDailyRevenue } from "./revenue-mix-daily";
+import { ensureDailyMixSchema, runDailyMix, dailyMixStatus, publishedDailyAdjustments, applyDailyAdjustment, publishedDailyRevenue, createDailyMixFamilyReader } from "./revenue-mix-daily";
 
 type Platform = "steam" | "xbox" | "ps5";
 const PLATFORMS: Platform[] = ["steam", "xbox", "ps5"];
@@ -249,6 +250,18 @@ const publicLeaderboardLimiter = rateLimit({
 });
 
 export function registerConsoleLeaderboardRoutes(app: Express) {
+  const queryWork = requestQueryWork();
+  app.use("/api/console", (_req, _res, next) => queryWork.run(next));
+  // The same indexed scalar reads are called thousands of times across rows.
+  // Reuse compilation within this request; each all/get still executes with
+  // its original bound values. No result lifetime or DB transaction is changed.
+  const prepareBoardQuery = (sql: string) => queryWork.read("statement:"+sql, () => rawSqlite.prepare(sql));
+  function dailyMixFamilies(policy: ReturnType<typeof dailyMixPolicy>, now: Date) {
+    // The key's callbacks are fixed here (editionGroupKey/IP protection); all
+    // variable policy inputs and the eligibility date remain in the key.
+    return queryWork.read(JSON.stringify(["dailyMixFamilies",now.toISOString().slice(0,10),policy.baseline,policy.asp]),
+      () => createDailyMixFamilyReader(rawSqlite,policy,now));
+  }
   ensureMixSchema(rawSqlite);
   ensureDailyMixSchema(rawSqlite);
   setImmediate(() => {
@@ -294,6 +307,14 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   // Verified lifetime anchors apply to every window of a title released within this many days.
   const YOUNG_ANCHOR_MAX_AGE_DAYS = 90;
   function platformSales(platform: Platform, window: string, sort = "revenue", dir = "desc", nativeOnly = false, skipUnitMilestones = false) {
+    // Identical internal requests used to rebuild the complete catalog for
+    // every overlay/ceiling. Keep every semantic argument in the key. A copy
+    // belongs to each consumer because the overlay pipeline mutates groups.
+    return structuredClone(queryWork.read(
+      JSON.stringify(["platformSales", platform, window, sort, dir, nativeOnly, skipUnitMilestones]),
+      () => computePlatformSales(platform, window, sort, dir, nativeOnly, skipUnitMilestones)));
+  }
+  function computePlatformSales(platform: Platform, window: string, sort: string, dir: string, nativeOnly: boolean, skipUnitMilestones: boolean) {
       // Default is the 7d window so fresh weekly hits (launches like
       // Halloween: The Game and How to Fish) surface first. Because the
       // estimator sometimes doesn't have 7d numbers yet for very recent
@@ -423,9 +444,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // store, and Push 2 will canonicalize them alongside any PS5-only twin SKU.
       // Exclusion tests must use the same identity as the displayed row. A
       // base game enriched as an update must not be filtered as paid DLC.
-      const nameSourceExpr = `LOWER(CASE WHEN igdb.match_confidence='low' OR console_identity_matches(igdb.store_name,igdb.name)=0
-        THEN COALESCE(NULLIF(igdb.store_name,''),NULLIF(igdb.name,''),psm.external_sku)
-        ELSE COALESCE(NULLIF(igdb.name,''),NULLIF(igdb.store_name,''),psm.external_sku) END)`;
+      const nameSourceExpr = "resolved_identity.filter_name";
       const dlcBundleFilter = `
         AND ${nameSourceExpr} NOT LIKE '%season pass%'
         AND ${nameSourceExpr} NOT LIKE '% season 1'
@@ -538,8 +557,25 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       const sortExprGated = sortExprFor(cascadeUnitsGated)[sort];
 
       // Grab latest daily rating snapshot per (title, platform). Only paid business_model.
-      const rows = rawSqlite.prepare(`
-        WITH latest_rating AS (
+      // Resolve each pure IGDB match and filter name once per SKU, not once
+      // per repeated predicate. Replace only the repeated IGDB expression in
+      // SELECT/interpolated release clauses/ORDER BY; name_igdb in the CTE is
+      // intentionally untouched. Xbox matching and all fallbacks remain exact.
+      const rows = prepareBoardQuery(`
+        WITH identity_matches AS MATERIALIZED (
+          SELECT name_psm.id, name_psm.external_sku, name_igdb.store_name, name_igdb.name,
+                 name_igdb.match_confidence,
+                 console_identity_matches(name_igdb.store_name, name_igdb.name) AS igdb_matches
+            FROM platform_sku_map name_psm
+            LEFT JOIN console_title_igdb name_igdb ON name_igdb.title_id=name_psm.title_id
+           WHERE name_psm.platform=? AND name_psm.business_model='paid' AND name_psm.sku_role='base'
+        ), resolved_identity AS MATERIALIZED (
+          SELECT id, igdb_matches,
+                 LOWER(CASE WHEN match_confidence='low' OR igdb_matches=0
+                   THEN COALESCE(NULLIF(store_name,''),NULLIF(name,''),external_sku)
+                   ELSE COALESCE(NULLIF(name,''),NULLIF(store_name,''),external_sku) END) AS filter_name
+            FROM identity_matches
+        ), latest_rating AS (
           SELECT title_id, platform, MAX(capture_date) AS max_date
             FROM store_rating_signal_daily
            WHERE platform = ?
@@ -659,7 +695,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                ) >= ?
                 AND ${recentHot7dTest}
                THEN 1 ELSE 0 END                    AS isRecentHot
-        FROM platform_sku_map psm
+        -- Drive from the one-row-per-SKU materialization, then indexed id lookup.
+        -- LEFT JOIN in the other direction made SQLite scan this small CTE for
+        -- every SKU (quadratic work); both sides have the exact paid/base scope.
+        FROM resolved_identity
+        CROSS JOIN platform_sku_map psm ON psm.id=resolved_identity.id
         LEFT JOIN latest_rating lr
                ON lr.title_id = psm.title_id AND lr.platform = psm.platform
         LEFT JOIN store_rating_signal_daily srs
@@ -703,13 +743,15 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                  ) >= ? THEN 1 ELSE 0 END) DESC,
                 COALESCE(srs.rating_count, 0) DESC
        -- Do not limit before final anchors, unit reconciliation, and sorting.
-      `).all(
-        platform,               // 1: latest_rating CTE WHERE platform = ?
-        aspFactor,              // 2: SELECT aspUsdCents CAST(msrp * ? AS INTEGER)
-        aspFactor,              // 3: SELECT revenueMidUsd = units * msrp * ? / 100
-        recentHotThresholdIso,  // 4: isRecentHot release_date >= ?
-        platform,               // 5: outer WHERE psm.platform = ?
-        ...sortBinds,           // 6,7: ORDER BY sortExpr contains one ? per use (twice when sort=revenue)
+      `.replaceAll("console_identity_matches(igdb.store_name, igdb.name)", "resolved_identity.igdb_matches")
+        .replaceAll("console_identity_matches(igdb.store_name,igdb.name)", "resolved_identity.igdb_matches")).all(
+        platform,               // identity_matches CTE
+        platform,               // latest_rating CTE
+        aspFactor,              // SELECT aspUsdCents CAST(msrp * ? AS INTEGER)
+        aspFactor,              // SELECT revenueMidUsd = units * msrp * ? / 100
+        recentHotThresholdIso,  // isRecentHot release_date >= ?
+        platform,               // outer WHERE psm.platform = ?
+        ...sortBinds,           // ORDER BY sortExpr contains one ? per use (twice when sort=revenue)
         recentHotThresholdIso,  // last: ORDER BY recent-hot tie-breaker release_date >= ?
       ) as Array<Record<string, any>>;
 
@@ -748,7 +790,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // sales, so each shared pool contributes once to its family (see pickSharedPoolPrimaries).
       const anchorFlags = platform === "steam" ? { positive: new Set<number>(), zero: new Set<number>() } : (() => {
         const positive = new Set<number>(), zero = new Set<number>();
-        const ar = rawSqlite.prepare(`SELECT title_id, MAX(actual_revenue_usd) rev FROM revenue_calibration_anchors
+        const ar = prepareBoardQuery(`SELECT title_id, MAX(actual_revenue_usd) rev FROM revenue_calibration_anchors
           WHERE platform = ? AND data_source LIKE 'manual_anchor_verified_%' GROUP BY title_id`).all(platform) as Array<{title_id:number; rev:number|null}>;
         for (const a of ar) ((a.rev ?? 0) > 0 ? positive : zero).add(a.title_id);
         return { positive, zero };
@@ -878,7 +920,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // Latest anchor per titleId for THIS platform+window (used for
         // Path A on Steam AND for the LTD-preserved exception on
         // PS5/Xbox anchored titles).
-        const anchorRows = rawSqlite.prepare(`
+        const anchorRows = prepareBoardQuery(`
           SELECT title_id, actual_revenue_usd, actual_units, sale_state, as_of_date, data_source
             FROM revenue_calibration_anchors
            WHERE platform = ? AND window = ?
@@ -907,7 +949,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         let ltdEstimatorUnitsByTitleId: Map<number, number> = new Map();
         const isShorterWindow = win !== 'ltd';
         if (isShorterWindow) {
-          const ltdAnchorRows = rawSqlite.prepare(`
+          const ltdAnchorRows = prepareBoardQuery(`
             SELECT title_id, actual_revenue_usd, actual_units, data_source, as_of_date
               FROM revenue_calibration_anchors
              WHERE platform = ? AND window = 'ltd'
@@ -1075,7 +1117,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             if (typeof ltdAnchor.actual_units === 'number' && ltdAnchor.actual_units > 0) {
               let estLtdUnits = ltdEstimatorUnitsByTitleId.get(g.titleId);
               if (estLtdUnits === undefined) {
-                const ltdRow = rawSqlite.prepare(`
+                const ltdRow = prepareBoardQuery(`
                   SELECT COALESCE(SUM(units_mid), 0) AS units
                     FROM window_estimates_daily
                    WHERE title_id = ? AND platform = ? AND window = 'ltd'
@@ -1115,7 +1157,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               // ratio > 1 amplifies an already-untrustworthy signal.
               let estLtdRev = ltdEstimatorRevByTitleId.get(g.titleId);
               if (estLtdRev === undefined) {
-                const ltdRow = rawSqlite.prepare(`
+                const ltdRow = prepareBoardQuery(`
                   SELECT COALESCE(SUM(units_mid), 0) AS units
                     FROM window_estimates_daily
                    WHERE title_id = ? AND platform = ? AND window = 'ltd'
@@ -1171,10 +1213,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // calibration have already won above. Per-title overrides are also
           // protected, both as targets and as native constraints.
           const protectedModel = (row:any, p:Platform) => (row.familyTitleIds as number[]).some(id =>
-            !!rawSqlite.prepare(`SELECT 1 FROM title_multiplier_overrides
+            !!prepareBoardQuery(`SELECT 1 FROM title_multiplier_overrides
               WHERE title_id=? AND platform=? AND effective_from<=? LIMIT 1`)
               .get(id,p,new Date().toISOString()) ||
-            !!rawSqlite.prepare(`SELECT 1 FROM revenue_calibration_anchors
+            !!prepareBoardQuery(`SELECT 1 FROM revenue_calibration_anchors
               WHERE title_id=? AND platform=? AND (window=? OR window='ltd')
               AND (data_source LIKE 'manual_anchor_verified_%' OR data_source LIKE 'portal_fetch%') LIMIT 1`)
               .get(id,p,win));
@@ -1278,12 +1320,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // Saber products are excluded here. Read-time only.
           if (platform === "steam" && SURGE_WINDOWS[win] && g.revenueMidUsd != null && g.externalSku &&
               !protectedModel(g, platform) &&
-              !rawSqlite.prepare("SELECT 1 FROM products WHERE steam_app_id=? LIMIT 1").get(String(g.externalSku))) {
+              !prepareBoardQuery("SELECT 1 FROM products WHERE steam_app_id=? LIMIT 1").get(String(g.externalSku))) {
             // Judge on complete UTC days only: the current UTC day is partial. Skip if the
             // newest complete day is stale (more than 2 days old), because that is unknown.
             const todayMid = Date.parse(`${todayIsoDate()}T00:00:00Z`) / 1000;
             const from = todayMid - 45 * 86400;
-            const rows = (rawSqlite.prepare(`SELECT bucket_start AS start, recommendations_up AS up, recommendations_down AS down
+            const rows = (prepareBoardQuery(`SELECT bucket_start AS start, recommendations_up AS up, recommendations_down AS down
               FROM steam_review_history WHERE app_id=? AND bucket_granularity='day' AND bucket_start>=? AND bucket_start<?`)
               .all(String(g.externalSku), from, todayMid) as Array<{start:number;up:number;down:number}>);
             const newest = rows.reduce((m, r) => Math.max(m, r.start), 0);
@@ -1370,7 +1412,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
       // Apply approved, recorded daily deltas before resolving units. The older
       // windowed shadow candidates never enter published revenue.
-      const daily = platform==="steam" ? new Map() : publishedDailyAdjustments(rawSqlite,dailyMixPolicy(),window);
+      const daily = platform==="steam" ? new Map() : (() => {
+        const mixPolicy=dailyMixPolicy(), mixNow=new Date();
+        return publishedDailyAdjustments(rawSqlite,mixPolicy,window,mixNow,dailyMixFamilies(mixPolicy,mixNow));
+      })();
       for (const g of groups) {
         // Only the generic baseline overlay is eligible. Verified anchors,
         // special IP ratios and LTD-anchor scaling never enter active mode.
@@ -1395,18 +1440,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           const mode = chartModeFromEnv(process.env.CHART_CONSISTENCY_MODE);
           if (mode !== "off") {
             const sortKey = platform === "ps5" ? "psn_api_sales30" : "xbox_api_top_paid";
-            const snap = rawSqlite.prepare(
+            const snap = prepareBoardQuery(
               `SELECT title_id, rank FROM console_storefront_rank_daily
                 WHERE platform = ? AND sort_key = ?
                   AND snapshot_date = (SELECT MAX(snapshot_date) FROM console_storefront_rank_daily WHERE platform = ? AND sort_key = ?)`,
             ).all(platform, sortKey, platform, sortKey) as Array<{ title_id: number; rank: number }>;
             // Protected titles: any per-title override, and any title with a verified anchor in ANY window
             // (an anchored title is never moved by chart evidence, whichever window the anchor is for).
-            const ov = rawSqlite.prepare(
+            const ov = prepareBoardQuery(
               `SELECT title_id FROM title_multiplier_overrides WHERE platform = ?
                UNION SELECT title_id FROM revenue_calibration_anchors WHERE platform = ?`,
             ).all(platform, platform) as Array<{ title_id: number }>;
-            const recent = rawSqlite.prepare(
+            const recent = prepareBoardQuery(
               `SELECT DISTINCT title_id FROM console_storefront_rank_daily
                 WHERE platform = ? AND sort_key = ?
                   AND snapshot_date IN (SELECT DISTINCT snapshot_date FROM console_storefront_rank_daily
@@ -1441,7 +1486,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // platform.
       let latestCaptureDate: string | null = null;
       try {
-        const latestRow = rawSqlite.prepare(
+        const latestRow = prepareBoardQuery(
           `SELECT MAX(capture_date) AS d
              FROM store_rating_signal_daily
             WHERE platform = ?`,
@@ -2441,6 +2486,12 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
   // Shared by the route and by the leaderboard (verified lifetime anchors grow with the daily series).
   function buildRevenueDaily(titleId: number, from: string, to: string): any {
+    // Requested ID remains part of identity: canonical sibling tie-breaking
+    // depends on it. Never share a final daily series by family key alone.
+    return structuredClone(queryWork.read(JSON.stringify(["revenueDaily", titleId, from, to]),
+      () => computeRevenueDaily(titleId, from, to)));
+  }
+  function computeRevenueDaily(titleId: number, from: string, to: string): any {
     const first = buildRevenueDailyCore(titleId, from, to);
     if (!first?.reconciliation) return first;
     // Anchored days are scaled over the whole series, so the answer must not depend on the requested window.
@@ -2471,7 +2522,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // still owns the PDP) but broaden the two SQL queries below to the
       // sibling set. Single-platform titles with no siblings degrade to the
       // previous behavior (one platform, chart draws one line).
-      const seedNameRow = rawSqlite.prepare(`
+      const seedNameRow = prepareBoardQuery(`
         SELECT DISTINCT
           CASE
             WHEN psm.platform = 'xbox' THEN CASE WHEN xtc.source = 'seeded_from_cti' AND console_identity_matches(igdb.store_name, xtc.name) = 0 THEN COALESCE(NULLIF(igdb.store_name, ''), xtc.name) ELSE xtc.name END
@@ -2499,7 +2550,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // sibs is guaranteed to contain the requested titleId.
       let siblingIds: number[] = [titleId];
       if (seedKey) {
-        const sibRows = rawSqlite.prepare(`
+        const byFamily = queryWork.read("dailySiblingCatalog", () => {
+          const sibRows = prepareBoardQuery(`
           SELECT DISTINCT psm.title_id AS titleId,
             CASE
               WHEN psm.platform = 'xbox' THEN CASE WHEN xtc.source = 'seeded_from_cti' AND console_identity_matches(igdb.store_name, xtc.name) = 0 THEN COALESCE(NULLIF(igdb.store_name, ''), xtc.name) ELSE xtc.name END
@@ -2514,11 +2566,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             AND psm.business_model = 'paid'
             AND psm.sku_role = 'base'
         `).all() as Array<{ titleId: number; name: string | null }>;
-        const matched = new Set<number>([titleId]);
-        for (const r of sibRows) {
-          if (chartFamilyKey(editionGroupKey(r.name)) === seedKey) matched.add(r.titleId);
-        }
-        const platformOf = rawSqlite.prepare(`SELECT DISTINCT platform FROM platform_sku_map WHERE title_id=?`);
+          // Retain original SQL encounter order inside each family. Requested
+          // title is still inserted first below, exactly as before.
+          const families = new Map<string, number[]>();
+          for (const r of sibRows) {
+            const key = chartFamilyKey(editionGroupKey(r.name));
+            const list = families.get(key) ?? [];
+            list.push(r.titleId); families.set(key, list);
+          }
+          return families;
+        });
+        const matched = new Set<number>([titleId, ...(byFamily.get(seedKey) ?? [])]);
+        const platformOf = prepareBoardQuery(`SELECT DISTINCT platform FROM platform_sku_map WHERE title_id=?`);
         siblingIds = canonicalSiblings(rawSqlite,
           Array.from(matched).flatMap(id => (platformOf.all(id) as Array<{platform:string}>).map(p => ({titleId:id, platform:p.platform}))),
           titleId);
@@ -2540,7 +2599,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // guards against it too), we keep both rows and let the per-platform
       // grouping below use whichever set is non-null on the same date. In
       // practice sibling sets are one-titleId-per-platform.
-      const rows = rawSqlite.prepare(`
+      const rows = prepareBoardQuery(`
         SELECT title_id AS titleId, platform, as_of_date AS date, units_mid AS units, method, signal_value AS signal
           FROM window_estimates_daily
          WHERE title_id IN (${idPlaceholders}) AND window = 'ltd'
@@ -2551,7 +2610,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Primary SKU MSRP per platform across the sibling set (lowest-priced
       // anchor SKU on each platform, regardless of which sibling titleId
       // owns it).
-      const skuRows = rawSqlite.prepare(`
+      const skuRows = prepareBoardQuery(`
         SELECT platform, MIN(msrp_usd_cents) AS msrp_usd_cents
           FROM platform_sku_map
          WHERE title_id IN (${idPlaceholders}) AND msrp_usd_cents IS NOT NULL
@@ -2563,7 +2622,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // products with their own units and price. The board sums them; so does the chart, each
       // priced at its own MSRP.
       const msrpByTitle = new Map<number, number>();
-      for (const r of rawSqlite.prepare(`SELECT title_id AS titleId, MIN(msrp_usd_cents) AS m FROM platform_sku_map
+      for (const r of prepareBoardQuery(`SELECT title_id AS titleId, MIN(msrp_usd_cents) AS m FROM platform_sku_map
           WHERE title_id IN (${idPlaceholders}) AND msrp_usd_cents IS NOT NULL GROUP BY title_id`).all(...siblingIds) as Array<{ titleId: number; m: number }>)
         msrpByTitle.set(r.titleId, r.m);
 
@@ -2786,7 +2845,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         }
       }
 
-      const recordedDaily = publishedDailyRevenue(rawSqlite,dailyMixPolicy(),seedKey,from,to);
+      const mixPolicy=dailyMixPolicy(), mixNow=new Date();
+      const recordedDaily = publishedDailyRevenue(rawSqlite,mixPolicy,seedKey,from,to,mixNow,dailyMixFamilies(mixPolicy,mixNow));
       const calibrated=activeMilestones(rawSqlite).find(m=>siblingIds.includes(m.titleId)&&milestoneCanOverlay(rawSqlite,m,"ltd"));
       const calibratedDays=calibrated?milestoneProjection(rawSqlite,calibrated,"ltd",to):null;
       const calibratedRevenue=new Map<string,number>();
@@ -2831,18 +2891,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       // Verified lifetime anchors: the days add up to lifetime and lifetime grows with the daily shape.
       let reconciliation: any = null;
       if (!calibratedDays && !dailyAllocationBlockReason(rawSqlite, siblingIds) && !points.some((pt: any) => pt.source === "daily_mix_ledger")) {
-        const arows = rawSqlite.prepare(`SELECT title_id AS titleId, platform, actual_revenue_usd AS rev, as_of_date AS asOf FROM revenue_calibration_anchors
+        const arows = prepareBoardQuery(`SELECT title_id AS titleId, platform, actual_revenue_usd AS rev, as_of_date AS asOf FROM revenue_calibration_anchors
           WHERE window='ltd' AND data_source LIKE 'manual_anchor_verified_%' AND title_id IN (${idPlaceholders})
             AND as_of_date=(SELECT MAX(x.as_of_date) FROM revenue_calibration_anchors x WHERE x.title_id=revenue_calibration_anchors.title_id
               AND x.platform=revenue_calibration_anchors.platform AND x.window='ltd')`).all(...siblingIds) as Array<{ titleId: number; platform: SpreadPlat; rev: number; asOf: string }>;
-        const rel = (rawSqlite.prepare(`SELECT MIN(COALESCE(store_release_date, release_date)) AS d FROM console_title_igdb WHERE title_id IN (${idPlaceholders})`).get(...siblingIds) as { d: string | null } | undefined)?.d;
+        const rel = (prepareBoardQuery(`SELECT MIN(COALESCE(store_release_date, release_date)) AS d FROM console_title_igdb WHERE title_id IN (${idPlaceholders})`).get(...siblingIds) as { d: string | null } | undefined)?.d;
         const wholeLife = !!rel && rel.slice(0, 10) >= "2026-09-07";
         const inputs: Partial<Record<SpreadPlat, SpreadInput>> = {};
         for (const pl of ["steam", "ps5", "xbox"] as SpreadPlat[]) {
           const mine = arows.filter(r => r.platform === pl);
           if (!mine.length) continue;
           const A = mine.reduce((a, r) => a + r.rev, 0), asOf = mine.reduce((m, r) => (r.asOf > m ? r.asOf : m), "");
-          const ids = siblingIds.filter(id => (rawSqlite.prepare("SELECT 1 FROM platform_sku_map WHERE title_id=? AND platform=? LIMIT 1").get(id, pl)));
+          const ids = siblingIds.filter(id => (prepareBoardQuery("SELECT 1 FROM platform_sku_map WHERE title_id=? AND platform=? LIMIT 1").get(id, pl)));
           const g = wholeLife ? null : growVerifiedLtdAnchor(rawSqlite, pl, ids, asOf, A, null, aspFactorFor(pl));
           const ca = wholeLife ? null : (g?.estimatorAtAnchorUsd ?? estimatorAtAnchor(rawSqlite, pl, ids, asOf, aspFactorFor(pl)));
           inputs[pl] = { anchorUsd: A, anchorAsOf: asOf, wholeLife, estimatorAtAnchorUsd: ca };

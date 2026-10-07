@@ -540,3 +540,36 @@ series is derived from consecutive published lifetime values, allocate the
 published change across missing days from dated evidence in one generic path
 (gap and first-observation), conserving the total. Do not hard-code titles, do
 not synthesize lifetime rows, and label modeled days on each point.
+
+## 2026-10-07: fix cold query work, not just cache hits or timeout symptoms
+
+Verified anchor growth can call the daily chart builder for many board rows. If
+that builder rescans the complete sibling catalog, or its daily-mix reader
+rebuilds all families, a correct per-title helper becomes a board-wide repeated
+catalog scan. Internal native-console ceilings and Steam overlays can likewise
+rebuild identical full boards. Trace exact call arguments and SQL counts before
+changing estimation rules.
+
+Use request-owned common subexpressions, not cross-request response caching:
+keep platform/window/sort/direction/native/milestone flags in board keys; keep
+requested title ID and dates in daily-series keys (sibling tie-breaks depend on
+the requested ID). Clone mutable board results. Daily-mix catalog keys include
+the date and all varying policy inputs; preserve kill-switch/freshness gates.
+Repeated read statements can share compilation within that same request without
+sharing their bound results. Test separate requests and failed reads explicitly.
+
+SQLite deterministic functions are not automatically evaluated once per row.
+Many LIKE predicates can repeat the same JavaScript identity function and CASE/
+LOWER expression. A small MATERIALIZED per-SKU identity/name stage removes those
+repetitions without changing vocabulary, fallback, Xbox name or regional rules.
+Inspect EXPLAIN: joining from each SKU into an unindexed materialized CTE can
+create a repeated scan; drive from the one-row-per-SKU CTE and indexed SKU ID
+instead. Preserve output tie order with exact full-response comparisons.
+
+Profile an approved, current, sanitized readonly snapshot, not repeated live
+requests or an old fixture. Suppress startup writers without disabling read-side
+model modes. Compare all five windows, five sorts, both directions, all platforms
+and both combined limits. Measure actual cold-process timings without SQL/UDF
+instrumentation, then separately record call counts/plans/prepare time. Four
+normal Buying requests need a separate client process to reveal server event-loop
+queuing. Old-code/current-data timing is not historical performance ground truth.
