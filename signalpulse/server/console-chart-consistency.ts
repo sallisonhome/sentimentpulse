@@ -72,7 +72,19 @@ export interface DeepCurve { a: number; b: number; n: number; r2: number }
 
 /** Log-log least squares of units on chart rank over the reference rows: units = exp(a) * rank^b. Null when the data
  *  cannot support a sensible curve (too few points, flat or rising, or an absurd slope). */
-export function fitRankCurve(points: Array<{ rank: number; units: number }>): DeepCurve | null {
+export function fitRankCurve(points: Array<{ rank: number; units: number; anchored?: boolean }>): DeepCurve | null {
+  // Protected rows (verified anchors, actuals) are exact for their own title but one anchored row far above the
+  // chart's pattern, especially at rank 1 where it has the most leverage on a log-log fit, steepens the curve and lowers
+  // every deep-rank ceiling (FC 27, 2026-10-06: a 6.5x anchor at rank 1 cut ~40 unrelated titles 1-18%). Fit the curve on
+  // the unprotected rows first; protected rows join the fit only when they sit within 2x of that curve.
+  if (points.some(x => x.anchored) && points.some(x => !x.anchored)) {
+    const base = fitRankCurve(points.filter(x => !x.anchored).map(({ rank, units }) => ({ rank, units })));
+    if (base) {
+      const kept = points.filter(x => !x.anchored || (x.rank >= 1 && x.units > 0 &&
+        x.units <= 2 * curveUnits(base, x.rank) && x.units >= curveUnits(base, x.rank) / 2));
+      return fitRankCurve(kept.map(({ rank, units }) => ({ rank, units }))) ?? base;
+    }
+  }
   const first = fitOnce(points);
   if (!first) return null;
   // One trimming pass: drop reference rows more than 2x above or below the first curve (these are the rows the pass is
@@ -137,7 +149,7 @@ export function applyChartConsistency(
     const out = new Map<ChartGroup, Decision>();
     const unitsOf = (r: { g: ChartGroup }) => work.get(r.g)!;
     const deepest = refs.slice(-CHART_NEIGHBOURS).map(unitsOf);
-    const curve = opts.deepRankByTitle && opts.deepRankByTitle.size > 0 ? fitRankCurve(refs.map(r => ({ rank: r.rank, units: unitsOf(r) }))) : null;
+    const curve = opts.deepRankByTitle && opts.deepRankByTitle.size > 0 ? fitRankCurve(refs.map(r => ({ rank: r.rank, units: unitsOf(r), anchored: exempt(r.g) }))) : null;
     for (const g of groups) {
       if (g.unitsMid == null || g.unitsMid <= 0) continue;
       if (exempt(g)) continue;
