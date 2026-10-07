@@ -17,6 +17,7 @@ export const CHART_MAX_RAISE = 3;       // never raise a row more than 3x on cha
 export const CHART_MIN_RANKED = 50;     // skip entirely when the snapshot is thin
 const EXEMPT_SOURCES = new Set([
   "actual", "native_public_ceiling", "scaled_to_verified_ltd_anchor_units", "scaled_to_verified_ltd_anchor",
+  "scaled_to_verified_ltd_anchor_full_life", "scaled_to_verified_ltd_anchor_young_share",
   "estimated_public_unit_milestone", "estimated_public_ceiling", "unavailable",
 ]);
 
