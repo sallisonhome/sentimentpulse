@@ -264,7 +264,7 @@ export interface RevenueLeaderboardRow {
   dlcRevenue24h: number | null;
   /** Lifetime BASE net units sold to-date. Base-only (matches units24h /
    * dlcUnits24h being tracked per-SKU-group) -- does NOT include DLC attach
-   * units, so dividing ltdRevenueUsd (base+dlc) by this is not a clean ASP. */
+   * units, and ltdRevenueUsd is base-only too, so the pair gives a clean ASP. */
   ltdUnitsSold: number | null;
   ltdRevenueUsd: number | null;
   revenue30d: number | null;
@@ -373,17 +373,18 @@ export function getRevenueLeaderboardRows(): RevenueLeaderboardRow[] {
         baseUnitsDayBefore += r.netUnits;
         baseRevDayBefore += r.netRevenueUsd;
       }
-      if (r.date >= trailing30Start && r.date <= anchor) {
+      // 30-day revenue is full-game (base SKU) revenue only; DLC revenue is not a full-game actual.
+      if (r.skuGroup === "base" && r.date >= trailing30Start && r.date <= anchor) {
         revenue30d += r.netRevenueUsd;
         any30dRow = true;
       }
-      if (r.date >= prior30Start && r.date <= prior30End) {
+      if (r.skuGroup === "base" && r.date >= prior30Start && r.date <= prior30End) {
         revenuePrior30d += r.netRevenueUsd;
         anyPrior30dRow = true;
       }
     }
 
-    const ltdRevenueUsd = round2(summary.baseNetRevenueUsd + summary.dlcNetRevenueUsd);
+    const ltdRevenueUsd = round2(summary.baseNetRevenueUsd);   // full-game only; DLC excluded
     // No sales history at all yet (brand-new prepurchase title) -> render
     // "—" everywhere rather than a confident "$0.00", matching §6.4.
     const hasAnyHistory = summary.rowCount > 0;

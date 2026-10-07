@@ -89,7 +89,7 @@ const SALE_THRESHOLD = (() => {
 // msrp_usd_cents / is_manual_override come from the base SKU's platform_sku_map
 // row. If more than one base row exists per title (rare), we take the
 // highest MSRP as the reference so ASP% never exceeds 100% by construction.
-interface TitleRollup {
+export interface TitleRollup {
   title_id: number;
   product_ids: number[];
   external_skus: string[];
@@ -178,11 +178,13 @@ interface WindowAgg {
  * A title that just launched N/2 days ago still gets a valid Nd window;
  * we just sum what's available.
  */
-function aggregateWindow(rollup: TitleRollup, days: number | null, as_of: string): WindowAgg {
-  const endDate = as_of;
+export function aggregateWindow(rollup: TitleRollup, days: number | null, as_of: string): WindowAgg {
+  // The window ends on the last day actually ingested (the daily pull is for the previous day), so a 30-day
+  // window is 30 complete days, not 29 plus a day that has no data yet.
+  const endDate = rollup.last_date < as_of ? rollup.last_date : as_of;
   const startDate = days == null
     ? rollup.first_date
-    : dateOffset(as_of, -days + 1); // inclusive lower bound
+    : dateOffset(endDate, -days + 1); // inclusive lower bound
   if (rollup.product_ids.length === 0) return { net_units: 0, net_revenue_usd: 0, row_count: 0 };
   const placeholders = rollup.product_ids.map(() => "?").join(",");
   const r = rawSqlite.prepare(`
@@ -194,6 +196,7 @@ function aggregateWindow(rollup: TitleRollup, days: number | null, as_of: string
     WHERE product_id IN (${placeholders})
       AND date >= ? AND date <= ?
       AND source = 'portal_fetch'
+      AND sku_group = 'base'
   `).get(...rollup.product_ids, startDate, endDate) as WindowAgg;
   return r;
 }
@@ -207,7 +210,7 @@ function aggregateWindow(rollup: TitleRollup, days: number | null, as_of: string
  * (product, day) as an independent sample) prevents a low-priced
  * Standard-only day from getting equal weight to a mixed-Deluxe day.
  */
-function rollingAspMedianPctMsrp(rollup: TitleRollup, as_of: string): number | null {
+export function rollingAspMedianPctMsrp(rollup: TitleRollup, as_of: string): number | null {
   if (rollup.product_ids.length === 0) return null;
   const start = dateOffset(as_of, -90);
   const placeholders = rollup.product_ids.map(() => "?").join(",");
@@ -219,6 +222,7 @@ function rollingAspMedianPctMsrp(rollup: TitleRollup, as_of: string): number | n
      WHERE product_id IN (${placeholders})
        AND date >= ? AND date <= ?
        AND source = 'portal_fetch'
+       AND sku_group = 'base'
      GROUP BY date
     HAVING SUM(net_units) > 0
   `).all(...rollup.product_ids, start, as_of) as Array<{date: string; net_units: number; net_revenue_usd: number}>;
@@ -336,4 +340,5 @@ function main() {
   }
 }
 
-main();
+// Importable for tests (WRITE_ANCHORS_NO_MAIN=1).
+if (process.env.WRITE_ANCHORS_NO_MAIN !== "1") main();

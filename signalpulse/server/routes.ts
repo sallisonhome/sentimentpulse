@@ -1202,11 +1202,10 @@ export async function registerRoutes(
   // shape as /steam/wishlists and /steam/prepurchases so the existing
   // TimeSeriesChart component can render it without changes.
   //
-  // dailyDelta = revenue on that calendar day (base + dlc SKUs summed).
+  // dailyDelta = full-game revenue on that calendar day (base SKUs only).
   // cumulativeCount = running-total revenue from first row through that day.
   //
-  // Excludes 'other' skuGroup (soundtrack/artbook) so the number aligns with
-  // the Steam Sales card's tracked revenue.
+  // Excludes DLC and 'other' (soundtrack/artbook): full-game actuals only.
   app.get("/api/products/:id/steam/revenue-daily", (req, res) => {
     try {
       const productId = parseInt(req.params.id);
@@ -1214,11 +1213,11 @@ export async function registerRoutes(
       const until = typeof req.query.until === "string" ? req.query.until : undefined;
       const rows = storage.getSteamSales(productId, { since, until });
 
-      // Roll up daily revenue (base + dlc). Multiple rows can share a date
+      // Roll up daily full-game revenue (base SKUs only). Multiple rows can share a date
       // when both base and dlc SKUs sold that day.
       const byDate = new Map<string, number>();
       for (const r of rows) {
-        if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
+        if (r.skuGroup !== "base") continue;   // full-game SKUs only; DLC revenue is not a full-game actual
         byDate.set(r.date, (byDate.get(r.date) ?? 0) + r.netRevenueUsd);
       }
       const dates = Array.from(byDate.keys()).sort();
