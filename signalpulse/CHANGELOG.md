@@ -4,6 +4,12 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 7, 2026
 
+- Verified lifetime anchors (manual or publicly reported) are now starting points, not fixed totals. The daily series is the platform's daily shape
+  scaled by one factor, so the days add up to lifetime and lifetime keeps growing with the shape after the anchor date. The leaderboard lifetime figure
+  is the same number. For a title released inside the series (FC 27) the days up to the anchor date add up to the anchor exactly and no day is empty or
+  zero: missing and zero days are filled from neighbouring days, and a platform whose own daily estimates are mostly zero or one spike (FC 27 on Xbox)
+  uses Steam's daily shape. Older titles keep their pre-series total as a separate figure, are not given interpolated zeros, and exclude one-day
+  estimator basis shifts. Anchors from actual sales feeds, manual multipliers, milestones and Saber products are unchanged. Filled days are marked.
 - A title with a manually verified or publicly reported lifetime figure now keeps the daily-history rules for late-listed editions and
   missing days. Before, adding the anchor switched them off, so FC 27 on Xbox showed seven empty days and then a one-day $7.7M catch-up.
   Titles anchored from actual sales feeds, with a manual multiplier, an active public milestone, or published by Saber are unchanged,

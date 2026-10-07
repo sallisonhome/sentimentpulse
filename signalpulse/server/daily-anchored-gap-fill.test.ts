@@ -40,10 +40,12 @@ test("a revenue anchor alone keeps late-joiner and gap-fill rules; other protect
     const { registerConsoleLeaderboardRoutes } = await import("./routes-console-leaderboards");
     const { dailyAllocationBlockReason } = await import("./daily-gap-allocation");
     const stamp = new Date().toISOString();
-    await seed(db, 49901, stamp); await seed(db, 49911, stamp); await seed(db, 49921, stamp); await seed(db, 49931, stamp);
+    await seed(db, 49901, stamp); await seed(db, 49911, stamp); await seed(db, 49921, stamp); await seed(db, 49931, stamp); await seed(db, 49941, stamp);
     anchor(db, 49911, stamp);                      // anchor only
     anchor(db, 49921, stamp);                      // anchor + manual multiplier override
     db.prepare(`INSERT INTO title_multiplier_overrides(title_id,platform,multiplier,ci_pct,digital_unit_share,confidence,method,effective_from,created_at) VALUES(49921,'ps5',50,.5,.9,'low','fixture',?,?)`).run(stamp, stamp);
+    db.prepare(`INSERT INTO revenue_calibration_anchors(title_id,platform,window,as_of_date,actual_revenue_usd,actual_units,reference_msrp_usd_cents,sale_state,data_source,created_at)
+      VALUES(49941,'ps5','ltd','2026-10-03',5000000,100000,6000,'regular','manual_anchor_verified_ltd',?)`).run(stamp);   // anchor dated before the last days
     anchor(db, 49931, stamp, "steam_sales_daily");  // anchor from an actual-sales feed
     assert.equal(dailyAllocationBlockReason(db, [49901, 49902]), null);
     assert.equal(dailyAllocationBlockReason(db, [49931, 49932]), "revenue_anchor", "actual-sales anchor still blocks");
@@ -57,10 +59,32 @@ test("a revenue anchor alone keeps late-joiner and gap-fill rules; other protect
       assert.equal(r.status, 200); return await r.json() as any;
     };
     const plain = await get(49901, "2026-10-05"), anchored = await get(49911, "2026-10-05"), overridden = await get(49921, "2026-10-05");
-    // Same shape of data, one anchored: identical series, no nulls from the late listing, no catch-up spike.
-    assert.deepEqual(anchored.points.map((p: any) => p.ps5), plain.points.map((p: any) => p.ps5));
-    assert.deepEqual(anchored.points.filter((p: any) => p.date >= "2026-09-24" && p.ps5 == null).map((p: any) => p.date), [], "no gap days");
+    // Same data, one anchored: the days are the unanchored shape scaled so they add up to the anchor (5,000,000),
+    // with no empty days and no catch-up spike from the late listing.
+    const vals = (b: any) => b.points.filter((p: any) => p.date >= "2026-09-24" && p.date <= "2026-10-05").map((p: any) => p.ps5);
+    assert.deepEqual(anchored.points.filter((p: any) => p.date >= "2026-09-24" && p.date <= "2026-10-05" && p.ps5 == null).map((p: any) => p.date), [], "no gap days");
+    const sum = (b: any) => b.points.reduce((a: number, p: any) => a + (p.ps5 ?? 0), 0);
+    assert.ok(Math.abs(sum(anchored) - 5_000_000) < 1, `days add up to the anchor: ${sum(anchored)}`);
+    assert.ok(Math.abs(anchored.reconciliation.ps5.lifetimeUsd - 5_000_000) < 1);
+    const ratios = vals(anchored).map((v: number, i: number) => v / vals(plain)[i]);
+    assert.ok(ratios.every((r: number) => Math.abs(r / ratios[0] - 1) < 1e-9), "same shape, one scale factor");
     assert.deepEqual(anchored.lateListings?.map((l: any) => l.firstValuedDate), ["2026-10-04"]);
+    // The answer does not depend on the requested window.
+    const narrow = await get(49941, "2026-10-04");
+    const wide = await get(49941, "2026-10-05");
+    assert.deepEqual(narrow.points.map((p: any) => p.ps5), wide.points.filter((p: any) => p.date <= "2026-10-04").map((p: any) => p.ps5));
+    // Anchor dated Oct 3, data to Oct 5: lifetime grows past the anchor, the days add up to it, and the board shows the same figure.
+    const grown = await get(49941, "2026-10-05");
+    const rec = grown.reconciliation.ps5;
+    const total = grown.points.reduce((a: number, p: any) => a + (p.ps5 ?? 0), 0);
+    assert.ok(rec.lifetimeUsd > 5_000_000 && Math.abs(total - rec.lifetimeUsd) < 1, `days add up to lifetime: ${total} vs ${rec.lifetimeUsd}`);
+    assert.ok(Math.abs(grown.points.filter((p: any) => p.date <= "2026-10-03").reduce((a: number, p: any) => a + (p.ps5 ?? 0), 0) - 5_000_000) < 1, "days up to the anchor date add up to the anchor");
+    const board = await originalFetch(`http://127.0.0.1:${server.address().port}/api/console/leaderboards/ps5?window=ltd&limit=100`).then(r => r.json()) as any;
+    const row = board.titles.find((t: any) => String(t.name).includes("Anchored Gap Fill 49941"));
+    assert.ok(row, "fixture title on the board");
+    assert.ok(Math.abs(row.revenueMidUsd - rec.lifetimeUsd) / rec.lifetimeUsd < 1e-6, `board lifetime ${row.revenueMidUsd} equals the series ${rec.lifetimeUsd}`);
+    const flat = board.titles.find((t: any) => String(t.name).includes("Anchored Gap Fill 49931"));
+    if (flat) assert.ok(flat.revenueMidUsd === 5_000_000 || flat.revenueMidUsd < 5_000_000 * 1.0000001, "actual-sales anchor stays fixed");
     const actuals = await get(49931, "2026-10-05");
     assert.ok(actuals.points.some((p: any) => p.date >= "2026-09-29" && p.date <= "2026-10-03" && p.ps5 == null), "actual-sales anchor keeps legacy gaps");
     // Override: legacy path kept, the late listing's null days still null the sum.
