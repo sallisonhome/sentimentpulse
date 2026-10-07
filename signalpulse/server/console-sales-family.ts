@@ -1,6 +1,19 @@
 // Shared sales-family normalization used by reconciliation and sales routes.
+// editionGroupKey is a pure function of its input but runs a long regex chain, and board queries call it
+// (directly and through the console_identity_matches SQL function) millions of times per request.
+// Memoize on the input string; cache is bounded so a runaway set of names cannot grow it without limit.
+const EDITION_KEY_CACHE = new Map<string, string>();
+const EDITION_KEY_CACHE_MAX = 100_000;
 export function editionGroupKey(name: string | null | undefined): string {
   if (!name) return "";
+  const hit = EDITION_KEY_CACHE.get(name);
+  if (hit !== undefined) return hit;
+  const out = computeEditionGroupKey(name);
+  if (EDITION_KEY_CACHE.size >= EDITION_KEY_CACHE_MAX) EDITION_KEY_CACHE.clear();
+  EDITION_KEY_CACHE.set(name, out);
+  return out;
+}
+function computeEditionGroupKey(name: string): string {
   let s = name.toLowerCase();
   // Strip trademark / registered / smart-quote noise so "PS4™ & PS5™" matches.
   s = s.replace(/[™®℗℠]/g, "");

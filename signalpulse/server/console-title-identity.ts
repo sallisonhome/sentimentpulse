@@ -3,7 +3,18 @@
  * the identity of a similarly named update, expansion, sequel or spin-off.
  * Strip packaging/platform noise only; never strip arbitrary subtitles.
  */
+// Pure and regex-heavy; the console_identity_matches SQL function calls it for every row of every board query.
+// Memoized on the input string; bounded so it cannot grow without limit.
+const IDENTITY_NAME_CACHE = new Map<string, string>();
 export function identityName(name: string): string {
+  const hit = IDENTITY_NAME_CACHE.get(name);
+  if (hit !== undefined) return hit;
+  const out = computeIdentityName(name);
+  if (IDENTITY_NAME_CACHE.size >= 100_000) IDENTITY_NAME_CACHE.clear();
+  IDENTITY_NAME_CACHE.set(name, out);
+  return out;
+}
+function computeIdentityName(name: string): string {
   let value = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .toLowerCase().replace(/[™®℗℠]/g, "").replace(/[‘’]/g, "'")
     .replace(/δ/g, "delta").replace(/[–—]/g, "-")
