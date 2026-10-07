@@ -55,6 +55,8 @@ export { pickSharedPoolPrimaries, sharedPoolViolations };
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
 import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
 import {chartFamilyKey,canonicalSiblings} from "./chart-family";
+import {growVerifiedLtdAnchor,estimatorAtAnchor} from "./anchor-growth";
+import {spreadToAnchors,type Plat as SpreadPlat,type SpreadInput} from "./anchored-daily-spread";
 import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
@@ -895,13 +897,13 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // Only applies when the LTD anchor is verified (data_source starts
         // with 'manual_anchor_verified_'), NOT for portal_fetch anchors —
         // those already track actual per-window revenue in their own row.
-        let ltdAnchorMap: Map<number, {actual_revenue_usd:number; actual_units:number|null; data_source:string}> = new Map();
+        let ltdAnchorMap: Map<number, {actual_revenue_usd:number; actual_units:number|null; data_source:string; as_of_date?:string}> = new Map();
         let ltdEstimatorRevByTitleId: Map<number, number> = new Map();
         let ltdEstimatorUnitsByTitleId: Map<number, number> = new Map();
         const isShorterWindow = win !== 'ltd';
         if (isShorterWindow) {
           const ltdAnchorRows = rawSqlite.prepare(`
-            SELECT title_id, actual_revenue_usd, actual_units, data_source
+            SELECT title_id, actual_revenue_usd, actual_units, data_source, as_of_date
               FROM revenue_calibration_anchors
              WHERE platform = ? AND window = 'ltd'
                AND data_source LIKE 'manual_anchor_verified_%'
@@ -911,7 +913,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
                     WHERE platform = ? AND window = 'ltd'
                     GROUP BY title_id
                )
-          `).all(platform, platform) as Array<{title_id:number; actual_revenue_usd:number; actual_units:number|null; data_source:string}>;
+          `).all(platform, platform) as Array<{title_id:number; actual_revenue_usd:number; actual_units:number|null; data_source:string; as_of_date:string}>;
           for (const a of ltdAnchorRows) ltdAnchorMap.set(a.title_id, a);
         }
 
@@ -1004,6 +1006,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           } : undefined;
           const isVerifiedAnchor = a && a.data_source && a.data_source.startsWith('manual_anchor_verified_');
           const anchorWins = a && (platform === "steam" || isVerifiedAnchor);
+          // A verified lifetime anchor is a starting point: lifetime grows with the estimator after its as-of date.
+          if (anchorWins && a && isVerifiedAnchor && win === "ltd") {
+            const grown = anchorLifetimeGrowth(g.titleId as number, platform);
+            if (grown) { a.actual_revenue_usd = a.actual_revenue_usd * grown.ratio; if (a.actual_units != null) a.actual_units = Math.round(a.actual_units * grown.ratio); g.anchorGrowth = grown.rec; }
+          }
           if (anchorWins && a) {
             g.revenueMidUsdEstimated = g.revenueMidUsd;
             g.revenueMidUsd = a.actual_revenue_usd;
@@ -1032,7 +1039,11 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // revenue by (anchor_ltd / estimator_ltd_for_same_title). This
           // preserves the "anchor drives the ceiling and shorter windows
           // adjust proportionally" behavior the user requested.
-          const ltdAnchor = ltdAnchorMap.get(g.titleId);
+          let ltdAnchor = ltdAnchorMap.get(g.titleId);
+          if (ltdAnchor?.as_of_date) {
+            const grown = anchorLifetimeGrowth(g.titleId as number, platform);
+            if (grown) { ltdAnchor = { ...ltdAnchor, actual_revenue_usd: ltdAnchor.actual_revenue_usd * grown.ratio, actual_units: ltdAnchor.actual_units != null ? Math.round(ltdAnchor.actual_units * grown.ratio) : null }; g.anchorGrowth = grown.rec; }
+          }
           if (isShorterWindow && ltdAnchor) {
             // A lifetime anchor calibrates an available window; it cannot
             // supply missing weekly evidence. In JS null * ratio is zero,
@@ -2410,12 +2421,18 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   //
   // Data-collection start: 2026-09-14 (title_ltd_state introduced). Dates
   // before that in a requested window are returned as null.
-  app.get("/api/console/titles/:titleId/revenue-daily", (req, res) => {
+  // Verified lifetime anchors are starting points: lifetime = the sum of the anchored daily series (see anchored-daily-spread).
+  function anchorLifetimeGrowth(titleId: number, platform: Platform): { ratio: number; rec: any } | null {
     try {
-      const titleId = parseInt(req.params.titleId, 10);
-      if (!Number.isFinite(titleId)) return res.status(400).json({ error: "invalid titleId" });
-      const to = parseDate(req.query.to as string | undefined, todayIsoDate());
-      const from = parseDate(req.query.from as string | undefined, daysAgo(90));
+      const rec = buildRevenueDaily(titleId, "2026-09-14", todayIsoDate())?.reconciliation?.[platform];
+      if (!rec || !(rec.anchorUsd > 0)) return null;
+      const ratio = rec.lifetimeUsd / rec.anchorUsd;
+      return ratio > 1 && ratio <= 2 ? { ratio, rec } : null;
+    } catch { return null; }
+  }
+
+  // Shared by the route and by the leaderboard (verified lifetime anchors grow with the daily series).
+  function buildRevenueDaily(titleId: number, from: string, to: string): any {
       const COLLECTION_START = "2026-09-14";
 
       // Cross-platform sibling resolution (2026-09-16). This endpoint powers
@@ -2457,7 +2474,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         xboxFactor:aspFactorFor("xbox"),
         xboxRatio:ipOverrideFactorFor(seedNameRow?.name,"xbox")?.factor??PLATFORM_RATIO_VS_STEAM.xbox!,
       });
-      if(launch)return res.json({titleId,...launch});
+      if(launch)return {titleId,...launch};
 
       // If we can't resolve a key, fall back to the requested titleId only.
       // sibs is guaranteed to contain the requested titleId.
@@ -2792,13 +2809,44 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         return { date: d, steam, ps5, xbox, combined, source:"raw_daily_estimator",
           ...(Object.keys(allocation).length ? { allocation } : {}) };
       });
+      // Verified lifetime anchors: the days add up to lifetime and lifetime grows with the daily shape.
+      let reconciliation: any = null;
+      if (!calibratedDays && !dailyAllocationBlockReason(rawSqlite, siblingIds) && !points.some((pt: any) => pt.source === "daily_mix_ledger")) {
+        const arows = rawSqlite.prepare(`SELECT title_id AS titleId, platform, actual_revenue_usd AS rev, as_of_date AS asOf FROM revenue_calibration_anchors
+          WHERE window='ltd' AND data_source LIKE 'manual_anchor_verified_%' AND title_id IN (${idPlaceholders})
+            AND as_of_date=(SELECT MAX(x.as_of_date) FROM revenue_calibration_anchors x WHERE x.title_id=revenue_calibration_anchors.title_id
+              AND x.platform=revenue_calibration_anchors.platform AND x.window='ltd')`).all(...siblingIds) as Array<{ titleId: number; platform: SpreadPlat; rev: number; asOf: string }>;
+        const rel = (rawSqlite.prepare(`SELECT MIN(COALESCE(store_release_date, release_date)) AS d FROM console_title_igdb WHERE title_id IN (${idPlaceholders})`).get(...siblingIds) as { d: string | null } | undefined)?.d;
+        const wholeLife = !!rel && rel.slice(0, 10) >= "2026-09-07";
+        const inputs: Partial<Record<SpreadPlat, SpreadInput>> = {};
+        for (const pl of ["steam", "ps5", "xbox"] as SpreadPlat[]) {
+          const mine = arows.filter(r => r.platform === pl);
+          if (!mine.length) continue;
+          const A = mine.reduce((a, r) => a + r.rev, 0), asOf = mine.reduce((m, r) => (r.asOf > m ? r.asOf : m), "");
+          const ids = siblingIds.filter(id => (rawSqlite.prepare("SELECT 1 FROM platform_sku_map WHERE title_id=? AND platform=? LIMIT 1").get(id, pl)));
+          const g = wholeLife ? null : growVerifiedLtdAnchor(rawSqlite, pl, ids, asOf, A, null, aspFactorFor(pl));
+          const ca = wholeLife ? null : (g?.estimatorAtAnchorUsd ?? estimatorAtAnchor(rawSqlite, pl, ids, asOf, aspFactorFor(pl)));
+          inputs[pl] = { anchorUsd: A, anchorAsOf: asOf, wholeLife, estimatorAtAnchorUsd: ca };
+        }
+        if (Object.keys(inputs).length) reconciliation = spreadToAnchors(points, inputs);
+      }
       const anyAllocated = points.some((pt: any) => pt.allocation);
 
-      res.json({ titleId, from, to, collectionStart: calibrated?.startDate??COLLECTION_START, points,
+      return ({ titleId, from, to, collectionStart: calibrated?.startDate??COLLECTION_START, points,
         ...(lateListings.length ? { lateListings } : {}),
+        ...(reconciliation && Object.keys(reconciliation).length ? { reconciliation } : {}),
         methodology:calibratedDays?.caveat??("Recorded eligible days use the daily platform-mix ledger. Earlier or ineligible days retain the raw daily estimator; no pre-activation history is reallocated."+
           (anyAllocated?" Days missing from the estimate history are modeled: the published lifetime change is split across them using dated review or rating evidence (marked on each point), and lifetime totals are unchanged.":"")+
           (points.some((pt: any) => Object.values(pt.allocation ?? {}).some((v: any) => String(v).startsWith("rebased_gap")))?" Where the estimator's units-per-review ratio was reset across the missing days, those days are the review growth valued at the post-reset ratio, not the (re-scaled) lifetime change.":"")) });
+  }
+
+  app.get("/api/console/titles/:titleId/revenue-daily", (req, res) => {
+    try {
+      const titleId = parseInt(req.params.titleId, 10);
+      if (!Number.isFinite(titleId)) return res.status(400).json({ error: "invalid titleId" });
+      const to = parseDate(req.query.to as string | undefined, todayIsoDate());
+      const from = parseDate(req.query.from as string | undefined, daysAgo(90));
+      res.json(buildRevenueDaily(titleId, from, to));
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
