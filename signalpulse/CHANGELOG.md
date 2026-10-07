@@ -4,6 +4,7 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 7, 2026
 
+- Board loading: name normalization (`editionGroupKey`, `identityName`) is now memoized. It ran millions of times per board request through the `console_identity_matches` SQL function and accounted for about two thirds of busy CPU. Local replay on a 38 MB database copy: Steam d7 2.6 s to 0.24 s, PS5 7.0 s to 0.39 s, Xbox 4.6 s to 0.28 s, cross-platform 14.2 s to 0.85 s. Response bodies identical to before.
 - Steam boards show the real Steamworks full-game units for Steamworks-actual rows (Space Marine 2, 30 days: 278,282 units at $14.97 average) instead of revenue divided by a modeled price (it showed 105,234).
 - Steam sales actuals that calibrate the estimator and show on the Buying boards now count full-game SKUs only. The anchor writer had summed every
   Steamworks row, so DLC and soundtrack revenue and units were inside each title's 7, 30 and 90 day and lifetime actuals (Space Marine 2, 30 days:
