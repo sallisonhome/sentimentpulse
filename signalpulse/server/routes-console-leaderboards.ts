@@ -998,7 +998,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           const a = familyAnchors.length ? {
             ...familyAnchors[0],
             actual_revenue_usd: familyAnchors.reduce((sum,a) => sum+a.actual_revenue_usd,0),
-            actual_units: familyAnchors.every(a => a.data_source?.startsWith("manual_anchor_verified_") &&
+            actual_units: familyAnchors.every(a => (a.data_source?.startsWith("manual_anchor_verified_") ||
+                (platform === "steam" && a.data_source === "steam_sales_daily")) &&
               typeof a.actual_units === "number" && a.actual_units > 0)
               ? familyAnchors.reduce((sum,a) => sum+a.actual_units!,0) : null,
             data_source: familyAnchors.every(a => a.data_source?.startsWith("manual_anchor_verified_"))
