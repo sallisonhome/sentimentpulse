@@ -62,7 +62,14 @@ case "$ACTION" in
       IFS=',' read -ra KV <<< "$OVERLAY"
       for kv in "${KV[@]}"; do
         k="${kv%%=*}"; v="${kv#*=}"
-        sqlite3 "$TMPD/cand/data.db" "INSERT INTO app_settings(key, value, label, category, is_secret, created_at, updated_at) VALUES('$k', '$v', 'preview overlay', 'preview', 0, datetime('now'), datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;"
+        if [[ "$k" == ownership_multiplier.* ]]; then
+          # ownership_multiplier.<platform>=<number>: a candidate multiplier row on the COPY only (copies the active row's
+          # share, confidence and CI, effective today), to replay a refit before anyone applies it to production.
+          plat="${k#ownership_multiplier.}"; [[ "$plat" =~ ^(steam|ps5|xbox)$ ]] || { echo "bad platform in overlay" >&2; exit 64; }
+          sqlite3 "$TMPD/cand/data.db" "INSERT INTO ownership_multipliers(platform, cohort_key, multiplier, ci_pct, digital_unit_share, confidence, method, notes, gp_rating_deflator, effective_from, created_at) SELECT platform, cohort_key, $v, ci_pct, digital_unit_share, confidence, method, 'preview overlay', gp_rating_deflator, date('now'), datetime('now') FROM ownership_multipliers WHERE platform='$plat' AND cohort_key='default' ORDER BY effective_from DESC LIMIT 1;"
+        else
+          sqlite3 "$TMPD/cand/data.db" "INSERT INTO app_settings(key, value, label, category, is_secret, created_at, updated_at) VALUES('$k', '$v', 'preview overlay', 'preview', 0, datetime('now'), datetime('now')) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;"
+        fi
         log "overlay applied to the COPY only: $k=$v"
       done
     fi
