@@ -4,6 +4,10 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 6, 2026
 
+- Recently released titles with a verified lifetime figure now show it in every window that covers their whole life
+  (30-day, 90-day, 12-month); the 7-day figure keeps the estimator's day-to-day shape scaled to that total. Previously only
+  the lifetime window moved. Older titles are unchanged.
+
 - Daily revenue history no longer changes when the report end date moves. CONTROL Resonant's Xbox days from September 29
   to October 4 were blank in any report ending October 5 or later; they are back, and match the earlier report. A
   second edition listing that gets its first estimate late now adds its daily change from that point, and the

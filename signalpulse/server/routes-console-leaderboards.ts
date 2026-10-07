@@ -284,6 +284,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
   // ─── Leaderboard list ─────────────────────────────────────────────────────
   // One read-side revenue/units pipeline, shared by every Buying surface.
   // Return the complete catalog so anchors and unit sorting precede top-N slicing.
+  // Verified lifetime anchors apply to every window of a title released within this many days.
+  const YOUNG_ANCHOR_MAX_AGE_DAYS = 90;
   function platformSales(platform: Platform, window: string, sort = "revenue", dir = "desc", nativeOnly = false, skipUnitMilestones = false) {
       // Default is the 7d window so fresh weekly hits (launches like
       // Halloween: The Game and How to Fish) surface first. Because the
@@ -949,6 +951,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         }
 
         const unitMilestones=platform==="steam"&&!skipUnitMilestones?activeMilestones(rawSqlite):[];
+        const fullLife: Array<{ g: any; anchor: { actual_revenue_usd: number; actual_units: number | null } }> = [];
+        const youngShare: Array<{ g: any; anchor: { actual_revenue_usd: number; actual_units: number | null }; ageDays: number }> = [];
         for (const g of groups) {
           const milestone=unitMilestones.find(m=>g.familyTitleIds.length===1&&g.familyTitleIds[0]===m.titleId);
           if(milestone&&milestoneCanOverlay(rawSqlite,milestone,window)){
@@ -1128,6 +1132,21 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               g.anchorAsOfDate = null;
               continue;
             }
+            // A verified lifetime anchor ABOVE the estimator (ratio > 1) used to be skipped as "untrustworthy
+            // estimator", which left every shorter window on the old estimate: a title 18 days old showed a
+            // lifetime anchor of 506.7M and a 30-day figure of 77.7M. For a recently released title, every sale
+            // is inside any window at least as long as its age, so that window IS the anchor. Shorter windows
+            // are scaled in the pass after this loop (they need the full-life window as reference).
+            const ageDays = typeof g.releaseDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(g.releaseDate)
+              ? (Date.parse(todayIsoDate()) - Date.parse(g.releaseDate.slice(0, 10))) / 86400000 : null;
+            const winDays = ({ d7: 7, d30: 30, d90: 90, m12: 365 } as Record<string, number>)[win];
+            if (ageDays != null && ageDays >= 0 && ageDays <= YOUNG_ANCHOR_MAX_AGE_DAYS && winDays) {
+              if (ageDays < winDays) {
+                // Applied after the normal derivation (Path B) so the pre-anchor value is the derived one.
+                fullLife.push({ g, anchor: ltdAnchor });
+              } else
+              youngShare.push({ g, anchor: ltdAnchor, ageDays });
+            }
           }
           // Calibrate the FC26 model in the selected period. Actuals and verified LTD
           // calibration have already won above. Per-title overrides are also
@@ -1286,6 +1305,39 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
               g.revenueCaveat = `Steam estimate capped at ${(cap.capUnits/1e6).toFixed(1)}M: the public all-platform total of ${(cap.ceiling.statedUnits/1e6).toFixed(1)}M (${cap.ceiling.asOf}) less native console units counted for the family.`;
               g.publicCeiling = { units: cap.ceiling.statedUnits, asOf: cap.ceiling.asOf, source: cap.ceiling.source };
             }
+          }
+        }
+
+        // Windows shorter than a young title's age: scale the anchor by this window's share of the title's
+        // own full-life window (same estimator, same derivation), never above the anchor.
+        for (const { g, anchor } of fullLife) {
+          if (g.revenueMidUsd == null) continue; // nothing derived to replace; the row stays as published
+          g.revenueMidUsdEstimated = g.revenueMidUsd;
+          g.revenueMidUsd = anchor.actual_revenue_usd;
+          if (typeof anchor.actual_units === "number" && anchor.actual_units > 0) g.verifiedAnchorUnits = anchor.actual_units;
+          g.dataSource = "scaled_to_verified_ltd_anchor_full_life";
+          g.windowUsed = win;
+          g.gatedReason = null;
+          g.anchorAsOfDate = null;
+        }
+        if (youngShare.length) {
+          const refCache = new Map<string, any[]>();
+          for (const { g, anchor, ageDays } of youngShare) {
+            if (g.dataSource === "scaled_to_verified_ltd_anchor_full_life" || g.dataSource === "actual" || g.revenueMidUsd == null) continue;
+            const refWin = (["d30", "d90", "m12"] as const).find(w => ({ d30: 30, d90: 90, m12: 365 })[w] > ageDays);
+            if (!refWin) continue;
+            if (!refCache.has(refWin)) refCache.set(refWin, platformSales(platform, refWin, "revenue", "desc", false, true).titles);
+            const ref = refCache.get(refWin)!.find((r: any) => r.titleId === g.titleId);
+            const refPre = ref?.dataSource === "scaled_to_verified_ltd_anchor_full_life" ? ref.revenueMidUsdEstimated : null;
+            if (typeof refPre !== "number" || !(refPre > 0) || !(g.revenueMidUsd > 0)) continue;
+            const share = Math.min(1, g.revenueMidUsd / refPre);
+            g.revenueMidUsdEstimated = g.revenueMidUsd;
+            g.revenueMidUsd = anchor.actual_revenue_usd * share;
+            g.dataSource = "scaled_to_verified_ltd_anchor_young_share";
+            g.anchorShare = share;
+            g.anchorAsOfDate = null;
+            g.windowUsed = win;
+            g.gatedReason = null;
           }
         }
 
