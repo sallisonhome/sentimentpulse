@@ -3176,3 +3176,9 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Fix: protected rows stay in the fit, clamped to [0.5x, 2x] of the curve of the unprotected rows.
 - Limits: on a synthetic rank-1 outlier the clamp still pulls the curve ~16% (the most leverage a point can have); the 0.1% match is on one live board (Xbox d7) using published board values, not the production pre-pass values.
 - Rule: a "fix" that removes evidence needs a before/after check against the live chart, not only against the symptom it was written for.
+
+### 2026-10-07 addendum 15 — an anchor must not move other titles; fit protected rows at their unanchored estimate
+- Offline replay of the production chart pass (exact on PS5 7d/30d and Xbox 7d, partial on Xbox 30d) showed no stable clamp band: on Xbox 7-day, titles moved more than 2% vs the unanchored world were 35 at 2x, 10 at 3x, 50 at 4x (the 2x trim pass inside fitRankCurve keeps or discards the clamped point, a cliff). Dropping the row moved 43 (up to +46%).
+- Fix: a protected row that carries `unitsMidEstimated` enters the rank-curve fit at that value as an ordinary point; without it, the clamp (#219) is the fallback. Xbox 7d: 4 titles moved, mean 0.28%.
+- Limits: Xbox 30d replay reproduces production for only 153 of 262 rows (about 8 estimate-bearing groups are invisible to the public API), so its numbers are low confidence. Neighbour-median effects of the anchored value are unchanged. Measures stability against an unanchored world, not accuracy. Only FC 27 was anchored on these boards, so other anchored titles are untested.
+- Rule: when a tuned constant shows a cliff in a sweep, replace the constant with a rule that does not need one. Replay with identical inputs before comparing against an earlier capture; the earlier "18 PS5 30-day titles up" did not reproduce in replay and the cause is unexplained.

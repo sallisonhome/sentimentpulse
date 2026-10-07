@@ -183,3 +183,23 @@ test("curve fit: a protected row far above the chart pattern is clamped to 2x th
   assert.ok(run(3, true) >= run(3, false) * 1.02, `deep-rank cut is milder with the outlier protected than unprotected: ${run(3, true)} vs ${run(3, false)}`);
   assert.ok(run(3, true) <= run(1, true), `and the protected outlier never raises it: ${run(3, true)} vs ${run(1, true)}`);
 });
+
+test("curve fit: a protected row enters the fit at its unanchored estimate, so an anchor does not move other titles", () => {
+  const rank = new Map<number, number>(); for (let i = 1; i <= 80; i++) rank.set(i, i);
+  const run = (rank1: Record<string, unknown>) => {
+    const gs = curveGroups().map(g => ({ ...g })) as any[];
+    Object.assign(gs[0], rank1);
+    gs.push(mkGroup(901, 90000));
+    applyChartConsistency(gs, rank, new Set(), "enforce", { today: "2026-10-04", deepRankByTitle: new Map([[901, 300]]) });
+    return { off: gs.find(x => x.familyTitleIds[0] === 901).unitsMid as number, top: gs[0].unitsMid as number };
+  };
+  const base = curveGroups()[0].unitsMid;
+  const ordinary = run({});
+  // verified anchor at 6x the estimate, estimator value kept
+  const withEst = run({ unitsMid: base * 6, unitsMidEstimated: base, dataSource: "scaled_to_verified_ltd_anchor_full_life" });
+  // same anchor, no unanchored estimate available: falls back to the clamp
+  const noEst = run({ unitsMid: base * 6, dataSource: "scaled_to_verified_ltd_anchor_full_life" });
+  assert.equal(withEst.top, base * 6, "the protected title keeps its anchored value");
+  assert.equal(withEst.off, ordinary.off, `deep-rank ceiling identical to the unanchored world: ${withEst.off} vs ${ordinary.off}`);
+  assert.ok(noEst.off > 0 && noEst.off <= ordinary.off * 1.05 && noEst.off >= ordinary.off * 0.75, `fallback clamp stays close: ${noEst.off} vs ${ordinary.off}`);
+});

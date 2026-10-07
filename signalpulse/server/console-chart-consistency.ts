@@ -70,6 +70,19 @@ export function inLaunchWindow(releaseDate: unknown, today: string): boolean {
 export const DEEP_FIT_MIN_REFS = 20;
 export interface DeepCurve { a: number; b: number; n: number; r2: number }
 
+/** The point a title contributes to the rank-curve fit. A protected title (verified anchor, actual, override) keeps its own
+ *  value for itself, but the curve is meant to describe how the chart behaves, and an anchor on one title must not move
+ *  the estimates of others. So a protected row that carries the estimator's own value from before the anchor
+ *  (`unitsMidEstimated`) enters the fit at that value, as an ordinary point. Without one it enters flagged `anchored`
+ *  and is clamped by fitRankCurve. Replay 2026-10-07: FC 27 anchored at 3.4x its estimate moved 4 other Xbox 7-day titles
+ *  more than 2% with this, against 35 to 50 with a clamp and 43 with the row dropped. */
+export function fitPoint(g: ChartGroup, rank: number, units: number, protectedRow: boolean): { rank: number; units: number; anchored?: boolean } {
+  if (!protectedRow) return { rank, units };
+  const est = g.unitsMidEstimated;
+  if (typeof est === "number" && Number.isFinite(est) && est > 0) return { rank, units: est };
+  return { rank, units, anchored: true };
+}
+
 /** Log-log least squares of units on chart rank over the reference rows: units = exp(a) * rank^b. Null when the data
  *  cannot support a sensible curve (too few points, flat or rising, or an absurd slope). */
 export function fitRankCurve(points: Array<{ rank: number; units: number; anchored?: boolean }>): DeepCurve | null {
@@ -153,7 +166,7 @@ export function applyChartConsistency(
     const out = new Map<ChartGroup, Decision>();
     const unitsOf = (r: { g: ChartGroup }) => work.get(r.g)!;
     const deepest = refs.slice(-CHART_NEIGHBOURS).map(unitsOf);
-    const curve = opts.deepRankByTitle && opts.deepRankByTitle.size > 0 ? fitRankCurve(refs.map(r => ({ rank: r.rank, units: unitsOf(r), anchored: exempt(r.g) }))) : null;
+    const curve = opts.deepRankByTitle && opts.deepRankByTitle.size > 0 ? fitRankCurve(refs.map(r => fitPoint(r.g, r.rank, unitsOf(r), exempt(r.g)))) : null;
     for (const g of groups) {
       if (g.unitsMid == null || g.unitsMid <= 0) continue;
       if (exempt(g)) continue;

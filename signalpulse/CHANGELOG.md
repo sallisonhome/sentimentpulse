@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 6, 2026
 
+- The chart fit now treats a title with a verified lifetime figure as an ordinary point at the estimator's own pre-anchor value, so an anchor
+  no longer shifts the estimates of other titles through the rank curve. Replaces the clamp from the previous change.
+
 - The chart fit keeps a verified lifetime figure on a top-ranked title as a data point, limited to twice what the rest of the chart implies,
   instead of ignoring it. This restores the 7-day estimates of titles far down the Xbox chart that rose after the previous change.
 
