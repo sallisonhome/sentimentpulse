@@ -1024,7 +1024,9 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             // the estimator units so the UI shows the exec-provided figure
             // instead of the pre-anchor estimator's cascaded units_mid.
             // Other anchors use modeled ASP in the final unit resolver.
-            if (isVerifiedAnchor && typeof a.actual_units === 'number' && a.actual_units > 0) {
+            // Steamworks actuals (full-game SKUs only) carry real units too: show them, never revenue / modeled ASP.
+            const isSteamActual = platform === "steam" && a.data_source === 'steam_sales_daily';
+            if ((isVerifiedAnchor || isSteamActual) && typeof a.actual_units === 'number' && a.actual_units > 0) {
               g.unitsMid = a.actual_units;
               g.ownersMid = a.actual_units;
               g.verifiedAnchorUnits = a.actual_units;
