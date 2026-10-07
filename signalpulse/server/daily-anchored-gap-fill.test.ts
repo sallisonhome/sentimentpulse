@@ -69,6 +69,10 @@ test("a revenue anchor alone keeps late-joiner and gap-fill rules; other protect
     const ratios = vals(anchored).map((v: number, i: number) => v / vals(plain)[i]);
     assert.ok(ratios.every((r: number) => Math.abs(r / ratios[0] - 1) < 1e-9), "same shape, one scale factor");
     assert.deepEqual(anchored.lateListings?.map((l: any) => l.firstValuedDate), ["2026-10-04"]);
+    // The answer does not depend on the requested window.
+    const narrow = await get(49941, "2026-10-04");
+    const wide = await get(49941, "2026-10-05");
+    assert.deepEqual(narrow.points.map((p: any) => p.ps5), wide.points.filter((p: any) => p.date <= "2026-10-04").map((p: any) => p.ps5));
     // Anchor dated Oct 3, data to Oct 5: lifetime grows past the anchor, the days add up to it, and the board shows the same figure.
     const grown = await get(49941, "2026-10-05");
     const rec = grown.reconciliation.ps5;

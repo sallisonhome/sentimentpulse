@@ -2433,6 +2433,17 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
 
   // Shared by the route and by the leaderboard (verified lifetime anchors grow with the daily series).
   function buildRevenueDaily(titleId: number, from: string, to: string): any {
+    const first = buildRevenueDailyCore(titleId, from, to);
+    if (!first?.reconciliation) return first;
+    // Anchored days are scaled over the whole series, so the answer must not depend on the requested window.
+    const today = todayIsoDate(), fullFrom = from < "2026-09-14" ? from : "2026-09-14", fullTo = to > today ? to : today;
+    if (from === fullFrom && to === fullTo) return first;
+    const full = buildRevenueDailyCore(titleId, fullFrom, fullTo);
+    if (!full?.reconciliation) return first;
+    return { ...full, from, to, points: full.points.filter((p: any) => p.date >= from && p.date <= to) };
+  }
+
+  function buildRevenueDailyCore(titleId: number, from: string, to: string): any {
       const COLLECTION_START = "2026-09-14";
 
       // Cross-platform sibling resolution (2026-09-16). This endpoint powers

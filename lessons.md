@@ -3189,3 +3189,10 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Not fixed: the Oct 6 catch-up stays, because it is a real change in the stored lifetime units (28,620 to 125,350 with the rating count flat at 10). A rule for a first valued day that carries lifetime units is a separate change.
 - Rule: when an anchor or protection check is added, grep every consumer of the protection function and test each one with an anchored fixture.
 - Process: a queued read-only workflow can wait behind an unrelated deploy that holds the same concurrency group; check the running runs before assuming the query failed.
+
+### 2026-10-07 addendum 17 — a verified anchor is a starting point; replay on real data before deploy
+- A verified lifetime anchor froze the board lifetime figure forever and left empty and zero days in the daily series. Fix: `anchored-daily-spread.ts` scales the platform's daily shape by one factor so days add up to lifetime and growth continues; the board reads the same figure from the series.
+- The real-data replay (30 verified anchors, read-only query run 37611054297) caught two bugs the unit tests did not: (1) interpolating quiet zero days of an older title fabricated +34% growth; (2) a one-day estimator basis shift (Xbox 10222, +792K units on Sep 15) inflated growth to +42%. Both are now tests.
+- The daily series must not depend on the requested window: anchored days are scaled over the whole series and then sliced.
+- Rule: any new derived series needs a real-data replay of every affected title, not only the motivating one, before asking to deploy.
+

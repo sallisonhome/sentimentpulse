@@ -44,6 +44,23 @@ test("older title: lifetime = anchor + growth at the estimator calibration; pre-
   assert.ok(Math.abs(rec.steam!.daysSumUsd + rec.steam!.beforeSeriesUsd - 1300) < 1e-9);
 });
 
+test("older title: an estimator basis-shift day is excluded from days and growth, and moves the calibration base", () => {
+  const ds = days(6, "2026-09-14");
+  const pts = mk(ds, [500, 10, 10, 10, 10, 10], Array(6).fill(null));   // day 1 jumps by 500 on a lifetime of 1000: basis shift
+  const rec = spreadToAnchors(pts, { steam: { anchorUsd: 2000, anchorAsOf: "2026-09-13", wholeLife: false, estimatorAtAnchorUsd: 1000 } });
+  assert.equal(pts[0].steam, null);
+  assert.equal(pts[0].allocation.steam, "anchor_spread:basis_shift_excluded");
+  // base 1000 + 500 shift = 1500, k = 2000/1500; five normal days of 10 grow lifetime by 50 * k
+  assert.ok(Math.abs(rec.steam!.growthUsd - 50 * 2000 / 1500) < 1e-9, String(rec.steam!.growthUsd));
+});
+
+test("older title: quiet zero days stay zero and are not interpolated into growth", () => {
+  const ds = days(8, "2026-10-01"), pts = mk(ds, [20, 0, 0, 0, 0, 0, 0, 8], Array(8).fill(null));
+  const rec = spreadToAnchors(pts, { steam: { anchorUsd: 1000, anchorAsOf: "2026-09-30", wholeLife: false, estimatorAtAnchorUsd: 1000 } });
+  assert.deepEqual(pts.slice(1, 7).map(p => p.steam), [0, 0, 0, 0, 0, 0]);
+  assert.ok(Math.abs(rec.steam!.growthUsd - 28) < 1e-9);
+});
+
 test("credibility and interpolation helpers", () => {
   assert.equal(shapeCredible([0, 0, 0, 0, 0, 5]), false);
   assert.equal(shapeCredible([5, 5, 5, 5, 5]), true);

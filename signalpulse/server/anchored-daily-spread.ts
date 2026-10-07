@@ -35,8 +35,8 @@ export function shapeCredible(vals: Array<number | null>): boolean {
 }
 
 /** Fill null/zero days that sit between two valued days by linear interpolation. Returns the filled indexes. */
-export function interpolateShape(vals: Array<number | null>): { shape: Array<number | null>; filled: Set<number> } {
-  const out = vals.map(v => (v != null && v > 0 ? v : null));
+export function interpolateShape(vals: Array<number | null>, fillZeros = true): { shape: Array<number | null>; filled: Set<number> } {
+  const out = vals.map(v => (v == null ? null : v > 0 ? v : fillZeros ? null : 0));
   const filled = new Set<number>();
   const valued = out.map((v, i) => (v != null ? i : -1)).filter(i => i >= 0);
   for (let a = 0; a + 1 < valued.length; a++) {
@@ -58,7 +58,15 @@ export function spreadToAnchors(
   for (const pl of ["steam", "ps5", "xbox"] as Plat[]) {
     const inp = inputs[pl];
     if (!inp || !(inp.anchorUsd > 0)) continue;
-    const own = raw(pl);
+    let own = raw(pl);
+    // Older title: a single day worth more than 10% of lifetime is the estimator changing basis (for example its
+    // accumulator starting), not sales. It is dropped from the days and from growth, and added to the calibration
+    // base so the anchor still scales to the post-shift level.
+    let caBase = inp.estimatorAtAnchorUsd;
+    const shifted = new Set<number>();
+    if (!inp.wholeLife && caBase && caBase > 0) {
+      own = own.map((v, i) => { if (v != null && v > 0.1 * (inp.estimatorAtAnchorUsd as number)) { shifted.add(i); caBase = (caBase as number) + v; return null; } return v; });
+    }
     let shapeKind: Reconciliation["shape"] = "own";
     let source = own;
     if (!shapeCredible(own)) {
@@ -66,15 +74,17 @@ export function spreadToAnchors(
       if (inp.wholeLife && pl !== "steam" && shapeCredible(steam)) { source = steam; shapeKind = "steam"; }
       else shapeKind = "own_not_credible";
     }
-    const { shape, filled } = interpolateShape(source);
+    // Zero days are filled only for a title released inside the series and only from a credible shape; for an older
+    // title (or a shape that is not credible) a zero is the estimator holding steady and stays zero.
+    const { shape, filled } = interpolateShape(source, inp.wholeLife && shapeKind !== "own_not_credible");
     const upTo = shape.reduce<number>((a, v, i) => (v != null && dates[i] <= inp.anchorAsOf ? a + v : a), 0);
     let k: number;
     if (inp.wholeLife) { if (!(upTo > 0)) continue; k = inp.anchorUsd / upTo; }
-    else { if (!(inp.estimatorAtAnchorUsd && inp.estimatorAtAnchorUsd > 0) || shapeKind === "steam") continue; k = inp.anchorUsd / inp.estimatorAtAnchorUsd; }
+    else { if (!(caBase && caBase > 0) || shapeKind === "steam") continue; k = inp.anchorUsd / caBase; }
     let days = 0, post = 0, interpolated = 0;
     points.forEach((p, i) => {
       const v = shape[i];
-      if (v == null) { p[pl] = null; return; }
+      if (v == null) { p[pl] = null; if (shifted.has(i)) (p.allocation ??= {})[pl] = "anchor_spread:basis_shift_excluded"; return; }
       p[pl] = v * k; days += v * k;
       if (dates[i] > inp.anchorAsOf) post += v * k;
       const al = (p.allocation ??= {}) as Record<string, string>;
