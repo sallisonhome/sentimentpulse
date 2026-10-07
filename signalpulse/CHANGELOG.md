@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 6, 2026
 
+- The chart fit keeps a verified lifetime figure on a top-ranked title as a data point, limited to twice what the rest of the chart implies,
+  instead of ignoring it. This restores the 7-day estimates of titles far down the Xbox chart that rose after the previous change.
+
 - A single verified lifetime figure on a top-ranked title can no longer pull down the estimates of titles far down the chart; the
   chart fit ignores a protected row more than 2x away from the pattern set by everything else.
 

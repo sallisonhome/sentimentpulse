@@ -73,16 +73,20 @@ export interface DeepCurve { a: number; b: number; n: number; r2: number }
 /** Log-log least squares of units on chart rank over the reference rows: units = exp(a) * rank^b. Null when the data
  *  cannot support a sensible curve (too few points, flat or rising, or an absurd slope). */
 export function fitRankCurve(points: Array<{ rank: number; units: number; anchored?: boolean }>): DeepCurve | null {
-  // Protected rows (verified anchors, actuals) are exact for their own title but one anchored row far above the
-  // chart's pattern, especially at rank 1 where it has the most leverage on a log-log fit, steepens the curve and lowers
-  // every deep-rank ceiling (FC 27, 2026-10-06: a 6.5x anchor at rank 1 cut ~40 unrelated titles 1-18%). Fit the curve on
-  // the unprotected rows first; protected rows join the fit only when they sit within 2x of that curve.
+  // Protected rows (verified anchors, actuals) are exact for their own title but one far above the chart's pattern,
+  // especially near rank 1 where it has the most leverage on a log-log fit, steepens the curve and lowers every
+  // deep-rank ceiling (FC 27, 2026-10-06). Dropping the row entirely over-corrects (it is a real chart point, and the curve
+  // came out flatter than before the anchor, raising ~40 deep titles). So: fit the unprotected rows first, then keep each
+  // protected row in the fit at no more than 2x (or less than 1/2x) of that curve. A protected row inside the band is unchanged.
   if (points.some(x => x.anchored) && points.some(x => !x.anchored)) {
     const base = fitRankCurve(points.filter(x => !x.anchored).map(({ rank, units }) => ({ rank, units })));
     if (base) {
-      const kept = points.filter(x => !x.anchored || (x.rank >= 1 && x.units > 0 &&
-        x.units <= 2 * curveUnits(base, x.rank) && x.units >= curveUnits(base, x.rank) / 2));
-      return fitRankCurve(kept.map(({ rank, units }) => ({ rank, units }))) ?? base;
+      const clamped = points.map(x => {
+        if (!x.anchored || !(x.rank >= 1 && x.units > 0)) return { rank: x.rank, units: x.units };
+        const c = curveUnits(base, x.rank);
+        return { rank: x.rank, units: Math.min(2 * c, Math.max(c / 2, x.units)) };
+      });
+      return fitRankCurve(clamped) ?? base;
     }
   }
   const first = fitOnce(points);
