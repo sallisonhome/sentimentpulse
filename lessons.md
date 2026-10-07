@@ -3202,3 +3202,8 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Rule: when a doc comment states an exclusion, grep the SQL for the matching predicate. Rule: a trailing window must end on the last ingested day.
 - Process: a workflow can be run from a feature branch only if its trigger is `push` on that branch; `workflow_dispatch` needs the file on the default branch. Do not `git checkout <branch> -- dir` over uncommitted edits.
 
+### 2026-10-07 addendum 19 — never fan out requests against the production board API
+- Title-detail and board calls take 8 to 12 seconds each (they rebuild the board). A 60-call sequential probe took over 10 minutes, and a 60-call parallel probe left the board API unresponsive for about 5 minutes. Probe at most a handful of calls, sequentially, with a gap; prefer a read-only DB query run for bulk comparisons (needs approval).
+- A board anchor passes through a family object (`familyAnchors` in routes-console-leaderboards.ts); fields not copied there silently vanish. After a deploy, probe the live row (unitSource) rather than trusting that the unit path changed. PR 225 passed tests and deployed but did nothing until PR 226.
+- 30-day fit (post 57.10 multiplier, 11 Saber/Focus titles): median actual/estimate 1.06, but the spread is 0.15 to 2.07 and tracks sale depth (log ratio about 1.30 minus 2.76 times average price as a share of MSRP, R2 0.76, n=11). Deep-discount titles are under-estimated, full-price small titles over-estimated. Price depth is derived from actuals, so it is not usable for non-Saber titles without store price history.
+
