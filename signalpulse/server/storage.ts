@@ -1431,12 +1431,11 @@ export interface SteamSalesSummary {
  * default. When a row's date < releaseDate it counts as pre-release
  * (pre-order fulfillment revenue), otherwise post-release.
  *
- * Revenue values sum base + dlc; retail activations are excluded at parse
- * time already so they don't enter these totals.
+ * Revenue values are full-game (base) SKUs only; DLC revenue and retail activations are excluded.
  */
 export interface SteamRevenueByReleaseSplit {
-  preReleaseRevenueUsd: number;   // sum of base + dlc net revenue, rows dated < releaseDate
-  postReleaseRevenueUsd: number;  // sum of base + dlc net revenue, rows dated >= releaseDate (or all rows if releaseDate is null)
+  preReleaseRevenueUsd: number;   // full-game net revenue, rows dated < releaseDate
+  postReleaseRevenueUsd: number;  // full-game net revenue, rows dated >= releaseDate (or all rows if releaseDate is null)
   totalRevenueUsd: number;
 
   // v3.4 (2026-08-11): units alongside revenue so we can compute ASP.
@@ -2191,9 +2190,9 @@ export class DatabaseStorage implements IStorage {
     let postReleaseBaseRevUsd = 0;
 
     for (const r of rows) {
-      // Only count base + dlc; 'other' (soundtrack, artbook) is excluded
-      // from revenue tracking on the dashboard.
-      if (r.skuGroup !== "base" && r.skuGroup !== "dlc") continue;
+      // Full-game SKUs only. DLC and 'other' (soundtrack, artbook) are not full-game actuals;
+      // DLC stays visible through getSteamSalesSummary().dlcNetRevenueUsd.
+      if (r.skuGroup !== "base") continue;
 
       const rev = r.netRevenueUsd;
       if (releaseDate && r.date < releaseDate) {

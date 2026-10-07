@@ -27,4 +27,11 @@ test("anchor windows sum base SKUs only and end on the last ingested day", async
   assert.equal(d30.net_units, 300);
   const ltd = aggregateWindow(rollup, null, "2026-10-11");
   assert.equal(ltd.net_revenue_usd, 4000);
+  // Product card totals and 30-day revenue are full-game only too.
+  const { storage } = await import("./storage");
+  const split = storage.getSteamRevenueByReleaseSplit(901, null);
+  assert.equal(split.totalRevenueUsd, 4000, "card total excludes DLC and other");
+  assert.equal(split.totalBaseNetUnits, 400);
+  const sum = storage.getSteamSalesSummary(901);
+  assert.equal(sum.dlcNetRevenueUsd, 16000, "DLC stays reported separately");
 });
