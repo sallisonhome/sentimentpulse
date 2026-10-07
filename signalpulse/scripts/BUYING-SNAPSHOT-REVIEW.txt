@@ -1,0 +1,49 @@
+Purpose: one approved, bounded read-only export for isolated cold Buying-query profiling.
+Status: UNCOMMITTED proposal. No workflow dispatch or production execution authorized here.
+
+Scope: export-buying-snapshot.py defines 17 tables and 7 setting keys. Original table
+DDL, explicit indexes, rowids, row order and included sqlite_stat1 are retained.
+All non-allowlisted columns are replaced with NULL or fixed constraint-safe values;
+unknown required columns fail closed. No users/auth/cookies/sessions/keys, product
+notes, raw store JSON or endpoint URLs are selected. steam_unit_milestones.payload_json
+is retained because it is model calibration, not an authentication payload.
+
+Runtime: original SQLite opened mode=ro, PRAGMA query_only=ON, authorizer rejects writes.
+One BEGIN/read snapshot across all 17 tables; no source VACUUM/ANALYZE/backup API.
+Read transaction can pin WAL during export: maximum 120 seconds, sequential 1000-row
+batches, maintenance flock nonblocking, reject active daily job, nice15/idle IO.
+Only destination temporary database has writes. No server restarts/deploy/polls.
+1 GiB output safety bound. Existing schema-stat4 presence is recorded; stat4 is
+not exported, so exact production planner parity is not assumed for stat4 builds.
+
+Encryption: OpenSSL CMS AuthEnvelopedData AES-256-GCM, recipient RSA public cert.
+Only snapshot.cms transferred from droplet to Actions/upload-artifact.
+Plain data.db and manifest.json exist only in private remote temp directory and
+are removed by temporary-directory cleanup; workflow trap removes remote bundle.
+Hard runner/host kill can bypass trap: remote /tmp/buying-profile.* permissions0700
+and files0600 limit exposure, but operator cleanup could be required afterward.
+No private recipient key enters repository, runner or droplet.
+Certificate SHA256:
+00:A9:48:61:86:F6:F5:64:3D:CF:62:66:92:06:18:DF:63:24:1E:E9:E3:40:B5:DA:C0:6D:F8:53:E9:80:89:A9
+
+Encrypted manifest: source Git revision, capture UTC, SQLite version/journal mode,
+schema+index SQL, rowcounts, redacted/read columns, snapshot SHA256, and five semantic
+environment modes (CHART_CONSISTENCY_MODE plus four booleans). Values normalized to
+known enum/boolean only; no arbitrary process environment copied.
+
+Workflow: action=buying-snapshot and ref=<reviewed commit/branch>. Ref loads only
+diagnostic scripts on runner, never changes deployed application. Same deploy-droplet
+concurrency lane. This workflow does not itself authorize a production export.
+Legacy SQL query path remains separate and is NOT used to export the snapshot.
+
+Offline QA: python3 signalpulse/scripts/test-export-buying-snapshot.py
+Uses own generated QA recipient key, retains fixture/evidence under workspace.
+Checks allowlists, private canary, source hash, DDL/index/rowid/read-column/stat1 parity,
+unknown-required-column rejection, encrypted roundtrip, tamper failure, ciphertext-only
+transfer directory. NO production data or services used.
+
+Decryption (parent workspace only): openssl cms -decrypt -binary -inform DER
+  -in snapshot.cms -recip <local certificate> -inkey <LOCAL PRIVATE KEY> -out bundle.tar
+Check successful OpenSSL exit BEFORE opening archive. Compare data.db SHA256 with
+manifest.snapshot_sha256, keep snapshot immutable, profile disposable working copy
+without server startup writers or response cache; no estimator runs.

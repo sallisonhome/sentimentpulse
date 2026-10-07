@@ -1,4 +1,6 @@
 name: SignalPulse DB Query (artifact)
+permissions:
+  contents: read
 
 # Same read-only DB query path as signalpulse-db-query.yml, but writes the
 # result to a workflow artifact instead of stdout. Use this when the result
@@ -8,9 +10,22 @@ name: SignalPulse DB Query (artifact)
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: "Read-only query or encrypted 17-table Buying profiling snapshot"
+        required: true
+        default: query
+        type: choice
+        options:
+          - query
+          - buying-snapshot
+      ref:
+        description: "Reviewed diagnostic script Git ref (snapshot only; never deployed)"
+        required: false
+        default: main
+        type: string
       sql:
         description: "SQL SELECT statement (read-only, whitespace-tolerant)"
-        required: true
+        required: false
         type: string
       mode:
         description: "sqlite3 output mode: csv | column | tabs | line"
@@ -33,6 +48,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Checkout reviewed snapshot scripts
+        if: inputs.action == 'buying-snapshot'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
@@ -41,11 +63,14 @@ jobs:
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Run query
+        if: inputs.action != 'buying-snapshot'
         env:
           SQL: ${{ inputs.sql }}
           MODE: ${{ inputs.mode }}
         run: |
           set -e
+          test -n "$SQL"
+          case "$MODE" in csv|column|tabs|line) ;; *) exit 1;; esac
           upper=$(printf '%s' "$SQL" | tr '[:lower:]' '[:upper:]')
           case " $upper " in
             *" INSERT "*|*" UPDATE "*|*" DELETE "*|*" DROP "*|*" ALTER "*|*" CREATE "*|*" REPLACE "*|*" ATTACH "*|*" VACUUM "*)
@@ -59,9 +84,31 @@ jobs:
           wc -l out/result.${MODE:-csv} || true
           head -3 out/result.${MODE:-csv} || true
 
+      - name: Export encrypted Buying snapshot
+        if: inputs.action == 'buying-snapshot'
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          host=root@104.236.239.46
+          ssh_opts=(-i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes)
+          # ONLY the public certificate and standalone read-only scripts travel out.
+          remote=$(ssh "${ssh_opts[@]}" "$host" 'umask 077; mktemp -d /tmp/buying-profile.XXXXXXXX')
+          [[ "$remote" =~ ^/tmp/buying-profile\.[a-zA-Z0-9]+$ ]] || exit 1
+          trap 'ssh "${ssh_opts[@]}" "$host" "rm -rf -- '\''$remote'\''" >/dev/null 2>&1 || true' EXIT
+          scp "${ssh_opts[@]}" \
+            signalpulse/scripts/export-buying-snapshot.py \
+            signalpulse/scripts/export-buying-snapshot-remote.sh \
+            signalpulse/scripts/buying-snapshot-recipient.crt "$host:$remote/"
+          ssh "${ssh_opts[@]}" "$host" "bash '$remote/export-buying-snapshot-remote.sh' '$remote/snapshot.cms'"
+          mkdir -p out
+          scp "${ssh_opts[@]}" "$host:$remote/snapshot.cms" out/snapshot.cms
+          # No database rows, plain manifest or environment strings enter logs.
+          sha256sum out/snapshot.cms
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}
           path: out/
-          retention-days: 3
+          retention-days: ${{ inputs.action == 'buying-snapshot' && 1 || 3 }}
