@@ -4,6 +4,11 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 7, 2026
 
+- Steam sales actuals that calibrate the estimator and show on the Buying boards now count full-game SKUs only. The anchor writer had summed every
+  Steamworks row, so DLC and soundtrack revenue and units were inside each title's 7, 30 and 90 day and lifetime actuals (Space Marine 2, 30 days:
+  $5.14M with $0.97M of DLC and 122K DLC units folded into the units). A 30-day window now also covers 30 complete days ending on the last ingested
+  day; before, it was 29 days plus a day with no data. All editions are included because Steamworks reports them inside one Steam units and
+  Steam revenue total.
 - Verified lifetime anchors (manual or publicly reported) are now starting points, not fixed totals. The daily series is the platform's daily shape
   scaled by one factor, so the days add up to lifetime and lifetime keeps growing with the shape after the anchor date. The leaderboard lifetime figure
   is the same number. For a title released inside the series (FC 27) the days up to the anchor date add up to the anchor exactly and no day is empty or

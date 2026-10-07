@@ -3196,3 +3196,9 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - The daily series must not depend on the requested window: anchored days are scaled over the whole series and then sliced.
 - Rule: any new derived series needs a real-data replay of every affected title, not only the motivating one, before asking to deploy.
 
+### 2026-10-07 addendum 18 — a header comment is not a filter; check what the SQL sums
+- `scripts/write-revenue-anchors.ts` documented "DLC is excluded" but its two queries had no `sku_group` filter, so every Saber and Focus Steam anchor (d7 to ltd) included DLC and soundtrack revenue and units. Space Marine 2 d30: stored base $4,166,557 and 278,282 units; the anchor held $5.1M and 400K units.
+- Steamworks audit of SM2, most recent 30 days (live fetch, read-only): Steam units 280,034 across Standard 238,991, 1-Year 32,951, 2-Year 7,860, 3-Year 232; Steam revenue $4,189,406; DLC $2,626,400 (193,918 units); soundtrack $2,783; Total $6,818,588. Retail activations (30,595) carry no revenue. Our stored DLC revenue captured about 37% of the Steamworks DLC figure, so DLC must not be used as a signal until that is understood; DLC is now excluded from actuals.
+- Rule: when a doc comment states an exclusion, grep the SQL for the matching predicate. Rule: a trailing window must end on the last ingested day.
+- Process: a workflow can be run from a feature branch only if its trigger is `push` on that branch; `workflow_dispatch` needs the file on the default branch. Do not `git checkout <branch> -- dir` over uncommitted edits.
+
