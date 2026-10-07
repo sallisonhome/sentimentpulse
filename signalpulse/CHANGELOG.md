@@ -4,6 +4,9 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 6, 2026
 
+- A single verified lifetime figure on a top-ranked title can no longer pull down the estimates of titles far down the chart; the
+  chart fit ignores a protected row more than 2x away from the pattern set by everything else.
+
 - Recently released titles with a verified lifetime figure now show it in every window that covers their whole life
   (30-day, 90-day, 12-month); the 7-day figure keeps the estimator's day-to-day shape scaled to that total. Previously only
   the lifetime window moved. Older titles are unchanged.

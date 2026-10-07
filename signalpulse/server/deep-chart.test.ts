@@ -146,3 +146,30 @@ test("deep rank ceiling: lowers an off-chart title by its deep rank, never raise
   assert.equal(thin.find((g: any) => g.familyTitleIds[0] === 901).chartConsistency.bound, "off_chart_cap");
   assert.ok(curveUnits(fitRankCurve(curveGroups().map((g, i) => ({ rank: i + 1, units: g.unitsMid })))!, 100) > 0);
 });
+
+// 50 reference rows, units = 400000 * rank^-0.8 with deterministic +-30% noise (a realistic, noisy chart).
+const noisyChart = () => Array.from({ length: 50 }, (_, i) => { const r = Math.sin((i + 1) * 12.9898 + 1) * 43758.5453; const f = (r - Math.floor(r)) * 2 - 1;
+  return { rank: i + 1, units: Math.round(400000 * Math.pow(i + 1, -0.8) * (1 + f * 0.3)) }; });
+
+test("curve fit: a protected row well above the chart pattern cannot steepen the curve; one near the pattern still informs it", () => {
+  const pts = noisyChart();
+  const base = fitRankCurve(pts)!;
+  const at = (c: any) => curveUnits(c, 300);
+  const tripled = pts.map(p => p.rank === 1 ? { ...p, units: p.units * 3 } : p);
+  const unguarded = fitRankCurve(tripled)!;
+  const guarded = fitRankCurve(tripled.map(p => p.rank === 1 ? { ...p, anchored: true } : p))!;
+  assert.ok(at(unguarded) < at(base) * 0.85, "fixture: an unguarded 3x rank-1 outlier lowers the deep-rank curve by more than 15%: " + at(unguarded) / at(base));
+  assert.ok(at(guarded) > at(base) * 0.94, "guarded curve stays within 6% of the unaffected one: " + at(guarded) / at(base));
+  const near = fitRankCurve(pts.map(p => p.rank === 1 ? { ...p, units: p.units * 1.5, anchored: true } : p))!;
+  assert.notDeepEqual(near, base, "an anchored row within 2x still informs the curve");
+  assert.deepEqual(fitRankCurve(pts.map(p => ({ ...p, anchored: true }))), base, "no unprotected rows: old behaviour");
+  // end to end: the deep-rank ceiling of an off-chart title with a protected 3x rank-1 title (the FC 27 shape)
+  const rank = new Map<number, number>(); pts.forEach((_, i) => rank.set(i + 1, i + 1));
+  const run = (factor: number, protect: boolean) => {
+    const gs = [...pts.map((p, i) => mkGroup(i + 1, p.units)), mkGroup(901, 90000)] as any[];
+    gs[0].unitsMid *= factor; if (protect) gs[0].dataSource = "scaled_to_verified_ltd_anchor_full_life";
+    applyChartConsistency(gs, rank, new Set(), "enforce", { today: "2026-10-04", deepRankByTitle: new Map([[901, 300]]) });
+    return gs.find(x => x.familyTitleIds[0] === 901).unitsMid as number;
+  };
+  assert.ok(run(3, true) > run(1, true) * 0.94, `protected 3x outlier leaves the cut within 6%: ${run(3, true)} vs ${run(1, true)}`);
+});

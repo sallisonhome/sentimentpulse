@@ -3165,3 +3165,8 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Fix (read-side): for a title released within 90 days, a window at least as long as its age equals the verified anchor (all sales are inside it); a shorter window = anchor x (this window / the full-life window) from the same estimator and derivation, never above the anchor. Old titles keep the guard. New sources `scaled_to_verified_ltd_anchor_full_life` and `..._young_share` are exempt from the chart pass.
 - Rule: after entering a verified anchor, read ALL five windows on every platform board before reporting; one window changing is not done.
 - Known gap: Steam has no lifetime-window estimator row for FC 27, so the Steam lifetime board does not list the title and the Steam anchor shows only through d7/d30/d90.
+
+### 2026-10-06 addendum 13 — one protected rank-1 anchor steepened the deep-rank curve (FC 27)
+- After the FC 27 anchors went live (PS5 units 1.39M to 9.05M at chart rank 1), about 40 unrelated PS5/Xbox d7/d30 rows were cut 1-18%, all `deep_rank_ceiling`. The ceiling comes from a log-log curve of units on chart rank fitted over reference rows; a protected row far above the pattern at rank 1 has the most leverage and lowers the curve everywhere. The existing 2x trim does not remove it because the distorted first fit moves toward it.
+- Fix: the curve is fitted on unprotected rows first; protected rows (verified anchors, actuals, overrides) join only when within 2x of that curve. Protected rows still protect their own estimate and still serve as neighbour references.
+- Rule: after adding or moving an anchor on a high-ranked title, diff the whole board before and after, not just the anchored title.
