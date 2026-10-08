@@ -34,11 +34,27 @@ export function parseDemoFeedContext(html: string) {
   const event = attribute(html, "data-event") as { ANNOUNCEMENT_GID?: string };
   const groups = attribute(html, "data-groupvanityinfo") as Array<{ clanAccountID?: number; vanity_url?: string }>;
   const clan = groups.find(group => group.vanity_url === "store_contenthubs")?.clanAccountID;
-  const section = html.match(/data-browser_contenthub_newandtrending_\d+_\d+_(\d+)_(\d+)_/);
-  if (!clan || !/^\d+$/.test(event.ANNOUNCEMENT_GID ?? "") || !section) {
+  const marker = findBrowserMarker(html);
+  if (!clan || !/^\d+$/.test(event.ANNOUNCEMENT_GID ?? "") || !marker) {
     throw new Error("Steam demos hub configuration changed");
   }
-  return { clan: String(clan), announcement: event.ANNOUNCEMENT_GID!, section: section[1], tab: section[2] };
+  return { clan: String(clan), announcement: event.ANNOUNCEMENT_GID!, section: marker.section, tab: marker.tab };
+}
+
+/**
+ * The hub renders one `data-browser_<flavor>_<start>_<count>_<section>_<tab...>=`
+ * attribute per item-browser tab. Steam moved the default tab from
+ * new-and-trending (`..._888_7_`) to all (`..._8_*_*_*_0`) on 2026-10-08, which
+ * broke an exact-name match. The feed endpoint ignores both ids (verified live),
+ * so any browser marker is enough; prefer new-and-trending when it exists so the
+ * old layout resolves exactly as before. Event and group ids stay mandatory.
+ */
+function findBrowserMarker(html: string): { section: string; tab: string } | null {
+  const markers = Array.from(html.matchAll(/data-browser_([a-z]+(?:_[a-z]+)*)_\d+_\d+_(\d+)_([^\s="]*)=/g));
+  const marker = markers.find(m => m[1] === "contenthub_newandtrending") ?? markers[0];
+  if (!marker) return null;
+  const tab = marker[3].split("_").filter(token => /^\d+$/.test(token)).pop() ?? "0";
+  return { section: marker[2], tab };
 }
 
 export function demoFeedUrl(context: ReturnType<typeof parseDemoFeedContext>, feed: DemoFeed, start: number) {

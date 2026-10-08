@@ -37,6 +37,33 @@ test("Steam context comes from hub; all feeds are paginated, bounded and keep so
   assert.equal(new URL(demoFeedUrl(context, "top", 50)).searchParams.get("start"), "50");
 });
 
+// Sanitized copy of the live demos hub markup observed on 2026-10-08: the only
+// item-browser attribute is the default "all" tab with wildcard placeholders.
+const hubAllTab = `data-event="{&quot;ANNOUNCEMENT_GID&quot;:&quot;3016840454305565994&quot;}"
+  data-groupvanityinfo="[{&quot;clanAccountID&quot;:41316928,&quot;vanity_url&quot;:&quot;store_contenthubs&quot;}]"
+  data-browser_contenthub_all_0_50_8_*_*_*_0="{&quot;appids&quot;:[1,2]}"`;
+
+test("hub context tolerates Steam's all-tab marker and keeps the old layout exact", () => {
+  assert.deepEqual(parseDemoFeedContext(hubAllTab),
+    { clan: "41316928", announcement: "3016840454305565994", section: "8", tab: "0" });
+  assert.deepEqual(parseDemoFeedContext(hub), { clan: "999", announcement: "987654321", section: "888", tab: "7" });
+  // old new-and-trending marker wins when both layouts are present
+  assert.deepEqual(parseDemoFeedContext(`${hubAllTab}\n${hub}`).section, "888");
+  // the generated feed URL is well formed with the new ids
+  const params = new URL(demoFeedUrl(parseDemoFeedContext(hubAllTab), "new", 0)).searchParams;
+  assert.equal(params.get("sectionuniqueid"), "8");
+  assert.equal(params.get("tabuniqueid"), "0");
+  assert.equal(params.get("flavor"), DEMO_FEEDS.new);
+});
+
+test("hub context still fails closed when a load-bearing id or every marker is missing", () => {
+  const noMarker = hubAllTab.replace(/data-browser_[^\n]*/, "");
+  assert.throws(() => parseDemoFeedContext(noMarker), /configuration changed/);
+  assert.throws(() => parseDemoFeedContext(hubAllTab.replace("store_contenthubs", "other")), /configuration changed/);
+  assert.throws(() => parseDemoFeedContext(hubAllTab.replace("3016840454305565994", "abc")), /configuration changed/);
+  assert.throws(() => parseDemoFeedContext(hubAllTab.replace(/data-event="[^"]*"/, "")), /missing/);
+});
+
 test("New Releases catches up beyond 500 to prior head plus overlap, and detects safety truncation", async () => {
   const context=parseDemoFeedContext(hub);
   const previous=new Set(Array.from({length:100},(_,i)=>String(10000+i)));
