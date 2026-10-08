@@ -47,5 +47,5 @@ jobs:
           if [ "$DRY_RUN" = "true" ]; then export DRY_RUN=1; else unset DRY_RUN; fi
           timeout 240 ./node_modules/.bin/tsx scripts/seed-xbox-reviewed-skus.ts
           echo "── rows ──"
-          sqlite3 -header -column "$WD/data.db" "SELECT title_id,platform,external_sku,sku_role,business_model,msrp_usd_cents,is_manual_override,business_model_source FROM platform_sku_map WHERE platform='xbox' AND external_sku IN ('9P5786PJB9RP','9NFDXGJ16M47')"
+          sqlite3 -header -column "$WD/data.db" "SELECT title_id,platform,external_sku,sku_role,business_model,msrp_usd_cents,is_manual_override,business_model_source FROM platform_sku_map WHERE platform='xbox' AND external_sku IN ('9P5786PJB9RP','9NFDXGJ16M47','9P3J32CTXLRZ','9MXDPXSRVML5')"
           REMOTE

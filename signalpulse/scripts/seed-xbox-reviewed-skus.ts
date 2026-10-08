@@ -30,6 +30,15 @@ async function main() {
     const titleId = rawSqlite.transaction((): number => {
       const have = existingRows.find(r => r.external_sku === base.bigId) ?? existingRows[0];
       if (have) return have.title_id;
+      if (fam.attachToTitleId) {
+        // The pinned title must already exist in the SKU map or console_title_igdb;
+        // otherwise the attach target is a typo and we must not write anything.
+        const known = rawSqlite.prepare(
+          "SELECT 1 FROM platform_sku_map WHERE title_id = ? UNION ALL SELECT 1 FROM console_title_igdb WHERE title_id = ? LIMIT 1",
+        ).get(fam.attachToTitleId, fam.attachToTitleId);
+        if (!known) throw new Error(`[${fam.family}] attachToTitleId ${fam.attachToTitleId} does not exist; refusing to allocate a new title`);
+        return fam.attachToTitleId;
+      }
       const { m } = rawSqlite.prepare("SELECT COALESCE(MAX(title_id), 9999) AS m FROM platform_sku_map").get() as { m: number };
       return m + 1;
     }).immediate();

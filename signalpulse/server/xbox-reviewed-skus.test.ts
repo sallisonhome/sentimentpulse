@@ -38,3 +38,28 @@ test("Hellraiser: Revival plans base and Deluxe at the PS5 prices, curly apostro
     [["9NSWRGZBQ2MC", "base", 3999, "insert"], ["9N3TVB2GX7CT", "edition", 4999, "insert"]]);
   assert.equal(planReviewedFamily(h, { ...n, "9N3TVB2GX7CT": "Hellraiser" }, new Set())[1].reason, "store_name_mismatch");
 });
+
+test("Elden Ring plans the paid SKU at the PS5 price and pins to the existing Xbox title", () => {
+  const e = REVIEWED_XBOX_FAMILIES.find(f => f.family === "ELDEN RING")!;
+  assert.equal(e.attachToTitleId, 11066);
+  assert.deepEqual(planReviewedFamily(e, { "9P3J32CTXLRZ": "ELDEN RING" }, new Set()).map(x => [x.bigId, x.role, x.msrpUsdCents, x.action]),
+    [["9P3J32CTXLRZ", "base", 5999, "insert"]]);
+  // Store-name variants of the same game: ™ noise is stripped, case is ignored,
+  // and the existing prefix rule accepts a trailing edition label (by design for
+  // "Family Deluxe Edition" listings) — so NIGHTREIGN passes it too. A name
+  // outside the family prefix is rejected. The seed's dry run prints the live
+  // store name for the bigId, which is the stronger check before any write.
+  assert.equal(storeNameMatchesFamily("ELDEN RING™", "ELDEN RING"), true);
+  assert.equal(storeNameMatchesFamily("Elden Ring", "ELDEN RING"), true);
+  assert.equal(storeNameMatchesFamily("Hellraiser", "ELDEN RING"), false);
+  assert.equal(planReviewedFamily(e, { "9P3J32CTXLRZ": "Hellraiser" }, new Set())[0].reason, "store_name_mismatch");
+});
+
+test("Star Wars: Galactic Racer plans the paid SKU at the PS5 price as a new family", () => {
+  const g = REVIEWED_XBOX_FAMILIES.find(f => f.family === "STAR WARS: Galactic Racer")!;
+  assert.equal(g.attachToTitleId, undefined);
+  assert.deepEqual(planReviewedFamily(g, { "9MXDPXSRVML5": "STAR WARS: Galactic Racer\u2122" }, new Set()).map(x => [x.bigId, x.role, x.msrpUsdCents, x.action]),
+    [["9MXDPXSRVML5", "base", 5999, "insert"]]);
+  // A colon-less store title would be a different name — reject, never guess.
+  assert.equal(planReviewedFamily(g, { "9MXDPXSRVML5": "Star Wars Galactic Racer" }, new Set())[0].reason, "store_name_mismatch");
+});

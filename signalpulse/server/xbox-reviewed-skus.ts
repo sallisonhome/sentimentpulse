@@ -2,9 +2,15 @@
 // day-one titles with a $0 price and no Purchase action, so the paid-only discovery gate drops
 // them. Each entry is reviewed by hand, takes its price from the same game's PS5 SKUs, and is
 // written as a manual override so automatic refresh cannot overwrite it.
-export const XBOX_REVIEWED_SOURCE = "xbox_reviewed_ps5_price_match:2026-10-03";
+export const XBOX_REVIEWED_SOURCE = "xbox_reviewed_ps5_price_match:2026-10-08";
 export type ReviewedXboxSku = { bigId: string; role: "base" | "edition"; msrpUsdCents: number; ps5Sku: string };
-export type ReviewedXboxFamily = { family: string; skus: ReviewedXboxSku[] };
+// attachToTitleId: pin a family whose SKUs are all new to an EXISTING title_id
+// instead of allocating a new one. Used when the game already has a console row
+// under a non-purchasable listing (e.g. Elden Ring's ratings_only stub) — a
+// second title would split the concept across two title_ids and muddy the
+// family grouping. Ignored when a family SKU already exists (the DB row's
+// title_id is the source of truth and is immutable).
+export type ReviewedXboxFamily = { family: string; skus: ReviewedXboxSku[]; attachToTitleId?: number };
 
 export const REVIEWED_XBOX_FAMILIES: ReviewedXboxFamily[] = [{
   family: "Minecraft Dungeons II",
@@ -20,6 +26,26 @@ export const REVIEWED_XBOX_FAMILIES: ReviewedXboxFamily[] = [{
   skus: [
     { bigId: "9NSWRGZBQ2MC", role: "base", msrpUsdCents: 3999, ps5Sku: "EP6853-PPSA25642_00-0082868685413873" },
     { bigId: "9N3TVB2GX7CT", role: "edition", msrpUsdCents: 4999, ps5Sku: "EP6853-PPSA25642_00-DELUXE0000000000" },
+  ],
+}, {
+  // Elden Ring's registered Xbox bigId 9NL9DV1SH9LS is a $0 Redeem-only listing
+  // (ratings_only stub on title 11066). The purchasable US SKU 9P3J32CTXLRZ
+  // ($59.99) never enters via discovery because the game sits outside the
+  // top-100 Xbox top-paid chart. Attach it to the existing title 11066 so the
+  // concept keeps one Xbox title_id. PS5 base UP0700-PPSA04610_00-ELDENRING0000000 is 5999.
+  family: "ELDEN RING",
+  attachToTitleId: 11066,
+  skus: [
+    { bigId: "9P3J32CTXLRZ", role: "base", msrpUsdCents: 5999, ps5Sku: "UP0700-PPSA04610_00-ELDENRING0000000" },
+  ],
+}, {
+  // Released 2026-10-06. Outside the Xbox top-100 top-paid chart, so discovery
+  // never sees it (the new-releases channel died 2026-09-11). PS5 base
+  // UP8737-PPSA28416_00-SWGALACTICRACER1 is 5999. The Deluxe (9P5X1SGXHTHW) and
+  // pre-order-bundle (9NM753GDJ8FS) pages are $0 non-standalone — not registered.
+  family: "STAR WARS: Galactic Racer",
+  skus: [
+    { bigId: "9MXDPXSRVML5", role: "base", msrpUsdCents: 5999, ps5Sku: "UP8737-PPSA28416_00-SWGALACTICRACER1" },
   ],
 }];
 
