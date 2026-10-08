@@ -28,6 +28,8 @@ import type { YtDb } from "./db";
 export interface TitleSeed {
   searchQuery: string;
   phrases: string[];
+  /** Explicit owner opt-out from automatic YouTube collection; history is retained. */
+  collectionEnabled?: boolean;
   excludeTerms?: string[];
   requireCompanion?: boolean;
   requiredTerms?: string[];
@@ -35,6 +37,9 @@ export interface TitleSeed {
 
 // Keyed by Steam App ID (stable across product renames).
 export const TITLE_SEEDS: Record<string, TitleSeed> = {
+  // YouTube-only opt-outs approved by the owner, 2026-10-08.
+  "3230960": { searchQuery: '"exodus"', phrases: ["exodus"], collectionEnabled: false },
+  "4148650": { searchQuery: '"toxic commando cosmetic pack 1"', phrases: ["toxic commando cosmetic pack 1"], collectionEnabled: false },
   "2183900": { searchQuery: '"space marine 2"', phrases: ["space marine 2", "space marine ii", "warhammer 40000 space marine 2", "spacemarine2"] },
   "1551980": { searchQuery: '"hellraiser revival"', phrases: ["hellraiser revival", "hellraiser: revival"] },
   "1486920": { searchQuery: '"tempest rising"', phrases: ["tempest rising"] },
@@ -223,12 +228,21 @@ export function specificityExcludes(own: string[], others: string[][]): string[]
   return Array.from(out).sort();
 }
 
+/** Apply explicit owner opt-outs only; never alter retained source data. */
+export function applyCollectionExclusions(db: YtDb): void {
+  const disable = db.prepare("UPDATE yt_titles SET enabled=0 WHERE title_id=? AND enabled<>0");
+  for (const [id, seed] of Object.entries(TITLE_SEEDS)) {
+    if (seed.collectionEnabled === false) disable.run(Number(id));
+  }
+}
+
 /**
- * Upsert tracked titles. When `authoritative` is true (SentimentPulse list
- * was fetched), titles not in `sources` are disabled; when false only the
- * given titles are upserted and nothing is disabled.
+ * Upsert tracked titles. Authoritative sync disables missing titles; partial
+ * sync preserves them. Explicit collection opt-outs apply in either case.
  */
 export function syncTitles(db: YtDb, sources: TitleSource[], now = new Date(), authoritative = true): number {
+  // Also enforce opt-outs during a source outage or a partial catalogue sync.
+  applyCollectionExclusions(db);
   const existing = new Map<number, { config_source: string }>(
     (db.prepare("SELECT title_id, config_source FROM yt_titles").all() as any[]).map((r) => [r.title_id, r]),
   );
@@ -239,12 +253,12 @@ export function syncTitles(db: YtDb, sources: TitleSource[], now = new Date(), a
       required_terms, require_companion, enabled, backfill_floor, config_source, updated_at)
     VALUES (@title_id, @title, @steam_app_id, @is_saber, @parent_title_id, @sentimentpulse_game_id,
       @signalpulse_product_id, @title_source, @search_query, @phrases, @exclude_terms, @title_excludes,
-      @required_terms, @require_companion, 1, @backfill_floor, 'seed', @updated_at)
+      @required_terms, @require_companion, @enabled, @backfill_floor, 'seed', @updated_at)
     ON CONFLICT(title_id) DO UPDATE SET
       title=excluded.title, steam_app_id=excluded.steam_app_id, is_saber=excluded.is_saber,
       parent_title_id=excluded.parent_title_id, sentimentpulse_game_id=excluded.sentimentpulse_game_id,
       signalpulse_product_id=excluded.signalpulse_product_id, title_source=excluded.title_source,
-      enabled=1, title_excludes=excluded.title_excludes, updated_at=excluded.updated_at,
+      enabled=excluded.enabled, title_excludes=excluded.title_excludes, updated_at=excluded.updated_at,
       search_query=CASE WHEN yt_titles.config_source='seed' THEN excluded.search_query ELSE yt_titles.search_query END,
       phrases=CASE WHEN yt_titles.config_source='seed' THEN excluded.phrases ELSE yt_titles.phrases END,
       exclude_terms=CASE WHEN yt_titles.config_source='seed' THEN excluded.exclude_terms ELSE yt_titles.exclude_terms END,
@@ -256,6 +270,7 @@ export function syncTitles(db: YtDb, sources: TitleSource[], now = new Date(), a
   for (const r of db.prepare("SELECT title_id, phrases, config_source FROM yt_titles WHERE enabled=1").all() as any[]) allPhrases.set(r.title_id, JSON.parse(r.phrases));
   for (const t of sources) {
     const id = Number(t.steamAppId);
+    if (seeds.get(t.steamAppId)!.collectionEnabled === false) continue;
     if (existing.get(id)?.config_source !== "manual") allPhrases.set(id, seeds.get(t.steamAppId)!.phrases);
   }
   let n = 0;
@@ -273,6 +288,7 @@ export function syncTitles(db: YtDb, sources: TitleSource[], now = new Date(), a
         search_query: s.searchQuery, phrases: JSON.stringify(s.phrases), exclude_terms: JSON.stringify(s.excludeTerms ?? []),
         title_excludes: JSON.stringify(specificityExcludes(own, others)),
         required_terms: JSON.stringify(s.requiredTerms ?? []),
+        enabled: s.collectionEnabled === false ? 0 : 1,
         require_companion: s.requireCompanion ? 1 : 0, backfill_floor: backfillFloor(t.releaseDate), updated_at: now.toISOString(),
       });
       n++;
