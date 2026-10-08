@@ -299,3 +299,27 @@ export function spreadRestatement(daily: Record<string, number | null>, beforeDa
   if (!(total > 0) || !(restatedRevenue > 0)) return;
   for (const d of days) daily[d] = (daily[d] as number) + restatedRevenue * ((daily[d] as number) / total);
 }
+
+/**
+ * Families whose launch week (D1 to D9) is re-shaped by dated Steam review activity. The estimator's first daily
+ * rows land after launch, so the first valued days carry a catch-up lump; the lump is real sales, only its timing is
+ * wrong. Scoped by decision (Steve, 2026-10-08): Halloween: The Game, D1 = 2026-09-08.
+ */
+export const LAUNCH_WEEK_REVIEW_FAMILIES: Readonly<Record<string, { start: string; days: number }>> = {
+  "halloween: the game": { start: "2026-09-08", days: 9 },
+};
+
+/**
+ * Re-time the launch week: the days' existing total is redistributed in proportion to `weights` (same length as
+ * `days`). The total is conserved exactly; returns false (and changes nothing) unless the weights are complete,
+ * non-negative and positive in sum and the existing total is positive. Days outside `days` are never touched.
+ */
+export function reshapeLaunchWeek(daily: Record<string, number | null>, days: string[], weights: Array<number | undefined>): boolean {
+  if (!days.length || weights.length !== days.length) return false;
+  if (!weights.every(w => typeof w === "number" && Number.isFinite(w) && w >= 0)) return false;
+  const wsum = (weights as number[]).reduce((s, w) => s + w, 0);
+  const total = days.reduce((s, d) => s + (typeof daily[d] === "number" ? (daily[d] as number) : 0), 0);
+  if (!(wsum > 0) || !(total > 0)) return false;
+  days.forEach((d, i) => { daily[d] = total * ((weights[i] as number) / wsum); });
+  return true;
+}
