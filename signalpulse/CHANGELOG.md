@@ -4,6 +4,7 @@ A running log of what changed in SignalPulse — wishlist, sales, and revenue in
 
 ## October 8, 2026
 
+- Daily revenue ratio-step spread, follow-up guards: only steps dated 2026-10-01 or later, and only when an earlier valued day exists to receive the restatement. The first version also matched an early-history step on Halloween (Sep 15) that has no earlier days, which dropped that step's units from the Steam total (17.4M to 12.1M). Those early steps keep their legacy value again.
 - Daily revenue for Control Resonant and Halloween: The Game (Steam): the 2026-10-07 Steam multiplier refit (40.2 to 57.1 units per review) stepped lifetime units up in one day, so the daily series showed Control at $7.35M and Halloween blank for Oct 7. Now each day keeps its own sales (review growth at the new ratio) and the one-time restatement of earlier sales is spread over the earlier days in proportion to each day's own value (curve shape kept, total conserved, null days stay null, nothing zero-filled). Read-side only, scoped to these two families; any future ratio step of 20% or more is handled the same way. Townfall has no Xbox SKU, so its blank Xbox is expected.
 
 ## October 7, 2026

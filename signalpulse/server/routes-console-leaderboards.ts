@@ -59,7 +59,7 @@ import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
 import {chartFamilyKey,canonicalSiblings} from "./chart-family";
 import {growVerifiedLtdAnchor,estimatorAtAnchor} from "./anchor-growth";
 import {spreadToAnchors,type Plat as SpreadPlat,type SpreadInput} from "./anchored-daily-spread";
-import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,ratioStepSplit,spreadRestatement,RATIO_STEP_SPREAD_FAMILIES,type Allocation} from "./daily-gap-allocation";
+import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,ratioStepSplit,spreadRestatement,RATIO_STEP_SPREAD_FAMILIES,RATIO_STEP_SPREAD_FROM,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -2785,7 +2785,8 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             const isTransitionDay = isBootstrapOnlyMethod(base.method) && isAccumulatorMethod(row.method);
             // Scoped (see RATIO_STEP_SPREAD_FAMILIES): a multiplier refit steps units-per-review up in one day. The day keeps
             // its own sales; the restatement of earlier sales is spread over earlier days by their own curve (after the loop).
-            const stepSplit = (p === "steam" && !multi && RATIO_STEP_SPREAD_FAMILIES.has(seedKey))
+            const priorValued = Object.keys(dailyRev).some(d => d < row.date && typeof dailyRev[d] === "number" && (dailyRev[d] as number) > 0);
+            const stepSplit = (p === "steam" && !multi && RATIO_STEP_SPREAD_FAMILIES.has(seedKey) && row.date >= RATIO_STEP_SPREAD_FROM && priorValued)
               ? ratioStepSplit({ units: base.units, signal: base.signal, method: base.method }, { units: cur, signal: row.signal, method: row.method }) : null;
             if (stepSplit) {
               dailyRev[row.date] = (stepSplit.dayUnits * msrpCents * aspFactor) / 100;
