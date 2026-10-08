@@ -38,3 +38,13 @@ test("base and edition rows are both repaired, and the PS5 family key then equal
   assert.equal(editionGroupKey(rows[0].name!), editionGroupKey(EN));
   assert.equal(editionGroupKey(rows[0].editions![0].name!), editionGroupKey(EN), "Deluxe collapses into the same family");
 });
+
+test("the PDP name-refresh row shape (extra fields) is repaired in place, keeping titleId and release date", async () => {
+  const rows = [
+    { titleId: 11187, name: JA, releaseDateIso: "2026-09-30", productId: "JP0106-PPSA32935_00-DW3CEREMASTERED0" },
+    { titleId: 5, name: "Elden Ring", releaseDateIso: null, productId: "UP0700-PPSA04610_00-ELDENRING0000000" },
+  ];
+  assert.equal(await applyPs5EnglishNames(rows, () => {}), 1);
+  assert.deepEqual(rows[0], { titleId: 11187, name: EN, releaseDateIso: "2026-09-30", productId: "JP0106-PPSA32935_00-DW3CEREMASTERED0" });
+  assert.equal(rows[1].name, "Elden Ring");
+});
