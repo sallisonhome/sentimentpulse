@@ -56,6 +56,7 @@ import { pickSharedPoolPrimaries, sharedPoolViolations } from "./console-shared-
 export { pickSharedPoolPrimaries, sharedPoolViolations };
 import {activeMilestones,milestoneCanOverlay,milestoneProjection,STEAM_UNIT_CALIBRATION_VERSION} from "./steam-unit-calibration";
 import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
+import {buildHellraiserDaily,HELLRAISER_SCOPE} from "./hellraiser-daily";
 import {chartFamilyKey,canonicalSiblings} from "./chart-family";
 import {growVerifiedLtdAnchor,estimatorAtAnchor} from "./anchor-growth";
 import {spreadToAnchors,type Plat as SpreadPlat,type SpreadInput} from "./anchored-daily-spread";
@@ -2545,6 +2546,10 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         xboxRatio:ipOverrideFactorFor(seedNameRow?.name,"xbox")?.factor??PLATFORM_RATIO_VS_STEAM.xbox!,
       });
       if(launch)return {titleId,...launch};
+      if(seedKey===HELLRAISER_SCOPE.key){
+        const hr=buildHellraiserDaily(rawSqlite,from,to,{steamAsp:0,ps5Asp:aspFactorFor("ps5"),xboxAsp:aspFactorFor("xbox")});
+        if(hr)return {titleId,...hr};
+      }
 
       // If we can't resolve a key, fall back to the requested titleId only.
       // sibs is guaranteed to contain the requested titleId.
