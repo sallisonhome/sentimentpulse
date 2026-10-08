@@ -10,6 +10,7 @@
  * Path: YOUTUBE_DB_PATH env or `youtube.db` next to data.db (process cwd).
  */
 import Database from "better-sqlite3";
+import { applyCollectionExclusions } from "./titles";
 
 export type YtDb = Database.Database;
 
@@ -173,6 +174,9 @@ export function openYoutubeDb(path = process.env.YOUTUBE_DB_PATH || "youtube.db"
   if (!videoCols.has("comments_backfill_polled_at")) db.exec("ALTER TABLE yt_videos ADD COLUMN comments_backfill_polled_at TEXT");
   const commentCols = new Set((db.prepare("PRAGMA table_info(yt_comments)").all() as any[]).map(c => c.name));
   if (!commentCols.has("excluded_at")) db.exec("ALTER TABLE yt_comments ADD COLUMN excluded_at TEXT");
+  // Apply owner opt-outs on startup, without waiting for a collection or title sync.
+  // This only changes eligibility; videos, snapshots and comment text stay intact.
+  applyCollectionExclusions(db);
   return db;
 }
 
