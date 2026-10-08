@@ -19,6 +19,7 @@ import { collectSteamSignals, type SteamCollectorInput } from "./steam";
 import { collectXboxSignals, type XboxCollectorInput } from "./xbox";
 import { collectPsSignals, type PsCollectorInput } from "./ps";
 import { bootstrapConsoleTitleNames } from "./discovery";
+import { applyPs5EnglishNames } from "./ps5-english-name";
 import { isVerifiedRatingsOnly } from "../../ratings-only-sku";
 import type { BusinessModel, ConsolePlatform, StoreRatingSnapshot, SteamReviewBucket } from "./types";
 
@@ -287,7 +288,7 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
   // moved the launch to 2026-09-04) is silently dropped from the board. The
   // daily PDP scrape keeps store_release_date in sync so the cascade heals
   // stale IGDB dates automatically without a separate cron.
-  const nameRefreshRows: Array<{ titleId: number; name: string; releaseDateIso: string | null }> = [];
+  const nameRefreshRows: Array<{ titleId: number; name: string; releaseDateIso: string | null; productId: string }> = [];
   for (const out of res.ok) {
     insertStoreRatingSnapshot(out.input.titleId, out.snapshot);
     if (out.usedFallback) {
@@ -305,12 +306,16 @@ export async function runPsCollector(inputs: PsCollectorInput[]): Promise<Platfo
         titleId: out.input.titleId,
         name: out.productName,
         releaseDateIso: out.pdpReleaseDate,
+        productId: out.input.productId,
       });
     }
     ingested++;
   }
   if (nameRefreshRows.length > 0) {
     try {
+      // This refresh runs after discovery and rewrites names for rows without an IGDB id, so a non-Latin
+      // PS5 name must be replaced here too or it undoes the discovery fix (Dynasty Warriors 3, 2026-10-08).
+      await applyPs5EnglishNames(nameRefreshRows, log);
       const heal = bootstrapConsoleTitleNames(nameRefreshRows);
       log(`ps pdp release-date refresh: inserted=${heal.inserted} updatedName=${heal.updatedName} kept=${heal.kept} (store_release_date coalesced on ${nameRefreshRows.length} rows)`);
     } catch (e) {
