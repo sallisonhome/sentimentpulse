@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 
-// Multiplier refit: units per rating 20 -> 30 on 2026-09-26. Scoped family spreads the restatement over its earlier days;
+// Multiplier refit: units per rating 20 -> 30 on 2026-10-06. Scoped family spreads the restatement over its earlier days;
 // an identical title outside the scope keeps the legacy series (global behaviour unchanged).
 test("route: ratio step is spread over earlier days for scoped families only, total conserved", async () => {
   const cwd = process.cwd(), dir = mkdtempSync(join(tmpdir(), "ratio-step-routes-"));
@@ -17,8 +17,8 @@ test("route: ratio step is spread over earlier days for scoped families only, to
     const { registerConsoleLeaderboardRoutes } = await import("./routes-console-leaderboards");
     const stamp = new Date().toISOString();
     const M = "calibrated_from_actuals_v1+steam_histogram_nonoverlap_v1";
-    const ratings: Record<string, number> = { "2026-09-22": 1000, "2026-09-23": 1100, "2026-09-24": 1200, "2026-09-25": 1300, "2026-09-26": 1400, "2026-09-27": 1500 };
-    const ltd: Record<string, number> = { "2026-09-22": 20000, "2026-09-23": 22000, "2026-09-24": 24000, "2026-09-25": 26000, "2026-09-26": 42000, "2026-09-27": 45000 };
+    const ratings: Record<string, number> = { "2026-10-02": 1000, "2026-10-03": 1100, "2026-10-04": 1200, "2026-10-05": 1300, "2026-10-06": 1400, "2026-10-07": 1500 };
+    const ltd: Record<string, number> = { "2026-10-02": 20000, "2026-10-03": 22000, "2026-10-04": 24000, "2026-10-05": 26000, "2026-10-06": 42000, "2026-10-07": 45000 };
     const ids: Array<[number, string]> = [[49981, "Control Resonant"], [49982, "Unscoped Step Title"]];
     for (const [id, name] of ids) {
       db.prepare(`INSERT INTO platform_sku_map(title_id,platform,external_sku,sku_role,business_model,msrp_usd_cents,refreshed_at,created_at)
@@ -37,27 +37,28 @@ test("route: ratio step is spread over earlier days for scoped families only, to
       const r = await fetchOriginal(`http://127.0.0.1:${server.address().port}${path}`);
       const body = await r.json(); assert.equal(r.status, 200, JSON.stringify(body)); return body as any;
     };
-    const q = "?from=2026-09-23&to=2026-09-27";
+    const q = "?from=2026-10-03&to=2026-10-07";
     const at = (b: any, d: string) => b.points.find((p: any) => p.date === d).steam as number;
     const scoped = await get(`/api/console/titles/49981/revenue-daily${q}`);
     const plain = await get(`/api/console/titles/49982/revenue-daily${q}`);
     const unit = 60 * 0.66; // msrp dollars x steam ASP factor
     // Legacy: the step day carries the whole 16,000-unit jump.
-    assert.equal(Math.round(at(plain, "2026-09-26")), Math.round(16000 * unit));
+    assert.equal(Math.round(at(plain, "2026-10-06")), Math.round(16000 * unit));
     // Scoped: the step day is only its own 100 ratings at the new ratio (3,000 units).
-    assert.equal(Math.round(at(scoped, "2026-09-26")), Math.round(3000 * unit));
+    assert.equal(Math.round(at(scoped, "2026-10-06")), Math.round(3000 * unit));
     // The 13,000 restated units are spread over Sep 23-25 (equal days, so equal shares: +4,333.33 units each).
-    for (const d of ["2026-09-23", "2026-09-24", "2026-09-25"]) assert.equal(Math.round(at(scoped, d)), Math.round((2000 + 13000 / 3) * unit));
-    assert.equal(Math.round(at(scoped, "2026-09-27")), Math.round(3000 * unit));
+    for (const d of ["2026-10-03", "2026-10-04", "2026-10-05"]) assert.equal(Math.round(at(scoped, d)), Math.round((2000 + 13000 / 3) * unit));
+    assert.equal(Math.round(at(scoped, "2026-10-07")), Math.round(3000 * unit));
     // Total conserved across the window.
-    const sum = (b: any) => ["2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27"].reduce((s, d) => s + at(b, d), 0);
+    const sum = (b: any) => ["2026-10-03", "2026-10-04", "2026-10-05", "2026-10-06", "2026-10-07"].reduce((s, d) => s + at(b, d), 0);
     assert.ok(Math.abs(sum(scoped) - sum(plain)) < 1);
     // Cutoff invariance: ending the query on the step day gives the same series.
-    const cut = await get(`/api/console/titles/49981/revenue-daily?from=2026-09-23&to=2026-09-26`);
-    for (const d of ["2026-09-23", "2026-09-25", "2026-09-26"]) assert.equal(Math.round(at(cut, d)), Math.round(at(scoped, d)));
+    const cut = await get(`/api/console/titles/49981/revenue-daily?from=2026-10-03&to=2026-10-06`);
+    for (const d of ["2026-10-03", "2026-10-05", "2026-10-06"]) assert.equal(Math.round(at(cut, d)), Math.round(at(scoped, d)));
   } finally {
     globalThis.fetch = fetchOriginal;
     if (server) await new Promise<void>((resolve, reject) => server.close((e: any) => e ? reject(e) : resolve()));
     db?.close(); process.chdir(cwd); rmSync(dir, { recursive: true, force: true });
   }
 });
+

@@ -285,6 +285,8 @@ export function ratioStepSplit(base: RebaseRow, cur: RebaseRow, minJump = 1.2): 
  * Families whose daily series carry the ratio-step restatement spread across their earlier days. Scoped by
  * explicit decision (Steve, 2026-10-08): other titles are not touched by this read-side rule.
  */
+/** Earlier ratio changes (launch accumulator starts, the September reset) keep their legacy handling. */
+export const RATIO_STEP_SPREAD_FROM = "2026-10-01";
 export const RATIO_STEP_SPREAD_FAMILIES: ReadonlySet<string> = new Set(["control resonant", "halloween: the game"]);
 
 /**
