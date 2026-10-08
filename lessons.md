@@ -3202,3 +3202,8 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Rule: when a doc comment states an exclusion, grep the SQL for the matching predicate. Rule: a trailing window must end on the last ingested day.
 - Process: a workflow can be run from a feature branch only if its trigger is `push` on that branch; `workflow_dispatch` needs the file on the default branch. Do not `git checkout <branch> -- dir` over uncommitted edits.
 
+### 2026-10-08 addendum 20 — a multiplier refit is a one-day step in every daily series built from LTD differences
+- Daily revenue is the day-over-day change in stored LTD units. Applying the 2026-10-07 Steam multiplier (40.2 to 57.1) restated all earlier sales on that one day: Control Resonant Steam showed $7.35M for Oct 7 and Halloween showed blank (the 20x outlier guard nulled it). Before any refit or multiplier apply, replay the revenue-daily endpoint for the briefing titles and check the apply day.
+- Fix is read-side and scoped (`RATIO_STEP_SPREAD_FAMILIES` in daily-gap-allocation.ts): the day keeps signal growth at the new ratio, and the restatement is spread over earlier valued days by their own shape. Other Steam titles still carry the legacy step day; extend the family set only with Steve's decision.
+- Townfall has no Xbox SKU: a blank Xbox line for it is correct, not missing data.
+

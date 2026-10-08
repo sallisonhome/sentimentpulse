@@ -2,6 +2,10 @@
 
 A running log of what changed in SignalPulse — wishlist, sales, and revenue intelligence for Saber's PC and console portfolio.
 
+## October 8, 2026
+
+- Daily revenue for Control Resonant and Halloween: The Game (Steam): the 2026-10-07 Steam multiplier refit (40.2 to 57.1 units per review) stepped lifetime units up in one day, so the daily series showed Control at $7.35M and Halloween blank for Oct 7. Now each day keeps its own sales (review growth at the new ratio) and the one-time restatement of earlier sales is spread over the earlier days in proportion to each day's own value (curve shape kept, total conserved, null days stay null, nothing zero-filled). Read-side only, scoped to these two families; any future ratio step of 20% or more is handled the same way. Townfall has no Xbox SKU, so its blank Xbox is expected.
+
 ## October 7, 2026
 
 - Cold Buying query work: share identical internal board calculations, daily sibling/mix catalogs and compiled read statements only within a request. Materialize identity/filter-name expressions once per SKU instead of re-entering the identity function for every exclusion predicate. Preserve window/anchor/milestone/identity/dedup rules; no estimator, data, response-cache TTL or timeout changes. Offline acceptance uses a current sanitized snapshot, exact response parity across 160 combinations, and fresh-process four-request navigation with response caching bypassed; live-host acceptance is separate.

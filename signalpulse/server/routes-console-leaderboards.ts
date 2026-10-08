@@ -59,7 +59,7 @@ import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
 import {chartFamilyKey,canonicalSiblings} from "./chart-family";
 import {growVerifiedLtdAnchor,estimatorAtAnchor} from "./anchor-growth";
 import {spreadToAnchors,type Plat as SpreadPlat,type SpreadInput} from "./anchored-daily-spread";
-import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,type Allocation} from "./daily-gap-allocation";
+import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,ratioStepSplit,spreadRestatement,RATIO_STEP_SPREAD_FAMILIES,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -2732,6 +2732,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         const dailyRev: Record<string, number | null> = {};
         const rollingDeltas: number[] = [];
         let base: { date: string; units: number; method: string | null; signal: number | null } | null = null;
+        const stepRestatements: Array<{ date: string; revenue: number }> = [];
         // One row per date is required to allocate. A later ambiguous sibling
         // must not retroactively erase an earlier, unambiguous allocation when
         // the caller extends `to`. Keep the strict rule from the first duplicate
@@ -2782,7 +2783,15 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           if (base && span === 1) {
             const deltaUnits = Math.max(0, cur - base.units);
             const isTransitionDay = isBootstrapOnlyMethod(base.method) && isAccumulatorMethod(row.method);
-            if (outlierSuppressed(deltaUnits, isTransitionDay)) {
+            // Scoped (see RATIO_STEP_SPREAD_FAMILIES): a multiplier refit steps units-per-review up in one day. The day keeps
+            // its own sales; the restatement of earlier sales is spread over earlier days by their own curve (after the loop).
+            const stepSplit = (p === "steam" && !multi && RATIO_STEP_SPREAD_FAMILIES.has(seedKey))
+              ? ratioStepSplit({ units: base.units, signal: base.signal, method: base.method }, { units: cur, signal: row.signal, method: row.method }) : null;
+            if (stepSplit) {
+              dailyRev[row.date] = (stepSplit.dayUnits * msrpCents * aspFactor) / 100;
+              if (stepSplit.dayUnits > 0) rollingDeltas.push(stepSplit.dayUnits);
+              stepRestatements.push({ date: row.date, revenue: (stepSplit.restatedUnits * msrpCents * aspFactor) / 100 });
+            } else if (outlierSuppressed(deltaUnits, isTransitionDay)) {
               dailyRev[row.date] = null;
             } else {
               dailyRev[row.date] = (deltaUnits * msrpCents * aspFactor) / 100;
@@ -2821,6 +2830,7 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           }
           base = { date: row.date, units: cur, method: row.method, signal: row.signal };
         });
+        for (const st of stepRestatements) spreadRestatement(dailyRev, st.date, st.revenue);
         perTitle.push(dailyRev);
         }
         if (perTitle.length <= 1) dailyByPlatform[p] = perTitle[0] ?? {};
