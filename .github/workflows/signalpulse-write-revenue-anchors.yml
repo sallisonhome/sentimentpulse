@@ -24,11 +24,10 @@ name: SignalPulse — Write revenue calibration anchors
 #     sallisonhome@yahoo.com) via `python -m services.cron_alerts alert`.
 
 on:
-  schedule:
-    # 11:15 UTC daily (6:15 ET winter / 7:15 ET summer). Sits ~30 min after
-    # the 10:45 UTC SentimentPulse ingest, which is the upstream data source
-    # for the anchor writer.
-    - cron: '15 11 * * *'
+  # 2026-10-08: daily schedule removed — the droplet's systemd timer
+  # (signalpulse-daily.service Phase 4, 09:15 UTC) is the sole scheduled
+  # anchor writer; the two schedules were writing the same idempotent rows
+  # twice a day. Manual dispatch remains, dry-run by default.
   workflow_dispatch:
     inputs:
       dry_run:
