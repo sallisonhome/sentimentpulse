@@ -261,3 +261,39 @@ export function dailyAllocationBlockReason(db: Database.Database, titleIds: numb
     return nonManual ? "revenue_anchor" : null;
   } catch { return "check_failed"; }
 }
+
+/**
+ * Estimator ratio STEP UP on one adjacent day (e.g. the 2026-10-07 Steam multiplier refit, 40.2 to 57.1 units per
+ * review). The day-over-day LTD change then holds two things: the day's real sales (signal growth at the new
+ * ratio) and a one-time restatement of everything sold before it (prior signal x ratio change). Only the first
+ * belongs to the day. Returns both parts, or null unless: same estimator method on both sides, the signal grew,
+ * units rose, and the ratio rose by at least `minJump` (default 20%).
+ */
+export function ratioStepSplit(base: RebaseRow, cur: RebaseRow, minJump = 1.2): { dayUnits: number; restatedUnits: number } | null {
+  if (!base.method || !cur.method || base.method.split("+")[0] !== cur.method.split("+")[0]) return null;
+  if (base.signal == null || cur.signal == null || !(base.signal > 0) || !(cur.signal > base.signal)) return null;
+  if (!(base.units > 0) || !(cur.units > base.units)) return null;
+  const rBase = base.units / base.signal, rCur = cur.units / cur.signal;
+  if (!(rCur / rBase >= minJump)) return null;
+  const dayUnits = (cur.signal - base.signal) * rCur;
+  const restatedUnits = (cur.units - base.units) - dayUnits;
+  if (!(dayUnits >= 0) || !(restatedUnits > 0)) return null;
+  return { dayUnits, restatedUnits };
+}
+
+/**
+ * Families whose daily series carry the ratio-step restatement spread across their earlier days. Scoped by
+ * explicit decision (Steve, 2026-10-08): other titles are not touched by this read-side rule.
+ */
+export const RATIO_STEP_SPREAD_FAMILIES: ReadonlySet<string> = new Set(["control resonant", "halloween: the game"]);
+
+/**
+ * Spread `restatedRevenue` over the already valued earlier days in proportion to each day's own value, so the
+ * existing sales-curve shape is kept and the total is conserved. Null days stay null (nothing is zero-filled).
+ */
+export function spreadRestatement(daily: Record<string, number | null>, beforeDate: string, restatedRevenue: number): void {
+  const days = Object.keys(daily).filter(d => d < beforeDate && typeof daily[d] === "number" && (daily[d] as number) > 0);
+  const total = days.reduce((s, d) => s + (daily[d] as number), 0);
+  if (!(total > 0) || !(restatedRevenue > 0)) return;
+  for (const d of days) daily[d] = (daily[d] as number) + restatedRevenue * ((daily[d] as number) / total);
+}
