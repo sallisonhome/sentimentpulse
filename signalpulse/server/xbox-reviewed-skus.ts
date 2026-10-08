@@ -14,11 +14,11 @@ export const REVIEWED_XBOX_FAMILIES: ReviewedXboxFamily[] = [{
     { bigId: "9NFDXGJ16M47", role: "edition", msrpUsdCents: 4999, ps5Sku: "EP4433-PPSA16064_00-0424848725030098" },
   ],
 }, {
-  // Released 2026-10-08 (store ids supplied by Steve). PS5 base EP6853-PPSA25642_00-0082868685413873 is 3999; the PS5
+  // Released 2026-10-08 (Deluxe id supplied by Steve; the standard id 9NSWRGZBQ2MC was read from the Xbox store, since 9PN93T01JMSR is the Deluxe bundle page). PS5 base EP6853-PPSA25642_00-0082868685413873 is 3999; the PS5
   // Deluxe edition EP6853-PPSA25642_00-DELUXE0000000000 is 4999.
   family: "Clive Barker's Hellraiser: Revival",
   skus: [
-    { bigId: "9PN93T01JMSR", role: "base", msrpUsdCents: 3999, ps5Sku: "EP6853-PPSA25642_00-0082868685413873" },
+    { bigId: "9NSWRGZBQ2MC", role: "base", msrpUsdCents: 3999, ps5Sku: "EP6853-PPSA25642_00-0082868685413873" },
     { bigId: "9N3TVB2GX7CT", role: "edition", msrpUsdCents: 4999, ps5Sku: "EP6853-PPSA25642_00-DELUXE0000000000" },
   ],
 }];
