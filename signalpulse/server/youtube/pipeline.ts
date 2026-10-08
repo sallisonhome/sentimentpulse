@@ -89,7 +89,7 @@ export async function runRetention(db: YtDb, yt: YouTubeClient | null, c: RunCou
   // Refresh older comment text on a rolling basis, without an expiry deadline.
   if (yt) {
     const budget = Math.floor(quotaRemaining(db, "units") * RETENTION_UNIT_SHARE);
-    const due = (db.prepare("SELECT comment_id FROM yt_comments WHERE excluded_at IS NULL AND fetched_at < ? ORDER BY fetched_at LIMIT ?")
+    const due = (db.prepare("SELECT comment_id FROM yt_comments WHERE title_id IN (SELECT title_id FROM yt_titles WHERE enabled=1) AND excluded_at IS NULL AND fetched_at < ? ORDER BY fetched_at LIMIT ?")
       .all(refreshBefore, budget * 50) as any[]).map((r) => r.comment_id as string);
     const upd = db.prepare("UPDATE yt_comments SET text=?, like_count=?, updated_at=?, author_channel_id=?, fetched_at=? WHERE comment_id=?");
     for (let i = 0; i < due.length; i += 50) {
@@ -254,9 +254,9 @@ export async function runDiscovery(db: YtDb, yt: YouTubeClient, c: RunCounters, 
 export async function runStatsRefresh(db: YtDb, yt: YouTubeClient, c: RunCounters, opts: PipelineOptions) {
   const now = (opts.now ?? (() => new Date()))();
   const today = iso(now).slice(0, 10);
-  const titles = new Map((db.prepare("SELECT * FROM yt_titles").all() as TitleRow[]).map((t) => [t.title_id, t]));
+  const titles = new Map((db.prepare("SELECT * FROM yt_titles WHERE enabled=1").all() as TitleRow[]).map((t) => [t.title_id, t]));
   // Oldest-refreshed first, skipping videos already refreshed today (discovery wrote them).
-  const rows = db.prepare("SELECT video_id, title_id FROM yt_videos WHERE excluded_at IS NULL AND (substr(last_refreshed_at,1,10) < ? OR relevance_version < ?) ORDER BY relevance_version, last_refreshed_at")
+  const rows = db.prepare("SELECT video_id, title_id FROM yt_videos WHERE title_id IN (SELECT title_id FROM yt_titles WHERE enabled=1) AND excluded_at IS NULL AND (substr(last_refreshed_at,1,10) < ? OR relevance_version < ?) ORDER BY relevance_version, last_refreshed_at")
     .all(today, RELEVANCE_VERSION) as Array<{ video_id: string; title_id: number }>;
   for (let i = 0; i < rows.length; i += 50) {
     const batch = rows.slice(i, i + 50);
@@ -332,7 +332,7 @@ export async function runComments(db: YtDb, yt: YouTubeClient, c: RunCounters, o
   const spendable = () => quotaRemaining(db, "units") > STATS_RESERVE_UNITS;
   // Poll daily even when the total is unchanged: one deletion plus one new
   // comment leaves the same total. Oldest-polled first prevents starvation.
-  const vids = db.prepare(`SELECT * FROM yt_videos WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND comments_disabled=0 AND COALESCE(comment_count,0) > 0
+  const vids = db.prepare(`SELECT * FROM yt_videos WHERE title_id IN (SELECT title_id FROM yt_titles WHERE enabled=1) AND excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND comments_disabled=0 AND COALESCE(comment_count,0) > 0
       AND (comments_polled_at IS NULL OR substr(comments_polled_at,1,10) < ? OR comments_incremental_token IS NOT NULL)
     ORDER BY COALESCE(comments_polled_at,''), title_id, video_id`).all(iso(now).slice(0, 10)) as any[];
   for (const v of vids) {
@@ -373,7 +373,7 @@ export async function runComments(db: YtDb, yt: YouTubeClient, c: RunCounters, o
   }
   // Rotate through older threads too: new replies can land under old comments.
   // Reset a completed sweep, otherwise continue its durable page token.
-  const back = db.prepare(`SELECT * FROM yt_videos WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION}
+  const back = db.prepare(`SELECT * FROM yt_videos WHERE title_id IN (SELECT title_id FROM yt_titles WHERE enabled=1) AND excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION}
       AND comments_disabled=0 AND COALESCE(comment_count,0)>0
       ORDER BY COALESCE(comments_backfill_polled_at,''),title_id,video_id`).all() as any[];
   for (const v of back) {

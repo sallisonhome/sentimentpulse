@@ -286,6 +286,7 @@ test("feed: verified-only, stable snapshots, tied timestamps, deletion-only resu
 
 test("daily collection polls unchanged totals and updates replies on known threads", async () => {
   const db = freshDb(), now = new Date("2026-09-24T12:00:00Z");
+  syncTitles(db, src([{ id: 3, title: "Tracked game", steamAppId: "3", releaseDate: null }]));
   addVideo(db, { video_id: "v", title_id: 3, published_at: "2026-09-01T00:00:00Z", comment_count: 2 });
   db.prepare(`UPDATE yt_videos SET comments_count_at_poll=2,comments_polled_at='2026-09-23T12:00:00Z',
     comments_newest_at='2026-09-22T12:00:00Z',comments_backfill_done=1`).run();
@@ -311,6 +312,7 @@ test("daily collection polls unchanged totals and updates replies on known threa
 
 test("older thread sweeps rotate independently from new-comment polling", async () => {
   const db = freshDb(), now = new Date("2026-09-24T12:00:00Z");
+  syncTitles(db, src([{ id: 3, title: "Tracked game", steamAppId: "3", releaseDate: null }]));
   for (const id of ["a", "b"]) addVideo(db, { video_id: id, title_id: 3, published_at: now.toISOString(), comment_count: 1 });
   db.prepare("UPDATE yt_videos SET comments_polled_at=?").run(now.toISOString());
   db.prepare("UPDATE yt_videos SET comments_backfill_polled_at=? WHERE video_id='a'").run(now.toISOString());
@@ -476,6 +478,7 @@ test("retention: edit refresh and removal exclusions never erase the stored text
   const now = new Date("2026-09-24T12:00:00Z");
   const ago = (d: number) => new Date(now.getTime() - d * DAY).toISOString();
   const db = freshDb();
+  syncTitles(db, src([{ id: 3, title: "Tracked game", steamAppId: "3", releaseDate: null }]));
   addVideo(db, { video_id: "v", title_id: 3, published_at: ago(60), last_refreshed_at: ago(1) });
   for (const id of ["keep", "gone"]) db.prepare(`INSERT INTO yt_comments (comment_id, video_id, title_id, text, published_at, fetched_at)
     VALUES (?, 'v', 3, 'old', ?, ?)`).run(id, ago(28), ago(28));
