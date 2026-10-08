@@ -40,3 +40,20 @@ test("spread keeps the curve shape, conserves the total, and never fills null da
 test("scope is exactly the two reviewed families", () => {
   assert.deepEqual(Array.from(RATIO_STEP_SPREAD_FAMILIES).sort(), ["control resonant", "halloween: the game"]);
 });
+
+import { reshapeLaunchWeek, LAUNCH_WEEK_REVIEW_FAMILIES } from "./daily-gap-allocation";
+
+test("launch week reshape: conserves the total, follows weights, leaves other days alone, fails closed", () => {
+  const days = ["2026-09-14", "2026-09-15", "2026-09-16"];
+  const d: Record<string, number | null> = { "2026-09-15": 900, "2026-09-16": 100, "2026-09-17": 55 };
+  assert.equal(reshapeLaunchWeek(d, days, [1, 2, 2]), true);
+  assert.ok(Math.abs((d["2026-09-14"] as number) + (d["2026-09-15"] as number) + (d["2026-09-16"] as number) - 1000) < 1e-9);
+  assert.ok(Math.abs((d["2026-09-15"] as number) - 400) < 1e-9);
+  assert.equal(d["2026-09-17"], 55);
+  const e: Record<string, number | null> = { "2026-09-15": 10 };
+  assert.equal(reshapeLaunchWeek(e, days, [1, undefined, 2]), false);
+  assert.equal(reshapeLaunchWeek(e, days, [0, 0, 0]), false);
+  assert.equal(reshapeLaunchWeek({}, days, [1, 1, 1]), false);
+  assert.equal(e["2026-09-15"], 10);
+  assert.deepEqual(Object.keys(LAUNCH_WEEK_REVIEW_FAMILIES), ["halloween: the game"]);
+});

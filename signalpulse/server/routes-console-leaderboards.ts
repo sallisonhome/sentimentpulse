@@ -59,7 +59,7 @@ import {reconstructLaunchDaily} from "./launch-daily-reconstruction";
 import {chartFamilyKey,canonicalSiblings} from "./chart-family";
 import {growVerifiedLtdAnchor,estimatorAtAnchor} from "./anchor-growth";
 import {spreadToAnchors,type Plat as SpreadPlat,type SpreadInput} from "./anchored-daily-spread";
-import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,ratioStepSplit,spreadRestatement,RATIO_STEP_SPREAD_FAMILIES,RATIO_STEP_SPREAD_FROM,type Allocation} from "./daily-gap-allocation";
+import {allocateSpan,allocationEnabled,changeExplainedBySignal,launchBaseline,loadGapEvidence,dailyAllocationBlockReason,rebasedGapUnits,ratioStepSplit,spreadRestatement,RATIO_STEP_SPREAD_FAMILIES,RATIO_STEP_SPREAD_FROM,LAUNCH_WEEK_REVIEW_FAMILIES,reshapeLaunchWeek,REVIEW_LAG_DAYS,type Allocation} from "./daily-gap-allocation";
 import { refreshIgdbForTitle } from "./signals/console/igdb";
 import { revenueSummary } from "./console-revenue-share";
 import { safeTitleMetadata } from "./console-title-metadata";
@@ -2853,6 +2853,26 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
             sum[d] = vals.every(v => v != null) ? (vals as number[]).reduce((s, v) => s + v, 0) : null;
           }
           dailyByPlatform[p] = sum;
+        }
+      }
+
+      // Launch week (D1 to D9) re-timed by dated Steam review activity, next-day weighted like every launch seed (Saber
+      // Steamworks validation). Conserves each platform's D1 to D9 total; only runs when every needed review day is stored
+      // and the query reaches D9, so the result never depends on the query window.
+      const launchWeek = LAUNCH_WEEK_REVIEW_FAMILIES[seedKey];
+      if (launchWeek && gapEvidenceAll) {
+        const lwDays = Array.from({ length: launchWeek.days }, (_, i) => new Date(Date.parse(launchWeek.start) + i * 86400000).toISOString().slice(0, 10));
+        const weights = lwDays.map(d => gapEvidenceAll.steamDaily.get(new Date(Date.parse(d) + REVIEW_LAG_DAYS * 86400000).toISOString().slice(0, 10)));
+        if (to >= lwDays[lwDays.length - 1]) {
+          for (const p of Object.keys(dailyByPlatform) as Platform[]) {
+            const daily = dailyByPlatform[p];
+            if (!daily || !reshapeLaunchWeek(daily, lwDays, weights)) continue;
+            allocations[p] = allocations[p] ?? {};
+            for (const d of lwDays) {
+              (allocations[p] as Record<string, { kind: string; basis: string }>)[d] = { kind: "launch_week", basis: "steam_review_activity" };
+              if (d >= from && d <= to && !dates.includes(d)) dates.push(d);
+            }
+          }
         }
       }
 

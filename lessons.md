@@ -3206,4 +3206,4 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Daily revenue is the day-over-day change in stored LTD units. Applying the 2026-10-07 Steam multiplier (40.2 to 57.1) restated all earlier sales on that one day: Control Resonant Steam showed $7.35M for Oct 7 and Halloween showed blank (the 20x outlier guard nulled it). Before any refit or multiplier apply, replay the revenue-daily endpoint for the briefing titles and check the apply day.
 - Fix is read-side and scoped (`RATIO_STEP_SPREAD_FAMILIES` in daily-gap-allocation.ts): the day keeps signal growth at the new ratio, and the restatement is spread over earlier valued days by their own shape. Other Steam titles still carry the legacy step day; extend the family set only with Steve's decision.
 - Townfall has no Xbox SKU: a blank Xbox line for it is correct, not missing data.
-
+- Addendum 20 follow-up: proportional spreading of a restatement follows the existing curve INCLUDING a launch catch-up lump (Halloween Sep 15 took about 70%). Re-time the launch week by review activity (`LAUNCH_WEEK_REVIEW_FAMILIES`) before judging a daily curve's shape.
