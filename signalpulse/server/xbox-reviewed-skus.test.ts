@@ -33,8 +33,8 @@ test("the list matches the family the PS5 rows use", () => {
 
 test("Hellraiser: Revival plans base and Deluxe at the PS5 prices, curly apostrophes match", () => {
   const h = REVIEWED_XBOX_FAMILIES.find(f => f.family === "Clive Barker's Hellraiser: Revival")!;
-  const n = { "9PN93T01JMSR": "Clive Barker\u2019s Hellraiser: Revival", "9N3TVB2GX7CT": "Clive Barker\u2019s Hellraiser: Revival - Deluxe Edition" };
+  const n = { "9NSWRGZBQ2MC": "Clive Barker\u2019s Hellraiser: Revival", "9N3TVB2GX7CT": "Clive Barker\u2019s Hellraiser: Revival - Deluxe Edition" };
   assert.deepEqual(planReviewedFamily(h, n, new Set()).map(x => [x.bigId, x.role, x.msrpUsdCents, x.action]),
-    [["9PN93T01JMSR", "base", 3999, "insert"], ["9N3TVB2GX7CT", "edition", 4999, "insert"]]);
+    [["9NSWRGZBQ2MC", "base", 3999, "insert"], ["9N3TVB2GX7CT", "edition", 4999, "insert"]]);
   assert.equal(planReviewedFamily(h, { ...n, "9N3TVB2GX7CT": "Hellraiser" }, new Set())[1].reason, "store_name_mismatch");
 });
