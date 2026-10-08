@@ -22,6 +22,7 @@ import { fetchXboxRatingSignal } from "./xbox";
 import { writeRankSnapshot, writeChartSlots, computeTop50Churn } from "./rankSnapshot";
 import { runDeepChartSnapshot } from "./deepChart";
 import { combineChartSlots } from "./chartRank";
+import { applyPs5EnglishNames } from "./ps5-english-name";
 import { fetchSteamCatalogJson } from "../../sales-catalog-steam-http";
 import { SteamCatalogDeferred } from "../../steam-catalog-cooldown";
 
@@ -1069,6 +1070,10 @@ export async function runFullDiscovery(opts: {
     classifyPs5TopSelling(ps5Raw),
     classifyPsManualSeed(manualSeeds),
   ]);
+
+  // Non-Latin PS5 grid names (e.g. Dynasty Warriors 3 returned its Japanese name) keep the PS5 row out of its
+  // Steam/Xbox family, which joins by name. Replace them with the en-us store name before anything is written.
+  try { await applyPs5EnglishNames([...ps5DiscoveredCls, ...psManualCls], log); } catch (e: any) { log(`ps5 english names failed (non-fatal): ${e?.message ?? String(e)}`); }
 
   // Write to platform_sku_map.
   //

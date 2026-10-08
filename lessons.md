@@ -3207,3 +3207,9 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 - Fix is read-side and scoped (`RATIO_STEP_SPREAD_FAMILIES` in daily-gap-allocation.ts): the day keeps signal growth at the new ratio, and the restatement is spread over earlier valued days by their own shape. Other Steam titles still carry the legacy step day; extend the family set only with Steve's decision.
 - Townfall has no Xbox SKU: a blank Xbox line for it is correct, not missing data.
 - Addendum 20 follow-up: proportional spreading of a restatement follows the existing curve INCLUDING a launch catch-up lump (Halloween Sep 15 took about 70%). Re-time the launch week by review activity (`LAUNCH_WEEK_REVIEW_FAMILIES`) before judging a daily curve's shape.
+
+## 2026-10-08 (signalpulse) — Addendum 21: A non-Latin PS5 grid name silently splits a game from its Steam and Xbox family
+
+**What happened.** Dynasty Warriors 3: Complete Edition Remastered showed on all three boards, but the PS5 row (title 11187, `JP0106-PPSA32935_00-DW3CEREMASTERED0`) carried the grid's Japanese name (真・三國無双２ with 猛将伝 Remastered). Boards join platforms by the normalized name, so PS5 stayed alone, fell to a console-exclusive `backfill-bootstrap` estimate, and had no IGDB id for the weekly link job to merge on. The en-us product page title was already English.
+
+**Rules.** (1) Before any PS5 name is written, a CJK name is replaced by the reviewed SKU name, then the en-us product page title; never invented (`ps5-english-name.ts`). (2) A family split is a name problem first: compare `editionGroupKey` across the three rows before touching estimates. (3) Daily discovery rewrites `console_title_igdb.name` for rows with a null `igdb_id`, so a one-off manual rename does not stick; fix the source. (4) Edition SKUs that own a separate title_id (11182) are not refreshed by the base-row name write and need a separate data repair.
