@@ -1,5 +1,52 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-09 — Inherited concept pools: new listings must not bootstrap lifetime ratings onto launch windows
+
+Two PS5 rows went absurd on the same day the boards picked them up: **Mafia III:
+Definitive Edition for PS5® (11389)** showed 2,011,263 units / $48.25M on d7 =
+d30 = d90 = m12, and **Dragon's Dogma 2: Dark Arisen (11352)** showed
+1,444,737 units on every window. The user called it "Mafia deluxe edition is
+over estimated this is likely due to the recent update".
+
+**Root cause:** both are genuinely NEW listings (Mafia III's native PS5 version
+launched 2026-10-08 with the 10-year-anniversary 60fps update; DD2 Dark Arisen
+is a new edition launched 2026-10-09, GAME_BUNDLE). PSN concept ratings are
+shared across a concept's SKUs, so each new listing inherits its concept's
+years-old rating pool on day one (63,690 ratings for the DE, live since
+2020-05-19; 45,750 for DD2, live since 2024-03-22). The backfill-bootstrap
+premise — release inside the window, therefore LTD == window signal — is only
+truthful when the pool accrued inside the window. For inherited pools it
+projects the concept's lifetime pool onto every window (d7 = d30 = LTD).
+
+**Fix (PR #243, main 306cf82):** scoped operator guards in
+`signalpulse/server/console-bootstrap-guards.ts` — the two (title, platform)
+pairs skip ONLY the bootstrap step in `resolveConsoleSignal` and fall through
+the normal ladder (forward-delta → observed-pace → steam-pace → else gated).
+Listing dates are genuine launches and are preserved — this is NOT a date
+pinning fix. LTD rows stay as concept-pool estimates (shared-pool invariant
+untouched). Verified by estimate-preview: d7/d30 changed = 2 rows only (the
+two titles, gated insufficient_history), all other rows unchanged; estimate-
+apply clean; live boards dropped both rows from d7/d30, LTD board keeps them
+as concept estimates.
+
+**Rules going forward:**
+1. **New listing + huge day-one rating pool = suspect.** A rating pool is
+   in-window evidence only if it accrued after the listing's discovery. When a
+   republish/update/edition creates a new title row, check
+   `console_title_igdb.created_at` and the concept's true age before trusting
+   bootstrap-window rows.
+2. **Verify listing provenance before choosing a mechanism.** Web-verify what
+   the listing is (new SKU, new version, republished page) and when the concept
+   really launched. If the listing date is genuine, do NOT pin an older date —
+   disable bootstrap eligibility for that (title, platform) pair instead.
+3. **Scoped guards, not estimator-wide changes.** Use the day-one-actuals /
+   bootstrap-guards pattern: an explicit operator table with reasons, consulted
+   at exactly one decision point, zero effect on every other title.
+4. **The preview must show the full diff.** changed=2 with only the two guarded
+titles proving isolation; any other changed row (rank-anchor floors, chart
+consistency) means the blast radius is bigger than scoped — stop and
+investigate before applying.
+
 ## 2026-10-02: crossover-games measurement - sample, filter and rank by the written design
 
 **Pattern (what I did wrong):** While running the Hellraiser overlap pilot I drifted from the agreed approach three times in one session:
