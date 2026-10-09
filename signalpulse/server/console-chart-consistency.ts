@@ -10,6 +10,7 @@
 // Only d7 and d30 are touched: the chart is a 30-day chart, and LTD/d90/m12 keep their own anchoring.
 
 import { combineChartSlots } from "./signals/console/chartRank";
+import { CONSOLE_DAY_ACTUAL_TAG } from "./console-day-unit-actuals";
 
 export const CHART_NEIGHBOURS = 5;
 export const CHART_TOLERANCE = 1.5;     // neighbours' median may be off by this factor before we move a row
@@ -52,6 +53,9 @@ export function groupChartRank(g: ChartGroup, rankByTitle: Map<number, number>):
 export function isChartExempt(g: ChartGroup, overrideTitleIds: Set<number>): boolean {
   if (g.verifiedAnchorUnits != null) return true;
   if (g.dataSource && EXEMPT_SOURCES.has(g.dataSource)) return true;
+  // Operator day-one unit actuals (2026-10-09): the anchored rows are
+  // references — the chart pass never moves a value anchored on an actual.
+  if (String(g.estimateMethod ?? "").includes(CONSOLE_DAY_ACTUAL_TAG)) return true;
   if (String(g.estimateMethod ?? "").startsWith("override")) return true;
   return g.familyTitleIds.some(id => overrideTitleIds.has(id));
 }
