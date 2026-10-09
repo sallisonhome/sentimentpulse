@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyChartConsistency, inLaunchWindow, chartModeFromEnv, groupChartRank, isChartExempt, CHART_MAX_RAISE, CHART_TOLERANCE, type ChartGroup } from "./console-chart-consistency";
+import { CONSOLE_DAY_ACTUAL_TAG } from "./console-day-unit-actuals";
 
 // 60 charted titles whose units follow a clean power law; ids 1..60 sit at rank = id.
 function fixture() {
@@ -67,6 +68,15 @@ test("anchors, actuals, verified anchors and overrides are never moved but still
   for (const i of [19, 20, 21, 22, 23, 24, 25]) assert.equal(g[i].unitsMid, groups[i].unitsMid, `row ${i} must not move`);
   assert.equal(isChartExempt({ familyTitleIds: [1], unitsMid: 1, revenueMidUsd: 1, dataSource: "actual" }, new Set()), true);
   assert.equal(isChartExempt({ familyTitleIds: [1], unitsMid: 1, revenueMidUsd: 1, dataSource: "derived_from_steam_ip_override" }, new Set()), false);
+});
+
+test("rows anchored on an operator day-one actual (d1_actual_anchor tag) are never moved but still serve as references", () => {
+  const { groups, ranks } = fixture(); groups[29].unitsMid = groups[29].unitsMid! * 6;
+  groups[29].estimateMethod = `ltd-anchor-median-v03+${CONSOLE_DAY_ACTUAL_TAG}+ltd_state:derived_max_windows`;
+  const g = clone(groups); const r = applyChartConsistency(g, ranks, new Set(), "enforce");
+  assert.equal(g[29].unitsMid, groups[29].unitsMid, "anchored row must not move");
+  assert.equal(r.moved + r.capped, 0);
+  assert.equal(isChartExempt({ familyTitleIds: [1], unitsMid: 1, revenueMidUsd: 1, estimateMethod: `x+${CONSOLE_DAY_ACTUAL_TAG}` }, new Set()), true);
 });
 
 test("results do not depend on row order even when neighbours are adjusted too", () => {

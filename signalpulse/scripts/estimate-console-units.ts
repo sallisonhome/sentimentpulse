@@ -49,6 +49,7 @@ import {refreshSteamUnitCalibration} from "../server/steam-unit-calibration";
 import {evaluateSteamSalesShadow} from "../server/steam-sales-shadow";
 import { capRankAnchorFloor, enforceRankAnchorWindows } from "../server/rank-anchor-guard";
 import { rankAnchorModeFromEnv, legacyFloor, chooseFloor, type Ref } from "../server/rank-anchor-curve";
+import { CONSOLE_DAY_ACTUAL_TAG, CONSOLE_DAY_UNIT_ACTUALS, windowContainsDay } from "../server/console-day-unit-actuals";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -1062,6 +1063,59 @@ async function main() {
     if (anchoredCount > 0 || skippedNoPeers > 0) {
       console.log(`[estimate-console-units] rank-anchor floor: applied=${anchoredCount} skipped_no_peers=${skippedNoPeers}`);
     }
+  }
+
+  // ─── 8c. Operator day-one console unit actuals (2026-10-09) ──────────────
+  //
+  // Scoped by construction: only the (title_id, platform) pairs listed in
+  // CONSOLE_DAY_UNIT_ACTUALS are touched; every other title's rows are
+  // byte-identical. The actual is a floor and a releveling point:
+  //   * LTD   = actual + later native increments (the native LTD at the anchor
+  //             day is frozen in the anchor's baselineLtdUnits, so a revised
+  //             native estimate never displaces the actual — a run dated ON
+  //             the anchor day writes exactly `units`).
+  //   * d7/d30/d90/m12 carry the gap (actual − baseline native LTD) only while
+  //             the anchor day is still inside the window; once it rolls out,
+  //             the window returns to native scaling. LTD always carries it.
+  // Runs dated before the anchor day are untouched. Gated rows stay gated —
+  // missing evidence is not zero sales, but we do not invent window values;
+  // the daily series serves the actual directly (hellraiser-daily.ts).
+  // Placement: after the rank-anchor floor (8a) and before the LTD accumulator
+  // (8b), so the accumulator's max() sees the anchored values and nothing
+  // downstream can lower them. The board's chart-consistency pass treats rows
+  // carrying CONSOLE_DAY_ACTUAL_TAG as references that are never moved.
+  {
+    let anchoredTitles = 0, anchoredRows = 0;
+    for (const actual of CONSOLE_DAY_UNIT_ACTUALS) {
+      if (asOfDate < actual.date) continue;
+      const gap = actual.units - actual.baselineLtdUnits;
+      let touched = 0;
+      for (const row of rows) {
+        if (row.titleId !== actual.titleId || row.platform !== actual.platform) continue;
+        if (row.gatedReason || row.unitsMid == null || !(row.unitsMid > 0)) continue;
+        let anchored: number;
+        const anchorDayLtd = row.window === "ltd" && asOfDate === actual.date;
+        if (row.window === "ltd") {
+          anchored = anchorDayLtd
+            ? actual.units // the actual wins on its own day, even if a revised native estimate is higher
+            : actual.units + Math.max(0, row.unitsMid - actual.baselineLtdUnits);
+        } else if (gap > 0 && windowContainsDay(row.window, asOfDate, actual.date)) {
+          anchored = row.unitsMid + gap;
+        } else {
+          continue;
+        }
+        if (!anchorDayLtd && anchored <= row.unitsMid) continue; // nothing to add — keep native
+        const scale = anchored / row.unitsMid;
+        row.unitsMid = Math.round(anchored);
+        if (row.ownersMid) row.ownersMid = Math.round(row.ownersMid * scale);
+        if (row.ownersLow) row.ownersLow = Math.round(row.ownersLow * scale);
+        if (row.ownersHigh) row.ownersHigh = Math.round(row.ownersHigh * scale);
+        row.method = `${row.method}+${CONSOLE_DAY_ACTUAL_TAG}`;
+        touched++;
+      }
+      if (touched) { anchoredTitles++; anchoredRows += touched; }
+    }
+    if (anchoredRows > 0) console.log(`[estimate-console-units] day-one actual anchor: ${anchoredTitles} title(s), ${anchoredRows} row(s) relevelled`);
   }
 
   // ─── 8b. LTD accumulator (2026-09-14, behind LTD_ACCUMULATOR_ENABLED flag) ─
