@@ -50,6 +50,7 @@ import {evaluateSteamSalesShadow} from "../server/steam-sales-shadow";
 import { capRankAnchorFloor, enforceRankAnchorWindows } from "../server/rank-anchor-guard";
 import { rankAnchorModeFromEnv, legacyFloor, chooseFloor, type Ref } from "../server/rank-anchor-curve";
 import { CONSOLE_DAY_ACTUAL_TAG, CONSOLE_DAY_UNIT_ACTUALS, windowContainsDay } from "../server/console-day-unit-actuals";
+import { isBootstrapIneligible } from "../server/console-bootstrap-guards";
 
 const NOISE_GATE_DEFAULT = 50;
 
@@ -685,8 +686,15 @@ async function main() {
     //    virtually all ratings did land inside the window. For older titles,
     //    fall through to steam-pace (which weights by pace) or return null and
     //    let the route's cliff gate suppress the row.
+    //
+    //    Operator-scoped exception (console-bootstrap-guards.ts): a newly
+    //    discovered listing can inherit its concept's years-old rating pool on
+    //    day one (PSN concept ratings are shared across a concept's SKUs), and
+    //    the bootstrap would then present the concept's lifetime pool as
+    //    launch-window sales (d7 = d30 = LTD). Guarded pairs skip ONLY this
+    //    step and fall through to the same ladder as any other title.
     const bootstrapHorizon = Math.min(winDays, BOOTSTRAP_MAX_DAYS);
-    if (ltdNow != null && isReleasedWithin(titleId, bootstrapHorizon)) {
+    if (ltdNow != null && isReleasedWithin(titleId, bootstrapHorizon) && !isBootstrapIneligible(titleId, platform)) {
       return { signal: ltdNow, methodTag: "backfill-bootstrap" };
     }
 
