@@ -120,6 +120,9 @@ _status: dict = {
     "max_attempts": 1,
     "prior_attempt_status": None,
     "prior_attempt_error": None,
+    # 2026-10-10: Reddit providers whose circuit breaker tripped this run
+    # ({provider: {state, trips, short_circuited, opened_at, last_error, ...}}).
+    "reddit_circuit": {},
 }
 
 
@@ -152,7 +155,8 @@ def get_status() -> dict:
                              "bluesky_health", "bluesky_fetched_total", "bluesky_retries",
                              "steam_review_health", "steam_review_fetched_total",
                              "steam_forum_health", "steam_forum_fetched_total",
-                             "youtube_health", "youtube_fetched_total"):
+                             "youtube_health", "youtube_fetched_total",
+                             "reddit_circuit"):
                         if k in persisted:
                             snapshot[k] = persisted[k]
             finally:
@@ -496,6 +500,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None, *,
     _status["posts_collected"] = 0
     _status["youtube_health"] = "skipped"
     _status["youtube_fetched_total"] = 0
+    _status["reddit_circuit"] = {}
     _run_started_at = time.monotonic()
     _status["last_run_finished_at"] = None
     _status["last_run_duration_s"] = None
@@ -783,6 +788,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None, *,
             _status["bluesky_fetched_total"] = bluesky_fetched_total
             _status["steam_review_fetched_total"] = steam_review_fetched_total
             _status["steam_forum_fetched_total"] = steam_forum_fetched_total
+            _status["reddit_circuit"] = _reddit_breaker_snapshot()
 
         # ── Phase B.1: Reddit retry-with-backoff ─────────────────────────────
         # If EVERY active game returned 0 Reddit posts fetched despite having
@@ -871,6 +877,14 @@ def run_ingestion(skip_sources: Optional[set[str]] = None, *,
                 f"[Step 4b retry #{bluesky_retries}] fetched {retry_fetched} "
                 f"posts across {len(active_games)} game(s)."
             )
+
+        # 2026-10-10: one run-level line per tripped provider, so Reddit
+        # reads "partial" and the skip is explained, not just counted.
+        _status["reddit_circuit"] = _reddit_breaker_snapshot()
+        for line in _reddit_breaker_errors(_status["reddit_circuit"]):
+            errors.append(line)
+            log_lines.append(line)
+            logger.warning(line)
 
         # ── Compute per-source health verdicts ───────────────────────────────
         def _verdict(eligible: bool, fetched_total: int, retries: int) -> str:
@@ -1232,6 +1246,7 @@ def run_ingestion(skip_sources: Optional[set[str]] = None, *,
                 "steam_forum_fetched_total": _status.get("steam_forum_fetched_total"),
                 "youtube_health": _status.get("youtube_health"),
                 "youtube_fetched_total": _status.get("youtube_fetched_total"),
+                "reddit_circuit": _status.get("reddit_circuit") or {},
             })
             db_snap = SessionLocal()
             try:
@@ -1611,6 +1626,28 @@ def _step3_steam_forums(
 
 # ── Step 4: Reddit ────────────────────────────────────────────────────────────
 
+def _reddit_breaker_snapshot() -> dict:
+    """Tripped Reddit provider breakers for the current run (never raises)."""
+    try:
+        from services.reddit_transport import breaker_snapshot
+        return breaker_snapshot()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reddit breaker snapshot failed: %s", exc)
+        return {}
+
+
+def _reddit_breaker_errors(snapshot: dict) -> list[str]:
+    lines = []
+    for provider, b in sorted((snapshot or {}).items()):
+        lines.append(
+            f"[Step 4] Reddit provider '{provider}' circuit breaker tripped "
+            f"{b.get('trips', 0)}x (last opened {b.get('opened_at')}; last error: "
+            f"{b.get('last_error')}); {b.get('short_circuited', 0)} request(s) skipped "
+            f"instead of waiting on timeouts. Cursors not advanced; next run retries."
+        )
+    return lines
+
+
 def _reddit_completeness_health(health, errors):
     """Positive volume is not proof that every subreddit query completed."""
     if health in ("ok", "degraded") and any(
@@ -1870,9 +1907,19 @@ def _step4a_reddit_comments(
             f"{_PARENT_FALLBACK_WINDOW_DAYS}d)."
         )
 
+    from services.reddit_transport import circuit_open
+
     total_saved = 0
     total_fetched = 0
-    for parent in parents:
+    for idx, parent in enumerate(parents):
+        # 2026-10-10: while Arctic Shift's breaker is open every comment read
+        # would fail instantly anyway; record one line, not one per parent.
+        if circuit_open("arctic_shift"):
+            errors.append(
+                f"[Step 4a] '{game.name}': Arctic Shift circuit open; skipped "
+                f"{len(parents) - idx} of {len(parents)} parent(s); retry on next run"
+            )
+            break
         permalink = None
         if parent.url and "reddit.com" in parent.url:
             try:

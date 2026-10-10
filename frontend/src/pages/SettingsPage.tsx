@@ -85,6 +85,31 @@ export function retryNotice(status: IngestStatus): string | null {
   return `Retrying: attempt ${attempt} of ${max}.${prior}${why}`
 }
 
+// 2026-10-10: a Reddit provider outage trips a per-run circuit breaker.
+// Say which provider, that reads were skipped (not waited on) and that
+// cursors stay put, so "partial" is explained rather than alarming.
+const PROVIDER_LABELS: Record<string, string> = {
+  arctic_shift: 'Arctic Shift',
+  pullpush: 'PullPush',
+}
+
+export function circuitNotice(status: IngestStatus): string | null {
+  const circuits = status.reddit_circuit
+  if (!circuits) return null
+  const names = Object.keys(circuits).sort()
+  if (names.length === 0) return null
+  const parts = names.map((name) => {
+    const c = circuits[name]
+    const label = PROVIDER_LABELS[name] ?? name
+    const now = c.state === 'closed' ? 'recovered' : 'unreachable'
+    const why = c.last_error ? `, last error ${c.last_error}` : ''
+    return `${label} ${now} (${c.short_circuited.toLocaleString()} request(s) skipped${why})`
+  })
+  const when = status.is_running ? 'this run' : 'the last run'
+  return `Reddit provider outage during ${when}: ${parts.join('; ')}. ` +
+    'Cursors were not advanced; the next run retries.'
+}
+
 // Compute a list of source labels whose health indicates a regression we
 // want to surface as a top-of-card amber banner.
 export function degradedSources(status: IngestStatus): string[] {
@@ -171,6 +196,11 @@ export default function SettingsPage() {
                 {retryNotice(ingestStatus) && (
                   <p className="text-amber-700 dark:text-amber-300 text-xs">
                     {retryNotice(ingestStatus)}
+                  </p>
+                )}
+                {circuitNotice(ingestStatus) && (
+                  <p className="text-amber-700 dark:text-amber-300 text-xs">
+                    {circuitNotice(ingestStatus)}
                   </p>
                 )}
                 <p className="text-muted-foreground">
