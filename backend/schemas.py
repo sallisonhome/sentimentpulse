@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -353,6 +353,10 @@ class IngestStatusResponse(BaseModel):
     max_attempts: int = 1
     prior_attempt_status: Optional[str] = None
     prior_attempt_error: Optional[str] = None
+    # Reddit provider circuit breakers tripped this run (2026-10-10):
+    # {provider: {state, trips, short_circuited, consecutive_failures,
+    #             opened_at, last_error}}.
+    reddit_circuit: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
 
 
 class IngestRunResponse(BaseModel):

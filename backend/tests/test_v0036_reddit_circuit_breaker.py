@@ -276,3 +276,23 @@ def test_status_carries_and_hydrates_reddit_circuit():
     run_src = inspect.getsource(ingestor.run_ingestion)
     assert '"reddit_circuit": _status.get("reddit_circuit")' in run_src
     assert '_status["reddit_circuit"] = _reddit_breaker_snapshot()' in run_src
+
+
+def test_status_endpoint_exposes_reddit_circuit(client):
+    """The live endpoint, not just _status: the first deploy dropped the field
+    because IngestStatusResponse did not declare it."""
+    from services import ingestor
+    circuit = {"arctic_shift": {
+        "state": "open", "trips": 1, "short_circuited": 42, "consecutive_failures": 5,
+        "opened_at": "2026-10-10T16:12:00+00:00", "last_error": "HTTP 522"}}
+    prior_last = ingestor._status.get("last_run_at")
+    ingestor._status.update(is_running=True, reddit_circuit=circuit,
+                            last_run_at="2026-10-10T16:09:26+00:00")
+    try:
+        body = client.get("/api/ingest/status").json()
+        assert body["reddit_circuit"] == circuit
+    finally:
+        ingestor._status.update(is_running=False, reddit_circuit={},
+                                last_run_at=prior_last)
+    body = client.get("/api/ingest/status").json()
+    assert body.get("reddit_circuit", None) is not None

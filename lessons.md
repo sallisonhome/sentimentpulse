@@ -15,6 +15,7 @@
 - A run-scoped client must stop calling a provider that is clearly down. Retry-per-request without a run-level breaker multiplies one outage by every subreddit and every comment thread.
 - Only count failures that mean "unreachable" (timeouts, connection errors, 5xx). A provider that answers 4xx/422/429 is reachable and must not trip an outage breaker.
 - "Stuck" vs "slow": read `ingest_phase end ... elapsed_s` per step before blaming volume. Compare a quiet title against the hot one.
+- A new `_status` field is invisible until `schemas.IngestStatusResponse` declares it (the endpoint builds the response model and drops unknown keys). PR #245 shipped `reddit_circuit` without it; the follow-up added the field and an endpoint-level test. Test new status fields through `GET /api/ingest/status`, not only `_status`.
 
 ## 2026-10-09 — Inherited concept pools: new listings must not bootstrap lifetime ratings onto launch windows
 
