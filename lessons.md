@@ -1,5 +1,21 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-10 — A provider outage turned every Reddit read into a 35 s wait (Arctic Shift 522 / ReadTimeout)
+
+**What happened.** The 05:45 ET ingest started on time but had finished 8 of 49 games after 4.5 h, so it looked stuck. The run was not hung. Per-step `ingest_phase end` timings in the journal showed Steam and Bluesky taking seconds, while `_step4a_reddit_comments` took 5,157 s for Tempest Rising (no launch) and 5,244 s for Hellraiser: Revival (launch week). Near-identical times for a quiet title and a launching one ruled out volume. Three py-spy dumps were all in `reddit_transport.fetch_json` waiting on Arctic Shift. Direct probes returned Cloudflare HTTP 522 after ~19 s on both `/api/posts/search` and `/api/comments/search`. Each failed read cost ~35 s (two 15 s attempts + 5 s cooldown), and the journal showed ~17 timeouts per 10 minutes from 09:40 to 13:50 UTC. The 7.5 h hard stop is only checked between games, and the live counters only move after a game, so nothing surfaced the outage.
+
+**Fix (PR: fix/reddit-provider-circuit-breaker).**
+1. `reddit_transport`: a per-run, per-provider circuit breaker inside `fetch_json`. After `BREAKER_THRESHOLD` (5) consecutive outage-class failures (timeout, connection error, HTTP 5xx including Cloudflare 520-524), the provider is open: requests raise `CircuitOpen` (an `UpstreamFailure`) with no network call. Reachable-but-unhappy answers (4xx, 422, 429, bad schema) reset the streak and never trip it; a local pacing cooldown is neutral. After `BREAKER_COOLDOWN_S` (900 s) one probe runs: success closes it, failure reopens it. Cache hits are still served. Outside an ingest run there is no breaker.
+2. Callers are unchanged: a skipped read is an ordinary upstream failure, so listings stay "incomplete, cursor not advanced" and the gist/PullPush fallbacks still run (PullPush has its own breaker).
+3. `_step4a_reddit_comments` stops at the first open check with one error line (`skipped N of M parent(s); retry on next run`) instead of one per parent.
+4. `_status["reddit_circuit"]` is updated after every game and persisted in the run snapshot. A run-level `[Step 4] Reddit provider ... circuit breaker tripped` error makes Reddit health `partial`. Settings shows "Reddit provider outage during this run: Arctic Shift unreachable (N request(s) skipped, last error ...). Cursors were not advanced; the next run retries."
+5. Live probe on the branch against the real outage: 20 comment reads took 175.6 s in total. The first 5 took 35 s each and the next 15 took 0 s, with 10 network requests instead of 40.
+
+**Rules.**
+- A run-scoped client must stop calling a provider that is clearly down. Retry-per-request without a run-level breaker multiplies one outage by every subreddit and every comment thread.
+- Only count failures that mean "unreachable" (timeouts, connection errors, 5xx). A provider that answers 4xx/422/429 is reachable and must not trip an outage breaker.
+- "Stuck" vs "slow": read `ingest_phase end ... elapsed_s` per step before blaming volume. Compare a quiet title against the hot one.
+
 ## 2026-10-09 — Inherited concept pools: new listings must not bootstrap lifetime ratings onto launch windows
 
 Two PS5 rows went absurd on the same day the boards picked them up: **Mafia III:

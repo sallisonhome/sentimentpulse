@@ -328,6 +328,17 @@ export interface IngestStatus {
   max_attempts?: number
   prior_attempt_status?: string | null
   prior_attempt_error?: string | null
+  // Reddit provider circuit breakers tripped this run (2026-10-10)
+  reddit_circuit?: Record<string, RedditCircuit>
+}
+
+export interface RedditCircuit {
+  state: 'open' | 'half_open' | 'closed' | string
+  trips: number
+  short_circuited: number
+  consecutive_failures: number
+  opened_at: string | null
+  last_error: string | null
 }
 
 export interface IngestRunResult {
