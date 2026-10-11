@@ -33,7 +33,7 @@ export type ConsoleNativeModelGuard = {
   policyVersion: string;
 };
 
-export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = [
+const guardsRegistry: ConsoleNativeModelGuard[] = [
   {
     // The Last of Us Part I (PS5). Native estimator d30 (backfill-observed-pace
     // on the PS5 rating-pool delta) was ~130K units / ~$7.3M; the Steam × 9.0
@@ -58,9 +58,40 @@ export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = [
   },
 ];
 
+export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = guardsRegistry;
+
 const guardIndex = new Map<string, ConsoleNativeModelGuard>();
 for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
   for (const w of g.windows) guardIndex.set(`${g.titleId}|${g.platform}|${w}`, g);
+}
+
+/**
+ * Rebuilds the guard index from the current CONSOLE_NATIVE_MODEL_GUARDS array.
+ * Used by route-level tests to drive a widened window scope in-process without
+ * editing the production registry. Production code never mutates the registry.
+ */
+export function rebuildGuardIndex(): void {
+  guardIndex.clear();
+  for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
+    for (const w of g.windows) guardIndex.set(`${g.titleId}|${g.platform}|${w}`, g);
+  }
+}
+
+/**
+ * Test-only hook: replace the guard registry with a widened-scope copy and
+ * rebuild the index. Returns a restore function that must be called in a
+ * finally block. Production code never calls this.
+ */
+export function widenGuardScopeForTest(windows: readonly string[]): () => void {
+  const original = guardsRegistry.slice();
+  guardsRegistry.length = 0;
+  guardsRegistry.push(...original.map((g) => ({ ...g, windows })));
+  rebuildGuardIndex();
+  return () => {
+    guardsRegistry.length = 0;
+    guardsRegistry.push(...original);
+    rebuildGuardIndex();
+  };
 }
 
 /**
