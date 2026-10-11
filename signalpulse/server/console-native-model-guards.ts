@@ -35,7 +35,7 @@ export type ConsoleNativeModelGuard = {
 
 export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = [
   {
-    // The Last of Us Part I (PS5) — released 2022-09-02, a 4-year-old
+    // The Last of Us Part I (PS5) — an aged
     // first-party title. The native estimator's own d30 is ~130K units /
     // ~$7.3M (backfill-observed-pace on the PS5 rating-pool delta, which
     // grows only ~100/day against a 145K pool that predates the window).
@@ -45,12 +45,12 @@ export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = [
     titleId: 11188,
     platform: "ps5",
     windows: ["d7", "d30", "d90", "m12", "ltd"],
-    reason: "aged first-party PS5 row (2022-09-02); Steam×9 IP override inflated d30 from native ~130K units to 609K units",
+    reason: "aged first-party PS5 row; Steam×9 IP override inflated d30 from native ~130K units to 609K units",
     policyVersion: "native_model_guard_v1",
   },
   {
-    // The Last of Us Part II Remastered (PS5) — remaster of a 2020 title,
-    // released 2024-01-19. Same aged-first-party profile: a PS5 rating pool
+    // The Last of Us Part II Remastered (PS5) — remaster of an older title.
+    // Same aged-first-party profile: a PS5 rating pool
     // of ~310K growing ~100/day, consistent with a shared PSN concept pool
     // (the PS5 and PS4 SKUs share the concept). The native estimator's own
     // d30 is ~163K units / ~$6.5M; the IP override reduced the served row
@@ -60,7 +60,7 @@ export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = [
     titleId: 11179,
     platform: "ps5",
     windows: ["d7", "d30", "d90", "m12", "ltd"],
-    reason: "aged first-party PS5 remaster (2024-01-19); Steam×9 IP override replaced native ~163K d30 units with 57K units",
+    reason: "aged first-party PS5 remaster; Steam×9 IP override replaced native ~163K d30 units with 57K units",
     policyVersion: "native_model_guard_v1",
   },
 ];
