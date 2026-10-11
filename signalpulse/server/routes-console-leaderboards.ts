@@ -114,6 +114,7 @@ export { editionGroupKey } from "./console-sales-family";
 import { editionGroupKey } from "./console-sales-family";
 import { detectReviewSurge, SURGE_WINDOWS, REVIEW_SURGE_VERSION } from "./steam-review-surge";
 import { overlayExceedsPublicCeiling, steamPublicCapRatio, publicCeilingFor } from "./console-public-ceilings";
+import { nativeModelGuardFor } from "./console-native-model-guards";
 import { applyChartConsistency, chartModeFromEnv } from "./console-chart-consistency";
 import { readDeepRankByTitle } from "./signals/console/deepChartStore";
 
@@ -1264,6 +1265,20 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           // Final unit reconciliation below returns null when ASP is unknown.
           if (consoleRatio != null) {
             const gk = (g.editionGroupKey as string | undefined) ?? "";
+            // Read-side native-model guard (2026-10-11): for the explicitly
+            // listed aged first-party rows, a franchise-mix Steam-ratio is not
+            // a better bound than the estimator's own output. Skip the
+            // Steam-anchored derivation entirely and keep the native revenue
+            // AND units (the console-exclusive fall-through below). A verified
+            // anchor or per-title override still wins above this point.
+            const nativeGuard = nativeModelGuardFor(g.familyTitleIds as number[] | undefined, platform, win);
+            if (nativeGuard) {
+              g.dataSource = "native_model_guarded";
+              g.revenueCaveat = nativeGuard.reason;
+              g.nativeModelGuard = { version: nativeGuard.policyVersion, reason: nativeGuard.reason };
+              pathBSkippedNoSteam++;
+              continue;
+            }
             const s = gk.length >= 2 ? steamRevenueByKey.get(gk) : undefined;
             // Steam-anchored derivation requires a MEANINGFUL Steam revenue.
             // PS5-exclusive Sony IPs (e.g. Gran Turismo 7) have no Steam SKU

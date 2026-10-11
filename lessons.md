@@ -1,5 +1,82 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-11 — Read-side IP override vs. the native estimator: aged first-party PS5 rows must not have their estimator output replaced by a Steam×9 franchise ratio
+
+The Sony first-party IP override in `routes-console-leaderboards.ts` Path B
+(The Last of Us → PS5 90 / Steam 10, factor 9.0) fires on every board read
+and replaces the native PS5 estimator's own output. For two aged rows the
+observed effect was material: **The Last of Us Part I (11188, PS5)** —
+native d30 ~130K units / ~$7.3M (backfill-observed-pace on the PS5
+rating-pool delta) was replaced by 609,449 units / $34.1M on the served
+board (verified 2026-10-11, d30); **The Last of Us Part II Remastered
+(11179, PS5)** — the Steam×9 override replaced the native ~163K d30
+units with 57K units after the chart-consistency pass moved the derived
+number further down (verified 2026-10-11, d30). Both PS5 rating pools are
+large and slow-moving (145K and 310K, growing ~100/day), consistent with
+shared PSN concept pools — plausible, but the PS4 SKU contribution is
+UNVERIFIED. The user called it "make the fix for these last of us SKUs
+durable going forward like an anchor so that this doesn't keep getting
+overridden based on number of ratings given its age as a title".
+
+**Root cause:** the IP override is a franchise-wide platform-mix heuristic,
+not a per-title sales estimate. It silently replaces the estimator's own
+output with a number whose only support is a mix ratio and an
+MSRP × ASP-factor. No `title_multiplier_overrides` row or verified
+anchor exists for either title (confirmed 2026-10-11, /tmp/tlou-anchors.txt),
+so nothing blocks it for these rows. Whether an earlier TLOU-specific
+correction ever existed in git history was searched and not found — that is
+absence-of-evidence, not proof of absence.
+
+**Fix (PR #247):** scoped operator guard in
+`signalpulse/server/console-native-model-guards.ts`. The
+`(title_id, platform, window)` triples 11188/ps5 and 11179/ps5 (d7 and d30
+only — the two windows whose served values were inspected) skip Path B's
+Steam-anchored derivation and keep the native estimator revenue AND units,
+tagged `dataSource='native_model_guarded'` with an explicit `revenueCaveat`
+reason. Verified anchors still win above this point; the estimator ladder and
+every other title (including other Sony first-party IPs) are untouched.
+Wider windows (d90, m12, ltd) are deliberately OUT of scope until their
+baselines are validated the same way.
+
+**Not verified (do not claim it again):**
+- PS4 SKU inclusion in either PS5 rating pool is plausible but unconfirmed.
+  The guard file previously asserted "the PS5 and PS4 SKUs share the concept"
+  — that was inferred, not proven, and has been removed.
+- No `title_multiplier_overrides` row or `revenue_calibration_anchors` entry
+  exists for either title (confirmed 2026-10-11, /tmp/tlou-anchors.txt). That
+  proves nothing about whether an earlier correction ever existed in git —
+  no such commit was found, but that is absence-of-evidence.
+- Whether `protectedModel` fully governs Path B is not established from the
+  code shown; the Path A/FC-family branches it demonstrably gates are not
+  the Steam-ratio derivation.
+
+**Rules going forward:**
+1. **A franchise-mix Steam ratio is not a bound for aged first-party rows.**
+   The Steam×N IP override is a platform-mix heuristic, not a per-title
+   estimate — it can replace the native estimator's own output by a large
+   multiple in either direction. Confirm the native baseline is the right
+   baseline before protecting it; "not inflated" is not the same as
+   "accurate."
+2. **Scoped read-side guards, not estimator-wide changes.** The durable fix
+   is a `(title_id, platform, window)`-keyed operator guard consulted at
+   exactly one decision point (Path B entry), zero effect on every other
+   title. Matches the bootstrap-guards precedent (PR #243).
+3. **Scope the guard to the windows you actually verified.** Guarding
+   `ltd`/`m12`/`d90` without validating those baselines preserves whatever
+   the SQL selected — including a wider-window cascade presented as the
+   requested window. Extend a guard only after the wider-window served
+   value is inspected.
+4. **Read-side fixes are not validated by estimator preview.** Path B is a
+   read-time overlay: `estimate-preview` measures the estimator only, so it
+   shows nothing. Verification is a live-board before/after comparison
+   across the affected windows and platforms. Later read-side passes
+   (chart consistency, public ceilings, daily mix) are NOT blocked by the
+   guard, so the final served value is not guaranteed to equal the raw
+   estimator value.
+5. **Do not label a guarded native estimate as an actual.** The guarded row
+   keeps `estimateMethod` (e.g. `backfill-observed-pace`) and gains
+   `dataSource='native_model_guarded'` + `revenueCaveat` reason — it is
+
 ## 2026-10-10 — A provider outage turned every Reddit read into a 35 s wait (Arctic Shift 522 / ReadTimeout)
 
 **What happened.** The 05:45 ET ingest started on time but had finished 8 of 49 games after 4.5 h, so it looked stuck. The run was not hung. Per-step `ingest_phase end` timings in the journal showed Steam and Bluesky taking seconds, while `_step4a_reddit_comments` took 5,157 s for Tempest Rising (no launch) and 5,244 s for Hellraiser: Revival (launch week). Near-identical times for a quiet title and a launching one ruled out volume. Three py-spy dumps were all in `reddit_transport.fetch_json` waiting on Arctic Shift. Direct probes returned Cloudflare HTTP 522 after ~19 s on both `/api/posts/search` and `/api/comments/search`. Each failed read cost ~35 s (two 15 s attempts + 5 s cooldown), and the journal showed ~17 timeouts per 10 minutes from 09:40 to 13:50 UTC. The 7.5 h hard stop is only checked between games, and the live counters only move after a game, so nothing surfaced the outage.
@@ -17,6 +94,8 @@
 - "Stuck" vs "slow": read `ingest_phase end ... elapsed_s` per step before blaming volume. Compare a quiet title against the hot one.
 - A new `_status` field is invisible until `schemas.IngestStatusResponse` declares it (the endpoint builds the response model and drops unknown keys). PR #245 shipped `reddit_circuit` without it; the follow-up added the field and an endpoint-level test. Test new status fields through `GET /api/ingest/status`, not only `_status`.
 
+
+   explicitly a protected estimate, never a verified actual.
 ## 2026-10-09 — Inherited concept pools: new listings must not bootstrap lifetime ratings onto launch windows
 
 Two PS5 rows went absurd on the same day the boards picked them up: **Mafia III:
