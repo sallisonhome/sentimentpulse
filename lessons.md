@@ -1,5 +1,98 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-12 — LTD capped at the age-covering window for titles under 12 months old
+
+**Symptom.** 47 (title, platform) LTD rows on 2026-10-12 exceeded their
+age-covering window's units_mid (the window that covers the title's whole time
+in market: 0-7d -> d7, 8-30d -> d30, 31-90d -> d90, 91-365d -> m12). Worst
+cases: 10676 PS5 at 62.7M LTD vs a 185K m12, 10006 Steam at 28.4M vs a 995K d90,
+10230 Xbox at 6.7M vs a 290K m12. Four of the 47 are anchored titles and are
+exempt by rule (user: anchored values stay untouched).
+
+**Cause.** `derived_max_windows` in `scripts/estimate-console-units.ts` (regime 2
+of the LTD accumulator) takes `max(d7, d30, d90, m12, naiveLtd, state.ltd_units)`.
+It is a monotonic lifetime floor with no ceiling and no notion of title age, so
+a stale state carry-forward or a runaway naive LTD compounding over days can
+inflate LTD well past any window the title can actually have sold in.
+
+**Fix.** A new pure helper (`scripts/ltd-age-cap.ts`) computes the age-covering
+window from the estimator's own effective release precedence
+(`COALESCE(release_date, store_release_date)` unless `match_confidence='low'`).
+Regime 2 now caps `newLtdUnits` at that window's `units_mid` when the row is
+ungated and non-null. Rules:
+
+1. Only ever lowers. A cap is applied only when `newLtdUnits > cap`; it never
+   raises an LTD.
+2. Titles with any `revenue_calibration_anchors` row are exempt.
+3. Per-title multiplier overrides are untouched (they take regime 1, not
+   regime 2).
+4. A gated or missing age-window row yields no cap (LTD keeps its prior
+   value); that case is reported as unresolved, not silently compliant.
+5. `title_ltd_state` is written from the same capped value, so a single
+   estimator apply repairs the stored LTD row and the carried state together
+   without a separate correction workflow. This also means a capped value can
+   LOWER a previously high state — that is a restatement, not negative sales.
+6. The estimator only writes today's `as_of_date`. Historical LTD rows keep
+   their inflated values; rewriting them is a separate, currently unjustified
+   correction.
+
+**Method tag.** `derived_max_windows_age_cap` is appended to the LTD row's
+method only when the cap fires, so the affected set is queryable.
+
+**GoW E-Day (11340) is NOT fixed by this.** Its stored d7/d30/d90/m12 are all
+~1.5M, so the cap does not fire. The underlying problem for that title is that
+its d7 window itself is inflated (the Steam-derived read-side replacement is
+the correct ~87,790); fixing it requires changing d7, which the user forbade
+this change from doing. Reported separately as a follow-up.
+
+**Tests.** Unit tests for the age mapping and the gate cases (gated, missing,
+null age, >=366d, negative age), plus an integration test that runs the real
+estimator on a fixture DB and asserts the cap lands, the state carry-forward
+no longer re-inflates it, and an anchored title is exempt. Full `npm test`
+suite green.
+
+## 2026-10-12 — The PDP "Estimated daily revenue" chart diffed a lifetime floor, not a per-day sales signal
+
+The console title PDP's "Estimated daily revenue · all platforms" card was
+removed (PR #256, head e094016, merged to a1c943c, deployed 2026-10-12).
+Its backend endpoint `/api/console/titles/:titleId/revenue-daily` is kept —
+the six route-test suites that exercise it (launch-week, daily-anchored-gap-fill,
+daily-gap-allocation, chart-multi-listing, ratio-step-guards, console-daily-mix)
+remain green. Only the frontend mount is gone.
+
+**Root cause:** the chart computed daily revenue as a day-over-day diff of the
+raw `window_estimates_daily.units_mid` where `window='ltd'`. For titles under
+366 days, LTD uses the `derived_max_windows` regime —
+`ltd_units = max(units[d7], units[d30], units[d90], units[m12], row.unitsMid,
+existing state.ltd_units)` — a monotonic lifetime floor, not a per-day sales
+rate. Diffing it produces cartoon-scale spikes whenever the floor jumps.
+
+**Observed (2026-10-12, GoW E-Day 11340 Xbox):** stored LTD units
+2026-10-07→12 were 152,553 → 762,767 → 1,057,583 → 1,298,663 → 1,513,283;
+the chart's Xbox daily revenue on 2026-10-08 was **$34.2M**; the served d30
+board answer for the same title was **87,790 units / $5.09M**. Chart 5-10x the
+estimator's own window answer. `outlierSuppressed` caught bootstrap→accumulator
+method flips, not a slow compounding drift in the floor.
+
+**Why removal, not recompute:** the operator decided on 2026-10-12 that rebuilding
+the chart from a decay curve summing to the served window total would require an
+estimator change, which is out of scope. The estimator / read-side passes /
+anchors were deliberately left untouched. The endpoint is retained so any future
+re-implementation can build on it without re-deriving the endpoint contract.
+
+**Rules going forward:**
+1. **Do not diff a lifetime floor to get a per-day rate.** A monotonic max-of-windows
+   floor guarantees LTD ≥ every measured window; it is not evidence of a 24h
+   sales event. Any daily-series derivation needs its own signal (dated review /
+   rating activity, chart rank, CCU), not a lifetime accumulator diff.
+2. **If a chart disagrees with the served board, the chart is the bug.** The served
+   d7/d30 answer is the estimator's own output for those windows; a daily chart
+   that sums to more than the served LTD is not a rounding artifact.
+3. **Removing a surface, not a data path, is a valid fix.** When the data source is
+   structurally wrong for the question, dropping the UI card is lower-risk than
+   an estimator change that affects every title. Backend endpoint + tests stay
+   intact so a future fix can be built incrementally.
+
 ## 2026-10-11 — Read-side IP override vs. the native estimator: aged first-party PS5 rows must not have their estimator output replaced by a Steam×9 franchise ratio
 
 The Sony first-party IP override in `routes-console-leaderboards.ts` Path B
