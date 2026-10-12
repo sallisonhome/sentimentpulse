@@ -1,0 +1,53 @@
+name: SP Set TikTok EnsembleData Token
+# One-off: PUT the EnsembleData token into SignalPulse's
+# /api/settings/tiktok_ensemble_token on the droplet. The token value
+# never appears in the workflow YAML or in any log — it is passed
+# via the GitHub Actions repository secret `ENSEMBLEDATA_TOKEN` (set by
+# the orchestrator right before dispatch), and only the "done" message
+# is echoed back.
+on:
+  workflow_dispatch:
+jobs:
+  set-token:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Set token
+        env:
+          ENSEMBLEDATA_TOKEN: ${{ secrets.ENSEMBLEDATA_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ENSEMBLEDATA_TOKEN" ]; then
+            echo "ERROR: ENSEMBLEDATA_TOKEN secret not set"
+            exit 1
+          fi
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -euo pipefail
+            # Read the token from stdin so it never lands in `ps` output
+            # or in any shell variable visible to a log.
+            TOK="$(cat)"
+            if [ -z "$TOK" ]; then
+              echo "ERROR: token was empty"
+              exit 1
+            fi
+            # PUT it into the SignalPulse settings API (not SentimentPulse's)
+            status=$(curl -sS -o /dev/null -w "%{http_code}" -X PUT \
+              http://127.0.0.1:5000/api/settings/tiktok_ensemble_token \
+              -H "Content-Type: application/json" \
+              --data-binary "$(python3 -c 'import json,sys; print(json.dumps({"value": sys.stdin.read()}))' <<< "$TOK")")
+            echo "HTTP status: $status"
+            # Read back masked to verify it saved (never prints the value)
+            python3 -c "
+import json, urllib.request
+r = urllib.request.urlopen('http://127.0.0.1:5000/api/settings/tiktok_ensemble_token')
+d = json.loads(r.read())
+print('isSet:', d.get('isSet'))
+print('isSecret:', d.get('isSecret'))
+print('valueMasked:', d.get('value'))
+"
+          EOF <<< "$ENSEMBLEDATA_TOKEN"
