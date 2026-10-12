@@ -74,17 +74,13 @@ export function useUpdateGameSettings(gameId: number) {
   return useMutation({
     mutationFn: (data: { subreddits?: string[]; is_active?: boolean; commercial_context?: string }) =>
       api.patch(`/games/${gameId}`, data).then(r => r.data),
-    onSuccess: async () => {
-      await queryClient.refetchQueries({ queryKey: ['games'] })
-    },
-  })
-}
-
-/** Toggle per-title TikTok comment ingestion. Independent from SignalPulse. */
-export function useUpdateGameTiktok(gameId: number) {
-  return useMutation({
-    mutationFn: (data: { enabled: boolean }) =>
-      api.patch(`/games/${gameId}/tiktok-comments`, data).then(r => r.data),
+    // v0025 (2026-08-24): use refetchQueries + await so the fresh list
+    // is guaranteed to be in the cache before the mutation resolves.
+    // invalidateQueries alone marks queries stale and schedules a
+    // background refetch, but the currently-mounted <TopBar> dropdown
+    // was continuing to render its stale `games` array in the window
+    // between the toast "Saved" and the refetch settling. Awaiting a
+    // refetch closes that window.
     onSuccess: async () => {
       await queryClient.refetchQueries({ queryKey: ['games'] })
     },

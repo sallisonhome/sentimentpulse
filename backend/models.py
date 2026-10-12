@@ -25,7 +25,6 @@ class SourceEnum(str, enum.Enum):
     # Hellraiser thread instead of 'Hellraiser: Revival is great').
     reddit_comment = "reddit_comment"
     youtube_comment = "youtube_comment"
-    tiktok_comment = "tiktok_comment"
     bluesky = "bluesky"
     # DTF.ru — Russian-language gaming forum. Added 2026-07-26 to capture
     # Russian-language discussion of Team Clout's ILL (developer is Russian

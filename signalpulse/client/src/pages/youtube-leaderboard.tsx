@@ -336,7 +336,7 @@ export default function YoutubeLeaderboard() {
                         aria-label={`Show videos for ${r.title}`} data-testid={`btn-yt-expand-${r.titleId}`}>
                         {open === r.titleId ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
                       </button>
-                      <Link href={`/titles/${r.titleId}`} className="flex items-center gap-2 text-left font-medium hover:underline" data-testid={`link-yt-title-${r.titleId}`}>
+                      <Link href={`/youtube/titles/${r.titleId}`} className="flex items-center gap-2 text-left font-medium hover:underline" data-testid={`link-yt-title-${r.titleId}`}>
                         {r.headerImageUrl && <img src={r.headerImageUrl} alt="" className="h-6 w-[52px] rounded object-cover shrink-0" loading="lazy"
                           onError={(e) => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />}
                         <span className="break-words">{r.title}</span>
