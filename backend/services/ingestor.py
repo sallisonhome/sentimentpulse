@@ -69,6 +69,7 @@ from services.topic_service import (
 )
 from services.post_relevance import is_post_relevant_to_game
 from services.youtube_service import import_enabled as youtube_import_enabled, import_game_comments, comment_is_focused as youtube_comment_is_focused
+from services.tiktok_service import import_enabled_for_game as tiktok_import_enabled_for_game, import_game_comments as tiktok_import_game_comments, comment_is_focused as tiktok_comment_is_focused
 
 logger = logging.getLogger(__name__)
 
@@ -1036,6 +1037,36 @@ def run_ingestion(skip_sources: Optional[set[str]] = None, *,
                     _status["youtube_health"] = "failed"
                     # The transport never includes credentials in these messages.
                     msg = f"[YouTube] game_id={_game_id(game)}: {type(exc).__name__}: {exc}"
+                    errors.append(msg)
+                    log_lines.append(msg)
+
+        # TikTok feed is also collected by SignalPulse. Import only for
+        # Games whose per-title tiktok_comment_enabled:<game_id> flag is on
+        # (falls back to tiktok_comment_enabled global). Independent from
+        # SignalPulse's own tt_titles.enabled collection flag. Disabled until
+        # configured and deployment-approved.
+        if "tiktok_comment" not in skip_sources:
+            _status["tiktok_health"] = "ok"
+            for game in active_games:
+                if not tiktok_import_enabled_for_game(db, game):
+                    continue
+                try:
+                    tt_result = tiktok_import_game_comments(db, game)
+                    per_game_posts[game.id] = per_game_posts.get(game.id, 0) + tt_result["inserted"]
+                    log_lines.append(f"[TikTok] game_id={game.id}: {tt_result}")
+                    _status["tiktok_fetched_total"] += tt_result["fetched"]
+                    if not tt_result["complete"]:
+                        if _status["tiktok_health"] != "failed":
+                            _status["tiktok_health"] = "degraded"
+                        errors.append(
+                            f"[TikTok] game_id={game.id}: "
+                            f"{tt_result.get('stop_reason', 'page_budget')} reached; "
+                            "current snapshot incomplete, will resume"
+                        )
+                except Exception as exc:
+                    db.rollback()
+                    _status["tiktok_health"] = "failed"
+                    msg = f"[TikTok] game_id={_game_id(game)}: {type(exc).__name__}: {exc}"
                     errors.append(msg)
                     log_lines.append(msg)
 

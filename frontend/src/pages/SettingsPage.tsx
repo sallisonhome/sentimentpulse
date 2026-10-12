@@ -124,6 +124,7 @@ export function degradedSources(status: IngestStatus): string[] {
   check('Steam reviews', status.steam_review_health)
   check('Steam forums', status.steam_forum_health)
   check('YouTube', status.youtube_health)
+  check('TikTok', status.tiktok_health)
   return out
 }
 
@@ -239,6 +240,11 @@ export default function SettingsPage() {
                   label="YouTube comments"
                   health={ingestStatus.youtube_health}
                   fetched={ingestStatus.youtube_fetched_total}
+                />
+                <SourceHealthRow
+                  label="TikTok comments"
+                  health={ingestStatus.tiktok_health}
+                  fetched={ingestStatus.tiktok_fetched_total}
                 />
               </div>
               <Button
