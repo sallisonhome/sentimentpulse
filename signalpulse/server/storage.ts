@@ -3463,6 +3463,13 @@ export class DatabaseStorage implements IStorage {
       { key: "sony_api_key", label: "Sony Partner Portal API Key", category: "api_keys", isSecret: true },
       { key: "sony_partner_id", label: "Sony Partner ID", category: "api_keys", isSecret: false },
       { key: "youtube_api_key", label: "YouTube Data API Key", category: "api_keys", isSecret: true },
+      // TikTok Pulse (2026-10-12): EnsembleData token powers TikTok discovery /
+      // stats / comments via the EnsembleData /tt/ endpoints (daily cron at
+      // 04:30 America/New_York). Same Settings-page-managed, isSecret=true,
+      // empty-default pattern as youtube_api_key. Runtime reader is
+      // routes-tiktok.ts tiktokEnsembleToken(); falls back to process.env.ED_TOKEN
+      // for local dev.
+      { key: "tiktok_ensemble_token", label: "EnsembleData API Key (TikTok Pulse)", category: "api_keys", isSecret: true },
       { key: "perplexity_api_key", label: "Perplexity API Key", category: "api_keys", isSecret: true },
       { key: "twitch_client_id", label: "Twitch Client ID (IGDB)", category: "api_keys", isSecret: false },
       { key: "twitch_client_secret", label: "Twitch Client Secret (IGDB)", category: "api_keys", isSecret: true },

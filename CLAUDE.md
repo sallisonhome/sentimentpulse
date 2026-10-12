@@ -907,6 +907,7 @@ The same reasoning applies to any other new free/public developer API key being 
 | `sony_api_key`                     | Sony Partner Portal API       | yes     |
 | `sony_partner_id`                  | Sony Partner ID               | no      |
 | `youtube_api_key`                  | YouTube Data API              | yes     |
+| `tiktok_ensemble_token`            | EnsembleData (TikTok Pulse)   | yes     |
 | `perplexity_api_key`               | Perplexity Sonar API          | yes     |
 | `twitch_client_id`                 | Twitch/IGDB Client ID         | no      |
 | `twitch_client_secret`             | Twitch/IGDB Client Secret     | yes     |
