@@ -29,39 +29,40 @@ jobs:
           WINDOW_DAYS: ${{ github.event.inputs.windowDays }}
         run: |
           set -euo pipefail
-          # Build the JSON body locally (titleIds as array)
-          TITLES_JSON=$(echo "$TITLE_IDS" | tr ',' '\n' | sed 's/^ *//' | grep -v '^$' | jq -R . | jq -s . | jq -c .)
-          BODY=$(jq -n --argjson titleIds "$TITLES_JSON" --argjson windowDays "$WINDOW_DAYS" \
-            '{titleIds: $titleIds, windowDays: $windowDays}')
-          echo "Body: $BODY"
-          # SSH to the droplet and trigger the backfill with auth from the DB
-          # (app_password read inside the SSH session, never printed)
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 \
-            "TITLES_JSON='$TITLES_JSON' WINDOW_DAYS='$WINDOW_DAYS' bash -s" <<'REMOTE'
-            set -euo pipefail
-            # Read app_password from the DB (never echo it) — use the same
-            # dynamic path resolution as signalpulse-db-admin.yml
-            DB_PATH=$(systemctl show -p WorkingDirectory --value signalpulse)/data.db
-            APP_PW=$(sqlite3 "$DB_PATH" "SELECT value FROM app_settings WHERE key = 'app_password'")
-            if [ -z "$APP_PW" ]; then
-              echo "ERROR: app_password not set in DB"
-              exit 1
-            fi
-            # Verify and capture the session cookie (never echo the password)
-            COOKIE=$(curl -sS -i -X POST http://127.0.0.1:5000/api/auth/verify \
-              -H "Content-Type: application/json" \
-              -d "{\"password\": \"$APP_PW\"}" | grep -i "^set-cookie:" | head -1 | sed 's/^set-cookie: //i' | cut -d';' -f1)
-            unset APP_PW
-            if [ -z "$COOKIE" ]; then
-              echo "ERROR: auth verify did not return a session cookie"
-              exit 1
-            fi
-            # POST the backfill with the session
-            echo "Triggering backfill..."
-            curl -sS -X POST http://127.0.0.1:5000/api/tiktok/ops/backfill \
-              -H "Content-Type: application/json" \
-              -H "Cookie: $COOKIE" \
-              -d "{\"titleIds\": $TITLES_JSON, \"windowDays\": $WINDOW_DAYS}"
-            echo ""
-            unset COOKIE
+          # Build the JSON array of title IDs locally (numbers only, safe)
+          TITLES_JSON=$(echo "$TITLE_IDS" | tr ',' '\n' | sed 's/^ *//' | grep -v '^$' | jq -R . | jq -s -c .)
+          echo "TITLES_JSON: $TITLES_JSON"
+          # SSH to the droplet; the heredoc is UNQUOTED so $TITLES_JSON and
+          # $WINDOW_DAYS are interpolated on the runner side. Remote-side
+          # shell vars are escaped with \$ so they only expand on the droplet.
+          # TITLE_IDS/WINDOW_DAYS are digits+commas only — no injection risk.
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 bash -s <<REMOTE
+          set -euo pipefail
+          TITLES_JSON='$TITLES_JSON'
+          WINDOW_DAYS=$WINDOW_DAYS
+          # Read app_password from the DB (never echo it) — same dynamic path
+          # resolution as signalpulse-db-admin.yml
+          DB_PATH=\$(systemctl show -p WorkingDirectory --value signalpulse)/data.db
+          APP_PW=\$(sqlite3 "\$DB_PATH" "SELECT value FROM app_settings WHERE key = 'app_password'")
+          if [ -z "\$APP_PW" ]; then
+            echo "ERROR: app_password not set in DB"
+            exit 1
+          fi
+          # Verify and capture the session cookie (never echo the password)
+          COOKIE=\$(curl -sS -i -X POST http://127.0.0.1:5000/api/auth/verify \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"\$APP_PW\"}" | grep -i "^set-cookie:" | head -1 | sed 's/^set-cookie: //i' | cut -d';' -f1)
+          unset APP_PW
+          if [ -z "\$COOKIE" ]; then
+            echo "ERROR: auth verify did not return a session cookie"
+            exit 1
+          fi
+          # POST the backfill with the session
+          echo "Triggering backfill..."
+          curl -sS -X POST http://127.0.0.1:5000/api/tiktok/ops/backfill \
+            -H "Content-Type: application/json" \
+            -H "Cookie: \$COOKIE" \
+            -d "{\"titleIds\": \$TITLES_JSON, \"windowDays\": \$WINDOW_DAYS}"
+          echo ""
+          unset COOKIE
           REMOTE
