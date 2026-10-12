@@ -13,6 +13,10 @@ on:
       sql:
         description: 'SQL to run (single statement, must be SELECT or PRAGMA)'
         required: true
+      db:
+        description: 'DB filename inside the signalpulse WorkingDirectory (default data.db)'
+        required: false
+        default: 'data.db'
       mode:
         description: 'Output format'
         required: false
@@ -41,6 +45,7 @@ jobs:
         env:
           SQL: ${{ github.event.inputs.sql }}
           MODE: ${{ github.event.inputs.mode }}
+          DB: ${{ github.event.inputs.db }}
         run: |
           set -e
           # Reject obvious writes. Loose but useful guard.
@@ -52,6 +57,6 @@ jobs:
           SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
           # Pass SQL via stdin so quoting is safe.
           # Resolve DB path from systemd WorkingDirectory (relative 'data.db' in storage.ts).
-          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/data.db\"")
+          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/${DB:-data.db}\"")
           echo "DB: $DB_PATH"
           printf '%s\n' "$SQL" | $SSH "cat > /tmp/q.sql && sqlite3 -header -${MODE:-column} \"$DB_PATH\" < /tmp/q.sql"
