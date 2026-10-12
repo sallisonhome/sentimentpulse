@@ -5,7 +5,7 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Switch } from '../ui/switch'
 import { Label } from '../ui/label'
-import { useUpdateGameSettings } from '../../hooks/useGames'
+import { useUpdateGameSettings, useUpdateGameTiktok } from '../../hooks/useGames'
 import { useAddCompetitor, useCompetitors, useRemoveCompetitor } from '../../hooks/useCompetitors'
 import { MAX_COMPETITORS_PER_PARENT } from '../../types'
 import type { Game } from '../../types'
@@ -40,12 +40,24 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
   const [commercialContext, setCommercialContext] = useState<string>(game.commercial_context ?? '')
   const [showBrief, setShowBrief] = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [tiktokComments, setTiktokComments] = useState<boolean>(!!game.tiktok_comment_enabled)
+  const [tiktokDirty, setTiktokDirty] = useState(false)
 
   const { mutate: save, isPending, error } = useUpdateGameSettings(game.id)
+  const { mutate: saveTiktok, isPending: tiktokPending } = useUpdateGameTiktok(game.id)
 
   function handleActiveToggle(checked: boolean) {
     setIsActive(checked)
     setDirty(true)
+  }
+
+  function handleTiktokToggle(checked: boolean) {
+    setTiktokComments(checked)
+    setTiktokDirty(true)
+  }
+
+  function handleSaveTiktok() {
+    saveTiktok({ enabled: tiktokComments }, { onSuccess: () => setTiktokDirty(false) })
   }
 
   function handleSave() {
@@ -74,6 +86,38 @@ export default function GameSettingsCard({ game }: GameSettingsCardProps) {
       </CardHeader>
 
       <CardContent className="space-y-4">
+        {/* TikTok comment collection — independent from SignalPulse's own
+            per-title tt_titles.enabled flag. Gates whether this Game's
+            TikTok comments enter SentimentPulse's RawPost table. */}
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <p className="text-xs font-medium">Collect TikTok Comments via EnsembleData</p>
+            <p className="text-[11px] text-muted-foreground">
+              Independent from SignalPulse's TikTok Pulse collection. Turning off
+              preserves history; it only stops new comment ingestion.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{tiktokComments ? 'On' : 'Off'}</span>
+            <Switch
+              checked={tiktokComments}
+              onCheckedChange={handleTiktokToggle}
+              data-testid={`tiktok-comment-toggle-${game.id}`}
+            />
+            {tiktokDirty && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={tiktokPending}
+                onClick={handleSaveTiktok}
+                data-testid={`tiktok-comment-save-${game.id}`}
+              >
+                Save
+              </Button>
+            )}
+          </div>
+        </div>
+
         {/* Tracked subreddits — owns its own state + save, scoped to this game's id */}
         <GameSubredditsEditor game={game} />
 

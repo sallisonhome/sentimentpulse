@@ -41,6 +41,7 @@ import { registerConsoleLeaderboardRoutes } from "./routes-console-leaderboards"
 import { registerDemosLeaderboardRoutes } from "./routes-demos-leaderboard";
 import { registerDemoDetailRoutes } from "./routes-demo-detail";
 import { registerYoutubeRoutes } from "./routes-youtube";
+import { registerTikTokRoutes } from "./routes-tiktok";
 import { registerReviewsRatingsRoutes } from "./routes-reviews-ratings";
 import { loadDashboardDemoDownloads } from "./signals/demos/dashboard";
 
@@ -161,6 +162,7 @@ export async function registerRoutes(
   registerDemosLeaderboardRoutes(app);
   registerDemoDetailRoutes(app);
   registerYoutubeRoutes(app);
+  registerTikTokRoutes(app);
   registerReviewsRatingsRoutes(app);
 
   // ─── Auth ──────────────────────────────────────────────────────────────────
