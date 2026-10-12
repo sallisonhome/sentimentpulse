@@ -26,9 +26,6 @@ export interface Game {
   subreddits: string[] | null
   /** CLAUDE.md §21 per-title commercial-strategic positioning brief. */
   commercial_context?: string | null
-  /** 2026-10-12 per-title TikTok comment ingestion (SentimentPulse).
-   *  Independent from SignalPulse's own tt_titles.enabled flag. */
-  tiktok_comment_enabled?: boolean
   created_at: string
 }
 
@@ -326,8 +323,6 @@ export interface IngestStatus {
   steam_forum_fetched_total?: number
   youtube_health?: SourceHealth | string
   youtube_fetched_total?: number
-  tiktok_health?: SourceHealth | string
-  tiktok_fetched_total?: number
   // Scheduled-retry visibility (2026-10-06)
   attempt?: number
   max_attempts?: number

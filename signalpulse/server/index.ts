@@ -7,8 +7,6 @@ import { startIngestionCron } from "./ingestion";
 import { startAmazonIngestionCron } from "./amazon-cron";
 import { startYoutubeCron } from "./youtube/cron";
 import { triggerYoutubeRun } from "./routes-youtube";
-import { startTikTokCron } from "./tiktok/cron";
-import { triggerTikTokRun } from "./routes-tiktok";
 import { startCcuPollScheduler } from "./ccu-poll";
 import { startIgdbMediaRefreshScheduler } from "./igdb";
 import { startRelatedGamesScheduler } from "./ccu-related";
@@ -130,11 +128,6 @@ app.get("/api/config", (_req, res) => {
   // retention, 04:30 America/New_York with same-day catch-up after restarts.
   // Separate youtube.db; runs retention only until youtube_api_key is set.
   startYoutubeCron((trigger) => triggerYoutubeRun(trigger));
-
-  // TikTok Pulse (2026-10-12): daily discovery / stats / comments / retention
-  // via EnsembleData, 04:30 America/New_York with same-day catch-up. Separate
-  // tiktok.db; runs retention only until the EnsembleData token is set.
-  startTikTokCron((trigger) => triggerTikTokRun(trigger));
 
   // Saber Steam CCU Leaderboard (2026-09-08): live CCU + Steam-global rank
   // poll for Saber's released Steam titles, top of every UTC hour (mirrors

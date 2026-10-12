@@ -60,9 +60,6 @@ class GameResponse(BaseModel):
     # 2026-09-18 Landing A: additional Steam appids grouped under this game
     # for ingest (demos, DLCs, region variants). See models.Game docstring.
     alias_steam_app_ids: Optional[list] = None
-    # 2026-10-12: per-title TikTok comment ingestion. Read from AppSetting
-    # tiktok_comment_enabled:<game_id>, not the Game model itself.
-    tiktok_comment_enabled: bool = False
     created_at: datetime
 
 
@@ -92,13 +89,6 @@ class GameSettingsUpdate(BaseModel):
     # validation rejects an alias appid that appears as any other game's
     # PRIMARY steam_app_id (would create a routing ambiguity).
     alias_steam_app_ids: Optional[List[int]] = None
-
-
-class GameTiktokCommentsUpdate(BaseModel):
-    """PATCH body for /games/<id>/tiktok-comments. Independent from SignalPulse
-    per-title tt_titles.enabled. Turning off preserves history; it only stops
-    new comment ingestion."""
-    enabled: bool
 
 
 class GameCreate(BaseModel):
