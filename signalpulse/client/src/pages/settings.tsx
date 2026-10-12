@@ -14,6 +14,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { SteamworksSessionSettings } from "@/components/steamworks-session-settings";
 import { ManualIngestionControls } from "@/components/manual-ingestion-controls";
+import { TikTokBackfillControls } from "@/components/tiktok-backfill-controls";
 import { CcuRefreshControl } from "@/components/ccu-refresh-control";
 import { AmazonAsinPins } from "@/components/amazon-asin-pins";
 
@@ -352,6 +353,7 @@ export default function Settings() {
       <RecipientsManager />
 
       <ManualIngestionControls />
+      <TikTokBackfillControls windowDays={90} />
 
       <CcuRefreshControl />
 
