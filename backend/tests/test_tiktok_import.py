@@ -38,13 +38,9 @@ def payload(comments=(), tombstones=(), next_cursor=None, snapshot=None):
 
 
 def getter(*pages):
-    """Mock transport that keeps serving an empty page after the mock's
-    side_effect list runs out so the loop ends naturally instead of raising
-    StopIteration."""
-    last_empty = payload([])
-    responses = [Mock(status_code=200, json=Mock(return_value=p)) for p in pages]
-    responses.extend([Mock(status_code=200, json=Mock(return_value=last_empty)) for _ in range(200)])
-    return Mock(side_effect=responses)
+    """Strict finite mock. Raises StopIteration if the service requests more
+    pages than provided — that is evidence of a pagination bug, not noise."""
+    return Mock(side_effect=[Mock(status_code=200, json=Mock(return_value=p)) for p in pages])
 
 
 
@@ -60,17 +56,24 @@ def test_disabled_by_default_and_secure_transport(db, configured):
         feed_options(db)
 
 
-def test_per_title_gate_and_global_fallback(db, game, configured):
-    assert import_enabled_for_game(db, game) is False  # per-title off, global off
+def test_per_title_gate_no_global_fallback(db, game, configured):
+    """'Specific titles only' means no global fallback. A missing per-title
+    key is off even if a global-looking key exists."""
+    assert import_enabled_for_game(db, game) is False
+    # A bare global-looking key must NOT enable every game.
     db.add(AppSetting(key="tiktok_comment_enabled", value="true"))
     db.commit()
-    assert import_enabled_for_game(db, game) is True  # falls back to global on
-    db.add(AppSetting(key=f"tiktok_comment_enabled:{game.id}", value="false"))
+    assert import_enabled_for_game(db, game) is False
+    # Explicit per-title true enables.
+    db.add(AppSetting(key=f"tiktok_comment_enabled:{game.id}", value="true"))
     db.commit()
-    assert import_enabled_for_game(db, game) is False  # per-title false overrides global
+    assert import_enabled_for_game(db, game) is True
+    # Explicit per-title false disables even with the global-looking key on.
     db.query(AppSetting).filter_by(key=f"tiktok_comment_enabled:{game.id}").delete()
     db.commit()
-    assert import_enabled_for_game(db, game) is True  # falls back again after clear
+    assert import_enabled_for_game(db, game) is False
+    # Missing key stays off after clear.
+    assert import_enabled_for_game(db, game) is False
 
 
 def test_competitor_stays_under_own_game_and_idempotent_replay(db, game, publisher, configured):
@@ -176,3 +179,85 @@ def test_comment_focused_gate_rejects_promo_comments(db, game):
     from services.tiktok_service import comment_is_focused
     assert comment_is_focused("This Warhammer game looks great", game) is True
     assert comment_is_focused("check out my channel for more", game) is False
+
+
+def test_terminal_page_exactly_one_request(db, game, configured):
+    """A single terminal page (no nextCursor) means the importer finishes in
+    one request. Requesting more is a termination bug."""
+    item = comment(game, cid="c1")
+    get = getter(payload([item]))
+    result = import_game_comments(db, game, get=get)
+    assert result["complete"] is True
+    assert result["stop_reason"] is None
+    assert get.call_count == 1
+
+
+def test_page_budget_preserves_cursor_and_reports_page_budget(db, game, configured):
+    """Exhausting max_pages is NOT completion. Saved cursor remains
+    unfinished and the caller must see stop_reason=page_budget."""
+    snapshot = stamp()
+    first = getter(payload([comment(game, cid="c1")], next_cursor="p2", snapshot=snapshot))
+    result = import_game_comments(db, game, get=first, max_pages=1)
+    assert result["complete"] is False
+    assert result["stop_reason"] == "page_budget"
+    assert json.loads(cursor_row(db, game).value)["cursor"] == "p2"
+    assert first.call_count == 1
+
+
+def test_resumed_snapshot_drains_without_repeated_polling(db, game, configured):
+    """A saved unfinished cursor resumes, drains the remaining pages, and
+    completes without extra empty-poll requests."""
+    snapshot = stamp()
+    # First run exhausts its budget on page 1 (which has a nextCursor).
+    first = getter(payload([comment(game, cid="c1")], next_cursor="p2", snapshot=snapshot))
+    import_game_comments(db, game, get=first, max_pages=1)
+    assert first.call_count == 1
+
+    # Second run resumes with the saved cursor and drains page 2 (terminal).
+    second = getter(payload([comment(game, cid="c2")], snapshot=snapshot))
+    result = import_game_comments(db, game, get=second, max_pages=10)
+    assert result["inserted"] == 1
+    assert result["complete"] is True
+    assert result["snapshots_completed"] == 1
+    assert second.call_count == 1  # resumed with cursor, then terminal -> exactly 1
+    state = json.loads(cursor_row(db, game).value)
+    assert "cursor" not in state
+
+
+def test_tiktok_comment_goes_through_focused_gate_in_step5(db, game, configured):
+    """Integration: the ingestor's Step 5 must run the focused-comment gate
+    on TikTok comments, not just store them. A focused comment is classified
+    as relevant; a solicitation comment is forced neutral + off-topic drift."""
+    item = comment(game, cid="c1", text="The Space Marine 2 combat looks fantastic")
+    import_game_comments(db, game, get=getter(payload([item])))
+    post = db.query(RawPost).one()
+    assert post.relevance_tier == "signal"
+
+    # Run Step 5 the same way the existing YouTube test does.
+    errors: list[str] = []
+    log_lines: list[str] = []
+    from services.ingestor import _step5_classify_sentiment
+    _step5_classify_sentiment(db, game, log_lines, errors)
+    db.commit()
+    post = db.query(RawPost).one()
+    assert post.is_relevant is True
+    assert post.is_off_topic_drift is False
+    assert post.sentiment_record is not None
+    assert post.sentiment_record.sentiment in ("positive", "negative", "neutral")
+
+
+def test_solicitation_comment_is_forced_neutral_in_step5(db, game, configured):
+    """A solicitation comment on a TikTok video enters the corpus but the
+    focused gate forces it neutral + off-topic drift, matching YouTube."""
+    item = comment(game, cid="c1", text="check out my channel for more")
+    import_game_comments(db, game, get=getter(payload([item])))
+    errors: list[str] = []
+    log_lines: list[str] = []
+    from services.ingestor import _step5_classify_sentiment
+    _step5_classify_sentiment(db, game, log_lines, errors)
+    db.commit()
+    post = db.query(RawPost).one()
+    assert post.is_relevant is True
+    assert post.is_off_topic_drift is True
+    assert post.sentiment_record is not None
+    assert post.sentiment_record.sentiment == "neutral"

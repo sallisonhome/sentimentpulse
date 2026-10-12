@@ -1,0 +1,41 @@
+ERROR    scheduler:scheduler.py:386 Weekly prewarm FAILED for game_id=1 'Test Game A': simulated Anthropic 500
+FAILED                                                                   [ 56%]
+FAILED                                                                   [ 56%]
+FAILED tests/test_nlp_service.py::TestClassifyBatch::test_negative_text - Ass...
+FAILED tests/test_nlp_service.py::TestClassifyBatch::test_positive_text - Ass...
+FAILED tests/test_nlp_service.py::TestLoadModel::test_load_model_falls_back_to_vader_on_import_error
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_batch_v2_high_confidence_positive_stays_positive
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_lone_white_wolf_no_body_becomes_neutral
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_return_dict_has_all_keys
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_rhetorical_bug_list_classifies_negative
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_title_body_agree_label_kept
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_title_body_disagree_conflict_flag
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_title_body_disagree_rhetorical_no_conflict
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_bug_list_body_forces_negative
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_multiple_rules_match_highest_priority_wins
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_no_rule_matches_preserves_v2_result
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_praise_emoji_plus_body_forces_positive
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_rhetorical_break_question_lexicon_forces_negative
+FAILED tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_sarcastic_thanks_devs_forces_negative
+FAILED tests/test_sentiment_gate.py::TestDetectLanguage::test_english_text_returns_en
+FAILED tests/test_sentiment_gate.py::TestDetectLanguage::test_russian_text_returns_ru
+FAILED tests/test_sentiment_gate.py::TestDetectLanguage::test_spanish_text_returns_es
+FAILED tests/test_youtube_catchup.py::test_only_requested_active_title_and_youtube_classifier
+tests/test_nlp_service.py::TestLoadModel::test_load_model_falls_back_to_vader_on_import_error FAILED [ 56%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_batch_v2_high_confidence_positive_stays_positive FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_lone_white_wolf_no_body_becomes_neutral FAILED [ 72%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_return_dict_has_all_keys FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_rhetorical_bug_list_classifies_negative FAILED [ 72%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_title_body_agree_label_kept FAILED [ 72%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_title_body_disagree_conflict_flag FAILED [ 72%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2::test_title_body_disagree_rhetorical_no_conflict FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_bug_list_body_forces_negative FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_multiple_rules_match_highest_priority_wins FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_no_rule_matches_preserves_v2_result FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_praise_emoji_plus_body_forces_positive FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_rhetorical_break_question_lexicon_forces_negative FAILED [ 73%]
+tests/test_sentiment_gate.py::TestClassifyWithGateV2LexiconIntegration::test_sarcastic_thanks_devs_forces_negative FAILED [ 73%]
+tests/test_sentiment_gate.py::TestDetectLanguage::test_english_text_returns_en FAILED [ 71%]
+tests/test_sentiment_gate.py::TestDetectLanguage::test_russian_text_returns_ru FAILED [ 71%]
+tests/test_sentiment_gate.py::TestDetectLanguage::test_spanish_text_returns_es FAILED [ 71%]
+tests/test_youtube_catchup.py::test_only_requested_active_title_and_youtube_classifier FAILED [ 98%]

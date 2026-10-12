@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from sqlalchemy import func
+
 from models import AppSetting, RawPost, SourceEnum
 
 EPOCH = "1970-01-01T00:00:00.000Z"
@@ -53,16 +55,24 @@ def _setting(db, key, default=""):
 
 
 def import_enabled_for_game(db, game):
-    """Per-title gate. Falls back to global default when the per-title key is absent."""
+    """Per-title gate. TikTok comment ingestion is 'specific titles only' —
+    it never enables every game by default. Per-title key must be explicitly
+    'true'; a missing key means off. No global fallback, unlike YouTube which
+    uses a single on/off switch.
+    """
     key = f"tiktok_comment_enabled:{game.id}"
     per = _setting(db, key)
-    if per:
-        return per.lower() == "true"
-    return import_enabled_global(db)
+    return bool(per and per.lower() == "true")
 
 
 def import_enabled_global(db):
-    return _setting(db, "tiktok_comment_enabled", os.getenv("TIKTOK_COMMENT_ENABLED", "false")).lower() == "true"
+    """Diagnostic only. Not used as a fallback in the effective gate — see
+    import_enabled_for_game. Returns true only if at least one per-title
+    key exists and is enabled, so operators can see 'any active' without
+    silently broadening the scope."""
+    return db.query(AppSetting).filter(
+        AppSetting.key.like("tiktok_comment_enabled:%"),
+        func.lower(AppSetting.value) == "true").count() > 0
 
 
 def feed_options(db):
@@ -102,11 +112,12 @@ def import_game_comments(db, game, *, get=requests.get, max_pages=MAX_PAGES_PER_
     started = time.monotonic()
     counts = {"inserted": 0, "updated": 0, "excluded": 0, "fetched": 0, "pages": 0,
               "complete": False, "snapshots_completed": 0, "completed_through": None,
-              "stop_reason": "page_budget"}
+              "stop_reason": None}
     for _ in range(max_pages):
         if time.monotonic() - started >= max_seconds:
             counts["stop_reason"] = "time_budget"
             break
+
         params = {"since": since, "steamAppId": str(game.steam_app_id), "limit": PAGE_LIMIT,
                   "deletedSince": deleted_since}
         if cursor:
@@ -211,15 +222,24 @@ def import_game_comments(db, game, *, get=requests.get, max_pages=MAX_PAGES_PER_
             counts[name] += value
         counts["fetched"] += len(page["comments"])
         counts["pages"] += 1
-        if not next_cursor:
-            counts["snapshots_completed"] += 1
-            counts["completed_through"] = snapshot
-            if resuming_saved_snapshot:
-                since = new_state["since"]
-                deleted_since = new_state["deletedSince"]
-            cursor = None
-            until = None
+        if next_cursor:
+            # Persisted for resume; the next request uses it.
+            cursor = next_cursor
+            continue
+        # Terminal page — this snapshot is fully drained. Advance watermark.
+        counts["snapshots_completed"] += 1
+        counts["completed_through"] = snapshot
+        if resuming_saved_snapshot:
+            since = new_state["since"]
+            deleted_since = new_state["deletedSince"]
+            resuming_saved_snapshot = False
+        cursor = None
+        until = None
+        break
     else:
-        counts["stop_reason"] = "complete"
+        # Loop exited by exhausting max_pages/time budget, not a terminal
+        # page. This is NOT completion — the saved cursor remains unfinished.
+        if counts["stop_reason"] is None:
+            counts["stop_reason"] = "page_budget"
     counts["complete"] = not cursor
     return counts

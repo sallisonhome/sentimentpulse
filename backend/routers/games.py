@@ -37,15 +37,18 @@ router = APIRouter(prefix="/games", tags=["games"])
 
 def _enrich_tiktok(db: Session, games: list[Game]) -> list[Game]:
     """Attach tiktok_comment_enabled from AppSetting so GameResponse can
-    read it. Independent from SignalPulse's own tt_titles.enabled flag."""
+    read it. Independent from SignalPulse's own tt_titles.enabled flag.
+    Matches the same effective gate as ingestion: per-title key only, no
+    global fallback. This way the UI shows exactly what the ingestion
+    will do."""
     if not games:
         return games
     keys = [f"tiktok_comment_enabled:{g.id}" for g in games]
     rows = db.query(AppSetting).filter(AppSetting.key.in_(keys)).all()
     enabled_map = {r.key: r.value for r in rows}
     for g in games:
-        val = enabled_map.get(f"tiktok_comment_enabled:{g.id}", "false")
-        g.tiktok_comment_enabled = val and val.lower() == "true"
+        val = enabled_map.get(f"tiktok_comment_enabled:{g.id}", "")
+        g.tiktok_comment_enabled = bool(val and val.lower() == "true")
     return games
 
 

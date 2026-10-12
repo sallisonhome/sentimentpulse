@@ -114,6 +114,8 @@ _status: dict = {
     "steam_forum_fetched_total": 0,
     "youtube_health": "unknown",
     "youtube_fetched_total": 0,
+    "tiktok_health": "unknown",
+    "tiktok_fetched_total": 0,
     # 2026-10-06: retry visibility. While attempt N>1 runs, the prior
     # attempt's outcome is reported here instead of masquerading as the
     # current run's status/errors (Oct 6 looked "stuck with errors").
@@ -157,6 +159,7 @@ def get_status() -> dict:
                              "steam_review_health", "steam_review_fetched_total",
                              "steam_forum_health", "steam_forum_fetched_total",
                              "youtube_health", "youtube_fetched_total",
+                             "tiktok_health", "tiktok_fetched_total",
                              "reddit_circuit"):
                         if k in persisted:
                             snapshot[k] = persisted[k]
@@ -389,7 +392,7 @@ def _reclaim_stuck_lock_if_needed() -> None:
 
 # Canonical names for the per-source skip switch. Keep as a frozenset
 # so callers can validate input against a known-good set.
-_VALID_SKIP_SOURCES = frozenset({"reddit", "bluesky", "steam_review", "steam_forum", "dtf", "youtube_comment"})
+_VALID_SKIP_SOURCES = frozenset({"reddit", "bluesky", "steam_review", "steam_forum", "dtf", "youtube_comment", "tiktok_comment"})
 
 
 # 2026-10-06: per-game error handlers must never touch the database. After a
@@ -501,6 +504,8 @@ def run_ingestion(skip_sources: Optional[set[str]] = None, *,
     _status["posts_collected"] = 0
     _status["youtube_health"] = "skipped"
     _status["youtube_fetched_total"] = 0
+    _status["tiktok_health"] = "skipped"
+    _status["tiktok_fetched_total"] = 0
     _status["reddit_circuit"] = {}
     _run_started_at = time.monotonic()
     _status["last_run_finished_at"] = None
@@ -1046,10 +1051,11 @@ def run_ingestion(skip_sources: Optional[set[str]] = None, *,
         # SignalPulse's own tt_titles.enabled collection flag. Disabled until
         # configured and deployment-approved.
         if "tiktok_comment" not in skip_sources:
-            _status["tiktok_health"] = "ok"
-            for game in active_games:
-                if not tiktok_import_enabled_for_game(db, game):
-                    continue
+            tiktok_eligible = [g for g in active_games
+                               if tiktok_import_enabled_for_game(db, g)]
+            if tiktok_eligible:
+                _status["tiktok_health"] = "ok"
+            for game in tiktok_eligible:
                 try:
                     tt_result = tiktok_import_game_comments(db, game)
                     per_game_posts[game.id] = per_game_posts.get(game.id, 0) + tt_result["inserted"]
@@ -2286,7 +2292,7 @@ def _step5_classify_sentiment(
         log_lines.append(f"[Step 5] '{game.name}': all posts filtered; nothing to classify.")
         return
 
-    items = [{'title': '' if p.source == SourceEnum.youtube_comment else (p.title or ''),
+    items = [{'title': '' if p.source in (SourceEnum.youtube_comment, SourceEnum.tiktok_comment) else (p.title or ''),
               'body': p.body or ''} for p in relevant_posts]
     try:
         results = classify_batch_with_gate_v2(items)
@@ -2347,11 +2353,13 @@ def _step5_classify_sentiment(
         # See services/post_relevance.py::is_comment_focused_on_game
         # for the decision tree (keyword match / short reply / game-aspect
         # + opinion). Applies to Reddit and verified-video YouTube comments.
-        if post.source in (SourceEnum.reddit_comment, SourceEnum.youtube_comment):
+        if post.source in (SourceEnum.reddit_comment, SourceEnum.youtube_comment, SourceEnum.tiktok_comment):
             from services.post_relevance import is_comment_focused_on_game  # noqa: PLC0415
             focused = (youtube_comment_is_focused(post.body or "", game)
                        if post.source == SourceEnum.youtube_comment
-                       else is_comment_focused_on_game(post.body or "", game))
+                       else (tiktok_comment_is_focused(post.body or "", game)
+                             if post.source == SourceEnum.tiktok_comment
+                             else is_comment_focused_on_game(post.body or "", game)))
             if not focused:
                 # Preserve the model's verdict for audit before overriding.
                 if original_label is None:

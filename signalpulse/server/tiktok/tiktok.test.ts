@@ -12,6 +12,7 @@ import Database from "better-sqlite3";
 import { matchVideo, RELEVANCE_VERSION } from "./relevance";
 import { TIKTOK_SCHEMA_SQL, openTikTokDb } from "./db";
 import { computeCohortLeaderboard, listTitleVideos } from "./cohort";
+import { scheduledTikTokRunDue } from "./cron";
 import { readCommentFeed } from "./feed";
 import { readTikTokSeries } from "./series";
 import { syncTitles, buildTitleSources, applyCollectionExclusions, TITLE_SEEDS } from "./titles";
@@ -187,4 +188,17 @@ test("collection opt-out disables collection but preserves history", () => {
   db.prepare("UPDATE tt_titles SET enabled=0 WHERE title_id=3230960").run();
   const enabled = (db.prepare("SELECT enabled FROM tt_titles WHERE title_id=3230960").get() as any).enabled;
   assert.equal(enabled, 0);
+});
+
+// ── Cron scheduling ──
+test("scheduled TikTok run is due at 04:30 ET and not before", () => {
+  // 2026-10-12 05:30 ET = 2026-10-12 09:30 UTC. 05:30 is after 04:30, so due.
+  const due = new Date("2026-10-12T09:30:00Z");
+  assert.equal(scheduledTikTokRunDue(due, null), true);
+  // 2026-10-12 03:30 ET = 07:30 UTC. Before 04:30, not due.
+  const early = new Date("2026-10-12T07:30:00Z");
+  assert.equal(scheduledTikTokRunDue(early, null), false);
+  // Already ran today, not due again.
+  const already = new Date("2026-10-12T09:30:00Z");
+  assert.equal(scheduledTikTokRunDue(already, "2026-10-12"), false);
 });
