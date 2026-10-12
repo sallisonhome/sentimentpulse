@@ -124,7 +124,7 @@ export default function TikTokLeaderboard() {
                 {rows.map((r) => (
                   <tr key={r.titleId} className="border-b hover:bg-muted/30" data-testid={`tiktok-row-${r.titleId}`}>
                     <td className="px-3 py-2">
-                      <Link href={`/tiktok/titles/${r.titleId}`} className="flex items-center gap-2">
+                      <Link href={`/titles/${r.titleId}`} className="flex items-center gap-2">
                         <img src={r.headerImageUrl ?? ""} alt="" className="w-16 h-8 object-cover rounded" loading="lazy" />
                         <div className="flex flex-col">
                           <span className="font-medium">{r.title}</span>

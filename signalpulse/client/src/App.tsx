@@ -20,9 +20,8 @@ import DemosLeaderboard from "@/pages/demos-leaderboard";
 import DemoDetail from "@/pages/demo-detail";
 import ArchivedDemos from "@/pages/archived-demos";
 import YoutubeLeaderboard from "@/pages/youtube-leaderboard";
-import YoutubeTitleDetail from "@/pages/youtube-title-detail";
 import TikTokLeaderboard from "@/pages/tiktok-leaderboard";
-import TikTokTitleDetail from "@/pages/tiktok-title-detail";
+import CombinedTitleDetail from "@/pages/combined-title-detail";
 import ConsoleTitleDetail from "@/pages/console-title-detail";
 import ConsoleMultiplatformDetail from "@/pages/console-multiplatform-detail";
 import NotFound from "@/pages/not-found";
@@ -50,9 +49,10 @@ function AppRouter() {
         <Route path="/demos-leaderboard" component={DemosLeaderboard} />
         <Route path="/demos-leaderboard/archive" component={ArchivedDemos} />
         <Route path="/demos-leaderboard/:appId" component={DemoDetail} />
-        <Route path="/youtube/titles/:titleId" component={YoutubeTitleDetail} />
+        <Route path="/titles/:titleId" component={CombinedTitleDetail} />
+        <Route path="/youtube/titles/:titleId" component={CombinedTitleDetail} />
         <Route path="/youtube" component={YoutubeLeaderboard} />
-        <Route path="/tiktok/titles/:titleId" component={TikTokTitleDetail} />
+        <Route path="/tiktok/titles/:titleId" component={CombinedTitleDetail} />
         <Route path="/tiktok" component={TikTokLeaderboard} />
         {/* Multiplatform PDP MUST precede the generic /:platform matcher
             below so wouter doesn't treat "multiplatform" as a platform.
