@@ -9,7 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 import {
   Eye, EyeOff, Save, Check, KeyRound, Server, Shield, Youtube, Trash2, Gamepad2, AlertTriangle,
-  Mail, Plus, Send, Loader2,
+  Mail, Plus, Send, Loader2, Music2,
 } from "lucide-react";
 import { Switch } from "@/components/ui/switch";
 import { SteamworksSessionSettings } from "@/components/steamworks-session-settings";
@@ -49,6 +49,13 @@ const SECTIONS: { key: string; label: string; description: string; icon: React.R
     description: "Google API key for tracking YouTube video view counts via the YouTube Data API v3.",
     icon: <Youtube className="h-5 w-5" />,
     settingKeys: ["youtube_api_key"],
+  },
+  {
+    key: "tiktok",
+    label: "TikTok Pulse (EnsembleData)",
+    description: "EnsembleData API token for the TikTok Pulse app — daily discovery of hashtag/keyword video pools, per-video stats (views, likes, comments), comment ingestion with game-relevance filter, and the 90-day comment backfill. Leave unset to disable TikTok ingestion (the cron runs retention only and the TikTok leaderboard shows an empty state).",
+    icon: <Music2 className="h-5 w-5" />,
+    settingKeys: ["tiktok_ensemble_token"],
   },
   {
     key: "perplexity",
