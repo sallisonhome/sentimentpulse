@@ -31,6 +31,10 @@ const DISCOVERY_KEYWORD_PAGES = 2;      // ~40 posts per keyword per run
 const COMMENT_NEW_MAX_PAGES = 5;
 const COMMENT_BACKFILL_MAX_PAGES = 3;
 const COMMENT_BACKFILL_AFTER_DAYS = 27;
+/** Hard page ceiling for the 90-day backfill per video, so a video with a huge
+ *  90-day slice doesn't drain the whole budget on one title. The early-exit
+ *  cutoff usually stops it well before this. */
+const BACKFILL_MAX_PAGES_PER_VIDEO = 60;
 const RETENTION_UNIT_SHARE = 0.20;
 const STATS_RESERVE_UNITS = 600;
 export const DISCOVERY_SLAB_AGE_DAYS = 180;
@@ -47,13 +51,22 @@ export interface RunCounters {
   commentsSaved: number;
   commentsRefreshed: number;
   commentsDeleted: number;
+  backfillVideos: number;
+  backfillPages: number;
+  backfillEarlyExits: number;
   notes: string[];
 }
 
 export interface PipelineOptions {
   retentionMode?: "unlimited";
   extendedStorageApproved: boolean; // legacy compatibility; retention no longer depends on this flag
-  steps?: Array<"retention" | "discovery" | "stats" | "comments">;
+  steps?: Array<"retention" | "discovery" | "stats" | "comments" | "backfill">;
+  /** Only these title_ids run in the backfill step. Empty = all enabled. */
+  backfillTitleIds?: number[];
+  /** Days of comment history the backfill targets (default 90). */
+  backfillWindowDays?: number;
+  /** Hard unit cap for the backfill step alone (default 3500, under the 5000/day plan). */
+  backfillUnitCap?: number;
   now?: () => Date;
 }
 
@@ -317,13 +330,86 @@ export async function runComments(db: TtDb, client: EnsembleDataClient, c: RunCo
   }
 }
 
+export async function runBackfill(db: TtDb, client: EnsembleDataClient, c: RunCounters, opts: PipelineOptions) {
+  /** Walks each title's tracked pool and paginates each video's comments
+   *  until the oldest create_time on a page falls outside the window. The
+   *  early-exit is the cost saver: a video whose 90-day slice fits in 1-3
+   *  pages costs 1-3 units instead of draining full lifetime history. */
+  const now = (opts.now ?? (() => new Date()))();
+  const windowDays = opts.backfillWindowDays ?? 90;
+  const unitCap = opts.backfillUnitCap ?? 3500;
+  const cutoffSec = Math.floor((now.getTime() - windowDays * DAY) / 1000);
+  const scoped = (opts.backfillTitleIds ?? []).length
+    ? db.prepare("SELECT * FROM tt_titles WHERE title_id IN (" + (opts.backfillTitleIds ?? []).map(() => "?").join(",") + ") AND enabled=1")
+        .all(...(opts.backfillTitleIds ?? [])) as any[]
+    : db.prepare("SELECT * FROM tt_titles WHERE enabled=1").all() as any[];
+  if (!scoped.length) { c.notes.push("backfill: no eligible titles"); return; }
+  const usedToday = (db.prepare("SELECT COALESCE(used, 0) AS used FROM tt_quota_daily WHERE pt_date=? AND bucket='units'")
+    .get(isoDate(now)) as any)?.used ?? 0;
+  if (usedToday >= unitCap) { c.notes.push("backfill: unit budget exhausted before start"); return; }
+  const ins = db.prepare(`INSERT INTO tt_comments (cid, aweme_id, title_id, parent_id, author_unique_id,
+      text, like_count, create_time, is_author_digged, reply_comment_total, fetched_at)
+    VALUES (@cid, @awemeId, @titleId, @parentId, @authorUniqueId, @text, @likeCount, @createTime,
+      @isAuthorDigged, @replyCommentTotal, @fetchedAt)
+    ON CONFLICT(cid) DO UPDATE SET text=excluded.text, like_count=excluded.like_count,
+      is_author_digged=excluded.is_author_digged, reply_comment_total=excluded.reply_comment_total,
+      fetched_at=excluded.fetched_at`);
+  for (const t of scoped) {
+    if (c.units + usedToday >= unitCap) { c.notes.push("backfill: unit budget exhausted mid-title"); break; }
+    const videos = db.prepare(`SELECT aweme_id FROM tt_videos WHERE title_id=? AND excluded_at IS NULL
+      ORDER BY COALESCE(view_count,0) DESC`).all(t.title_id) as any[];
+    let titleStopped = false;
+    for (const v of videos) {
+      if (c.units + usedToday >= unitCap) { c.notes.push("backfill: unit budget exhausted mid-video"); titleStopped = true; break; }
+      c.backfillVideos++;
+      let cursor = 0;
+      // paginate until the oldest comment on a page is older than the cutoff
+      for (let page = 0; page < BACKFILL_MAX_PAGES_PER_VIDEO; page++) {
+        try {
+          const res = await client.postComments(v.aweme_id, cursor);
+          recordUnits(db, c, res.units_charged ?? 0, now);
+          c.backfillPages++; c.commentCalls++;
+          const cs = (res.data?.comments ?? []) as TikTokComment[];
+          if (!cs.length) break;
+          for (const cm of cs) {
+            if (cm.create_time < cutoffSec) continue; // outside window, skip but keep scanning
+            ins.run({
+              cid: cm.cid, awemeId: v.aweme_id, titleId: t.title_id,
+              parentId: cm.reply_id || null,
+              authorUniqueId: cm.user?.unique_id ?? null,
+              text: cm.text ?? "",
+              likeCount: cm.digg_count ?? null, createTime: cm.create_time,
+              isAuthorDigged: cm.is_author_digged ? 1 : 0,
+              replyCommentTotal: cm.reply_comment_total ?? null,
+              fetchedAt: iso(now),
+            });
+            c.commentsSaved++;
+          }
+          // early exit: oldest comment on this page is already outside the window
+          const oldestOnPage = Math.min(...cs.map((cm: TikTokComment) => cm.create_time));
+          if (oldestOnPage < cutoffSec) { c.backfillEarlyExits++; break; }
+          cursor = res.data?.nextCursor ?? 0;
+          if (!cursor) break;
+        } catch (e) {
+          if (e instanceof EnsembleDataUnitBudgetError) {
+            c.notes.push("backfill: unit budget exhausted"); return;
+          }
+          c.notes.push(`backfill ${v.aweme_id}: ${(e as Error).message}`); break;
+        }
+      }
+    }
+    if (titleStopped) break;  // don't proceed to the next title — the whole run is capped
+  }
+}
+
 export async function runPipeline(db: TtDb, client: EnsembleDataClient | null, opts: PipelineOptions,
   trigger: string, runRow?: { id: number }): Promise<RunCounters> {
   const now = (opts.now ?? (() => new Date()))();
   const c: RunCounters = {
     hashtagCalls: 0, keywordCalls: 0, postInfoCalls: 0, commentCalls: 0, units: 0,
     videosDiscovered: 0, videosRefreshed: 0, videosRemoved: 0,
-    commentsSaved: 0, commentsRefreshed: 0, commentsDeleted: 0, notes: [],
+    commentsSaved: 0, commentsRefreshed: 0, commentsDeleted: 0,
+    backfillVideos: 0, backfillPages: 0, backfillEarlyExits: 0, notes: [],
   };
   const steps = opts.steps ?? ["retention", "discovery", "stats", "comments"];
   const withClient = client ?? null;
@@ -331,6 +417,7 @@ export async function runPipeline(db: TtDb, client: EnsembleDataClient | null, o
   if (steps.includes("discovery") && withClient) await runDiscovery(db, withClient, c, opts);
   if (steps.includes("stats") && withClient) await runStats(db, withClient, c, opts);
   if (steps.includes("comments") && withClient) await runComments(db, withClient, c, opts);
+  if (steps.includes("backfill") && withClient) await runBackfill(db, withClient, c, opts);
   if (runRow?.id) {
     db.prepare(`UPDATE tt_ingest_runs SET finished_at=?, status=?,
       hashtag_calls=?, keyword_calls=?, post_info_calls=?, comment_calls=?,
@@ -341,6 +428,20 @@ export async function runPipeline(db: TtDb, client: EnsembleDataClient | null, o
       c.units, c.videosDiscovered, c.videosRefreshed, c.videosRemoved,
       c.commentsSaved, c.commentsRefreshed, c.commentsDeleted,
       c.notes.length ? c.notes.join("; ") : null, runRow.id);
+  }
+  return c;
+}
+
+/** Backfill-aware wrapper. Records backfill counters in the run's message
+ *  so operators can see how many videos hit the early exit. */
+export async function runBackfillStep(db: TtDb, client: EnsembleDataClient, opts: PipelineOptions,
+  trigger: string, runRow?: { id: number }): Promise<RunCounters> {
+  const c = await runPipeline(db, client, { ...opts, steps: ["backfill"] }, trigger, runRow);
+  if (runRow?.id) {
+    const backfillNote = `backfill: ${c.backfillVideos} videos, ${c.backfillPages} pages, ` +
+      `${c.backfillEarlyExits} early-exits, ${c.commentsSaved} comments saved`;
+    db.prepare(`UPDATE tt_ingest_runs SET message=COALESCE(message, '') || ? WHERE id=?`)
+      .run(backfillNote, runRow.id);
   }
   return c;
 }

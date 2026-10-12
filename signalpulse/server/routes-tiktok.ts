@@ -18,7 +18,7 @@ import type { Express, Request, Response } from "express";
 import { storage } from "./storage";
 import { ttDb } from "./tiktok/db";
 import { COHORT_WINDOWS, COHORT_SORTS, computeCohortLeaderboard, listTitleVideos, type CohortWindow, type CohortSort } from "./tiktok/cohort";
-import { runPipeline } from "./tiktok/pipeline";
+import { runPipeline, runBackfillStep } from "./tiktok/pipeline";
 import { EnsembleDataClient, ensembleTokenFromEnv, EnsembleDataUnitBudgetError } from "./tiktok/api";
 import { syncTitles, buildTitleSources, type TitleRow, type SentimentPulseGameLite } from "./tiktok/titles";
 import { listSentimentPulseGames, listCompetitorsForParent } from "./sentimentpulse-client";
@@ -64,6 +64,23 @@ export async function triggerTikTokRun(trigger: string, steps?: any[]) {
   const runRow = { id: Number(runRowIns.lastInsertRowid) };
   const res = await runPipeline(ttDb(), client, { extendedStorageApproved: true, steps }, trigger, runRow);
   log(`tiktok run (${trigger}): ${JSON.stringify({ ...res, notes: undefined })}`, "tiktok");
+  return res;
+}
+
+/** Manual 90-day comment backfill. Scoped to explicit titleIds so you can
+ *  run the six Saber parents without touching competitors. */
+export async function triggerTikTokBackfill(titleIds: number[], windowDays?: number, unitCap?: number) {
+  await syncTikTokTitles(true);
+  const tok = tiktokEnsembleToken();
+  if (!tok) throw new Error("TikTok EnsembleData token is not configured");
+  const client = new EnsembleDataClient({ token: tok });
+  const runRowIns = ttDb().prepare(`INSERT INTO tt_ingest_runs (trigger, started_at, status) VALUES ('backfill', ?, 'running')`).run(new Date().toISOString());
+  const runRow = { id: Number(runRowIns.lastInsertRowid) };
+  const res = await runBackfillStep(ttDb(), client, {
+    extendedStorageApproved: true, steps: ["backfill"],
+    backfillTitleIds: titleIds, backfillWindowDays: windowDays, backfillUnitCap: unitCap,
+  }, "backfill", runRow);
+  log(`tiktok backfill: ${JSON.stringify({ ...res, notes: undefined })}`, "tiktok");
   return res;
 }
 
@@ -163,6 +180,21 @@ export function registerTikTokRoutes(app: Express) {
       .catch((e) => log(`tiktok manual run failed: ${e}`, "tiktok"))
       .finally(() => { runInFlight = false; });
     res.status(202).json({ accepted: true, steps: steps ?? allowed });
+  });
+
+  let backfillInFlight = false;
+  app.post("/api/tiktok/ops/backfill", (req: Request, res: Response) => {
+    if (backfillInFlight) return res.status(409).json({ error: "a TikTok backfill is already in progress" });
+    if (runInFlight) return res.status(409).json({ error: "a TikTok run is already in progress" });
+    const titleIds = Array.isArray(req.body?.titleIds) ? req.body.titleIds.map(Number).filter(Number.isFinite) : [];
+    if (!titleIds.length) return res.status(400).json({ error: "titleIds must be a non-empty array of title IDs (Steam App IDs)" });
+    const windowDays = typeof req.body?.windowDays === "number" && req.body.windowDays > 0 ? req.body.windowDays : 90;
+    const unitCap = typeof req.body?.unitCap === "number" && req.body.unitCap > 0 ? req.body.unitCap : 3500;
+    backfillInFlight = true;
+    triggerTikTokBackfill(titleIds, windowDays, unitCap)
+      .catch((e) => log(`tiktok backfill failed: ${e}`, "tiktok"))
+      .finally(() => { backfillInFlight = false; });
+    res.status(202).json({ accepted: true, titleIds, windowDays, unitCap });
   });
 
   app.get("/api/tiktok/ops/comments-feed", (req: Request, res: Response) => {

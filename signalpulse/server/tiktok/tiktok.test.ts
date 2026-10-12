@@ -202,3 +202,119 @@ test("scheduled TikTok run is due at 04:30 ET and not before", () => {
   const already = new Date("2026-10-12T09:30:00Z");
   assert.equal(scheduledTikTokRunDue(already, "2026-10-12"), false);
 });
+
+// ── 90-day backfill (no live calls) ──
+test("backfill early-exits when oldest comment on a page is outside the window", async () => {
+  const db = seedDb();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const daySec = 86400;
+  // page 1: 30 comments, all recent. page 2: 30 comments, oldest is 120 days old (outside 90-day window).
+  const mk = (i: number, ageDays: number) => ({
+    cid: `bf-p1-${i}`, aweme_id: "aw1", create_time: nowSec - ageDays * daySec,
+    reply_id: null, user: { unique_id: "u" }, text: `comment ${i} recent`, digg_count: 0,
+    is_author_digged: false, reply_comment_total: 0,
+  });
+  const page1 = Array.from({ length: 30 }, (_, i) => mk(i, 5));
+  const page2 = Array.from({ length: 30 }, (_, i) => ({ ...mk(i, 120), cid: `bf-p2-${i}` }));
+  const calls: Array<{ aweme: string; cursor: number }> = [];
+  const fakeClient = {
+    postComments: async (awemeId: string, cursor: number): Promise<EnsembleDataResponse> => {
+      calls.push({ aweme: awemeId, cursor });
+      const comments = cursor === 0 ? page1 : page2;
+      return { data: { comments, nextCursor: cursor === 0 ? 30 : null }, units_charged: 1 };
+    },
+  };
+  const counters = await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["backfill"], backfillWindowDays: 90, backfillUnitCap: 100,
+  }, "test");
+  // both videos in the seed (aw1) — actually seedDb has one video aw1
+  assert.equal(counters.backfillPages, 2);         // page1 + page2, then early exit
+  assert.equal(counters.backfillEarlyExits, 1);    // page2's oldest was outside window
+  assert.equal(counters.commentsSaved, 30);        // only the recent 30
+  // only the recent ones persisted
+  const rows = db.prepare("SELECT COUNT(*) AS n FROM tt_comments WHERE cid LIKE 'bf-p%'").get() as any;
+  assert.equal(rows.n, 30);
+});
+
+test("backfill saves nothing when all comments are outside the window", async () => {
+  const db = seedDb();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const daySec = 86400;
+  const fakeClient = {
+    postComments: async (_awemeId: string, _cursor: number): Promise<EnsembleDataResponse> => ({
+      data: {
+        comments: [{ cid: "old1", aweme_id: "aw1", create_time: nowSec - 200 * daySec,
+          reply_id: null, user: { unique_id: "u" }, text: "very old", digg_count: 0,
+          is_author_digged: false, reply_comment_total: 0 }],
+        nextCursor: null,
+      },
+      units_charged: 1,
+    }),
+  };
+  const counters = await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["backfill"], backfillWindowDays: 90,
+  }, "test");
+  assert.equal(counters.commentsSaved, 0);
+  assert.equal(counters.backfillEarlyExits, 1);
+  const rows = db.prepare("SELECT COUNT(*) AS n FROM tt_comments WHERE cid='old1'").get() as any;
+  assert.equal(rows.n, 0);
+});
+
+test("backfill respects the unit cap and stops mid-title", async () => {
+  const db = seedDb();
+  const nowSec = Math.floor(Date.now() / 1000);
+  // Add three more videos so the cap (2 units) stops mid-title.
+  for (let i = 2; i <= 4; i++) {
+    db.prepare(`INSERT INTO tt_videos (aweme_id, title_id, desc, create_time, view_count, like_count,
+      comment_count, repost_count, match_reason, relevance_version, discovered_via, first_seen_at, last_refreshed_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(`aw${i}`, 2183900, `SM2 video ${i}`, nowSec - 100, 100 * i, 10, 5, 1,
+        "space marine 2", RELEVANCE_VERSION, "hashtag", new Date().toISOString(), new Date().toISOString());
+  }
+  const fakeClient = {
+    postComments: async (awemeId: string, _cursor: number): Promise<EnsembleDataResponse> => ({
+      data: {
+        comments: [{ cid: `cap-${awemeId}`, aweme_id: awemeId, create_time: nowSec,
+          reply_id: null, user: { unique_id: "u" }, text: "recent", digg_count: 0,
+          is_author_digged: false, reply_comment_total: 0 }],
+        nextCursor: null,
+      },
+      units_charged: 1,
+    }),
+  };
+  const counters = await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["backfill"], backfillUnitCap: 2,
+  }, "test");
+  assert.equal(counters.units, 2);
+  assert.equal(counters.backfillVideos, 2);   // stopped mid-title after 2 units
+  assert.ok(counters.notes.some((n: string) => n.includes("unit budget exhausted")));
+});
+
+test("backfill scopes to explicit titleIds only", async () => {
+  const db = seedDb();
+  // seedDb has one title 2183900 (SM2) and one video aw1. Add a second title with a video.
+  db.prepare(`INSERT INTO tt_titles (title_id, title, steam_app_id, is_saber, phrases, exclude_terms,
+    title_excludes, required_terms, require_companion, enabled, backfill_floor, config_source, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(1465360, "SnowRunner", "1465360", 1, JSON.stringify(["snowrunner"]),
+      JSON.stringify([]), JSON.stringify([]), JSON.stringify([]), 0, 1, "2017-01-01", "seed", new Date().toISOString());
+  db.prepare(`INSERT INTO tt_videos (aweme_id, title_id, desc, create_time, view_count, like_count,
+    comment_count, repost_count, match_reason, relevance_version, discovered_via, first_seen_at, last_refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run("aw2", 1465360, "SnowRunner gameplay", 1, 100, 10, 5, 1,
+      "snowrunner", RELEVANCE_VERSION, "hashtag", new Date().toISOString(), new Date().toISOString());
+  const nowSec = Math.floor(Date.now() / 1000);
+  const touched: string[] = [];
+  const fakeClient = {
+    postComments: async (awemeId: string, _cursor: number): Promise<EnsembleDataResponse> => {
+      touched.push(awemeId);
+      return { data: { comments: [], nextCursor: null }, units_charged: 0 };
+    },
+  };
+  await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["backfill"],
+    backfillTitleIds: [2183900],  // SM2 only, SnowRunner excluded
+  }, "test");
+  assert.ok(touched.includes("aw1"));
+  assert.ok(!touched.includes("aw2"));
+});
