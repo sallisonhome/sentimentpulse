@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import CompetitorGame, DailySummary, Game, Publisher
+from models import AppSetting, CompetitorGame, DailySummary, Game, Publisher
 from schemas import (
     DailySummaryResponse,
     GameCreate,
@@ -33,6 +33,23 @@ from schemas import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/games", tags=["games"])
+
+
+def _enrich_tiktok(db: Session, games: list[Game]) -> list[Game]:
+    """Attach tiktok_comment_enabled from AppSetting so GameResponse can
+    read it. Independent from SignalPulse's own tt_titles.enabled flag.
+    Matches the same effective gate as ingestion: per-title key only, no
+    global fallback. This way the UI shows exactly what the ingestion
+    will do."""
+    if not games:
+        return games
+    keys = [f"tiktok_comment_enabled:{g.id}" for g in games]
+    rows = db.query(AppSetting).filter(AppSetting.key.in_(keys)).all()
+    enabled_map = {r.key: r.value for r in rows}
+    for g in games:
+        val = enabled_map.get(f"tiktok_comment_enabled:{g.id}", "")
+        g.tiktok_comment_enabled = bool(val and val.lower() == "true")
+    return games
 
 
 @router.get("", response_model=List[GameResponse])
@@ -54,7 +71,8 @@ def list_games(
     if exclude_competitors:
         competitor_ids = db.query(CompetitorGame.competitor_id)
         q = q.filter(~Game.id.in_(competitor_ids))
-    return q.order_by(Game.id.desc()).all()
+    games = q.order_by(Game.id.desc()).all()
+    return _enrich_tiktok(db, games)
 
 
 @router.post("", response_model=GameResponse, status_code=201)
@@ -208,6 +226,10 @@ def get_game(game_id: int, db: Session = Depends(get_db)):
     if not game:
         raise HTTPException(status_code=404, detail="Game not found.")
 
+    # Attach per-title TikTok comment ingestion state so the response
+    # reflects the AppSetting, not a non-existent Game model field.
+    game = _enrich_tiktok(db, [game])[0]
+
     latest = (
         db.query(DailySummary)
         .filter_by(game_id=game_id)
@@ -223,6 +245,33 @@ def get_game(game_id: int, db: Session = Depends(get_db)):
             DailySummaryResponse.model_validate(latest) if latest else None
         ),
     )
+
+
+@router.patch("/{game_id}/tiktok-comments", response_model=GameResponse)
+def update_game_tiktok_comments(
+    game_id: int,
+    data: GameTiktokCommentsUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    Toggle per-title TikTok comment ingestion for this game.
+    Stored as AppSetting tiktok_comment_enabled:<game_id>. Independent
+    from SignalPulse's own per-title tt_titles.enabled flag. Turning off
+    preserves history; it only stops new comment ingestion.
+    """
+    game = db.query(Game).filter_by(id=game_id).first()
+    if not game:
+        raise HTTPException(status_code=404, detail="Game not found.")
+
+    key = f"tiktok_comment_enabled:{game_id}"
+    row = db.query(AppSetting).filter_by(key=key).first()
+    if row is None:
+        row = AppSetting(key=key)
+        db.add(row)
+    row.value = "true" if data.enabled else "false"
+    db.commit()
+    db.refresh(game)
+    return _enrich_tiktok(db, [game])[0]
 
 
 @router.patch("/{game_id}", response_model=GameResponse)

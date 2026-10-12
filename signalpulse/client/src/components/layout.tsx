@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import { useTheme } from "./theme-provider";
 import { useQuery } from "@tanstack/react-query";
-import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, ChevronDown, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon, Handshake, Calendar, Globe2, Download, Youtube } from "lucide-react";
+import { Sun, Moon, Plus, Gamepad2, ChevronLeft, ChevronRight, ChevronDown, Activity, Settings, LogOut, ArrowRightLeft, Home, Trophy, AlertTriangle, Inbox as InboxIcon, Handshake, Calendar, Globe2, Download, Youtube, Music2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -46,7 +46,7 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
   const isMobile = useIsMobile();
   const isDemosPage = location.startsWith("/demos-leaderboard");
   const isRatingsDetailPage = /^\/(?:products\/\d+|ccu\/\d+|amazon\/product\/[^/]+|console-leaderboards\/(?:multiplatform\/[^/]+|(?:steam|ps5|xbox)\/\d+))\/?$/.test(location);
-  const isCompactDataPage = isDemosPage || location.startsWith("/youtube") || location === "/dashboard" || isRatingsDetailPage;
+  const isCompactDataPage = isDemosPage || location.startsWith("/youtube") || location.startsWith("/tiktok") || location === "/dashboard" || isRatingsDetailPage;
   const [sidebarOverride, setSidebarCollapsed] = useState<boolean | null>(null);
   const sidebarCollapsed = sidebarOverride ?? (isCompactDataPage && isMobile);
   const isProductPage = location.startsWith("/products/");
@@ -219,6 +219,19 @@ export function Layout({ children, onAddProduct }: LayoutProps) {
               >
                 <Youtube className="h-3.5 w-3.5 shrink-0" />
                 {!sidebarCollapsed && <span>YouTube Pulse <span className="opacity-60">(experimental)</span></span>}
+              </div>
+            </Link>
+            <Link href="/tiktok">
+              <div
+                className={`flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs cursor-pointer transition-colors ${
+                  location.startsWith("/tiktok")
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50"
+                }`}
+                data-testid="link-tiktok-pulse"
+              >
+                <Music2 className="h-3.5 w-3.5 shrink-0" />
+                {!sidebarCollapsed && <span>TikTok Pulse <span className="opacity-60">(experimental)</span></span>}
               </div>
             </Link>
             <Link href="/dashboard">
