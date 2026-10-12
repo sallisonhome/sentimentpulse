@@ -1,10 +1,10 @@
 name: SP Set TikTok EnsembleData Token
 # One-off: PUT the EnsembleData token into SignalPulse's
 # /api/settings/tiktok_ensemble_token on the droplet. The token value
-# never appears in the workflow YAML or in any log — it is passed
-# via the GitHub Actions repository secret `ENSEMBLEDATA_TOKEN` (set by
-# the orchestrator right before dispatch), and only the "done" message
-# is echoed back.
+# never appears in the workflow YAML, in any log line, or in ps output —
+# it's read from the ENSEMBLEDATA_TOKEN Actions secret on the runner,
+# written to a file on the droplet via stdin, and consumed by the
+# remote script which immediately deletes it after PUTting it.
 on:
   workflow_dispatch:
 jobs:
@@ -26,29 +26,48 @@ jobs:
             echo "ERROR: ENSEMBLEDATA_TOKEN secret not set"
             exit 1
           fi
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
-            set -euo pipefail
-            # Read the token from stdin so it never lands in `ps` output
-            # or in any shell variable visible to a log.
-            TOK="$(cat)"
-            if [ -z "$TOK" ]; then
-              echo "ERROR: token was empty"
-              exit 1
-            fi
-            # PUT it into the SignalPulse settings API (not SentimentPulse's)
-            status=$(curl -sS -o /dev/null -w "%{http_code}" -X PUT \
-              http://127.0.0.1:5000/api/settings/tiktok_ensemble_token \
-              -H "Content-Type: application/json" \
-              --data-binary "$(python3 -c 'import json,sys; print(json.dumps({"value": sys.stdin.read()}))' <<< "$TOK")")
-            echo "HTTP status: $status"
-            # Read back masked to verify it saved (never prints the value)
-            python3 -c "
-import json, urllib.request
-r = urllib.request.urlopen('http://127.0.0.1:5000/api/settings/tiktok_ensemble_token')
-d = json.loads(r.read())
-print('isSet:', d.get('isSet'))
-print('isSecret:', d.get('isSecret'))
-print('valueMasked:', d.get('value'))
-"
-          EOF <<< "$ENSEMBLEDATA_TOKEN"
-
+          # Write the remote script locally. It's inside the run: | block
+          # scalar, so the heredoc content must be indented to match.
+          cat > /tmp/remote-set.sh <<'REMOTE'
+          set -euo pipefail
+          TOK_B64=$(cat /tmp/.tok_b64)
+          rm -f /tmp/.tok_b64
+          if [ -z "$TOK_B64" ]; then
+            echo "ERROR: token file was empty"
+            exit 1
+          fi
+          TOK=$(printf "%s" "$TOK_B64" | base64 -d)
+          unset TOK_B64
+          if [ -z "$TOK" ]; then
+            echo "ERROR: token was empty after decode"
+            exit 1
+          fi
+          # PUT it into SignalPulse settings API (not SentimentPulse)
+          status=$(curl -sS -o /tmp/put_response.txt -w "%{http_code}" -X PUT \
+            http://127.0.0.1:5000/api/settings/tiktok_ensemble_token \
+            -H "Content-Type: application/json" \
+            -d "{\"value\": \"$TOK\"}")
+          unset TOK
+          echo "HTTP status: $status"
+          # Read back masked to verify it saved (never prints the value)
+          python3 - <<'PYEOF'
+          import json, urllib.request
+          r = urllib.request.urlopen("http://127.0.0.1:5000/api/settings/tiktok_ensemble_token")
+          d = json.loads(r.read())
+          print("isSet:", d.get("isSet"))
+          print("isSecret:", d.get("isSecret"))
+          print("valueMasked:", d.get("value"))
+          PYEOF
+          REMOTE
+          # Step 1: pipe the base64 token as stdin to ssh, which saves it to
+          # a 600-perm tmp file on the droplet. The token never appears in ps
+          # or in any log line (it's only ever in a pipe, never a command-line arg).
+          printf '%s' "$ENSEMBLEDATA_TOKEN" | base64 -w 0 | \
+            ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              root@104.236.239.46 "cat > /tmp/.tok_b64 && chmod 600 /tmp/.tok_b64"
+          # Step 2: run the remote script (it reads + deletes /tmp/.tok_b64)
+          # Strip the leading 10-space indent so the heredoc content works as bash
+          sed 's/^          //' /tmp/remote-set.sh > /tmp/remote-set-clean.sh
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 "bash -s" < /tmp/remote-set-clean.sh
+          rm -f /tmp/remote-set.sh /tmp/remote-set-clean.sh
