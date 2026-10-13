@@ -172,6 +172,30 @@ test("stats refreshes video view_count from array-shaped postInfo response", asy
   assert.equal(stat.view_count, 9999);
 });
 
+/** Keyword-search results sometimes have no aweme_id. admitPost must
+ *  skip them silently, NOT throw a NOT NULL constraint failure (which
+ *  was polluting every run's notes). */
+test("admitPost skips posts without an aweme_id", async () => {
+  const db = seedDb();
+  // A keyword-search result with NO aweme_id (TikTok keyword API quirk)
+  const postNoId = { desc: "Hellraiser movie clip", author: { unique_id: "someone" } } as any;
+  const fakeClient = {
+    hashtagPosts: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    keywordSearch: async (): Promise<EnsembleDataResponse> => ({ data: { data: [postNoId], nextCursor: null }, units_charged: 0 }),
+    postInfo: async (): Promise<EnsembleDataResponse> => ({ data: [], units_charged: 0 }),
+    postComments: async (): Promise<EnsembleDataResponse> => ({ data: { comments: [], nextCursor: null }, units_charged: 0 }),
+  };
+  db.prepare("UPDATE tt_titles SET keywords=?").run(JSON.stringify(["hellraiser"]));
+  const counters = await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["discovery"],
+  }, "test");
+  // No NOT NULL error should be pushed; the post is silently skipped
+  assert.ok(!counters.notes.some((n: string) => n.includes("NOT NULL constraint")),
+    "no NOT NULL constraint errors should appear");
+  const rejected = (db.prepare("SELECT COUNT(*) AS n FROM tt_rejected_videos").get() as any).n;
+  assert.equal(rejected, 0, "a post with no aweme_id should not be recorded as rejected");
+});
+
 test("removeVideo excludes but retains raw text", () => {
   const db = seedDb();
   const now = new Date();
