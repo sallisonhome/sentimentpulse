@@ -20,6 +20,10 @@ on:
       sql:
         description: 'SQL to run (single statement, must not include CREATE / ATTACH / DROP TABLE)'
         required: true
+      db:
+        description: 'DB filename inside the signalpulse WorkingDirectory (default data.db)'
+        required: false
+        default: 'data.db'
       confirm:
         description: 'Type CONFIRM to acknowledge you are writing to prod'
         required: true
@@ -58,6 +62,7 @@ jobs:
       - name: Backup, EXPLAIN, and run
         env:
           SQL: ${{ github.event.inputs.sql }}
+          DB: ${{ github.event.inputs.db }}
           NOTE: ${{ github.event.inputs.note }}
         run: |
           set -e
@@ -70,7 +75,7 @@ jobs:
           esac
 
           SSH="ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46"
-          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/data.db\"")
+          DB_PATH=$($SSH "wd=\$(systemctl show -p WorkingDirectory --value signalpulse); echo \"\$wd/${DB:-data.db}\"")
           echo "DB: $DB_PATH"
           echo "NOTE: ${NOTE:-<none>}"
           echo "SQL:"
