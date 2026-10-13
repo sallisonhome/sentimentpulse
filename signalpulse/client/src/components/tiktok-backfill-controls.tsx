@@ -1,13 +1,13 @@
-// ─── TikTok Pulse Manual Backfill Controls (2026-10-12) ─────────────────────
+// ─── TikTok Pulse Manual Ingestion Controls (2026-10-13) ─────────────────────
 //
-// One-shot trigger for the 90-day TikTok comment backfill. Mirrors the
-// ManualIngestionControls pattern but calls the TikTok-specific ops route:
-//   POST /api/tiktok/ops/backfill  { titleIds: [...], windowDays: 90 }
+// ONE button: "Backfill TikTok comments (90d)". Clicking it triggers
+// POST /api/tiktok/ops/backfill, which server-side runs discovery + stats
+// + backfill in a single pipeline pass (see routes-tiktok.ts
+// triggerTikTokBackfill). No separate "Run discovery now" step — that was
+// an artifact of an earlier bug where the backfill didn't bootstrap the
+// video pool itself.
 //
-// Authenticated by the operator's existing SignalPulse browser session
-// (the same path the Settings page uses for every other API key /
-// ingestion operation — see CLAUDE.md "SignalPulse — API Key Storage
-// Convention"). No SSH, no secrets read, no new auth surface.
+// Authenticated by the operator's existing SignalPulse browser session.
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -80,7 +80,7 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
       setLastAccepted(new Date().toLocaleString());
       toast({
         title: "TikTok backfill started",
-        description: `titleIds=${(data.titleIds || []).join(",")} · windowDays=${data.windowDays ?? windowDays}. Comments accumulate in the background; check tt_comments row counts to verify.`,
+        description: `titleIds=${(data.titleIds || []).join(",")} · windowDays=${data.windowDays ?? windowDays}. Runs discovery + stats + backfill server-side in one pass. Ground truth is tt_comments row counts, not the log line.`,
       });
       qc.invalidateQueries({ queryKey: ["./api/tiktok/status"] });
     },
@@ -90,29 +90,6 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
         description: err?.message || "Unknown error — check server logs.",
         variant: "destructive",
       });
-    },
-  });
-
-  const discovery = useMutation({
-    mutationFn: async () => {
-      const resp = await fetch("./api/tiktok/ops/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ steps: ["discovery", "stats", "comments"] }),
-      });
-      if (!resp.ok) {
-        let detail = "";
-        try { const b = await resp.clone().json(); if (b?.error) detail = ` \u2014 ${b.error}`; } catch { /* ignore */ }
-        throw new Error(`HTTP ${resp.status}${detail}`);
-      }
-      return resp.json();
-    },
-    onSuccess: () => {
-      toast({ title: "TikTok discovery started", description: "Discovery + stats are running in the background (same steps as the 04:30 ET cron). Videos appear in the counts below as they are admitted." });
-      qc.invalidateQueries({ queryKey: ["./api/tiktok/status"] });
-    },
-    onError: (err: any) => {
-      toast({ title: "TikTok discovery failed to start", description: err?.message || "Unknown error", variant: "destructive" });
     },
   });
 
@@ -130,11 +107,11 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
           TikTok Pulse — 90-Day Comment Backfill
         </CardTitle>
         <CardDescription>
-          One-shot trigger that backfills the last {windowDays} days of TikTok comments
-          (discovery → stats → comments with the game-relevance filter) for the six
-          tracked Saber titles. Fire-and-forget — comments accumulate in the
-          background and the row counts in tt_comments are the ground truth, not
-          the "backfill saved" log line.
+          One-shot trigger that runs the full pipeline for the last {windowDays} days:
+          discovery (hashtags/keywords), stats (fresh view counts), then the 90-day
+          comment backfill with the game-relevance filter. Fire-and-forget — comments
+          accumulate in the background and the row counts in tt_comments are the ground
+          truth, not the "backfill saved" log line.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
@@ -147,19 +124,8 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm font-medium flex items-center gap-2">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Database className="w-4 h-4" />}
-            {busy ? "A TikTok run/backfill is already in progress…" : "Ready to backfill"}
+            {busy ? "A TikTok run/backfill is in progress…" : "Ready to backfill"}
           </div>
-          <Button
-            size="sm"
-            variant="outline"
-            className="h-8 text-xs gap-1.5"
-            disabled={discovery.isPending || busy || !tokenConfigured}
-            onClick={() => discovery.mutate()}
-            data-testid="button-tiktok-discovery"
-          >
-            {discovery.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Music2 className="w-3.5 h-3.5" />}
-            1. Run discovery now
-          </Button>
           <Button
             size="sm"
             variant="outline"
@@ -169,7 +135,7 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
             data-testid="button-tiktok-backfill"
           >
             {mutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Music2 className="w-3.5 h-3.5" />}
-            2. Backfill comments ({windowDays}d)
+            Backfill TikTok comments ({windowDays}d)
           </Button>
         </div>
         {lastAccepted && (

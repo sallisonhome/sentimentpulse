@@ -31,6 +31,25 @@ export function tiktokEnsembleToken(): string | null {
   return v || ensembleTokenFromEnv();
 }
 
+/** The TikTok Pulse scope — the specific title_ids the pipeline should track.
+ *  Stored as a JSON array in app_settings key `tiktok_scope_title_ids`.
+ *  This is INDEPENDENT from `tt_titles.enabled` (which is the broad
+ *  SentimentPulse/SignalPulse title sync) and independent from YouTube Pulse's
+ *  title scope. Defaults to the six Saber core parents the user specified:
+ *  2183900 (SM2), 1551980 (Hellraiser Revival), 1967610 (Turok Origins),
+ *  2947860 (John Wick), 675010 (MudRunner), 1465360 (SnowRunner).
+ *  Leave empty to track all enabled titles (the old behavior). */
+export function tiktokScopeTitleIds(): number[] {
+  const raw = storage.getSetting("tiktok_scope_title_ids")?.value?.trim();
+  if (!raw) return [2183900, 1551980, 1967610, 2947860, 675010, 1465360];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((n: any) => typeof n === "number" && n > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
 const TITLE_SYNC_TTL_MS = 15 * 60_000;
 let lastTitleSync = 0;
 let titleSyncInFlight: Promise<{ titles: number; sentimentpulse: boolean }> | null = null;
@@ -60,25 +79,33 @@ export async function triggerTikTokRun(trigger: string, steps?: any[]) {
   await syncTikTokTitles(true);
   const tok = tiktokEnsembleToken();
   const client = tok ? new EnsembleDataClient({ token: tok }) : null;
+  const scopeTitleIds = tiktokScopeTitleIds();
   const runRowIns = ttDb().prepare(`INSERT INTO tt_ingest_runs (trigger, started_at, status) VALUES (?, ?, 'running')`).run(trigger, new Date().toISOString());
   const runRow = { id: Number(runRowIns.lastInsertRowid) };
-  const res = await runPipeline(ttDb(), client, { extendedStorageApproved: true, steps }, trigger, runRow);
+  const res = await runPipeline(ttDb(), client, { extendedStorageApproved: true, steps, scopeTitleIds }, trigger, runRow);
   log(`tiktok run (${trigger}): ${JSON.stringify({ ...res, notes: undefined })}`, "tiktok");
   return res;
 }
 
 /** Manual 90-day comment backfill. Scoped to explicit titleIds so you can
- *  run the six Saber parents without touching competitors. */
+ *  run the six Saber parents without touching competitors.
+ *
+ *  Runs discovery + stats + backfill in one shot. runBackfill only paginates
+ *  comments for videos already in tt_videos — it does NOT discover the video
+ *  pool itself — so the backfill must run discovery first to bootstrap the
+ *  pool (and stats so each video has fresh view_count, which runBackfill
+ *  uses to order videos by view count DESC). One button, one API call. */
 export async function triggerTikTokBackfill(titleIds: number[], windowDays?: number, unitCap?: number) {
   await syncTikTokTitles(true);
   const tok = tiktokEnsembleToken();
   if (!tok) throw new Error("TikTok EnsembleData token is not configured");
   const client = new EnsembleDataClient({ token: tok });
+  const scopeTitleIds = tiktokScopeTitleIds();
   const runRowIns = ttDb().prepare(`INSERT INTO tt_ingest_runs (trigger, started_at, status) VALUES ('backfill', ?, 'running')`).run(new Date().toISOString());
   const runRow = { id: Number(runRowIns.lastInsertRowid) };
   const res = await runBackfillStep(ttDb(), client, {
-    extendedStorageApproved: true, steps: ["backfill"],
-    backfillTitleIds: titleIds, backfillWindowDays: windowDays, backfillUnitCap: unitCap,
+    extendedStorageApproved: true, steps: ["comments", "backfill", "discovery", "stats"],
+    backfillTitleIds: titleIds, backfillWindowDays: windowDays, backfillUnitCap: unitCap, scopeTitleIds,
   }, "backfill", runRow);
   log(`tiktok backfill: ${JSON.stringify({ ...res, notes: undefined })}`, "tiktok");
   return res;
@@ -175,6 +202,8 @@ export function registerTikTokRoutes(app: Express) {
     if (runInFlight) return res.status(409).json({ error: "a TikTok run is already in progress" });
     const allowed = ["retention", "discovery", "stats", "comments"];
     const steps = Array.isArray(req.body?.steps) ? req.body.steps.filter((s: any) => allowed.includes(s)) : undefined;
+    // Log the received + filtered steps so we can verify what actually ran
+    log(`tiktok ops/run: bodySteps=${JSON.stringify(req.body?.steps)} -> filteredSteps=${JSON.stringify(steps)}`, "tiktok");
     runInFlight = true;
     triggerTikTokRun("manual", steps)
       .catch((e) => log(`tiktok manual run failed: ${e}`, "tiktok"))
