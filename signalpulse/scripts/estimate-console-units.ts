@@ -1153,6 +1153,9 @@ async function main() {
   // Flag defaults to false. When false, LTD is written exactly as before.
   // When true, LTD rows use title_ltd_state as source of truth.
   const LTD_ACCUMULATOR_ENABLED = process.env.LTD_ACCUMULATOR_ENABLED === "1";
+  // Set inside the LTD_ACCUMULATOR_ENABLED block below; called AFTER the 9b
+  // GP revshare overlay so title_ltd_state reflects the post-overlay LTD.
+  let runStateUpserts: (() => void) | null = null;
   if (LTD_ACCUMULATOR_ENABLED) {
     console.log(`[estimate-console-units] LTD_ACCUMULATOR_ENABLED=1 — using title_ltd_state`);
 
@@ -1334,8 +1337,16 @@ async function main() {
         stateUpsert.run(u.title_id, u.platform, u.ltd_units, u.ltd_source, u.last_signal_value, nowIso);
       }
     });
-    stateTx(stateUpserts);
-    console.log(`[estimate-console-units] title_ltd_state upserts: ${stateUpserts.length}`);
+    // NOTE(2026-10-12): the actual stateTx() call is deferred to AFTER the
+    // 9b GP revshare overlay below. Writing the state before the overlay
+    // records the pre-overlay (inflated) LTD into title_ltd_state, which then
+    // re-inflates the LTD row on the next estimator run via the max() in
+    // regime 2. Writing it after the overlay means the state reflects the
+    // post-overlay LTD the user actually sees.
+    runStateUpserts = () => {
+      stateTx(stateUpserts);
+      console.log(`[estimate-console-units] title_ltd_state upserts: ${stateUpserts.length}`);
+    };
   }
 
   // ─── 9. UPSERT into window_estimates_daily ───────────────────────────────
@@ -1530,6 +1541,10 @@ async function main() {
 
     console.log(`[estimate-console-units] GP revshare overlay: applied=${overlayApplied}, skipped_no_steam_anchor=${overlaySkippedNoSteam}, skipped_would_raise=${overlaySkippedRaisesUnits}`);
   }
+
+  // Write title_ltd_state AFTER the 9b GP revshare overlay so the state
+  // reflects the post-overlay LTD (see the NOTE above for the bug this fixes).
+  if (runStateUpserts) runStateUpserts();
 
   // ─── 10. Summary ─────────────────────────────────────────────────────────
   const byOutcome: Record<string, number> = {};
