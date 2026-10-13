@@ -98,7 +98,7 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
       const resp = await fetch("./api/tiktok/ops/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ steps: ["discovery", "stats"] }),
+        body: JSON.stringify({ steps: ["discovery", "stats", "comments"] }),
       });
       if (!resp.ok) {
         let detail = "";

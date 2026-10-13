@@ -156,6 +156,11 @@ function titleIdOf(db: TtDb, awemeId: string): number | null {
 
 async function admitPost(db: TtDb, client: EnsembleDataClient, c: RunCounters, t: TitleRow, p: TikTokPost,
   now: Date, discoveredVia: "hashtag" | "keyword", hashtag: string | null): Promise<void> {
+  // Keyword-search results sometimes come back without an aweme_id
+  // (TikTok's keyword API returns a different post shape for some
+  // entries). Those can't be recorded — tt_rejected_videos.aweme_id
+  // is NOT NULL — and are indistinguishable, so just skip them.
+  if (!p.aweme_id) return;
   const cfg = matchConfigOf(t);
   const verdict = matchVideo(cfg, { desc: p.desc ?? "" });
   if (!verdict.admit) {
