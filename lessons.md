@@ -3514,3 +3514,31 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 **What happened.** Dynasty Warriors 3: Complete Edition Remastered showed on all three boards, but the PS5 row (title 11187, `JP0106-PPSA32935_00-DW3CEREMASTERED0`) carried the grid's Japanese name (真・三國無双２ with 猛将伝 Remastered). Boards join platforms by the normalized name, so PS5 stayed alone, fell to a console-exclusive `backfill-bootstrap` estimate, and had no IGDB id for the weekly link job to merge on. The en-us product page title was already English.
 
 **Rules.** (1) Before any PS5 name is written, a CJK name is replaced by the reviewed SKU name, then the en-us product page title; never invented (`ps5-english-name.ts`). (2) A family split is a name problem first: compare `editionGroupKey` across the three rows before touching estimates. (3) Daily discovery rewrites `console_title_igdb.name` for rows with a null `igdb_id`, so a one-off manual rename does not stick; fix the source. (4) Edition SKUs that own a separate title_id (11182) are not refreshed by the base-row name write and need a separate data repair.
+
+## 2026-10-13 (signalpulse) — Aged first-party PS5 windows: a 32-day linear extrapolation is not a rolling window, and a global fix was the wrong shape
+
+**Symptom:** TLOU Part I/Part II Remastered PS5 showed massively overstated d90/m12 (Part II Rem m12 served 6.4M units vs a ~2M lifetime). GoW Ragnarök PS5 d90/m12 were overstated the same way (m12 served 3.6M units; native estimator 1.26M; curve-consistent ~137K).
+
+**Root cause chain (three independent defects compounding):**
+1. Every PS5 d90/m12 is a **32-day linear extrapolation**. The PS5 rating collector started 2026-09-11 catalog-wide, so forward-delta has never fired for d90/m12; `backfill-observed-pace` scales the last 32 days' rating delta across 90/365 days. For a 4-year-old game this assumes the current tail pace is representative of the whole window — it is not.
+2. The **Steam×9 IP override** (Path B) then replaced those already-wrong values with Steam-family-revenue × 9.0 back-solved to units via ASP.
+3. The estimator's LTD for TLOU Part II Remastered (9.8M) was the PS4 Part II figure — the wrong title's lifetime.
+
+**What was NOT done (deliberate):** a global estimator rule. The user explicitly scoped the fix to the three named titles ("these changes shouldnt be global but specific to these titles and not written over by future crons and updates"). A global ceiling would change every aged title on the board, including ones whose baselines have not been validated.
+
+**The durable shape (PR #272, merged 2026-10-13):**
+1. `server/aged-title-ceilings.ts` — a **per-(title_id, platform, window) registry** (NOT the estimator) that clamps the estimator's output at READ time in the group loop of `routes-console-leaderboards.ts`. Fractions derived from dated Sony first-party milestones: GoW Ragnarök 5.1M day-5 / 11M day-75 / 15M day-370; GoW 2018 3.1M/5M/10M/23M; HFW 1.5M/6M/8.4M; Ghost of Tsushima 2.4M/5M/9.73M. Curve-fit: d90 ~1.5% of LTD, m12 ~2% of LTD for a 4-year-old title. TLOU Part II Remastered gets 3x burst-adjusted ceilings (0.24 d90, 0.33 m12) because the HBO S2 bump is real.
+2. `scripts/write-console-public-ltd-anchors.ts` — writes `manual_anchor_verified_public_lifetime_v1` LTD rows from researched public figures (Sony 15M × 82% PS5; Alinea 6.3M × 55.4%; Fandom 2M). Each row cites its source URL and date in `notes`. The verified anchor wins on Path A above every read-side pass; `anchorLifetimeGrowth` grows it from the observed daily ratings.
+3. `console-native-model-guards.ts` — TLOU rows widened to d7/d30/d90/m12 (LTD deliberately NOT guarded — the anchor handles LTD); GoW Ragnarök added scoped to d90/m12 only.
+
+**Why the ceiling must be at read time:** the estimator runs on a cron and would overwrite any stored fix on the next run. The serving path consults the registry on every read, so the estimator's stored `window_estimates_daily` rows can stay as-is while the served values are clamped. Verified: after `estimate-apply`, the DB still has the raw `backfill-observed-pace` values, and the served board shows the clamped ones.
+
+**Verification (2026-10-13, live):**
+- GoW Ragnarök d90 served 102,826 (was 468,445); m12 falls below the top-100 cutoff (324K) at ~253K.
+- TLOU Part I d7 20,832, d30 96,921 (verified-LTD-anchor scaled); d90/m12 fall below the top-100 cutoff.
+- TLOU Part II Remastered d90 99,755 (was 1.43M), m12 404,556 (was 6.44M).
+- All three LTDs served as `dataSource=actual` with the researched figures.
+
+**Pattern:** (1) A "burst" is a real signal (HBO S2, a deep discount, a launch); a per-title ceiling must not erase it — hence the 3x burst allowance on 11179. (2) `revenue_calibration_anchors` column names are `actual_units`/`actual_revenue_usd`/`reference_msrp_usd_cents`/`sale_state` — all NOTNULL; check `PRAGMA table_info` before writing. (3) `signalpulse-recompute.yml` defaults to `ranks-preview` (no writes); pass `action=estimate-apply` to regenerate estimates. (4) The honest answer for an aged title with only 32 days of data may be a gated/null value or a drop below the board cutoff, not a clamped number — the cutoff case is what happened here and is correct.
+
+**Rules.** (1) Aged first-party titles with high LTDs (>2y old) will need this clamped approach often — the registry is the mechanism; add a row, don't touch the estimator. (2) Never widen a guard or ceiling beyond the windows the user named without asking. (3) A verified public anchor beats every read-side pass by design; check `dataSource=actual` to confirm it won.
