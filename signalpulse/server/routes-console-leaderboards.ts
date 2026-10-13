@@ -890,16 +890,30 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           ).get(g.familyTitleIds[0], platform, g.familyTitleIds[0], platform) as { units_mid: number | null } | undefined;
           const ltdUnits = ltdRow?.units_mid ?? null;
           if (ltdUnits != null && ltdUnits > 0) {
-            const ceilingUnits = Math.round(ltdUnits * agedCeiling.ceilingFraction);
-            if (g.unitsMid > ceilingUnits) {
-              // Scale revenue and owners proportionally, then let the ASP
-              // computation below derive from the clamped values.
-              const ratio = ceilingUnits / g.unitsMid;
-              g.unitsMid = ceilingUnits;
-              if (g.ownersMid != null) g.ownersMid = Math.round(g.ownersMid * ratio);
-              if (g.revenueMidUsd != null) g.revenueMidUsd = Math.round(g.revenueMidUsd * ratio);
-              g.agedTitleCeiling = { version: agedCeiling.policyVersion, reason: agedCeiling.reason, ceilingFraction: agedCeiling.ceilingFraction };
-              g.gatedReason = null;
+            // BURST EXEMPTION: if the recent daily sales rate is many times the
+            // title's lifetime-average daily rate, the title is in a burst (a
+            // launch, an update bump, a deep-discount event). The curve is a
+            // steady-state prior and must not clamp a burst — the observed
+            // pace wins. Only registry rows get this check, so this is per-
+            // title behavior, not a global rule.
+            const gRelease = typeof g.releaseDate === "string" ? g.releaseDate.slice(0, 10) : null;
+            const gAgeDays = (gRelease && /^\d{4}-\d{2}-\d{2}/.test(gRelease))
+              ? Math.round((Date.parse(todayIsoDate()) - Date.parse(gRelease)) / 86400000) : null;
+            const winDays = ({ d7: 7, d30: 30, d90: 90, m12: 365 } as Record<string, number>)[window] ?? null;
+            const isBurst = gAgeDays != null && gAgeDays > 0 && winDays != null
+              ? (g.unitsMid / winDays) / (ltdUnits / gAgeDays) > 10 : false;
+            if (!isBurst) {
+              const ceilingUnits = Math.round(ltdUnits * agedCeiling.ceilingFraction);
+              if (g.unitsMid > ceilingUnits) {
+                // Scale revenue and owners proportionally, then let the ASP
+                // computation below derive from the clamped values.
+                const ratio = ceilingUnits / g.unitsMid;
+                g.unitsMid = ceilingUnits;
+                if (g.ownersMid != null) g.ownersMid = Math.round(g.ownersMid * ratio);
+                if (g.revenueMidUsd != null) g.revenueMidUsd = Math.round(g.revenueMidUsd * ratio);
+                g.agedTitleCeiling = { version: agedCeiling.policyVersion, reason: agedCeiling.reason, ceilingFraction: agedCeiling.ceilingFraction };
+                g.gatedReason = null;
+              }
             }
           }
         }
