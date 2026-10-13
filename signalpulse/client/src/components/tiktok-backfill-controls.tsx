@@ -31,7 +31,7 @@ interface TikTokStatus {
     id: number;
     trigger: string;
     started_at: string;
-    completed_at: string | null;
+    finished_at: string | null;
     status: string;
     message: string | null;
   }>;
@@ -93,6 +93,29 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
     },
   });
 
+  const discovery = useMutation({
+    mutationFn: async () => {
+      const resp = await fetch("./api/tiktok/ops/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ steps: ["discovery", "stats"] }),
+      });
+      if (!resp.ok) {
+        let detail = "";
+        try { const b = await resp.clone().json(); if (b?.error) detail = ` \u2014 ${b.error}`; } catch { /* ignore */ }
+        throw new Error(`HTTP ${resp.status}${detail}`);
+      }
+      return resp.json();
+    },
+    onSuccess: () => {
+      toast({ title: "TikTok discovery started", description: "Discovery + stats are running in the background (same steps as the 04:30 ET cron). Videos appear in the counts below as they are admitted." });
+      qc.invalidateQueries({ queryKey: ["./api/tiktok/status"] });
+    },
+    onError: (err: any) => {
+      toast({ title: "TikTok discovery failed to start", description: err?.message || "Unknown error", variant: "destructive" });
+    },
+  });
+
   // The status route doesn't expose in-flight flags; use the latest run's
   // status field ("running") as the busy indicator.
   const latestRun = status?.runs?.[0];
@@ -130,12 +153,23 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
             size="sm"
             variant="outline"
             className="h-8 text-xs gap-1.5"
+            disabled={discovery.isPending || busy || !tokenConfigured}
+            onClick={() => discovery.mutate()}
+            data-testid="button-tiktok-discovery"
+          >
+            {discovery.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Music2 className="w-3.5 h-3.5" />}
+            1. Run discovery now
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 text-xs gap-1.5"
             disabled={mutation.isPending || busy || !tokenConfigured}
             onClick={() => mutation.mutate()}
             data-testid="button-tiktok-backfill"
           >
             {mutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Music2 className="w-3.5 h-3.5" />}
-            Backfill TikTok comments ({windowDays}d)
+            2. Backfill comments ({windowDays}d)
           </Button>
         </div>
         {lastAccepted && (
@@ -154,8 +188,8 @@ export function TikTokBackfillControls({ windowDays = 90 }: TikTokBackfillContro
         {latestRun && (
           <div className="rounded border p-2 bg-muted/30 space-y-1 text-xs text-muted-foreground">
             <div>
-              Last run (trigger={latestRun.trigger}): {latestRun.completed_at
-                ? new Date(latestRun.completed_at).toLocaleString()
+              Last run (trigger={latestRun.trigger}): {latestRun.finished_at
+                ? new Date(latestRun.finished_at).toLocaleString()
                 : "in progress"}
             </div>
             {latestRun.message && <div>Message: {latestRun.message}</div>}
