@@ -220,6 +220,106 @@ test("runBackfillStep passes caller's steps through (regression)", async () => {
   assert.ok(counters.hashtagCalls > 0, `hashtagCalls should be > 0 (got ${counters.hashtagCalls}) — steps must pass through`);
 });
 
+/** Comments must run FIRST in the default steps order. This was the root
+ *  cause of runs 5/6/7 burning 5,000 EnsembleData units with 0 comments saved:
+ *  discovery (~350 units) + stats (870 postInfo × 2 = 1,740 units) ate the
+ *  budget before comments ever started. */
+test("comments run FIRST in default steps order (regression)", async () => {
+  const { runPipeline } = await import("./pipeline");
+  const order: string[] = [];
+  // Fake client that tracks call order
+  const fakeClient = {
+    hashtagPosts: async (): Promise<EnsembleDataResponse> => { order.push("hashtag"); return { data: { data: [], nextCursor: null }, units_charged: 0 }; },
+    keywordSearch: async (): Promise<EnsembleDataResponse> => { order.push("keyword"); return { data: { data: [], nextCursor: null }, units_charged: 0 }; },
+    postInfo: async (): Promise<EnsembleDataResponse> => { order.push("postInfo"); return { data: [], units_charged: 0 }; },
+    postComments: async (): Promise<EnsembleDataResponse> => { order.push("postComments"); return { data: { comments: [], nextCursor: null }, units_charged: 0 }; },
+  };
+  // Seed a video so comments has something to iterate
+  const db = seedDb();
+  db.prepare(`INSERT INTO tt_videos (aweme_id, title_id, author_unique_id, desc, create_time, view_count, comment_count, match_reason, discovered_via, first_seen_at, last_refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("7694531836088798477", 1, "testuser", "test", 1700000000, 1000, 5, "test", "manual", new Date().toISOString(), new Date().toISOString());
+  await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true,
+  }, "test");
+  const postCommentsIdx = order.indexOf("postComments");
+  const postInfoIdx = order.indexOf("postInfo");
+  assert.ok(postCommentsIdx >= 0, "postComments should have been called at least once");
+  assert.ok(postInfoIdx >= 0, "postInfo should have been called at least once");
+  assert.ok(postCommentsIdx < postInfoIdx,
+    `postComments must run BEFORE postInfo (postComments idx=${postCommentsIdx}, postInfo idx=${postInfoIdx})`);
+});
+
+/** Unit tracking must actually record spend. `recordUnits` used to have
+ *  `if (!units) return;` — EnsembleData reports `units_charged: 0` for
+ *  cached results, so `tt_quota_daily` was always empty and every budget
+ *  check saw 0 and never fired. This test verifies that a run with real
+ *  API calls leaves a nonzero row in tt_quota_daily. */
+test("runPipeline records real unit spend in tt_quota_daily (regression)", async () => {
+  const db = seedDb();
+  db.prepare("UPDATE tt_titles SET hashtags=?").run(JSON.stringify(["spacemarine2"]));
+  // Seed a video so comments has something to iterate
+  db.prepare(`INSERT INTO tt_videos (aweme_id, title_id, author_unique_id, desc, create_time, view_count, comment_count, match_reason, discovered_via, first_seen_at, last_refreshed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run("7694531836088798477", 1, "testuser", "test", 1700000000, 1000, 5, "test", "manual", new Date().toISOString(), new Date().toISOString());
+  const fakeClient = {
+    hashtagPosts: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    keywordSearch: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    postInfo: async (): Promise<EnsembleDataResponse> => ({ data: [], units_charged: 0 }),
+    postComments: async (): Promise<EnsembleDataResponse> => ({ data: { comments: [], nextCursor: null }, units_charged: 0 }),
+  };
+  const { runPipeline } = await import("./pipeline");
+  const counters = await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true,
+  }, "test");
+  // After the fix, counters.units should reflect the KNOWN per-call cost
+  // (hashtag=1, postInfo=2, postComments=1), not the reported units_charged: 0
+  assert.ok(counters.units > 0, `counters.units should be > 0 (got ${counters.units}) — unit tracking must record known cost`);
+  // And tt_quota_daily should have a nonzero row for today
+  const row = db.prepare("SELECT used FROM tt_quota_daily WHERE bucket='units'").get() as any;
+  assert.ok(row?.used > 0, `tt_quota_daily.used should be > 0 (got ${row?.used}) — budget tracking must persist`);
+});
+
+/** Scope filter: the pipeline must only make calls for the titles in
+ *  `scopeTitleIds`, NOT for all 48+ enabled titles. This was the root cause
+ *  of the "5,000 credits burned with 0 comments" — discovery + stats +
+ *  comments were running against every enabled SentimentPulse/SignalPulse
+ *  SKU, including DLC packs, not just the 6 core titles the user specified. */
+test("pipeline scope restricts to the given title_ids (regression)", async () => {
+  const { runPipeline } = await import("./pipeline");
+  const fakeClient = {
+    hashtagPosts: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    keywordSearch: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    postInfo: async (): Promise<EnsembleDataResponse> => ({ data: [], units_charged: 0 }),
+    postComments: async (): Promise<EnsembleDataResponse> => ({ data: { comments: [], nextCursor: null }, units_charged: 0 }),
+  };
+  // seedDb has title_id=2183900 (Space Marine 2) with a video. Set 1 hashtag
+  // on it and add a second enabled title (Hellraiser 1551980) with its own
+  // hashtag. Scope to [2183900].
+  const db = seedDb();
+  db.prepare("UPDATE tt_titles SET hashtags=? WHERE title_id=2183900").run(JSON.stringify(["spacemarine2"]));
+  db.prepare(`INSERT INTO tt_titles (title_id, title, enabled, hashtags, keywords, phrases, is_saber, backfill_floor, config_source, updated_at)
+    VALUES (1551980, 'Hellraiser Revival', 1, ?, '[]', '[]', 1, '2026-01-01', 'seed', ?)`)
+    .run(JSON.stringify(["hellraiser"]), new Date().toISOString());
+  const counters = await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["discovery"], scopeTitleIds: [2183900],
+  }, "test");
+  // Only spacemarine2 (2183900) runs. 1 hashtag, and the mock returns
+  // nextCursor: null so the pagination breaks after page 0 = 1 call.
+  // If scope were ignored, we'd also see hellraiser (1551980) = 2 calls.
+  assert.equal(counters.hashtagCalls, 1,
+    `hashtagCalls should be exactly 1 (1 hashtag, nextCursor null → 1 page, title_id=2183900 only), got ${counters.hashtagCalls}`);
+  // Sanity: without scope, both titles run = 2 calls
+  const db2 = seedDb();
+  db2.prepare("UPDATE tt_titles SET hashtags=? WHERE title_id=2183900").run(JSON.stringify(["spacemarine2"]));
+  db2.prepare(`INSERT INTO tt_titles (title_id, title, enabled, hashtags, keywords, phrases, is_saber, backfill_floor, config_source, updated_at)
+    VALUES (1551980, 'Hellraiser Revival', 1, ?, '[]', '[]', 1, '2026-01-01', 'seed', ?)`)
+    .run(JSON.stringify(["hellraiser"]), new Date().toISOString());
+  const counters2 = await runPipeline(db2, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["discovery"],
+  }, "test");
+  assert.equal(counters2.hashtagCalls, 2,
+    `hashtagCalls without scope should be 2 (1 hashtag per title × 2 titles), got ${counters2.hashtagCalls}`);
+});
+
 test("removeVideo excludes but retains raw text", () => {
   const db = seedDb();
   const now = new Date();

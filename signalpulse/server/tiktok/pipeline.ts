@@ -37,6 +37,12 @@ const COMMENT_BACKFILL_AFTER_DAYS = 27;
 const BACKFILL_MAX_PAGES_PER_VIDEO = 60;
 const RETENTION_UNIT_SHARE = 0.20;
 const STATS_RESERVE_UNITS = 600;
+/** Comments get priority — this is the user's actual goal. Stats and discovery
+ *  only run if there are units left after comments. This is the reserve floor
+ *  for comments alone. */
+export const COMMENTS_RESERVE_UNITS = 2000;
+/** Total daily budget on the Bronze plan (5,000 units/day). */
+export const DAILY_UNIT_BUDGET = 5000;
 export const DISCOVERY_SLAB_AGE_DAYS = 180;
 
 export interface RunCounters {
@@ -67,18 +73,38 @@ export interface PipelineOptions {
   backfillWindowDays?: number;
   /** Hard unit cap for the backfill step alone (default 3500, under the 5000/day plan). */
   backfillUnitCap?: number;
+  /** Only these title_ids run discovery/stats/comments. Empty = all enabled.
+   *  This is the TikTok-specific scope, independent from tt_titles.enabled
+   *  and independent from YouTube Pulse's scope. Set from
+   *  tiktokScopeTitleIds() in routes-tiktok.ts. */
+  scopeTitleIds?: number[];
   now?: () => Date;
 }
 
 const iso = (d: Date) => d.toISOString();
 const isoDate = (d: Date) => d.toISOString().slice(0, 10);
 
-function recordUnits(db: TtDb, counters: RunCounters, units: number, now: Date) {
-  if (!units) return;
-  counters.units += units;
+/** Build a WHERE clause that respects the optional TikTok scope filter.
+ *  Returns "" if scopeTitleIds is empty/undefined (track all enabled titles,
+ *  the old behavior). */
+function scopeFilter(opts: PipelineOptions, col: string): string {
+  const ids = opts.scopeTitleIds ?? [];
+  if (!ids.length) return "";
+  return ` AND ${col} IN (${ids.join(",")})`;
+}
+
+/** Record actual API spend. The caller passes the per-request unit cost
+ *  (EnsembleData documents: hashtag/keyword = 1 unit, postInfo = 2 units,
+ *  postComments = 1 unit). EnsembleData sometimes reports `units_charged: 0`
+ *  for cached results, but the attempt still counts against the daily quota,
+ *  so we track the KNOWN cost, not the reported charge. This fixes the bug
+ *  where `tt_quota_daily` was always empty and every budget check saw 0. */
+function recordUnits(db: TtDb, counters: RunCounters, knownUnits: number, now: Date) {
+  if (!knownUnits) return;
+  counters.units += knownUnits;
   const d = isoDate(now);
   db.prepare(`INSERT INTO tt_quota_daily (pt_date, bucket, used) VALUES (?, 'units', ?)
-    ON CONFLICT(pt_date, bucket) DO UPDATE SET used = used + ?`).run(d, units, units);
+    ON CONFLICT(pt_date, bucket) DO UPDATE SET used = used + ?`).run(d, knownUnits, knownUnits);
 }
 
 export function removeVideo(db: TtDb, awemeId: string, reason: string, now: Date): number {
@@ -111,7 +137,7 @@ export async function runRetention(db: TtDb, client: EnsembleDataClient | null, 
     if (budget <= 0) { c.notes.push("retention: unit budget too low to refresh"); return; }
     const refreshBefore = iso(new Date(now.getTime() - COMMENT_BACKFILL_AFTER_DAYS * DAY));
     const due = (db.prepare(`SELECT cid, aweme_id FROM tt_comments WHERE title_id IN
-        (SELECT title_id FROM tt_titles WHERE enabled=1)
+        (SELECT title_id FROM tt_titles WHERE enabled=1${scopeFilter(opts, "title_id")})
       AND excluded_at IS NULL AND fetched_at < ? ORDER BY fetched_at LIMIT 2000`)
       .all(refreshBefore) as any[]).map((r) => ({ cid: r.cid as string, awemeId: r.aweme_id as string }));
     const ins = db.prepare(`INSERT INTO tt_comments (cid, aweme_id, title_id, parent_id, author_unique_id,
@@ -124,7 +150,8 @@ export async function runRetention(db: TtDb, client: EnsembleDataClient | null, 
     for (const d of due) {
       try {
         const res = await client.postComments(d.awemeId, 0);
-        recordUnits(db, c, res.units_charged ?? 0, now);
+        // postComments = 1 unit per request (per EnsembleData docs)
+        recordUnits(db, c, 1, now);
         for (const cm of (res.data?.comments ?? []).slice(0, 60)) {
           const updated = (cm as TikTokComment).cid === d.cid;
           if (!updated) continue;
@@ -205,14 +232,24 @@ async function admitPost(db: TtDb, client: EnsembleDataClient, c: RunCounters, t
 
 export async function runDiscovery(db: TtDb, client: EnsembleDataClient, c: RunCounters, opts: PipelineOptions) {
   const now = (opts.now ?? (() => new Date()))();
-  const titles = (db.prepare("SELECT * FROM tt_titles WHERE enabled=1").all() as any[]) as unknown as TitleRow[];
+  // Budget check: comments already ran (they get priority), so discovery only
+  // runs if there's real budget left. ~48 titles × ~8 hashtags/keywords × 2 pages
+  // × 1 unit = ~400-700 units per full discovery pass.
+  const today = isoDate(now);
+  const usedToday = (db.prepare("SELECT COALESCE(used,0) AS used FROM tt_quota_daily WHERE pt_date=? AND bucket='units'")
+    .get(today) as any)?.used ?? 0;
+  if (usedToday >= DAILY_UNIT_BUDGET - COMMENTS_RESERVE_UNITS) {
+    c.notes.push(`discovery: unit budget too low (used ${usedToday}/${DAILY_UNIT_BUDGET})`); return;
+  }
+  const titles = (db.prepare(`SELECT * FROM tt_titles WHERE enabled=1${scopeFilter(opts, "title_id")}`).all() as any[]) as unknown as TitleRow[];
   for (const t of titles) {
     const hashtags = JSON.parse((t as any).hashtags ?? "[]") as string[];
     for (const h of hashtags) {
       for (let page = 0; page < DISCOVERY_HASHTAG_PAGES; page++) {
         try {
           const res = await client.hashtagPosts(h, page * 20);
-          recordUnits(db, c, res.units_charged ?? 0, now);
+          // hashtagPosts = 1 unit per request (per EnsembleData docs)
+          recordUnits(db, c, 1, now);
           c.hashtagCalls++;
           for (const p of (res.data?.data ?? [])) {
             await admitPost(db, client, c, t, p as TikTokPost, now, "hashtag", h);
@@ -231,7 +268,8 @@ export async function runDiscovery(db: TtDb, client: EnsembleDataClient, c: RunC
       for (let page = 0; page < DISCOVERY_KEYWORD_PAGES; page++) {
         try {
           const res = await client.keywordSearch(k, { cursor: page * 20 });
-          recordUnits(db, c, res.units_charged ?? 0, now);
+          // keywordSearch = 1 unit per request (per EnsembleData docs)
+          recordUnits(db, c, 1, now);
           c.keywordCalls++;
           for (const p of (res.data?.data ?? [])) {
             await admitPost(db, client, c, t, p as TikTokPost, now, "keyword", null);
@@ -254,9 +292,14 @@ export async function runStats(db: TtDb, client: EnsembleDataClient, c: RunCount
   const today = isoDate(now);
   const usedToday = (db.prepare("SELECT COALESCE(used,0) AS used FROM tt_quota_daily WHERE pt_date=? AND bucket='units'")
     .get(today) as any)?.used ?? 0;
-  if (usedToday > 1500 - STATS_RESERVE_UNITS) { c.notes.push("stats: unit budget too low"); return; }
+  // Budget check: comments already ran (they get priority), so stats only
+  // runs if there's real budget left. We now track the KNOWN per-call cost
+  // (postInfo = 2 units) so this actually fires instead of always seeing 0.
+  if (usedToday >= DAILY_UNIT_BUDGET - STATS_RESERVE_UNITS) {
+    c.notes.push(`stats: unit budget too low (used ${usedToday}/${DAILY_UNIT_BUDGET})`); return;
+  }
   const videos = db.prepare(`SELECT v.* FROM tt_videos v JOIN tt_titles t ON t.title_id=v.title_id
-    WHERE v.excluded_at IS NULL AND t.enabled=1`).all() as any[];
+    WHERE v.excluded_at IS NULL AND t.enabled=1${scopeFilter(opts, "t.title_id")}`).all() as any[];
   const statsUpsert = db.prepare(`INSERT INTO tt_video_stats_daily (aweme_id, date, view_count, like_count,
       comment_count, share_count, repost_count, download_count)
     VALUES (?,?,?,?,?,?,?,?)
@@ -269,7 +312,9 @@ export async function runStats(db: TtDb, client: EnsembleDataClient, c: RunCount
     try {
       const url = buildTikTokUrl(v.author_unique_id, v.aweme_id);
       const res = await client.postInfo(url);
-      recordUnits(db, c, res.units_charged ?? 0, now);
+      // postInfo = 2 units per request (per EnsembleData docs) — this was the
+      // budget killer: 870 videos × 2 units = 1,740 units in one stats pass
+      recordUnits(db, c, 2, now);
       c.postInfoCalls++;
       // EnsembleData /tt/post/info returns { data: [post, ...] } — an array,
       // not { data: { post } }. Same shape as hashtag/keyword discovery
@@ -298,7 +343,15 @@ export async function runStats(db: TtDb, client: EnsembleDataClient, c: RunCount
 
 export async function runComments(db: TtDb, client: EnsembleDataClient, c: RunCounters, opts: PipelineOptions) {
   const now = (opts.now ?? (() => new Date()))();
-  const titles = db.prepare("SELECT * FROM tt_titles WHERE enabled=1").all() as any[];
+  const today = isoDate(now);
+  const usedToday = (db.prepare("SELECT COALESCE(used,0) AS used FROM tt_quota_daily WHERE pt_date=? AND bucket='units'")
+    .get(today) as any)?.used ?? 0;
+  const remaining = Math.max(0, DAILY_UNIT_BUDGET - usedToday);
+  // Soft cap on comments per run so one pass doesn't eat the whole day's budget
+  // and stats/discovery never get a chance. Comments = 1 unit per request,
+  // 5 pages max per video, top 3 videos per title.
+  const commentsBudget = Math.min(remaining, COMMENTS_RESERVE_UNITS);
+  const titles = db.prepare(`SELECT * FROM tt_titles WHERE enabled=1${scopeFilter(opts, "title_id")}`).all() as any[];
   const ins = db.prepare(`INSERT INTO tt_comments (cid, aweme_id, title_id, parent_id, author_unique_id,
       text, like_count, create_time, is_author_digged, reply_comment_total, fetched_at)
     VALUES (@cid, @awemeId, @titleId, @parentId, @authorUniqueId, @text, @likeCount, @createTime,
@@ -312,8 +365,14 @@ export async function runComments(db: TtDb, client: EnsembleDataClient, c: RunCo
     for (const v of videos) {
       for (let page = 0; page < COMMENT_NEW_MAX_PAGES; page++) {
         try {
+          // Budget guard: stop when we've used our comments allowance
+          if (c.units >= usedToday + commentsBudget) {
+            c.notes.push(`comments: unit budget for this pass reached (${c.units - usedToday}/${commentsBudget})`);
+            break;
+          }
           const res = await client.postComments(v.aweme_id, page * 30);
-          recordUnits(db, c, res.units_charged ?? 0, now);
+          // postComments = 1 unit per request (per EnsembleData docs)
+          recordUnits(db, c, 1, now);
           c.commentCalls++;
           const cs = (res.data?.comments ?? []) as TikTokComment[];
           for (const cm of cs) {
@@ -353,7 +412,7 @@ export async function runBackfill(db: TtDb, client: EnsembleDataClient, c: RunCo
   const scoped = (opts.backfillTitleIds ?? []).length
     ? db.prepare("SELECT * FROM tt_titles WHERE title_id IN (" + (opts.backfillTitleIds ?? []).map(() => "?").join(",") + ") AND enabled=1")
         .all(...(opts.backfillTitleIds ?? [])) as any[]
-    : db.prepare("SELECT * FROM tt_titles WHERE enabled=1").all() as any[];
+    : db.prepare(`SELECT * FROM tt_titles WHERE enabled=1${scopeFilter(opts, "title_id")}`).all() as any[];
   if (!scoped.length) { c.notes.push("backfill: no eligible titles"); return; }
   const usedToday = (db.prepare("SELECT COALESCE(used, 0) AS used FROM tt_quota_daily WHERE pt_date=? AND bucket='units'")
     .get(isoDate(now)) as any)?.used ?? 0;
@@ -378,7 +437,8 @@ export async function runBackfill(db: TtDb, client: EnsembleDataClient, c: RunCo
       for (let page = 0; page < BACKFILL_MAX_PAGES_PER_VIDEO; page++) {
         try {
           const res = await client.postComments(v.aweme_id, cursor);
-          recordUnits(db, c, res.units_charged ?? 0, now);
+          // postComments = 1 unit per request (per EnsembleData docs)
+          recordUnits(db, c, 1, now);
           c.backfillPages++; c.commentCalls++;
           const cs = (res.data?.comments ?? []) as TikTokComment[];
           if (!cs.length) break;
@@ -422,13 +482,18 @@ export async function runPipeline(db: TtDb, client: EnsembleDataClient | null, o
     commentsSaved: 0, commentsRefreshed: 0, commentsDeleted: 0,
     backfillVideos: 0, backfillPages: 0, backfillEarlyExits: 0, notes: [],
   };
-  const steps = opts.steps ?? ["retention", "discovery", "stats", "comments"];
+  const steps = opts.steps ?? ["retention", "comments", "stats", "discovery"];
   const withClient = client ?? null;
+  // COMMENTS RUN FIRST — the user's actual goal is TikTok comments flowing into
+  // SentimentPulse. Discovery and stats eat the budget fast (870 postInfo calls
+  // at 2 units = 1,740 units; ~350 discovery calls at 1 unit = ~350 units) and
+  // by the time comments would run the daily budget is dead. This was the
+  // root cause of runs 5/6/7 burning 5,000 units with 0 comments saved.
   if (steps.includes("retention")) await runRetention(db, withClient, c, opts);
-  if (steps.includes("discovery") && withClient) await runDiscovery(db, withClient, c, opts);
-  if (steps.includes("stats") && withClient) await runStats(db, withClient, c, opts);
   if (steps.includes("comments") && withClient) await runComments(db, withClient, c, opts);
   if (steps.includes("backfill") && withClient) await runBackfill(db, withClient, c, opts);
+  if (steps.includes("stats") && withClient) await runStats(db, withClient, c, opts);
+  if (steps.includes("discovery") && withClient) await runDiscovery(db, withClient, c, opts);
   if (runRow?.id) {
     // finished_at should be the ACTUAL end time, not the run's start time
     // (the pre-existing code passed iso(now) which is the run's start).
