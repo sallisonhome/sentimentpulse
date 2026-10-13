@@ -18,9 +18,16 @@
 // Verified anchors still win above this point. The estimator ladder and
 // every other title (including other Sony first-party IPs) are untouched.
 //
-// Window scope is explicit and intentionally narrow: only the windows whose
-// served values were inspected during the investigation (d7, d30). Extend a
-// row's scope only after its wider-window baseline is validated the same way.
+// Window scope: 2026-10-11 shipped d7/d30 only. 2026-10-13: TLOU rows
+// widened to d7/d30/d90/m12; God of War Ragnarök (10370) added scoped to
+// d90/m12 — the user's request named those windows. LTD is deliberately NOT
+// guarded for any of these rows: the durable LTD fix is the public-anchor +
+// AAA-curve work (set LTD from researched public lifetime sales, curve-derive
+// the windows, blend observed ratings pace), not a read-side guard. Extend a
+// row's window scope only after that window's baseline is validated the
+// same way. Note the guard blocks the Path B Steam-anchored overlay only;
+// later read-side passes (chart consistency, public ceilings, daily mix) can
+// still move a guarded row's value.
 // Later read-side passes (chart consistency, public ceilings, daily mix) are
 // NOT blocked — a guarded row can still be moved by them, so the final
 // served value is not guaranteed to equal the raw estimator value.
@@ -41,8 +48,8 @@ const guardsRegistry: ConsoleNativeModelGuard[] = [
     // (verified 2026-10-11, d30). Keep the native estimate.
     titleId: 11188,
     platform: "ps5",
-    windows: ["d7", "d30"],
-    reason: "aged first-party PS5 row; Steam×9 IP override inflated served d30 from native ~130K units to 609K units",
+    windows: ["d7", "d30", "d90", "m12"],
+    reason: "aged first-party PS5 row; Steam×9 IP override inflated served d30 from native ~130K units to 609K units; 2026-10-13 served d90 was 1.08M units/$60.7M and m12 5.4M/$302M from the same override",
     policyVersion: "native_model_guard_v1",
   },
   {
@@ -52,8 +59,23 @@ const guardsRegistry: ConsoleNativeModelGuard[] = [
     // d30). Same franchise-mix concern as Part I. Keep the native estimate.
     titleId: 11179,
     platform: "ps5",
-    windows: ["d7", "d30"],
-    reason: "aged first-party PS5 remaster; Steam×9 IP override replaced native ~163K d30 units with 57K units",
+    windows: ["d7", "d30", "d90", "m12"],
+    reason: "aged first-party PS5 remaster; Steam×9 IP override replaced native ~163K d30 units with 57K units; same override still inflating served d90/m12 in 2026-10-13",
+    policyVersion: "native_model_guard_v1",
+  },
+  {
+    // God of War Ragnarök (PS5), released 2022-11-09. Aged first-party row with
+    // the same Steam×9 IP override firing on every window. Verified 2026-10-13:
+    // the override inflated d90 (311K → 468K) and m12 (1.26M → 3.62M). The
+    // 2026-10-13 user request scoped the fix to d90/m12; d7/d30/LTD keep the
+    // IP override pending the public-anchor + AAA-curve work that will set LTD
+    // from researched lifetime sales. Native estimator rows (as_of 2026-10-13,
+    // backfill-observed-pace — note these are 32-day linear extrapolations):
+    // d7 20,874 / d30 104,621 / d90 311,305 / m12 1,262,495 / LTD 6,633,915.
+    titleId: 10370,
+    platform: "ps5",
+    windows: ["d90", "m12"],
+    reason: "aged first-party PS5 row; Steam×9 IP override inflated d90/m12 against the native estimator; native values kept for these windows only",
     policyVersion: "native_model_guard_v1",
   },
 ];
