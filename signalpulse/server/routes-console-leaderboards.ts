@@ -115,6 +115,7 @@ import { editionGroupKey } from "./console-sales-family";
 import { detectReviewSurge, SURGE_WINDOWS, REVIEW_SURGE_VERSION } from "./steam-review-surge";
 import { overlayExceedsPublicCeiling, steamPublicCapRatio, publicCeilingFor } from "./console-public-ceilings";
 import { nativeModelGuardFor } from "./console-native-model-guards";
+import { agedTitleCeilingFor } from "./aged-title-ceilings";
 import { applyChartConsistency, chartModeFromEnv } from "./console-chart-consistency";
 import { readDeepRankByTitle } from "./signals/console/deepChartStore";
 
@@ -871,6 +872,37 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
       }
       for (const g of groups) {
         g.unitsMidEstimated = g.unitsMid;
+        // ─── Per-title aged-AAA ceiling (2026-10-13) ───────────────────────
+        // Specific titles only (TLOU Part I, TLOU Part II Remastered, GoW
+        // Ragnarök) — NOT a global estimator rule. Clamps the estimator's
+        // backfill-observed-pace output for the listed windows to a curve-
+        // consistent fraction of the title's LTD rating count, derived from
+        // dated Sony first-party milestones. Applied at read time so a cron
+        // re-run of the estimator cannot overwrite it. Verified anchors
+        // still win above this (Path A). See server/aged-title-ceilings.ts.
+        const agedCeiling = agedTitleCeilingFor(g.familyTitleIds as number[] | undefined, platform, window);
+        if (agedCeiling && g.unitsMid != null && g.unitsMid > 0) {
+          const ltdRow = rawSqlite.prepare(
+            `SELECT units_mid FROM window_estimates_daily
+              WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                AND as_of_date = (SELECT MAX(as_of_date) FROM window_estimates_daily
+                   WHERE title_id = ? AND platform = ? AND window = 'ltd')`
+          ).get(g.familyTitleIds[0], platform, g.familyTitleIds[0], platform) as { units_mid: number | null } | undefined;
+          const ltdUnits = ltdRow?.units_mid ?? null;
+          if (ltdUnits != null && ltdUnits > 0) {
+            const ceilingUnits = Math.round(ltdUnits * agedCeiling.ceilingFraction);
+            if (g.unitsMid > ceilingUnits) {
+              // Scale revenue and owners proportionally, then let the ASP
+              // computation below derive from the clamped values.
+              const ratio = ceilingUnits / g.unitsMid;
+              g.unitsMid = ceilingUnits;
+              if (g.ownersMid != null) g.ownersMid = Math.round(g.ownersMid * ratio);
+              if (g.revenueMidUsd != null) g.revenueMidUsd = Math.round(g.revenueMidUsd * ratio);
+              g.agedTitleCeiling = { version: agedCeiling.policyVersion, reason: agedCeiling.reason, ceilingFraction: agedCeiling.ceilingFraction };
+              g.gatedReason = null;
+            }
+          }
+        }
         delete g.representativeRevenue;
         // Weighted family ASP preserves distinct-edition economics; no penny
         // truncation before back-solving large unit quantities.
