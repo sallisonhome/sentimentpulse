@@ -68,7 +68,13 @@ export async function triggerTikTokRun(trigger: string, steps?: any[]) {
 }
 
 /** Manual 90-day comment backfill. Scoped to explicit titleIds so you can
- *  run the six Saber parents without touching competitors. */
+ *  run the six Saber parents without touching competitors.
+ *
+ *  Runs discovery + stats + backfill in one shot. runBackfill only paginates
+ *  comments for videos already in tt_videos — it does NOT discover the video
+ *  pool itself — so the backfill must run discovery first to bootstrap the
+ *  pool (and stats so each video has fresh view_count, which runBackfill
+ *  uses to order videos by view count DESC). One button, one API call. */
 export async function triggerTikTokBackfill(titleIds: number[], windowDays?: number, unitCap?: number) {
   await syncTikTokTitles(true);
   const tok = tiktokEnsembleToken();
@@ -77,7 +83,7 @@ export async function triggerTikTokBackfill(titleIds: number[], windowDays?: num
   const runRowIns = ttDb().prepare(`INSERT INTO tt_ingest_runs (trigger, started_at, status) VALUES ('backfill', ?, 'running')`).run(new Date().toISOString());
   const runRow = { id: Number(runRowIns.lastInsertRowid) };
   const res = await runBackfillStep(ttDb(), client, {
-    extendedStorageApproved: true, steps: ["backfill"],
+    extendedStorageApproved: true, steps: ["discovery", "stats", "backfill"],
     backfillTitleIds: titleIds, backfillWindowDays: windowDays, backfillUnitCap: unitCap,
   }, "backfill", runRow);
   log(`tiktok backfill: ${JSON.stringify({ ...res, notes: undefined })}`, "tiktok");
@@ -175,6 +181,8 @@ export function registerTikTokRoutes(app: Express) {
     if (runInFlight) return res.status(409).json({ error: "a TikTok run is already in progress" });
     const allowed = ["retention", "discovery", "stats", "comments"];
     const steps = Array.isArray(req.body?.steps) ? req.body.steps.filter((s: any) => allowed.includes(s)) : undefined;
+    // Log the received + filtered steps so we can verify what actually ran
+    log(`tiktok ops/run: bodySteps=${JSON.stringify(req.body?.steps)} -> filteredSteps=${JSON.stringify(steps)}`, "tiktok");
     runInFlight = true;
     triggerTikTokRun("manual", steps)
       .catch((e) => log(`tiktok manual run failed: ${e}`, "tiktok"))

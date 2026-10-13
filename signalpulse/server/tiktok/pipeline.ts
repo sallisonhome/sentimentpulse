@@ -430,11 +430,14 @@ export async function runPipeline(db: TtDb, client: EnsembleDataClient | null, o
   if (steps.includes("comments") && withClient) await runComments(db, withClient, c, opts);
   if (steps.includes("backfill") && withClient) await runBackfill(db, withClient, c, opts);
   if (runRow?.id) {
+    // finished_at should be the ACTUAL end time, not the run's start time
+    // (the pre-existing code passed iso(now) which is the run's start).
+    const finishedAt = new Date().toISOString();
     db.prepare(`UPDATE tt_ingest_runs SET finished_at=?, status=?,
       hashtag_calls=?, keyword_calls=?, post_info_calls=?, comment_calls=?,
       units_used=?, videos_discovered=?, videos_refreshed=?, videos_removed=?,
       comments_saved=?, comments_refreshed=?, comments_deleted=?, message=?
-      WHERE id=?`).run(iso(now), c.notes.length ? "partial" : "success",
+      WHERE id=?`).run(finishedAt, c.notes.length ? "partial" : "success",
       c.hashtagCalls, c.keywordCalls, c.postInfoCalls, c.commentCalls,
       c.units, c.videosDiscovered, c.videosRefreshed, c.videosRemoved,
       c.commentsSaved, c.commentsRefreshed, c.commentsDeleted,
@@ -444,10 +447,18 @@ export async function runPipeline(db: TtDb, client: EnsembleDataClient | null, o
 }
 
 /** Backfill-aware wrapper. Records backfill counters in the run's message
- *  so operators can see how many videos hit the early exit. */
+ *  so operators can see how many videos hit the early exit.
+ *
+ *  IMPORTANT: this used to hardcode steps:["backfill"], which silently
+ *  overrode any steps the caller passed (including "discovery" and "stats").
+ *  That was the root cause of the "0 videos, 0 comments" backfill — the
+ *  backfill only paginates comments for videos already in tt_videos, and
+ *  without discovery the pool was empty. Now it passes the caller's steps
+ *  through (falling back to ["backfill"] if none given). */
 export async function runBackfillStep(db: TtDb, client: EnsembleDataClient, opts: PipelineOptions,
   trigger: string, runRow?: { id: number }): Promise<RunCounters> {
-  const c = await runPipeline(db, client, { ...opts, steps: ["backfill"] }, trigger, runRow);
+  const steps: NonNullable<PipelineOptions["steps"]> = opts.steps && opts.steps.length ? opts.steps : ["backfill"];
+  const c = await runPipeline(db, client, { ...opts, steps }, trigger, runRow);
   if (runRow?.id) {
     const backfillNote = `backfill: ${c.backfillVideos} videos, ${c.backfillPages} pages, ` +
       `${c.backfillEarlyExits} early-exits, ${c.commentsSaved} comments saved`;

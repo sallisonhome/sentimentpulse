@@ -196,6 +196,30 @@ test("admitPost skips posts without an aweme_id", async () => {
   assert.equal(rejected, 0, "a post with no aweme_id should not be recorded as rejected");
 });
 
+/** runBackfillStep must pass the caller's steps through, NOT hardcode
+ *  steps:["backfill"]. Hardcoding was the root cause of the "0 videos, 0
+ *  comments" backfill — the backfill only paginates comments for videos
+ *  already in tt_videos, and without discovery the pool was empty. */
+test("runBackfillStep passes caller's steps through (regression)", async () => {
+  const db = seedDb();
+  // seedDb doesn't set hashtags/keywords — discovery needs at least one to iterate
+  db.prepare("UPDATE tt_titles SET hashtags=?").run(JSON.stringify(["spacemarine2"]));
+  const fakeClient = {
+    hashtagPosts: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    keywordSearch: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    postInfo: async (): Promise<EnsembleDataResponse> => ({ data: [], units_charged: 0 }),
+    postComments: async (): Promise<EnsembleDataResponse> => ({ data: { comments: [], nextCursor: null }, units_charged: 0 }),
+  };
+  const { runBackfillStep } = await import("./pipeline");
+  const counters = await runBackfillStep(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true,
+    steps: ["discovery", "stats", "backfill"],
+  }, "test");
+  // With the OLD code (hardcoded steps:["backfill"]), hashtagCalls would be 0.
+  // With the fix (steps passed through), discovery runs and hashtagCalls > 0.
+  assert.ok(counters.hashtagCalls > 0, `hashtagCalls should be > 0 (got ${counters.hashtagCalls}) — steps must pass through`);
+});
+
 test("removeVideo excludes but retains raw text", () => {
   const db = seedDb();
   const now = new Date();
