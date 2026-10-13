@@ -2,11 +2,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CONSOLE_NATIVE_MODEL_GUARDS, nativeModelGuardFor } from "./console-native-model-guards";
 
-test("the shipped native-model guards are the three aged first-party PS5 rows", () => {
-  assert.deepEqual(
-    CONSOLE_NATIVE_MODEL_GUARDS.map((g) => [g.titleId, g.platform]),
-    [[11188, "ps5"], [11179, "ps5"], [10370, "ps5"]],
-  );
+test("the shipped native-model guards are the v1 batch plus the 22 audit-widened v2 rows", () => {
+  const ids = CONSOLE_NATIVE_MODEL_GUARDS.map((g) => g.titleId);
+  // v1: the three titles the user named.
+  for (const id of [11188, 11179, 10370]) {
+    assert.ok(ids.includes(id), `v1 guard ${id} present`);
+  }
+  // v2: the 22 audit-widened titles, d90/m12 only.
+  const V2 = [10319, 10320, 10350, 10352, 10362, 10402, 10513, 10520, 10535,
+              10565, 10624, 10635, 10636, 10645, 10651, 10691, 10876, 11035,
+              11157, 11192, 11337, 11345];
+  for (const id of V2) {
+    assert.ok(ids.includes(id), `v2 guard ${id} present`);
+  }
+  assert.equal(CONSOLE_NATIVE_MODEL_GUARDS.filter((g) => g.policyVersion === "native_model_guard_v1").length, 3);
+  assert.equal(CONSOLE_NATIVE_MODEL_GUARDS.filter((g) => g.policyVersion === "native_model_guard_v2").length, V2.length);
   for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
     assert.ok(g.reason.length > 20, "each guard carries an audit reason");
     assert.ok(g.policyVersion.length > 0, "each guard carries a policy version");
@@ -53,12 +63,21 @@ test("guards do not leak to an unsupported window", () => {
   assert.equal(nativeModelGuardFor([11188], "ps5", "d1"), null);
   assert.equal(nativeModelGuardFor([11188], "ps5", "bogus"), null);
   assert.equal(nativeModelGuardFor([10370], "ps5", "d1"), null);
+  // v2 rows are d90/m12 only.
+  for (const id of [10320, 10513, 10402]) {
+    for (const w of ["d7", "d30", "ltd", "d1"]) {
+      assert.equal(nativeModelGuardFor([id], "ps5", w), null, `${id}/ps5/${w} is NOT guarded`);
+    }
+    for (const w of ["d90", "m12"]) {
+      assert.ok(nativeModelGuardFor([id], "ps5", w), `${id}/ps5/${w} is guarded`);
+    }
+  }
 });
 
 test("the shipped guards carry an audit reason and policy version", () => {
   for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
-    assert.ok(g.reason.includes("Steam×9 IP override"), `guard reason cites the override: ${g.reason}`);
-    assert.ok(g.reason.includes("native"), `guard reason cites the native baseline: ${g.reason}`);
-    assert.equal(g.policyVersion, "native_model_guard_v1");
+    assert.ok(g.reason.includes("Steam×9 IP override") || g.reason.includes("ceiling clamp") || g.reason.includes("native"), `guard reason cites the override, clamp, or native baseline: ${g.reason}`);
+    assert.ok(["native_model_guard_v1", "native_model_guard_v2"].includes(g.policyVersion),
+      `guard policyVersion is a known version: ${g.policyVersion}`);
   }
 });
