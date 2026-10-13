@@ -1,6 +1,71 @@
 # Lessons Learned — Agent Working Notes
 
-## 2026-10-12 — LTD capped at the age-covering window for titles under 12 months old
+## 2026-10-12 — GoW E-Day Xbox d7 inflated by a missing Game Pass flag; the
+## revshare overlay fixed it once the flag was set (and the state-upsert
+## ordering bug that followed)
+
+**Symptom.** GoW E-Day (11340) Xbox d7 = 1,511,813 units from a 9,256-rating
+signal, while the Steam sibling (10147) d7 was 253,427 units from a 4,438-rating
+signal — 163 Xbox units-per-rating vs 57 on Steam, on a platform that typically
+sells a fraction of Steam units for the same title.
+
+**Cause (1): missing is_gamepass flag.** The Xbox multiplier row (id 9,
+`ltd-anchor-median-v03-gp-segmented`, multiplier 147, gp_rating_deflator 1.406)
+applies the deflator ONLY to GP-flagged SKUs. Both 11340 (base, $69.99) and
+11266 (Premium, $99.99) had `is_gamepass=0` in `platform_sku_map`, so neither
+the GP deflator nor the 9b steam-anchored revshare overlay
+(`steam-anchored-revshare-v01`) applied. The raw 147x multiplier hit the raw
+9,256 signal directly: 9,256 × 147 / 0.9 = 1,511,813.
+
+**Cause (2): state-upsert ordering.** After the GP flag was set and the
+estimator re-ran, the window rows correctly showed the overlay's projection
+(d7 = 67,471) but `title_ltd_state` for 11340 Xbox still held 1,075,258 — the
+pre-overlay LTD. The estimator writes `title_ltd_state` in a separate
+transaction that runs BEFORE the 9b overlay modifies the window rows, so the
+state never sees the overlay's lower value. That stale state would re-inflate
+the LTD row on the next run via the `max()` in regime 2.
+
+**Fixes.**
+
+1. `platform_sku_map.is_gamepass` set to 1 for both 11340 and 11266 Xbox via
+   `signalpulse-db-admin.yml` (the workflow's own documented intended use:
+   "UPDATE is_gamepass corrections that the enrichment cron can't discover").
+2. `estimate-console-units.ts` — the `title_ltd_state` upsert is deferred to
+   AFTER the 9b GP revshare overlay (PR #264, merged 4d6e70b). The state now
+   reflects the post-overlay LTD the user actually sees.
+3. 11340 Xbox's stale `title_ltd_state` corrected from 1,075,258 to 67,471 via
+   db-admin (matching the window_estimates_daily LTD row).
+
+**Result (11340 Xbox, as_of 2026-10-13).**
+
+| window | before | after | method |
+|---|---|---|---|
+| d7 | 1,511,813 | 67,471 | steam-anchored-revshare-v01 |
+| d30 | 1,513,120 | 67,529 | steam-anchored-revshare-v01 |
+| d90 | 1,513,283 | 67,537 | steam-anchored-revshare-v01 |
+| m12 | 1,513,283 | 67,537 | steam-anchored-revshare-v01 |
+| LTD | 1,513,283 | 67,471 | steam-anchored-revshare-v01 |
+
+The revshare overlay projected Xbox units from the Steam sibling via the fixed
+revenue-share ratio (Xbox 0.18 / Steam 0.46 of the active platform footprint),
+which is the intended correction for a day-one Game Pass title whose Xbox
+ratings are decoupled from purchases.
+
+**Note on 11266 (Premium).** Its revshare overlay did not apply (it has no
+separate Steam-sibling bridge); it stayed `ltd-anchor-median-v03-gp-segmented`
+with the GP deflator now applied. Its LTD is 96,769, correctly capped to its
+age-covering window (d30).
+
+**Served board.** The Xbox d7 board shows 11340 at 9,188 units
+`derived_from_steam` (Path B Steam substitution, lower than the stored native
+67,471). LTD board does not include 11340 in top 100 — it is now too low. The
+stored data is correct per the estimator's GP-aware model; the served board is
+a separate read-side layer.
+
+**Rule.** A title's `is_gamepass` flag is a first-class calibration input, not
+bookkeeping. Before diagnosing an inflated Xbox estimate, check the flag: the
+GP deflator AND the revshare overlay both gate on it. A missing flag means the
+147x raw multiplier applies with no correction.
 
 **Symptom.** 47 (title, platform) LTD rows on 2026-10-12 exceeded their
 age-covering window's units_mid (the window that covers the title's whole time
