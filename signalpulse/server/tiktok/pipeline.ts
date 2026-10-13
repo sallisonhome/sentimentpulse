@@ -266,7 +266,13 @@ export async function runStats(db: TtDb, client: EnsembleDataClient, c: RunCount
       const res = await client.postInfo(url);
       recordUnits(db, c, res.units_charged ?? 0, now);
       c.postInfoCalls++;
-      const p = res.data?.post;
+      // EnsembleData /tt/post/info returns { data: [post, ...] } — an array,
+      // not { data: { post } }. Same shape as hashtag/keyword discovery
+      // responses. Prior code read res.data?.post, which was always
+      // undefined, so runStats silently no-oped on every video.
+      const p = Array.isArray(res.data)
+        ? (res.data as any[]).find((x) => x?.aweme_id === v.aweme_id) ?? (res.data as any[])[0]
+        : (res.data as any)?.post;
       if (!p) continue;
       const st = p.statistics ?? {};
       upd.run(st.play_count ?? v.view_count, st.digg_count ?? v.like_count, st.comment_count ?? v.comment_count,

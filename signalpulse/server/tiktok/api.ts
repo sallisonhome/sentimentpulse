@@ -120,8 +120,10 @@ export class EnsembleDataClient {
     });
   }
 
-  /** Post info: 2 units per post; returns full statistics. */
-  async postInfo(url: string): Promise<EnsembleDataResponse<{ post: TikTokPost }>> {
+  /** Post info: 2 units per post; returns full statistics.
+   *  EnsembleData /tt/post/info returns { data: [post, ...] } — an array,
+   *  same shape as hashtag/keyword discovery. */
+  async postInfo(url: string): Promise<EnsembleDataResponse<TikTokPost[]>> {
     return this.call("/tt/post/info", { url });
   }
 

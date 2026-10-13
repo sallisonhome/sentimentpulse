@@ -141,6 +141,37 @@ test("discovery admits on-topic post and rejects off-topic post", async () => {
   assert.equal(rejected, 1);
 });
 
+/** runStats must handle the real EnsembleData /tt/post/info response shape.
+ *  Live-verified 2026-10-13: the root is { data: [post] } — an array, not
+ *  { data: { post } }. Prior code read res.data?.post, which was always
+ *  undefined, so runStats silently no-oped on every video and never updated
+ *  last_refreshed_at (root cause of the 61-minute "running" stall). */
+test("stats refreshes video view_count from array-shaped postInfo response", async () => {
+  const db = seedDb();
+  // seedDb already inserted video 'aw1' (title 2183900, view_count=1000)
+  const fakeClient = {
+    postInfo: async (): Promise<EnsembleDataResponse> => ({
+      // Real shape: data is an ARRAY of posts, not { post: {...} }
+      data: [{
+        aweme_id: "aw1",
+        statistics: { play_count: 9999, digg_count: 123, comment_count: 45, share_count: 6, download_count: 7, repost_count: 8 },
+      }],
+      units_charged: 2,
+    }),
+  };
+  const counters = await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["stats"],
+  }, "test");
+  assert.equal(counters.postInfoCalls, 1);
+  assert.equal(counters.videosRefreshed, 1);
+  const v = db.prepare("SELECT view_count, like_count, comment_count, last_refreshed_at FROM tt_videos WHERE aweme_id='aw1'").get() as any;
+  assert.equal(v.view_count, 9999);
+  assert.equal(v.like_count, 123);
+  assert.equal(v.comment_count, 45);
+  const stat = db.prepare("SELECT view_count FROM tt_video_stats_daily WHERE aweme_id='aw1' ORDER BY date DESC LIMIT 1").get() as any;
+  assert.equal(stat.view_count, 9999);
+});
+
 test("removeVideo excludes but retains raw text", () => {
   const db = seedDb();
   const now = new Date();
