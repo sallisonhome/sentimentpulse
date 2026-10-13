@@ -68,7 +68,11 @@ export const TITLE_SEEDS: Record<string, TitleSeed> = {
       "gta", "gta 5", "battlefield", "bf6", "spine", "bodycam", "max payne",
       "resident evil", "resident evil requiem", "leon kennedy", "r6", "r6siege", "vr", "simulator",
     ],
-    requiredTerms: ["saber", "saber interactive"],
+    // NOTE: previously had requiredTerms: ["saber", "saber interactive"] which
+    // rejected ~70 of 87 discovered videos as "missing title-specific identity
+    // context" — almost no TikTok creator mentions Saber in a John Wick game
+    // video description. Removed; requireCompanion (game-context term) plus the
+    // film excludeTerms is sufficient to disambiguate from the film franchise.
     requireCompanion: true,
   },
   // MudRunner
