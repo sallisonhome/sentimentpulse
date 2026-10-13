@@ -2,18 +2,49 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AGED_TITLE_CEILINGS, agedTitleCeilingFor, applyAgedTitleCeiling } from "./aged-title-ceilings";
 
-test("the registry covers exactly the three named titles, d90/m12 only", () => {
+test("the registry covers the v1 batch and the audit-widened v2 batch, d90/m12 only", () => {
   const keys = AGED_TITLE_CEILINGS.map(c => `${c.titleId}|${c.platform}|${c.window}`).sort();
-  assert.deepEqual(keys, [
+  const expected = [
+    // v1: the three titles the user named
     "10370|ps5|d90", "10370|ps5|m12",
     "11179|ps5|d90", "11179|ps5|m12",
     "11188|ps5|d90", "11188|ps5|m12",
-  ]);
+    // v2: audit-widened (LTD>1M, age>730d, ratio>5x) — 22 titles
+    "10319|ps5|d90", "10319|ps5|m12",
+    "10320|ps5|d90", "10320|ps5|m12",
+    "10350|ps5|d90", "10350|ps5|m12",
+    "10352|ps5|d90", "10352|ps5|m12",
+    "10362|ps5|d90", "10362|ps5|m12",
+    "10402|ps5|d90", "10402|ps5|m12",
+    "10513|ps5|d90", "10513|ps5|m12",
+    "10520|ps5|d90", "10520|ps5|m12",
+    "10535|ps5|d90", "10535|ps5|m12",
+    "10565|ps5|d90", "10565|ps5|m12",
+    "10624|ps5|d90", "10624|ps5|m12",
+    "10635|ps5|d90", "10635|ps5|m12",
+    "10636|ps5|d90", "10636|ps5|m12",
+    "10645|ps5|d90", "10645|ps5|m12",
+    "10651|ps5|d90", "10651|ps5|m12",
+    "10691|ps5|d90", "10691|ps5|m12",
+    "10876|ps5|d90", "10876|ps5|m12",
+    "11035|ps5|d90", "11035|ps5|m12",
+    "11157|ps5|d90", "11157|ps5|m12",
+    "11192|ps5|d90", "11192|ps5|m12",
+    "11337|ps5|d90", "11337|ps5|m12",
+    "11345|ps5|d90", "11345|ps5|m12",
+  ].sort();
+  assert.deepEqual(keys, expected);
   for (const c of AGED_TITLE_CEILINGS) {
     assert.ok(c.ceilingFraction > 0 && c.ceilingFraction < 1, `${c.titleId}/${c.window} fraction in (0,1)`);
     assert.ok(c.reason.length > 20, `${c.titleId}/${c.window} carries a reason`);
-    assert.equal(c.policyVersion, "aged_title_ceiling_v1");
+    assert.ok(["aged_title_ceiling_v1", "aged_title_ceiling_v2"].includes(c.policyVersion),
+      `${c.titleId}/${c.window} has a known policy version`);
   }
+  // v1 covers exactly 3 titles (6 rows); v2 covers exactly 22 titles (44 rows).
+  const v1 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v1");
+  const v2 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v2");
+  assert.equal(v1.length, 6);
+  assert.equal(v2.length, 44);
 });
 
 test("agedTitleCeilingFor matches the exact triple and family members", () => {
@@ -55,4 +86,20 @@ test("the TLOU Part II Remastered ceilings are burst-adjusted (higher than the r
   // And they must be higher than the steady-state titles' fractions.
   const gowM12 = AGED_TITLE_CEILINGS.find(x => x.titleId === 10370 && x.window === "m12")!;
   assert.ok(m12.ceilingFraction > gowM12.ceilingFraction, "11179 m12 ceiling > 10370 m12 ceiling (burst)");
+});
+
+test("the v2 burst-exemption math: a steady-state aged title is clamped, a burst is not", () => {
+  // Ready or Not: LTD 1,113,477, m12 stored 1,485,352, age 1035d.
+  // Lifetime-avg daily = 1,113,477/1035 ≈ 1074.9 units/day.
+  // Window-implied daily = 1,485,352/365 ≈ 4069.5 units/day.
+  // Ratio ≈ 3.8x — below the 10x burst threshold, so the ceiling applies.
+  const ltd = 1_113_477, m12 = 1_485_352, age = 1035;
+  const ratio = (m12 / 365) / (ltd / age);
+  assert.ok(ratio < 10, `steady-state ratio ${ratio.toFixed(2)} < 10, ceiling applies`);
+
+  // A burst case: a deep-discount event pushes the m12 to 20x the lifetime
+  // average. ratio > 10 → the observed pace wins, no clamp.
+  const burstM12 = 20 * (ltd / age) * 365;
+  const burstRatio = (burstM12 / 365) / (ltd / age);
+  assert.ok(burstRatio > 10, `burst ratio ${burstRatio.toFixed(0)} > 10, ceiling skipped`);
 });

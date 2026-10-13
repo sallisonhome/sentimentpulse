@@ -3542,3 +3542,24 @@ Net: whenever an `isManualOverride=true` upsert hit a row that already existed (
 **Pattern:** (1) A "burst" is a real signal (HBO S2, a deep discount, a launch); a per-title ceiling must not erase it — hence the 3x burst allowance on 11179. (2) `revenue_calibration_anchors` column names are `actual_units`/`actual_revenue_usd`/`reference_msrp_usd_cents`/`sale_state` — all NOTNULL; check `PRAGMA table_info` before writing. (3) `signalpulse-recompute.yml` defaults to `ranks-preview` (no writes); pass `action=estimate-apply` to regenerate estimates. (4) The honest answer for an aged title with only 32 days of data may be a gated/null value or a drop below the board cutoff, not a clamped number — the cutoff case is what happened here and is correct.
 
 **Rules.** (1) Aged first-party titles with high LTDs (>2y old) will need this clamped approach often — the registry is the mechanism; add a row, don't touch the estimator. (2) Never widen a guard or ceiling beyond the windows the user named without asking. (3) A verified public anchor beats every read-side pass by design; check `dataSource=actual` to confirm it won.
+
+## 2026-10-13 (signalpulse) — Audit of aged high-LTD PS5 titles: the overstatement is systemic; v2 widens the per-title registry to 22 more titles
+
+**Audit method:** pulled the top-40 PS5 LTDs (>1M units) from `window_estimates_daily`, computed each title's d90/m12 as a fraction of LTD, and compared against the AAA curve ceiling at the title's actual age. The `xf` column in the PR table is the overstatement multiple.
+
+**Finding: the defect is universal, not title-specific.** Every aged PS5 title with a d90/m12 value is 1x–38x over the curve ceiling. The worst cases:
+- Ready or Not (10320): m12 stored at 1,485,352 = 133% of its own LTD (1,113,477) — a logical impossibility
+- Control: Ultimate Edition (10513): d90 33.5x, m12 27.2x
+- FF7R Intergrade (10535): d90 37.9x, m12 35.1x
+- Spider-Man Remastered (10565): d90 and m12 both 23.3x
+- No Man's Sky (10350): 14.0x/14.9x; Skyrim SE (11035): 13.1x/10.4x
+
+Titles with `d90=0/m12=0` are already gated (`insufficient_history`) — the honest answer for a 32-day history.
+
+**User decision (2026-10-13, 19:13 EDT):** widen the per-title registry (Option B), NOT a global rule. Criteria: LTD > 1M units, age > 730d, overstatement > 5x. 22 titles × 2 windows = 44 new rows at `aged_title_ceiling_v2`.
+
+**Key design addition — the read-time burst exemption.** The original 3-title registry had no burst exemption (TLOU Part II Remastered's burst was handled by manually raising the ceiling). For 22 titles that doesn't scale: several have real ongoing bursts (Ark: Survival Ascended, Outlast Trials). The fix: in the group loop, if `(unitsMid / winDays) / (ltdUnits / ageDays) > 10`, the title is in a burst and the observed pace wins — no clamp. This is per-registry-row behavior, so it does NOT become a global rule. Units-per-day compared to units-per-day; do not mix rating-delta (ratings) with LTD units.
+
+**Verification plan:** after merge + deploy, probe the live d90/m12 boards for the 22 titles and confirm the served values are ≤ LTD × fraction. Titles whose clamped value falls below the top-100 cutoff will drop off the board — that is the honest answer for an aged title.
+
+**Rules.** (1) The v2 fractions are curve values at the title's age — they do NOT include a burst allowance. If a title later bursts, the read-time burst exemption protects it; do not raise the fraction. (2) Audit again when the PS5 rating collector has 90+ days of history — forward-delta will start firing and the curve ceiling may no longer be the binding constraint. (3) The 5x cutoff was the user's call; do not widen it without asking.
