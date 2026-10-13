@@ -48,6 +48,7 @@ import { advanceLifetimeSignal } from "../server/lifetime-signal";
 import {refreshSteamUnitCalibration} from "../server/steam-unit-calibration";
 import {evaluateSteamSalesShadow} from "../server/steam-sales-shadow";
 import { capRankAnchorFloor, enforceRankAnchorWindows } from "../server/rank-anchor-guard";
+import { ageWindowCapFor } from "./ltd-age-cap";
 import { rankAnchorModeFromEnv, legacyFloor, chooseFloor, type Ref } from "../server/rank-anchor-curve";
 import { CONSOLE_DAY_ACTUAL_TAG, CONSOLE_DAY_UNIT_ACTUALS, windowContainsDay } from "../server/console-day-unit-actuals";
 import { isBootstrapIneligible } from "../server/console-bootstrap-guards";
@@ -1137,7 +1138,10 @@ async function main() {
   //                          title_ltd_state with today's value.
   //   derived_max_windows  — age < 366d, no override → ltd_units =
   //                          max(units[d7], units[d30], units[d90], units[m12],
-  //                              row.unitsMid, existing state.ltd_units).
+  //                              row.unitsMid, existing state.ltd_units),
+  //                          then capped at the age-covering window's
+  //                          units_mid (2026-10-12 user rule). Exempt:
+  //                          anchored titles, per-title overrides.
   //                          Guarantees monotonicity and that LTD is never
   //                          smaller than any measured window.
   //   accumulator          — age >= 366d, no override → ltd_units =
@@ -1151,6 +1155,14 @@ async function main() {
   const LTD_ACCUMULATOR_ENABLED = process.env.LTD_ACCUMULATOR_ENABLED === "1";
   if (LTD_ACCUMULATOR_ENABLED) {
     console.log(`[estimate-console-units] LTD_ACCUMULATOR_ENABLED=1 — using title_ltd_state`);
+
+    // 2026-10-12: Titles with any revenue_calibration_anchors row are exempt
+    // from the age-covering-window ceiling below (user rule: anchored values
+    // stay untouched).
+    const anchoredTitleIds = new Set<number>(
+      (db.prepare(`SELECT DISTINCT title_id FROM revenue_calibration_anchors`).all() as Array<{ title_id: number }>).map((r) => r.title_id),
+    );
+    console.log(`[estimate-console-units] anchored titles exempt from age cap: ${anchoredTitleIds.size}`);
 
     // Preload existing state
     const stateRows = db
@@ -1232,6 +1244,19 @@ async function main() {
           const existing = state?.ltd_units ?? 0;
           newLtdUnits = Math.max(...windowValues, naiveLtd, existing);
           newSource = "derived_max_windows";
+          // 2026-10-12: Age-covering-window ceiling. For a title under 12 months
+          // in market, LTD must never exceed the window that represents its
+          // current age (0-7d -> d7, 8-30d -> d30, 31-90d -> d90,
+          // 91-365d -> m12). Exemptions: any title with a
+          // revenue_calibration_anchors row, or a per-title multiplier override
+          // (those win over the cap so anchored values stay untouched).
+          if (!anchoredTitleIds.has(titleId)) {
+            const cap = ageWindowCapFor(age, titleRows);
+            if (cap != null && newLtdUnits > cap) {
+              newLtdUnits = cap;
+              newSource = "derived_max_windows_age_cap";
+            }
+          }
         } else {
           // Regime 3: accumulator (age >= 366d)
           if (!state || state.ltd_source !== "accumulator") {
