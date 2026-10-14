@@ -32,7 +32,7 @@
 
 export type AgedTitleCeiling = {
   titleId: number;
-  platform: "ps5" | "xbox";
+  platform: "ps5" | "xbox" | "steam";
   window: string;
   /**
    * The ceiling as a fraction of the title's LTD rating count (the stored
@@ -380,6 +380,198 @@ export const AGED_TITLE_CEILINGS: readonly AgedTitleCeiling[] = [
     platform: "ps5", window: "m12", ceilingFraction: 0.0425,
     reason: "Hogwarts Legacy aged ~3.7y; m12 3.8x over curve; ceiling 4.25%",
     policyVersion: "aged_title_ceiling_v2",
+  },
+
+  // ─── v3: Steam audit-widened batch (2026-10-13, PR #277) ────────────────
+  // Criteria: Steam, LTD > 1M units, release age > 730d, and the stored
+  // d90/m12 exceeded 5x the curve-consistent ceiling (same cutoff as the
+  // PS5 v2 batch). 19 titles x 2 windows = 38 rows at aged_title_ceiling_v3.
+  // The root cause is different from PS5: the Steam review-to-sales
+  // multiplier is thrashing (25.0 -> 74.6 -> 40.2 -> 57.1, calibrated from
+  // only 4-25 anchors with observed_ratio 0.54-2.98). The steam_histogram
+  // signal is honest; the multiplier is wrong. The refit is stabilized
+  // separately (geometric mean + 1.5x step cap + MIN_ANCHORS=5); these
+  // ceilings are the belt-and-suspenders durable fix that survives future
+  // multiplier refits.
+  // Note: the platform type was widened from "ps5" | "xbox" to include
+  // "steam" for this batch. There is no IP override to block on Steam
+  // (the IP override derives console FROM Steam, so Steam rows are not
+  // affected by it) - the ceiling alone is sufficient.
+  // Curve values: a 5-8y title's d90 ~ 0.20% of LTD, m12 ~ 0.80% of LTD.
+  // RE4 (9002) is younger (3.6y): d90 0.74%, m12 3.88%.
+  {
+    titleId: 10444, // Resident Evil 2 (Steam)
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "RE2 Steam aged ~7.7y; d90 165.9x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10444,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "RE2 Steam aged ~7.7y; m12 38.8x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10186, // Bloons TD 6
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "Bloons TD 6 aged ~8.3y; d90 stored at 2.2% of LTD; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10186,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Bloons TD 6 aged ~8.3y; m12 74.5x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10136, // The Binding of Isaac: Rebirth
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "Isaac Rebirth aged ~5.2y; d90 31.8x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10136,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Isaac Rebirth aged ~5.2y; m12 32.2x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10916, // Detroit: Become Human
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "Detroit aged ~6.3y; d90 22.8x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10916,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Detroit aged ~6.3y; m12 42.9x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10836, // ULTRAKILL
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "ULTRAKILL aged ~6.1y; d90 19.2x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10836,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "ULTRAKILL aged ~6.1y; m12 33.4x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10833, // GTA IV: Complete Edition
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "GTA IV CE aged ~6.6y; d90 16.9x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10833,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "GTA IV CE aged ~6.6y; m12 18.3x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10151, // Red Dead Redemption 2
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "RDR2 Steam aged ~8y; d90 15.3x over curve (user-reported 2026-10-13); ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10151,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "RDR2 Steam aged ~8y; m12 21.1x over curve (user-reported 2026-10-13); ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 11162, // Slay the Spire
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Slay the Spire aged ~7.7y; m12 26.7x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10123, // RimWorld
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "RimWorld aged ~8y; m12 28.2x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10319, // Forza Horizon 5: Deluxe Edition (Steam)
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "FH5 Deluxe Steam aged ~4.9y; d90 10.7x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10319,
+    platform: "steam", window: "m12", ceilingFraction: 0.0096,
+    reason: "FH5 Deluxe Steam aged ~4.9y; m12 17x over curve; ceiling 0.96%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10152, // Risk of Rain 2
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Risk of Rain 2 aged ~6.2y; m12 13.6x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10592, // DayZ
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "DayZ aged ~7.8y; m12 13.5x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10168, // Deep Rock Galactic
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Deep Rock Galactic aged ~6.4y; m12 10.5x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10088, // Phasmophobia
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "Phasmophobia aged ~6.1y; d90 6.1x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10088,
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Phasmophobia aged ~6.1y; m12 11.9x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 11174, // Hades
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "Hades aged ~6.1y; m12 9.9x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 9002, // Resident Evil 4 (Steam)
+    platform: "steam", window: "d90", ceilingFraction: 0.0074,
+    reason: "RE4 Steam aged ~3.6y; d90 7.2x over curve; ceiling 0.74%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 9002,
+    platform: "steam", window: "m12", ceilingFraction: 0.0388,
+    reason: "RE4 Steam aged ~3.6y; m12 10.6x over curve; ceiling 3.88%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10601, // It Takes Two (Steam)
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "It Takes Two Steam aged ~5.6y; m12 18x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10181, // Mount & Blade II: Bannerlord
+    platform: "steam", window: "m12", ceilingFraction: 0.0080,
+    reason: "M&B II Bannerlord aged ~6.5y; m12 12.6x over curve; ceiling 0.80%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 11134, // Ori and the Will of the Wisps
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "Ori Will of Wisps aged ~6.6y; d90 21.7x over curve; ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
   },
 ];
 
