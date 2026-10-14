@@ -41,6 +41,21 @@ function lastScheduledTikTokRunEtDate(): string | null {
 
 export function startTikTokCron(run: (trigger: string) => Promise<unknown>) {
   if (tiktokTimer) return;
+  // Startup cleanup: mark any runs still 'running' as 'aborted'. A process
+  // restart (deploy) kills the in-flight pipeline, but the run row stays
+  // 'running' forever because nothing marks it failed. Runs 3 and 8 both
+  // orphaned this way during signalpulse deploy restarts.
+  try {
+    const db = ttDb();
+    const orphaned = db.prepare(`SELECT id FROM tt_ingest_runs WHERE status='running'`).all() as Array<{ id: number }>;
+    if (orphaned.length) {
+      db.prepare(`UPDATE tt_ingest_runs SET status='aborted', finished_at=?, message='aborted: orphaned by signalpulse restart' WHERE status='running'`)
+        .run(new Date().toISOString());
+      log(`TikTok Pulse: marked ${orphaned.length} orphaned run(s) as aborted (killed by restart): ${orphaned.map(r => r.id).join(", ")}`, "tiktok");
+    }
+  } catch (e) {
+    log(`TikTok Pulse: failed to clean up orphaned runs: ${e}`, "tiktok");
+  }
   log("TikTok Pulse cron started (daily 04:30 America/New_York, catch-up until 20:00)", "tiktok");
   tiktokTimer = setInterval(() => {
     try {
