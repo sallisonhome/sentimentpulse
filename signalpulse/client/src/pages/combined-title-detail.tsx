@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useParams } from "wouter";
+import { Link, useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Download, RefreshCw } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, Legend } from "recharts";
@@ -205,9 +205,26 @@ export default function CombinedTitleDetail() {
   const isFetching = youtube.isFetching || tiktok.isFetching;
   const error = (youtube.error as Error) && (tiktok.error as Error) ? (youtube.error as Error) : null;
 
+  // The combined PDP is shared by YouTube Pulse and TikTok Pulse. The back
+  // link should return the user to whichever Pulse they came from.
+  // The routes already differentiate the source:
+  //   /youtube/titles/:titleId — YouTube Pulse
+  //   /tiktok/titles/:titleId  — TikTok Pulse
+  //   /titles/:titleId         — generic (no source info)
+  //
+  // For the generic route, fall back to document.referrer (full page load)
+  // or default to YouTube Pulse (the original behavior).
+  const [currentPath] = useLocation();
+  const isTikTokRoute = currentPath.startsWith("/tiktok/");
+  const isYouTubeRoute = currentPath.startsWith("/youtube/");
+  const referrer = typeof document !== "undefined" ? document.referrer : "";
+  const cameFromTikTok = isTikTokRoute || (!isYouTubeRoute && referrer.includes("/tiktok"));
+  const backHref = cameFromTikTok ? "/tiktok" : "/youtube";
+  const backLabel = cameFromTikTok ? "TikTok Pulse" : "YouTube Pulse";
+
   return <div className="p-4 md:p-6 space-y-4 min-w-0 max-w-[1600px] mx-auto" data-testid="page-combined-title">
-    <Link href="/youtube" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-      <ArrowLeft className="h-3.5 w-3.5" />YouTube Pulse
+    <Link href={backHref} className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground" data-testid="back-link-combined-title">
+      <ArrowLeft className="h-3.5 w-3.5" />{backLabel}
     </Link>
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div>
