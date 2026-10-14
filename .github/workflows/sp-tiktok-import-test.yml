@@ -1,0 +1,49 @@
+name: SP TikTok Import Direct Test
+
+# One-off: bypass the full ingest and directly test the TikTok comment feed
+# import path — verify auth works and comments actually land in raw_posts.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Test TikTok comment feed directly
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+            echo "── 1. Get tiktok_feed_ops_token from SentimentPulse DB ──"
+            TOKEN=$(sqlite3 -header -column /opt/sentimentpulse/signalpulse/../backend/sentimentpulse.db "SELECT value FROM app_settings WHERE key='tiktok_feed_ops_token'" | tail -1 | tr -d ' \n')
+            echo "TOKEN_LEN: ${#TOKEN}"
+
+            echo "── 2. Test GET /api/tiktok/ops/comments-feed (SM2, steamAppId=2183900) ──"
+            HTTP_CODE=$(curl -sS -o /tmp/tt_feed.json -w "%{http_code}" --max-time 10 \
+              -H "x-ops-token: $TOKEN" \
+              "http://127.0.0.1:5000/api/tiktok/ops/comments-feed?steamAppId=2183900&limit=10" 2>&1)
+            echo "HTTP_CODE: $HTTP_CODE"
+            head -c 500 /tmp/tt_feed.json
+            echo ""
+
+            echo "── 3. Test YouTube feed (control — same auth pattern) ──"
+            HTTP_CODE_YT=$(curl -sS -o /tmp/yt_feed.json -w "%{http_code}" --max-time 10 \
+              -H "x-ops-token: $TOKEN" \
+              "http://127.0.0.1:5000/api/youtube/ops/comments-feed?steamAppId=2183900&limit=10" 2>&1)
+            echo "YT_HTTP_CODE: $HTTP_CODE_YT"
+            head -c 500 /tmp/yt_feed.json
+            echo ""
+          EOF
