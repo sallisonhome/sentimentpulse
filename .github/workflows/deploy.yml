@@ -487,6 +487,19 @@ jobs:
             if [ -d signalpulse ] && [ -f signalpulse/package.json ]; then
               cd signalpulse
               npm install --no-audit --no-fund
+
+              # Inject build timestamp for ETag cache-busting (PR 304, 2026-10-14).
+              # The touch-only cache-bust doesn't change file content, so the
+              # browser can serve a stale index.html from cache. Injecting the
+              # build timestamp makes the content (and thus ETag) genuinely
+              # change on every deploy.
+              if [ -f "client/index.html" ] && \
+                 grep -q "__BUILD_TIMESTAMP__" "client/index.html"; then
+                BUILD_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                sed -i "s/__BUILD_TIMESTAMP__/${BUILD_TS}/" "client/index.html"
+                echo "injected build timestamp: ${BUILD_TS}"
+              fi
+
               npm run build
               cd ..
             else
