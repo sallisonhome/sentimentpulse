@@ -1,9 +1,9 @@
 name: SP TikTok Catchup (scheduled)
 
 # Scheduled TikTok comment import into SentimentPulse.
-# Runs AFTER SignalPulse's TikTok Pulse cron (4:30 AM ET, ~6:00 AM UTC)
-# so the latest TikTok comments are imported and available in SentimentPulse
-# by the time the daily SentimentPulse ingest runs at 2:00 AM local time.
+# Runs AFTER SignalPulse's TikTok Pulse cron (4:30 AM ET) so the latest
+# TikTok comments are imported and available in SentimentPulse by the time
+# the daily SentimentPulse ingest runs at 2:00 AM local time.
 #
 # This is the fast, idempotent path — no full ingest needed.
 # Idempotent: re-running is safe; dedup by game/source/external_id.
@@ -33,11 +33,14 @@ jobs:
 
       - name: Run TikTok catch-up (6 core titles)
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
-            set -uo pipefail
-            cd /opt/sentimentpulse/backend
-            echo "── Scheduled TikTok catch-up for games: 20,21,23,24,27,36 ──"
-            source venv/bin/activate 2>/dev/null || true
-            python3 scripts/catchup_tiktok.py --game-ids "20,21,23,24,27,36"
-            echo "── Exit: $? ──"
-          EOF
+          set -euo pipefail
+          GAME_IDS="20,21,23,24,27,36"
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 "GAME_IDS=$GAME_IDS bash -s" <<'REMOTE'
+          set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 600 9 || { echo "Maintenance busy; no catch-up performed"; exit 75; }
+          cd /opt/sentimentpulse/backend
+          .venv/bin/python scripts/catchup_tiktok.py --game-ids "$GAME_IDS" \
+            --max-pages 200 --max-seconds 180
+          REMOTE
