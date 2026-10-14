@@ -304,6 +304,11 @@ const OPS_TOKEN_PREFIXES = [
   // SentimentPulse comment feed. The feed carries YouTube comment text, so it
   // is ops-token or JWT only — never public-read. See server/routes-youtube.ts.
   "/api/youtube/ops/",
+  // TikTok Pulse (2026-10-14): manual run trigger, status and the SentimentPulse
+  // comment feed. Same rationale as YouTube — the feed carries TikTok comment
+  // text, so it is ops-token or JWT only — never public-read. See
+  // server/routes-tiktok.ts.
+  "/api/tiktok/ops/",
 ];
 
 function hasValidOpsToken(req: Request): boolean {
