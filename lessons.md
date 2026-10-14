@@ -3563,3 +3563,19 @@ Titles with `d90=0/m12=0` are already gated (`insufficient_history`) — the hon
 **Verification plan:** after merge + deploy, probe the live d90/m12 boards for the 22 titles and confirm the served values are ≤ LTD × fraction. Titles whose clamped value falls below the top-100 cutoff will drop off the board — that is the honest answer for an aged title.
 
 **Rules.** (1) The v2 fractions are curve values at the title's age — they do NOT include a burst allowance. If a title later bursts, the read-time burst exemption protects it; do not raise the fraction. (2) Audit again when the PS5 rating collector has 90+ days of history — forward-delta will start firing and the curve ceiling may no longer be the binding constraint. (3) The 5x cutoff was the user's call; do not widen it without asking.
+
+## 2026-10-13 (signalpulse) — Addendum 22: The ceiling clamp was defeated by the IP override; the guard and the ceiling are a PAIR, not alternatives
+
+**Symptom:** After PR #274 deployed, the live d90/m12 boards still served the unclamped values for 17 of 22 v2 titles. The `agedTitleCeiling` metadata was set on every row (the clamp fired) but the units were the Steam×9 IP-derived ones — the clamp ran BEFORE the IP override replaced the value, so it clamped the wrong number.
+
+**Root cause:** The ceiling clamp runs early in the group loop (right after `unitsMidEstimated` is set); the Steam×9 IP override (Path B) runs later and overwrites `unitsMid`. The v1 titles (TLOU, GoW Ragnarök) worked only because they ALSO carry a native-model guard that blocks the IP override — the guard was doing the heavy lifting, and the ceiling was clamping the already-native value.
+
+**The fix (PR #275):** the guard and the ceiling are a PAIR for aged titles:
+1. The native-model guard blocks the Steam×9 IP override so the NATIVE estimator value survives to the clamp.
+2. The aged-title ceiling then clamps the native value to the curve-consistent fraction of LTD.
+
+A registry row in `aged-title-ceilings.ts` without a matching row in `console-native-model-guards.ts` is a no-op for titles the IP override fires on. PR #275 added the 22 v2 titles to the guard registry (`native_model_guard_v2`, scoped to d90/m12) and applied the ceiling to the PDP `windowKpisPerPlatform` path so the PDP KPI cards agree with the board.
+
+**Verified live (2026-10-13, post-PR #275):** 0 failures of 22. Only 2 titles (Cyberpunk UE 74,429 d90 / 301,258 m12; Witcher 3 Rem 99,595 / 403,124) remain on the d90/m12 top-100 boards; the other 20 fell below the cutoff — the honest answer for aged titles. PDP KPI cards agree exactly with the board for both.
+
+**Rule.** When adding an aged title to the ceiling registry, ALWAYS add the matching native-model guard row for the same windows — otherwise the IP override defeats the clamp. Check both registries stay in sync (the test in aged-title-ceilings.test.ts and console-native-model-guards.test.ts assert the counts; if they drift, one of the two is missing).
