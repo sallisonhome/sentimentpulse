@@ -95,14 +95,20 @@ test("cohort leaderboard aggregates views for 24h window", () => {
 
 test("cohort excludes out-of-window videos", () => {
   const db = seedDb();
-  // Push the video's create_time to 3 days ago so it falls outside d1 but inside d7.
+  // Push the video's create_time to 3 days ago so it falls outside d7 but inside d30.
+  // NOTE: d1 is now a DAILY VIEW GAIN (delta between the two most recent daily
+  // snapshots, no publication filter — per user direction Oct 14), so a video
+  // published 3 days ago still counts in d1. The d7/d30 windows still filter
+  // by publication date.
   db.prepare("UPDATE tt_videos SET create_time=? WHERE aweme_id='aw1'")
-    .run(Math.floor((Date.now() - 3 * 86400_000) / 1000));
-  const rows = computeCohortLeaderboard(db, "d1", "views", "desc");
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].videos, 0);
+    .run(Math.floor((Date.now() - 8 * 86400_000) / 1000));
+  const d1 = computeCohortLeaderboard(db, "d1", "views", "desc");
+  assert.equal(d1.length, 1);
+  assert.equal(d1[0].videos, 1); // d1 has no publication filter
   const d7 = computeCohortLeaderboard(db, "d7", "views", "desc");
-  assert.equal(d7[0].videos, 1);
+  assert.equal(d7[0].videos, 0); // 8 days ago is outside d7
+  const d30 = computeCohortLeaderboard(db, "d30", "views", "desc");
+  assert.equal(d30[0].videos, 1); // 8 days ago is inside d30
 });
 
 // ── Feed ──
