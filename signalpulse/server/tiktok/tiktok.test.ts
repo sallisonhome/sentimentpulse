@@ -65,8 +65,19 @@ function seedDb() {
     `INSERT INTO tt_videos (aweme_id, title_id, desc, create_time, view_count, like_count,` +
     ` comment_count, repost_count, match_reason, relevance_version, discovered_via, first_seen_at, last_refreshed_at)` +
     ` VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run("aw1", 2183900, "Space Marine 2 gameplay", Math.floor((now - 86400_000) / 1000), 1000, 100, 50, 10,
+  ).run("aw1", 2183900, "Space Marine 2 gameplay", Math.floor((now - 3600_000) / 1000), 1000, 100, 50, 10,
     "space marine 2", RELEVANCE_VERSION, "hashtag", iso(now), iso(now));
+  // d1 is now a UTC calendar-day window (start of today UTC), not a rolling
+  // 24h. If the test runs within the first hour of a UTC day, now-1h lands on
+  // yesterday and the video would fall outside d1 — clamp the create_time to
+  // no earlier than the start of today UTC so the seed is always in-window.
+  {
+    const todayStart = Math.floor(Date.parse(new Date(now).toISOString().slice(0, 10) + "T00:00:00.000Z") / 1000);
+    const seeded = Math.floor((now - 3600_000) / 1000);
+    if (seeded < todayStart) {
+      db.prepare("UPDATE tt_videos SET create_time=? WHERE aweme_id='aw1'").run(todayStart);
+    }
+  }
   db.prepare(
     `INSERT INTO tt_video_stats_daily (aweme_id, date, view_count, like_count, comment_count)` +
     ` VALUES (?, ?, ?, ?, ?)`
