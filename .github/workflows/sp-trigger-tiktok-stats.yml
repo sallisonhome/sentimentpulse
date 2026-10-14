@@ -1,0 +1,58 @@
+name: SP Trigger TikTok Stats Run
+
+# One-off: trigger SignalPulse's TikTok stats-only run via the ops endpoint
+# so tt_video_stats_daily gets a fresh snapshot of all tracked videos' current
+# lifetime views right now (instead of waiting for tomorrow's 4:30 AM ET cron).
+#
+# POSTs to SignalPulse's /api/tiktok/ops/run on 127.0.0.1:5000 with
+# steps=["stats"]. The OPS token comes from the INGESTION_OPS_TOKEN secret.
+# Returns 200 immediately; the run executes in the background.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Trigger SignalPulse TikTok stats run
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+            echo "── SignalPulse health check ──"
+            curl -sS --max-time 10 http://127.0.0.1:5000/api/health 2>&1 | head -3
+            echo ""
+            echo "── POST /api/tiktok/ops/run (steps=[stats]) ──"
+            OPS_TOKEN="${{ secrets.INGESTION_OPS_TOKEN }}"
+            HTTP_CODE=$(curl -sS -o /tmp/tt_stats_resp.json -w "%{http_code}" --max-time 60 \
+              -X POST http://127.0.0.1:5000/api/tiktok/ops/run \
+              -H "Content-Type: application/json" \
+              -H "x-ops-token: ${OPS_TOKEN}" \
+              -d '{"steps":["stats"]}' 2>&1)
+            echo "HTTP: $HTTP_CODE"
+            cat /tmp/tt_stats_resp.json | head -10
+            echo ""
+            echo "── Check tt_ingest_runs for the new run ──"
+            sleep 5
+            # Query the DB for the most recent run
+            cd /opt/sentimentpulse/signalpulse
+            node -e "
+              const Database = require('better-sqlite3');
+              const db = new Database('tiktok.db', { readonly: true });
+              const rows = db.prepare('SELECT id, trigger, started_at, status, substr(message,1,200) as msg FROM tt_ingest_runs ORDER BY id DESC LIMIT 3').all();
+              console.log(JSON.stringify(rows, null, 2));
+            " 2>&1 || echo "(node query failed)"
+          EOF
