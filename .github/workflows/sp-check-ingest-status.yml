@@ -31,6 +31,6 @@ jobs:
             curl -sS --max-time 10 http://127.0.0.1:8000/api/ingest/status 2>&1 | python3 -m json.tool 2>/dev/null || \
               curl -sS --max-time 10 http://127.0.0.1:8000/api/ingest/status 2>&1 | head -20
             echo ""
-            echo "── SentimentPulse journalctl (ingest window 04:30-05:35 UTC Oct 14, tiktok/ingest related) ──"
-            journalctl -u sentimentpulse --since "2026-10-14 04:30:00" --until "2026-10-14 05:35:00" --no-pager -n 5000 2>/dev/null | grep -iE "tiktok|ingest_phase|ERROR|WARNING|import" | grep -v "GET /api/settings\|GET /api/tiktok/status\|GET /api/tiktok/series\|GET /api/tiktok/comments" | tail -50
+            echo "── SentimentPulse journalctl (last 4 hours, tiktok/ingest related) ──"
+            journalctl -u sentimentpulse --since '4 hours ago' --no-pager -n 5000 2>/dev/null | grep -iE "tiktok|ingest_phase|ERROR|WARNING|import" | grep -v "GET /api/settings\|GET /api/tiktok/status\|GET /api/tiktok/series\|GET /api/tiktok/comments" | tail -50
           EOF
