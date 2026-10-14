@@ -39,6 +39,14 @@ def comment_is_focused(text, game):
 
 
 def _dt(value):
+    """Parse a feed timestamp into a naive UTC datetime.
+
+    The SignalPulse feed sends createTime as an epoch-seconds integer (raw
+    DB value), while snapshotAt / fetchedAt / deletedAt are ISO strings with
+    a Z suffix. Handle both — int/float means epoch seconds since UTC.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return datetime.fromtimestamp(value, tz=timezone.utc).replace(tzinfo=None)
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
         raise ValueError("feed timestamp must include timezone")
