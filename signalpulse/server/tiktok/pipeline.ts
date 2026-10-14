@@ -29,6 +29,12 @@ export const REJECTED_CACHE_MAX_DAYS = 30;
 const DISCOVERY_HASHTAG_PAGES = 2;      // ~40 posts per hashtag per run
 const DISCOVERY_KEYWORD_PAGES = 2;      // ~40 posts per keyword per run
 const COMMENT_NEW_MAX_PAGES = 5;
+/** How many videos per title the daily `comments` step polls. The plan was
+ *  top-30 per title, not top-3 — this was requested but never implemented
+ *  (runComments was hardcoded LIMIT 3). Top-30 × 5 pages × 1 unit = 150 units
+ *  per title worst case, 900 units for all 6 titles. Under the 2,000-unit
+ *  comments reserve. */
+const COMMENT_TOP_VIDEOS_PER_TITLE = 30;
 const COMMENT_BACKFILL_MAX_PAGES = 3;
 const COMMENT_BACKFILL_AFTER_DAYS = 27;
 /** Hard page ceiling for the 90-day backfill per video, so a video with a huge
@@ -361,7 +367,7 @@ export async function runComments(db: TtDb, client: EnsembleDataClient, c: RunCo
       fetched_at=excluded.fetched_at`);
   for (const t of titles) {
     const videos = db.prepare(`SELECT aweme_id, comment_count FROM tt_videos WHERE title_id=? AND excluded_at IS NULL
-      ORDER BY COALESCE(view_count,0) DESC LIMIT 3`).all(t.title_id) as any[];
+      ORDER BY COALESCE(view_count,0) DESC LIMIT ${COMMENT_TOP_VIDEOS_PER_TITLE}`).all(t.title_id) as any[];
     for (const v of videos) {
       for (let page = 0; page < COMMENT_NEW_MAX_PAGES; page++) {
         try {

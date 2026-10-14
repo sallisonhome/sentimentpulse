@@ -220,10 +220,37 @@ test("runBackfillStep passes caller's steps through (regression)", async () => {
   assert.ok(counters.hashtagCalls > 0, `hashtagCalls should be > 0 (got ${counters.hashtagCalls}) — steps must pass through`);
 });
 
-/** Comments must run FIRST in the default steps order. This was the root
- *  cause of runs 5/6/7 burning 5,000 EnsembleData units with 0 comments saved:
- *  discovery (~350 units) + stats (870 postInfo × 2 = 1,740 units) ate the
- *  budget before comments ever started. */
+/** The daily `comments` step must poll the TOP 30 videos per title, not top 3.
+ *  The plan was top-30 per title; runComments was hardcoded LIMIT 3 and this
+ *  was requested but never implemented. This test seeds 35 videos for one
+ *  title and asserts postComments is called for at least 30 distinct videos. */
+test("daily comments step polls top 30 videos per title (regression)", async () => {
+  const { runPipeline } = await import("./pipeline");
+  const db = seedDb();
+  // seedDb inserts 1 video for title 2183900. Add 34 more (35 total).
+  const ins = db.prepare(`INSERT INTO tt_videos (aweme_id, title_id, author_unique_id, desc, create_time, view_count, comment_count, match_reason, discovered_via, first_seen_at, last_refreshed_at)
+    VALUES (?, 2183900, ?, ?, ?, ?, 5, 'test', 'manual', ?, ?)`);
+  const now = new Date().toISOString();
+  for (let i = 0; i < 34; i++) {
+    ins.run(`aw-extra-${i}`, `user${i}`, `extra video ${i}`, 1700000000, 1000 - i, now, now);
+  }
+  const calledVideos = new Set<string>();
+  const fakeClient = {
+    hashtagPosts: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    keywordSearch: async (): Promise<EnsembleDataResponse> => ({ data: { data: [], nextCursor: null }, units_charged: 0 }),
+    postInfo: async (): Promise<EnsembleDataResponse> => ({ data: [], units_charged: 0 }),
+    postComments: async (awemeId: string): Promise<EnsembleDataResponse> => {
+      calledVideos.add(awemeId);
+      return { data: { comments: [], nextCursor: null }, units_charged: 0 };
+    },
+  };
+  await runPipeline(db, fakeClient as unknown as EnsembleDataClient, {
+    extendedStorageApproved: true, steps: ["comments"],
+  }, "test");
+  assert.ok(calledVideos.size >= 30,
+    `postComments should be called for at least 30 distinct videos (got ${calledVideos.size}) — top-30 polling required`);
+});
+
 test("comments run FIRST in default steps order (regression)", async () => {
   const { runPipeline } = await import("./pipeline");
   const order: string[] = [];
