@@ -306,6 +306,18 @@ export async function runStats(db: TtDb, client: EnsembleDataClient, c: RunCount
   }
   const videos = db.prepare(`SELECT v.* FROM tt_videos v JOIN tt_titles t ON t.title_id=v.title_id
     WHERE v.excluded_at IS NULL AND t.enabled=1${scopeFilter(opts, "t.title_id")}`).all() as any[];
+
+  // Prioritize the 6 Saber tracked titles (2183900 SM2, 1551980 Hellraiser,
+  // 1967610 Turok, 2947860 John Wick, 675010 MudRunner, 1465360 SnowRunner)
+  // so they always get a daily snapshot within the stats reserve.
+  // 276 tracked videos × 2 units (postInfo) = 552 units — fits in the
+  // 600-unit STATS_RESERVE_UNITS. Remaining budget refreshes other titles.
+  const TRACKED_TITLE_IDS = [2183900, 1551980, 1967610, 2947860, 675010, 1465360];
+  const tracked = videos.filter(v => TRACKED_TITLE_IDS.includes(v.title_id));
+  const other = videos.filter(v => !TRACKED_TITLE_IDS.includes(v.title_id));
+  const ordered = [...tracked, ...other];
+  c.notes.push(`stats: ${tracked.length} tracked-title videos prioritized, ${other.length} other videos after`);
+
   const statsUpsert = db.prepare(`INSERT INTO tt_video_stats_daily (aweme_id, date, view_count, like_count,
       comment_count, share_count, repost_count, download_count)
     VALUES (?,?,?,?,?,?,?,?)
