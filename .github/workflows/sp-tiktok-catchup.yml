@@ -1,0 +1,42 @@
+name: SP TikTok Catchup (fast)
+
+# Fast, standalone TikTok comment import into SentimentPulse.
+# Mirrors the YouTube catch-up pattern: idempotent, seconds-fast,
+# only runs the TikTok import step for the specified titles.
+# No full ingest required — this is the efficient iterative path.
+
+on:
+  workflow_dispatch:
+    inputs:
+      game_ids:
+        description: 'Comma-separated SentimentPulse game IDs (default: 6 core titles)'
+        required: false
+        default: '20,21,23,24,27,36'
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  catchup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run TikTok catch-up
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+            cd /opt/sentimentpulse/backend
+            echo "── Running TikTok catch-up for games: ${{ github.event.inputs.game_ids || '20,21,23,24,27,36' }} ──"
+            source venv/bin/activate 2>/dev/null || true
+            python3 scripts/catchup_tiktok.py --game-ids "${{ github.event.inputs.game_ids || '20,21,23,24,27,36' }}"
+            echo "── Exit: $? ──"
+          EOF
