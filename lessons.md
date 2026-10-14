@@ -58,18 +58,44 @@ Daily flow:
 After any TikTok Pulse change: run the catchup (seconds), not a full
 full ingest (hour).
 
-**Column misalignment (PR 303).** The TikTok leaderboard table had 8
-body columns (Title + 7 data) but only 7 header columns because
-`"title"` was in `SORTS`. The `title` entry is the first column (title
-image + name + competitor badge), not a sortable data column. Removing
-it from `SORTS` keeps the header and body column counts in sync.
+**Column misalignment (PRs 303, 308) — two-stage bug.**
+
+Stage 1 (PR 303): The TikTok leaderboard table had 8 body columns
+(Title + 7 data) but only 7 header columns because `"title"` was in
+`SORTS`. The `title` entry is the first column (title image + name +
+competitor badge), not a sortable data column. Removing it from
+`SORTS` was correct but incomplete — it fixed the duplicate but not
+the missing Title header.
+
+Stage 2 (PR 308): After removing `"title"` from `SORTS` AND removing
+`"reposts"` (PR 305), the header row had 5 headers (Views, Videos,
+Comments, Likes, Likes %) but the body still had 6 columns (Title +
+5 data). **The Title column header was never rendered** — there was
+no header above the first body column.
+
+This caused every data column to shift one position right:
+
+- Views values appeared under the Videos header
+- Videos counts appeared under the Comments header
+- Comments appeared under the Likes header
+- Likes counts appeared under the Likes % header
+- Likes % values appeared on the far right with NO header above them
+
+Fix: add a non-sortable `Title` header `<th>` before the SORTS
+headers. Now the header row has 6 columns (Title + 5 data), matching
+the body.
+
+**Key lesson: check the header AND body column counts together.**
+Removing a column from the header without removing it from the body
+(or vice versa) causes misalignment. Always verify the header count
+equals the body cell count per row.
 
 **Dead Reposts column (PR 305).** TikTok returns `repost_count=0` for
 every video (verified: 993/993 videos with sum=0). The Reposts column
 was dead weight showing all zeros. Removed from the UI (frontend only;
 backend keeps returning it in case TikTok changes).
 
-**Cache-bust that didn't bust (PR 304).** The deploy's cache-bust step
+**Cache-bust that didn't bust (PRs 304, 307).** The deploy's cache-bust step
 was `touch dist/public/index.html`, which only changes mtime. The
 browser kept serving the old bundle after a hard refresh even though
 the server was serving the new hash (old JS 404, new JS 200).
@@ -84,11 +110,22 @@ This makes the content (and thus ETag and Content-Length) genuinely
 change on every deploy, which forces the browser to download the new
 file. The touch-only cache-bust is kept as a fallback.
 
+Note: PR 304 only fixed the signalpulse-deploy.yml path. The main
+deploy.yml did NOT have the injection step, so a full deploy reverted
+the fix (index.html showed the raw `__BUILD_TIMESTAMP__` placeholder).
+PR 307 added the injection to the main deploy.yml too, so both deploy
+paths apply the fix.
+
 **Key lesson: verify every claim against the server, not the browser.**
 When a user says "hard refresh didn't fix it," verify the deployed
 artifact (fetch the JS, check the ETag, check the 404 on the old
 hash) before assuming the code fix is wrong. The code was correct; the
 delivery mechanism (cache) was broken.
+
+**Key lesson: when a deploy path has two workflows, fix BOTH.** The
+signalpulse/ path triggers signalpulse-deploy.yml, but non-signalpulse
+changes trigger the main deploy.yml which ALSO rebuilds signalpulse.
+A fix applied to one workflow is reverted by the other.
 
 **Top 30 vs Top 100 analysis (2026-10-14).** For the 6 tracked titles,
 top-30-by-views captures 90.7% of the total TikTok comment universe.
@@ -103,7 +140,7 @@ misread the Views column (1,711,099) as Videos because of the column
 misalignment. The actual video count (40) matched the PDP bar chart
 exactly.
 
-**PRs merged this session:** 287, 296, 297, 301, 302, 303, 304, 305.
+**PRs merged this session:** 287, 296, 297, 301, 302, 303, 304, 305, 306, 307, 308.
 **PRs closed without merge:** 284, 285, 289, 292, 300.
 
 ## 2026-10-12 — GoW E-Day Xbox d7 inflated by a missing Game Pass flag; the
