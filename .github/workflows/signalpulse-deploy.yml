@@ -88,6 +88,23 @@ jobs:
           npm install --no-audit --no-fund
 
           echo ""
+          echo "== Inject build timestamp into index.html (for ETag cache-busting) =="
+          # The touch-only cache-bust below doesn't change the file content,
+          # so the browser's ETag/Last-Modified revalidation can still serve
+          # a stale index.html from cache (observed 2026-10-14: hard refresh
+          # did not pick up a new JS hash). Injecting the build timestamp into
+          # the HTML comment makes the content (and thus ETag) genuinely change
+          # on every deploy.
+          if [ -f "${SIGNALPULSE_DIR}/client/index.html" ] && \
+             grep -q "__BUILD_TIMESTAMP__" "${SIGNALPULSE_DIR}/client/index.html"; then
+            BUILD_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            sed -i "s/__BUILD_TIMESTAMP__/${BUILD_TS}/" "${SIGNALPULSE_DIR}/client/index.html"
+            echo "injected build timestamp: ${BUILD_TS}"
+          else
+            echo "skip (no __BUILD_TIMESTAMP__ placeholder in client/index.html)"
+          fi
+
+          echo ""
           echo "== npm run build =="
           npm run build
 
