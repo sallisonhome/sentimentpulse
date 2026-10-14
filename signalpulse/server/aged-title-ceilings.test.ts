@@ -44,8 +44,8 @@ test("the registry covers the v1 batch and the audit-widened v2 batch, d90/m12 o
     "10186|steam|d90", "10186|steam|m12",
     "10319|steam|d90", "10319|steam|m12",
     "10444|steam|d90", "10444|steam|m12",
-    "10592|steam|m12",
-    "10601|steam|m12",
+    "10592|steam|d90", "10592|steam|m12",
+    "10601|steam|d90", "10601|steam|m12",
     "10833|steam|d90", "10833|steam|m12",
     "10836|steam|d90", "10836|steam|m12",
     "10916|steam|d90", "10916|steam|m12",
@@ -61,13 +61,13 @@ test("the registry covers the v1 batch and the audit-widened v2 batch, d90/m12 o
       `${c.titleId}/${c.window} has a known policy version`);
   }
   // v1 covers exactly 3 titles (6 rows); v2 covers exactly 22 titles (44 rows);
-  // v3 (Steam) covers exactly 19 titles (29 rows).
+  // v3 (Steam) covers exactly 19 titles (31 rows).
   const v1 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v1");
   const v2 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v2");
   const v3 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v3");
   assert.equal(v1.length, 6);
   assert.equal(v2.length, 44);
-  assert.equal(v3.length, 29);
+  assert.equal(v3.length, 31);
   // Every v3 row is Steam.
   for (const c of v3) {
     assert.equal(c.platform, "steam", `v3 row ${c.titleId}/${c.window} is steam`);
