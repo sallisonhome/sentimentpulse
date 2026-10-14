@@ -31,12 +31,17 @@ jobs:
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Run TikTok catch-up
+        env:
+          GAME_IDS: ${{ github.event.inputs.game_ids || '20,21,23,24,27,36' }}
         run: |
-          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
-            set -uo pipefail
-            cd /opt/sentimentpulse/backend
-            echo "── Running TikTok catch-up for games: ${{ github.event.inputs.game_ids || '20,21,23,24,27,36' }} ──"
-            source venv/bin/activate 2>/dev/null || true
-            python3 scripts/catchup_tiktok.py --game-ids "${{ github.event.inputs.game_ids || '20,21,23,24,27,36' }}"
-            echo "── Exit: $? ──"
-          EOF
+          set -euo pipefail
+          case "$GAME_IDS" in *[!0-9,]*|'') echo "Invalid game IDs"; exit 2;; esac
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            root@104.236.239.46 "GAME_IDS=$GAME_IDS bash -s" <<'REMOTE'
+          set -euo pipefail
+          exec 9>/run/lock/signalpulse-maintenance.lock
+          flock -w 600 9 || { echo "Maintenance busy; no catch-up performed"; exit 75; }
+          cd /opt/sentimentpulse/backend
+          .venv/bin/python scripts/catchup_tiktok.py --game-ids "$GAME_IDS" \
+            --max-pages 200 --max-seconds 180
+          REMOTE
