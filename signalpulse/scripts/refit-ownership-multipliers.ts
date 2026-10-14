@@ -35,8 +35,8 @@ const AS_OF = (() => {
   if (raw && /^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
   return new Date().toISOString().slice(0, 10);
 })();
-const MIN_ANCHORS = parseInt(process.env.MIN_ANCHORS ?? "2", 10);
-const MAX_STEP = parseFloat(process.env.MAX_STEP ?? "3.0"); // cap: |new/old| ≤ MAX_STEP
+const MIN_ANCHORS = parseInt(process.env.MIN_ANCHORS ?? "5", 10);
+const MAX_STEP = parseFloat(process.env.MAX_STEP ?? "1.5"); // cap: |new/old| ≤ MAX_STEP (2026-10-13: tightened from 3.0 — see STABILIZATION)
 const COHORT = "default"; // single-cohort world today
 
 const ASP_DEFAULTS = { steam: 0.66, ps5: 0.80, xbox: 0.80 };
@@ -98,16 +98,8 @@ function loadAnchors(platform: string, asOf: string): AnchorRow[] {
   `).all(platform, platform, platform, platform, asOf) as AnchorRow[];
 }
 
-function weightedMedian(items: Array<{value:number; weight:number}>): number {
-  const sorted = items.slice().sort((a, b) => a.value - b.value);
-  const totalW = sorted.reduce((s, x) => s + x.weight, 0);
-  let cum = 0;
-  for (const it of sorted) {
-    cum += it.weight;
-    if (cum >= totalW / 2) return it.value;
-  }
-  return sorted[sorted.length - 1].value;
-}
+// weightedMedian removed 2026-10-13: superseded by the geometric-mean in
+// the STABILIZATION block below (see that comment for why).
 
 function main() {
   const platform = "steam";
@@ -164,7 +156,23 @@ function main() {
     process.exit(0);
   }
 
-  const obsRatio = weightedMedian(rows.map(r => ({ value: r.ratio, weight: r.weight })));
+  // ─── STABILIZATION (2026-10-13): geometric-mean + tighter step cap ──────
+  // The weighted-median with tiny anchor sets (4-25 rows) and wide ratio
+  // spread (observed 0.54–2.98 across 2026-09-12 → 2026-10-07 refits) is
+  // unstable: the median flips between anchors, so the multiplier thrashes
+  // (25.0 → 74.6 → 40.2 → 57.1 in production). A geometric mean in log space
+  // is robust to outliers and smooths the median flip. Additionally tighten
+  // the per-refit step cap from 3.0x to 1.5x so a bad anchor batch cannot
+  // move the multiplier more than ±50% in one refit.
+  //
+  // The formula changes but the semantics are the same: `obsRatio` is a
+  // scalar multiplier on the current value. Weights are dropped — the
+  // geometric mean uses all anchors equally because the weights (365 for
+  // m12, days-since-first-sale for ltd) were amplifying the ltd outliers.
+  const ratios = rows.map(r => r.ratio).filter(x => x > 0);
+  const obsRatio = ratios.length > 0
+    ? Math.exp(ratios.reduce((s, x) => s + Math.log(x), 0) / ratios.length)
+    : 1.0;
   const proposedNew = cur.multiplier * obsRatio;
   const step = proposedNew / cur.multiplier;
   const cappedNew = Math.abs(Math.log(step)) > Math.log(MAX_STEP)
@@ -190,7 +198,7 @@ function main() {
     (bandMin !== null && Number.isFinite(bandMin) && cappedNew < bandMin) ||
     (bandMax !== null && Number.isFinite(bandMax) && cappedNew > bandMax);
 
-  console.log(`\nWeighted median ratio (act/est): ${obsRatio.toFixed(3)}×`);
+  console.log(`\nGeometric-mean ratio (act/est, log space): ${obsRatio.toFixed(3)}×`);
   console.log(`Current multiplier             : ${cur.multiplier.toFixed(3)}`);
   console.log(`Proposed new (uncapped)        : ${proposedNew.toFixed(3)}`);
   if (wasCapped) console.log(`⚠ Capped at ${MAX_STEP}× step → ${cappedNew.toFixed(3)}`);
@@ -217,7 +225,7 @@ function main() {
     anchor_count: rows.length,
     anchor_sample_json: JSON.stringify(sample),
     window_used: "m12+ltd",
-    weight_method: "window_days_length_weighted_median",
+    weight_method: "geometric_mean_log_space_v2",
     observed_ratio: obsRatio,
     old_multiplier: cur.multiplier,
     new_multiplier: cappedNew,
@@ -286,7 +294,7 @@ function main() {
     `).run(
       platform, COHORT, cappedNew,
       cur.ci_pct, cur.digital_unit_share,
-      `Weighted median of ${rows.length} baseline anchors (m12+ltd). ratio=${obsRatio.toFixed(3)}${wasCapped ? ", capped" : ""}`,
+      `Geometric mean of ${rows.length} baseline anchors (m12+ltd, log space). ratio=${obsRatio.toFixed(3)}${wasCapped ? ", capped" : ""}`,
       cur.gp_rating_deflator,
       AS_OF, nowIso,
     );

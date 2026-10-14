@@ -32,19 +32,46 @@ test("the registry covers the v1 batch and the audit-widened v2 batch, d90/m12 o
     "11192|ps5|d90", "11192|ps5|m12",
     "11337|ps5|d90", "11337|ps5|m12",
     "11345|ps5|d90", "11345|ps5|m12",
+    // v3: the 19 Steam titles (some have only m12, Ori has only d90)
+    "9002|steam|d90", "9002|steam|m12",
+    "10088|steam|d90", "10088|steam|m12",
+    "10123|steam|m12",
+    "10136|steam|d90", "10136|steam|m12",
+    "10151|steam|d90", "10151|steam|m12",
+    "10152|steam|m12",
+    "10168|steam|m12",
+    "10181|steam|m12",
+    "10186|steam|d90", "10186|steam|m12",
+    "10319|steam|d90", "10319|steam|m12",
+    "10444|steam|d90", "10444|steam|m12",
+    "10592|steam|m12",
+    "10601|steam|m12",
+    "10833|steam|d90", "10833|steam|m12",
+    "10836|steam|d90", "10836|steam|m12",
+    "10916|steam|d90", "10916|steam|m12",
+    "11134|steam|d90",
+    "11162|steam|m12",
+    "11174|steam|m12",
   ].sort();
   assert.deepEqual(keys, expected);
   for (const c of AGED_TITLE_CEILINGS) {
     assert.ok(c.ceilingFraction > 0 && c.ceilingFraction < 1, `${c.titleId}/${c.window} fraction in (0,1)`);
     assert.ok(c.reason.length > 20, `${c.titleId}/${c.window} carries a reason`);
-    assert.ok(["aged_title_ceiling_v1", "aged_title_ceiling_v2"].includes(c.policyVersion),
+    assert.ok(["aged_title_ceiling_v1", "aged_title_ceiling_v2", "aged_title_ceiling_v3"].includes(c.policyVersion),
       `${c.titleId}/${c.window} has a known policy version`);
   }
-  // v1 covers exactly 3 titles (6 rows); v2 covers exactly 22 titles (44 rows).
+  // v1 covers exactly 3 titles (6 rows); v2 covers exactly 22 titles (44 rows);
+  // v3 (Steam) covers exactly 19 titles (29 rows).
   const v1 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v1");
   const v2 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v2");
+  const v3 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v3");
   assert.equal(v1.length, 6);
   assert.equal(v2.length, 44);
+  assert.equal(v3.length, 29);
+  // Every v3 row is Steam.
+  for (const c of v3) {
+    assert.equal(c.platform, "steam", `v3 row ${c.titleId}/${c.window} is steam`);
+  }
 });
 
 test("agedTitleCeilingFor matches the exact triple and family members", () => {

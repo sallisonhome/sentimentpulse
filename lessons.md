@@ -3579,3 +3579,29 @@ A registry row in `aged-title-ceilings.ts` without a matching row in `console-na
 **Verified live (2026-10-13, post-PR #275):** 0 failures of 22. Only 2 titles (Cyberpunk UE 74,429 d90 / 301,258 m12; Witcher 3 Rem 99,595 / 403,124) remain on the d90/m12 top-100 boards; the other 20 fell below the cutoff — the honest answer for aged titles. PDP KPI cards agree exactly with the board for both.
 
 **Rule.** When adding an aged title to the ceiling registry, ALWAYS add the matching native-model guard row for the same windows — otherwise the IP override defeats the clamp. Check both registries stay in sync (the test in aged-title-ceilings.test.ts and console-native-model-guards.test.ts assert the counts; if they drift, one of the two is missing).
+
+## 2026-10-13 (signalpulse) — RDR2 Steam d90/m12 overstatement: the multiplier is thrashing, not the signal
+
+**Symptom:** RDR2 Steam (10151) d90 = 1,398,531 (3.8% of LTD) and m12 = 7,693,888 (21.1% of LTD) — 15.3x and 21.1x over the curve-consistent ceiling for a 6.9-year-old title. The LTD (36.4M) is a reasonable Boxleiter estimate (~926K lifetime reviews × 30-60 copies/review, confirmed against [Steampageanalyzer](https://www.steampageanalyzer.com/games/1174180) and [SteamDB](https://steamdb.info/app/1174180/charts/)) — the LTD is NOT the problem.
+
+**Root cause (different from PS5):** The Steam d90/m12 signal comes from `steam_histogram_nonoverlap_v1` (real Steam review histogram buckets) and the signal itself is honest (m12 signal 134,735 reviews ≈ the observed ~9K/month rate from [Steambase](https://steambase.io/games/red-dead-redemption-2/reviews)). The problem is the **review-to-sales multiplier**: it is thrashing — 25.0 → 74.6 → 40.2 → 57.1, calibrated from only 4-25 anchors with observed_ratio 0.54-2.98 (from `calibration_events`). A 6.9-year-old title's m12 should be ~1% of LTD, but 57.1 × the honest signal produces 21%.
+
+**The Steam audit found the same systemic pattern:** 19 titles >5x over (same cutoff as the PS5 audit). Worst: RE2 d90 165.9x, Bloons TD 6 m12 74.5x, Binding of Isaac 31.8x/32.2x, Detroit 22.8x/42.9x, ULTRAKILL 19.2x/33.4x, GTA IV CE 16.9x/18.3x, RDR2 m12 39.5x, plus Slay the Spire, RimWorld, FH5, Risk of Rain 2, DayZ, Deep Rock, Phasmophobia, Hades, RE4, It Takes Two, M&B II Bannerlord, Ori.
+
+**User decision (2026-10-13, 20:48 EDT): BOTH** — fix the multiplier refit (the root cause) AND add per-title ceilings as a belt-and-suspenders durable fix.
+
+**Fix 1 — stabilize the refit** (`scripts/refit-ownership-multipliers.ts`):
+- Weighted median → **geometric mean in log space** (robust to outliers; the median flips between anchors with tiny sets)
+- MAX_STEP default 3.0 → **1.5** (a bad anchor batch can't move the multiplier more than ±50% per refit)
+- MIN_ANCHORS default 2 → **5** (a refit shouldn't fire on 4 anchors)
+- Weights dropped (365 for m12, days-since-first-sale for ltd were amplifying the ltd outliers)
+- weight_method tagged `geometric_mean_log_space_v2`
+
+**Fix 2 — per-title Steam ceilings** (`server/aged-title-ceilings.ts`, v3 batch):
+- Platform type widened `"ps5" | "xbox"` → `"ps5" | "xbox" | "steam"`
+- 19 titles × (d90/m12 as available) = 29 rows at `aged_title_ceiling_v3`
+- Curve values: a 5-8y title's d90 ~ 0.20% of LTD, m12 ~ 0.80% of LTD (flat tail rate ~0.8%/year). RE4 (9002) is younger (3.6y): d90 0.74%, m12 3.88%.
+- **No native-model guard needed on Steam** — the IP override derives console FROM Steam, so Steam rows aren't affected by it. The ceiling alone is sufficient.
+- The curve's original tail saturated at 4y (cum=1.0), which produced d90 fractions of 0.0000 for 7-8y titles — wrong. The v3 fractions use a non-saturating tail (~0.8%/year, caps at 99.9%). A real 7y game still sells ~0.2%/quarter.
+
+**Rules.** (1) When the multiplier refit runs next, check `calibration_events` for the new `geometric_mean_log_space_v2` tag and confirm the step stayed within ±1.5x. (2) The Steam v3 rows are belt-and-suspenders — if the refit is stabilized correctly, the ceilings should rarely bind; if they bind every day, the refit is still wrong. (3) A curve that saturates produces zero ceilings — always sanity-check the computed fraction is > 0 before hardcoding it.
