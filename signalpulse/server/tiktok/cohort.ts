@@ -141,7 +141,11 @@ export function computeCohortLeaderboard(db: TtDb, w: CohortWindow, sort: Cohort
           isSaber: !!t.is_saber, parentTitle: t.parent_title ?? null,
           views: Math.max(0, a?.views ?? 0), videos: videoCountById.get(t.title_id) ?? a?.matched_videos ?? 0,
           comments: Math.max(0, a?.comments ?? 0), likes: Math.max(0, a?.likes ?? 0), reposts: a?.reposts ?? 0,
-          likesPct: a && a.views_with_likes > 0 ? (a.likes_lifetime / a.views_with_likes) * 100 : null,
+          // Likes% = daily like gain / daily view gain (consistent with the
+          // Views and Likes columns, which are daily gains). Fixed Oct 14: was
+          // using lifetime values which produced a different number than the
+          // adjacent daily-gain columns suggested (5.62% vs 6.14%).
+          likesPct: a && a.views > 0 ? (a.likes / a.views) * 100 : null,
           topVideo: top ? {
             awemeId: top.aweme_id, desc: top.desc, authorUniqueId: top.author_unique_id,
             views: top.view_count ?? 0, createTime: top.create_time,
