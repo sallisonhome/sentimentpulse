@@ -1,7 +1,7 @@
 name: SP TikTok Import Direct Test
 
-# One-off diagnostic: directly test the TikTok comment feed and leaderboard
-# endpoints via curl from the droplet.
+# One-off diagnostic: curl the TikTok leaderboard through the exact nginx
+# path the SPA uses (/signal/api/tiktok/leaderboard) to see the response.
 
 on:
   workflow_dispatch:
@@ -23,31 +23,27 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
 
-      - name: Test TikTok leaderboard and feed endpoints
+      - name: Test TikTok leaderboard via exact SPA path
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
             set -uo pipefail
-            echo "── 1. GET /api/tiktok/leaderboard (d1, saber) ──"
-            HTTP_CODE=$(curl -sS -o /tmp/tt_lb.json -w "%{http_code}" --max-time 30 \
-              "http://127.0.0.1:5000/api/tiktok/leaderboard?window=d1&sort=views&direction=desc&scope=saber" 2>&1)
+            echo "── 1. GET /signal/api/tiktok/leaderboard (exact SPA path, no auth) ──"
+            HTTP_CODE=$(curl -sS -o /tmp/tt_lb1.json -w "%{http_code}" --max-time 30 \
+              "http://127.0.0.1:80/signal/api/tiktok/leaderboard?window=d1&sort=views&direction=desc&scope=saber" 2>&1)
             echo "HTTP_CODE: $HTTP_CODE"
-            echo "--- Response (first 800 chars) ---"
-            head -c 800 /tmp/tt_lb.json
+            echo "--- Response (first 300 chars) ---"
+            head -c 300 /tmp/tt_lb1.json
             echo ""
 
-            echo "── 2. GET /api/tiktok/status ──"
-            HTTP_CODE_2=$(curl -sS -o /tmp/tt_status.json -w "%{http_code}" --max-time 30 \
-              "http://127.0.0.1:5000/api/tiktok/status" 2>&1)
-            echo "STATUS_HTTP_CODE: $HTTP_CODE_2"
-            echo "--- Status response (first 500 chars) ---"
-            head -c 500 /tmp/tt_status.json
+            echo "── 2. GET /signal/api/tiktok/leaderboard with a fake auth cookie ──"
+            HTTP_CODE_2=$(curl -sS -o /tmp/tt_lb2.json -w "%{http_code}" --max-time 30 \
+              -H "Cookie: saber_session=fake" \
+              "http://127.0.0.1:80/signal/api/tiktok/leaderboard?window=d1&sort=views&direction=desc&scope=saber" 2>&1)
+            echo "HTTP_CODE_2: $HTTP_CODE_2"
+            echo "--- Response (first 300 chars) ---"
+            head -c 300 /tmp/tt_lb2.json
             echo ""
 
-            echo "── 3. GET /api/tiktok/leaderboard via nginx (external) ──"
-            HTTP_CODE_3=$(curl -sS -o /tmp/tt_lb_ext.json -w "%{http_code}" --max-time 30 \
-              -H "Host: saber-apps-suite.local" \
-              "http://127.0.0.1:80/api/tiktok/leaderboard?window=d1&sort=views&direction=desc&scope=saber" 2>&1)
-            echo "EXT_HTTP_CODE: $HTTP_CODE_3"
-            head -c 300 /tmp/tt_lb_ext.json
-            echo ""
+            echo "── 3. Check nginx access log for recent /signal/api/tiktok requests ──"
+            tail -50 /var/log/nginx/access.log 2>/dev/null | grep "tiktok" | tail -10
           EOF
