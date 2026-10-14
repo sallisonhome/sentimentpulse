@@ -20,7 +20,12 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "wouter";
 
 type WindowKey = "d1" | "d7" | "d30" | "d90" | "m12" | "ltd";
-type SortKey = "views" | "videos" | "comments" | "likes" | "likesPct" | "reposts" | "title";
+type SortKey = "views" | "videos" | "comments" | "likes" | "likesPct" | "title";
+// NOTE: "reposts" removed 2026-10-14 — TikTok returns repost_count=0 for every
+// video (verified: 993/993 videos with sum=0), so the column was dead weight.
+// NOTE: "title" removed from SORTS (PR 303) — the Title column (first column)
+// shows the title image + name + competitor badge, not a sortable data column.
+// It remains in SortKey because the server's COHORT_SORTS still includes it.
 
 const WINDOWS: Array<{ id: WindowKey; label: string }> = [
   { id: "d1", label: "24 hours" },
@@ -35,7 +40,7 @@ interface TopVideo { awemeId: string; desc: string; authorUniqueId: string | nul
 interface Row {
   titleId: number; title: string; steamAppId: string | null; headerImageUrl: string | null;
   isSaber: boolean; parentTitle: string | null;
-  views: number; videos: number; comments: number; likes: number; reposts: number; likesPct: number | null;
+  views: number; videos: number; comments: number; likes: number; likesPct: number | null;
   topVideo: TopVideo | null; statsAsOf: string | null; trackingSince: string | null;
   backfillComplete: boolean; backfillOldest: string | null; backfillFloor: string;
 }
@@ -58,7 +63,9 @@ const SORTS: Array<{ id: SortKey; label: string; align?: string }> = [
   { id: "comments", label: "Comments" },
   { id: "likes", label: "Likes" },
   { id: "likesPct", label: "Likes %" },
-  { id: "reposts", label: "Reposts" },
+  // NOTE: Reposts column removed 2026-10-14 — TikTok returns repost_count=0
+  // for every video (verified: 993/993 videos with sum=0), so the column was
+  // dead weight showing all zeros.
   // "title" is not a sortable column header — the Title column (first column)
   // shows the title image + name + competitor badge. Removing it from SORTS
   // keeps the header and body column counts in sync (7 data columns + 1 title column).
@@ -151,11 +158,10 @@ export default function TikTokLeaderboard() {
                     <td className="px-3 py-2 tabular-nums">{fmt(r.comments)}</td>
                     <td className="px-3 py-2 tabular-nums">{fmt(r.likes)}</td>
                     <td className="px-3 py-2 tabular-nums">{r.likesPct == null ? "—" : `${r.likesPct.toFixed(1)}%`}</td>
-                    <td className="px-3 py-2 tabular-nums">{fmt(r.reposts)}</td>
                   </tr>
                 ))}
                 {rows.length === 0 ? (
-                  <tr><td colSpan={SORTS.length} className="px-3 py-6 text-center text-muted-foreground">
+                  <tr><td colSpan={SORTS.length + 1} className="px-3 py-6 text-center text-muted-foreground">
                     No TikTok videos yet. Trigger a collection run from Settings.
                   </td></tr>
                 ) : null}
