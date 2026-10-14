@@ -24,13 +24,13 @@ on:
         required: false
         default: ""
       min_anchors:
-        description: "Minimum anchor rows required to refit (default 2)"
+        description: "Minimum anchor rows required to refit (default 5)"
         required: false
-        default: "2"
+        default: "5"
       max_step:
-        description: "Maximum step change relative to current multiplier per refit (default 3.0)"
+        description: "Maximum step change relative to current multiplier per refit (default 1.5)"
         required: false
-        default: "3.0"
+        default: "1.5"
 
 concurrency:
   group: deploy-droplet
@@ -53,8 +53,8 @@ jobs:
         env:
           DRY_RUN: ${{ github.event.inputs.dry_run || 'true' }}
           AS_OF_DATE: ${{ github.event.inputs.as_of_date || '' }}
-          MIN_ANCHORS: ${{ github.event.inputs.min_anchors || '2' }}
-          MAX_STEP: ${{ github.event.inputs.max_step || '3.0' }}
+          MIN_ANCHORS: ${{ github.event.inputs.min_anchors || '5' }}
+          MAX_STEP: ${{ github.event.inputs.max_step || '1.5' }}
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
               root@104.236.239.46 \

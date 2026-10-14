@@ -3615,3 +3615,13 @@ A registry row in `aged-title-ceilings.ts` without a matching row in `console-na
 **Fix:** added the d90 rows for DayZ (10592) and It Takes Two (10601) to the v3 registry. Total v3 rows: 29 → 31.
 
 **Rule.** When auditing "is X overstated?", pull from `window_estimates_daily` directly (the stored estimator), NOT from the served board API — the board has a top-100 cutoff that hides titles. A `0` in the audit table means "not in the top-100", not "no value".
+
+## 2026-10-13 (signalpulse) — Addendum 24: the post-refit audit caught the workflow defaults defeating the script defaults
+
+**Symptom:** the post-refit dry-run (2026-10-14) ran with `min_anchors=2 max_step=3×` — the OLD defaults — even though PR #277 set the script defaults to 5/1.5.
+
+**Root cause:** the workflow `signalpulse-refit-multipliers.yml` always passes `MIN_ANCHORS` and `MAX_STEP` as env vars with the old defaults (2, 3.0), which override the script's new defaults. The script's new defaults were dead code.
+
+**Fix (this addendum):** update the workflow defaults to match the script (5, 1.5). Also add an AS_OF_DATE fallback: running the refit on a day with no anchors produced `n=0` and a silent SKIP — the refit never fired even when anchors existed the day before (found that anchors exist daily since ~2026-10-09 but the AS_OF join is exact).
+
+**Rule.** When changing a script's default via env vars, check whether the workflow that invokes it also hardcodes those env vars — otherwise the workflow wins.
