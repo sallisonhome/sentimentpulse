@@ -515,6 +515,12 @@ export const AGED_TITLE_CEILINGS: readonly AgedTitleCeiling[] = [
   },
   {
     titleId: 10592, // DayZ
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "DayZ aged ~7.8y; d90 244,405 units = 7.3x over curve (found in post-deploy verify); ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10592,
     platform: "steam", window: "m12", ceilingFraction: 0.0080,
     reason: "DayZ aged ~7.8y; m12 13.5x over curve; ceiling 0.80%",
     policyVersion: "aged_title_ceiling_v3",
@@ -557,6 +563,12 @@ export const AGED_TITLE_CEILINGS: readonly AgedTitleCeiling[] = [
   },
   {
     titleId: 10601, // It Takes Two (Steam)
+    platform: "steam", window: "d90", ceilingFraction: 0.0020,
+    reason: "It Takes Two Steam aged ~5.6y; d90 258,452 units = 14x over curve (found in post-deploy verify); ceiling 0.20%",
+    policyVersion: "aged_title_ceiling_v3",
+  },
+  {
+    titleId: 10601,
     platform: "steam", window: "m12", ceilingFraction: 0.0080,
     reason: "It Takes Two Steam aged ~5.6y; m12 18x over curve; ceiling 0.80%",
     policyVersion: "aged_title_ceiling_v3",

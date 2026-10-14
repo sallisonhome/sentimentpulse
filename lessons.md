@@ -3605,3 +3605,13 @@ A registry row in `aged-title-ceilings.ts` without a matching row in `console-na
 - The curve's original tail saturated at 4y (cum=1.0), which produced d90 fractions of 0.0000 for 7-8y titles — wrong. The v3 fractions use a non-saturating tail (~0.8%/year, caps at 99.9%). A real 7y game still sells ~0.2%/quarter.
 
 **Rules.** (1) When the multiplier refit runs next, check `calibration_events` for the new `geometric_mean_log_space_v2` tag and confirm the step stayed within ±1.5x. (2) The Steam v3 rows are belt-and-suspenders — if the refit is stabilized correctly, the ceilings should rarely bind; if they bind every day, the refit is still wrong. (3) A curve that saturates produces zero ceilings — always sanity-check the computed fraction is > 0 before hardcoding it.
+
+## 2026-10-13 (signalpulse) — Addendum 23: the audit table can under-report; verify against the stored estimator, not just the served board
+
+**Symptom:** Post-deploy verification found DayZ d90 = 244,405 (7.3x over) and It Takes Two d90 = 258,452 (14x over) still serving unclamped. My audit table showed both as `d90=0` (gated).
+
+**Root cause:** the audit pulled the served board via the API with `limit=100` — the titles' d90 values were below the top-100 cutoff on the board, so the API returned no row and I recorded 0. But the stored estimator (`window_estimates_daily`) has real non-zero d90 values for both. The audit under-reported because it read the served board (which had a cutoff) instead of the stored estimator (which has everything).
+
+**Fix:** added the d90 rows for DayZ (10592) and It Takes Two (10601) to the v3 registry. Total v3 rows: 29 → 31.
+
+**Rule.** When auditing "is X overstated?", pull from `window_estimates_daily` directly (the stored estimator), NOT from the served board API — the board has a top-100 cutoff that hides titles. A `0` in the audit table means "not in the top-100", not "no value".
