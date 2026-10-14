@@ -1,5 +1,111 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-14 — TikTok comment ingestion: 5 sequential bugs, a shared PDP
+## mislabeled back link, a dead Reposts column, and the cache-bust that
+## didn't bust
+
+**Context.** TikTok comments were collected by the SignalPulse TikTok
+Pulse cron (4:30 AM ET) but never appeared in SentimentPulse `raw_posts`.
+The user asked to fix this end-to-end without full-ingest churn.
+
+**Bug 1: missing app_setting.** `tiktok_feed_ops_token` was absent from
+SentimentPulse `app_settings`. The ingestor raised
+`ValueError: TikTok feed ops token is not configured`. Fixed by copying
+`youtube_feed_ops_token` (same INGESTION_OPS_TOKEN, 64 chars) to
+`tiktok_feed_ops_token` via the DB Admin workflow.
+
+**Bug 2: missing OPS_TOKEN_PREFIXES entry.** The SignalPulse server route
+`/api/tiktok/ops/` was not in `OPS_TOKEN_PREFIXES` in
+`signalpulse/server/saber-auth.ts`, so the feed call got HTTP 401.
+Fixed by adding `"/api/tiktok/ops/"` to the list (PR 287).
+
+**Bug 3: epoch-seconds createTime.** `_dt()` in
+`backend/services/tiktok_service.py` crashed with a TypeError when the
+feed sent `createTime` as a raw epoch int (the YouTube feed sends ISO
+strings). Fixed `_dt()` to handle epoch ints (PR 296).
+
+**Bug 4: hardcoded 6-source lists.** SentimentPulse's Posts by Source
+and Post Volume by Source charts had hardcoded 6-source lists (frontend
+`SOURCES` and backend `vol_map`/`volume_points`) omitting `tiktok_comment`.
+Fixed by adding `tiktok_comment` (color `#38a8c9`) to all lists
+(PR 297).
+
+**Bug 5: path-segment URL in TikTok leaderboard.** The TikTok Pulse
+leaderboard `queryFn` used `queryKey.join("/")`, producing a
+path-segment URL like `/api/tiktok/leaderboard/d1/views/desc/saber`.
+The server route uses query parameters, so the fetch hit nginx, which
+returned HTML, producing the `Unexpected token '<'` error. Fixed by
+building the URL with `URLSearchParams` (PR 301, found by advisor
+review).
+
+**Result.** 12,787 `tiktok_comment` rows in `raw_posts` across 6 titles
+(SnowRunner 4,122 / SM2 3,205 / MudRunner 2,857 / Turok 945 / John
+Wick 833 / Hellraiser 825).
+
+**Fast TikTok import architecture (PRs 298, 302).** Replaced the
+"full ingest on every change" pattern (~1 hour) with a standalone,
+idempotent, seconds-fast TikTok import mirroring `catchup_youtube.py`.
+
+Daily flow:
+
+1. 4:30 AM ET (08:30 UTC EDT) — SignalPulse TikTok Pulse cron collects
+   TikTok comments (EnsembleData top-30 videos per title).
+2. 9:05 AM ET (13:05 UTC) — TikTok catchup imports them (seconds,
+   idempotent).
+3. 2:00 AM ET (06:00 UTC) next day — SentimentPulse daily ingest
+   processes the already-imported TikTok data.
+
+After any TikTok Pulse change: run the catchup (seconds), not a full
+full ingest (hour).
+
+**Column misalignment (PR 303).** The TikTok leaderboard table had 8
+body columns (Title + 7 data) but only 7 header columns because
+`"title"` was in `SORTS`. The `title` entry is the first column (title
+image + name + competitor badge), not a sortable data column. Removing
+it from `SORTS` keeps the header and body column counts in sync.
+
+**Dead Reposts column (PR 305).** TikTok returns `repost_count=0` for
+every video (verified: 993/993 videos with sum=0). The Reposts column
+was dead weight showing all zeros. Removed from the UI (frontend only;
+backend keeps returning it in case TikTok changes).
+
+**Cache-bust that didn't bust (PR 304).** The deploy's cache-bust step
+was `touch dist/public/index.html`, which only changes mtime. The
+browser kept serving the old bundle after a hard refresh even though
+the server was serving the new hash (old JS 404, new JS 200).
+
+Root cause: the browser was not re-fetching index.html despite
+`Cache-Control: no-cache, must-revalidate`. The ETag stayed the same
+because the content did not change.
+
+Fix: inject the build timestamp into `index.html` as an HTML comment
+(`<!-- build-version: __BUILD_TIMESTAMP__ -->`) BEFORE `npm run build`.
+This makes the content (and thus ETag and Content-Length) genuinely
+change on every deploy, which forces the browser to download the new
+file. The touch-only cache-bust is kept as a fallback.
+
+**Key lesson: verify every claim against the server, not the browser.**
+When a user says "hard refresh didn't fix it," verify the deployed
+artifact (fetch the JS, check the ETag, check the 404 on the old
+hash) before assuming the code fix is wrong. The code was correct; the
+delivery mechanism (cache) was broken.
+
+**Top 30 vs Top 100 analysis (2026-10-14).** For the 6 tracked titles,
+top-30-by-views captures 90.7% of the total TikTok comment universe.
+Only SnowRunner has significant tail volume (+3,625 comments from
+ranks 31-74). The real constraint is per-video comment pages (5 pages
+capped at ~250 comments per video, ~65% capture on high-volume
+videos), not the top-30 cap.
+
+**Hellraiser 7-day video count.** 40 videos published in the last 7
+days with 1,711,099 total views. This is NOT low — the user
+misread the Views column (1,711,099) as Videos because of the column
+misalignment. The actual video count (40) matched the PDP bar chart
+exactly.
+
+**PRs merged this session:** 287, 296, 297, 301, 302, 303, 304, 305.
+**PRs closed without merge:** 284, 285, 289, 292, 300.
+
 ## 2026-10-12 — GoW E-Day Xbox d7 inflated by a missing Game Pass flag; the
 ## revshare overlay fixed it once the flag was set (and the state-upsert
 ## ordering bug that followed)
