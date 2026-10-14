@@ -144,6 +144,9 @@ export interface VolumePoint {
    *  Older responses may omit this field, so treat as optional client-side. */
   reddit_comment?: number
   youtube_comment?: number
+  /** TikTok comments imported from SignalPulse's TikTok Pulse feed. Added
+   *  2026-10-14; older responses may omit this field, so treat as optional. */
+  tiktok_comment?: number
   bluesky: number
   /** DTF.ru — Russian-language gaming forum. Added 2026-07-27; older
    *  responses may omit this field, so treat as optional client-side. */

@@ -74,7 +74,7 @@ export default function YoutubeTitleDetail() {
     retry: false,
     queryFn: async () => {
       const params = new URLSearchParams({ start: range.start, end: range.end, bucket: range.bucket, includeArchived: range.includeArchived ? "1" : "0" });
-      const response = await fetch(`api/youtube/titles/${titleId}/timeseries?${params}`, { credentials: "include" });
+      const response = await fetch(`/signal/api/youtube/titles/${titleId}/timeseries?${params}`, { credentials: "include" });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not load title history");
       return result;

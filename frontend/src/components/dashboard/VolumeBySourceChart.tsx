@@ -16,6 +16,7 @@ import type { VolumePoint } from '../../types'
 
 const SOURCE_COLORS = {
   youtube_comment: '#C63838',
+  tiktok_comment:  '#38a8c9', // cyan — matches the TikTok Pulse series color
   steam_review: '#3b82f6',
   steam_forum:  '#a855f7',
   reddit:       '#f97316',
@@ -68,6 +69,7 @@ export default function VolumeBySourceChart({ data }: VolumeBySourceChartProps) 
             <Bar dataKey="bluesky"      stackId="a" fill={SOURCE_COLORS.bluesky}      radius={[0, 0, 0, 0]} />
             <Bar dataKey="dtf"          stackId="a" fill={SOURCE_COLORS.dtf}          radius={[3, 3, 0, 0]} />
             <Bar dataKey="youtube_comment" stackId="a" fill={SOURCE_COLORS.youtube_comment} radius={[3, 3, 0, 0]} />
+            <Bar dataKey="tiktok_comment" stackId="a" fill={SOURCE_COLORS.tiktok_comment} radius={[3, 3, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
       </CardContent>
