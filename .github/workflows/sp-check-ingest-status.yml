@@ -1,0 +1,36 @@
+name: SP Check Ingest Status
+
+# One-off diagnostic: check SentimentPulse's ingest status via
+# GET /api/ingest/status on 127.0.0.1:8000 (loopback, no auth).
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Check ingest status
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
+            set -uo pipefail
+            echo "── GET /api/ingest/status ──"
+            curl -sS --max-time 10 http://127.0.0.1:8000/api/ingest/status 2>&1 | python3 -m json.tool 2>/dev/null || \
+              curl -sS --max-time 10 http://127.0.0.1:8000/api/ingest/status 2>&1 | head -20
+            echo ""
+            echo "── SentimentPulse journalctl (last 5 min, ingest-related) ──"
+            journalctl -u sentimentpulse --since '5 min ago' --no-pager -n 50 2>/dev/null | grep -iE "ingest|tiktok|error" | tail -20
+          EOF
