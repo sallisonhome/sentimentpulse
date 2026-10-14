@@ -103,10 +103,20 @@ export async function triggerTikTokBackfill(titleIds: number[], windowDays?: num
   const scopeTitleIds = tiktokScopeTitleIds();
   const runRowIns = ttDb().prepare(`INSERT INTO tt_ingest_runs (trigger, started_at, status) VALUES ('backfill', ?, 'running')`).run(new Date().toISOString());
   const runRow = { id: Number(runRowIns.lastInsertRowid) };
-  const res = await runBackfillStep(ttDb(), client, {
-    extendedStorageApproved: true, steps: ["comments", "backfill", "discovery", "stats"],
-    backfillTitleIds: titleIds, backfillWindowDays: windowDays, backfillUnitCap: unitCap, scopeTitleIds,
-  }, "backfill", runRow);
+  let res;
+  try {
+    res = await runBackfillStep(ttDb(), client, {
+      extendedStorageApproved: true, steps: ["comments", "backfill", "discovery", "stats"],
+      backfillTitleIds: titleIds, backfillWindowDays: windowDays, backfillUnitCap: unitCap, scopeTitleIds,
+    }, "backfill", runRow);
+  } catch (e) {
+    // Wrap runPipeline so a thrown error marks the run row as 'failed' instead
+    // of orphaning it at 'running' forever (pre-existing bug — runs 3 and 8 both
+    // orphaned because triggerTikTokBackfill had no try/catch).
+    ttDb().prepare(`UPDATE tt_ingest_runs SET status='failed', finished_at=?, message=? WHERE id=?`)
+      .run(new Date().toISOString(), `failed: ${(e as Error).message}`, runRow.id);
+    throw e;
+  }
   log(`tiktok backfill: ${JSON.stringify({ ...res, notes: undefined })}`, "tiktok");
   return res;
 }
