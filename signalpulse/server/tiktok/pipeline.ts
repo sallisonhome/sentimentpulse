@@ -314,7 +314,7 @@ export async function runStats(db: TtDb, client: EnsembleDataClient, c: RunCount
       repost_count=excluded.repost_count, download_count=excluded.download_count`);
   const upd = db.prepare(`UPDATE tt_videos SET view_count=?, like_count=?, comment_count=?, share_count=?,
     download_count=?, repost_count=?, forward_count=?, collect_count=?, last_refreshed_at=? WHERE aweme_id=?`);
-  for (const v of videos) {
+  for (const v of ordered) {
     try {
       const url = buildTikTokUrl(v.author_unique_id, v.aweme_id);
       const res = await client.postInfo(url);
