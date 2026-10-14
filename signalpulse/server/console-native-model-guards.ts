@@ -78,6 +78,149 @@ const guardsRegistry: ConsoleNativeModelGuard[] = [
     reason: "aged first-party PS5 row; Steam×9 IP override inflated d90/m12 against the native estimator; native values kept for these windows only",
     policyVersion: "native_model_guard_v1",
   },
+
+  // ─── v2: audit-widened batch (2026-10-13, PR #275) ───────────────────────
+  // These 22 aged PS5 titles (LTD > 1M, age > 730d, curve overstatement > 5x)
+  // carry an aged-title-ceiling_v2 registry row that clamps the NATIVE
+  // estimator value. But the Steam×9 IP override replaces the native value
+  // BEFORE the ceiling clamp runs, so the clamp fires on the wrong number
+  // (observed post-deploy 2026-10-13: 17 of 22 titles still over the
+  // ceiling, agedTitleCeiling metadata set but units unclamped). Blocking the
+  // override on d90/m12 lets the native value reach the clamp. LTD and
+  // d7/d30 are deliberately NOT guarded — the ceiling registry does not
+  // cover them and the user scoped the fix to d90/m12.
+  {
+    titleId: 10319, // Forza Horizon 5 Deluxe
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; Steam×9 IP override replaces the native value before the aged-title ceiling can clamp it",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10320, // Ready or Not
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; m12 stored at 133% of LTD; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10350, // No Man's Sky
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 14.0x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10352, // Marvel's Spider-Man 2
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 8.1x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10362, // Arma Reforger
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 8.6x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10402, // Elden Ring
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 8.7x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10513, // Control: Ultimate Edition
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 33.5x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10520, // Dead by Daylight
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 7.9x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10535, // FF7 Remake Intergrade
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 37.9x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10565, // Marvel's Spider-Man Remastered
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 23.3x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10624, // It Takes Two
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 11.3x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10635, // Cyberpunk 2077 Ultimate Edition
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 3.6x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10636, // Ark: Survival Ascended
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 5.8x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10645, // Hogwarts Legacy
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 2.3x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10651, // Witcher 3 Remastered
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 8.9x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10691, // Resident Evil 4
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 7.2x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 10876, // Resident Evil 2
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 19.1x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 11035, // Skyrim Special Edition
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 13.1x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 11157, // Resident Evil 7
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 16.9x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 11192, // Horizon Forbidden West CE
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 4.0x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 11337, // The Outlast Trials
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 11.0x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
+  {
+    titleId: 11345, // Alan Wake 2
+    platform: "ps5", windows: ["d90", "m12"],
+    reason: "audit-v2 aged PS5 row; d90 5.9x over curve; Steam×9 IP override blocks the ceiling clamp",
+    policyVersion: "native_model_guard_v2",
+  },
 ];
 
 export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = guardsRegistry;

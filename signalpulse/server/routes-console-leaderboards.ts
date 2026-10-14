@@ -2363,8 +2363,39 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
         // nulls and set gatedReason so the client can badge it.
         const gateToLtd = window !== "ltd" && cascade.length >= 2;
         const gatedLtdOnly = gateToLtd && windowUsed === "ltd";
-        const unitsMid = gatedLtdOnly ? null : (winRow?.unitsMid ?? null);
-        const ownersMid = gatedLtdOnly ? null : (winRow?.ownersMid ?? null);
+        let unitsMid = gatedLtdOnly ? null : (winRow?.unitsMid ?? null);
+        let ownersMid = gatedLtdOnly ? null : (winRow?.ownersMid ?? null);
+        // ─── Per-title aged-AAA ceiling (PDP path, 2026-10-13) ────────────────
+        // Same clamp as the leaderboard board path (see the group loop in this
+        // file). Keeps the PDP KPI cards consistent with the board for the
+        // registry rows.
+        const agedCeilingPdp = agedTitleCeilingFor([titleId], platform, window);
+        if (agedCeilingPdp && unitsMid != null && unitsMid > 0) {
+          const ltdRowPdp = rawSqlite.prepare(
+            `SELECT units_mid FROM window_estimates_daily
+              WHERE title_id = ? AND platform = ? AND window = 'ltd'
+                AND as_of_date = (SELECT MAX(as_of_date) FROM window_estimates_daily
+                   WHERE title_id = ? AND platform = ? AND window = 'ltd')`
+          ).get(titleId, platform, titleId, platform) as { units_mid: number | null } | undefined;
+          const ltdUnitsPdp = ltdRowPdp?.units_mid ?? null;
+          if (ltdUnitsPdp != null && ltdUnitsPdp > 0) {
+            const releaseRowPdp = rawSqlite.prepare(
+              `SELECT release_date AS releaseDate FROM console_title_igdb WHERE title_id = ?`
+            ).get(titleId) as { releaseDate: string | null } | undefined;
+            const relPdp = typeof releaseRowPdp?.releaseDate === "string" ? releaseRowPdp.releaseDate.slice(0, 10) : null;
+            const ageDaysPdp = (relPdp && /^\d{4}-\d{2}-\d{2}/.test(relPdp))
+              ? Math.round((Date.parse(todayIsoDate()) - Date.parse(relPdp)) / 86400000) : null;
+            const winDaysPdp = ({ d7: 7, d30: 30, d90: 90, m12: 365 } as Record<string, number>)[window] ?? null;
+            const isBurstPdp = ageDaysPdp != null && ageDaysPdp > 0 && winDaysPdp != null
+              ? (unitsMid / winDaysPdp) / (ltdUnitsPdp / ageDaysPdp) > 10 : false;
+            const ceilingUnitsPdp = Math.round(ltdUnitsPdp * agedCeilingPdp.ceilingFraction);
+            if (!isBurstPdp && unitsMid > ceilingUnitsPdp) {
+              const ratioPdp = ceilingUnitsPdp / unitsMid;
+              unitsMid = ceilingUnitsPdp;
+              if (ownersMid != null) ownersMid = Math.round(ownersMid * ratioPdp);
+            }
+          }
+        }
         const revenueMidUsd = (unitsMid != null && aspUsdCents != null)
           ? Math.round((unitsMid * aspUsdCents) / 100)
           : null;

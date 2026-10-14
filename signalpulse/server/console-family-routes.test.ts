@@ -88,7 +88,30 @@ test("No Man's Sky family reconciles every platform and window without update or
         assert.equal(family.perPlatform[platforms[i]].windowUsed,window);
       }
       const steamRevenue=units[0]*5999*0.66/100;
-      assert.ok(Math.abs(family.combinedRevenueUsd-steamRevenue/0.495)<0.01);
+      // PS5 (10350) carries a native_model_guard_v2 (2026-10-13 audit-widened
+      // batch): the Steam×9 IP override is blocked on d90/m12 so the native
+      // estimator value reaches the aged-title ceiling. The combined revenue
+      // is the sum of the three platforms' own revenues, not the IP-derived
+      // formula. The fixture's expected Steam share (0.495) no longer holds
+      // for d90/m12; the LTD/d7/d30 windows keep the override (guard scoped
+      // to d90/m12 only) and the old formula still applies there.
+      const isGuarded = window === "d90" || window === "m12";
+      if (isGuarded) {
+        // The guard blocks the IP override AND the aged-title ceiling clamps
+        // the native value for 10350 (No Man's Sky, fraction 0.0025 for d90,
+        // 0.0100 for m12). PS5 revenue = clamped units × msrp × aspFactor.
+        const frac = window === "d90" ? 0.0025 : 0.0100;
+        const clampedUnits = Math.round(quantities.ltd[1] * frac); // LTD fixture value for PS5
+        const ps5ClampedRev = clampedUnits * 5999 * 0.8 / 100;
+        assert.ok(Math.abs(family.perPlatform.ps5.revenueUsd - ps5ClampedRev) < 2,
+          `PS5 revenue is the clamped native value (guard + ceiling): ${family.perPlatform.ps5.revenueUsd} vs ${ps5ClampedRev}`);
+        const sumOfPerPlatform = platforms.reduce(
+          (sum:number,p:any)=>sum+family.perPlatform[p].revenueUsd,0);
+        assert.ok(Math.abs(family.combinedRevenueUsd - sumOfPerPlatform) < 1,
+          `combined = sum of per-platform revenues: ${family.combinedRevenueUsd} vs ${sumOfPerPlatform}`);
+      } else {
+        assert.ok(Math.abs(family.combinedRevenueUsd-steamRevenue/0.495)<0.01);
+      }
       assert.ok(Math.abs(family.revenueSummary.platforms.reduce((sum:number,p:any)=>sum+p.sharePct,0)-100)<0.01);
       const board = await get(`/api/console/leaderboards-multiplatform?window=${window}`);
       const row = board.titles.find((r:any)=>r.editionGroupKey==="no man's sky");
