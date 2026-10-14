@@ -105,7 +105,13 @@ export function computeCohortLeaderboard(db: TtDb, w: CohortWindow, sort: Cohort
           COALESCE(SUM(CASE WHEN s.like_count IS NOT NULL AND p.like_count IS NOT NULL
             THEN s.like_count - p.like_count END),0) AS likes,
           COALESCE(SUM(s.repost_count),0) AS reposts,
+          -- views_with_likes and likes_lifetime are the LIFETIME totals from
+          -- the latest snapshot (NOT the daily delta). Likes % is a quality /
+          -- engagement metric and should use lifetime values, not the daily
+          -- gain. (Bug fix Oct 14: the d1 branch was computing likesPct as
+          -- daily-like-gain / lifetime-views, which produced tiny ratios.)
           COALESCE(SUM(CASE WHEN s.like_count IS NOT NULL THEN s.view_count END),0) AS views_with_likes,
+          COALESCE(SUM(s.like_count),0) AS likes_lifetime,
           MIN(v.last_refreshed_at) AS stats_as_of
         FROM tt_video_stats_daily s
         JOIN tt_video_stats_daily p ON p.aweme_id=s.aweme_id AND p.date=?
@@ -135,7 +141,7 @@ export function computeCohortLeaderboard(db: TtDb, w: CohortWindow, sort: Cohort
           isSaber: !!t.is_saber, parentTitle: t.parent_title ?? null,
           views: Math.max(0, a?.views ?? 0), videos: videoCountById.get(t.title_id) ?? a?.matched_videos ?? 0,
           comments: Math.max(0, a?.comments ?? 0), likes: Math.max(0, a?.likes ?? 0), reposts: a?.reposts ?? 0,
-          likesPct: a && a.views_with_likes > 0 ? (a.likes / a.views_with_likes) * 100 : null,
+          likesPct: a && a.views_with_likes > 0 ? (a.likes_lifetime / a.views_with_likes) * 100 : null,
           topVideo: top ? {
             awemeId: top.aweme_id, desc: top.desc, authorUniqueId: top.author_unique_id,
             views: top.view_count ?? 0, createTime: top.create_time,
