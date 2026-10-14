@@ -20,7 +20,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import { Link } from "wouter";
 
 type WindowKey = "d1" | "d7" | "d30" | "d90" | "m12" | "ltd";
-type SortKey = "views" | "videos" | "comments" | "likes" | "likesPct" | "title";
+type SortKey = "views" | "videos" | "comments" | "likes" | "shares" | "likesPct" | "sharePct" | "title";
 // NOTE: "reposts" removed 2026-10-14 — TikTok returns repost_count=0 for every
 // video (verified: 993/993 videos with sum=0), so the column was dead weight.
 // NOTE: "title" removed from SORTS (PR 303) — the Title column (first column)
@@ -40,7 +40,7 @@ interface TopVideo { awemeId: string; desc: string; authorUniqueId: string | nul
 interface Row {
   titleId: number; title: string; steamAppId: string | null; headerImageUrl: string | null;
   isSaber: boolean; parentTitle: string | null;
-  views: number; videos: number; comments: number; likes: number; likesPct: number | null;
+  views: number; videos: number; comments: number; likes: number; shares: number; likesPct: number | null; sharePct: number | null;
   topVideo: TopVideo | null; statsAsOf: string | null; trackingSince: string | null;
   backfillComplete: boolean; backfillOldest: string | null; backfillFloor: string;
 }
@@ -63,6 +63,8 @@ const SORTS: Array<{ id: SortKey; label: string; align?: string }> = [
   { id: "comments", label: "Comments" },
   { id: "likes", label: "Likes" },
   { id: "likesPct", label: "Likes %" },
+  { id: "shares", label: "Shares" },
+  { id: "sharePct", label: "Share %" },
   // NOTE: Reposts column removed 2026-10-14 — TikTok returns repost_count=0
   // for every video (verified: 993/993 videos with sum=0), so the column was
   // dead weight showing all zeros.
@@ -165,6 +167,8 @@ export default function TikTokLeaderboard() {
                     <td className="px-3 py-2 tabular-nums">{fmt(r.comments)}</td>
                     <td className="px-3 py-2 tabular-nums">{fmt(r.likes)}</td>
                     <td className="px-3 py-2 tabular-nums">{r.likesPct == null ? "—" : `${r.likesPct.toFixed(1)}%`}</td>
+                    <td className="px-3 py-2 tabular-nums">{fmt(r.shares)}</td>
+                    <td className="px-3 py-2 tabular-nums">{r.sharePct == null ? "—" : `${r.sharePct.toFixed(1)}%`}</td>
                   </tr>
                 ))}
                 {rows.length === 0 ? (
