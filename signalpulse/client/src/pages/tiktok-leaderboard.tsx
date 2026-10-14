@@ -128,6 +128,11 @@ export default function TikTokLeaderboard() {
             <table className="w-full text-sm" data-testid="tiktok-leaderboard-table">
               <thead>
                 <tr className="border-b bg-muted/50">
+                  {/* Title header — the body's first column is the Title
+                      (image + name + competitor badge), not a sortable data
+                      column. This header MUST be present so the header and
+                      body column counts match (Title + 5 data columns). */}
+                  <th className="px-3 py-2 text-left font-medium">Title</th>
                   {SORTS.map((s) => (
                     <th key={s.id} className="px-3 py-2 text-left font-medium">
                       <button className="inline-flex items-center gap-1 hover:text-foreground"
