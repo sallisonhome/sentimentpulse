@@ -1,7 +1,8 @@
 name: SP Check Ingest Status
 
 # One-off diagnostic: check SentimentPulse's ingest status via
-# GET /api/ingest/status on 127.0.0.1:8000 (loopback, no auth).
+# GET /api/ingest/status on 127.0.0.1:8000 (loopback, no auth),
+# plus a sentimentpulse journalctl grep for ingest/tiktok/errors.
 
 on:
   workflow_dispatch:
@@ -28,9 +29,8 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 << 'EOF'
             set -uo pipefail
             echo "── GET /api/ingest/status ──"
-            curl -sS --max-time 10 http://127.0.0.1:8000/api/ingest/status 2>&1 | python3 -m json.tool 2>/dev/null || \
-              curl -sS --max-time 10 http://127.0.0.1:8000/api/ingest/status 2>&1 | head -20
+            curl -sS --max-time 10 http://127.0.0.1:8000/api/ingest/status 2>&1 | head -30
             echo ""
-            echo "── SentimentPulse journalctl (last 5 min, ingest-related) ──"
-            journalctl -u sentimentpulse --since '5 min ago' --no-pager -n 50 2>/dev/null | grep -iE "ingest|tiktok|error" | tail -20
+            echo "── SentimentPulse journalctl (04:30-05:35 UTC, tiktok/ingest_phase related) ──"
+            journalctl -u sentimentpulse --since "2026-10-14 04:30:00" --until "2026-10-14 05:35:00" --no-pager -n 5000 2>/dev/null | grep -iE "tiktok|ingest_phase|ERROR|WARNING|import" | grep -v "GET /api/settings\|GET /api/tiktok/status\|GET /api/tiktok/series\|GET /api/tiktok/comments" | tail -50
           EOF
