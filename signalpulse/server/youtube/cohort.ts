@@ -51,7 +51,17 @@ export interface CohortRow {
 
 export function windowStart(w: CohortWindow, now = new Date()): string | null {
   const h = WINDOW_HOURS[w];
-  return h == null ? null : new Date(now.getTime() - h * 3600_000).toISOString();
+  if (h == null) return null;
+  // d1 is a UTC calendar-day window anchored to the last completed cron
+  // run, not a rolling 24 hours from "now". This makes the 24-hour numbers
+  // stable: they only change when the next cron runs, not when someone
+  // visits the page. For d7/d30/d90/m12 we keep the rolling window
+  // (longer windows are less sensitive to visit timing).
+  if (w === "d1") {
+    const todayUtc = now.toISOString().slice(0, 10);
+    return `${todayUtc}T00:00:00.000Z`;
+  }
+  return new Date(now.getTime() - h * 3600_000).toISOString();
 }
 
 export function computeCohortLeaderboard(db: YtDb, w: CohortWindow, sort: CohortSort = "views",
