@@ -155,7 +155,7 @@ function csvOf(titleId: number, start: string, end: string, bucket: string, yout
 
 async function fetchSeries(path: string, range: { start: string; end: string; bucket: string; includeArchived: boolean }) {
   const params = new URLSearchParams({ start: range.start, end: range.end, bucket: range.bucket, includeArchived: range.includeArchived ? "1" : "0" });
-  const response = await fetch(`api/${path}?${params}`, { credentials: "include" });
+  const response = await fetch(`/signal/api/${path}?${params}`, { credentials: "include" });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error ?? `Could not load ${path}`);
   return result;

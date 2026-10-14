@@ -229,6 +229,10 @@ class VolumePoint(BaseModel):
     # field existed deserialize cleanly.
     reddit_comment: int = 0
     youtube_comment: int = 0
+    # TikTok comments imported from SignalPulse's TikTok Pulse feed.
+    # Added 2026-10-14. Default 0 so old rows and JSON payloads from before
+    # this field existed deserialize cleanly.
+    tiktok_comment: int = 0
     bluesky: int = 0
     # DTF.ru (Russian-language gaming forum) — added 2026-07-27 after the
     # source itself was wired into the ingestor a day earlier. Default 0

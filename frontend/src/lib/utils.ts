@@ -48,6 +48,10 @@ export function sourceLabel(source: string): string {
     // comment-level engagement inheriting a parent-thread's topic match.
     reddit_comment: 'Reddit Comments',
     youtube_comment: 'YouTube Comments',
+    // TikTok comments imported from SignalPulse's TikTok Pulse feed.
+    // Added 2026-10-14. Uses 'TikTok Comments' to match the YouTube
+    // Comments naming convention.
+    tiktok_comment:  'TikTok Comments',
     bluesky:       'Bluesky',
     // DTF.ru — Russian-language gaming forum. Added 2026-07-27.
     dtf:           'DTF',

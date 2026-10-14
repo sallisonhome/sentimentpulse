@@ -675,12 +675,13 @@ def _compute_dashboard(
     )
 
     vol_map: dict[date, dict[str, int]] = {}
+    _ZERO_SOURCE_MAP: dict[str, int] = {"steam_review": 0, "steam_forum": 0, "reddit": 0, "reddit_comment": 0, "youtube_comment": 0, "tiktok_comment": 0, "bluesky": 0, "dtf": 0}
     for row in vol_rows:
         d = _to_date(row.day)
         # Skip NULL-post_date rows (see trend-map comment above).
         if d is None:
             continue
-        vol_map.setdefault(d, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "reddit_comment": 0, "bluesky": 0, "dtf": 0})
+        vol_map.setdefault(d, dict(_ZERO_SOURCE_MAP))
         # v0016.3 (2026-08-12): fold reddit_comment counts into the reddit
         # bar so the chart shows real Reddit engagement in one series (per
         # user directive "just need the posts actually coming in and being
@@ -691,6 +692,9 @@ def _compute_dashboard(
             vol_map[d]["reddit"] += row.cnt
             vol_map[d]["reddit_comment"] = row.cnt
         else:
+            # Unknown source (e.g. a new source added later): record it so
+            # the totals stay correct, but only if the row is in scope. The
+            # .setdefault above creates all keys, so assignment is safe.
             vol_map[d][src_key] = row.cnt
 
     # Same zero-fill treatment as the trend chart above — sparse titles
@@ -700,7 +704,7 @@ def _compute_dashboard(
         cursor = p_start
         today_local = date.today()
         while cursor <= today_local:
-            vol_map.setdefault(cursor, {"steam_review": 0, "steam_forum": 0, "reddit": 0, "reddit_comment": 0, "bluesky": 0, "dtf": 0})
+            vol_map.setdefault(cursor, dict(_ZERO_SOURCE_MAP))
             cursor += timedelta(days=1)
 
     # v0016.5 (2026-08-17): compute the same aggregation for the
@@ -776,6 +780,7 @@ def _compute_dashboard(
                         reddit=counts.get("reddit", 0),
                         reddit_comment=counts.get("reddit_comment", 0),
                         youtube_comment=counts.get("youtube_comment", 0),
+                        tiktok_comment=counts.get("tiktok_comment", 0),
                         bluesky=counts.get("bluesky", 0),
                         dtf=counts.get("dtf", 0),
                         total=(
@@ -785,6 +790,7 @@ def _compute_dashboard(
                             + counts.get("bluesky", 0)
                             + counts.get("dtf", 0)
                             + counts.get("youtube_comment", 0)
+                            + counts.get("tiktok_comment", 0)
                         ),
                     )
                     for d2, counts in sorted(prior_map.items())
@@ -801,10 +807,9 @@ def _compute_dashboard(
             # submissions from comments; never re-added to the total.
             reddit_comment=counts.get("reddit_comment", 0),
             youtube_comment=counts.get("youtube_comment", 0),
+            tiktok_comment=counts.get("tiktok_comment", 0),
             bluesky=counts.get("bluesky", 0),
             dtf=counts.get("dtf", 0),
-            # Total sums the display axes only — reddit_comment is already
-            # inside 'reddit', so exclude it here to avoid double counting.
             total=(
                 counts.get("steam_review", 0)
                 + counts.get("steam_forum", 0)
@@ -812,6 +817,7 @@ def _compute_dashboard(
                 + counts.get("bluesky", 0)
                 + counts.get("dtf", 0)
                 + counts.get("youtube_comment", 0)
+                + counts.get("tiktok_comment", 0)
             ),
         )
         for d, counts in sorted(vol_map.items())
