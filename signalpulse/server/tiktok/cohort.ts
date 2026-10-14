@@ -23,7 +23,7 @@ export const WINDOW_HOURS: Record<CohortWindow, number | null> = {
   d1: 24, d7: 24 * 7, d30: 24 * 30, d90: 24 * 90, m12: 24 * 365, ltd: null,
 };
 
-export const COHORT_SORTS = ["views", "videos", "comments", "likes", "likesPct", "reposts", "title"] as const;
+export const COHORT_SORTS = ["views", "videos", "comments", "likes", "shares", "likesPct", "sharePct", "reposts", "title"] as const;
 export type CohortSort = typeof COHORT_SORTS[number];
 
 export interface CohortTopVideo {
@@ -41,8 +41,10 @@ export interface CohortRow {
   videos: number;
   comments: number;
   likes: number;
+  shares: number;
   reposts: number;
   likesPct: number | null;
+  sharePct: number | null;
   topVideo: CohortTopVideo | null;
   statsAsOf: string | null;
   trackingSince: string | null;
@@ -104,6 +106,8 @@ export function computeCohortLeaderboard(db: TtDb, w: CohortWindow, sort: Cohort
             THEN s.comment_count - p.comment_count END),0) AS comments,
           COALESCE(SUM(CASE WHEN s.like_count IS NOT NULL AND p.like_count IS NOT NULL
             THEN s.like_count - p.like_count END),0) AS likes,
+          COALESCE(SUM(CASE WHEN s.share_count IS NOT NULL AND p.share_count IS NOT NULL
+            THEN s.share_count - p.share_count END),0) AS shares,
           COALESCE(SUM(s.repost_count),0) AS reposts,
           -- views_with_likes and likes_lifetime are the LIFETIME totals from
           -- the latest snapshot (NOT the daily delta). Likes % is a quality /
@@ -140,12 +144,16 @@ export function computeCohortLeaderboard(db: TtDb, w: CohortWindow, sort: Cohort
           titleId: t.title_id, title: t.title, steamAppId: t.steam_app_id,
           isSaber: !!t.is_saber, parentTitle: t.parent_title ?? null,
           views: Math.max(0, a?.views ?? 0), videos: videoCountById.get(t.title_id) ?? a?.matched_videos ?? 0,
-          comments: Math.max(0, a?.comments ?? 0), likes: Math.max(0, a?.likes ?? 0), reposts: a?.reposts ?? 0,
+          comments: Math.max(0, a?.comments ?? 0), likes: Math.max(0, a?.likes ?? 0),
+          shares: Math.max(0, a?.shares ?? 0), reposts: a?.reposts ?? 0,
           // Likes% = daily like gain / daily view gain (consistent with the
           // Views and Likes columns, which are daily gains). Fixed Oct 14: was
           // using lifetime values which produced a different number than the
           // adjacent daily-gain columns suggested (5.62% vs 6.14%).
           likesPct: a && a.views > 0 ? (a.likes / a.views) * 100 : null,
+          // Share% = daily share gain / daily view gain (same consistency
+          // rule as Likes%).
+          sharePct: a && a.views > 0 ? (a.shares / a.views) * 100 : null,
           topVideo: top ? {
             awemeId: top.aweme_id, desc: top.desc, authorUniqueId: top.author_unique_id,
             views: top.view_count ?? 0, createTime: top.create_time,
@@ -179,6 +187,7 @@ export function computeCohortLeaderboard(db: TtDb, w: CohortWindow, sort: Cohort
       COALESCE(SUM(view_count),0) AS views,
       COALESCE(SUM(comment_count),0) AS comments,
       COALESCE(SUM(like_count),0) AS likes,
+      COALESCE(SUM(share_count),0) AS shares,
       COALESCE(SUM(repost_count),0) AS reposts,
       COALESCE(SUM(CASE WHEN like_count IS NOT NULL THEN view_count END),0) AS views_with_likes,
       MIN(last_refreshed_at) AS stats_as_of
@@ -199,8 +208,9 @@ export function computeCohortLeaderboard(db: TtDb, w: CohortWindow, sort: Cohort
       titleId: t.title_id, title: t.title, steamAppId: t.steam_app_id,
       isSaber: !!t.is_saber, parentTitle: t.parent_title ?? null,
       views: a?.views ?? 0, videos: a?.videos ?? 0,
-      comments: a?.comments ?? 0, likes: a?.likes ?? 0, reposts: a?.reposts ?? 0,
+      comments: a?.comments ?? 0, likes: a?.likes ?? 0, shares: a?.shares ?? 0, reposts: a?.reposts ?? 0,
       likesPct: a && a.views_with_likes > 0 ? (a.likes / a.views_with_likes) * 100 : null,
+      sharePct: a && a.views > 0 ? (a.shares / a.views) * 100 : null,
       topVideo: top ? {
         awemeId: top.aweme_id, desc: top.desc, authorUniqueId: top.author_unique_id,
         views: top.view_count ?? 0, createTime: top.create_time,
