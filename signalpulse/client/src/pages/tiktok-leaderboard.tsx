@@ -59,7 +59,9 @@ const SORTS: Array<{ id: SortKey; label: string; align?: string }> = [
   { id: "likes", label: "Likes" },
   { id: "likesPct", label: "Likes %" },
   { id: "reposts", label: "Reposts" },
-  { id: "title", label: "Title" },
+  // "title" is not a sortable column header — the Title column (first column)
+  // shows the title image + name + competitor badge. Removing it from SORTS
+  // keeps the header and body column counts in sync (7 data columns + 1 title column).
 ];
 
 export default function TikTokLeaderboard() {
