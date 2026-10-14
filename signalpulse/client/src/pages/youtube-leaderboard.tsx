@@ -55,7 +55,10 @@ const fmtDate = (s: string | null) => (s ? new Date(s).toLocaleDateString("en-US
 const fmtDuration = (s: number | null) => (s == null ? "—" : s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`);
 
 async function getJson<T>(url: string): Promise<T> {
-  const r = await fetch(url, { credentials: "include" });
+  // Prefix /signal/ so relative URLs resolve to the correct nginx route.
+  // Without this, fetch('api/...') resolves relative to the current page URL
+  // and hits a nonexistent path, returning an HTML 404.
+  const r = await fetch(`/signal/${url.replace(/^\/+/, "")}`, { credentials: "include" });
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
     try { const j = await r.json(); if (j?.error) msg = j.error; } catch { /* keep status text */ }

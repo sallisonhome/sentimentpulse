@@ -69,7 +69,17 @@ export default function TikTokLeaderboard() {
   const [scope, setScope] = useState<"saber" | "all">("saber");
 
   const { data, isLoading, error } = useQuery<LeaderboardResponse>({
+    // Use an explicit queryFn — the shared getQueryFn joins queryKey
+    // segments with '/' which produces a path-segment URL that the server
+    // route (query-parameters) does not match, causing an HTML 404.
     queryKey: ["/api/tiktok/leaderboard", window, sort, direction, scope],
+    queryFn: async () => {
+      const params = new URLSearchParams({ window, sort, direction, scope });
+      const res = await fetch(`/signal/api/tiktok/leaderboard?${params}`, { credentials: "include" });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error ?? "Could not load TikTok leaderboard");
+      return result;
+    },
     refetchInterval: 60_000,
   });
 
