@@ -1,5 +1,20 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-16 (signalpulse) — The Revenue Leaderboard froze "yesterday" at the 09:15 UTC snapshot; Steamworks kept adding to it
+
+**What the user saw.** The Revenue Leaderboard's Oct 15 row did not match Steamworks (Hellraiser 5,126 units / $203,499 vs 5,135 / $203,782).
+
+**Evidence (all 12 board titles, Steamworks portal read through the operator's logged-in browser on Oct 16).** Seven titles matched exactly (BusBound, Tempest Rising, Toxic Commando, Insurgency, Docked, Twisted Tower, Expeditions). The five high-volume titles were all slightly short: Space Marine 2 -17 units / -$217, Hellraiser -9 / -$283, World War Z -6 / -$36, SnowRunner -7 / -$83, RoadCraft -2 / -$22. DLC matched everywhere except small drifts on the same high-volume titles. Nothing was broken globally: no stale titles, no missing SKU groups, no failed fetches.
+
+**Root cause.** `ingestSteamSales` fetched GMT-yesterday once at 09:15 UTC and never revisited it. Steamworks keeps posting late transactions to that day for hours, so every stored day stayed slightly low, and the 24h delta compared against a prior day frozen the same way (Hellraiser board -4.7% vs Steamworks -5%).
+
+**Fix (PR: fix/steam-sales-restate-prior-day).** Each run also re-fetches the previous `steam_sales_restate_days` day(s) (app_settings, default 1, 0 disables, max 7). Rows are keyed `(product_id, date, sku_group)` and the batch id `daily-cron-{product}-{date}` is deterministic, so a re-fetch overwrites in place. Restatement errors never mark the run failed; each changed day is logged as `Steam sales restated: <title> <date>: base +N units / +X USD ...` and summarized in the run message.
+
+**Rules.**
+- A provider day is not final at first read. Any daily snapshot of a source that keeps posting late data needs a restatement pass, or the stored series is permanently low.
+- When only high-volume titles disagree, and only by a fraction of a percent, suspect late-arriving data before suspecting the parser.
+- Verify a board against the source per title for the same date and both sides of the delta, not just the headline title.
+
 ## 2026-10-14 — TikTok comment ingestion: 5 sequential bugs, a shared PDP
 ## mislabeled back link, a dead Reposts column, and the cache-bust that
 ## didn't bust
