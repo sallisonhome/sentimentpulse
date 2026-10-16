@@ -1174,28 +1174,42 @@ async function ingestSteamSales(): Promise<IngestionResult> {
   }
 
   const { fetchPortalPage, portalToSalesRows } = await import("./steamworks-portal");
+  const {
+    STEAM_SALES_RESTATE_SETTING, parseRestateDays, steamSalesFetchDates,
+    salesTotalsForDate, describeRestatement,
+  } = await import("./steam-sales-restate");
   const targetDate = getYesterdayGmtDateString();
+  // 2026-10-16: also re-fetch the prior day(s); Steamworks keeps adding late
+  // transactions after the 09:15 UTC snapshot (see steam-sales-restate.ts).
+  const restateDays = parseRestateDays(storage.getSetting(STEAM_SALES_RESTATE_SETTING)?.value);
+  const fetchDates = steamSalesFetchDates(targetDate, restateDays);
 
   let dataPoints = 0;
   let sessionExpired = false;
   const errors: Array<{ title: string; error: string }> = [];
+  const restateErrors: Array<{ title: string; error: string }> = [];
+  const restateChanges: string[] = [];
+  let restatedOk = 0;
+  let fetchIndex = 0;
 
-  for (let i = 0; i < titles.length; i++) {
+  for (let i = 0; i < titles.length && !sessionExpired; i++) {
     const product = titles[i];
-    if (i > 0) await new Promise((r) => setTimeout(r, PORTAL_FETCH_DELAY_MS));
+    for (const { date: fetchDate, restatement } of fetchDates) {
+    if (fetchIndex++ > 0) await new Promise((r) => setTimeout(r, PORTAL_FETCH_DELAY_MS));
+    const errorList = restatement ? restateErrors : errors;
 
     try {
       const result = await fetchPortalPage({
         appId: Number(product.steamAppId),
-        dateStart: targetDate,
-        dateEnd: targetDate,
+        dateStart: fetchDate,
+        dateEnd: fetchDate,
         cookieHeader: session.cookieValue,
       });
 
       const nowIso = new Date().toISOString();
       if (!result.ok || !result.parsed) {
         const errMsg = (result.error ?? "unknown error").slice(0, 200);
-        errors.push({ title: product.title, error: errMsg });
+        errorList.push({ title: restatement ? `${product.title} ${fetchDate}` : product.title, error: errMsg });
         storage.upsertSteamworksSession({
           id: "default",
           cookieValue: session.cookieValue,
@@ -1203,7 +1217,7 @@ async function ingestSteamSales(): Promise<IngestionResult> {
           lastVerifiedAt: nowIso,
           lastVerifiedResult: `error: ${errMsg}`,
         });
-        log(`Steam sales portal-fetch failed for ${product.title}: ${errMsg}`, "ingestion");
+        log(`Steam sales portal-fetch failed for ${product.title} ${fetchDate}: ${errMsg}`, "ingestion");
         if (/session expired/i.test(errMsg)) {
           sessionExpired = true;
           // Proactive alert: only fire once per failure episode, not on every
@@ -1224,26 +1238,27 @@ async function ingestSteamSales(): Promise<IngestionResult> {
         continue;
       }
 
-      // Deterministic + idempotent: purge any existing rows for today's
-      // batch before re-inserting, so re-running the same day never
+      // Deterministic + idempotent: purge any existing rows for this
+      // day's batch before re-inserting, so re-running the same day never
       // double-counts (matches the portal-daily-backfill convention).
-      const batchId = `daily-cron-${product.id}-${targetDate}`;
+      const before = restatement ? salesTotalsForDate(storage.getSteamSales(product.id), fetchDate) : null;
+      const batchId = `daily-cron-${product.id}-${fetchDate}`;
       storage.deleteSteamSalesByBatch(batchId);
-      const rows = portalToSalesRows(result.parsed, product.id, targetDate, batchId);
+      const rows = portalToSalesRows(result.parsed, product.id, fetchDate, batchId);
 
       storage.createSteamSalesUploadBatch({
         id: batchId,
         productId: product.id,
-        filename: `daily-cron-${targetDate}.html`,
+        filename: `daily-cron-${fetchDate}.html`,
         fileBytes: result.htmlBytes ?? 0,
-        reportDateStart: targetDate,
-        reportDateEnd: targetDate,
+        reportDateStart: fetchDate,
+        reportDateEnd: fetchDate,
         publisherName: null,
         rowsParsed: 1,
         rowsIngested: rows.length,
         rowsSkipped: 0,
         skippedReason: null,
-        uploadedBy: "daily-cron",
+        uploadedBy: restatement ? "daily-cron-restate" : "daily-cron",
       });
 
       if (rows.length > 0) {
@@ -1264,10 +1279,21 @@ async function ingestSteamSales(): Promise<IngestionResult> {
         storage.setSteamworksSessionAlertSent("default", null);
       }
 
-      dataPoints++;
+      if (restatement) {
+        restatedOk++;
+        const change = describeRestatement(
+          product.title, fetchDate, before!, salesTotalsForDate(rows as any, fetchDate));
+        if (change) {
+          restateChanges.push(change);
+          log(`Steam sales restated: ${change}`, "ingestion");
+        }
+      } else {
+        dataPoints++;
+      }
     } catch (err: any) {
-      errors.push({ title: product.title, error: String(err?.message || err) });
-      log(`Steam sales ingestion error for ${product.title}: ${err}`, "ingestion");
+      errorList.push({ title: restatement ? `${product.title} ${fetchDate}` : product.title, error: String(err?.message || err) });
+      log(`Steam sales ingestion error for ${product.title} ${fetchDate}: ${err}`, "ingestion");
+    }
     }
   }
 
@@ -1289,7 +1315,12 @@ async function ingestSteamSales(): Promise<IngestionResult> {
   return {
     source: "steam_sales",
     status: dataPoints === 0 && errors.length > 0 ? "error" : "success",
-    message: `Ingested daily portal sales for ${dataPoints}/${titles.length} revenue-eligible titles for ${targetDate}${errorSummary}${expiredNote}`,
+    message: `Ingested daily portal sales for ${dataPoints}/${titles.length} revenue-eligible titles for ${targetDate}${errorSummary}${expiredNote}`
+      + (restateDays > 0
+        ? ` | restated prior ${restateDays} day(s) for ${restatedOk} fetch(es); ${restateChanges.length} changed`
+          + (restateChanges.length ? ` (${restateChanges.join("; ")})` : "")
+          + (restateErrors.length ? `; ${restateErrors.length} restatement error(s): ${restateErrors.map((e) => `[${e.title}] ${e.error}`).join("; ")}` : "")
+        : ""),
     productsProcessed: titles.length,
     dataPointsAdded: dataPoints,
   };
