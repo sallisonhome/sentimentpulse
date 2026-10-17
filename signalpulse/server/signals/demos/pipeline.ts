@@ -5,10 +5,11 @@
  * -> review history -> CCU -> non-Saber multiplier presentation,
  * plus dedicated Steamworks demo-download reports for Saber actuals.
  *
- * Complimentary units, free licenses and other activation categories are
- * NOT demo downloads. Neither the scheduled nor manual pipeline calls the
- * experimental portal collector or promotes those values to actuals.
- * The separate read-only portal probe remains an operator diagnostic.
+ * 2026-10-17: the Saber portal collector also records daily free-licenses
+ * snapshots (demo_portal_daily) as a SEPARATE licenses metric. Those
+ * values never enter demo_window_estimates_daily or any download-semantics
+ * table, and ranking stays download-based. computeDemoWindowActuals()
+ * remains deliberately unwired (see portal-actuals.ts).
  */
 import { log } from "../../log";
 import { seedSaberDemos, SABER_DEMO_ROSTER } from "./saber-seed";
@@ -19,6 +20,7 @@ import { runDemosCcuCollector } from "./ccu";
 import { computeDemoWindowEstimates } from "./estimator";
 import { rawSqlite, storage } from "../../storage";
 import { refreshDashboardDemoActuals } from "./download-actuals";
+import { runDemosPortalCollector } from "./portal-actuals";
 import { runFriendsPassPipeline } from "./friends-pass";
 import { loadDemoCatalog } from "./catalog";
 import { HistoryBudget, refreshRecentDemoReports } from "./history-backfill";
@@ -30,7 +32,7 @@ export interface DemosPipelineRunResult {
   reviewHistory: Awaited<ReturnType<typeof runDemosReviewHistoryCollector>>;
   ccu: Awaited<ReturnType<typeof runDemosCcuCollector>>;
   estimates: ReturnType<typeof computeDemoWindowEstimates>;
-  portalActualsFetch: { source: string; status: "skipped"; message: string };
+  portalActualsFetch: Awaited<ReturnType<typeof runDemosPortalCollector>>;
   actuals: { demosWithActuals: number; rowsWritten: number };
   dashboardActuals: Awaited<ReturnType<typeof refreshDashboardDemoActuals>>;
   datedActuals: Awaited<ReturnType<typeof refreshRecentDemoReports>>;
@@ -38,11 +40,20 @@ export interface DemosPipelineRunResult {
 }
 
 export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelineRunResult> {
-  log("Demos pipeline: released game demos only; license-category ingestion disabled", "demos-pipeline");
+  log("Demos pipeline: released game demos; licenses collected as a separate metric", "demos-pipeline");
   const seed = seedSaberDemos();
   const friendsPass = await runFriendsPassPipeline(delayMs);
   // Independent of public availability: archived demos still have actuals.
   const dashboardActuals = await refreshDashboardDemoActuals();
+  // Licenses snapshots (demo_portal_daily). Failure-isolated: a licenses
+  // collection error must never prevent the rest of the pipeline.
+  let portalActualsFetch: Awaited<ReturnType<typeof runDemosPortalCollector>>;
+  try {
+    portalActualsFetch = await runDemosPortalCollector();
+  } catch (err: any) {
+    portalActualsFetch = { source: "demos_portal", status: "error", message: String(err?.message ?? err).slice(0, 300) };
+  }
+  log(`Demos portal licenses: ${JSON.stringify(portalActualsFetch)}`, "demos-pipeline");
   const datedActuals = await refreshRecentDemoReports(rawSqlite,loadDemoCatalog("demo"),
     new Set(SABER_DEMO_ROSTER.map(d=>d.steamAppId)),storage.getSteamworksSession("default")?.cookieValue,
     new HistoryBudget(48,120000,delayMs));
@@ -94,11 +105,8 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
   const reviewHistory = await runDemosReviewHistoryCollector(delayMs, eligibleAppIds);
   const ccu = await runDemosCcuCollector(delayMs, eligibleAppIds);
   const estimates = computeDemoWindowEstimates(undefined, new Set(reviewHistory.succeededAppIds));
-  const portalActualsFetch = {
-    source: "demos_portal",
-    status: "skipped" as const,
-    message: "Disabled: complimentary units and free-license categories are not demo-download actuals",
-  };
+  // Deliberately zero: licenses never become download actuals. Kept as an
+  // explicit field so callers can see nothing was promoted.
   const actuals = { demosWithActuals: 0, rowsWritten: 0 };
   log(`Demos pipeline: eligible=${eligibility.eligible} excluded=${eligibility.excluded} failed=${eligibility.failed}`, "demos-pipeline");
   return { seeded: seed.seeded, discovery, eligibility, reviewHistory, ccu, estimates, portalActualsFetch, actuals, dashboardActuals, datedActuals, friendsPass };

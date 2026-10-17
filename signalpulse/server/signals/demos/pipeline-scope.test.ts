@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 
-test("daily and manual pipeline ingest only released game demos, never license categories", async () => {
+test("daily and manual pipeline collect licenses as a separate metric, never promote them to download actuals", async () => {
   const cwd = process.cwd();
   const dir = mkdtempSync(join(tmpdir(), "demo-scope-"));
   const realFetch = globalThis.fetch;
@@ -84,6 +84,9 @@ test("daily and manual pipeline ingest only released game demos, never license c
     assert.equal(daily.eligibility.failed, 1);
     assert.equal(daily.reviewHistory.ingested, 6);
     assert.equal(daily.ccu.succeeded, 6);
+    // No Steamworks session is configured in this fixture, so the licenses
+    // collector skips (visible skip, never a fabricated zero) and makes no
+    // portal calls -- the downstream assertions prove nothing was promoted.
     assert.equal(daily.portalActualsFetch.status, "skipped");
     assert.equal(daily.actuals.rowsWritten, 0);
     assert.equal(daily.dashboardActuals.attempted, 6, "daily schedule refreshes all approved Saber demos");
@@ -102,6 +105,9 @@ test("daily and manual pipeline ingest only released game demos, never license c
     const body = await response.json() as any;
     assert.equal(body.result.portalActualsFetch.status, "skipped");
     assert.equal(body.result.actuals.rowsWritten, 0);
+    // Licenses may live in demo_portal_daily (collector-owned), but must
+    // never appear in the download-estimate table under any method.
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_window_estimates_daily WHERE method='steamworks_actual'").get().n, 0);
     assert.equal(body.result.estimates.rowsWritten, 30);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_portal_daily").get().n, 1, "no portal rows added");
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_window_estimates_daily WHERE method='steamworks_actual'").get().n, 0);

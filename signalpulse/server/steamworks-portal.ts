@@ -38,6 +38,10 @@ export interface PortalFetchOptions {
   // full page for a label the regex parser didn't recognize -- see
   // server/signals/demos/portal-actuals.ts probeDemoPortal().
   includeRawHtml?: boolean;
+  /** Optional per-request deadline (ms). When set, an AbortSignal bounds the
+   * fetch so a hung request cannot stall a scheduled collector. Paid-title
+   * ingestion leaves this unset (behavior unchanged). */
+  timeoutMs?: number;
 }
 
 export interface PortalFetchResult {
@@ -52,6 +56,12 @@ export interface PortalFetchResult {
 export interface ParsedPortalPage {
   appId: number;
   appName: string | null;
+  /** App ID as rendered in the page's own `<h1>Game: ... (appid)</h1>`
+  * header -- the REPORT's identity, independent of the requested appId
+  * (which is just what we put in the URL). Collectors must compare the
+  * two and reject the row on mismatch so a Steamworks redirect or a
+  * wrong-appid fetch can never be attributed to the requested demo. */
+  reportAppId: number | null;
   // Lifetime totals from the top box
   lifetimeSteamRevenueGrossUsd: number | null;
   lifetimeSteamRevenueNetUsd: number | null;
@@ -72,17 +82,17 @@ export interface ParsedPortalPage {
   periodDlcUnits: number | null;
   periodDlcRevenueUsd: number | null;
   // Added 2026-09-22 for free/demo titles (Saber Steamworks ground truth,
-  // see server/signals/demos/portal-actuals.ts). Paid titles have no
-  // reason to populate these -- Steamworks renders a "Complimentary
-  // units" period row and a "Lifetime free licenses" lifetime row ONLY
-  // for apps with free/comp distribution (demos, F2P, giveaways). Label
-  // wording is UNCONFIRMED against a real Saber demo page (no login
-  // available from this sandbox) -- sourced from Steamworks community
-  // reports ("Complimentary units" / "Lifetime free licenses" threads),
-  // not official Valve docs. `matchedLabel` records which regex actually
-  // hit so the probe endpoint can surface it for manual confirmation;
-  // treat these two fields as unverified until a live probe confirms
-  // non-null values against a known Saber demo appid.
+  // see server/signals/demos/portal-actuals.ts); LIVE-VERIFIED 2026-10-17
+  // against the Hellraiser: Revival Demo (appid 5184670) via the routed
+  // read-only probe: Steamworks renders a "Complimentary units" period
+  // row and a "Lifetime free licenses" lifetime row for free/comp apps
+  // (demos, F2P, giveaways). The lifetime row's label cell carries a
+  // tooltip whose prose contains commas ("A free license is a grant of a
+  // product to a user, but does not necessarily mean the user has
+  // downloaded the product.") -- the shared findValueAfterLabel pattern
+  // can capture that prose comma instead of the adjacent value cell, so
+  // these two fields use the row-scoped rowValueAfterLabel() extractor.
+  // `*Label` records which candidate label matched, for the probe.
   periodComplimentaryUnits: number | null;
   periodComplimentaryUnitsLabel: string | null;
   lifetimeFreeLicenses: number | null;
@@ -175,6 +185,7 @@ export async function fetchPortalPage(opts: PortalFetchOptions): Promise<PortalF
         "Accept-Language": "en-US,en;q=0.9",
       },
       redirect: "manual", // Steamworks redirects to login when session expires
+      signal: opts.timeoutMs ? AbortSignal.timeout(opts.timeoutMs) : undefined,
     });
     if (resp.status === 302 || resp.status === 301) {
       // Redirect indicates expired session.
@@ -225,6 +236,7 @@ export function parsePortalHtml(html: string, appId: number): ParsedPortalPage {
   const result: ParsedPortalPage = {
     appId,
     appName: null,
+    reportAppId: null,
     lifetimeSteamRevenueGrossUsd: null,
     lifetimeSteamRevenueNetUsd: null,
     lifetimeSteamUnits: null,
@@ -252,8 +264,12 @@ export function parsePortalHtml(html: string, appId: number): ParsedPortalPage {
   };
 
   // App name: <h1>Game: {name} ({appid})</h1>
-  const nameMatch = html.match(/<h1[^>]*>\s*Game:\s*([^(]+)\s*\(\d+\)\s*<\/h1>/i);
-  if (nameMatch) result.appName = nameMatch[1].trim();
+  const nameMatch = html.match(/<h1[^>]*>\s*Game:\s*([^(]+)\s*\((\d+)\)\s*<\/h1>/i);
+  if (nameMatch) {
+    result.appName = nameMatch[1].trim();
+    const h1AppId = Number(nameMatch[2]);
+    if (Number.isSafeInteger(h1AppId)) result.reportAppId = h1AppId;
+  }
 
   // Lifetime label \u2192 value pairs. Steamworks renders these as a table with
   // <td>Lifetime Steam revenue (gross)</td> ... <td>$273,162,107</td> ...
@@ -308,34 +324,71 @@ export function parsePortalHtml(html: string, appId: number): ParsedPortalPage {
   result.periodSteamRevenueUsd = parseNum(findValueAfterLabel(/(?:^|>)\s*Steam\s+revenue\s*(?:<|$)/im));
   result.periodDlcRevenueUsd = parseNum(findValueAfterLabel(/(?:^|>)\s*Steam\s+DLC\s+revenue\s*(?:<|$)/im));
 
-  // Free/demo-specific fields (2026-09-22). Try several label candidates
-  // in priority order since the exact current Valve wording is
-  // unconfirmed -- see the field doc comment above. The first candidate
-  // that matches wins; `*Label` records which one, so a probe caller can
-  // see what actually fired instead of a silent guess.
-  const tryLabels = (labels: RegExp[]): { value: number | null; label: string | null } => {
-    for (const rx of labels) {
-      const raw = findValueAfterLabel(rx);
-      if (raw != null) return { value: parseNum(raw), label: rx.source };
+  // Free/demo-specific fields (2026-09-22; extraction hardened 2026-10-17
+  // after the live probe against appid 5184670). Try several label
+  // candidates in priority order. `*Label` records which one matched, so
+  // a probe caller can see what actually fired instead of a silent guess.
+  //
+  // These rows use rowValueAfterLabel() instead of the shared
+  // findValueAfterLabel(): the lifetime row's label cell embeds a tooltip
+  // whose sentence ("...to a user, but does not necessarily mean...")
+  // contains commas, and the shared pattern's [\d,]+ can capture that
+  // lone comma as a "number" -- observed live on 2026-10-17 when the
+  // probe matched the label but returned null for the value.
+  // Row-scoped label→value extraction. The free/comp rows embed a tooltip
+  // in the label cell whose prose contains commas, which the shared
+  // findValueAfterLabel can mis-capture; this helper isolates each <tr>,
+  // finds the cell whose text begins with the label, and requires the
+  // IMMEDIATELY following cell to be a clean non-negative integer.
+  // A matched row with a missing or non-numeric adjacent cell returns null
+  // (fail closed) rather than scanning on to a later row.
+  //
+  // `unique` (used for the lifetime metric): more than one matching row is
+  // AMBIGUOUS and returns null -- silently picking one could attribute a
+  // per-SKU or repeated row's number to the headline metric. The period
+  // metric keeps first-row-wins, mirroring the old first-match-in-page
+  // behavior (live-verified against appid 5184670 on 2026-10-17).
+  //
+  // Labels are the LIVE-VERIFIED Valve wording ONLY (2026-10-17, appid
+  // 5184670 probe): "Lifetime free licenses" and "Complimentary units".
+  // No fallback to "complimentary units"/"activations" phrasings for the
+  // lifetime metric -- the same page shows free licenses and complimentary
+  // units as DIFFERENT totals, so substituting one label for the other
+  // would report the wrong metric as verified.
+  const rowValueAfterLabel = (page: string, label: RegExp, unique: boolean): number | null => {
+    const cellText = (cellHtml: string): string =>
+      decodeHtmlEntities(cellHtml.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+    const extractFromRow = (cells: string[]): number | null => {
+      const idx = cells.findIndex(c => label.test(c));
+      if (idx === -1) return null;
+      const valueCell = cells[idx + 1];
+      // Plain digits or correctly comma-grouped counts only. No currency
+      // prefix (these are counts, not money) and no lone comma -- the very
+      // bug the shared extractor had (it captured the tooltip prose comma).
+      if (valueCell == null || !/^(\d{1,3}(,\d{3})*|\d+)$/.test(valueCell.trim())) return null;
+      const n = Number(valueCell.replace(/,/g, ""));
+      return Number.isSafeInteger(n) && n >= 0 ? n : null;
+    };
+    const rows = page.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? [];
+    let matchedRow: string[] | null = null;
+    for (const row of rows) {
+      const cells = Array.from(row.matchAll(/<(td|th)\b[^>]*>([\s\S]*?)<\/\1>/gi))
+        .map(m => cellText(m[2]));
+      if (!cells.some(c => label.test(c))) continue;
+      if (!unique) return extractFromRow(cells); // first-row-wins
+      if (matchedRow != null) return null; // ambiguous: two matching rows
+      matchedRow = cells;
     }
-    return { value: null, label: null };
+    return matchedRow != null ? extractFromRow(matchedRow) : null;
   };
 
-  const compUnits = tryLabels([
-    /(?:^|>)\s*Complimentary\s+units\s*(?:<|$)/im,
-    /(?:^|>)\s*Free\s+licenses\s*(?:<|$)/im,
-    /(?:^|>)\s*Demo\s+activations\s*(?:<|$)/im,
-  ]);
-  result.periodComplimentaryUnits = compUnits.value;
-  result.periodComplimentaryUnitsLabel = compUnits.label;
+  result.periodComplimentaryUnits = rowValueAfterLabel(html, /^Complimentary\s+units/i, false);
+  result.periodComplimentaryUnitsLabel = result.periodComplimentaryUnits == null
+    ? null : "^Complimentary\\s+units";
 
-  const lifetimeFree = tryLabels([
-    /Lifetime\s+free\s+licenses/i,
-    /Lifetime\s+complimentary\s+units/i,
-    /Lifetime\s+demo\s+activations/i,
-  ]);
-  result.lifetimeFreeLicenses = lifetimeFree.value;
-  result.lifetimeFreeLicensesLabel = lifetimeFree.label;
+  result.lifetimeFreeLicenses = rowValueAfterLabel(html, /^Lifetime\s+free\s+licenses/i, true);
+  result.lifetimeFreeLicensesLabel = result.lifetimeFreeLicenses == null
+    ? null : "^Lifetime\\s+free\\s+licenses";
 
   // Try to detect the period label (e.g. "today", "1 month", "5/1 - 8/11")
   const periodLabelMatch = html.match(/units\s+sold,\s*([^(<]+?)\s*(?:\(|<)/i);

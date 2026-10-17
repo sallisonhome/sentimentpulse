@@ -98,4 +98,3 @@ test("computeDemoWindowActuals: sums period rows per window, uses latest snapsho
     rmSync(dir, { recursive: true, force: true });
   }
 });
-

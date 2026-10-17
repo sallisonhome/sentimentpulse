@@ -64,6 +64,13 @@ interface DemoLeaderboardRow {
   ccuAllTimePeak: number | null;
   ccuAsOf: string | null;
   sourceRank: number | null;
+  // Separate licenses metric (2026-10-17): Steamworks "Lifetime free
+  // licenses" for the demo's own App ID. Null for non-Saber demos (no
+  // Steamworks view permission) and before the first collection. Never
+  // used for ranking; downloads stay the ranking metric.
+  freeLicensesLtd: number | null;
+  licensesAsOf: string | null;
+  licensesStale: boolean;
   reviewEstimate: number | null;
   isObservedMinimum: boolean;
   lifetimeModelBelowPeak: boolean;
@@ -144,6 +151,21 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     "SELECT demo_title_id,source_rank FROM demo_discovery_ranks WHERE feed=?"
   ).all(sort) as Array<{ demo_title_id: number; source_rank: number }>)
     .map(row => [row.demo_title_id, row.source_rank]));
+  // Latest free-licenses snapshot per demo (lifetime value; never summed),
+  // selected by the RETRIEVAL timestamp (updated_at) -- the observation
+  // time -- so a late refresh supersedes an earlier same-day snapshot.
+  const licenseRows = rawSqlite.prepare(`
+    SELECT p.demo_title_id, p.lifetime_free_licenses, p.updated_at
+    FROM demo_portal_daily p
+    INNER JOIN (
+      SELECT demo_title_id, MAX(updated_at) AS latest
+      FROM demo_portal_daily WHERE lifetime_free_licenses IS NOT NULL
+      GROUP BY demo_title_id
+    ) latest ON latest.demo_title_id = p.demo_title_id
+      AND latest.latest = p.updated_at
+    WHERE p.lifetime_free_licenses IS NOT NULL
+  `).all() as Array<{ demo_title_id: number; lifetime_free_licenses: number; updated_at: string }>;
+  const licensesByDemoId = new Map(licenseRows.map(r => [r.demo_title_id, r]));
 
   let asOfDate: string | null = null;
   const rows: DemoLeaderboardRow[] = demos
@@ -203,6 +225,10 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       actualsEndDate: saber ? actual?.report_end_date ?? null : null,
       actualsStale: saber && (!actual?.fetched_at || Date.now() - Date.parse(actual.fetched_at) > 3 * 86400_000),
       actualsRefreshFailed: saber && !!actual?.last_error,
+      freeLicensesLtd: saber ? licensesByDemoId.get(d.id)?.lifetime_free_licenses ?? null : null,
+      licensesAsOf: saber ? licensesByDemoId.get(d.id)?.updated_at ?? null : null,
+      licensesStale: saber && (!licensesByDemoId.get(d.id)?.updated_at
+        || Date.now() - Date.parse(licensesByDemoId.get(d.id)!.updated_at) > 3 * 86400_000),
       ccuCurrent: snap?.ccu ?? null,
       ccuAllTimePeak: observedPeak,
       ccuAsOf: snap?.captured_at ?? null,

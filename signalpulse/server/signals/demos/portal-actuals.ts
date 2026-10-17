@@ -1,9 +1,11 @@
 /**
- * EXPERIMENTAL / UNSCHEDULED: excluded from both daily and manual demo
- * pipelines by user requirement. Complimentary units and free licenses
- * are not approved demo-download metrics. Only the read-only probe is
- * routed; do not wire these writers back in without verified metric
- * semantics and explicit approval.
+ * APPROVED 2026-10-17 (user decision, SignalPulse thread 033faf70):
+ * complimentary units and lifetime free licenses are collected daily as a
+ * SEPARATE licenses metric ("Free licenses (LTD)"), displayed alongside
+ * -- never instead of -- playtime downloads. They must never enter
+ * demo_window_estimates_daily or any download-semantics table, and the
+ * leaderboard continues to rank by downloads. computeDemoWindowActuals()
+ * below stays UNWIRED for exactly that reason.
  *
  * Saber Steamworks Sales & Activations ground truth for Saber's OWN demos
  * (2026-09-22).
@@ -21,23 +23,19 @@
  *
  * Demos are free, so the paid-title fields (Steam units/revenue) don't
  * apply. The relevant Steamworks fields are a per-day "Complimentary
- * units" row and a lifetime "Lifetime free licenses" total -- see the
- * field doc comments in steamworks-portal.ts for the important caveat:
- * ==========================================================================
- * THE EXACT LABEL WORDING FOR THESE TWO FIELDS IS UNVERIFIED.
- * ==========================================================================
- * This sandbox has no Steamworks login, so the parser's regexes were
- * written from third-party Steamworks-community reports ("Complimentary
- * units" / "Lifetime free licenses" forum threads), not by inspecting a
- * real Saber demo's portal page. `probeDemoPortal()` below exists
- * specifically to let an operator (post-deploy, with the real droplet
- * cookie) run ONE live, read-only fetch against a known Saber demo appid
- * and see exactly which candidate label matched (or didn't). Until that
- * probe confirms a non-null match against a real Saber demo, treat any
- * `steamworks_actual` rows this collector writes as provisional -- the
- * upsert only fires when a numeric value was actually parsed, so a wrong
- * label just means silence (rows stay on the review_delta_multiplier
- * estimate), never a wrong number.
+ * units" row and a lifetime "Lifetime free licenses" total. Both labels
+ * were LIVE-VERIFIED 2026-10-17 against the Hellraiser: Revival Demo
+ * (appid 5184670) via the routed read-only probe: the label matched, and
+ * Valve's own tooltip defines the metric ("A free license is a grant of a
+ * product to a user, but does not necessarily mean the user has
+ * downloaded the product."). That same probe exposed a value-extraction
+ * bug -- the shared extractor captured a comma from the tooltip prose
+ * instead of the adjacent value cell. The bug, the label wording, and
+ * the row structure are live-verified; the fixed row-scoped extractor
+ * (rowValueAfterLabel() in steamworks-portal.ts) is verified against a
+ * fixture built from that live-observed row, and the live VALUE is
+ * re-verified via the probe after each deploy -- the live total moves
+ * daily, so it is never hard-coded as an acceptance value.
  *
  * Only Saber's own demos (is_saber_published=1) are ever fetched -- we
  * have no view permission on any other publisher's Steamworks account,
@@ -52,6 +50,9 @@ import { fetchPortalPage, type ParsedPortalPage } from "../../steamworks-portal"
 // PORTAL_FETCH_DELAY_MS) -- gentle on Steamworks, kept as a local literal
 // rather than importing a non-exported const across modules.
 const PORTAL_FETCH_DELAY_MS = 2000;
+// Request deadline for the scheduled collector (paid-title ingestion is
+// unchanged -- fetchPortalPage only applies a signal when timeoutMs is set).
+const PORTAL_FETCH_TIMEOUT_MS = 30_000;
 
 // Deliberately NOT importing anything (even a single named function) from
 // "../../ingestion" here -- that module does `import { log } from "./index"`,
@@ -95,18 +96,29 @@ const upsertPortalDailyStmt = () => rawSqlite.prepare(
    VALUES (?, ?, ?, ?, ?, ?, ?, 'portal_fetch', ?, ?, ?)
    ON CONFLICT(demo_title_id, date) DO UPDATE SET
      complimentary_units_period = excluded.complimentary_units_period,
-     lifetime_free_licenses = excluded.lifetime_free_licenses,
-     lifetime_unique_users = excluded.lifetime_unique_users,
-     current_players = excluded.current_players,
+     -- Licenses observation is NON-DESTRUCTIVE: a re-run of the same
+     -- target date that fails to parse licenses must never erase the
+     -- last successful value or its observation timestamp (updated_at).
+     lifetime_free_licenses = COALESCE(excluded.lifetime_free_licenses, demo_portal_daily.lifetime_free_licenses),
+     lifetime_unique_users = COALESCE(excluded.lifetime_unique_users, demo_portal_daily.lifetime_unique_users),
+     current_players = COALESCE(excluded.current_players, demo_portal_daily.current_players),
      period_label = excluded.period_label,
      batch_id = excluded.batch_id,
-     updated_at = excluded.updated_at`
+     updated_at = CASE WHEN excluded.lifetime_free_licenses IS NOT NULL THEN excluded.updated_at ELSE demo_portal_daily.updated_at END`
 );
 
 /**
  * Daily "yesterday" snapshot collector for Saber's demo roster. Mirrors
  * ingestSteamSales()'s shared-cookie, stop-early-on-expiry pattern, minus
  * any session-alerting (that stays owned by ingestSteamSales()).
+ *
+ * Identity + success rules (2026-10-17): the report's own app id (parsed
+ * from the page's <h1> header) must equal the requested demo's app id,
+ * and a data point only counts when a valid non-negative integer was
+ * parsed for lifetime free licenses -- a successful HTTP response with
+ * a null licenses value is recorded as an error for that demo (the last
+ * successful snapshot remains authoritative for display), never as a
+ * collected data point.
  */
 export async function runDemosPortalCollector(): Promise<IngestionResult> {
   const demos = loadSaberDemoRoster();
@@ -139,11 +151,14 @@ export async function runDemosPortalCollector(): Promise<IngestionResult> {
     if (i > 0) await new Promise((r) => setTimeout(r, PORTAL_FETCH_DELAY_MS));
 
     try {
+      // Bounded fetch: a hung Steamworks request must never stall the
+      // daily pipeline (the try/catch below does not bound runtime).
       const result = await fetchPortalPage({
         appId: Number(demo.steam_app_id),
         dateStart: targetDate,
         dateEnd: targetDate,
         cookieHeader: session.cookieValue,
+        timeoutMs: PORTAL_FETCH_TIMEOUT_MS,
       });
 
       if (!result.ok || !result.parsed) {
@@ -155,12 +170,33 @@ export async function runDemosPortalCollector(): Promise<IngestionResult> {
       }
 
       const p: ParsedPortalPage = result.parsed;
+      // Report identity: the page's own <h1> app id must be PRESENT and
+      // equal the requested demo's app id. A page without the header
+      // (or reporting a different app) is rejected outright -- an
+      // unidentifiable report must never be attributed to this demo.
+      if (p.reportAppId == null || p.reportAppId !== Number(demo.steam_app_id)) {
+        const errMsg = p.reportAppId == null
+          ? "report identity missing: page has no Game header app id"
+          : `report identity mismatch: page reports app ${p.reportAppId}, requested ${demo.steam_app_id}`;
+        errors.push({ demo: demo.name, error: errMsg });
+        log(`Demos portal identity rejected for ${demo.name}: ${errMsg}`, "demos-portal");
+        continue;
+      }
       const batchId = `demos-portal-cron-${demo.id}-${targetDate}`;
       upsertPortalDailyStmt().run(
         demo.id, targetDate,
         p.periodComplimentaryUnits, p.lifetimeFreeLicenses, p.lifetimeUniqueUsers,
         p.currentPlayers, p.periodLabel, batchId, nowIso, nowIso,
       );
+      // Success requires a valid non-negative integer for the licenses
+      // metric (the row above still preserves the other parsed fields and
+      // display falls back to the last successful non-null snapshot).
+      if (p.lifetimeFreeLicenses == null || !Number.isSafeInteger(p.lifetimeFreeLicenses) || p.lifetimeFreeLicenses < 0) {
+        const errMsg = "free licenses not parsed from report";
+        errors.push({ demo: demo.name, error: errMsg });
+        log(`Demos portal licenses missing for ${demo.name}: ${errMsg}`, "demos-portal");
+        continue;
+      }
       dataPoints += 1;
     } catch (err: any) {
       errors.push({ demo: demo.name, error: String(err?.message ?? err).slice(0, 200) });
@@ -268,6 +304,7 @@ export interface PortalProbeResult {
   error?: string;
   parsedFields?: {
     appName: string | null;
+    reportAppId: number | null;
     currentPlayers: number | null;
     lifetimeUniqueUsers: number | null;
     lifetimeFreeLicenses: number | null;
@@ -305,15 +342,21 @@ export async function probeDemoPortal(appId: number, dateStart: string, dateEnd:
 
   const p = result.parsed;
   let rawExcerpt: string | null = null;
-  // Search the FULL page (not just the 1KB parsedFields.rawExcerpt) --
-  // the free-licenses/complimentary-units section can sit well past 1KB
-  // in. A null result here means the text genuinely isn't anywhere on
-  // the page (real signal the app has no free/comp section at all, or
-  // Valve's wording doesn't contain either substring), not a truncation
-  // artifact.
+  // Search the FULL page for the row containing "complimentary" or "free
+  // licens" text and return it as tag-stripped text -- the label AND its
+  // adjacent value cell, so an operator can see exactly what Valve
+  // rendered (and the parsed value can be checked against it). A null
+  // result means the text genuinely isn't anywhere on the page (the app
+  // has no free/comp section at all), not a truncation artifact.
   const html = result.rawHtml ?? "";
-  const m = html.match(/[\s\S]{0,150}(omplimentary|[Ff]ree licen[cs]e)[\s\S]{0,150}/);
-  if (m) rawExcerpt = m[0];
+  const rowMatch = html.match(/<tr\b[^>]*>(?:(?!<tr\b)[\s\S])*?(omplimentary|[Ff]ree licen[cs]e)[\s\S]*?<\/tr>/);
+  if (rowMatch) {
+    rawExcerpt = rowMatch[0]
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;/gi, " ")
+      .replace(/\s+/g, " ").trim().slice(0, 600);
+  }
 
   return {
     appId,
@@ -321,6 +364,7 @@ export async function probeDemoPortal(appId: number, dateStart: string, dateEnd:
     httpStatus: result.httpStatus,
     parsedFields: {
       appName: p.appName,
+      reportAppId: p.reportAppId,
       currentPlayers: p.currentPlayers,
       lifetimeUniqueUsers: p.lifetimeUniqueUsers,
       lifetimeFreeLicenses: p.lifetimeFreeLicenses,

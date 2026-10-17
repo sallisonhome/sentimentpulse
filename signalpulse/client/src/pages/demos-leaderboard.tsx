@@ -77,6 +77,9 @@ interface DemoRow {
   actualsEndDate: string | null;
   actualsStale: boolean;
   actualsRefreshFailed: boolean;
+  freeLicensesLtd: number | null;
+  licensesAsOf: string | null;
+  licensesStale: boolean;
   steamReviews: { positive: number; negative: number; total: number; positivePercent: number | null } | null;
   playerEstimate: PassPlayerEstimate | null;
   passParentActivity: PassParentActivity | null;
@@ -414,6 +417,11 @@ export default function DemosLeaderboard() {
           it excludes parent-game purchase preloads and is not free-license activations.
           Reports refresh daily and may lag; hover an actual for its exact reporting dates.
           Missing Saber actuals never fall back to estimates.
+          The separate “Free licenses (LTD)” column shows Steamworks “Lifetime free licenses” for
+          Saber demo App IDs — demo-SKU grants to user accounts. Valve: “A free license is a grant
+          of a product to a user, but does not necessarily mean the user has downloaded the product.”
+          It is a different metric from playtime downloads, is never used for ranking, and is not
+          available for other publishers' demos (no Steamworks view permission).
           Non-Saber estimated downloads = reviews added in the selected window × {data.multiplier.nonSaberTrial}.
           This is the user-selected trial, not a newly verified calibration.
           Values marked “≥” are minimums supported by observed concurrent players, not point estimates.
@@ -436,11 +444,12 @@ export default function DemosLeaderboard() {
           <table className={`w-full ${pass ? "min-w-[1740px]" : "min-w-[1280px]"} table-fixed text-sm`}>
             <colgroup>
               <col style={{ width: pass ? "3%" : "4%" }} />
-              <col style={{ width: pass ? "17%" : "23%" }} />
-              <col style={{ width: pass ? "10%" : "14%" }} />
+              <col style={{ width: pass ? "17%" : "20%" }} />
+              <col style={{ width: pass ? "10%" : "12%" }} />
               <col style={{ width: pass ? "8%" : "11%" }} />
               <col style={{ width: pass ? "7%" : "8%" }} />
               <col style={{ width: pass ? "8%" : "12%" }} />
+              {!pass && <col style={{ width: "9%" }} />}
               <col style={{ width: pass ? "9%" : "12%" }} />
               {pass && <col style={{ width: "10%" }} />}
               {pass && <col style={{ width: "14%" }} />}
@@ -456,6 +465,10 @@ export default function DemosLeaderboard() {
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "reviews" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("reviews", "Reviews (LTD)")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "rating" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("rating", "Steam Reviews")}</th>
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "downloads" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("downloads", "Downloads (window)")}</th>
+                {!pass && <th className="px-3 py-2 font-medium text-right">
+                  Free licenses (LTD)
+                  <span className="block text-xs font-normal text-muted-foreground">Saber Steamworks · separate metric</span>
+                </th>}
                 {pass && <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "players" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>
                   {sortLabel("players", "Est. Players (window)")}
                 </th>}
@@ -508,7 +521,7 @@ export default function DemosLeaderboard() {
                       d.method === "steamworks_actual" ? (
                         <span title={`Steamworks demo Total Downloads: ${d.unitsMid.toLocaleString()}. Report ${d.actualsStartDate} through ${d.actualsEndDate}; retrieved ${d.actualsAsOf}. Not licenses or parent-game preloads.`}>
                           {formatNumberCompact(d.unitsMid)}
-                          <span className="block text-xs text-muted-foreground" data-testid={`badge-confirmed-${d.steamAppId}`}>Steamworks actual</span>
+                          <span className="block text-xs text-muted-foreground" data-testid={`badge-confirmed-${d.steamAppId}`}>Playtime/preload downloads</span>
                           {(d.actualsRefreshFailed || d.actualsStale) && <span className="block text-xs text-amber-600 dark:text-amber-400">
                             {d.actualsRefreshFailed ? "Refresh failed" : "Stale snapshot"}
                           </span>}
@@ -536,6 +549,15 @@ export default function DemosLeaderboard() {
                       </span>
                     )}
                   </td>
+                  {!pass && <td className="px-3 py-2 text-right tabular-nums" data-testid={`licenses-demo-${d.steamAppId}`}>
+                    {d.freeLicensesLtd != null ? (
+                      <span title={`Steamworks Lifetime free licenses for this demo App ID: ${d.freeLicensesLtd.toLocaleString()}. Valve: "A free license is a grant of a product to a user, but does not necessarily mean the user has downloaded the product." Not downloads, not parent-game preloads, and not used for ranking. Retrieved ${d.licensesAsOf}.`}>
+                        {formatNumberCompact(d.freeLicensesLtd)}
+                        <span className="block text-xs text-muted-foreground">Steamworks actual</span>
+                        {d.licensesStale && <span className="block text-xs text-amber-600 dark:text-amber-400">Stale snapshot</span>}
+                      </span>
+                    ) : d.isSaberPublished ? <span className="text-xs text-muted-foreground">Not collected yet</span> : "—"}
+                  </td>}
                   {pass && <td className="px-3 py-2 text-right tabular-nums" data-testid={`players-pass-${d.steamAppId}`}>
                     {d.playerEstimate?.players != null ? <span
                       title={`Estimated active players from this pass App ID only, not downloads. ${d.playerEstimate.playerHours?.toLocaleString()} observed player-hours ÷ ${d.playerEstimate.meanHoursPerPlayer} mean hours/player. ${d.playerEstimate.sampleCount.toLocaleString()} samples; ${d.playerEstimate.coveragePercent}% coverage. Period ${d.playerEstimate.periodStart} to ${d.playerEstimate.periodEnd} (exclusive).`}>
@@ -562,7 +584,7 @@ export default function DemosLeaderboard() {
                 </tr>
               ))}
               {data.demos.length === 0 && (
-                <tr><td colSpan={pass ? 11 : 9} className="px-3 py-6 text-center text-muted-foreground">
+                <tr><td colSpan={pass ? 11 : 10} className="px-3 py-6 text-center text-muted-foreground">
                   {search || genre ? `No ${noun} match these filters.` : sourceView ? "No verified game demos in the latest successful feed snapshot." : `No ${noun} collected yet.`}
                 </td></tr>
               )}
