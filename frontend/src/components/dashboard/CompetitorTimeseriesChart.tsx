@@ -21,8 +21,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card'
 import { useAppContext } from '../../contexts/AppContext'
-import { useCompetitors, useCompetitorTimeseries } from '../../hooks/useCompetitors'
-import { Skeleton } from '../ui/skeleton'
+import { useCompetitorTimeseries } from '../../hooks/useCompetitors'
 import type { Period } from '../../types'
 // v0020 (2026-08-19): PLS annotations for the parent Saber title.
 // Same hook + category-color palette that powers Net Sentiment Trend's
@@ -68,14 +67,7 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   const navigate = useNavigate()
   const location = useLocation()
   const { setSelectedGameId } = useAppContext()
-  const { data, isLoading, isError, refetch, isFetching } = useCompetitorTimeseries(parentId, period)
-  // 2026-10-17: the card used to return null while loading AND on error, so
-  // a slow or failed request (e.g. right after the daily ingest) made the
-  // chart silently disappear. The competitor list is a cheap query that
-  // tells us whether this title has a chart at all, so we can show a
-  // placeholder or an error only for titles that should have one.
-  const { data: competitors } = useCompetitors(parentId)
-  const expectsChart = (competitors?.length ?? 0) > 0
+  const { data, isLoading } = useCompetitorTimeseries(parentId, period)
 
   // v0020 (2026-08-19): PLS annotations from SignalPulse for the parent
   // Saber title. We look up the parent's steam_app_id from the response
@@ -104,16 +96,7 @@ export default function CompetitorTimeseriesChart({ parentId, period }: Competit
   // Hidden entirely when the parent has no competitors — `games` contains
   // only the parent in that case. Also render nothing while loading so we
   // never flash an empty chart shell above/below neighboring cards.
-  if (!data) {
-    if (!expectsChart) return null
-    return (
-      <CompetitorTimeseriesStatus
-        state={isLoading || isFetching ? 'loading' : isError ? 'error' : 'loading'}
-        onRetry={() => { void refetch() }}
-      />
-    )
-  }
-  if (data.games.length <= 1) return null
+  if (isLoading || !data || data.games.length <= 1) return null
 
   async function handleDownload() {
     if (!cardRef.current || !data) return
@@ -554,35 +537,5 @@ function CompetitorTooltip({
         )
       })}
     </div>
-  )
-}
-
-
-export function CompetitorTimeseriesStatus({ state, onRetry }: {
-  state: 'loading' | 'error'
-  onRetry: () => void
-}) {
-  return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle className="text-base">Post Volume by Title</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Daily post volume comparison across parent title and competitors
-        </p>
-      </CardHeader>
-      <CardContent>
-        {state === 'loading' ? (
-          <div role="status" aria-label="Loading post volume by title" className="space-y-3">
-            <Skeleton className="h-[260px] w-full" />
-            <p className="text-xs text-muted-foreground">Loading post volume…</p>
-          </div>
-        ) : (
-          <div role="alert" className="flex h-[120px] flex-col items-center justify-center gap-3 text-sm">
-            <p className="text-muted-foreground">Post volume could not be loaded.</p>
-            <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
-          </div>
-        )}
-      </CardContent>
-    </Card>
   )
 }

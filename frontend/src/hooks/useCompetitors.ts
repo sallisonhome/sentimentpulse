@@ -72,11 +72,5 @@ export function useCompetitorTimeseries(parentId: number | null, period: Period)
         .get<CompetitorTimeseriesResponse>(`/games/${parentId}/competitor-timeseries`, { params: { period } })
         .then(r => r.data),
     enabled: parentId != null,
-    // 2026-10-17: keep the previous period's chart on screen while a new
-    // period loads, instead of blanking the card for the whole request.
-    // Only reused for the same parent so a title switch never shows the
-    // previous title's lines.
-    placeholderData: (prev, prevQuery) =>
-      prevQuery?.queryKey?.[1] === parentId ? prev : undefined,
   })
 }
