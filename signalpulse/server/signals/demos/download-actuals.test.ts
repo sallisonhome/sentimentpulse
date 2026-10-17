@@ -107,6 +107,18 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     assert.equal(cards.get(10)?.[0].isArchived,true);
     assert.equal(cards.get(15)?.[0].lifetimeDownloads,128512);
     assert.equal(loadDashboardDemoDownloads([...products,{id:16,steamAppId:"2487300"}]).has(15),false,"ambiguous parent fails closed");
+    // Licenses join (2026-10-17): latest non-null demo_portal_daily snapshot
+    // surfaces as a separate metric, never touching lifetimeDownloads.
+    const dockedId=db.prepare("SELECT id FROM demo_titles WHERE steam_app_id='4010800'").get().id;
+    // Later retrieval timestamp must win even if the earlier row carries a later target date.
+    db.prepare(`INSERT INTO demo_portal_daily (demo_title_id,date,lifetime_free_licenses,source,created_at,updated_at)
+      VALUES (?,'2026-10-15',493430,'portal_fetch',?,?)`).run(dockedId,stamp,new Date(Date.parse(stamp)+60000).toISOString());
+    db.prepare(`INSERT INTO demo_portal_daily (demo_title_id,date,lifetime_free_licenses,source,created_at,updated_at)
+      VALUES (?,'2026-10-16',400000,'portal_fetch',?,?)`).run(dockedId,stamp,stamp);
+    const withLicenses=loadDashboardDemoDownloads(products);
+    assert.equal(withLicenses.get(15)?.[0].lifetimeFreeLicenses,493430,"latest snapshot wins");
+    assert.equal(withLicenses.get(15)?.[0].licensesAsOf,new Date(Date.parse(stamp)+60000).toISOString(),"latest retrieval timestamp wins");
+    assert.equal(withLicenses.get(15)?.[0].lifetimeDownloads,128512,"downloads unchanged");
     // Public estimate pollution must not override Saber actuals.
     const demoId=db.prepare("SELECT id FROM demo_titles WHERE steam_app_id='4010800'").get().id;
     db.prepare(`INSERT INTO demo_window_estimates_daily (demo_title_id,window,as_of_date,units_mid,review_delta,method,created_at)

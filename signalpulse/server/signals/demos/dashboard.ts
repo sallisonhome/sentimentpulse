@@ -8,6 +8,8 @@ interface ProductIdentity { id: number; steamAppId: string | null }
  * categories. Explicit approved demo/parent identities also include Saber-
  * developed, externally published games (Toxic Commando), without changing
  * the paid game's publisher flag. Retired demos retain lifetime totals.
+ * Downloads here are Steamworks playtime/preload downloads; free licenses
+ * (a separate Steamworks metric) are joined from demo_portal_daily.
  */
 export function loadDashboardDemoDownloads(products: ProductIdentity[]): Map<number, DashboardDemoDownloads[]> {
   const byProduct = new Map<number, DashboardDemoDownloads[]>();
@@ -16,9 +18,23 @@ export function loadDashboardDemoDownloads(products: ProductIdentity[]): Map<num
     const matches = products.filter(product => product.steamAppId === demo.parentSteamAppId);
     if (matches.length !== 1) continue;
     const row = rawSqlite.prepare("SELECT * FROM demo_download_actuals WHERE steam_app_id=? AND window='ltd'").get(demo.steamAppId) as any;
-    const title = rawSqlite.prepare("SELECT is_active,base_game_product_id FROM demo_titles WHERE steam_app_id=?").get(demo.steamAppId) as any;
+    const title = rawSqlite.prepare("SELECT id, is_active,base_game_product_id FROM demo_titles WHERE steam_app_id=?").get(demo.steamAppId) as any;
+    // Latest licenses snapshot for this demo (never summed; the portal's
+    // lifetime box is cumulative-to-date at fetch time). Selected by the
+    // RETRIEVAL timestamp (updated_at) -- the observation time -- not the
+    // collector's target date, so a late refresh supersedes an earlier
+    // same-day snapshot. The row's date field is the collector's target
+    // date, not the lifetime observation date.
+    const licenses = title?.id != null
+      ? rawSqlite.prepare(
+          `SELECT lifetime_free_licenses, updated_at FROM demo_portal_daily
+           WHERE demo_title_id=? AND lifetime_free_licenses IS NOT NULL
+           ORDER BY updated_at DESC LIMIT 1`
+        ).get(title.id) as { lifetime_free_licenses: number; updated_at: string } | undefined
+      : undefined;
     if (title?.base_game_product_id != null && title.base_game_product_id !== matches[0].id) continue;
     const actual = row?.source === "steamworks_downloads_report" && Number.isSafeInteger(row.downloads) && row.downloads >= 0;
+    const licensesValid = licenses != null && Number.isSafeInteger(licenses.lifetime_free_licenses) && licenses.lifetime_free_licenses >= 0;
     const item: DashboardDemoDownloads = {
       demoAppId: demo.steamAppId, demoName: demo.name,
       lifetimeDownloads: actual ? row.downloads : null,
@@ -29,6 +45,9 @@ export function loadDashboardDemoDownloads(products: ProductIdentity[]): Map<num
       refreshFailed: !!row?.last_error,
       isArchived: title ? title.is_active !== 1 : !demo.isActive,
       isStale: !actual || !Number.isFinite(Date.parse(row.fetched_at)) || Date.now() - Date.parse(row.fetched_at) > 3 * 86_400_000,
+      lifetimeFreeLicenses: licensesValid ? licenses!.lifetime_free_licenses : null,
+      licensesAsOf: licensesValid ? licenses!.updated_at : null,
+      licensesStale: !licensesValid || !Number.isFinite(Date.parse(licenses!.updated_at)) || Date.now() - Date.parse(licenses!.updated_at) > 3 * 86_400_000,
     };
     const rows = byProduct.get(matches[0].id) ?? [];
     rows.push(item);

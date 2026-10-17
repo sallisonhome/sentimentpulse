@@ -64,8 +64,8 @@ export default function DemoDetail(){
   const downloadTitle=downloadMetric==="reportedDownloadsToDate"?"Reported downloads through date"
     :downloadMetric==="netLifetimeChange"?"Net change in observed lifetime totals"
     :downloadMetric==="lifetimeDownloads"
-    ? data?.isSaber?"Observed lifetime downloads":"Recorded lifetime download estimates"
-    : data?.isSaber?"Daily demo downloads · Steamworks actuals":"Estimated daily downloads";
+    ? data?.isSaber?"Observed lifetime playtime downloads":"Recorded lifetime download estimates"
+    : data?.isSaber?"Daily demo playtime downloads · Steamworks actuals":"Estimated daily downloads";
   const downloadNote=downloadMetric==="reportedDownloadsToDate"
     ? "Steamworks report from its 2000-01-01 baseline through each date, retrieved later. Not a snapshot observed on that past date and not a sum of daily reports."
     :downloadMetric==="netLifetimeChange"
@@ -120,7 +120,7 @@ export default function DemoDetail(){
 
       <section aria-label="Latest recorded metrics" className="grid grid-cols-1 min-[450px]:grid-cols-2 xl:grid-cols-4 gap-3">
         {[
-          {label:data.latest.observedMinimum?"Observed minimum, not an estimate":data.isSaber?"Lifetime demo downloads":"Lifetime estimated downloads",
+          {label:data.latest.observedMinimum?"Observed minimum, not an estimate":data.isSaber?"Lifetime demo playtime downloads":"Lifetime estimated downloads",
             value:fmt(data.latest.downloads),note:data.isSaber?`Steamworks · ${data.latest.actualsAsOf?.slice(0,10)??"Not observed"}`
               :data.latest.observedMinimum?"Concurrency exceeded the review model":"Own-demo review model · provisional"},
           {label:"Last recorded review total",value:fmt(data.latest.reviews),note:data.latest.positivePercent==null?"Own-demo reviews only":`${fmt(data.latest.positivePercent)}% positive · own demo`},

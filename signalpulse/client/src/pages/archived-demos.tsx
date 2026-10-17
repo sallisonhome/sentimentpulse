@@ -41,7 +41,7 @@ export default function ArchivedDemos(){
       <p className="text-sm text-muted-foreground leading-6">Daily source checks continue for these demos, and they remain in the main
         metric views. Top Demos and New Releases only show available demos. Open a title to inspect its history;
         unavailable sources retain their last good observations rather than becoming zero.</p>
-      <p className="text-xs text-muted-foreground">Saber downloads use Steamworks actuals; non-Saber records are provisional estimates.
+      <p className="text-xs text-muted-foreground">Saber downloads are Steamworks playtime-download actuals; non-Saber records are provisional estimates.
         Dates are UTC. Retirement detected is when SignalPulse recorded inactivity, not a verified publisher removal time.
         Recorded model totals keep their original multiplier; the main leaderboard uses the current trial.</p>
     </Card>
