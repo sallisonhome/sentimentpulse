@@ -1,27 +1,15 @@
 # Lessons Learned — Agent Working Notes
 
-## 2026-10-17 — "Post Volume by Title" vanished after the ingest: a slow query plus a card that renders nothing while it waits
+## 2026-10-17 — Reverted PR #319: the index-friendly post_date filter made big competitor groups 10x slower in production
 
-**What the user saw.** After the Oct 17 daily ingest, the Post Volume by Title chart was missing for Hellraiser: Revival, Turok: Origins and Stuntman: Hollywood (all titles with competitors).
+PR #319 replaced `date(post_date) >= D` with `post_date >= 'D'` in competitor-timeseries and added loading/error states plus regression guards. Live after deploy, cold weekly requests: Stuntman (1 small competitor) 3.4 s -> 0.2 s, but Turok (Gears E-Day, Aliens FE2, EXODUS) 4.5 s -> 43-46 s and Hellraiser (Silent Hill, Halloween, Control, ILL) 25.7 s -> 39-50 s. Every other endpoint stayed under 0.4 s. The operator chose to revert immediately.
 
-**Evidence.** `/api/games/<id>/competitor-timeseries` returned complete data for all three (Turok weekly: parent + 3 competitors, 7 days). The first requests after the ingest were slow: Hellraiser today 8.8 s, monthly 17.5 s, weekly 25.7 s. Later calls took 2-6 s. In a fresh browser later, all three charts drew correctly at 7d. The card `return null`ed while loading AND on error, so a slow or failed request looked like a missing chart with no message.
-
-**Root cause.** (1) The query filtered on `func.date(RawPost.post_date) >= D`, which stops SQLite using `ix_raw_posts_game_id_post_date` for the date range, so every request scanned every post of every title in the group (Hellraiser's group is the largest). (2) The frontend hid the card for every state except success.
-
-**Fix (PR: fix/post-volume-by-title-visibility).**
-- Backend: the timeseries, period-over-period and coverage queries compare the bare column to a `'YYYY-MM-DD'` String literal (`_day_start`). This gives identical day boundaries for every stored format, including midnight without microseconds (a bound datetime would send `'... 00:00:00.000000'` and drop those rows) and `T` separators. A synthetic 1.25M-row benchmark ran about 13x faster with identical counts.
-- Frontend: titles with competitors show a loading placeholder, then an error with Retry, instead of nothing. A period switch keeps the previous chart for the same title while the next one loads.
-
-**Protection against regression.**
-- `tests/test_v0037_competitor_timeseries_index.py` checks day boundaries against the old `date()` semantics and uses `EXPLAIN QUERY PLAN` to require the index. It forbids `date(post_date)` filters in competitor-timeseries, and it ratchets the 14 remaining legacy uses (dashboard.py 7, ingest.py 4, ingestor.py 2, dashboard_feedback_synthesizer.py 1). New ones fail CI; lower the baseline when you convert one.
-- `CompetitorTimeseriesChart.guard.test.ts` renders the real component with mocked loading and error results and fails if either state renders nothing.
-- CLAUDE.md "DO NOT" has both rules.
+**What went wrong in QA.** The equivalence tests and the 1.25M-row in-memory benchmark used uniform synthetic data, a tiny in-memory DB and no `sqlite_stat1`, so they could not show how the production planner treats a range on groups dominated by very high-volume titles. "EXPLAIN shows the index" is not "the production query is faster".
 
 **Rules.**
-- Never wrap an indexed column in a function inside a range filter. Compare the column to a correctly formatted literal, and prove the boundaries with a test.
-- A card may only disappear for "no data by design". Loading and error states must render something.
-- When a mocked UI test shows real data, check the mock is intercepting. Playwright route handlers receive `(route, request)`, so a default argument in the second position gets overwritten.
-- `pkill -f <pattern>` inside a bash command can match and kill that same command. Use the PID or `pkill -f '[v]ite preview'`.
+- A query-shape change on a hot production table needs a read-only timing and `EXPLAIN QUERY PLAN` on the production DB (approved diagnostic, `sqlite3 -readonly`) for the heaviest real groups before merge, not just synthetic benchmarks.
+- Measure the live endpoint for the heaviest and lightest groups right after deploy, and be ready to revert.
+- The UI part (placeholder/error instead of `return null`) was not the regression. Re-land it separately from any query change.
 
 ## 2026-10-16 (signalpulse) — The Revenue Leaderboard froze "yesterday" at the 09:15 UTC snapshot; Steamworks kept adding to it
 
