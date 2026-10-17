@@ -1,5 +1,22 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-17 — The real cause: SQLite picked the off-topic index for multi-title queries; PR #319 was reverted on a wrong attribution
+
+**Sequence.** PR #319 (index-friendly `post_date` range plus loading/error states) was deployed. Turok and Hellraiser weekly requests then measured 39-50 s and Stuntman 0.2 s, and I attributed the slowdown to #319. The operator chose an immediate revert (PR #320). After the revert, every title measured about 40 s, Stuntman included, so #319 was not the cause.
+
+**Approved read-only diagnostic (encrypted).** The DB is 1.86 GB in WAL mode with no `sqlite_stat1`, on a 2 GB host with 44% I/O wait during the request. py-spy showed the request thread inside the SQLite execute. `EXPLAIN QUERY PLAN` on production for each group:
+- Current query (`date(post_date) >= D`, `is_off_topic_drift IS 0`): `SEARCH r USING INDEX ix_raw_posts_is_off_topic_drift`, a near-full scan. Stuntman 14.3 s, Turok 14.5 s, Hellraiser 14.4 s.
+- #319 alone (range on `post_date`): the 2-title group switches to `ix_raw_posts_game_id_post_date` (0.04 s). The 4- and 5-title groups still use the drift index (14.1 / 14.6 s).
+- #319 plus `(is_off_topic_drift + 0) = 0`: the composite index for every group. Turok 0.44 s, Hellraiser 0.30 s, Stuntman 0.04 s. Results are identical across all three shapes (14/4,455, 27/55,908, 35/53,523 rows/posts).
+The endpoint runs three such queries, hence about 40 s. Earlier the same scans took 2-5 s while the page cache was warm; the restarts and ingest evicted it.
+
+**Fix (PR: fix/post-volume-by-title-index).** Re-lands #319 (reverted in #320) and adds `_NOT_DRIFT_UNINDEXED` to the three competitor-timeseries queries. Guards: the source guard forbids `.filter(_NOT_DRIFT)` in competitor-timeseries, and there is a predicate-equivalence test. The sandbox SQLite picks the right plan even with the old predicate, so the plan test alone cannot catch this.
+
+**Rules.**
+- Measure the lightest AND heaviest groups before attributing a regression to the last deploy. A uniform slowdown across all titles points away from the change.
+- A query-shape change on `raw_posts` needs production `EXPLAIN QUERY PLAN` plus wall-clock time (approved read-only diag) before merge. Synthetic and test DBs do not reproduce the production planner.
+- Without `sqlite_stat1`, SQLite treats any `col = const` equality index as selective. Keep low-selectivity flags out of the planner's choices (unary `+ 0`) on multi-title queries.
+
 ## 2026-10-17 — "Post Volume by Title" vanished after the ingest: a slow query plus a card that renders nothing while it waits
 
 **What the user saw.** After the Oct 17 daily ingest, the Post Volume by Title chart was missing for Hellraiser: Revival, Turok: Origins and Stuntman: Hollywood (all titles with competitors).

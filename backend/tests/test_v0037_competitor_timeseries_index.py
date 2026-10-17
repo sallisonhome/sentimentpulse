@@ -103,22 +103,46 @@ def test_period_over_period_totals_match_date_function(client, db, game):
     assert g[game.id]["prev_total"] == 2 and g[game.id]["current_total"] == 0
 
 
-def test_timeseries_range_filter_uses_the_game_date_index(db):
+def _plan(db, drift_filter, game_ids):
     from sqlalchemy import func
     from models import RawPost, SentimentRecord
-    from routers.dashboard import _day_start, _NOT_DRIFT
+    from routers.dashboard import _day_start
 
     q = (db.query(func.date(RawPost.post_date), RawPost.game_id, func.count(RawPost.id))
          .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
-         .filter(RawPost.game_id.in_([1, 2, 3]))
+         .filter(RawPost.game_id.in_(game_ids))
          .filter(RawPost.post_date.isnot(None))
-         .filter(_NOT_DRIFT)
+         .filter(drift_filter)
          .filter(RawPost.post_date >= _day_start(date(2026, 10, 11)))
          .group_by(func.date(RawPost.post_date), RawPost.game_id))
     compiled = q.statement.compile(compile_kwargs={"literal_binds": True})
-    plan = " ".join(str(r[-1]) for r in db.execute(text(f"EXPLAIN QUERY PLAN {compiled}")).all())
-    assert "ix_raw_posts_game_id_post_date" in plan
-    assert "post_date>" in plan.replace(" ", "")
+    return " ".join(str(r[-1]) for r in db.execute(text(f"EXPLAIN QUERY PLAN {compiled}")).all())
+
+
+def test_multi_title_query_uses_the_game_date_index(db):
+    """Production 2026-10-17: for a 4-5 title group SQLite chose
+    ix_raw_posts_is_off_topic_drift and scanned ~all of raw_posts (14 s per
+    query). The unindexable drift predicate forces the composite index."""
+    from routers.dashboard import _NOT_DRIFT_UNINDEXED
+    for ids in ([1, 2], [23, 145, 146, 161], [21, 138, 139, 140, 159]):
+        plan = _plan(db, _NOT_DRIFT_UNINDEXED, ids)
+        assert "ix_raw_posts_game_id_post_date" in plan, plan
+        assert "is_off_topic_drift" not in plan, plan
+
+
+def test_unindexed_drift_filter_matches_the_original_predicate(client, db, game):
+    """Same rows as is_off_topic_drift IS 0 (the column is NOT NULL)."""
+    from models import RawPost
+    from routers.dashboard import _NOT_DRIFT, _NOT_DRIFT_UNINDEXED
+    comp = _competitor(client, game.id, 810003, "Drift Rival")
+    today = date.today().isoformat()
+    for i in range(4):
+        _insert(db, comp, f"d{i}", f"{today} 10:00:0{i}")
+    db.execute(text("UPDATE raw_posts SET is_off_topic_drift = 1 WHERE external_id IN ('d1','d3')"))
+    db.commit()
+    a = {r.id for r in db.query(RawPost).filter(_NOT_DRIFT).all()}
+    b = {r.id for r in db.query(RawPost).filter(_NOT_DRIFT_UNINDEXED).all()}
+    assert a == b and len(a) == 2
 
 
 # ── Regression guards (2026-10-17) ───────────────────────────────────────────
@@ -150,6 +174,11 @@ def test_post_volume_by_title_never_filters_on_date_of_post_date():
         "(use _day_start); date(post_date) disables the (game_id, post_date) index "
         "and made the chart disappear after the daily ingest (lessons 2026-10-17).")
     assert "_day_start(" in src
+    assert ".filter(_NOT_DRIFT)" not in src, (
+        "competitor-timeseries must use _NOT_DRIFT_UNINDEXED: the indexable drift "
+        "predicate lets SQLite pick ix_raw_posts_is_off_topic_drift for multi-title "
+        "groups and scan all of raw_posts (lessons 2026-10-17).")
+    assert src.count("_NOT_DRIFT_UNINDEXED") >= 3
 
 
 def test_no_new_date_of_post_date_range_filters_anywhere():

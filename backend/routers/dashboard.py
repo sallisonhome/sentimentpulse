@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 
 from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import String, case, func, literal
+from sqlalchemy import Integer, String, case, func, literal, type_coerce
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -62,6 +62,16 @@ router = APIRouter(prefix="/games", tags=["dashboard"])
 # Kept as a module-level constant so every callsite reads identically
 # and future audits can grep `_NOT_DRIFT` to find every filtered query.
 _NOT_DRIFT = RawPost.is_off_topic_drift.is_(False)
+
+# 2026-10-17: same predicate, but written so SQLite cannot use
+# ix_raw_posts_is_off_topic_drift. There is no sqlite_stat1, and for a
+# multi-title `game_id IN (...)` query the planner picks that low-selectivity
+# index and walks nearly every row of raw_posts (14 s per query on the
+# production DB; ~40 s for the Post Volume by Title endpoint, every title).
+# With it unindexable the planner uses ix_raw_posts_game_id_post_date
+# (0.04-0.45 s, identical results). The column is NOT NULL, so `+ 0 = 0`
+# is exactly `IS 0`.
+_NOT_DRIFT_UNINDEXED = (type_coerce(RawPost.is_off_topic_drift, Integer) + 0) == 0
 
 
 # ── Process-local TTL cache (2026-09-20) ────────────────────────────────────
@@ -1008,7 +1018,7 @@ def get_competitor_timeseries(
         .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id.in_(game_ids))
         .filter(RawPost.post_date.isnot(None))
-        .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
+        .filter(_NOT_DRIFT_UNINDEXED)  # v0024: match KPI drift filter
     )
     if p_start:
         # 2026-10-17: compare the column itself so SQLite can use
@@ -1080,7 +1090,7 @@ def get_competitor_timeseries(
             )
             .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
             .filter(RawPost.game_id.in_(game_ids))
-            .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
+            .filter(_NOT_DRIFT_UNINDEXED)  # v0024: match KPI drift filter
             .filter(effective_date_expr >= _day_start(prev_start))
             .filter(effective_date_expr < _day_start(curr_end + timedelta(days=1)))
             .group_by(RawPost.game_id, window_case)
@@ -1105,7 +1115,7 @@ def get_competitor_timeseries(
             .select_from(RawPost)
             .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
             .filter(RawPost.game_id.in_(game_ids))
-            .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
+            .filter(_NOT_DRIFT_UNINDEXED)  # v0024: match KPI drift filter
             .filter(effective_date_expr >= _day_start(prev_start))
             .filter(effective_date_expr < _day_start(prev_end + timedelta(days=1)))
         )
