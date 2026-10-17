@@ -1,0 +1,73 @@
+name: SP demo licenses verify (one-off)
+
+# One-off verification (2026-10-17, user-approved with the merge): triggers
+# the demos pipeline (which now includes the Saber free-licenses collector),
+# then re-runs the routed read-only portal probe against the Hellraiser
+# demo. Ops token is read on the droplet and never leaves it. Delete after
+# use.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Trigger demos pipeline, then probe licenses (server-local)
+        run: |
+          cat > /tmp/verify.py <<'PYS'
+          import json, re, shlex, urllib.request
+          from pathlib import Path
+
+          token = None
+          for line in Path('/etc/signalpulse/env').read_text().splitlines():
+              m = re.match(r'^\s*(?:export\s+)?INGESTION_OPS_TOKEN\s*=(.*)$', line)
+              if m:
+                  token = shlex.split(m.group(1), comments=True, posix=True)[0]
+          if not token:
+              raise SystemExit('ops token not found')
+
+          # 1. Run the full demos pipeline (synchronous; includes the
+          #    free-licenses collector for all Saber demos).
+          req = urllib.request.Request(
+              'http://127.0.0.1:5000/api/ops/demos-pipeline-run',
+              data=b'{}', method='POST',
+              headers={'x-ops-token': token, 'Content-Type': 'application/json'})
+          with urllib.request.urlopen(req, timeout=1200) as r:
+              result = json.loads(r.read())
+          keep = {k: result.get(k) for k in
+                  ('seeded', 'eligibility', 'reviewHistory', 'ccu',
+                   'estimates', 'portalActualsFetch', 'actuals',
+                   'dashboardActuals', 'datedActuals', 'friendsPass')}
+          print('PIPELINE_RESULT=' + json.dumps(keep)[:3000])
+
+          # 2. Read-only probe: the fixed parser against the live page.
+          req = urllib.request.Request(
+              'http://127.0.0.1:5000/api/ops/demos-portal-probe/5184670',
+              headers={'x-ops-token': token})
+          with urllib.request.urlopen(req, timeout=120) as r:
+              probe = json.loads(r.read())
+
+          def clean(v):
+              if isinstance(v, str) and len(v) > 600:
+                  return v[:600] + '...[truncated]'
+              if isinstance(v, dict):
+                  return {k: clean(x) for k, x in v.items()}
+              return v
+
+          print('PROBE_RESULT=' + json.dumps(clean(probe), indent=2))
+          PYS
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 'python3 -' < /tmp/verify.py
