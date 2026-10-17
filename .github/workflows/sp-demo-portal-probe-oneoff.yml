@@ -1,0 +1,57 @@
+name: SP Demo portal probe (one-off)
+
+# One-off read-only diagnostic (2026-10-17): verifies the Steamworks portal
+# parser's free-licenses labels against the live Hellraiser demo page via the
+# routed /api/ops/demos-portal-probe endpoint. The ops token is read on the
+# droplet and never leaves it. Delete this file after use.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-droplet
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DROPLET_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Probe (server-local, read-only)
+        run: |
+          cat > /tmp/probe.py <<'PYS'
+          import json, re, shlex, urllib.request
+          from pathlib import Path
+
+          token = None
+          for line in Path('/etc/signalpulse/env').read_text().splitlines():
+              m = re.match(r'^\s*(?:export\s+)?INGESTION_OPS_TOKEN\s*=(.*)$', line)
+              if m:
+                  token = shlex.split(m.group(1), comments=True, posix=True)[0]
+          if not token:
+              raise SystemExit('ops token not found')
+
+          req = urllib.request.Request(
+              'http://127.0.0.1:5000/api/ops/demos-portal-probe/5184670',
+              headers={'x-ops-token': token})
+          with urllib.request.urlopen(req, timeout=120) as r:
+              data = json.loads(r.read())
+
+          def clean(v):
+              if isinstance(v, str) and len(v) > 600:
+                  return v[:600] + '...[truncated]'
+              if isinstance(v, dict):
+                  return {k: clean(x) for k, x in v.items()}
+              return v
+
+          print(json.dumps(clean(data), indent=2))
+          PYS
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new root@104.236.239.46 'python3 -' < /tmp/probe.py
