@@ -98,12 +98,40 @@ function loadAnchors(platform: string, asOf: string): AnchorRow[] {
   `).all(platform, platform, platform, platform, asOf) as AnchorRow[];
 }
 
+/**
+ * If the provided AS_OF_DATE has no anchors, fall back to the most recent
+ * anchor date that has baseline anchors (2026-10-13: found that running on
+ * a day with no anchors produced n=0 and a silent SKIP — the refit never
+ * fired even when anchors existed the day before).
+ */
+function resolveAsOf(platform: string, requested: string): string {
+  const hasAnchors = (d: string) =>
+    (rawSqlite.prepare(`
+      SELECT COUNT(*) AS n
+        FROM revenue_calibration_anchors
+       WHERE platform = ? AND as_of_date = ?
+         AND window IN ('m12', 'ltd') AND sale_state = 'baseline'
+    `).get(platform, d) as { n: number }).n > 0;
+  if (hasAnchors(requested)) return requested;
+  const latest = rawSqlite.prepare(`
+    SELECT MAX(as_of_date) AS d
+      FROM revenue_calibration_anchors
+     WHERE platform = ? AND window IN ('m12', 'ltd') AND sale_state = 'baseline'
+  `).get(platform) as { d: string | null };
+  if (latest?.d && hasAnchors(latest.d)) {
+    console.log(`\nNOTE: AS_OF_DATE=${requested} has no anchors; falling back to latest anchor date ${latest.d}`);
+    return latest.d;
+  }
+  return requested;
+}
+
 // weightedMedian removed 2026-10-13: superseded by the geometric-mean in
 // the STABILIZATION block below (see that comment for why).
 
 function main() {
   const platform = "steam";
   const aspFactor = aspFactorFor(platform);
+  const AS_OF = resolveAsOf(platform, AS_OF_DATE);
 
   console.log(`══════════════════════════════════════════════════════════`);
   console.log(`  refit-ownership-multipliers.ts   AS_OF=${AS_OF}  DRY_RUN=${DRY_RUN ? 1 : "unset"}`);
