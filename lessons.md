@@ -1,15 +1,44 @@
 # Lessons Learned — Agent Working Notes
 
-## 2026-10-17 — Reverted PR #319: the index-friendly post_date filter made big competitor groups 10x slower in production
+## 2026-10-17 — The real cause: SQLite picked the off-topic index for multi-title queries; PR #319 was reverted on a wrong attribution
 
-PR #319 replaced `date(post_date) >= D` with `post_date >= 'D'` in competitor-timeseries and added loading/error states plus regression guards. Live after deploy, cold weekly requests: Stuntman (1 small competitor) 3.4 s -> 0.2 s, but Turok (Gears E-Day, Aliens FE2, EXODUS) 4.5 s -> 43-46 s and Hellraiser (Silent Hill, Halloween, Control, ILL) 25.7 s -> 39-50 s. Every other endpoint stayed under 0.4 s. The operator chose to revert immediately.
+**Sequence.** PR #319 (index-friendly `post_date` range plus loading/error states) was deployed. Turok and Hellraiser weekly requests then measured 39-50 s and Stuntman 0.2 s, and I attributed the slowdown to #319. The operator chose an immediate revert (PR #320). After the revert, every title measured about 40 s, Stuntman included, so #319 was not the cause.
 
-**What went wrong in QA.** The equivalence tests and the 1.25M-row in-memory benchmark used uniform synthetic data, a tiny in-memory DB and no `sqlite_stat1`, so they could not show how the production planner treats a range on groups dominated by very high-volume titles. "EXPLAIN shows the index" is not "the production query is faster".
+**Approved read-only diagnostic (encrypted).** The DB is 1.86 GB in WAL mode with no `sqlite_stat1`, on a 2 GB host with 44% I/O wait during the request. py-spy showed the request thread inside the SQLite execute. `EXPLAIN QUERY PLAN` on production for each group:
+- Current query (`date(post_date) >= D`, `is_off_topic_drift IS 0`): `SEARCH r USING INDEX ix_raw_posts_is_off_topic_drift`, a near-full scan. Stuntman 14.3 s, Turok 14.5 s, Hellraiser 14.4 s.
+- #319 alone (range on `post_date`): the 2-title group switches to `ix_raw_posts_game_id_post_date` (0.04 s). The 4- and 5-title groups still use the drift index (14.1 / 14.6 s).
+- #319 plus `(is_off_topic_drift + 0) = 0`: the composite index for every group. Turok 0.44 s, Hellraiser 0.30 s, Stuntman 0.04 s. Results are identical across all three shapes (14/4,455, 27/55,908, 35/53,523 rows/posts).
+The endpoint runs three such queries, hence about 40 s. Earlier the same scans took 2-5 s while the page cache was warm; the restarts and ingest evicted it.
+
+**Fix (PR: fix/post-volume-by-title-index).** Re-lands #319 (reverted in #320) and adds `_NOT_DRIFT_UNINDEXED` to the three competitor-timeseries queries. Guards: the source guard forbids `.filter(_NOT_DRIFT)` in competitor-timeseries, and there is a predicate-equivalence test. The sandbox SQLite picks the right plan even with the old predicate, so the plan test alone cannot catch this.
 
 **Rules.**
-- A query-shape change on a hot production table needs a read-only timing and `EXPLAIN QUERY PLAN` on the production DB (approved diagnostic, `sqlite3 -readonly`) for the heaviest real groups before merge, not just synthetic benchmarks.
-- Measure the live endpoint for the heaviest and lightest groups right after deploy, and be ready to revert.
-- The UI part (placeholder/error instead of `return null`) was not the regression. Re-land it separately from any query change.
+- Measure the lightest AND heaviest groups before attributing a regression to the last deploy. A uniform slowdown across all titles points away from the change.
+- A query-shape change on `raw_posts` needs production `EXPLAIN QUERY PLAN` plus wall-clock time (approved read-only diag) before merge. Synthetic and test DBs do not reproduce the production planner.
+- Without `sqlite_stat1`, SQLite treats any `col = const` equality index as selective. Keep low-selectivity flags out of the planner's choices (unary `+ 0`) on multi-title queries.
+
+## 2026-10-17 — "Post Volume by Title" vanished after the ingest: a slow query plus a card that renders nothing while it waits
+
+**What the user saw.** After the Oct 17 daily ingest, the Post Volume by Title chart was missing for Hellraiser: Revival, Turok: Origins and Stuntman: Hollywood (all titles with competitors).
+
+**Evidence.** `/api/games/<id>/competitor-timeseries` returned complete data for all three (Turok weekly: parent + 3 competitors, 7 days). The first requests after the ingest were slow: Hellraiser today 8.8 s, monthly 17.5 s, weekly 25.7 s. Later calls took 2-6 s. In a fresh browser later, all three charts drew correctly at 7d. The card `return null`ed while loading AND on error, so a slow or failed request looked like a missing chart with no message.
+
+**Root cause.** (1) The query filtered on `func.date(RawPost.post_date) >= D`, which stops SQLite using `ix_raw_posts_game_id_post_date` for the date range, so every request scanned every post of every title in the group (Hellraiser's group is the largest). (2) The frontend hid the card for every state except success.
+
+**Fix (PR: fix/post-volume-by-title-visibility).**
+- Backend: the timeseries, period-over-period and coverage queries compare the bare column to a `'YYYY-MM-DD'` String literal (`_day_start`). This gives identical day boundaries for every stored format, including midnight without microseconds (a bound datetime would send `'... 00:00:00.000000'` and drop those rows) and `T` separators. A synthetic 1.25M-row benchmark ran about 13x faster with identical counts.
+- Frontend: titles with competitors show a loading placeholder, then an error with Retry, instead of nothing. A period switch keeps the previous chart for the same title while the next one loads.
+
+**Protection against regression.**
+- `tests/test_v0037_competitor_timeseries_index.py` checks day boundaries against the old `date()` semantics and uses `EXPLAIN QUERY PLAN` to require the index. It forbids `date(post_date)` filters in competitor-timeseries, and it ratchets the 14 remaining legacy uses (dashboard.py 7, ingest.py 4, ingestor.py 2, dashboard_feedback_synthesizer.py 1). New ones fail CI; lower the baseline when you convert one.
+- `CompetitorTimeseriesChart.guard.test.ts` renders the real component with mocked loading and error results and fails if either state renders nothing.
+- CLAUDE.md "DO NOT" has both rules.
+
+**Rules.**
+- Never wrap an indexed column in a function inside a range filter. Compare the column to a correctly formatted literal, and prove the boundaries with a test.
+- A card may only disappear for "no data by design". Loading and error states must render something.
+- When a mocked UI test shows real data, check the mock is intercepting. Playwright route handlers receive `(route, request)`, so a default argument in the second position gets overwritten.
+- `pkill -f <pattern>` inside a bash command can match and kill that same command. Use the PID or `pkill -f '[v]ite preview'`.
 
 ## 2026-10-16 (signalpulse) — The Revenue Leaderboard froze "yesterday" at the 09:15 UTC snapshot; Steamworks kept adding to it
 

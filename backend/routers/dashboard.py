@@ -16,7 +16,7 @@ from typing import Optional, Tuple
 
 from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, func
+from sqlalchemy import Integer, String, case, func, literal, type_coerce
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -62,6 +62,16 @@ router = APIRouter(prefix="/games", tags=["dashboard"])
 # Kept as a module-level constant so every callsite reads identically
 # and future audits can grep `_NOT_DRIFT` to find every filtered query.
 _NOT_DRIFT = RawPost.is_off_topic_drift.is_(False)
+
+# 2026-10-17: same predicate, but written so SQLite cannot use
+# ix_raw_posts_is_off_topic_drift. There is no sqlite_stat1, and for a
+# multi-title `game_id IN (...)` query the planner picks that low-selectivity
+# index and walks nearly every row of raw_posts (14 s per query on the
+# production DB; ~40 s for the Post Volume by Title endpoint, every title).
+# With it unindexable the planner uses ix_raw_posts_game_id_post_date
+# (0.04-0.45 s, identical results). The column is NOT NULL, so `+ 0 = 0`
+# is exactly `IS 0`.
+_NOT_DRIFT_UNINDEXED = (type_coerce(RawPost.is_off_topic_drift, Integer) + 0) == 0
 
 
 # ── Process-local TTL cache (2026-09-20) ────────────────────────────────────
@@ -112,6 +122,19 @@ def _dashboard_cache_stats() -> dict:
 
 
 # ── Helper ────────────────────────────────────────────────────────────────────
+
+def _day_start(d: date):
+    """'YYYY-MM-DD' text literal for index-friendly ranges on RawPost.post_date.
+
+    post_date is stored as text ('YYYY-MM-DD HH:MM:SS[.ffffff]', some rows
+    with a 'T' separator). Comparing the bare column against the day string
+    gives exactly date(post_date) >= D, including rows stamped at midnight
+    without microseconds, which a bound datetime ('... 00:00:00.000000')
+    would wrongly exclude. A plain String literal skips the DateTime bind
+    processor.
+    """
+    return literal(d.isoformat(), type_=String)
+
 
 def _period_start(period: PeriodEnum) -> Optional[date]:
     # v2 (2026-07-24): windows are inclusive of both endpoints, so an
@@ -995,10 +1018,16 @@ def get_competitor_timeseries(
         .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
         .filter(RawPost.game_id.in_(game_ids))
         .filter(RawPost.post_date.isnot(None))
-        .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
+        .filter(_NOT_DRIFT_UNINDEXED)  # v0024: match KPI drift filter
     )
     if p_start:
-        ts_q = ts_q.filter(func.date(effective_date_expr) >= str(p_start))
+        # 2026-10-17: compare the column itself so SQLite can use
+        # ix_raw_posts_game_id_post_date for the date range. Wrapping it in
+        # date() forced a scan of every post of every title in the group
+        # (9-26 s cold for Hellraiser right after the daily ingest, while
+        # the card rendered nothing). Same day boundary: date(x) >= D  <=>
+        # x >= 'D 00:00:00' for the stored 'YYYY-MM-DD[ T]HH:MM:SS' text.
+        ts_q = ts_q.filter(effective_date_expr >= _day_start(p_start))
 
     ts_rows = ts_q.group_by(day_expr, RawPost.game_id).order_by(day_expr).all()
 
@@ -1050,7 +1079,7 @@ def get_competitor_timeseries(
         # SentimentRecord as the main timeseries query so the totals are
         # apples-to-apples with what the chart lines add up to.
         window_case = case(
-            (func.date(effective_date_expr) >= str(curr_start), "curr"),
+            (effective_date_expr >= _day_start(curr_start), "curr"),
             else_="prev",
         ).label("win")
         pop_q = (
@@ -1061,9 +1090,9 @@ def get_competitor_timeseries(
             )
             .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
             .filter(RawPost.game_id.in_(game_ids))
-            .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
-            .filter(func.date(effective_date_expr) >= str(prev_start))
-            .filter(func.date(effective_date_expr) <= str(curr_end))
+            .filter(_NOT_DRIFT_UNINDEXED)  # v0024: match KPI drift filter
+            .filter(effective_date_expr >= _day_start(prev_start))
+            .filter(effective_date_expr < _day_start(curr_end + timedelta(days=1)))
             .group_by(RawPost.game_id, window_case)
         )
         for row in pop_q.all():
@@ -1086,9 +1115,9 @@ def get_competitor_timeseries(
             .select_from(RawPost)
             .join(SentimentRecord, SentimentRecord.raw_post_id == RawPost.id)
             .filter(RawPost.game_id.in_(game_ids))
-            .filter(_NOT_DRIFT)  # v0024: match KPI drift filter
-            .filter(func.date(effective_date_expr) >= str(prev_start))
-            .filter(func.date(effective_date_expr) <= str(prev_end))
+            .filter(_NOT_DRIFT_UNINDEXED)  # v0024: match KPI drift filter
+            .filter(effective_date_expr >= _day_start(prev_start))
+            .filter(effective_date_expr < _day_start(prev_end + timedelta(days=1)))
         )
         prev_days_with_data = coverage_q.scalar() or 0
         min_days_required = max(3, pct_window_days // 2)
