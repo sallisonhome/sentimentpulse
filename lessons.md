@@ -1,5 +1,15 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-19 — Digest "not received" two weeks running: delivered, but filed away; the sender now matches SignalPulse
+
+**Evidence (Resend).** "SentimentPulse — Weekly Digest · Oct 12 – Oct 18" was sent 11:06 UTC and is `delivered` to steve.allison.home@gmail.com plus 11 Saber recipients. Oct 12 was the same (11:05 UTC, delivered). The SignalPulse weekly digest (sender `signalpulse@mail.howmanyareplaying.com`) reached the user's inbox both weeks. The SentimentPulse one (sender `SentimentPulse Intelligence <digest@mail.howmanyareplaying.com>`) was visible in Gmail but not in Apple Mail.
+
+**Change.** The digest sender is now set in code: `DIGEST_FROM_DEFAULT = "SentimentPulse <signalpulse@mail.howmanyareplaying.com>"`. It can be overridden only by `DIGEST_FROM`. `RESEND_FROM` no longer affects the digest: deploy.yml rewrites it from a GitHub secret on every deploy, and cron_alerts.py shares it, so editing the droplet `.env` would be silently overwritten. Alerts keep using `RESEND_FROM`. `TestDigestSender` covers weekly, monthly, the override and the RESEND_FROM-is-ignored case.
+
+**Rules.**
+- "I didn't get the email" → check the Resend `last_event` first. `delivered` means the recipient's server accepted it; look at client-side filtering (Gmail tabs, Apple Mail categories) before touching the pipeline.
+- Never fix a sender by editing `/opt/sentimentpulse/.env`: deploy.yml rewrites `RESEND_FROM`. Change `DIGEST_FROM_DEFAULT` in code, with tests.
+
 ## 2026-10-17 — The real cause: SQLite picked the off-topic index for multi-title queries; PR #319 was reverted on a wrong attribution
 
 **Sequence.** PR #319 (index-friendly `post_date` range plus loading/error states) was deployed. Turok and Hellraiser weekly requests then measured 39-50 s and Stuntman 0.2 s, and I attributed the slowdown to #319. The operator chose an immediate revert (PR #320). After the revert, every title measured about 40 s, Stuntman included, so #319 was not the cause.

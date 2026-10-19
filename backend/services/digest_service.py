@@ -18,7 +18,11 @@ SMTP ports (25/465/587) on droplets, so SMTP is NOT a viable transport
 in production — it would time out silently.  Configuration:
 
   RESEND_API_KEY  (required)  — https://resend.com API key
-  RESEND_FROM     (optional)  — 'Name <addr@domain>'.  Defaults to
+  DIGEST_FROM     (optional)  — overrides DIGEST_FROM_DEFAULT
+                                ('SentimentPulse <signalpulse@mail.howmanyareplaying.com>',
+                                the SignalPulse digest sender).  RESEND_FROM
+                                is NOT used for the digest since 2026-10-19.
+  RESEND_FROM     (legacy note) — 'Name <addr@domain>'.  Previously defaulted to
                                 'SentimentPulse Intelligence <onboarding@resend.dev>',
                                 which works immediately without domain
                                 verification, BUT Resend's free tier with
@@ -2051,6 +2055,21 @@ def _post_to_resend(
         return {"kind": "network", "message": str(e)}
 
 
+# 2026-10-19: the digest sends from the same address as the SignalPulse
+# weekly digest. Both arrive in steve.allison.home@gmail.com, but Apple Mail
+# kept filing the old digest@ sender out of the inbox while SignalPulse's
+# sender showed normally, two weeks in a row. This is set in code on purpose.
+# RESEND_FROM is rewritten from a GitHub secret on every deploy and is shared
+# with the cron-alert mails, so it must NOT decide the digest sender. Override
+# only with DIGEST_FROM (no deploy writes it). Guarded by
+# tests/test_digest_service.py::TestDigestSender.
+DIGEST_FROM_DEFAULT = "SentimentPulse <signalpulse@mail.howmanyareplaying.com>"
+
+
+def digest_from_addr() -> str:
+    return (os.getenv("DIGEST_FROM") or "").strip() or DIGEST_FROM_DEFAULT
+
+
 def _send_via_resend(
     subject: str, recipients: list[str], html_body: str,
 ) -> dict:
@@ -2059,10 +2078,7 @@ def _send_via_resend(
     api_key = os.getenv("RESEND_API_KEY")
     if not api_key:
         return {"sent": False, "reason": "resend_not_configured"}
-    from_addr = os.getenv(
-        "RESEND_FROM",
-        "SentimentPulse Intelligence <onboarding@resend.dev>",
-    )
+    from_addr = digest_from_addr()
 
     try:
         email_html, attachments = _prepare_email_inline_images(html_body)
