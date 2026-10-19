@@ -12,4 +12,8 @@ export const SABER_DEMO_ROSTER:SaberDemoSeed[]=[
   // Parent verified: https://steamdb.info/app/4010830/
   {steamAppId:"4010830",parentSteamAppId:"2095420",name:"Bus Bound Demo",genre:"Simulation",isActive:false},
   {steamAppId:"4047990",name:"Painkiller Demo",genre:"Action",isActive:false},
+  // Released 2026-10-18/19 for Steam Next Fest October 2026. Identity verified
+  // via store appdetails (type=demo, publishers=[Saber Interactive],
+  // fullgame.appid=2366590); genre is Steam's own string for the demo app.
+  {steamAppId:"5102100",parentSteamAppId:"2366590",name:'Rideshare "Stimulator" Demo',genre:"Adventure, Simulation",isActive:true},
 ];
