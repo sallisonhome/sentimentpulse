@@ -1,0 +1,54 @@
+name: SP demos pipeline run (one-off, Rideshare)
+
+on:
+  workflow_dispatch: {}
+
+concurrency:
+  group: sp-demos-pipeline-oneoff
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Run demos pipeline + probe new demo (server-local, read ops token on droplet)
+        env:
+          DROPLET_SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DROPLET_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H 104.236.239.46 >> ~/.ssh/known_hosts 2>/dev/null
+          cat > /tmp/verify.py <<'PYS'
+          import json, shlex, re, urllib.request, os
+          env = open('/etc/signalpulse/env').read()
+          m = re.search(r'^INGESTION_OPS_TOKEN=["\']?([^"\'\n]+)', env, re.M)
+          token = shlex.split(m.group(1), comments=True, posix=True)[0] if m else ''
+          if not token:
+              raise SystemExit('ops token not found')
+          # 1. Trigger the full daily demos pipeline (synchronous; includes
+          #    the Rideshare roster entry seeded from PR 327).
+          req = urllib.request.Request(
+              'http://127.0.0.1:5000/api/ops/demos-pipeline-run',
+              data=b'{}', method='POST',
+              headers={'x-ops-token': token, 'Content-Type': 'application/json'})
+          with urllib.request.urlopen(req, timeout=1500) as r:
+              result = json.loads(r.read())
+          keep = {k: result.get(k) for k in
+                  ('seeded', 'eligibility', 'reviewHistory', 'ccu',
+                   'estimates', 'portalActualsFetch', 'actuals',
+                   'dashboardActuals', 'friendsPass')}
+          print('PIPELINE_RESULT=' + json.dumps(keep)[:3000])
+          # 2. Read-only probe of the new demo's Steamworks report.
+          req = urllib.request.Request(
+              'http://127.0.0.1:5000/api/ops/demos-portal-probe/5102100',
+              headers={'x-ops-token': token})
+          with urllib.request.urlopen(req, timeout=120) as r:
+              probe = json.loads(r.read())
+          print('PROBE_RESULT=' + json.dumps(probe, indent=2)[:2500])
+          PYS
+          ssh -i ~/.ssh/id_ed25519 \
+              -o ServerAliveInterval=30 -o ServerAliveCountMax=40 \
+              -o StrictHostKeyChecking=accept-new root@104.236.239.46 'python3 -' < /tmp/verify.py
