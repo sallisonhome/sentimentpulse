@@ -86,10 +86,10 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     };
     const { refreshDashboardDemoActuals }=await import("./download-actuals");
     const p=refreshDashboardDemoActuals(); assert.equal(p,refreshDashboardDemoActuals(),"single-flight");
-    const result=await p; assert.equal(result.succeeded,6); assert.equal(result.failed,0);
-    assert.equal(requests.length,36,"all approved demos: landing plus five windows, including retired");
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_actuals").get().n,30);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,30);
+    const result=await p; assert.equal(result.succeeded,7); assert.equal(result.failed,0);
+    assert.equal(requests.length,42,"all approved demos: landing plus five windows, including retired");
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_actuals").get().n,35);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,35);
     assert.equal(db.prepare("SELECT downloads FROM demo_download_observations WHERE steam_app_id='4010800' AND window='d7'").get().downloads,0);
     for (const demo of SABER_DEMO_ROSTER.filter(d=>!d.isActive)) {
       const scoped=requests.map(url=>new URL(url)).filter(url=>url.searchParams.get("appID")===demo.steamAppId);
@@ -100,12 +100,20 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_portal_daily").get().n,0);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_window_estimates_daily").get().n,0);
     const { loadDashboardDemoDownloads }=await import("./dashboard");
-    const products=[{id:10,steamAppId:"2157830",isSaberPublished:false},{id:15,steamAppId:"2487300",isSaberPublished:true}];
+    const products=[{id:10,steamAppId:"2157830",isSaberPublished:false},{id:15,steamAppId:"2487300",isSaberPublished:true},{id:17,steamAppId:"2366590",isSaberPublished:true}];
     const cards=loadDashboardDemoDownloads(products);
     assert.equal(cards.get(10)?.[0].demoAppId,"4354730");
     assert.equal(cards.get(10)?.[0].lifetimeDownloads,128512);
     assert.equal(cards.get(10)?.[0].isArchived,true);
     assert.equal(cards.get(15)?.[0].lifetimeDownloads,128512);
+    // Rideshare "Stimulator" Demo (added 2026-10-19): its parent product
+    // maps to the new roster entry, seeded Saber-owned and active.
+    assert.ok(cards.has(17),"Rideshare parent maps to its demo");
+    assert.equal(cards.get(17)?.[0].demoAppId,"5102100");
+    assert.equal(cards.get(17)?.[0].demoName,'Rideshare "Stimulator" Demo');
+    const rideshare=db.prepare("SELECT is_saber_published,is_active FROM demo_titles WHERE steam_app_id='5102100'").get() as any;
+    assert.equal(rideshare.is_saber_published,1,"seeded as Saber-owned");
+    assert.equal(rideshare.is_active,1,"seeded active");
     assert.equal(loadDashboardDemoDownloads([...products,{id:16,steamAppId:"2487300"}]).has(15),false,"ambiguous parent fails closed");
     // Licenses join (2026-10-17): latest non-null demo_portal_daily snapshot
     // surfaces as a separate metric, never touching lifetimeDownloads.
@@ -176,8 +184,8 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     computeDemoWindowEstimates("2099-01-01");
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM demo_window_estimates_daily e JOIN demo_titles t ON t.id=e.demo_title_id
       WHERE t.is_active=0 AND e.as_of_date='2099-01-01'`).get().n,0,"retired estimates require explicit fresh review success, not stale cache recomputation");
-    fail=true; const failed=await refreshDashboardDemoActuals(); assert.equal(failed.failed,6);
-    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,30,"failed refresh creates no fabricated observations");
+    fail=true; const failed=await refreshDashboardDemoActuals(); assert.equal(failed.failed,7);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,35,"failed refresh creates no fabricated observations");
     assert.equal(db.prepare("SELECT downloads FROM demo_download_actuals WHERE steam_app_id='4010800' AND window='d7'").get().downloads,0);
     assert.equal(loadDashboardDemoDownloads(products).get(15)?.[0].refreshFailed,true);
     db.prepare("UPDATE demo_download_actuals SET fetched_at='2020-01-01T00:00:00Z'").run();

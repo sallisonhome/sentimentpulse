@@ -89,8 +89,8 @@ test("retired demos retain PDPs, stay in metric views and daily checks without z
     };
     const {runDemosDailyPipeline}=await import("./pipeline");
     const run=await runDemosDailyPipeline(0);
-    assert.equal(run.reviewHistory.attempted,7,"six approved Saber + retired competitor");
-    assert.equal(run.ccu.succeeded,7);assert.equal(run.estimates.rowsWritten,0);
+    assert.equal(run.reviewHistory.attempted,8,"seven approved Saber + retired competitor");
+    assert.equal(run.ccu.succeeded,8);assert.equal(run.estimates.rowsWritten,0);
     assert.equal(db.prepare("SELECT deactivated_at FROM demo_titles WHERE id=?").get(id).deactivated_at,baseline);
     const seedDates=db.prepare("SELECT steam_app_id,deactivated_at FROM demo_titles WHERE is_saber_published=1 ORDER BY steam_app_id").all();
     assert.equal(seedDates.find((r:any)=>r.steam_app_id==="4354730").deactivated_at,null,"unknown pre-existing retirement is not invented");
