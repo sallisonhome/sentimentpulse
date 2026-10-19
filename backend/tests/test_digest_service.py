@@ -564,8 +564,12 @@ class TestSend:
         assert result["sent"] is True
         assert mock_post.call_count == 2
 
-    def test_resend_from_env_override(self, db, monkeypatch):
-        """RESEND_FROM env var must be used when set, instead of default."""
+
+class TestDigestSender:
+    """2026-10-19: the digest must send from the SignalPulse sender address,
+    and the deploy-managed RESEND_FROM secret must not be able to change it."""
+
+    def _send(self, db, monkeypatch, monthly=False):
         from unittest.mock import patch
         from models import DigestRecipient
         db.add(DigestRecipient(email="a@example.com", is_active=True))
@@ -573,13 +577,35 @@ class TestSend:
         for gid, name in ds.PRIORITY_TITLES:
             _seed_game(db, gid, name, 9000 + gid)
         monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
-        monkeypatch.setenv("RESEND_FROM",
-                           "SentimentPulse <digest@verified.example.com>")
         with patch("services.digest_service._post_to_resend",
                    return_value={"kind": "ok", "status": 200, "body": ""}) as mock_post:
-            ds.send_weekly_digest(db, today=date(2026, 6, 24))
-        # 2nd positional arg is from_addr
-        assert mock_post.call_args[0][1] == "SentimentPulse <digest@verified.example.com>"
+            if monthly:
+                ds.send_monthly_digest(db, today=date(2026, 7, 1))
+            else:
+                ds.send_weekly_digest(db, today=date(2026, 6, 24))
+        assert mock_post.called
+        return mock_post.call_args[0][1]
+
+    def test_default_is_the_signalpulse_sender(self):
+        assert ds.DIGEST_FROM_DEFAULT == "SentimentPulse <signalpulse@mail.howmanyareplaying.com>"
+
+    def test_weekly_uses_signalpulse_sender_even_when_resend_from_is_set(self, db, monkeypatch):
+        monkeypatch.delenv("DIGEST_FROM", raising=False)
+        monkeypatch.setenv("RESEND_FROM", "SentimentPulse Intelligence <digest@mail.howmanyareplaying.com>")
+        assert self._send(db, monkeypatch) == ds.DIGEST_FROM_DEFAULT
+
+    def test_monthly_uses_signalpulse_sender(self, db, monkeypatch):
+        monkeypatch.delenv("DIGEST_FROM", raising=False)
+        monkeypatch.setenv("RESEND_FROM", "SentimentPulse Intelligence <digest@mail.howmanyareplaying.com>")
+        assert self._send(db, monkeypatch, monthly=True) == ds.DIGEST_FROM_DEFAULT
+
+    def test_digest_from_env_overrides(self, db, monkeypatch):
+        monkeypatch.setenv("DIGEST_FROM", "SentimentPulse <digest@verified.example.com>")
+        assert self._send(db, monkeypatch) == "SentimentPulse <digest@verified.example.com>"
+
+    def test_blank_digest_from_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("DIGEST_FROM", "   ")
+        assert ds.digest_from_addr() == ds.DIGEST_FROM_DEFAULT
 
 
 # ── Cloudflare-1010 / urllib User-Agent regression ───────────────────────────
