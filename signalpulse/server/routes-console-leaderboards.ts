@@ -160,6 +160,14 @@ const IP_OVERRIDE_RULES: IpOverrideRule[] = [
   { pattern: /^\s*(ea\s*sports\s*)?madden\s*nfl/i,  label: "Madden NFL",                  ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*college\s*football/i, label: "EA Sports College Football", ps5: 65, xbox: 25, steam: 10 },
   { pattern: /^\s*ea\s*sports\s*fc/i,             label: "EA Sports FC",                ps5: 65, xbox: 25, steam: 10 },
+  // Call of Duty — console-skewed annual franchise (user direction 2026-10-20: "the PC % of
+  // sales for COD games is typically 25%", PS5 65% / Xbox 10%). Same mechanism as the sports
+  // rules: Steam revenue is the anchor, PS5/Xbox revenue derive from the fixed mix, units
+  // back-compute from ASP. Factors: PS5 = 65/25 = 2.6× Steam, Xbox = 10/25 = 0.4× Steam.
+  // Prefix match covers every year/edition (Modern Warfare 4, Black Ops 8, ...). Console rows
+  // still respect the unreleased-title filter and the shared-rating-pool rule; the rule only
+  // replaces the revenue mix, it never creates rows that would not otherwise render.
+  { pattern: /^\s*call\s*of\s*duty/i,              label: "Call of Duty",                ps5: 65, xbox: 10, steam: 25 },
   // Minecraft Dungeons II (Xbox Game Studios, Game Pass day one). Lifetime store ratings on 2026-10-03: Steam 6,437,
   // PS5 1,452, Xbox 1,405 base + 51 Deluxe. PS5 ratings are 0.23x Steam, and the generic PS5 mix (37.9/49.5 = 0.77x Steam)
   // put PS5 at 186,514 units, 3.4x what its own ratings estimate (52,800) supports and above four titles that chart ABOVE it
