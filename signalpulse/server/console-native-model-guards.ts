@@ -221,6 +221,22 @@ const guardsRegistry: ConsoleNativeModelGuard[] = [
     reason: "audit-v2 aged PS5 row; d90 5.9x over curve; Steam×9 IP override blocks the ceiling clamp",
     policyVersion: "native_model_guard_v2",
   },
+
+  // ─── v3: RDR2 PS4-backcompat row (2026-10-20) ─────────────────────────
+  // RDR2 has no native PS5 SKU; the user approved extracting PS5 estimates
+  // from the backcompat SKU's PSN concept-level ratings (title_id 11561,
+  // UP1004-CUSA03041_00-REDEMPTIONFULL02, seeded sku_role='base'). The guard
+  // blocks the general-ratio Steam derivation (Path B) for ALL windowed rows
+  // (d7/d30/d90/m12) so the ratings-driven native value survives — the user's
+  // explicit directive. LTD stays unguarded per doctrine (the durable LTD fix
+  // is anchor work, not a read-side guard). The aged-title ceiling registry
+  // (aged_title_ceiling_v4) clamps d90/m12 — the guard and ceiling are a pair.
+  {
+    titleId: 11561, // Red Dead Redemption 2 (PS4 backcompat on PS5)
+    platform: "ps5", windows: ["d7", "d30", "d90", "m12"],
+    reason: "RDR2 PS4-backcompat PS5 row (title_id 11561); user direction 2026-10-20: PS5 estimates come from the backcompat SKU's PSN ratings, so Path B's general-ratio Steam derivation is blocked for all windowed rows and the ratings-driven native value survives; aged-title ceiling v4 clamps d90/m12",
+    policyVersion: "native_model_guard_v3",
+  },
 ];
 
 export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = guardsRegistry;

@@ -52,12 +52,14 @@ test("the registry covers the v1 batch and the audit-widened v2 batch, d90/m12 o
     "11134|steam|d90",
     "11162|steam|m12",
     "11174|steam|m12",
+    // v4: the RDR2 PS4-backcompat PS5 row (title_id 11561), d90/m12 only
+    "11561|ps5|d90", "11561|ps5|m12",
   ].sort();
   assert.deepEqual(keys, expected);
   for (const c of AGED_TITLE_CEILINGS) {
     assert.ok(c.ceilingFraction > 0 && c.ceilingFraction < 1, `${c.titleId}/${c.window} fraction in (0,1)`);
     assert.ok(c.reason.length > 20, `${c.titleId}/${c.window} carries a reason`);
-    assert.ok(["aged_title_ceiling_v1", "aged_title_ceiling_v2", "aged_title_ceiling_v3"].includes(c.policyVersion),
+    assert.ok(["aged_title_ceiling_v1", "aged_title_ceiling_v2", "aged_title_ceiling_v3", "aged_title_ceiling_v4"].includes(c.policyVersion),
       `${c.titleId}/${c.window} has a known policy version`);
   }
   // v1 covers exactly 3 titles (6 rows); v2 covers exactly 22 titles (44 rows);
@@ -68,6 +70,13 @@ test("the registry covers the v1 batch and the audit-widened v2 batch, d90/m12 o
   assert.equal(v1.length, 6);
   assert.equal(v2.length, 44);
   assert.equal(v3.length, 31);
+  // v4: the RDR2 PS4-backcompat PS5 row — exactly 2 rows, both ps5.
+  const v4 = AGED_TITLE_CEILINGS.filter(c => c.policyVersion === "aged_title_ceiling_v4");
+  assert.equal(v4.length, 2);
+  for (const c of v4) {
+    assert.equal(c.titleId, 11561);
+    assert.equal(c.platform, "ps5");
+  }
   // Every v3 row is Steam.
   for (const c of v3) {
     assert.equal(c.platform, "steam", `v3 row ${c.titleId}/${c.window} is steam`);

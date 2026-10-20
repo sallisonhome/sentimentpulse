@@ -585,6 +585,26 @@ export const AGED_TITLE_CEILINGS: readonly AgedTitleCeiling[] = [
     reason: "Ori Will of Wisps aged ~6.6y; d90 21.7x over curve; ceiling 0.20%",
     policyVersion: "aged_title_ceiling_v3",
   },
+
+  // ─── v4: RDR2 PS4-backcompat PS5 row (2026-10-20) ──────────────────────
+  // Same aged-title protections as RDR2's Steam row (v3, title_id 10151):
+  // the title is ~8 years old (2018-10-26), so d90/m12 are clamped to the
+  // aged curve fractions of the row's LTD units. Paired with the
+  // native_model_guard_v3 row for 11561 — the guard blocks Path B's Steam
+  // derivation so the ratings-driven native value reaches this clamp.
+  // Fractions match the v3 Steam row exactly (same title, same age).
+  {
+    titleId: 11561, // Red Dead Redemption 2 (PS4 backcompat on PS5)
+    platform: "ps5", window: "d90", ceilingFraction: 0.0020,
+    reason: "RDR2 PS4-backcompat PS5 row aged ~8y; d90 ceiling 0.20% of LTD (matches RDR2 Steam v3 row)",
+    policyVersion: "aged_title_ceiling_v4",
+  },
+  {
+    titleId: 11561,
+    platform: "ps5", window: "m12", ceilingFraction: 0.0080,
+    reason: "RDR2 PS4-backcompat PS5 row aged ~8y; m12 ceiling 0.80% of LTD (matches RDR2 Steam v3 row)",
+    policyVersion: "aged_title_ceiling_v4",
+  },
 ];
 
 const ceilingIndex = new Map<string, AgedTitleCeiling>();
