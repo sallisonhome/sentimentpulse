@@ -3879,3 +3879,41 @@ console rows stay hidden by design — do not NULL the release date to force the
 that is the $1.82B bug class. (4) The shared COD hub rating pool inflates native PS5
 estimates for every COD SKU — the IP override is the durable defense; ratingCount displayed
 may still show the hub pool count (cosmetic).
+
+## 2026-10-20 RDR2 PS5: PS4-backcompat SKU with ratings-driven estimates (title_id 11561)
+
+**Symptom.** RDR2 (Steam 10151) had no PS5 row on the console boards — no native PS5 SKU
+exists (RDR2 is a PS4 title; the PS5 play path is backcompat through the PS4 store product).
+The RDR1 remaster precedent (EP/UP PPSA rows) does not apply: RDR2 has no PPSA-format PS5
+store listing at all (verified via the PSN concept page 209441 — only UP1004-CUSA03041_00-*
+products).
+
+**Root cause + mechanism (the key discovery).** Backcompat CUSA products DO get captured:
+the PS collector polls every platform_sku_map row daily and PSN productRetrieve returns
+concept-level ratings (the RDR1 remaster's EP and UP rows both report the same 42,057
+pool). The reason The Sims 4 / Monster Hunter World backcompat rows have no estimates is
+that they were seeded sku_role='ratings_only' — the estimator's base universe requires
+sku_role='base'. The backcompat COD games that DO serve on the PS5 board (BO1 10324 /
+BO2 10313) have PS5-native PPSA re-listings (UP0002-PPSA34502_00-CODBO2GAME000001) that
+discovery found as base rows. So for a backcompat title with no PPSA product, the only
+path to PS5 estimates is seeding the CUSA product itself as sku_role='base'.
+
+**Fix.** (a) db-admin seed: UP1004-CUSA03041_00-REDEMPTIONFULL02 as platform='ps5',
+sku_role='base', paid, msrp 5999, is_manual_override=1, title_id 11561 + console_title_igdb
+row ("Red Dead Redemption 2", 2018-10-26). The nightly collector/estimator then produce
+ratings-driven PS5 estimates (LTD ≈ concept pool × ps5 multiplier 24.0) automatically.
+(b) native_model_guard_v3 for 11561 on d7/d30/d90/m12 — blocks Path B's general-ratio
+Steam derivation (0.7657×Steam) so the ratings-driven value survives (user directive:
+"extract PS5 estimates based on ratings for that backcompat SKU"). LTD deliberately NOT
+guarded per doctrine (LTD stays Steam-derived ≈ 12.8M units, same ballpark as
+ratings-driven). (c) aged_title_ceiling_v4 rows for 11561 d90 (0.20%) / m12 (0.80%) —
+same fractions as the RDR2 Steam v3 rows (same title, same ~8y age); without the clamp the
+ratings-driven m12 (~200 ratings/day × 24) would be ~1.75M units, the exact aged-overstatement
+class v2/v3 fixed. Guard and ceiling are a pair (see 2026-09-30 Addendum 22).
+
+**Rules.** (1) A backcompat PS4 title needs no PS5-native SKU to serve on the PS5 board —
+seed the CUSA product as sku_role='base' (ratings_only excludes it from the estimator).
+(2) Concept-level rating pools make regional EP/UP duplicates unnecessary — one product row
+captures the full concept pool. (3) The db-admin EXPLAIN pass executes writes: the "UNIQUE
+constraint failed" noise on the actual run after a successful EXPLAIN means the seed landed
+(verify with a read query, do not rerun the write).

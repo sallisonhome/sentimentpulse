@@ -17,6 +17,12 @@ test("the shipped native-model guards are the v1 batch plus the 22 audit-widened
   }
   assert.equal(CONSOLE_NATIVE_MODEL_GUARDS.filter((g) => g.policyVersion === "native_model_guard_v1").length, 3);
   assert.equal(CONSOLE_NATIVE_MODEL_GUARDS.filter((g) => g.policyVersion === "native_model_guard_v2").length, V2.length);
+  // v3: the RDR2 PS4-backcompat PS5 row (title_id 11561), all windowed rows guarded.
+  const v3 = CONSOLE_NATIVE_MODEL_GUARDS.filter((g) => g.policyVersion === "native_model_guard_v3");
+  assert.equal(v3.length, 1);
+  assert.equal(v3[0].titleId, 11561);
+  assert.equal(v3[0].platform, "ps5");
+  assert.deepEqual(v3[0].windows, ["d7", "d30", "d90", "m12"]); // LTD deliberately not guarded
   for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
     assert.ok(g.reason.length > 20, "each guard carries an audit reason");
     assert.ok(g.policyVersion.length > 0, "each guard carries a policy version");
@@ -76,8 +82,8 @@ test("guards do not leak to an unsupported window", () => {
 
 test("the shipped guards carry an audit reason and policy version", () => {
   for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
-    assert.ok(g.reason.includes("Steam×9 IP override") || g.reason.includes("ceiling clamp") || g.reason.includes("native"), `guard reason cites the override, clamp, or native baseline: ${g.reason}`);
-    assert.ok(["native_model_guard_v1", "native_model_guard_v2"].includes(g.policyVersion),
+    assert.ok(g.reason.includes("Steam×9 IP override") || g.reason.includes("ceiling clamp") || g.reason.includes("native") || g.reason.includes("ratings-driven"), `guard reason cites the override, clamp, native baseline, or ratings-driven directive: ${g.reason}`);
+    assert.ok(["native_model_guard_v1", "native_model_guard_v2", "native_model_guard_v3"].includes(g.policyVersion),
       `guard policyVersion is a known version: ${g.policyVersion}`);
   }
 });
