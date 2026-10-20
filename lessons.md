@@ -1137,6 +1137,9 @@ reflect the smaller Steam share):
 - **Madden NFL** — PS5 65% / Xbox 25% / Steam (PC) 10%
 - **EA Sports College Football** — PS5 65% / Xbox 25% / Steam (PC) 10%
 - **EA Sports FC** — PS5 65% / Xbox 25% / Steam (PC) 10%
+- **Call of Duty** — PS5 65% / Xbox 10% / Steam (PC) 25% (user direction
+  2026-10-20: "the PC % of sales for COD games is typically 25%"; PS5 65%,
+  Xbox 10%). Derivation factors: PS5 = Steam × 2.6, Xbox = Steam × 0.4.
 
 Derivation factors for these IPs: PS5 = Steam × 6.5, Xbox = Steam × 2.5.
 Units are back-computed from the derived revenue the same way as the
@@ -3835,3 +3838,44 @@ A registry row in `aged-title-ceilings.ts` without a matching row in `console-na
 **Decision (user, 2026-10-17):** licenses are collected daily for all Saber demos as a SEPARATE "Free licenses (LTD)" metric (dashboard block + leaderboard column), never entering download-semantics tables, never used for ranking; `computeDemoWindowActuals()` stays unwired. Non-Saber tracked demos cannot get licenses (no Steamworks view permission on other publishers).
 
 **Rules.** (1) When a number from one Steamworks page disagrees with another, check which METRIC each is before "fixing" data. (2) `[\d,]+`-style number patterns must require a digit — prose commas otherwise masquerade as values. (3) A live read-only probe of the real page beats reconstructed fixtures; keep probes routed. (4) `[skip ci]` in a BRANCH commit message also suppresses pull_request CI (including required checks) — put the marker only on the squash-merge commit; if required CI silently never starts on a PR, this is why.
+
+## 2026-10-20 (signalpulse) — Call of Duty: Modern Warfare 4 console launch prep: IP override rule + missing Xbox base SKU
+
+**Symptom.** User reported the new COD (Modern Warfare 4, releases 2026-10-22/23) missing
+from the console Buying leaderboards while Steam had it. COD is console-skewed: user set
+the mix PS5 65% / Xbox 10% / Steam 25%.
+
+**Findings.**
+
+1. The Steam row (10455) shows because its console_title_igdb release_date AND
+   store_release_date are both NULL — the unreleased-title filter (2026-09-13, added after
+   MW4 itself produced a bogus $1.82B pre-release row) preserves unknown-date rows. The
+   Steam reviews (~4K by 2026-10-20) are real campaign-early-access owners; the estimate is
+   legitimate.
+2. PS5 SKUs exist (10763 standard/cross-gen/vault + 10312 vault) and ARE gated correctly by
+   the unreleased filter via COALESCE(release_date, store_release_date) = 2026-10-23. The
+   729K-rating PS5 signal is the shared Call of Duty hub pool — the native PS5 estimate
+   (23M LTD) is franchise-hub garbage, which is exactly why the IP override matters here.
+3. The Xbox base game SKU was genuinely missing from platform_sku_map — only the $29.99
+   Vault Edition Upgrade (10287) existed. Unreleased titles don't chart in top-paid, so
+   discovery never found the base game. Found via the Microsoft Store: base 9NCPSQQD1Z66
+   ($69.99) and Vault Edition 9NWWNS0C3007 ($99.99), both releasing 2026-10-23.
+
+**Fix.** (a) Added the Call of Duty prefix rule to IP_OVERRIDE_RULES (PS5 65 / Xbox 10 /
+Steam 25 → factors 2.6× / 0.4× Steam revenue, units back-computed from ASP). Franchise-wide
+prefix like the EA Sports rules — this also re-derives legacy cross-platform COD families
+(Black Ops 1/2, MW3, Infinite Warfare) that share an editionGroupKey with a Steam sibling;
+legacy console-only COD rows (BO3 special editions etc.) are unaffected (no Steam sibling).
+(b) Seeded the two Xbox SKUs via db-admin with is_manual_override=1 (protected from
+discovery clobber), xbox_title_cache entries (the board filters Xbox rows with no cached
+name), and console_title_igdb rows with release_date=store_release_date=2026-10-23 so they
+gate identically to the PS5 rows until launch.
+
+**Rules.** (1) A new cross-platform title needs ALL of: platform_sku_map base SKU row,
+xbox_title_cache name entry (Xbox only), console_title_igdb identity row with a real
+release date. (2) The IP override needs the Steam sibling on the board (families join by
+editionGroupKey of the SERVED name) and ≥$1,000 Steam revenue in the window. (3) Pre-release
+console rows stay hidden by design — do not NULL the release date to force them visible;
+that is the $1.82B bug class. (4) The shared COD hub rating pool inflates native PS5
+estimates for every COD SKU — the IP override is the durable defense; ratingCount displayed
+may still show the hub pool count (cosmetic).
