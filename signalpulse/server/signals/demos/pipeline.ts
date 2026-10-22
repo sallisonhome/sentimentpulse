@@ -12,7 +12,7 @@
  * remains deliberately unwired (see portal-actuals.ts).
  */
 import { log } from "../../log";
-import { seedSaberDemos, SABER_DEMO_ROSTER } from "./saber-seed";
+import { seedSaberDemos } from "./saber-seed";
 import { runDemosHubDiscovery } from "./discovery";
 import { createDemoVerifier } from "./metadata";
 import { runDemosReviewHistoryCollector } from "./runner";
@@ -43,6 +43,11 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
   log("Demos pipeline: released game demos; licenses collected as a separate metric", "demos-pipeline");
   const seed = seedSaberDemos();
   const friendsPass = await runFriendsPassPipeline(delayMs);
+  // Discovery runs BEFORE the Saber collectors (2026-10-22): a newly
+  // discovered and publisher-flagged Saber demo is seeded, classified and
+  // collected in this same run instead of waiting for the next one.
+  const verifier = createDemoVerifier(delayMs);
+  const discovery = await runDemosHubDiscovery(delayMs, verifier);
   // Independent of public availability: archived demos still have actuals.
   const dashboardActuals = await refreshDashboardDemoActuals();
   // Licenses snapshots (demo_portal_daily). Failure-isolated: a licenses
@@ -54,12 +59,11 @@ export async function runDemosDailyPipeline(delayMs = 250): Promise<DemosPipelin
     portalActualsFetch = { source: "demos_portal", status: "error", message: String(err?.message ?? err).slice(0, 300) };
   }
   log(`Demos portal licenses: ${JSON.stringify(portalActualsFetch)}`, "demos-pipeline");
-  const datedActuals = await refreshRecentDemoReports(rawSqlite,loadDemoCatalog("demo"),
-    new Set(SABER_DEMO_ROSTER.map(d=>d.steamAppId)),storage.getSteamworksSession("default")?.cookieValue,
+  const datedCatalog = loadDemoCatalog("demo");
+  const datedActuals = await refreshRecentDemoReports(rawSqlite,datedCatalog,
+    new Set(datedCatalog.filter(d=>d.is_saber_published===1).map(d=>d.steam_app_id)),storage.getSteamworksSession("default")?.cookieValue,
     new HistoryBudget(48,120000,delayMs));
   log(`Demo dated reports: ${JSON.stringify(datedActuals)}`,"demos-pipeline");
-  const verifier = createDemoVerifier(delayMs);
-  const discovery = await runDemosHubDiscovery(delayMs, verifier);
 
   // Includes seeded/manual/previously discovered entries, not just today's
   // hub. Fail closed for this run on missing metadata or network errors,

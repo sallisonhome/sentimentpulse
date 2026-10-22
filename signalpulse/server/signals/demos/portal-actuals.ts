@@ -84,7 +84,8 @@ interface SaberDemoRow {
 
 function loadSaberDemoRoster(): SaberDemoRow[] {
   return rawSqlite
-    .prepare(`SELECT id, steam_app_id, name FROM demo_titles WHERE is_saber_published = 1`)
+    .prepare(`SELECT id, steam_app_id, name FROM demo_titles
+      WHERE is_saber_published = 1 AND sku_kind = 'demo' AND tracking_excluded_reason IS NULL`)
     .all() as SaberDemoRow[];
 }
 

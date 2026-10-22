@@ -26,6 +26,14 @@ test("actual parser verifies demo identity, metric, lifetime scope and exact dat
     assert.throws(()=>parseDownloadReport(bad,name,"2000-01-01",end));
   }
   assert.throws(()=>parseDownloadReport(html(),name,"2026-09-16",end), "Lifetime total cannot masquerade as 7-day actuals");
+  // Live-verified 2026-10-22: Steamworks entity-escapes double quotes in
+  // game names as " (Rideshare "Stimulator" Demo report). The decoder
+  // must decode them or the identity check fails on every fetch.
+  const rideshare = 'Rideshare "Stimulator" Demo';
+  assert.equal(parseDownloadReport(html('Rideshare &quot;Stimulator&quot; Demo', "18,000", "2000-01-01", "5102100"), rideshare, "2000-01-01", end), 18000);
+  // &quot; is decoded once only: a double-escaped &amp;quot; stays literal text.
+  assert.throws(()=>parseDownloadReport(html('Rideshare &amp;quot;Stimulator&amp;quot; Demo'), rideshare, "2000-01-01", end));
+  assert.throws(()=>parseDownloadReport(html('Rideshare "Wrong" Demo'), rideshare, "2000-01-01", end));
 });
 test("all-history URL cannot escape approved host, demo App ID or download-report scope", () => {
   const url = allHistoryReportUrl(html(),"4010800",name);
@@ -69,6 +77,14 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
   let db:any, server:any;
   try {
     const storageModule=await import("../../storage"); db=storageModule.rawSqlite;
+    // Parent products for the roster demos so the seed resolves the
+    // base_game_product_id links (the dashboard block is FK-driven since
+    // 2026-10-22). Ids match the products fixture used further below.
+    const iso=new Date().toISOString();
+    const insertProduct=db.prepare("INSERT INTO products (id,title,publisher,is_saber_published,platforms,player_format,genre,release_date,steam_app_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+    insertProduct.run(10,"Toxic Commando","Focus Entertainment",0,"PC","p","Action","2024-06-06","2157830",iso,iso);
+    insertProduct.run(15,"Docked","Saber Interactive",1,"PC","p","Simulation","2026-09-24","2487300",iso,iso);
+    insertProduct.run(17,'Rideshare "Stimulator"',"Saber Interactive",1,"PC","p","Simulation","2027-04-15","2366590",iso,iso);
     const { SABER_DEMO_ROSTER, seedSaberDemos }=await import("./saber-seed"); seedSaberDemos();
     const stamp=new Date().toISOString();
     storageModule.storage.upsertSteamworksSession({id:"default",cookieValue:"fixture-cookie"});
@@ -114,7 +130,9 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     const rideshare=db.prepare("SELECT is_saber_published,is_active FROM demo_titles WHERE steam_app_id='5102100'").get() as any;
     assert.equal(rideshare.is_saber_published,1,"seeded as Saber-owned");
     assert.equal(rideshare.is_active,1,"seeded active");
-    assert.equal(loadDashboardDemoDownloads([...products,{id:16,steamAppId:"2487300"}]).has(15),false,"ambiguous parent fails closed");
+    // A demo whose parent product is absent from the product list is skipped
+    // (the FK resolves to exactly one product; no fallback guessing).
+    assert.equal(loadDashboardDemoDownloads(products.filter(p=>p.id!==15)).has(15),false,"parent absent from product list is skipped");
     // Licenses join (2026-10-17): latest non-null demo_portal_daily snapshot
     // surfaces as a separate metric, never touching lifetimeDownloads.
     const dockedId=db.prepare("SELECT id FROM demo_titles WHERE steam_app_id='4010800'").get().id;
@@ -162,14 +180,17 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
       assert.equal(own.unitsMid,window==="ltd"?128512:window==="d7"?0:353);
       assert.equal(own.method,"steamworks_actual"); assert.equal(own.downloadMultiplier,null); assert.equal(own.isObservedMinimum,false);
       assert.equal(comp.unitsMid,1300); assert.equal(comp.calibrationMode,"non_saber_trial");
-      assert.ok(!body.demos.some((d:any)=>d.steamAppId==="997"),"flag-only Saber rows stay excluded");
+      // Since 2026-10-22 the is_saber_published flag IS the curation
+      // (roster seed or publisher-based discovery): flag-only Saber rows
+      // are tracked like any other Saber demo.
+      assert.ok(body.demos.some((d:any)=>d.steamAppId==="997"),"flag-only Saber rows are tracked");
       assert.ok(body.demos.some((d:any)=>d.steamAppId==="998"),"retired competitors remain tracked");
       const toxic=body.demos.find((d:any)=>d.steamAppId==="4354730");
       if(window==="ltd") {
         assert.equal(toxic.unitsMid,332853); assert.equal(toxic.isArchived,true);
         assert.equal(toxic.ccuCurrent,9999);assert.equal(toxic.ccuAllTimePeak,9999);assert.equal(toxic.ccuAsOf,stamp);
         assert.equal(toxic.steamReviews,null);assert.equal(toxic.reviewDelta,null);
-        assert.equal(body.coverage.archivedCount,5);
+        assert.equal(body.coverage.archivedCount,6);
         assert.equal(body.coverage.completeSteamCatalog,false);
       } else assert.ok(toxic?.isArchived,"retired Saber remains in every metric window");
       const values=body.demos.map((d:any)=>d.unitsMid).filter((n:any)=>n!==null);
@@ -178,13 +199,13 @@ test("collector, real HTTP leaderboard, dashboard mapping, zeroes, stale failure
     for(const window of DEMO_ACTUAL_WINDOWS) for(const sort of ["top","new","ccu","reviews","rating","peak","release"]) {
       const body=await(await realFetch(`http://127.0.0.1:${server.address().port}/api/demos/leaderboard?window=${window}&sort=${sort}&limit=250`)).json();
       const archived=body.demos.filter((d:any)=>d.isArchived);
-      assert.equal(archived.length,!["top","new"].includes(sort)?5:0);
+      assert.equal(archived.length,!["top","new"].includes(sort)?6:0);
     }
     const { computeDemoWindowEstimates }=await import("./estimator");
     computeDemoWindowEstimates("2099-01-01");
     assert.equal(db.prepare(`SELECT COUNT(*) n FROM demo_window_estimates_daily e JOIN demo_titles t ON t.id=e.demo_title_id
       WHERE t.is_active=0 AND e.as_of_date='2099-01-01'`).get().n,0,"retired estimates require explicit fresh review success, not stale cache recomputation");
-    fail=true; const failed=await refreshDashboardDemoActuals(); assert.equal(failed.failed,7);
+    fail=true; const failed=await refreshDashboardDemoActuals(); assert.equal(failed.failed,8);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_download_observations").get().n,35,"failed refresh creates no fabricated observations");
     assert.equal(db.prepare("SELECT downloads FROM demo_download_actuals WHERE steam_app_id='4010800' AND window='d7'").get().downloads,0);
     assert.equal(loadDashboardDemoDownloads(products).get(15)?.[0].refreshFailed,true);

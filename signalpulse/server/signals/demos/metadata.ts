@@ -14,6 +14,9 @@ interface StoreItem {
   visible?: boolean;
   is_free?: boolean;
   tagids?: number[];
+  // Live-verified 2026-10-22: include_basic_info returns publisher/developer
+  // names here (e.g. publishers: [{name: "Saber Interactive"}]).
+  basic_info?: { publishers?: Array<{ name?: string; creator_clan_account_id?: number }>; developers?: Array<{ name?: string }> };
   related_items?: { parent_appid?: number };
   release?: { steam_release_date?: number; is_coming_soon?: boolean };
 }
@@ -27,6 +30,8 @@ const GENRE_TAGS: Record<number, string> = {
 };
 export interface VerifiedDemo {
   name: string; genre: string | null; releaseDate: string | null;
+  publishers: Array<{ name: string; creatorClanAccountId?: number }>;
+  parentSteamAppId: string | null;
   availabilitySource: "metadata_release" | "store_download";
   availabilitySourceUrl: string | null;
   availabilityCheckedAt: string;
@@ -153,10 +158,15 @@ export function createDemoVerifier(delayMs = 250, kind: SkuKind = "demo") {
         const demoGenres = (item.tagids ?? []).flatMap(tag => GENRE_TAGS[tag] ? [GENRE_TAGS[tag]] : []);
         const genres = demoGenres.length ? demoGenres
           : (parent.tagids ?? []).flatMap(tag => GENRE_TAGS[tag] ? [GENRE_TAGS[tag]] : []);
+        const publishers = (item.basic_info?.publishers ?? [])
+          .map(p => ({ name: p.name ?? "", creatorClanAccountId: p.creator_clan_account_id }))
+          .filter(p => p.name !== "" || Number.isInteger(p.creatorClanAccountId));
         out.set(id, { demo: validParent ? {
           name: item.name || `Steam demo ${id}`,
           genre: Array.from(new Set(genres)).sort().join(", ") || null,
           releaseDate: validDate ? new Date(release! * 1000).toISOString().slice(0, 10) : null,
+          publishers,
+          parentSteamAppId: validParent ? String(parent.id) : null,
           availabilitySource: availabilitySourceUrl ? "store_download" : "metadata_release",
           availabilitySourceUrl,
           availabilityCheckedAt: new Date().toISOString(),

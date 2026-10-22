@@ -17,6 +17,8 @@ import { rawSqlite } from "../../storage";
 import { log } from "../../log";
 import { DEMO_FEEDS, DEMOS_HUB_URL, fetchDemoFeed, fetchSteamText, parseDemoFeedContext, type DemoFeed, type DemoFeedPage } from "./feeds";
 import { createDemoVerifier, type DemoVerifier, type VerifiedDemo } from "./metadata";
+import { isSaberPublisher } from "./saber-roster";
+import { resolveParentProduct } from "./saber-seed";
 import type { SkuKind } from "./friends-pass-identity";
 
 export type DiscoverySource = "steam_demos_hub" | "steam_friends_pass_search" | "compset" | "saber_own" | "manual";
@@ -26,11 +28,15 @@ const upsertDemoTitleStmt = () => rawSqlite.prepare(
      (steam_app_id, name, base_game_product_id, is_saber_published, genre, release_date,
       discovered_via, is_active, first_seen_at, last_checked_at, created_at, updated_at,
       availability_source, availability_source_url, availability_checked_at, sku_kind)
-   VALUES (?, ?, NULL, 0, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+   VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
    ON CONFLICT(steam_app_id) DO UPDATE SET
      name = excluded.name,
      sku_kind = excluded.sku_kind,
      genre = excluded.genre,
+     -- Never downgrade a Saber flag (roster seed or earlier discovery) to 0.
+     is_saber_published = CASE WHEN excluded.is_saber_published=1 THEN 1 ELSE demo_titles.is_saber_published END,
+     -- Keep an existing parent link when this pass could not resolve one.
+     base_game_product_id = COALESCE(excluded.base_game_product_id, demo_titles.base_game_product_id),
      release_date = excluded.release_date,
      is_active = 1,
      deactivated_at = NULL,
@@ -48,14 +54,21 @@ export function upsertDiscoveredDemo(params: {
   name: string;
   genre: string | null;
   releaseDate: string | null;
+  saberPublished?: boolean;
+  parentSteamAppId?: string | null;
   availabilitySource?: VerifiedDemo["availabilitySource"];
   availabilitySourceUrl?: string | null;
   availabilityCheckedAt?: string;
   discoveredVia: DiscoverySource;
 }): void {
   const nowIso = new Date().toISOString();
+  // Resolve the parent product FK when the tracked products table knows the
+  // parent game; NULL keeps any existing link (see COALESCE above).
+  const parentProductId = params.parentSteamAppId
+    ? resolveParentProduct(params.parentSteamAppId)
+    : null;
   upsertDemoTitleStmt().run(
-    params.steamAppId, params.name, params.genre, params.releaseDate, params.discoveredVia,
+    params.steamAppId, params.name, parentProductId, params.saberPublished ? 1 : 0, params.genre, params.releaseDate, params.discoveredVia,
     nowIso, nowIso, nowIso, nowIso,
     params.availabilitySource ?? null, params.availabilitySourceUrl ?? null, params.availabilityCheckedAt ?? null, params.skuKind ?? "demo",
   );
@@ -134,6 +147,8 @@ export async function runDemosHubDiscovery(delayMs = 250, verifier: DemoVerifier
         name: verified.name,
         genre: verified.genre,
         releaseDate: verified.releaseDate,
+        saberPublished: isSaberPublisher(verified.publishers),
+        parentSteamAppId: verified.parentSteamAppId,
         availabilitySource: verified.availabilitySource,
         availabilitySourceUrl: verified.availabilitySourceUrl,
         availabilityCheckedAt: verified.availabilityCheckedAt,
