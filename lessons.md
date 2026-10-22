@@ -3976,3 +3976,18 @@ cast must not start on a new line after its expression (TS1434 "Unexpected keywo
 identifier" pointing mid-`const`) — keep the cast on the same line as the closing paren.
 (5) tsconfig target is pre-ES2015 for iteration: `for (const [k,v] of map)` needs
 downlevelIteration — use `map.forEach((v,k)=>...)` instead.
+
+
+## 2026-10-22 addendum — the "required status check is expected" merge block is usually a BEHIND branch, not branch protection being broken
+
+PR #335 hit the same error that stalled PR #279 ("Required status check 'SignalPulse
+tests' is expected" while the rollup showed SUCCESS). The cause this time was visible in
+`mergeStateStatus`: **BEHIND** — main moved after the branch's CI ran (PR #336 landed
+mid-flight), so branch protection evaluated the check against a stale merge-base. Fix:
+`gh pr update-branch <n>` (merge main in, CI re-runs on the merge commit) → mergeStateStatus
+CLEAN → plain `--squash` merge succeeds. No `--admin` needed. Check `mergeStateStatus` FIRST
+when a merge is blocked with all-green checks; only consider admin override if the branch is
+CLEAN and still blocked (the #279 case was a branch based on itself — different disease).
+Also: PR #337's squash push did NOT auto-trigger the deploy despite matching the
+`paths: signalpulse/**` filter (no run for the SHA) — when a deploy doesn't appear within
+a few minutes of a merge, dispatch it: `gh workflow run signalpulse-deploy.yml`, then poll.
