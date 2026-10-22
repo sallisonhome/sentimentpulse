@@ -237,6 +237,22 @@ const guardsRegistry: ConsoleNativeModelGuard[] = [
     reason: "RDR2 PS4-backcompat PS5 row (title_id 11561); user direction 2026-10-20: PS5 estimates come from the backcompat SKU's PSN ratings, so Path B's general-ratio Steam derivation is blocked for all windowed rows and the ratings-driven native value survives; aged-title ceiling v4 clamps d90/m12",
     policyVersion: "native_model_guard_v3",
   },
+
+  // ─── v4: Hellraiser operator anchor contract (2026-10-22) ───────────────
+  // The operator re-anchored Hellraiser PS5 (145,300 LTD units through
+  // 2026-10-21) and set explicit ASPs ($40 Steam / $33.05 console). The deck
+  // contract module (hellraiser-deck-contract.ts) is the final authority for
+  // the served values; this guard keeps Path B's general-ratio derivation
+  // away from 11296/ps5 in the first place so the contract never fights a
+  // Steam-ratio overwrite. LTD IS guarded here — unlike the aged-title
+  // doctrine — because the operator anchor, not the Steam ratio, is the
+  // authority for this title's LTD.
+  {
+    titleId: 11296, // Clive Barker's Hellraiser: Revival (PS5)
+    platform: "ps5", windows: ["d7", "d30", "d90", "m12", "ltd"],
+    reason: "Hellraiser PS5 (title_id 11296): operator deck-contract 2026-10-22 anchors PS5 LTD to 145,300 units through 2026-10-21 with operator ASPs; Path B's Steam-ratio derivation is blocked because the operator anchor is the authority (see hellraiser-deck-contract.ts)",
+    policyVersion: "native_model_guard_v4",
+  },
 ];
 
 export const CONSOLE_NATIVE_MODEL_GUARDS: readonly ConsoleNativeModelGuard[] = guardsRegistry;
