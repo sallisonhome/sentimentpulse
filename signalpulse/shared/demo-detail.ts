@@ -47,6 +47,8 @@ export interface DemoDetail {
     downloads: number | null; observedMinimum: boolean;
     reviews: number | null; positivePercent: number | null;
     ccu: number | null; peak: number | null; ccuObservedAt: string | null;
+    ccuRecentPeak: number | null; ccuRecentPeakSource: "steam" | "observed" | null;
+    ccuSteamRank: number | null; ccuRecentPeakAsOf: string | null;
     actualsAsOf: string | null; actualsStale: boolean; actualsRefreshFailed: boolean;
   };
   rows: DemoHistoryPoint[];

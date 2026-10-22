@@ -124,8 +124,18 @@ export default function DemoDetail(){
             value:fmt(data.latest.downloads),note:data.isSaber?`Steamworks · ${data.latest.actualsAsOf?.slice(0,10)??"Not observed"}`
               :data.latest.observedMinimum?"Concurrency exceeded the review model":"Own-demo review model · provisional"},
           {label:"Last recorded review total",value:fmt(data.latest.reviews),note:data.latest.positivePercent==null?"Own-demo reviews only":`${fmt(data.latest.positivePercent)}% positive · own demo`},
-          {label:"Latest sampled CCU",value:fmt(data.latest.ccu),note:data.latest.ccuObservedAt?`${data.latest.ccuObservedAt.replace("T"," ").slice(0,16)} UTC`:"No observation"},
-          {label:"Peak observed CCU",value:fmt(data.latest.peak),note:"Highest stored sample, not continuous monitoring"},
+          {label:"Current CCU",value:fmt(data.latest.ccu),note:data.latest.ccuObservedAt
+            ?`${(() => {const ageMs=Date.now()-Date.parse(data.latest.ccuObservedAt);
+              if(!Number.isFinite(ageMs)||ageMs<0)return "";
+              const mins=Math.floor(ageMs/60000);
+              const ago=mins<60?`${mins}m ago`:mins<1440?`${Math.round(mins/60)}h ago`:`${Math.round(mins/1440)}d ago`;
+              return ageMs>2*60*60*1000?`stale · ${ago}`:ago;})()} · ${data.latest.ccuObservedAt.replace("T"," ").slice(0,16)} UTC`
+            :"No observation"},
+          {label:"Peak CCU",value:fmt(data.latest.ccuRecentPeak),note:data.latest.ccuRecentPeakSource==="steam"
+            ?`Steam's most-played charts peak (rank ${data.latest.ccuSteamRank})${data.latest.peak!=null?` · all-time observed ${fmt(data.latest.peak)}`:""}`
+            :data.latest.ccuRecentPeakSource==="observed"
+              ?`Max of our hourly samples, last 24h${data.latest.peak!=null?` · all-time observed ${fmt(data.latest.peak)}`:""}`
+              :"No peak sample yet"},
         ].map(k=><Card key={k.label} className="p-4 min-w-0"><p className="text-xs text-muted-foreground">{k.label}</p>
           <p className="text-2xl font-semibold tabular-nums mt-2">{k.value}</p><p className="text-xs text-muted-foreground mt-2">{k.note}</p></Card>)}
       </section>
@@ -185,11 +195,11 @@ export default function DemoDetail(){
           </div>
           <div className="space-y-3 min-w-0">
             <div className="flex flex-wrap gap-1" aria-label="CCU history mode">
-              <Button size="sm" variant={ccuMode==="peak"?"secondary":"outline"} aria-pressed={ccuMode==="peak"} onClick={()=>setCcuMode("peak")}>Daily sampled peak</Button>
-              <Button size="sm" variant={ccuMode==="latest"?"secondary":"outline"} aria-pressed={ccuMode==="latest"} onClick={()=>setCcuMode("latest")}>Last daily sample</Button>
+              <Button size="sm" variant={ccuMode==="peak"?"secondary":"outline"} aria-pressed={ccuMode==="peak"} onClick={()=>setCcuMode("peak")}>Daily peak</Button>
+              <Button size="sm" variant={ccuMode==="latest"?"secondary":"outline"} aria-pressed={ccuMode==="latest"} onClick={()=>setCcuMode("latest")}>Latest sample per day</Button>
             </div>
-            <HistoryChart rows={data.rows} metric={ccuMode==="peak"?"ccuPeak":"ccuLatest"} title={ccuMode==="peak"?"Daily peak observed CCU":"Last CCU observation per day"}
-              note="Own-demo concurrent players. Daily sampling does not establish the true 24-hour peak or unique players; a measured zero is retained."/>
+            <HistoryChart rows={data.rows} metric={ccuMode==="peak"?"ccuPeak":"ccuLatest"} title={ccuMode==="peak"?"Daily peak CCU":"Latest CCU sample per day"}
+              note="Own-demo concurrent players, sampled hourly (top of each UTC hour). Daily peaks are the max sample observed that day; for demos on Steam's most-played chart the dash also carries Steam's own peak figure. A measured zero is retained."/>
           </div>
         </div>}
       </section>

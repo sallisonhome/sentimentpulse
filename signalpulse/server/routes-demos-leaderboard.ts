@@ -63,6 +63,17 @@ interface DemoLeaderboardRow {
   ccuCurrent: number | null;
   ccuAllTimePeak: number | null;
   ccuAsOf: string | null;
+  // Peak CCU presented on the dash (2026-10-22): Steam's own charts peak
+  // figure for tracked appids currently charting in the most-played top 100
+  // (rows are deleted on chart departure and age out of presentation after
+  // 24h; Steam labels its figure "Peak Today" — presented without claiming
+  // a verified window), else the max of our samples from the last 24h.
+  // The all-time observed peak stays available (ccuAllTimePeak) for the
+  // detail page.
+  ccuRecentPeak: number | null;
+  ccuRecentPeakSource: "steam" | "observed" | null;
+  ccuSteamRank: number | null;
+  ccuRecentPeakAsOf: string | null;
   sourceRank: number | null;
   // Separate licenses metric (2026-10-17): Steamworks "Lifetime free
   // licenses" for the demo's own App ID. Null for non-Saber demos (no
@@ -143,6 +154,24 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     .all() as Array<{ demo_title_id: number; ccu: number; captured_at: string }>;
   const ccuCurrentByDemoId = new Map(latestSnapshotRows.map((r) => [r.demo_title_id, r]));
 
+  // Steam's own peak figure for tracked appids charting in the most-played
+  // top 100 (hourly overlay, see signals/demos/ccu-scheduler.ts). Rows age
+  // out of presentation after 24h off the chart.
+  const STEAM_PEAK_FRESH_MS = 24 * 60 * 60 * 1000;
+  const steamPeakRows = rawSqlite.prepare("SELECT * FROM demo_ccu_steam_peaks").all() as Array<{
+    steam_app_id: string; global_rank: number; current_ccu: number; peak_ccu: number; captured_at: string;
+  }>;
+  const steamPeakByAppId = new Map(steamPeakRows
+    .filter(r => Date.parse(r.captured_at) > Date.now() - STEAM_PEAK_FRESH_MS)
+    .map(r => [r.steam_app_id, r]));
+
+  // Max of our samples in the last 24h — the observed fallback peak for
+  // demos that never chart (hourly sampling makes this a real peak).
+  const observedPeak24hRows = rawSqlite.prepare(
+    `SELECT demo_title_id, MAX(ccu) AS peak FROM demo_ccu_snapshots WHERE captured_at > ? GROUP BY demo_title_id`
+  ).all(new Date(Date.now() - STEAM_PEAK_FRESH_MS).toISOString()) as Array<{ demo_title_id: number; peak: number }>;
+  const observedPeak24hByDemoId = new Map(observedPeak24hRows.map(r => [r.demo_title_id, r.peak]));
+
   const demos = loadDemoCatalog(kind);
   const activity = kind === "friends_pass" ? loadPassParentActivity(demos, activityWindow) : new Map<number, PassParentActivity>();
   const playerEstimates = kind === "friends_pass"
@@ -188,6 +217,8 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
     const dailyPeak = ccuPeakByDemoId.get(d.id);
     const observedPeak = (dailyPeak == null && snap == null)
       ? null : Math.max(dailyPeak ?? 0, snap?.ccu ?? 0);
+    const steamPeak = steamPeakByAppId.get(d.steam_app_id);
+    const observedPeak24h = observedPeak24hByDemoId.get(d.id) ?? null;
     const resolved = saber ? {
       unitsMid: actualValue, reviewEstimate: null, isObservedMinimum: false,
       lifetimeModelBelowPeak: false, method: actualValue === null ? null : "steamworks_actual",
@@ -232,6 +263,10 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       ccuCurrent: snap?.ccu ?? null,
       ccuAllTimePeak: observedPeak,
       ccuAsOf: snap?.captured_at ?? null,
+      ccuRecentPeak: steamPeak?.peak_ccu ?? observedPeak24h ?? null,
+      ccuRecentPeakSource: steamPeak ? "steam" : (observedPeak24h == null ? null : "observed"),
+      ccuSteamRank: steamPeak?.global_rank ?? null,
+      ccuRecentPeakAsOf: steamPeak?.captured_at ?? null,
       sourceRank: sourceRanks.get(d.id) ?? null,
     };
   });
@@ -244,7 +279,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       : sort === "downloads" ? row.unitsMid : sort === "ccu" ? row.ccuCurrent
       : sort === "players" ? row.playerEstimate?.players ?? null
       : sort === "activity" ? row.passParentActivity?.ratio ?? null
-      : sort === "peak" ? row.ccuAllTimePeak : row.releaseDate;
+      : sort === "peak" ? row.ccuRecentPeak : row.releaseDate;
     rows.sort((a, b) => {
       const av = value(a); const bv = value(b);
       if (av == null && bv == null) return a.name.localeCompare(b.name) || a.id - b.id;

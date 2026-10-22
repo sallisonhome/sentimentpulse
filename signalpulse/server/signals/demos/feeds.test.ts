@@ -301,6 +301,18 @@ test("discovery, migration and HTTP views preserve source order, null estimates 
       db.prepare("INSERT INTO demo_ccu_daily_peaks(demo_title_id,peak_date,peak_ccu,created_at) VALUES (?,'2026-09-22',?,'2026-09-22')")
         .run(demoId, id === "1" ? 5 : 9);
     }
+    // Fresh hourly samples (2026-10-22 semantics): the peak column now sorts
+    // by the max sample in the last 24h (Steam charts peak when charting,
+    // else observed). Demo 1's latest sample (3) beats demo 2's (2) so the
+    // ccu sort keeps its order; demo 2's earlier-in-window sample (7) beats
+    // demo 1's window max (3) so the peak sort keeps its order.
+    for (const [id, earlier, latest] of [["1", 1, 3], ["2", 7, 2]] as const) {
+      const demoId = db.prepare("SELECT id FROM demo_titles WHERE steam_app_id=?").get(id).id;
+      db.prepare("INSERT INTO demo_ccu_snapshots(demo_title_id,captured_at,ccu) VALUES (?,?,?)")
+        .run(demoId, new Date(Date.now() - 2 * 60 * 60_000).toISOString(), earlier);
+      db.prepare("INSERT INTO demo_ccu_snapshots(demo_title_id,captured_at,ccu) VALUES (?,?,?)")
+        .run(demoId, new Date(Date.now() - 60 * 60_000).toISOString(), latest);
+    }
     db.prepare("UPDATE demo_titles SET release_date=NULL WHERE steam_app_id='1'").run();
     const expectedDesc = { reviews: ["2", "1", "4"], downloads: ["1", "2", "4"], ccu: ["1", "2", "4"],
       peak: ["2", "1", "4"], release: ["4", "2", "1"] };

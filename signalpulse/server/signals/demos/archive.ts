@@ -16,7 +16,11 @@ export function archivedSnapshot(title: CatalogDemo): DemoDetail["latest"] & {sn
     downloads:downloads?.lifetimeDownloads??null,observedMinimum:false,
     reviews:reviews?.totalReviews??null,positivePercent:sentiment?.positivePercent??null,
     ccu:ccu?.ccuLatest??null,peak:peaks.length?Math.max(...peaks):null,
-    ccuObservedAt:ccu?.date??null,actualsAsOf:null,actualsStale:false,actualsRefreshFailed:false,
+    ccuObservedAt:ccu?.date??null,
+    // Archived demos are off Steam's live chart; the hourly overlay does
+    // not apply. Saved values only — no fabricated peaks.
+    ccuRecentPeak:null,ccuRecentPeakSource:null,ccuSteamRank:null,ccuRecentPeakAsOf:null,
+    actualsAsOf:null,actualsStale:false,actualsRefreshFailed:false,
     snapshotAsOf:evidence.at(-1)?.date??null,
   };
 }

@@ -1222,6 +1222,55 @@ function initializeDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS demo_ccu_daily_peaks_unique
       ON demo_ccu_daily_peaks (demo_title_id, peak_date);
 
+    -- Steam's own most-played charts peak overlay (2026-10-22). The demos
+    -- leaderboard's "peak" used to be only the max of our once-daily
+    -- pipeline samples — trough samples that missed every real peak
+    -- (Probably Stolen Demo: 19.4K observed vs 39.8K on Steam's own chart,
+    -- live-verified 2026-10-22). The hourly poll
+    -- (signals/demos/ccu-scheduler.ts) stores Steam's
+    -- GetGamesByConcurrentPlayers peak figure for every tracked appid
+    -- that charts in Steam's top 100 (demos chart there — Probably
+    -- Stolen Demo was rank 96). Presentation treats rows as stale after
+    -- 24h off the chart; daily_peaks/snapshots remain the fallback
+    -- peak source for demos that never chart.
+    CREATE TABLE IF NOT EXISTS demo_ccu_steam_peaks (
+      steam_app_id TEXT PRIMARY KEY,
+      global_rank INTEGER NOT NULL,
+      current_ccu INTEGER NOT NULL,
+      peak_ccu INTEGER NOT NULL,
+      captured_at TEXT NOT NULL
+    );
+
+    -- Lossless CCU history compaction (2026-10-22). The hourly poll adds
+    -- ~24 raw snapshots per tracked demo per day; demo_ccu_daily_rollups
+    -- stores one row per demo per day (latest value + timestamp, sample
+    -- count, max) before the scheduler prunes raw snapshots older than 7
+    -- days, so the demo detail history (ccuLatest/ccuSamples/ccuPeak per
+    -- day) survives compaction. Daily peaks (demo_ccu_daily_peaks) remain
+    -- the authoritative per-day peak.
+    CREATE TABLE IF NOT EXISTS demo_ccu_daily_rollups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      demo_title_id INTEGER NOT NULL,
+      rollup_date TEXT NOT NULL,
+      latest_ccu INTEGER NOT NULL,
+      latest_captured_at TEXT NOT NULL,
+      sample_count INTEGER NOT NULL,
+      max_ccu INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (demo_title_id) REFERENCES demo_titles(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS demo_ccu_daily_rollups_unique
+      ON demo_ccu_daily_rollups (demo_title_id, rollup_date);
+
+    -- Hourly CCU poll state (2026-10-22): the timestamp of the last
+    -- COMPLETED full-catalog sweep, used by the boot catch-up check so a
+    -- single fresh sample from an interrupted sweep cannot mask a missed
+    -- one. See signals/demos/ccu-scheduler.ts.
+    CREATE TABLE IF NOT EXISTS demo_ccu_poll_state (
+      id INTEGER PRIMARY KEY CHECK(id=1),
+      last_sweep_completed_at TEXT NOT NULL
+    );
+
     -- Isolated engagement comparison. Never a source of pass downloads,
     -- player estimates, paid units, or publisher conversion.
     CREATE TABLE IF NOT EXISTS pass_parent_mappings (

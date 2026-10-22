@@ -66,6 +66,10 @@ interface DemoRow {
   ccuCurrent: number | null;
   ccuAllTimePeak: number | null;
   ccuAsOf: string | null;
+  ccuRecentPeak: number | null;
+  ccuRecentPeakSource: "steam" | "observed" | null;
+  ccuSteamRank: number | null;
+  ccuRecentPeakAsOf: string | null;
   sourceRank: number | null;
   reviewEstimate: number | null;
   isObservedMinimum: boolean;
@@ -476,8 +480,8 @@ export default function DemosLeaderboard() {
                   {sortLabel("activity", "Pass / Parent Activity")}
                   <span className="block text-xs font-normal">{activityWindow === "latest" ? "Latest paired sample" : activityWindow === "d7" ? "7-day daily samples" : "30-day daily samples"}</span>
                 </th>}
-                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "ccu" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("ccu", "Latest Sampled CCU")}</th>
-                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak Observed CCU")}</th>
+                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "ccu" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("ccu", "Current CCU")}</th>
+                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak CCU (24h)")}</th>
               </tr>
             </thead>
             <tbody>
@@ -578,9 +582,26 @@ export default function DemosLeaderboard() {
                   </td>}
                   <td className="px-3 py-2 text-right tabular-nums" title={d.ccuAsOf ? `Sample collected: ${d.ccuAsOf}` : "No CCU sample collected"}>
                     {formatNumberCompact(d.ccuCurrent)}
-                    {d.isArchived&&d.ccuAsOf&&<span className="block text-xs text-muted-foreground">{d.ccuAsOf.slice(0,10)}</span>}
+                    {d.isArchived && d.ccuAsOf
+                      ? <span className="block text-xs text-muted-foreground">{d.ccuAsOf.slice(0,10)}</span>
+                      : d.ccuAsOf && d.ccuCurrent != null && (() => {
+                        const ageMs = Date.now() - Date.parse(d.ccuAsOf);
+                        if (!Number.isFinite(ageMs) || ageMs < 0) return null;
+                        const mins = Math.floor(ageMs / 60000);
+                        const ageText = mins < 60 ? `${mins}m ago` : mins < 1440 ? `${Math.round(mins / 60)}h ago` : `${Math.round(mins / 1440)}d ago`;
+                        const stale = ageMs > 2 * 60 * 60 * 1000;
+                        return <span className={`block text-xs ${stale ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground"}`}>{stale ? `stale · ${ageText}` : ageText}</span>;
+                      })()}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{formatNumberCompact(d.ccuAllTimePeak)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums" title={
+                    d.ccuRecentPeakSource === "steam"
+                      ? `Steam most-played charts peak (Steam labels it "Peak Today"), captured ${d.ccuRecentPeakAsOf}`
+                      : d.ccuRecentPeakSource === "observed"
+                        ? "Max of our hourly samples in the last 24h (not on Steam's top-100 chart)"
+                        : "No peak sample yet"}>
+                    {formatNumberCompact(d.ccuRecentPeak)}
+                    {d.ccuRecentPeakSource === "steam" && <span className="ml-1 align-super text-[9px] text-muted-foreground">Steam</span>}
+                  </td>
                 </tr>
               ))}
               {data.demos.length === 0 && (

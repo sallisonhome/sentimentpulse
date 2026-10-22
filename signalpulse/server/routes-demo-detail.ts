@@ -62,6 +62,8 @@ export function registerDemoDetailRoutes(app: Express) {
         latest:{downloads:summary!.unitsMid,observedMinimum:summary!.isObservedMinimum,
           reviews:summary!.reviewCountTotal,positivePercent:summary!.steamReviews?.positivePercent??null,
           ccu:summary!.ccuCurrent,peak:summary!.ccuAllTimePeak,ccuObservedAt:summary!.ccuAsOf,
+          ccuRecentPeak:summary!.ccuRecentPeak,ccuRecentPeakSource:summary!.ccuRecentPeakSource,
+          ccuSteamRank:summary!.ccuSteamRank,ccuRecentPeakAsOf:summary!.ccuRecentPeakAsOf,
           actualsAsOf:summary!.actualsAsOf,actualsStale:summary!.actualsStale,actualsRefreshFailed:summary!.actualsRefreshFailed},
         latestWindows:latestWindows.sort((a,b)=>["d7","d30","d90","m12","ltd"].indexOf(a.window)-["d7","d30","d90","m12","ltd"].indexOf(b.window)),
         historyCoverage:{
