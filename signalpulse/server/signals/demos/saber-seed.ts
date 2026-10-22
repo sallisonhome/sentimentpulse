@@ -32,21 +32,37 @@ const upsertSaberDemoStmt = () => rawSqlite.prepare(
   `INSERT INTO demo_titles
      (steam_app_id, name, base_game_product_id, is_saber_published, genre,
       discovered_via, is_active, first_seen_at, last_checked_at, created_at, updated_at)
-   VALUES (?, ?, NULL, 1, ?, 'saber_own', ?, ?, ?, ?, ?)
+   VALUES (?, ?, ?, 1, ?, 'saber_own', ?, ?, ?, ?, ?)
    ON CONFLICT(steam_app_id) DO UPDATE SET
      name = excluded.name,
      genre = excluded.genre,
      is_saber_published = 1,
      discovered_via = 'saber_own',
+     -- Keep an existing parent link when the products row is missing now.
+     base_game_product_id = COALESCE(excluded.base_game_product_id, demo_titles.base_game_product_id),
      last_checked_at = excluded.last_checked_at,
      updated_at = excluded.updated_at`
 );
 
+/** Exactly one tracked product may own a parent app id. Zero matches links
+ *  nothing (COALESCE keeps any existing link); two or more is ambiguous and
+ *  fails closed to no link rather than guessing. */
+export function resolveParentProduct(parentSteamAppId: string): number | null {
+  const rows = rawSqlite.prepare(
+    "SELECT id FROM products WHERE steam_app_id=?").all(parentSteamAppId) as Array<{ id: number }>;
+  return rows.length === 1 ? rows[0].id : null;
+}
+
 export function seedSaberDemos(): { seeded: number } {
   const nowIso = new Date().toISOString();
   for (const demo of SABER_DEMO_ROSTER) {
+    // Resolve the roster's parent game to a tracked product row so the
+    // product-dashboard demo block and media lookups can work from the DB.
+    const parent = demo.parentSteamAppId
+      ? resolveParentProduct(demo.parentSteamAppId)
+      : undefined;
     upsertSaberDemoStmt().run(
-      demo.steamAppId, demo.name, demo.genre, demo.isActive ? 1 : 0,
+      demo.steamAppId, demo.name, parent ?? null, demo.genre, demo.isActive ? 1 : 0,
       nowIso, nowIso, nowIso, nowIso,
     );
   }

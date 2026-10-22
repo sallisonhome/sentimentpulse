@@ -39,8 +39,8 @@ test("daily and manual pipeline collect licenses as a separate metric, never pro
           data-browser_contenthub_newandtrending_0_50_123_6_="{}"`);
       }
       if (url.includes("/ajaxgetsaledynamicappquery?")) {
-        return Response.json({ success: 1, appids: [5184670,101,102,103,104,105,106,107,108,109],
-          match_count: 10, possible_has_more: false });
+        return Response.json({ success: 1, appids: [5184670,101,102,103,104,105,106,107,108,109,110],
+          match_count: 11, possible_has_more: false });
       }
       if (url.includes("/IStoreBrowseService/GetItems/")) {
         const ids = JSON.parse(new URL(url).searchParams.get("input_json")!).ids;
@@ -59,12 +59,15 @@ test("daily and manual pipeline collect licenses as a separate metric, never pro
           if (id === "106") delete data.related_items;
           if (id === "107") data.is_free = false;
           if (id === "108") data.success = 15;
+          // 110: Saber-published demo NOT in the roster -- must be
+          // auto-flagged by the publisher signal and collected this run.
+          if (id === "110") data.basic_info = { publishers: [{ name: "Saber Interactive", creator_clan_account_id: 32513338 }] };
           return data;
         }) } });
       }
       if (url.includes("/appreviewhistogram/")) {
         const id = new URL(url).pathname.split("/").pop()!;
-        assert.ok(["5184670","4010800","4354730","3462370","4010830","4047990","5102100"].includes(id), `ineligible histogram: ${id}`);
+        assert.ok(["5184670","4010800","4354730","3462370","4010830","4047990","5102100","110"].includes(id), `ineligible histogram: ${id}`);
         return Response.json({ success: 1, results: {
           rollup_type: "day", recent: [{ date: Math.floor(Date.parse(stamp)/1000)-60,
             recommendations_up: 10, recommendations_down: 0 }], rollups: [],
@@ -72,25 +75,32 @@ test("daily and manual pipeline collect licenses as a separate metric, never pro
       }
       if (url.includes("/GetNumberOfCurrentPlayers/")) {
         const id = new URL(url).searchParams.get("appid")!;
-        assert.ok(["5184670","4010800","4354730","3462370","4010830","4047990","5102100"].includes(id), `ineligible CCU: ${id}`);
+        assert.ok(["5184670","4010800","4354730","3462370","4010830","4047990","5102100","110"].includes(id), `ineligible CCU: ${id}`);
         return Response.json({ response: { result: 1, player_count: 3 } });
       }
       throw new Error(`Unexpected outbound request: ${url}`);
     };
     const { runDemosDailyPipeline } = await import("./pipeline");
     const daily = await runDemosDailyPipeline(0);
-    assert.equal(daily.eligibility.eligible, 7);
+    assert.equal(daily.eligibility.eligible, 8);
     assert.equal(daily.eligibility.excluded, 8);
     assert.equal(daily.eligibility.failed, 1);
-    assert.equal(daily.reviewHistory.ingested, 7);
-    assert.equal(daily.ccu.succeeded, 7);
+    assert.equal(daily.reviewHistory.ingested, 8);
+    assert.equal(daily.ccu.succeeded, 8);
     // No Steamworks session is configured in this fixture, so the licenses
     // collector skips (visible skip, never a fabricated zero) and makes no
     // portal calls -- the downstream assertions prove nothing was promoted.
     assert.equal(daily.portalActualsFetch.status, "skipped");
     assert.equal(daily.actuals.rowsWritten, 0);
-    assert.equal(daily.dashboardActuals.attempted, 7, "daily schedule refreshes all approved Saber demos");
-    assert.equal(daily.dashboardActuals.failed, 7, "missing session is visible, never fabricated zero actuals");
+    assert.equal(daily.dashboardActuals.attempted, 8, "daily schedule refreshes all approved Saber demos");
+    assert.equal(daily.dashboardActuals.failed, 8, "missing session is visible, never fabricated zero actuals");
+    // Non-roster Saber demo (110) is auto-flagged from the publisher signal
+    // and collected in the SAME run: discovery runs before the collectors.
+    const flagged = db.prepare("SELECT is_saber_published, discovered_via, is_active FROM demo_titles WHERE steam_app_id='110'").get() as any;
+    assert.ok(flagged, "110 discovered");
+    assert.equal(flagged.is_saber_published, 1, "110 auto-flagged as Saber via publisher");
+    assert.equal(flagged.discovered_via, "steam_demos_hub");
+    assert.equal(flagged.is_active, 1);
     // Exercise the real orchestrator through HTTP without booting the
     // application, starting schedulers or touching developer data.
     const app = express();
@@ -108,12 +118,12 @@ test("daily and manual pipeline collect licenses as a separate metric, never pro
     // Licenses may live in demo_portal_daily (collector-owned), but must
     // never appear in the download-estimate table under any method.
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_window_estimates_daily WHERE method='steamworks_actual'").get().n, 0);
-    assert.equal(body.result.estimates.rowsWritten, 35);
+    assert.equal(body.result.estimates.rowsWritten, 40);
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_portal_daily").get().n, 1, "no portal rows added");
     assert.equal(db.prepare("SELECT COUNT(*) n FROM demo_window_estimates_daily WHERE method='steamworks_actual'").get().n, 0);
     assert.deepEqual(db.prepare(`SELECT DISTINCT t.steam_app_id FROM demo_window_estimates_daily e
       JOIN demo_titles t ON t.id=e.demo_title_id ORDER BY t.steam_app_id`).all()
-      .map((r: any) => r.steam_app_id), ["3462370","4010800","4010830","4047990","4354730","5102100","5184670"]);
+      .map((r: any) => r.steam_app_id), ["110","3462370","4010800","4010830","4047990","4354730","5102100","5184670"]);
     assert.equal(db.prepare("SELECT units_mid FROM demo_window_estimates_daily WHERE demo_title_id=? AND window='d7'").get(demoId).units_mid, 655);
     assert.ok(!calls.some(url => url.includes("partner.steam")), "no Steamworks portal calls");
     assert.equal(db.pragma("integrity_check", { simple: true }), "ok");

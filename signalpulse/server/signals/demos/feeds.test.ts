@@ -232,12 +232,18 @@ test("discovery, migration and HTTP views preserve source order, null estimates 
           return { id: i.appid, appid: i.appid, success: 1, visible: true,
             type: id === "500" ? 0 : id === "600" ? 6 : 1, name: `Demo ${id}`, is_free: true,
             tagids: id === "2" ? [19, 21] : id === "4" ? [9] : [599],
-            related_items: { parent_appid: id === "3" ? 600 : 500 }, release: { steam_release_date: Number(id) * 86400 } };
+            related_items: { parent_appid: id === "3" ? 600 : 500 }, release: { steam_release_date: Number(id) * 86400 },
+            // 8 is a Saber-published demo (used by the isolated publisher
+            // round below): discovery must auto-flag it from the publisher
+            // signal -- live-verified Store Browse shape.
+            basic_info: id === "8" ? { publishers: [{ name: "Saber Interactive", creator_clan_account_id: 32513338 }] } : undefined };
         }) } });
     };
     const { runDemosHubDiscovery } = await import("./discovery");
     const first = await runDemosHubDiscovery(0);
     assert.equal(first.hubAppIdsFound, 4);
+
+
     assert.equal(first.newlyDiscovered, 3);
     assert.equal(first.rejectedNotDemo, 1);
     assert.equal(metadataCalls.filter(id => id === "2").length, 1, "cross-feed dedup before metadata calls");
@@ -348,6 +354,49 @@ test("discovery, migration and HTTP views preserve source order, null estimates 
     assert.ok(large.demos.every((a:any)=>!largeNext.demos.some((b:any)=>b.id===a.id)),"no duplicate rows across pages");
     assert.equal(db.pragma("integrity_check", { simple: true }), "ok");
     assert.deepEqual(db.pragma("foreign_key_check"), []);
+    // Isolated publisher round (2026-10-22): a Saber-published demo NOT in
+    // the roster is auto-flagged by hub discovery through the real path
+    // (Store Browse metadata -> VerifiedDemo.publishers -> upsert).
+    const discoveryFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input));
+      if (url.searchParams.get("flavor") === DEMO_FEEDS.new) {
+        return Response.json({ success: 1, appids: [2, 8], match_count: 2, possible_has_more: false });
+      }
+      return discoveryFetch(input, init);
+    };
+    const saberRound = await runDemosHubDiscovery(0);
+    globalThis.fetch = discoveryFetch;
+    assert.equal(saberRound.newlyDiscovered, 1);
+    assert.equal(db.prepare("SELECT is_saber_published FROM demo_titles WHERE steam_app_id='8'").get().is_saber_published, 1,
+      "Saber-published demo auto-flagged by hub discovery (publisher signal, no roster entry)");
+
+    // Publisher-based Saber flagging (2026-10-22): discovery marks Saber-
+    // published demos without a roster entry, links the parent product when
+    // tracked, and never downgrades an existing Saber flag.
+    db.exec(`INSERT INTO products (title,publisher,is_saber_published,platforms,player_format,genre,release_date,steam_app_id,created_at,updated_at)
+      VALUES('Parent Game','Saber Interactive',1,'PC','p','Action','2026-01-01','500','2026-01-01','2026-01-01')`);
+    const { upsertDiscoveredDemo } = await import("./discovery");
+    const { isSaberPublisher } = await import("./saber-roster");
+    assert.equal(isSaberPublisher([{ name: "Saber Interactive" }]), true);
+    assert.equal(isSaberPublisher([{ name: "Someone Else" }]), false);
+    assert.equal(isSaberPublisher([{ name: "Anything", creatorClanAccountId: 32513338 }]), true, "clan id is the canonical signal");
+    upsertDiscoveredDemo({ steamAppId: "700", name: "New Saber Demo", genre: null, releaseDate: null,
+      saberPublished: true, parentSteamAppId: "500", discoveredVia: "steam_demos_hub" });
+    const flagged = db.prepare("SELECT is_saber_published, base_game_product_id FROM demo_titles WHERE steam_app_id='700'").get() as any;
+    assert.equal(flagged.is_saber_published, 1, "publisher-flagged demo is Saber");
+    assert.ok(Number.isInteger(flagged.base_game_product_id), "parent product link resolved");
+    upsertDiscoveredDemo({ steamAppId: "700", name: "New Saber Demo", genre: null, releaseDate: null, discoveredVia: "steam_demos_hub" });
+    assert.equal(db.prepare("SELECT is_saber_published FROM demo_titles WHERE steam_app_id='700'").get().is_saber_published, 1, "re-discovery never downgrades the Saber flag");
+    // Ambiguous parent (two products with the same steam_app_id) fails
+    // closed to no link rather than guessing.
+    db.exec(`INSERT INTO products (title,publisher,is_saber_published,platforms,player_format,genre,release_date,steam_app_id,created_at,updated_at)
+      VALUES('Ambiguous A','Saber Interactive',1,'PC','p','Action','2026-01-01','900','2026-01-01','2026-01-01'),
+             ('Ambiguous B','Saber Interactive',1,'PC','p','Action','2026-01-01','900','2026-01-01','2026-01-01')`);
+    upsertDiscoveredDemo({ steamAppId: "701", name: "Ambiguous Parent Demo", genre: null, releaseDate: null,
+      saberPublished: true, parentSteamAppId: "900", discoveredVia: "steam_demos_hub" });
+    assert.equal(db.prepare("SELECT base_game_product_id FROM demo_titles WHERE steam_app_id='701'").get().base_game_product_id, null,
+      "ambiguous parent fails closed to no link");
   } finally {
     globalThis.fetch = realFetch;
     if (server) await new Promise<void>(resolve => server!.close(() => resolve()));
