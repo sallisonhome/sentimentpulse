@@ -1,11 +1,12 @@
 /**
- * YouTube Pulse — Saber title leaderboard (cohort view).
+ * YouTube Pulse — Saber title leaderboard.
  *
  * Route: /youtube
  *
- * Default: past 24 hours, ranked by aggregated views, descending.
- * Cohort definition: each window counts videos PUBLISHED in that window and
- * sums their current lifetime views/likes/comments from the YouTube Data API.
+ * Default definition: daily views — net daily view deltas across ALL tracked
+ * videos (the same arithmetic as the PDP "Daily views" chart), so the
+ * top-level list and the PDP agree. The legacy cohort view (videos PUBLISHED
+ * in the window, current lifetime stats) stays available as a toggle.
  * Short-form, likes % of views and all totals are SignalPulse calculations
  * from YouTube API data, labeled as such.
  */
@@ -21,7 +22,8 @@ import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { Link } from "wouter";
 
 type WindowKey = "d1" | "d7" | "d30" | "d90" | "m12" | "ltd";
-type SortKey = "views" | "videos" | "shortForm" | "comments" | "likes" | "likesPct" | "title";
+type Definition = "daily" | "cohort";
+type SortKey = "views" | "videos" | "shortForm" | "comments" | "likes" | "likesPct" | "netComments" | "title";
 
 const WINDOWS: Array<{ id: WindowKey; label: string }> = [
   { id: "d1", label: "24 hours" },
@@ -35,12 +37,13 @@ const WINDOWS: Array<{ id: WindowKey; label: string }> = [
 interface TopVideo { videoId: string; title: string; channelTitle: string | null; views: number; publishedAt: string; isShortForm: boolean }
 interface Row {
   titleId: number; title: string; steamAppId: string | null; headerImageUrl: string | null; isSaber: boolean; parentTitle: string | null;
-  views: number; videos: number; shortForm: number; comments: number; likes: number; likesPct: number | null;
-  likesHiddenVideos: number; commentsDisabledVideos: number; topVideo: TopVideo | null;
+  views: number | null; videos: number; netComments?: number | null;
+  shortForm?: number; comments?: number; likes?: number; likesPct?: number | null;
+  likesHiddenVideos?: number; commentsDisabledVideos?: number; topVideo: TopVideo | null;
   statsAsOf: string | null; trackingSince: string | null; backfillComplete: boolean; backfillOldest: string | null; backfillFloor: string;
 }
 interface LeaderboardResponse {
-  definition: "cohort"; window: WindowKey; sort: SortKey; direction: "asc" | "desc"; generatedAt: string;
+  definition: Definition; window: WindowKey; sort: SortKey; direction: "asc" | "desc"; generatedAt: string;
   apiKeyConfigured: boolean; lastRun: { status: string; finished_at: string | null; message: string | null } | null; rows: Row[];
 }
 interface VideoRow {
@@ -244,14 +247,18 @@ function TitleVideos({ titleId, window }: { titleId: number; window: WindowKey }
 
 export default function YoutubeLeaderboard() {
   const [windowSel, setWindowSel] = useState<WindowKey>("d1");
+  const [definition, setDefinition] = useState<Definition>("daily");
   const [sort, setSort] = useState<SortKey>("views");
   const [direction, setDirection] = useState<"asc" | "desc">("desc");
   const [open, setOpen] = useState<number | null>(null);
   const [scope, setScope] = useState<"saber" | "all">("saber");
 
+  // Cohort-only sort keys have no daily-mode column; snap back to views.
+  const effectiveSort: SortKey = definition === "daily" && (sort === "shortForm" || sort === "comments" || sort === "likes" || sort === "likesPct") ? "views" : sort;
+
   const { data, isLoading, isError, error } = useQuery<LeaderboardResponse>({
-    queryKey: ["/api/youtube/leaderboard", windowSel, sort, direction, scope],
-    queryFn: () => getJson(`api/youtube/leaderboard?window=${windowSel}&sort=${sort}&direction=${direction}&scope=${scope}`),
+    queryKey: ["/api/youtube/leaderboard", windowSel, effectiveSort, direction, scope, definition],
+    queryFn: () => getJson(`api/youtube/leaderboard?window=${windowSel}&sort=${effectiveSort}&direction=${direction}&scope=${scope}&definition=${definition}`),
   });
 
   const clickSort = (k: SortKey) => {
@@ -267,7 +274,7 @@ export default function YoutubeLeaderboard() {
     </th>
   );
   const windowLabel = WINDOWS.find((w) => w.id === windowSel)?.label.toLowerCase();
-  const totals = data?.rows.reduce((a, r) => ({ views: a.views + r.views, videos: a.videos + r.videos, shortForm: a.shortForm + r.shortForm }), { views: 0, videos: 0, shortForm: 0 });
+  const totals = data?.rows.reduce((a, r) => ({ views: a.views + (r.views ?? 0), videos: a.videos + r.videos, shortForm: a.shortForm + (r.shortForm ?? 0) }), { views: 0, videos: 0, shortForm: 0 });
 
   return (
     <div className="p-4 md:p-6 space-y-4" data-testid="page-youtube-leaderboard">
@@ -286,7 +293,16 @@ export default function YoutubeLeaderboard() {
 
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-muted-foreground">View:</span>
-        <Badge variant="secondary" data-testid="badge-yt-definition">Cohort: videos published in window</Badge>
+        <div className="flex flex-wrap gap-1" role="tablist" aria-label="Metric definition">
+          <Button size="sm" variant={definition === "daily" ? "default" : "outline"} role="tab" aria-selected={definition === "daily"}
+            onClick={() => { setDefinition("daily"); setOpen(null); }} data-testid="btn-yt-def-daily">
+            Daily views: all tracked videos
+          </Button>
+          <Button size="sm" variant={definition === "cohort" ? "default" : "outline"} role="tab" aria-selected={definition === "cohort"}
+            onClick={() => { setDefinition("cohort"); setOpen(null); }} data-testid="btn-yt-def-cohort">
+            Cohort: videos published in window
+          </Button>
+        </div>
         <Badge variant="outline" className="text-muted-foreground" title="Click a title for time series, daily snapshots, velocity and CSV export.">
           Title charts, velocity &amp; CSV: click a title
         </Badge>
@@ -320,10 +336,16 @@ export default function YoutubeLeaderboard() {
                 {header("title", "Title", false)}
                 {header("views", "Views")}
                 {header("videos", "Videos")}
-                {header("shortForm", "Short-form (≤3 min)")}
-                {header("comments", "Comments")}
-                {header("likes", "Likes")}
-                {header("likesPct", "Likes % of views")}
+                {definition === "cohort" ? (
+                  <>
+                    {header("shortForm", "Short-form (≤3 min)")}
+                    {header("comments", "Comments")}
+                    {header("likes", "Likes")}
+                    {header("likesPct", "Likes % of views")}
+                  </>
+                ) : (
+                  header("netComments", "Net comments")
+                )}
                 <th className="px-3 py-2 font-medium">Top video</th>
               </tr>
             </thead>
@@ -359,12 +381,24 @@ export default function YoutubeLeaderboard() {
                         </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums font-medium" title={fmt(r.views)}>{compact.format(r.views)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums font-medium"
+                      title={r.views == null ? "No comparable daily snapshots yet in this window" : fmt(r.views)}>
+                      {r.views == null ? "—" : compact.format(r.views)}
+                    </td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmt(r.videos)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmt(r.shortForm)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmt(r.comments)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums" title={r.likesHiddenVideos ? `${r.likesHiddenVideos} video(s) hide likes` : undefined}>{fmt(r.likes)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{r.likesPct == null ? "—" : `${r.likesPct.toFixed(2)}%`}</td>
+                    {definition === "cohort" ? (
+                      <>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmt(r.shortForm)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmt(r.comments)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums" title={r.likesHiddenVideos ? `${r.likesHiddenVideos} video(s) hide likes` : undefined}>{fmt(r.likes)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{r.likesPct == null ? "—" : `${r.likesPct.toFixed(2)}%`}</td>
+                      </>
+                    ) : (
+                      <td className="px-3 py-2 text-right tabular-nums"
+                        title={r.netComments == null ? "No comparable daily snapshots yet in this window" : fmt(r.netComments)}>
+                        {r.netComments == null ? "—" : fmt(r.netComments)}
+                      </td>
+                    )}
                     <td className="px-3 py-2 text-xs">
                       {r.topVideo ? (
                         <a href={`https://www.youtube.com/watch?v=${r.topVideo.videoId}`} target="_blank" rel="noreferrer" className="hover:underline line-clamp-2"
@@ -389,13 +423,19 @@ export default function YoutubeLeaderboard() {
 
       {totals && (
         <p className="text-xs text-muted-foreground" data-testid="text-yt-totals">
-          {scope === "all" ? "All tracked titles" : "Saber portfolio"}, {windowLabel}: {fmt(totals.views)} views across {fmt(totals.videos)} videos ({fmt(totals.shortForm)} short-form).
+          {scope === "all" ? "All tracked titles" : "Saber portfolio"}, {windowLabel}:{" "}
+          {definition === "daily"
+            ? ` ${fmt(totals.views)} net views across ${fmt(totals.videos)} matched videos.`
+            : ` ${fmt(totals.views)} views across ${fmt(totals.videos)} videos (${fmt(totals.shortForm)} short-form).`}
         </p>
       )}
 
       <details className="text-xs text-muted-foreground" data-testid="details-yt-method">
         <summary className="cursor-pointer py-1">How these numbers are built</summary>
         <ul className="mt-2 space-y-1 list-disc pl-5">
+          {definition === "daily" && (
+            <li>Daily view: net views gained between consecutive daily snapshots of the same videos, not lifetime totals. Newly discovered videos count only after a comparable prior snapshot exists. Negative corrections are preserved. The 24-hour window is the latest snapshot date, so it matches the title page's latest daily bar.</li>
+          )}
           <li>Cohort view: a window includes videos published in that window. Views, likes and comments are each video's current lifetime totals from the YouTube Data API, summed by SignalPulse.</li>
           <li>Videos are found by daily YouTube search for each title and admitted only when a distinctive title phrase appears in the video title; ambiguous names also need the Gaming category and a game-context word. Lifetime covers discovered videos, not every video on YouTube.</li>
           <li>Tracked titles are every active SentimentPulse title, including competitor titles set up under a Saber title, plus every SignalPulse product. Videos, stats and comments are collected for all of them; comments feed SentimentPulse. Competitors are hidden here unless "Include competitor titles" is on.</li>
