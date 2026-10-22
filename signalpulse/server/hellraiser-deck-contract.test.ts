@@ -42,8 +42,10 @@ const steamDaily = buildSteamDaily();
 test("contract constants match the operator directive", () => {
   assert.equal(a.units, 145300); // "PS5 actual units are 145.3K" (user, 2026-10-22)
   assert.equal(a.asOfDate, "2026-10-21");
-  assert.equal(HELLRAISER_DECK_CONTRACT.aspUsdCents.steam, 4000); // $40 Steam
   assert.equal(HELLRAISER_DECK_CONTRACT.aspUsdCents.console, 3305); // $33.05 console
+  // $40 Steam retained as documentation of the original directive but NOT
+  // applied — Steam serves Steamworks actuals (amendment 2026-10-22).
+  assert.equal(HELLRAISER_DECK_CONTRACT.aspUsdCents.steam, 4000);
 });
 
 test("allocation conserves the anchor exactly (largest-remainder, sum = 145,300)", () => {
@@ -115,7 +117,7 @@ test("applyHellraiserDeckContract sets PS5 units + revenue at the console ASP", 
   assert.equal(g.ownersMid, Math.max(1, Math.round(80000 * (expectedLtd / 99999)))); // scaled with units
 });
 
-test("applyHellraiserDeckContract restates Xbox and Steam revenue at the operator ASPs, units unchanged", () => {
+test("applyHellraiserDeckContract restates Xbox revenue at the console ASP; Steam serves actuals untouched", () => {
   const xbox: Array<Record<string, unknown>> = [
     { editionGroupKey: HELLRAISER_DECK_CONTRACT.familyKey, familyTitleIds: [11355], unitsMid: 54800, revenueMidUsd: 1753000, method: "m" },
   ];
@@ -124,13 +126,16 @@ test("applyHellraiserDeckContract restates Xbox and Steam revenue at the operato
   assert.equal(xbox[0].revenueMidUsd, Math.round((54800 * 3305) / 100));
   assert.equal(xbox[0].aspUsdCents, 3305);
 
+  // Steam is NOT restated to the operator ASP — the operator has Steamworks
+  // actuals for Hellraiser and all Saber titles (amendment 2026-10-22), so
+  // the Steam row keeps serving actuals unchanged.
   const steam: Array<Record<string, unknown>> = [
     { editionGroupKey: HELLRAISER_DECK_CONTRACT.familyKey, familyTitleIds: [10664], unitsMid: 167327, revenueMidUsd: 6887000, method: "m" },
   ];
-  assert.equal(applyHellraiserDeckContract(steam, "steam", "ltd", steamDaily), 1);
+  assert.equal(applyHellraiserDeckContract(steam, "steam", "ltd", steamDaily), 0);
   assert.equal(steam[0].unitsMid, 167327);
-  assert.equal(steam[0].revenueMidUsd, Math.round((167327 * 4000) / 100));
-  assert.equal(steam[0].aspUsdCents, 4000);
+  assert.equal(steam[0].revenueMidUsd, 6887000); // actuals unchanged
+  assert.equal(steam[0].aspUsdCents, undefined);
 });
 
 test("unrelated families are untouched", () => {

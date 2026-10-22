@@ -7,13 +7,17 @@
 // revenue, units back-computed at the msrp×aspFactor ASP), which both
 // misstated the level and used a different revenue basis than the deck.
 //
-// The contract, verbatim from the operator (2026-10-22):
+// The contract, from the operator (2026-10-22, amended same day):
 //   * PS5 LTD actual: 145,300 units through 2026-10-21 (supersedes the
 //     137,000-through-2026-10-18 and 49,200-day-one figures, which remain
 //     valid history for their own dates).
-//   * ASPs, now and going forward: $40.00/unit Steam, $33.05/console SKU
-//     (PS5 and Xbox). These replace the board's msrp×aspFactor basis for
-//     this title. Revenue on this basis is modeled, not disclosed actuals.
+//   * Console ASP, now and going forward: $33.05/console SKU (PS5 and Xbox).
+//     Revenue on this basis is modeled, not disclosed actuals.
+//   * Steam: ALWAYS serves Steamworks actuals — the operator has Steamworks
+//     access for Hellraiser and all Saber titles, so the $40/unit ASP is NOT
+//     applied to Steam (amended 2026-10-22: "revert forcing the asp onto
+//     Steam"). The constant is retained below only as documentation of the
+//     original directive.
 //   * Daily continuation after the anchor date: Steam daily units × the
 //     PS5:Steam unit ratio measured through the anchor (the deck rule).
 //   * The anchor is allocated across D1..anchor-date by Steam's daily-unit
@@ -53,11 +57,13 @@ export const HELLRAISER_DECK_CONTRACT = {
     launchWindowStart: "2026-10-08",
     launchWindowSteamUnits: 125676,
   } as HellraiserDeckContractAnchor,
-  /** Operator ASP directive 2026-10-22: "$40 ASP for Steam and 33.05 for
-   *  console SKUs now and going forward" — USD cents per unit. */
+  /** Operator ASP directive 2026-10-22: $33.05/console SKU (PS5 and Xbox),
+   *  now and going forward. The $40 Steam figure is NOT applied — Steam
+   *  serves Steamworks actuals for Hellraiser and all Saber titles
+   *  (amended 2026-10-22); retained here as documentation only. */
   aspUsdCents: { steam: 4000, console: 3305 },
   source:
-    "operator deck-contract 2026-10-22: PS5 LTD actual 145,300 units through 2026-10-21; ASPs $40 Steam / $33.05 console (user directive, now and going forward)",
+    "operator deck-contract 2026-10-22 (amended): PS5 LTD actual 145,300 units through 2026-10-21; console ASP $33.05 (PS5 + Xbox, now and going forward); Steam always serves Steamworks actuals",
 } as const;
 
 /** Appended to the served method string for every row this contract sets. */
@@ -163,7 +169,8 @@ function addDays(iso: string, n: number): string {
  * Apply the contract to the served board groups of one platform response.
  * PS5: units come from the contract series; revenue = units × $33.05.
  * Xbox: units unchanged (Path B level); revenue = units × $33.05.
- * Steam: units unchanged (actuals); revenue = units × $40.
+ * Steam: NOT touched — Steam always serves Steamworks actuals for this
+ * title (operator amendment 2026-10-22). Returns the groups set.
  *
  * Mutates the group objects in place (same pattern as the other serve-time
  * registries). `window` is the requested board window; `asOf` is the latest
@@ -179,8 +186,7 @@ export function applyHellraiserDeckContract(
   const asOf = steamDaily.reduce((m, r) => (r.date > m ? r.date : m), "");
   if (!asOf) return 0;
   const asp =
-    platform === "steam" ? HELLRAISER_DECK_CONTRACT.aspUsdCents.steam
-    : platform === "ps5" || platform === "xbox" ? HELLRAISER_DECK_CONTRACT.aspUsdCents.console
+    platform === "ps5" || platform === "xbox" ? HELLRAISER_DECK_CONTRACT.aspUsdCents.console
     : null;
   let touched = 0;
   for (const g of groups) {
@@ -206,14 +212,14 @@ export function applyHellraiserDeckContract(
         g.estimateMethod = HELLRAISER_DECK_CONTRACT_TAG;
       }
       touched++;
-    } else if (platform === "xbox" || platform === "steam") {
+    } else if (platform === "xbox") {
       const units = typeof g.unitsMid === "number" && g.unitsMid > 0 ? g.unitsMid : null;
       if (units == null || asp == null) continue;
       g.revenueMidUsdEstimated = typeof g.revenueMidUsd === "number" ? g.revenueMidUsd : null;
       g.aspUsdCents = asp;
       g.revenueMidUsd = Math.round((units * asp) / 100);
       g.dataSource = "operator_asp_contract";
-      g.revenueCaveat = `ASP basis per operator directive 2026-10-22 ($${(asp / 100).toFixed(2)}/unit, now and going forward); ${platform === "steam" ? "revenue restated from actuals to the operator ASP basis" : "modeled revenue, not disclosed actuals"}.`;
+      g.revenueCaveat = `ASP basis per operator directive 2026-10-22 ($${(asp / 100).toFixed(2)}/unit, now and going forward); modeled revenue, not disclosed actuals.`;
       g.method = `${g.method ?? ""}+${HELLRAISER_DECK_CONTRACT_TAG}`.replace(/^\+/, "");
       if (typeof g.estimateMethod === "string") {
         g.estimateMethod = `${g.estimateMethod}+${HELLRAISER_DECK_CONTRACT_TAG}`;
