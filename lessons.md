@@ -3934,3 +3934,45 @@ seed the CUSA product as sku_role='base' (ratings_only excludes it from the esti
 captures the full concept pool. (3) The db-admin EXPLAIN pass executes writes: the "UNIQUE
 constraint failed" noise on the actual run after a successful EXPLAIN means the seed landed
 (verify with a read query, do not rerun the write).
+
+
+## 2026-10-22 Hellraiser deck-contract: operator-anchored PS5 + operator ASPs on the buying leaderboards
+
+**Symptom.** The buying-leaderboard combined estimate for Clive Barker's Hellraiser: Revival
+($13.91M LTD) sat ~8% below the deck's anchor-reset model (~$15.4M through 10-21). Root
+cause was NOT the anchor machinery (the D1 49,200 anchor + native growth existed in
+window_estimates_daily) — it was that **Path B overwrote the anchored values at read time**:
+the PS5 row was entirely 0.7657 x Steam revenue with units back-computed at the
+msrp x aspFactor ASP ($39.99 x 0.8 = $32/unit). The D1 anchor never surfaced on any board.
+Same failure class as RDR2 (title 11561): estimator-side anchors are invisible unless a
+read-side guard protects them.
+
+**Fix (PR: hellraiser-deck-contract).** A per-title operator contract, read-side and
+durable, mirroring the ceilings/guards pattern:
+1. `server/hellraiser-deck-contract.ts` — the contract registry: PS5 LTD actual 145,300
+   units through 2026-10-21 (operator: "PS5 actual units are 145.3K", 2026-10-22; the
+   137K-through-10-18 and 49,200-D1 figures remain valid history for their dates),
+   allocation across 10-08..10-21 by Steam's daily-unit shape (largest-remainder, sum
+   exact, denominator 125,676), continuation after 10-21 at ratio 145,300/167,327 (Steam
+   base units through the anchor), ASPs $40.00 Steam / $33.05 console SKU (operator
+   directive "now and going forward").
+2. Route hook in `platformSales` AFTER chart-consistency, BEFORE sorting: PS5 units from
+   the contract series + revenue at $33.05; Xbox units unchanged (Path B level), revenue
+   at $33.05; Steam units unchanged (actuals), revenue restated to units x $40.
+   Steam actuals come from one `steam_sales_daily` query (product_id 7, base, from
+   10-08). Values recompute per request — the nightly estimator cannot erase them.
+3. `native_model_guard_v4` for 11296/ps5 on d7/d30/d90/m12/LTD — LTD IS guarded here
+   (unlike the aged-title doctrine) because the operator anchor, not the Steam ratio, is
+   the authority. The guard keeps Path B away; the contract step is the final authority.
+
+**Rules.** (1) An operator-supplied anchor only reaches the boards if BOTH a read-side
+guard blocks Path B AND a read-side step sets the values — an estimator-side releveling
+alone is masked. (2) Operator ASP directives override the board-wide msrp x aspFactor basis
+per title; label the revenue as modeled and keep the prior estimate in
+`unitsMidEstimated`/`revenueMidUsdEstimated` for disclosure. (3) The ratio denominator
+(Steam units through the anchor) is FROZEN in the contract row — never recomputed from
+whatever slice of actuals is present at read time. (4) TS scanner gotcha: an `as Type`
+cast must not start on a new line after its expression (TS1434 "Unexpected keyword or
+identifier" pointing mid-`const`) — keep the cast on the same line as the closing paren.
+(5) tsconfig target is pre-ES2015 for iteration: `for (const [k,v] of map)` needs
+downlevelIteration — use `map.forEach((v,k)=>...)` instead.

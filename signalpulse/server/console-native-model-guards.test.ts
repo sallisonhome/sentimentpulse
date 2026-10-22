@@ -23,6 +23,13 @@ test("the shipped native-model guards are the v1 batch plus the 22 audit-widened
   assert.equal(v3[0].titleId, 11561);
   assert.equal(v3[0].platform, "ps5");
   assert.deepEqual(v3[0].windows, ["d7", "d30", "d90", "m12"]); // LTD deliberately not guarded
+  // v4: the Hellraiser operator-anchor contract — all windows INCLUDING ltd
+  // (the operator anchor, not the Steam ratio, is the LTD authority here).
+  const v4 = CONSOLE_NATIVE_MODEL_GUARDS.filter((g) => g.policyVersion === "native_model_guard_v4");
+  assert.equal(v4.length, 1);
+  assert.equal(v4[0].titleId, 11296);
+  assert.equal(v4[0].platform, "ps5");
+  assert.deepEqual(v4[0].windows, ["d7", "d30", "d90", "m12", "ltd"]);
   for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
     assert.ok(g.reason.length > 20, "each guard carries an audit reason");
     assert.ok(g.policyVersion.length > 0, "each guard carries a policy version");
@@ -52,9 +59,14 @@ test("nativeModelGuardFor matches only the exact (family, platform, window) trip
   assert.equal(nativeModelGuardFor([11179], "steam", "d30"), null);
   assert.equal(nativeModelGuardFor([10370], "xbox", "d90"), null);
   // Wrong title.
-  assert.equal(nativeModelGuardFor([11296], "ps5", "d30"), null);
   assert.equal(nativeModelGuardFor([11389], "ps5", "d30"), null);
   assert.equal(nativeModelGuardFor([0], "ps5", "d30"), null);
+  // Hellraiser (11296/ps5) IS guarded as of native_model_guard_v4 (operator
+  // anchor contract) — all windows including ltd.
+  for (const win of ["d7", "d30", "d90", "m12", "ltd"]) {
+    assert.ok(nativeModelGuardFor([11296], "ps5", win), `11296/ps5/${win} is guarded (v4)`);
+  }
+  assert.equal(nativeModelGuardFor([11296], "xbox", "d30"), null);
   // Guarded title inside a larger family is still protected (edition grouping).
   assert.ok(nativeModelGuardFor([99999, 11188], "ps5", "d30"));
   assert.ok(nativeModelGuardFor([11179, 99998], "ps5", "d30"));
@@ -82,8 +94,8 @@ test("guards do not leak to an unsupported window", () => {
 
 test("the shipped guards carry an audit reason and policy version", () => {
   for (const g of CONSOLE_NATIVE_MODEL_GUARDS) {
-    assert.ok(g.reason.includes("Steam×9 IP override") || g.reason.includes("ceiling clamp") || g.reason.includes("native") || g.reason.includes("ratings-driven"), `guard reason cites the override, clamp, native baseline, or ratings-driven directive: ${g.reason}`);
-    assert.ok(["native_model_guard_v1", "native_model_guard_v2", "native_model_guard_v3"].includes(g.policyVersion),
+    assert.ok(g.reason.includes("Steam×9 IP override") || g.reason.includes("ceiling clamp") || g.reason.includes("native") || g.reason.includes("ratings-driven") || g.reason.includes("operator"), `guard reason cites the override, clamp, native baseline, ratings-driven directive, or operator anchor: ${g.reason}`);
+    assert.ok(["native_model_guard_v1", "native_model_guard_v2", "native_model_guard_v3", "native_model_guard_v4"].includes(g.policyVersion),
       `guard policyVersion is a known version: ${g.policyVersion}`);
   }
 });

@@ -115,6 +115,7 @@ import { editionGroupKey } from "./console-sales-family";
 import { detectReviewSurge, SURGE_WINDOWS, REVIEW_SURGE_VERSION } from "./steam-review-surge";
 import { overlayExceedsPublicCeiling, steamPublicCapRatio, publicCeilingFor } from "./console-public-ceilings";
 import { nativeModelGuardFor } from "./console-native-model-guards";
+import { HELLRAISER_DECK_CONTRACT, applyHellraiserDeckContract, isHellraiserDeckContractGroup } from "./hellraiser-deck-contract";
 import { agedTitleCeilingFor } from "./aged-title-ceilings";
 import { applyChartConsistency, chartModeFromEnv } from "./console-chart-consistency";
 import { readDeepRankByTitle } from "./signals/console/deepChartStore";
@@ -1536,6 +1537,27 @@ export function registerConsoleLeaderboardRoutes(app: Express) {
           }
         } catch (chartErr: any) {
           console.log(`[chart-consistency] skipped (${chartErr?.message ?? chartErr}); returning estimates unchanged`);
+        }
+      }
+      // ─── Hellraiser deck contract (2026-10-22): operator-anchored PS5 units +
+      // operator ASPs ($40 Steam / $33.05 console). Serve-time and durable like
+      // the ceilings/guards; runs AFTER Path B and chart-consistency so the
+      // operator contract is the final authority for this family. The paired
+      // native_model_guard_v4 row keeps Path B from touching 11296/ps5 in the
+      // first place.
+      if (groups.some((g: any) => isHellraiserDeckContractGroup(g))) {
+        try {
+          const steamDaily = prepareBoardQuery(
+            `SELECT date, net_units AS units FROM steam_sales_daily
+             WHERE product_id = ? AND sku_group = 'base' AND date >= ?
+             ORDER BY date`
+          ).all(HELLRAISER_DECK_CONTRACT.steamProductId, HELLRAISER_DECK_CONTRACT.anchor.launchWindowStart) as Array<{ date: string; units: number }>;
+          const touched = applyHellraiserDeckContract(groups as any[], platform, window, steamDaily);
+          if (touched > 0) {
+            console.log(`[hellraiser-deck-contract] platform=${platform} window=${window} groups=${touched}`);
+          }
+        } catch (contractErr: any) {
+          console.log(`[hellraiser-deck-contract] skipped (${contractErr?.message ?? contractErr}); returning estimates unchanged`);
         }
       }
       if (sort === "revenue" || sort === "units" || sort === "asp") {
