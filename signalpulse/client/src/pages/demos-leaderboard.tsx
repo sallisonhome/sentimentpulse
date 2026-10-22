@@ -481,7 +481,7 @@ export default function DemosLeaderboard() {
                   <span className="block text-xs font-normal">{activityWindow === "latest" ? "Latest paired sample" : activityWindow === "d7" ? "7-day daily samples" : "30-day daily samples"}</span>
                 </th>}
                 <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "ccu" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("ccu", "Current CCU")}</th>
-                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak CCU (24h)")}</th>
+                <th className="px-3 py-2 font-medium text-right" aria-sort={sortSel === "peak" ? (sortDirection === "desc" ? "descending" : "ascending") : "none"}>{sortLabel("peak", "Peak CCU")}</th>
               </tr>
             </thead>
             <tbody>
