@@ -2,8 +2,10 @@
  * YouTube Pulse API (v1.0, 2026-09-24).
  *
  * Authenticated (Saber JWT, like the rest of the SPA):
- *   GET  /api/youtube/leaderboard?window=d1|d7|d30|d90|m12|ltd&sort=views|videos|shortForm|comments|likes|likesPct|title&direction=desc|asc
- *        Cohort definition: videos PUBLISHED in the window, current lifetime stats.
+ *   GET  /api/youtube/leaderboard?window=d1|d7|d30|d90|m12|ltd&sort=…&direction=desc|asc&definition=daily|cohort
+ *        Default definition=daily: net daily view deltas across ALL tracked
+ *        videos (PDP-aligned). definition=cohort: videos PUBLISHED in the
+ *        window, current lifetime stats.
  *   GET  /api/youtube/titles/:titleId/videos?window=…&limit=…
  *   GET  /api/youtube/status          quota use, last runs, row counts
  *   GET  /api/youtube/lookup?q=<game name>&strict=0|1&refresh=0|1
@@ -23,7 +25,7 @@
 import type { Express, Request, Response } from "express";
 import { storage } from "./storage";
 import { ytDb } from "./youtube/db";
-import { COHORT_WINDOWS, COHORT_SORTS, computeCohortLeaderboard, listTitleVideos, type CohortWindow, type CohortSort } from "./youtube/cohort";
+import { COHORT_WINDOWS, COHORT_SORTS, DAILY_SORTS, computeCohortLeaderboard, computeDailyViewsLeaderboard, listTitleVideos, type CohortWindow, type CohortSort, type DailySort } from "./youtube/cohort";
 import { quotaUsed, ptDate, SEARCH_CALLS_CEILING, UNITS_CEILING, YouTubeClient, QuotaExhaustedError } from "./youtube/api";
 import { runYoutubePipeline, isYoutubeRunActive, judgeCandidates, type RetentionMode } from "./youtube/pipeline";
 import { syncTitles, buildTitleSources, type TitleRow, type SentimentPulseGameLite } from "./youtube/titles";
@@ -114,14 +116,19 @@ export function registerYoutubeRoutes(app: Express) {
     try {
       await syncYoutubeTitles().catch(() => undefined);
       const scope = req.query.scope === "all" ? "all" : "saber";
+      const definition = req.query.definition === "cohort" ? "cohort" : "daily";
       const window = pick<CohortWindow>(req.query.window, COHORT_WINDOWS, "d1");
-      const sort = pick<CohortSort>(req.query.sort, COHORT_SORTS, "views");
       const direction = req.query.direction === "asc" ? "asc" : "desc";
-      const rows = computeCohortLeaderboard(ytDb(), window, sort, direction, new Date(), scope);
+      const sort = definition === "cohort"
+        ? pick<CohortSort>(req.query.sort, COHORT_SORTS, "views")
+        : pick<DailySort>(req.query.sort, DAILY_SORTS, "views");
+      const rows = definition === "cohort"
+        ? computeCohortLeaderboard(ytDb(), window, sort as CohortSort, direction, new Date(), scope)
+        : computeDailyViewsLeaderboard(ytDb(), window, sort as DailySort, direction, new Date(), scope);
       const headers = new Map(storage.getAllProducts().filter((p: any) => p.steamAppId).map((p: any) => [Number(p.steamAppId), p.steamHeaderImageUrl ?? null]));
       const lastRun = ytDb().prepare("SELECT * FROM yt_ingest_runs WHERE status != 'running' ORDER BY id DESC LIMIT 1").get() ?? null;
       res.json({
-        definition: "cohort",
+        definition,
         window, sort, direction, scope,
         generatedAt: new Date().toISOString(),
         apiKeyConfigured: !!youtubeApiKey(),

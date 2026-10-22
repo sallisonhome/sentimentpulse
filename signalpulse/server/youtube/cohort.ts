@@ -25,6 +25,9 @@ export const WINDOW_HOURS: Record<CohortWindow, number | null> = {
 export const COHORT_SORTS = ["views", "videos", "shortForm", "comments", "likes", "likesPct", "title"] as const;
 export type CohortSort = typeof COHORT_SORTS[number];
 
+export const DAILY_SORTS = ["views", "videos", "netComments", "title"] as const;
+export type DailySort = typeof DAILY_SORTS[number];
+
 export interface CohortTopVideo { videoId: string; title: string; channelTitle: string | null; views: number; publishedAt: string; isShortForm: boolean }
 
 export interface CohortRow {
@@ -125,6 +128,106 @@ export function computeCohortLeaderboard(db: YtDb, w: CohortWindow, sort: Cohort
     if (a < b) return -1 * dir;
     if (a > b) return 1 * dir;
     return y.views - x.views || x.title.localeCompare(y.title);
+  });
+  return rows;
+}
+
+/**
+ * Daily-views leaderboard: net view deltas between consecutive UTC daily
+ * snapshots of the SAME videos, summed over the window — the arithmetic
+ * behind the PDP "Daily views" chart (series.ts netViews), so the top-level
+ * list and the PDP agree by construction.
+ *
+ * Semantics carried over from series.ts: missing snapshots are null, not
+ * zero; newly discovered videos count only after a comparable prior snapshot
+ * exists; negative corrections are preserved. d1 is the latest observed
+ * snapshot date (stable between cron runs, equal to the PDP's latest bar);
+ * ltd sums every observed daily delta ("views since tracking began").
+ */
+export interface DailyRow {
+  titleId: number;
+  title: string;
+  steamAppId: string | null;
+  isSaber: boolean;
+  parentTitle: string | null;
+  views: number | null;
+  videos: number; // distinct videos with a matched consecutive-snapshot pair
+  netComments: number | null;
+  topVideo: CohortTopVideo | null; // title's most-viewed tracked video, full catalog
+  statsAsOf: string | null;
+  trackingSince: string | null;
+  backfillComplete: boolean;
+  backfillOldest: string | null;
+  backfillFloor: string;
+}
+
+export function computeDailyViewsLeaderboard(db: YtDb, w: CohortWindow, sort: DailySort = "views",
+  direction: "asc" | "desc" = "desc", now = new Date(), scope: "saber" | "all" = "saber"): DailyRow[] {
+  const today = now.toISOString().slice(0, 10);
+  let start: string | null;
+  let end: string;
+  if (w === "d1") {
+    const latest = (db.prepare("SELECT MAX(date) AS d FROM yt_video_stats_daily").get() as any)?.d as string | null;
+    start = latest ?? today; // latest observed snapshot date; equals the PDP's latest bar
+    end = start;
+  } else if (w === "ltd") {
+    start = null; // every observed daily delta
+    end = today;
+  } else {
+    start = windowStart(w, now)!.slice(0, 10);
+    end = today;
+  }
+  const titles = db.prepare(`SELECT t.*, p.title AS parent_title FROM yt_titles t LEFT JOIN yt_titles p ON p.title_id=t.parent_title_id
+    WHERE t.enabled=1 AND (? = 'all' OR t.is_saber=1)`).all(scope) as any[];
+  const agg = db.prepare(`
+    SELECT v.title_id,
+      COUNT(*) AS matched,
+      SUM(CASE WHEN s.view_count IS NOT NULL AND p.view_count IS NOT NULL THEN s.view_count - p.view_count END) AS views,
+      SUM(CASE WHEN s.comment_count IS NOT NULL AND p.comment_count IS NOT NULL THEN s.comment_count - p.comment_count END) AS net_comments
+    FROM yt_video_stats_daily s
+    JOIN yt_video_stats_daily p ON p.video_id=s.video_id AND p.date=date(s.date,'-1 day')
+    JOIN yt_videos v ON v.video_id=s.video_id
+    WHERE v.excluded_at IS NULL AND v.relevance_version=${RELEVANCE_VERSION}
+      AND (? IS NULL OR s.date >= ?) AND s.date <= ?
+    GROUP BY v.title_id`).all(start, start, end) as any[];
+  const byId = new Map(agg.map((a) => [a.title_id, a]));
+  const firstSeen = new Map((db.prepare("SELECT title_id, MIN(first_seen_at) AS s FROM yt_videos GROUP BY title_id").all() as any[]).map((r) => [r.title_id, r.s]));
+  const topStmt = db.prepare(`SELECT video_id, title, channel_title, view_count, published_at, is_short_form FROM yt_videos
+    WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND title_id=? ORDER BY view_count DESC, published_at DESC LIMIT 1`);
+  const statsStmt = db.prepare(`SELECT MIN(last_refreshed_at) AS s FROM yt_videos WHERE excluded_at IS NULL AND relevance_version=${RELEVANCE_VERSION} AND title_id=?`);
+
+  const rows: DailyRow[] = titles.map((t) => {
+    const a = byId.get(t.title_id);
+    const top = topStmt.get(t.title_id) as any;
+    const floorIso = `${t.backfill_floor}T00:00:00.000Z`;
+    return {
+      titleId: t.title_id,
+      title: t.title,
+      steamAppId: t.steam_app_id,
+      isSaber: !!t.is_saber,
+      parentTitle: t.parent_title ?? null,
+      views: a?.views ?? null,
+      videos: a?.matched ?? 0,
+      netComments: a?.net_comments ?? null,
+      topVideo: top ? { videoId: top.video_id, title: top.title, channelTitle: top.channel_title, views: top.view_count ?? 0, publishedAt: top.published_at, isShortForm: !!top.is_short_form } : null,
+      statsAsOf: (statsStmt.get(t.title_id) as any)?.s ?? null,
+      trackingSince: firstSeen.get(t.title_id) ?? null,
+      backfillComplete: !!t.backfill_oldest && t.backfill_oldest <= floorIso,
+      backfillOldest: t.backfill_oldest,
+      backfillFloor: t.backfill_floor,
+    };
+  });
+
+  const dir = direction === "asc" ? 1 : -1;
+  const val = (r: DailyRow): number | string | null => sort === "title" ? r.title.toLowerCase() : (r as any)[sort];
+  rows.sort((x, y) => {
+    const a = val(x), b = val(y);
+    if (a == null && b == null) return x.title.localeCompare(y.title);
+    if (a == null) return 1; // missing values sort last in both directions
+    if (b == null) return -1;
+    if (a < b) return -1 * dir;
+    if (a > b) return 1 * dir;
+    return (y.views ?? 0) - (x.views ?? 0) || x.title.localeCompare(y.title);
   });
   return rows;
 }

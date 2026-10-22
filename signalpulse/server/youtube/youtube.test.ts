@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { openYoutubeDb, type YtDb } from "./db";
 import { matchVideo, parseIsoDuration, isShortForm, RELEVANCE_VERSION } from "./relevance";
 import { readCommentFeed } from "./feed";
-import { computeCohortLeaderboard, windowStart, listTitleVideos } from "./cohort";
+import { computeCohortLeaderboard, computeDailyViewsLeaderboard, windowStart, listTitleVideos } from "./cohort";
 import { runRetention, removeVideo, runComments, type RunCounters } from "./pipeline";
 import { scheduledRunDue } from "./cron";
 import { syncTitles, backfillFloor, TITLE_SEEDS, seedFor, buildTitleSources, specificityExcludes, cleanTitleName, matchConfigOf, type ProductLite, type SentimentPulseGameLite } from "./titles";
@@ -432,6 +432,76 @@ test("cohort: window membership by publish date, sums of current stats, likes% e
   assert.deepEqual(byTitle.map((r) => r.title), ["SnowRunner", "Space Marine 2", "Twisted Tower"]);
   assert.equal(windowStart("ltd", now), null);
   assert.deepEqual(listTitleVideos(db, 3, "d7", 10, now).map((v) => v.videoId), ["b", "a"]);
+});
+
+// ─── daily-views leaderboard ─────────────────────────────────────────────────
+
+test("daily: same-video net deltas, new videos wait for a prior snapshot, negatives preserved, d1 = PDP's latest bar", () => {
+  const db = freshDb();
+  const now = new Date("2026-09-24T12:00:00Z");
+  syncTitles(db, src([
+    { id: 3, title: "Space Marine 2", steamAppId: "3", releaseDate: "2024-09-09" },
+    { id: 16, title: "SnowRunner", steamAppId: "16", releaseDate: "2020-04-28" },
+    { id: 17, title: "Twisted Tower", steamAppId: "17", releaseDate: "2026-01-01" },
+  ]), now);
+  addVideo(db, { video_id: "a", title_id: 3, published_at: "2026-09-20T00:00:00Z", view_count: 5000, comment_count: 45 });
+  addVideo(db, { video_id: "b", title_id: 3, published_at: "2026-09-23T00:00:00Z", view_count: 1000, comment_count: 10 }); // no prior snapshot
+  addVideo(db, { video_id: "c", title_id: 16, published_at: "2026-09-01T00:00:00Z", view_count: 3000, comment_count: 5 });
+  const snap = db.prepare("INSERT INTO yt_video_stats_daily(video_id,date,view_count,like_count,comment_count) VALUES(?,?,?,?,?)");
+  snap.run("a", "2026-09-22", 4000, 400, 40);
+  snap.run("a", "2026-09-23", 5000, 450, 45);   // +1000 views, +5 comments
+  snap.run("b", "2026-09-23", 1000, 100, 10);   // no prior: never counted
+  snap.run("c", "2026-09-22", 3050, 300, 6);
+  snap.run("c", "2026-09-23", 3000, 295, 5);     // negative correction: -50 views, -1 comment
+
+  // d1 = latest observed snapshot date (2026-09-23)
+  const d1 = computeDailyViewsLeaderboard(db, "d1", "views", "desc", now);
+  assert.deepEqual(d1.map((r) => [r.titleId, r.views, r.videos]), [[3, 1000, 1], [16, -50, 1], [17, null, 0]]);
+  assert.equal(d1[0].netComments, 5);
+  assert.equal(d1.find((r) => r.titleId === 3)!.topVideo?.videoId, "a"); // full-catalog top video
+
+  // 7-day window: only one matched pair exists per title
+  const d7 = computeDailyViewsLeaderboard(db, "d7", "views", "desc", now);
+  assert.equal(d7.find((r) => r.titleId === 3)!.views, 1000);
+  assert.equal(d7.find((r) => r.titleId === 16)!.views, -50);
+
+  // ltd sums every observed daily delta
+  const ltd = computeDailyViewsLeaderboard(db, "ltd", "views", "desc", now);
+  assert.equal(ltd.find((r) => r.titleId === 3)!.views, 1000);
+
+  // cross-check against the PDP series arithmetic for the same date
+  const s = readYoutubeSeries(db, 3, { start: "2026-09-23", end: "2026-09-23", bucket: "day" }, now);
+  assert.equal(s.rows[0].netViews, d1.find((r) => r.titleId === 3)!.views);
+
+  // missing values sort last in both directions
+  for (const dir of ["asc", "desc"] as const) {
+    const sorted = computeDailyViewsLeaderboard(db, "d1", "views", dir, now);
+    assert.equal(sorted[sorted.length - 1].titleId, 17);
+  }
+  const byTitle = computeDailyViewsLeaderboard(db, "ltd", "title", "asc", now);
+  assert.deepEqual(byTitle.map((r) => r.title), ["SnowRunner", "Space Marine 2", "Twisted Tower"]);
+});
+
+test("daily: excluded videos and stale relevance versions contribute nothing", () => {
+  const db = freshDb();
+  const now = new Date("2026-09-24T12:00:00Z");
+  syncTitles(db, src([
+    { id: 3, title: "Space Marine 2", steamAppId: "3", releaseDate: "2024-09-09" },
+  ]), now);
+  addVideo(db, { video_id: "ok", title_id: 3, published_at: "2026-09-20T00:00:00Z", view_count: 100, comment_count: 4 });
+  const snap = db.prepare("INSERT INTO yt_video_stats_daily(video_id,date,view_count,like_count,comment_count) VALUES(?,?,?,?,?)");
+  snap.run("ok", "2026-09-22", 90, 9, 3);
+  snap.run("ok", "2026-09-23", 100, 10, 4);
+  const stale = db.prepare(`INSERT INTO yt_videos (video_id,title_id,title,channel_title,published_at,view_count,like_count,
+    comment_count,is_short_form,comments_disabled,match_reason,discovered_via,first_seen_at,last_refreshed_at,relevance_version,excluded_at)
+    VALUES ('stale',3,'t','c','2026-09-20T00:00:00Z',50,5,2,0,0,'test','incremental','2026-09-20T00:00:00Z','2026-09-23T00:00:00Z',1,'2026-09-23T00:00:00Z')`);
+  stale.run();
+  snap.run("stale", "2026-09-22", 40, 4, 2);
+  snap.run("stale", "2026-09-23", 50, 5, 2); // excluded + stale relevance: ignored
+  const rows = computeDailyViewsLeaderboard(db, "d7", "views", "desc", now);
+  const row = rows.find((r) => r.titleId === 3)!;
+  assert.equal(row.views, 10);
+  assert.equal(row.videos, 1);
 });
 
 // ─── retention ───────────────────────────────────────────────────────────────
