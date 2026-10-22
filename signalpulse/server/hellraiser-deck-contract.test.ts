@@ -110,6 +110,7 @@ test("applyHellraiserDeckContract sets PS5 units + revenue at the console ASP", 
   assert.equal(g.aspUsdCents, 3305);
   assert.equal(g.dataSource, "operator_anchor_contract");
   assert.match(String(g.method), new RegExp(HELLRAISER_DECK_CONTRACT_TAG));
+  assert.match(String(g.estimateMethod), new RegExp(HELLRAISER_DECK_CONTRACT_TAG)); // serialized field
   assert.equal(g.unitsMidEstimated, 99999); // prior estimate kept visible
   assert.equal(g.ownersMid, Math.max(1, Math.round(80000 * (expectedLtd / 99999)))); // scaled with units
 });

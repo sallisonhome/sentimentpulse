@@ -200,6 +200,11 @@ export function applyHellraiserDeckContract(
       g.dataSource = "operator_anchor_contract";
       g.revenueCaveat = HELLRAISER_DECK_CONTRACT.source;
       g.method = `${g.method ?? ""}+${HELLRAISER_DECK_CONTRACT_TAG}`.replace(/^\+/, "");
+      if (typeof g.estimateMethod === "string") {
+        g.estimateMethod = `${g.estimateMethod}+${HELLRAISER_DECK_CONTRACT_TAG}`;
+      } else {
+        g.estimateMethod = HELLRAISER_DECK_CONTRACT_TAG;
+      }
       touched++;
     } else if (platform === "xbox" || platform === "steam") {
       const units = typeof g.unitsMid === "number" && g.unitsMid > 0 ? g.unitsMid : null;
@@ -210,6 +215,11 @@ export function applyHellraiserDeckContract(
       g.dataSource = "operator_asp_contract";
       g.revenueCaveat = `ASP basis per operator directive 2026-10-22 ($${(asp / 100).toFixed(2)}/unit, now and going forward); ${platform === "steam" ? "revenue restated from actuals to the operator ASP basis" : "modeled revenue, not disclosed actuals"}.`;
       g.method = `${g.method ?? ""}+${HELLRAISER_DECK_CONTRACT_TAG}`.replace(/^\+/, "");
+      if (typeof g.estimateMethod === "string") {
+        g.estimateMethod = `${g.estimateMethod}+${HELLRAISER_DECK_CONTRACT_TAG}`;
+      } else {
+        g.estimateMethod = HELLRAISER_DECK_CONTRACT_TAG;
+      }
       touched++;
     }
   }
