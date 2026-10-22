@@ -99,6 +99,14 @@ export function loadDemoHistory(db: Database.Database, title: Title, range: Demo
       p.reviewObservedAt=r.fetched_at;
       p.reviewSource=r.source;
     }
+    // Compacted CCU history (2026-10-22): per-day rollups written before
+    // the scheduler prunes raw snapshots — processed first so raw snapshots
+    // still present (recent days) take precedence on their days.
+    const rollups=db.prepare("SELECT rollup_date,latest_ccu,sample_count,max_ccu FROM demo_ccu_daily_rollups WHERE demo_title_id=?").all(title.id) as any[];
+    for(const r of rollups) {
+      const p=point(r.rollup_date);
+      p.ccuLatest=r.latest_ccu;p.ccuPeak=Math.max(p.ccuPeak??0,r.max_ccu);p.ccuSamples=(p.ccuSamples??0)+r.sample_count;
+    }
     const ccu = db.prepare(`SELECT captured_at,ccu FROM demo_ccu_snapshots WHERE demo_title_id=? ORDER BY captured_at,id`)
       .all(title.id) as Array<{captured_at:string;ccu:number}>;
     for (const r of ccu) {

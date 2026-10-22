@@ -14,7 +14,8 @@ function fixture(){
     CREATE TABLE demo_window_estimates_daily(demo_title_id,window,as_of_date,units_mid,method,multiplier_id,review_count_total);
     CREATE TABLE steam_review_history(app_id,bucket_start,bucket_granularity,recommendations_up,recommendations_down,created_at);
     CREATE TABLE demo_ccu_snapshots(id,demo_title_id,captured_at,ccu);
-    CREATE TABLE demo_ccu_daily_peaks(demo_title_id,peak_date,peak_ccu);`);
+    CREATE TABLE demo_ccu_daily_peaks(demo_title_id,peak_date,peak_ccu);
+    CREATE TABLE demo_ccu_daily_rollups(demo_title_id,rollup_date,latest_ccu,sample_count,max_ccu);`);
   initializeDemoHistory(db);return db;
 }
 const saber={id:1,steam_app_id:"5184670",is_saber_published:1,is_active:1};

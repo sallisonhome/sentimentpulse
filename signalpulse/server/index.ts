@@ -10,6 +10,7 @@ import { triggerYoutubeRun } from "./routes-youtube";
 import { startTikTokCron } from "./tiktok/cron";
 import { triggerTikTokRun } from "./routes-tiktok";
 import { startCcuPollScheduler } from "./ccu-poll";
+import { startDemoCcuPollScheduler } from "./signals/demos/ccu-scheduler";
 import { startIgdbMediaRefreshScheduler } from "./igdb";
 import { startRelatedGamesScheduler } from "./ccu-related";
 import { startPopularUpcomingScheduler } from "./ccu-upcoming";
@@ -140,6 +141,14 @@ app.get("/api/config", (_req, res) => {
   // poll for Saber's released Steam titles, top of every UTC hour (mirrors
   // howmanyareplaying's `0 * * * *` pollLive cadence). See server/ccu-poll.ts.
   startCcuPollScheduler();
+
+  // Demos leaderboard CCU (2026-10-22): hourly current-player samples for
+  // the whole tracked demo catalog (concurrent batches) plus Steam's own
+  // most-played charts peak overlay for tracked appids that chart. Fixes
+  // the stale-once-daily-trough "Latest Sampled" and the missed-every-peak
+  // "Peak Observed" columns; raw snapshots are pruned after 7 days (daily
+  // peaks persist). See signals/demos/ccu-scheduler.ts.
+  startDemoCcuPollScheduler();
 
   // Daily IGDB media/summary cache refresh for CCU-eligible titles (media
   // changes far less often than live CCU, so this runs on its own 24h

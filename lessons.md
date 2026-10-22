@@ -1,5 +1,20 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-22 (signalpulse) — Demo CCU was once-daily-trough data: hourly poll + Steam's own chart peaks; lossless history compaction
+
+**What the user saw.** Demos charting on Steam's live CCU chart (Probably Stolen, Melvor Idle 2) showed peak volumes several times our dash's "Peak Observed CCU" (Probably Stolen: 39,811 from Steam's charts API vs 19,428 as our stored max — live-verified).
+
+**Root cause.** The CCU collector and its endpoint were CORRECT (GetNumberOfCurrentPlayers, live-checked); the defect was cadence: the nightly 3 AM ET pipeline was the only sampler, so "Latest Sampled CCU" was up to 24h stale and "Peak Observed" was the best of once-daily trough samples. Steam's own most-played chart (store.steampowered.com/charts/mostplayed — Rank / Current Players / Peak Today, demos included) publishes its peak figure via ISteamChartsService/GetGamesByConcurrentPlayers (top 100; Dota 2's 973K confirmed it is a daily-window peak, not all-time).
+
+**Fix.** Hourly in-process poll (signals/demos/ccu-scheduler.ts, mirrors the Saber-games poll, staggered :05 past the hour): (1) upserts Steam's chart peak for tracked appids that chart into demo_ccu_steam_peaks — rows are DELETED on chart departure so a departed app never shows a stale rank, and age out of presentation after 24h if refresh fails; (2) sweeps the whole catalog via the collector in batches of 10 (250ms between batches), per-response timestamps (a sweep can cross UTC midnight), 429 aborts the sweep instead of hammering; (3) lossless compaction once per UTC day: per-day rollups (demo_ccu_daily_rollups) are written before pruning raw snapshots older than 7 days, each demo's most recent snapshot is always kept (last-good current never lost), daily peaks persist forever — history.ts merges rollups so ccuLatest/ccuSamples/ccuPeak survive compaction. Boot catch-up keys off the last COMPLETED sweep state (demo_ccu_poll_state), not a catalog-wide newest-sample check, so one fresh sample from an interrupted sweep cannot mask a missed one. Presentation: "Current CCU" (value + relative age, orange stale label >2h), "Peak CCU" (Steam superscript tag + tooltip; observed fallback = max of our hourly samples in the last 24h; the column header does NOT claim a 24h window because Steam labels its figure "Peak Today" and its exact window is unverified), all-time observed peak kept on the detail page.
+
+**Rules.**
+- A KPI column's correctness is (source, cadence, window semantics, staleness presentation) — a stale-but-correct sample presents as wrong data. Label every sampled value with its age and every peak with its provenance and window.
+- Before pruning any raw time series, write rollups that preserve exactly what the history readers compute (latest per day, count, max) — deleting "old raw data" silently rewrites charts.
+- A refresh that omits an entity must stop presenting that entity (departure deletion); a failed refresh must retain last-known values WITH their timestamps, never re-stamped.
+- Never re-stamp a batch of observations with the sweep-start time; timestamp each response (sweeps cross midnight).
+- When adding tables, also update the minimal in-memory fixtures in the affected test files (history.test.ts / history-backfill.test.ts pattern) — the full storage migrations only run for tests that import storage.
+
 ## 2026-10-22 (signalpulse) — The Rideshare demo had no downloads: Steamworks escapes quotes in report headings; Saber pickup is now publisher-driven
 
 **What the user saw.** The Rideshare "Stimulator" Demo (5102100, released 2026-10-18 for Next Fest, ~18K downloads LTD per Steamworks) was absent from the demo leaderboard while licenses collected fine (17,996).
