@@ -1,5 +1,22 @@
 # Lessons Learned — Agent Working Notes
 
+## 2026-10-22 (signalpulse) — The Rideshare demo had no downloads: Steamworks escapes quotes in report headings; Saber pickup is now publisher-driven
+
+**What the user saw.** The Rideshare "Stimulator" Demo (5102100, released 2026-10-18 for Next Fest, ~18K downloads LTD per Steamworks) was absent from the demo leaderboard while licenses collected fine (17,996).
+
+**Root cause (live-proven with a user-approved read-only diagnostic).** The Downloads-by-Region report heading renders the game name as `Game: Rideshare "Stimulator" Demo - Downloads by Region`. The report parser's `text()` decoder handled `&#39;`/`'` but not `"`, so the exact-match identity check ("Demo report identity not verified") failed on EVERY fetch since Oct 19 — recorded as "report unavailable or unverified" failure markers with NULL downloads, so the demo could never rank. The test fixture rendered names with raw quotes and never reproduced the entity-escaped live form. My earlier "expected for a day-old app" attribution was wrong — it was a parser defect.
+
+**Fixes.**
+- `text()` decodes `"/&#34;` before `&` (so `"` stays literal); regression test uses the exact live heading string plus a double-escape negative.
+- Real-time Saber pickup: hub discovery now flags demos as Saber from the Store Browse publisher signal (`basic_info.publishers`, matched on `creator_clan_account_id` 32513338 or the exact name — both live-verified), links the parent product when tracked, and never downgrades an existing flag. All Saber collectors/queries iterate `demo_titles WHERE is_saber_published=1 AND sku_kind='demo'` instead of the static `SABER_DEMO_ROSTER`; the roster stays as the curated seed for exceptions (Saber-developed, externally published: Toxic Commando). Discovery runs BEFORE the collectors in the daily pipeline so a newly discovered Saber demo is collected in the same run.
+- Parent links moved to `demo_titles.base_game_product_id` (FK), resolved fail-closed: zero matches links nothing, ambiguous (duplicate `products.steam_app_id`) links nothing.
+
+**Rules.**
+- Any identity check comparing HTML-extracted names must decode every entity the source page can emit; test fixtures must use the entity-escaped form, not raw quotes/apostrophes, or they prove nothing about the live page.
+- "Expected for a new app" is an inference, not evidence — when a collector fails every run, prove the failure mode against the live page before normalizing it.
+- Static in-code lists as iteration sources for collectors mean every new item needs a code change; prefer the DB flag and keep the code list as a seed/exceptions file.
+- When moving resolution logic into SQL upserts, keep the fail-closed semantics that existed in the filtered-out code path (ambiguous parent = no link, not a guess).
+
 ## 2026-10-19 — Digest "not received" two weeks running: delivered, but filed away; the sender now matches SignalPulse
 
 **Evidence (Resend).** "SentimentPulse — Weekly Digest · Oct 12 – Oct 18" was sent 11:06 UTC and is `delivered` to steve.allison.home@gmail.com plus 11 Saber recipients. Oct 12 was the same (11:05 UTC, delivered). The SignalPulse weekly digest (sender `signalpulse@mail.howmanyareplaying.com`) reached the user's inbox both weeks. The SentimentPulse one (sender `SentimentPulse Intelligence <digest@mail.howmanyareplaying.com>`) was visible in Gmail but not in Apple Mail.

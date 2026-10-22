@@ -12,7 +12,11 @@ function text(html: string): string {
   return html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ").replace(/&nbsp;|&#160;/gi, " ")
-    .replace(/&#0?39;|&apos;/gi, "'").replace(/&amp;/gi, "&")
+    .replace(/&#0?39;|&apos;/gi, "'")
+    // Live-verified 2026-10-22 on the Rideshare report: Steamworks
+    // entity-escapes double quotes in game names as &quot;.
+    .replace(/&quot;|&#0?34;/gi, '"')
+    .replace(/&amp;/gi, "&")
     .replace(/\s+/g, " ").trim();
 }
 

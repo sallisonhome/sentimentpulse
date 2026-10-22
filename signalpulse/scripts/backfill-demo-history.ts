@@ -4,7 +4,6 @@
  * Run under /run/lock/signalpulse-maintenance.lock on the production host.
  */
 import Database from "better-sqlite3";
-import {SABER_DEMO_ROSTER} from "../server/signals/demos/saber-roster";
 import {isFriendsPassSku} from "../server/signals/demos/friends-pass-identity";
 import {HistoryBudget,planHistoryBackfill,runHistoryBackfill,type HistoryTitle} from "../server/signals/demos/history-backfill";
 const args=process.argv.slice(2);
@@ -17,10 +16,12 @@ if(!since||!until||!["all","saber","reviews"].includes(scope)||!Number.isSafeInt
 if(apply&&process.env.DEMO_HISTORY_MAINTENANCE_LOCK!=="1")throw Error("Apply requires the approved maintenance-lock workflow");
 const db=new Database(process.env.DEMO_HISTORY_DB??"data.db",{readonly:!apply,fileMustExist:true});
 try{
-  const approved=new Set(SABER_DEMO_ROSTER.map(t=>t.steamAppId));
+  // DB-driven (2026-10-22): the is_saber_published flag itself is the
+  // curation (roster seed or publisher-based discovery); no code list.
   const titles=(db.prepare(`SELECT steam_app_id,name,is_saber_published,release_date FROM demo_titles
     WHERE sku_kind='demo' AND tracking_excluded_reason IS NULL ORDER BY is_saber_published DESC,name`).all() as HistoryTitle[])
-    .filter(t=>!isFriendsPassSku(t.steam_app_id,t.name)&&(t.is_saber_published!==1||approved.has(t.steam_app_id)));
+    .filter(t=>!isFriendsPassSku(t.steam_app_id,t.name));
+  const approved=new Set(titles.filter(t=>t.is_saber_published===1).map(t=>t.steam_app_id));
   const plan=planHistoryBackfill(db,titles,approved,since,until,scope as any,apply);
   const cookie=apply?(db.prepare("SELECT cookie_value FROM steamworks_sessions WHERE id='default'").get() as any)?.cookie_value:undefined;
   const result=apply?await runHistoryBackfill(db,titles,approved,cookie,new HistoryBudget(maxRequests,maxMs),scope as any):null;

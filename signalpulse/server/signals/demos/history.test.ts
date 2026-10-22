@@ -89,6 +89,14 @@ test("real routes, authentication, collector snapshot writes, archived gates and
   const env={mode:process.env.AUTH_MODE,secret:process.env.SABER_AUTH_JWT_SECRET};
   try{
     const module=await import("../../storage");db=module.rawSqlite;
+    // Parent products so the seed resolves base_game_product_id links
+    // (verifiedDemoParent is FK-driven since 2026-10-22).
+    const iso0=new Date().toISOString();
+    const insertProduct=db.prepare("INSERT INTO products (title,publisher,is_saber_published,platforms,player_format,genre,release_date,steam_app_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)");
+    insertProduct.run("Hellraiser: Revival","Saber Interactive",1,"PC","p","Action","2026-10-01","1551980",iso0,iso0);
+    insertProduct.run("Toxic Commando","Focus Entertainment",0,"PC","p","Action","2024-06-06","2157830",iso0,iso0);
+    insertProduct.run("Docked","Saber Interactive",1,"PC","p","Simulation","2026-09-24","2487300",iso0,iso0);
+    insertProduct.run("Bus Bound","Saber Interactive",1,"PC","p","Simulation","2026-10-08","2095420",iso0,iso0);
     const {seedSaberDemos}=await import("./saber-seed");seedSaberDemos();
     const stamp=new Date().toISOString();
     db.prepare(`INSERT INTO demo_titles(steam_app_id,name,is_active,sku_kind,discovered_via,first_seen_at,created_at,updated_at)
@@ -101,7 +109,10 @@ test("real routes, authentication, collector snapshot writes, archived gates and
     server=app.listen(0,"127.0.0.1");await new Promise<void>(r=>server.once("listening",r));
     const base=`http://127.0.0.1:${server.address().port}`;
     assert.equal((await realFetch(`${base}/api/demos/titles/99999`)).status,404);
-    assert.equal((await realFetch(`${base}/api/demos/titles/99998`)).status,404);
+    // Since 2026-10-22 the is_saber_published flag is the curation: a retired
+    // flag-only Saber demo is tracked (detail page serves, archived).
+    const unapproved=await(await realFetch(`${base}/api/demos/titles/99998`)).json();
+    assert.equal(unapproved.archived,true);
     assert.equal((await realFetch(`${base}/api/demos/titles/nope`)).status,404);
     assert.equal((await realFetch(`${base}/api/demos/titles/5184670?days=999999`)).status,400);
     const archive=await(await realFetch(`${base}/api/demos/titles/4354730`)).json();

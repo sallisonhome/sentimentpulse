@@ -1,6 +1,5 @@
 import { rawSqlite } from "../../storage";
 import { directIgdbAvailable, fetchIgdbDetailBySteamAppid } from "../../igdb";
-import { SABER_DEMO_ROSTER } from "./saber-seed";
 import type { DemoMedia, DemoMediaResponse } from "../../../shared/demo-detail";
 
 const inFlight=new Map<string,Promise<DemoMediaResponse>>();
@@ -8,8 +7,9 @@ const TTL=24*3600000;
 
 /** Metadata fallback only. This identity never reaches a metrics query. */
 export async function verifiedDemoParent(appId:string):Promise<string|null> {
-  const roster=SABER_DEMO_ROSTER.find(d=>d.steamAppId===appId)?.parentSteamAppId;
-  if(roster) return roster;
+  const linked=rawSqlite.prepare(`SELECT p.steam_app_id FROM demo_titles t
+    JOIN products p ON p.id=t.base_game_product_id WHERE t.steam_app_id=?`).get(appId) as {steam_app_id:string}|undefined;
+  if(linked?.steam_app_id) return linked.steam_app_id;
   const url=new URL("https://api.steampowered.com/IStoreBrowseService/GetItems/v1/");
   const items=async(ids:string[])=>{
     url.searchParams.set("input_json",JSON.stringify({ids:ids.map(id=>({appid:Number(id)})),
