@@ -192,6 +192,16 @@ const PUBLIC_READ_PREFIXES = [
                                   // /:titleId/... admin routes (e.g. /refresh)
                                   // are POST and never match GET-only public gate.
   "/api/console/multiplatform-title/", // matches /:key (editionGroupKey).
+  "/api/demos/public/",            // Steam demos public read (2026-10-22):
+                                  // leaderboard + PDP + media for hmap's
+                                  // demos board. Served from
+                                  // routes-demos-public.ts with an explicit
+                                  // public-safe allowlist (no licenses, no
+                                  // estimate internals, no pass data, no
+                                  // pipeline coverage) and its own
+                                  // per-IP limiter. Other /api/demos/... routes
+                                  // stay authenticated — only this prefix is
+                                  // public, and the GET-only gate applies.
 ];
 // Deny-list for the prefix above: paths whose prefix qualifies but which
 // must stay authenticated. Keep this narrow — only entries that would

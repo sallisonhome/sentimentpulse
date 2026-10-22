@@ -40,6 +40,7 @@ import { registerAmazonRoutes } from "./amazon-routes";
 import { registerConsoleLeaderboardRoutes } from "./routes-console-leaderboards";
 import { registerDemosLeaderboardRoutes } from "./routes-demos-leaderboard";
 import { registerDemoDetailRoutes } from "./routes-demo-detail";
+import { registerDemosPublicRoutes } from "./routes-demos-public";
 import { registerYoutubeRoutes } from "./routes-youtube";
 import { registerTikTokRoutes } from "./routes-tiktok";
 import { registerReviewsRatingsRoutes } from "./routes-reviews-ratings";
@@ -161,6 +162,7 @@ export async function registerRoutes(
   registerConsoleLeaderboardRoutes(app);
   registerDemosLeaderboardRoutes(app);
   registerDemoDetailRoutes(app);
+  registerDemosPublicRoutes(app);
   registerYoutubeRoutes(app);
   registerTikTokRoutes(app);
   registerReviewsRatingsRoutes(app);

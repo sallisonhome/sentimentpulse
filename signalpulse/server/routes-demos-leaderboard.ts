@@ -40,7 +40,7 @@ import { DEMO_CALIBRATION, DEMO_DOWNLOAD_MULTIPLIER, NON_SABER_DOWNLOAD_TRIAL, d
 
 type DemoSort = "top" | "new" | "reviews" | "rating" | "downloads" | "ccu" | "peak" | "release" | "players" | "activity";
 
-interface DemoLeaderboardRow {
+export interface DemoLeaderboardRow {
   id: number;
   steamAppId: string;
   name: string;
@@ -97,7 +97,15 @@ interface DemoLeaderboardRow {
   passParentActivity: PassParentActivity | null;
 }
 
-function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number, offset: number, search: string, kind: SkuKind, playerEvidence: readonly PassPlayerEvidence[], activityWindow: ActivityWindow) {
+/**
+ * Full, unfiltered row set for one window. Shared by the authenticated
+ * leaderboard below and the public read-only projection in
+ * routes-demos-public.ts. Rows are neither filtered, ranked nor paginated
+ * here — callers own genre/search/availability filtering, ordering and
+ * slicing. `sort` is used only to select the Steam discovery feed for
+ * sourceRank (top/new views); metric sorts get an empty feed map.
+ */
+export function loadDemoRowsForWindow(window: WindowKey, kind: SkuKind, sort: string, playerEvidence: readonly PassPlayerEvidence[], activityWindow: ActivityWindow) {
   const reviewSummaries = loadDemoReviewSummaries();
   const actualRows = rawSqlite.prepare("SELECT * FROM demo_download_actuals WHERE window=? AND source='steamworks_downloads_report'").all(window) as any[];
   const actualByAppId = new Map(actualRows.map(row => [row.steam_app_id, row]));
@@ -197,12 +205,7 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
   const licensesByDemoId = new Map(licenseRows.map(r => [r.demo_title_id, r]));
 
   let asOfDate: string | null = null;
-  const rows: DemoLeaderboardRow[] = demos
-    .filter(d => !["top","new"].includes(sort) || d.is_active === 1)
-    .filter(d => (sort !== "top" && sort !== "new") || sourceRanks.has(d.id))
-    .filter(d => !genre || (d.genre ?? "").split(", ").includes(genre))
-    .filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.steam_app_id === search)
-    .map((d) => {
+  const rows: DemoLeaderboardRow[] = demos.map((d) => {
     const est = estimateByDemoId.get(d.id);
     const estimateStale=!!est?.as_of_date&&est.as_of_date<new Date().toISOString().slice(0,10);
     const usableEstimate=!(d.is_active!==1&&window!=="ltd"&&estimateStale);
@@ -270,6 +273,22 @@ function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc"
       sourceRank: sourceRanks.get(d.id) ?? null,
     };
   });
+  return { rows, asOfDate };
+}
+
+/**
+ * Authenticated leaderboard view: filter, rank and paginate the shared rows.
+ * Behavior is identical to the previous single-function implementation;
+ * availability for top/new now reads the assembled row (isArchived /
+ * sourceRank) instead of the catalog row, which is equivalent.
+ */
+function loadLeaderboardRows(window: WindowKey, sort: DemoSort, direction: "asc" | "desc", genre: string, limit: number, offset: number, search: string, kind: SkuKind, playerEvidence: readonly PassPlayerEvidence[], activityWindow: ActivityWindow) {
+  const { rows: allRows, asOfDate } = loadDemoRowsForWindow(window, kind, sort, playerEvidence, activityWindow);
+  const rows = allRows
+    .filter(d => !["top","new"].includes(sort) || !d.isArchived)
+    .filter(d => (sort !== "top" && sort !== "new") || d.sourceRank != null)
+    .filter(d => !genre || (d.genre ?? "").split(", ").includes(genre))
+    .filter(d => !search || d.name.toLowerCase().includes(search.toLowerCase()) || d.steamAppId === search);
 
   if (sort === "top" || sort === "new") {
     rows.sort((a, b) => a.sourceRank! - b.sourceRank!);
