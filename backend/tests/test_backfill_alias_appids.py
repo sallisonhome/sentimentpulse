@@ -11,6 +11,7 @@ Companion to Landing A which did the same for the DAILY cron path
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
@@ -40,19 +41,23 @@ def _forum_post(external_id: str, ts_epoch: int) -> dict:
 
 
 def _reviews_page(ids: list[str], ts_epoch: int, cursor_next: str = "") -> dict:
-    """Shape returned by store.steampowered.com/appreviews/{appid}?json=1."""
+    """Shape returned by IUserReviewsService/GetAppReviews v1 (2026-10-22
+    replacement for store.steampowered.com/appreviews): payload nested under
+    `response`, no `success` field."""
     return {
-        "reviews": [
-            {
-                "recommendationid": rid,
-                "review": f"review body {rid}",
-                "author": {"steamid": f"user_{rid}"},
-                "votes_up": 0,
-                "timestamp_created": ts_epoch,
-            }
-            for rid in ids
-        ],
-        "cursor": cursor_next,
+        "response": {
+            "reviews": [
+                {
+                    "recommendationid": rid,
+                    "review": f"review body {rid}",
+                    "author": {"steamid": f"user_{rid}"},
+                    "votes_up": 0,
+                    "timestamp_created": ts_epoch,
+                }
+                for rid in ids
+            ],
+            "cursor": cursor_next,
+        }
     }
 
 
@@ -140,6 +145,13 @@ class TestBackfillForumsWithAliases:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# GetAppReviews v1 (2026-10-22): the appid lives in the input_json param.
+
+def _appid_of(call):
+    return json.loads(call.kwargs["params"]["input_json"])["appid"]
+
+
 class TestBackfillReviewsWithAliases:
     def _stub_httpx_get(self, per_call_payloads: list[dict]):
         """Return a fake httpx.get whose responses come from per_call_payloads."""
@@ -168,10 +180,9 @@ class TestBackfillReviewsWithAliases:
              patch("scripts.historical_backfill._bulk_save_posts", return_value=2) as mock_save, \
              patch("scripts.historical_backfill.time.sleep"):  # skip 1s sleep
             saved = backfill_steam_reviews_for_game(db, game, start_dt, [])
-        # One httpx.get call for the one page; url must include the primary appid.
+        # One httpx.get call for the one page; request must target the primary appid.
         assert mock_get.call_count == 1
-        url = mock_get.call_args_list[0].args[0]
-        assert str(game.steam_app_id) in url
+        assert _appid_of(mock_get.call_args_list[0]) == game.steam_app_id
         assert saved == 2
 
     def test_alias_triggers_full_walk_of_both_appids(self, db, game):
@@ -195,10 +206,8 @@ class TestBackfillReviewsWithAliases:
             saved = backfill_steam_reviews_for_game(db, game, start_dt, [])
         # Two appid walks, one httpx.get per walk (page returns then empty cursor).
         assert mock_get.call_count == 2
-        primary_url = mock_get.call_args_list[0].args[0]
-        alias_url = mock_get.call_args_list[1].args[0]
-        assert str(game.steam_app_id) in primary_url
-        assert "5184670" in alias_url
+        assert _appid_of(mock_get.call_args_list[0]) == game.steam_app_id
+        assert _appid_of(mock_get.call_args_list[1]) == 5184670
         # 2 primary + 3 alias = 5 reviews saved.
         assert saved == 5
 
@@ -212,7 +221,7 @@ class TestBackfillReviewsWithAliases:
         primary_page = _reviews_page(["main_r1"], recent_ts)
 
         def _get(url, params=None, timeout=None):
-            if "5184670" in url:
+            if json.loads(params["input_json"])["appid"] == 5184670:
                 raise RuntimeError("demo API blip")
             resp = MagicMock(); resp.status_code = 200; resp.json.return_value = primary_page
             return resp

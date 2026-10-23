@@ -44,7 +44,7 @@ test("verified F2P console links reuse current ratings without changing paid/F2P
     const p=evidence[0].accepted[0];
     globalThis.fetch=(async(input:any,init:any)=>{
       if(String(input).startsWith("http://127.0.0.1:"))return real(input,init);
-      if(String(input).includes("appreviews"))return new Response(JSON.stringify({success:1,query_summary:{total_positive:80,total_negative:20,total_reviews:100}}));
+      if(String(input).includes("IUserReviewsService/GetAppReviews"))return new Response(JSON.stringify({response:{query_summary:{total_positive:80,total_negative:20,total_reviews:100}}}));
       if(String(input).includes("web.np.playstation.com"))return new Response(JSON.stringify({data:{productRetrieve:{
         id:p.sku,name:p.name,storeDisplayClassification:"FULL_GAME",concept:{id:"232860"},
         starRating:{totalRatingsCount:1000,averageRating:4.4}}}}));

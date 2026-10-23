@@ -110,15 +110,20 @@ jobs:
               if d is None or d < CUTOFF: excluded_notes["older than 3 years"] += 1; return False
               return True
           def reviewers(appid, pages=40):
+              # 2026-10-22: Valve disabled store.steampowered.com/appreviews (Steamworks
+              # announcement 2026-10-02). Migrated to IUserReviewsService/GetAppReviews v1:
+              # params in input_json, payload nested under `response`, no `success` field.
               authors = []; cursor = "*"
               for _ in range(pages):
-                  s, body = get(f"https://store.steampowered.com/appreviews/{appid}?json=1&filter=recent&language=all&purchase_type=all&num_per_page=100&cursor={urllib.parse.quote(cursor)}")
+                  ij = json.dumps({"appid": int(appid), "filter": "recent", "languages": ["all"], "purchase_type": "all", "num_per_page": 100, "cursor": cursor})
+                  s, body = get("https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/?input_json=" + urllib.parse.quote(ij))
                   if s != 200: break
                   try: j = json.loads(body)
                   except Exception: break
-                  revs = j.get("reviews", [])
+                  resp = j.get("response") or {}
+                  revs = resp.get("reviews", [])
                   authors += [r["author"]["steamid"] for r in revs]
-                  nc = j.get("cursor")
+                  nc = resp.get("cursor")
                   if not revs or not nc or nc == cursor: break
                   cursor = nc; time.sleep(1)
               return list(dict.fromkeys(authors))

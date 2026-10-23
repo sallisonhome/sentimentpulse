@@ -91,8 +91,12 @@ export function verifyCriticIdentity(raw: any, name: string, releaseDate: string
 }
 
 export function steamSummary(raw: any) {
-  const q = raw?.query_summary;
-  if (raw?.success !== 1 || !q || count(q.total_positive) == null || count(q.total_negative) == null
+  // 2026-10-22: Valve disabled store.steampowered.com/appreviews (Steamworks
+  // announcement 2026-10-02). The replacement IUserReviewsService/GetAppReviews
+  // has no `success` field (HTTP status is validated by the caller) and nests
+  // everything under `response`.
+  const q = raw?.response?.query_summary;
+  if (!q || count(q.total_positive) == null || count(q.total_negative) == null
     || count(q.total_reviews) == null || q.total_positive + q.total_negative !== q.total_reviews) {
     throw new Error("invalid_steam_response");
   }

@@ -85,10 +85,10 @@ const review=(id:number,date:string,positive=true)=>({recommendationid:String(id
 test("review paging checkpoints atomically, deduplicates IDs and only publishes reconciled activity dates",async()=>{
   const db=fixture();planHistoryBackfill(db,[other],approved,"2025-01-01","2026-09-25","reviews",true);
   const transport:typeof fetch=async input=>{
-    const cursor=new URL(String(input)).searchParams.get("cursor");
-    return Response.json(cursor==="*"?{success:1,query_summary:{total_reviews:2},cursor:"next",reviews:[review(1,"2025-02-07")]}
-      :cursor==="next"?{success:1,cursor:"end",reviews:[review(1,"2025-02-07"),review(2,"2025-02-08",false)]}
-      :{success:1,cursor:"end",reviews:[]});
+    const cursor=JSON.parse(new URL(String(input)).searchParams.get("input_json")??"{}").cursor;
+    return Response.json(cursor==="*"?{response:{query_summary:{total_reviews:2},cursor:"next",reviews:[review(1,"2025-02-07")]}}
+      :cursor==="next"?{response:{cursor:"end",reviews:[review(1,"2025-02-07"),review(2,"2025-02-08",false)]}}
+      :{response:{cursor:"end",reviews:[]}});
   };
   await runHistoryBackfill(db,[other],approved,undefined,budget(1,transport));
   assert.equal((db.prepare("SELECT cursor FROM demo_history_backfill_jobs").get() as any).cursor,"next");
@@ -110,10 +110,10 @@ test("incomplete, mismatched and zeroed retired pagination never publishes recov
     const db=fixture();planHistoryBackfill(db,[other],approved,"2025-01-01","2026-09-25","reviews",true);
     if(mode==="zeroed")db.prepare("INSERT INTO demo_window_estimates_daily VALUES(2,'ltd','2026-09-22',130,'review_delta_multiplier','trial',1)").run();
     const transport:typeof fetch=async input=>{
-      const cursor=new URL(String(input)).searchParams.get("cursor");
+      const cursor=JSON.parse(new URL(String(input)).searchParams.get("input_json")??"{}").cursor;
       const reviews=mode==="zeroed"||cursor==="end"?[]:[review(1,mode==="invalid"?"1900-01-01":"2025-02-07")];
-      return Response.json({success:1,query_summary:{total_reviews:mode==="mismatch"?5:mode==="zeroed"?0:1},
-        cursor:mode==="stalled"?"*":"end",reviews});
+      return Response.json({response:{query_summary:{total_reviews:mode==="mismatch"?5:mode==="zeroed"?0:1},
+        cursor:mode==="stalled"?"*":"end",reviews}});
     };
     await runHistoryBackfill(db,[other],approved,undefined,budget(5,transport));
     assert.equal((db.prepare("SELECT COUNT(*) n FROM demo_review_recovered_daily").get() as any).n,0);
@@ -127,8 +127,8 @@ test("matching review-summary totals still fail publication when fresh histogram
   db.prepare("INSERT INTO steam_review_history VALUES(?,?,?,?,?,?)")
     .run(other.steam_app_id,Date.parse(day)/1000,"day",2,0,fetched);
   const transport:typeof fetch=async input=>Response.json({
-    success:1,query_summary:{total_reviews:1},cursor:"end",
-    reviews:new URL(String(input)).searchParams.get("cursor")==="*"?[review(1,day)]:[],
+    response:{query_summary:{total_reviews:1},cursor:"end",
+      reviews:JSON.parse(new URL(String(input)).searchParams.get("input_json")??"{}").cursor==="*"?[review(1,day)]:[]},
   });
   await runHistoryBackfill(db,[other],approved,undefined,budget(5,transport));
   assert.equal((db.prepare("SELECT status FROM demo_history_backfill_jobs").get() as any).status,"mismatch");

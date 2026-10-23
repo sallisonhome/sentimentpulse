@@ -8,7 +8,7 @@ const DAY = 86400_000;
 const game: RatingIdentity = { name: "Elden Ring", releaseDate: "2022-02-25", steamAppId: "1245620" };
 const detail = { id: 12090, name: "Elden Ring", release_date: "2022-02-25", tier: "Mighty",
   top_critic_score: 95.1, percent_recommended: 97.13, percentile: 100, review_count: 219, steam_id: null };
-const summary = { success: 1, query_summary: { total_positive: 90, total_negative: 10, total_reviews: 100, review_score_desc: "Very Positive" } };
+const summary = { response: { query_summary: { total_positive: 90, total_negative: 10, total_reviews: 100, review_score_desc: "Very Positive" } } };
 const search = { results: [
   { type: "game", id: 18502, name: "Elden Ring: Nightreign" },
   { type: "game", id: 12090, name: "Elden Ring" },
@@ -24,7 +24,7 @@ function fixtureFetch(counter: string[], fail = () => false): typeof fetch {
     const url = String(input);
     counter.push(url);
     if (fail()) throw new Error("simulated upstream failure containing SECRET");
-    return new Response(JSON.stringify(url.includes("appreviews") ? summary : url.includes("/search") ? search : detail));
+    return new Response(JSON.stringify(url.includes("GetAppReviews") ? summary : url.includes("/search") ? search : detail));
   }) as typeof fetch;
 }
 
@@ -38,9 +38,11 @@ test("native metrics, nulls and zero remain distinct; percentile is not recommen
   assert.equal(normalizeCritics({ ...detail, tier: "Unknown" }).rating, null);
   for (const bad of [null, "", false, -1, 101, Infinity, NaN, "97"]) assert.equal(score(bad, 100), null);
   assert.equal(steamSummary(summary).value, 90);
-  assert.equal(steamSummary({ success: 1, query_summary: { total_positive: 0, total_negative: 5, total_reviews: 5 } }).value, 0);
-  assert.equal(steamSummary({ success: 1, query_summary: { total_positive: 0, total_negative: 0, total_reviews: 0 } }).value, null);
-  assert.throws(() => steamSummary({ success: 1, query_summary: { total_positive: 10, total_negative: 5, total_reviews: 10 } }));
+  assert.equal(steamSummary({ response: { query_summary: { total_positive: 0, total_negative: 5, total_reviews: 5 } } }).value, 0);
+  assert.equal(steamSummary({ response: { query_summary: { total_positive: 0, total_negative: 0, total_reviews: 0 } } }).value, null);
+  assert.throws(() => steamSummary({ response: { query_summary: { total_positive: 10, total_negative: 5, total_reviews: 10 } } }));
+  // The retired store endpoint's flat shape must no longer validate.
+  assert.throws(() => steamSummary({ success: 1, query_summary: { total_positive: 10, total_negative: 5, total_reviews: 15 } }));
 });
 
 test("strict identity rejects sequels, demos, passes, editions, ambiguous matches and reused names", () => {

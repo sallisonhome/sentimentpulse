@@ -123,14 +123,21 @@ export function planHistoryBackfill(db:Database.Database,titles:HistoryTitle[],a
 
 function reviewsUrl(id:string,cursor:string){
   if(!/^[1-9]\d{0,9}$/.test(id))throw Error("Invalid demo identity");
-  const url=new URL(`https://store.steampowered.com/appreviews/${id}`);
-  url.search=new URLSearchParams({json:"1",filter:"recent",language:"all",review_type:"all",
-    purchase_type:"all",filter_offtopic_activity:"0",num_per_page:"100",cursor}).toString();return url.href;
+  // 2026-10-22: Valve disabled the store appreviews endpoint (Steamworks
+  // announcement 2026-10-02); migrated to IUserReviewsService/GetAppReviews v1.
+  // Same filters/cohort, params in input_json, payload nested under `response`.
+  const input={appid:Number(id),filter:"recent",languages:["all"],review_type:"all",
+    purchase_type:"all",filter_offtopic_activity:0,num_per_page:100,cursor};
+  const url=new URL("https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/");
+  url.search="input_json="+encodeURIComponent(JSON.stringify(input));return url.href;
 }
 async function reviewPage(id:string,cursor:string,budget:HistoryBudget){
   const data=await(await budget.get(reviewsUrl(id,cursor))).json() as any;
-  if(data.success!==1||!Array.isArray(data.reviews))throw Error("Review contract unavailable");
-  return data;
+  // The new endpoint has no `success` field — HTTP status is the transport check
+  // (budget.get throws on non-ok); the contract check is the nested payload.
+  // query_summary validation stays with the caller (optional per page).
+  if(!data?.response||!Array.isArray(data.response.reviews))throw Error("Review contract unavailable");
+  return data.response;
 }
 function completeReviews(db:Database.Database,job:Job,total:number){
   const items=db.prepare("SELECT COUNT(*) n FROM demo_review_backfill_items WHERE steam_app_id=?").get(job.steam_app_id) as {n:number};

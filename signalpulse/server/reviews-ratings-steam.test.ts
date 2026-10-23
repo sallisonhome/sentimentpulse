@@ -6,9 +6,11 @@ import { ReviewsRatingsService } from "./reviews-ratings-service";
 const DAY = 86400_000;
 const game = { name: "Marvel Rivals", steamAppId: "2767030", releaseDate: "2024-12-06" };
 function summary(positive: number, negative: number) {
-  return { success: 1, query_summary: { total_positive: positive,
+  // IUserReviewsService/GetAppReviews v1 shape (2026-10-22 replacement for
+  // the retired store appreviews endpoint): payload nested under `response`.
+  return { response: { query_summary: { total_positive: positive,
     total_negative: negative, total_reviews: positive + negative,
-    review_score_desc: positive + negative ? "Mostly Positive" : "No user reviews" } };
+    review_score_desc: positive + negative ? "Mostly Positive" : "No user reviews" } } };
 }
 function setup(all: any) {
   const db = new Database(":memory:");
@@ -17,10 +19,13 @@ function setup(all: any) {
   let fail = false;
   const service = new ReviewsRatingsService(db, () => undefined, (async (input: any) => {
     const url = new URL(String(input)); calls.push(url);
-    assert.equal(url.pathname, "/appreviews/2767030");
-    assert.equal(url.searchParams.get("language"), "all");
-    assert.equal(url.searchParams.get("filter"), "all");
-    assert.equal(url.searchParams.get("purchase_type"), "all");
+    assert.equal(url.hostname, "api.steampowered.com");
+    assert.equal(url.pathname, "/IUserReviewsService/GetAppReviews/v1/");
+    const inputJson = JSON.parse(url.searchParams.get("input_json") ?? "{}");
+    assert.equal(inputJson.appid, 2767030);
+    assert.deepEqual(inputJson.languages, ["all"]);
+    assert.equal(inputJson.filter, "all");
+    assert.equal(inputJson.purchase_type, "all");
     if (fail) throw Error("provider outage");
     return new Response(JSON.stringify(all));
   }) as typeof fetch, () => now);
