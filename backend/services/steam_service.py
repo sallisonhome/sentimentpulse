@@ -5,6 +5,7 @@ All external HTTP calls include a 1-second rate-limit delay and are wrapped
 in try/except so a single failure never halts the ingestion pipeline.
 """
 import html
+import json
 import logging
 import re
 import time
@@ -20,7 +21,10 @@ _REQUEST_DELAY = 1.0  # seconds between Steam API calls
 
 STEAM_SEARCH_URL = "https://store.steampowered.com/search/results/"
 STEAM_APP_DETAILS_URL = "https://store.steampowered.com/api/appdetails"
-STEAM_REVIEWS_URL = "https://store.steampowered.com/appreviews/{appid}"
+# 2026-10-22: Valve disabled store.steampowered.com/appreviews (Steamworks
+# announcement 2026-10-02). Replacement: IUserReviewsService/GetAppReviews v1 —
+# params in input_json, payload nested under `response`, no `success` field.
+STEAM_REVIEWS_URL = "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/"
 STEAM_FORUM_URL = "https://steamcommunity.com/app/{appid}/discussions/"
 
 # v2 (2026-08-17): use a real browser User-Agent + age-gate bypass cookies
@@ -42,9 +46,9 @@ STEAM_FORUM_URL = "https://steamcommunity.com/app/{appid}/discussions/"
 # NOT secrets or auth tokens; they're the same cookies a browser sets
 # after clicking "I'm over 21".
 #
-# Applies to the FORUM HTML fetches only. The Steam Reviews JSON API
-# (store.steampowered.com/appreviews/) is not age-gated, so it's fine on
-# the existing _HEADERS.
+# Applies to the FORUM HTML fetches only. The Steam Reviews API
+# (now api.steampowered.com/IUserReviewsService) is not age-gated, so it's
+# fine on the existing _HEADERS.
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -282,16 +286,20 @@ def fetch_reviews(
     cursor = "*"
 
     for page_num in range(max_pages):
+        # 2026-10-22 migration: GetAppReviews v1 takes params in input_json;
+        # `language` (single) became `languages` (list).
         resp = _get(
-            STEAM_REVIEWS_URL.format(appid=steam_app_id),
+            STEAM_REVIEWS_URL,
             params={
-                "json": "1",
-                "filter": "recent",
-                "language": language,
-                "review_type": "all",
-                "purchase_type": "all",
-                "num_per_page": 100,
-                "cursor": cursor,
+                "input_json": json.dumps({
+                    "appid": steam_app_id,
+                    "filter": "recent",
+                    "languages": [language],
+                    "review_type": "all",
+                    "purchase_type": "all",
+                    "num_per_page": 100,
+                    "cursor": cursor,
+                }),
             },
         )
         if resp is None:
@@ -304,7 +312,8 @@ def fetch_reviews(
                          steam_app_id, page_num + 1, exc)
             break
 
-        batch = data.get("reviews", [])
+        payload = data.get("response") or {}
+        batch = payload.get("reviews", [])
         if not batch:
             break
 
@@ -341,7 +350,7 @@ def fetch_reviews(
             if len(batch_ids & known_ids) >= len(batch_ids) * 0.5:
                 break
 
-        next_cursor = data.get("cursor", "")
+        next_cursor = payload.get("cursor", "")
         if not next_cursor or next_cursor == cursor:
             break
         cursor = next_cursor

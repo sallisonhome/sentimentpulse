@@ -33,6 +33,7 @@ Idempotent: safe to re-run. Deduplicates on RawPost.external_id + source,
 so re-fetching the same posts is a no-op.
 """
 import argparse
+import json
 import logging
 import sys
 import time
@@ -71,7 +72,7 @@ import requests  # noqa: E402
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-8s %(message)s")
 logger = logging.getLogger(__name__)
 
-STEAM_REVIEWS_BASE = "https://store.steampowered.com/appreviews/{app_id}"
+STEAM_REVIEWS_BASE = "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/"
 REQUEST_DELAY = 1.5
 TIMEOUT = 30.0
 
@@ -396,16 +397,22 @@ def _backfill_steam_reviews_for_appid(
 
     while True:
         try:
+            # 2026-10-22 migration: Valve disabled store.steampowered.com/appreviews
+            # (Steamworks announcement 2026-10-02). GetAppReviews v1 takes params in
+            # input_json; `language` (single) became `languages` (list); payload is
+            # nested under `response`.
             r = httpx.get(
-                STEAM_REVIEWS_BASE.format(app_id=appid),
+                STEAM_REVIEWS_BASE,
                 params={
-                    "json": "1",
-                    "filter": "recent",
-                    "language": "all",
-                    "cursor": cursor,
-                    "num_per_page": "100",
-                    "purchase_type": "all",
-                    "review_type": "all",
+                    "input_json": json.dumps({
+                        "appid": appid,
+                        "filter": "recent",
+                        "languages": ["all"],
+                        "cursor": cursor,
+                        "num_per_page": 100,
+                        "purchase_type": "all",
+                        "review_type": "all",
+                    }),
                 },
                 timeout=TIMEOUT,
             )
@@ -419,7 +426,8 @@ def _backfill_steam_reviews_for_appid(
             errors.append(f"steam_review backfill {game.name} appid={appid}: {exc}")
             break
 
-        reviews = data.get("reviews", []) or []
+        payload = data.get("response") or {}
+        reviews = payload.get("reviews", []) or []
         if not reviews:
             break
 
@@ -451,7 +459,7 @@ def _backfill_steam_reviews_for_appid(
             total_saved += saved
 
         pages_fetched += 1
-        next_cursor = data.get("cursor", "")
+        next_cursor = payload.get("cursor", "")
         if not next_cursor or next_cursor == cursor:
             break
         cursor = next_cursor

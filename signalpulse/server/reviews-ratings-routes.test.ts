@@ -34,10 +34,12 @@ test("real routes and migrations: all PDP identities, public boundary, family ra
       VALUES(1,'Space Marine 2','["Steam","PS5","Xbox"]','single','Action','2024-09-09','2183900',?,?)`).run(stamp, stamp);
     db.prepare(`INSERT INTO amazon_asin_map(product_id,platform,asin,updated_at) VALUES(1,'ps5','B123456789',?)`).run(stamp);
     globalThis.fetch = (async (input: any, opts: any) => {
-      if (/store\.steampowered\.com\/appreviews\/(?:2183900|2104890)/.test(String(input))) {
-        return new Response(JSON.stringify({ success: 1, query_summary: {
+      if (/IUserReviewsService\/GetAppReviews\/v1\//.test(String(input))) {
+        const inputJson = JSON.parse(new URL(String(input)).searchParams.get("input_json") ?? "{}");
+        assert.ok(["2183900", "2104890"].includes(String(inputJson.appid)));
+        return new Response(JSON.stringify({ response: { query_summary: {
           total_reviews: 100, total_positive: 85, total_negative: 15, review_score_desc: "Very Positive",
-        } }));
+        } } }));
       }
       if (String(input).includes("api/appdetails?appids=2104890")) {
         return new Response(JSON.stringify({ "5075720": { success: true, data: {

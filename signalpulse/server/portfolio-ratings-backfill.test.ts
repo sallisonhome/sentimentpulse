@@ -86,8 +86,8 @@ test("actual schema, idempotent seed, same daily PS collector and all eight publ
     globalThis.fetch = (async (input: any, init: any) => {
       const url = String(input);
       if (url.startsWith("http://127.0.0.1:")) return realFetch(input, init);
-      if (url.includes("appreviews/")) return new Response(JSON.stringify({
-        success: 1, query_summary: { total_positive: 80, total_negative: 20, total_reviews: 100 },
+      if (url.includes("IUserReviewsService/GetAppReviews")) return new Response(JSON.stringify({
+        response: { query_summary: { total_positive: 80, total_negative: 20, total_reviews: 100 } },
       }));
       if (url.includes("web.np.playstation.com")) {
         const id = JSON.parse(new URL(url).searchParams.get("variables")!).productId;

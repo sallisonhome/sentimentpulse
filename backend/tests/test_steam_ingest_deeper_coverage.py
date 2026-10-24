@@ -16,6 +16,7 @@ Three changes ship together:
 from __future__ import annotations
 
 import inspect
+import json
 from unittest.mock import patch
 
 from services import ingestor
@@ -47,16 +48,17 @@ class TestFetchReviewsDefaults:
         with patch("services.steam_service._get") as mock_get:
             mock_get.return_value = None  # short-circuit the walk
             fetch_reviews(1551980, language="english")
-        # Assert the URL params included language=english.
+        # GetAppReviews v1 (2026-10-22): `language` became the `languages` list
+        # inside input_json.
         _, kwargs = mock_get.call_args
-        assert kwargs["params"]["language"] == "english"
+        assert json.loads(kwargs["params"]["input_json"])["languages"] == ["english"]
 
     def test_default_call_uses_all_languages_on_the_wire(self):
         with patch("services.steam_service._get") as mock_get:
             mock_get.return_value = None
             fetch_reviews(1551980)
         _, kwargs = mock_get.call_args
-        assert kwargs["params"]["language"] == "all"
+        assert json.loads(kwargs["params"]["input_json"])["languages"] == ["all"]
 
 
 # ---------------------------------------------------------------------------

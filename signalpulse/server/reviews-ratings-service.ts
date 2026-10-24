@@ -149,7 +149,14 @@ export class ReviewsRatingsService {
     // purchase-only count or percentage into this all-types summary.
     const key = `steam_reviews:all:v2:${appId}`;
     return this.cached(key, async () => {
-      const url = `https://store.steampowered.com/appreviews/${appId}?json=1&language=all&purchase_type=all&filter=all&num_per_page=0`;
+      // 2026-10-22: Valve disabled the store appreviews endpoint (Steamworks
+      // announcement 2026-10-02); migrated to IUserReviewsService/GetAppReviews
+      // v1. Same cohort (all languages, all purchase types), params in input_json,
+      // no `success` field (HTTP status checked in json()), payload nested under
+      // `response`. num_per_page=1: only query_summary is consumed.
+      const input = { appid: Number(appId), filter: "all", languages: ["all"],
+        purchase_type: "all", num_per_page: 1 };
+      const url = `https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/?input_json=${encodeURIComponent(JSON.stringify(input))}`;
       // Count, positive percentage and description share one validated source
       // cohort. This display-only cache is not a sales-estimation input.
       const all = steamSummary(await this.json(url));

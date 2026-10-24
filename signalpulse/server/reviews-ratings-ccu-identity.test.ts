@@ -41,7 +41,7 @@ test("CCU routes keep exact Steam ratings, reuse verified consoles and pass link
     const mod=await import("./storage");db=mod.rawSqlite;
     globalThis.fetch=(async(input:any,init:any)=>{
       const url=String(input);if(url.startsWith("http://127.0.0.1:"))return real(input,init);
-      if(url.includes("/appreviews/"))return new Response(JSON.stringify({success:1,query_summary:{total_positive:80,total_negative:20,total_reviews:100}}));
+      if(url.includes("IUserReviewsService/GetAppReviews"))return new Response(JSON.stringify({response:{query_summary:{total_positive:80,total_negative:20,total_reviews:100}}}));
       if(url.includes("api/appdetails")){
         const id=new URL(url).searchParams.get("appids")!,m=metadata[id];assert.ok(m,url);
         return new Response(JSON.stringify({[id]:{success:true,data:{steam_appid:Number(id),name:m.name,type:"game",release_date:{date:m.date}}}}));
