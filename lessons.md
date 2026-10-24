@@ -3991,3 +3991,29 @@ cast must not start on a new line after its expression (TS1434 "Unexpected keywo
 identifier" pointing mid-`const`) — keep the cast on the same line as the closing paren.
 (5) tsconfig target is pre-ES2015 for iteration: `for (const [k,v] of map)` needs
 downlevelIteration — use `map.forEach((v,k)=>...)` instead.
+
+## 2026-10-23 — Valve retired the store appreviews endpoint; five consumers migrated to GetAppReviews v1 (PR #346)
+
+* Valve disabled `store.steampowered.com/appreviews/{appid}?json=1` on 2026-10-22
+  (announcement 2026-10-02). Replacement: `IUserReviewsService/GetAppReviews/v1`
+  on api.steampowered.com. Contract changes that bit us: params in `input_json`
+  (query param), `language` (single) became `languages` (list), no `success`
+  field (HTTP status is the transport check), payload nested under `response`.
+  Works anonymously (~10-min cache, lower rate limits; publisher keys raise them).
+* The buying leaderboards and the estimator were NEVER exposed: their Steam
+  rating signal is `store_rating_signal_daily`, collected via the unaffected
+  `appreviewhistogram` endpoint (`server/signals/console/steam.ts`). When a
+  public endpoint dies, first map WHICH surface actually consumes it — the
+  display card (reviews-ratings-service), the demos backfill, the overlap
+  workflow, and the Python ingestor were the real casualties. Trace the whole
+  monorepo (rg across signalpulse/, backend/, .github/), not just the TS tree.
+* Card cohort equivalence: GetAppReviews v1 with filter=all/languages=[all]/
+  purchase_type=all returns a slightly LOWER total_reviews than the retired
+  endpoint's last reading for the same nominal cohort (7,208 vs 8,105 for
+  Hellraiser 1551980) — Valve's new summary appears to exclude offtopic/refunded
+  reviews. The card is display-only; the estimator reads the histogram table, so
+  this does not touch estimates. Do NOT substitute histogram data for the card —
+  it is english-only rollups, a silent definition change.
+* Deploy auto-trigger fired for this squash merge (#346) — the two prior
+  squash merges (#337, #341) did not. Always verify a deploy run exists for the
+  new main SHA before claiming live.
